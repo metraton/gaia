@@ -42,11 +42,16 @@ from cli.metrics import (
     _calculate_agent_outcomes,
     _calculate_token_usage,
     _calculate_anomaly_summary,
+    _split_native_agents,
     _format_tokens,
     _format_chars,
     _make_bar,
     register,
     cmd_metrics,
+    MetricsSnapshot,
+    SCHEMA_VERSION,
+    NATIVE_AGENT_NAMES,
+    render_console,
 )
 
 
@@ -332,6 +337,56 @@ class TestCalculateTokenUsage(unittest.TestCase):
         result = _calculate_token_usage([{"agent": "developer"}])
         self.assertIsNone(result)
 
+    def test_prefers_real_over_approx(self):
+        # P1 fix #4: output_tokens_real wins over the chars/4 approximation.
+        metrics = [
+            {"agent": "developer", "output_tokens_approx": 100, "output_tokens_real": 250},
+        ]
+        result = _calculate_token_usage(metrics)
+        self.assertEqual(result["grand_total"], 250)
+        self.assertEqual(result["real_count"], 1)
+        self.assertEqual(result["approx_count"], 0)
+        self.assertEqual(result["agents"][0]["source"], "real")
+
+    def test_degrades_to_approx_when_real_absent(self):
+        metrics = [{"agent": "developer", "output_tokens_approx": 100}]
+        result = _calculate_token_usage(metrics)
+        self.assertEqual(result["grand_total"], 100)
+        self.assertEqual(result["real_count"], 0)
+        self.assertEqual(result["agents"][0]["source"], "approx")
+
+    def test_surfaces_input_and_cache_when_present(self):
+        metrics = [
+            {"agent": "developer", "output_tokens_real": 250,
+             "input_tokens": 1000, "cache_creation_tokens": 40, "cache_read_tokens": 900},
+        ]
+        result = _calculate_token_usage(metrics)
+        self.assertEqual(result["input_tokens"], 1000)
+        self.assertEqual(result["cache_read_tokens"], 900)
+
+    def test_input_cache_none_when_no_transcript_data(self):
+        metrics = [{"agent": "developer", "output_tokens_approx": 100}]
+        result = _calculate_token_usage(metrics)
+        self.assertIsNone(result["input_tokens"])
+
+
+class TestSplitNativeAgents(unittest.TestCase):
+    def test_segregates_native_agents(self):
+        # P1 fix #3: Explore et al. are separated from Gaia specialists.
+        metrics = [
+            {"agent": "developer"},
+            {"agent": "Explore"},
+            {"agent": "gaia-operator"},
+            {"agent": "Plan"},
+        ]
+        gaia, native = _split_native_agents(metrics)
+        self.assertEqual({r["agent"] for r in gaia}, {"developer", "gaia-operator"})
+        self.assertEqual({r["agent"] for r in native}, {"Explore", "Plan"})
+
+    def test_native_names_present(self):
+        self.assertIn("Explore", NATIVE_AGENT_NAMES)
+        self.assertIn("claude-code-guide", NATIVE_AGENT_NAMES)
+
 
 class TestCalculateAnomalySummary(unittest.TestCase):
     def test_recent_anomalies(self):
@@ -359,6 +414,29 @@ class TestCalculateAnomalySummary(unittest.TestCase):
         result = _calculate_anomaly_summary(entries)
         self.assertIsNone(result)
 
+    def test_severity_sorts_above_volume(self):
+        # P2 fix #6: a rare critical must sort above a high-volume warning.
+        recent = datetime.now(timezone.utc).isoformat()
+        entries = [
+            {
+                "timestamp": recent,
+                "metrics": {"agent": "developer"},
+                "anomalies": (
+                    [{"type": "pipe_retroactive", "severity": "warning"}] * 20
+                    + [{"type": "response_contract_violation", "severity": "critical"}]
+                ),
+            }
+        ]
+        result = _calculate_anomaly_summary(entries)
+        self.assertIsNotNone(result)
+        # critical entry appears first despite being far less frequent
+        self.assertEqual(result["by_type"][0]["type"], "response_contract_violation")
+        self.assertEqual(result["by_type"][0]["severity"], "critical")
+        self.assertEqual(result["by_type"][1]["type"], "pipe_retroactive")
+        # by_severity aggregate is present
+        crit = next(s for s in result["by_severity"] if s["severity"] == "critical")
+        self.assertEqual(crit["count"], 1)
+
 
 class TestFormatHelpers(unittest.TestCase):
     def test_format_tokens_millions(self):
@@ -374,17 +452,23 @@ class TestFormatHelpers(unittest.TestCase):
         self.assertIn("1.5k", _format_chars(1500))
         self.assertEqual(_format_chars(42), "42")
 
+    # Dashboard v2: _make_bar now returns a FIXED-width string of filled (█)
+    # + empty (░) cells, not just the filled prefix.
     def test_make_bar_full(self):
         result = _make_bar(100, 10)
         self.assertEqual(len(result), 10)
+        self.assertEqual(result.count("█"), 10)
 
     def test_make_bar_empty(self):
         result = _make_bar(0, 10)
-        self.assertEqual(len(result), 0)
+        self.assertEqual(len(result), 10)
+        self.assertEqual(result.count("█"), 0)
+        self.assertEqual(result.count("░"), 10)
 
     def test_make_bar_half(self):
         result = _make_bar(50, 10)
-        self.assertEqual(len(result), 5)
+        self.assertEqual(len(result), 10)
+        self.assertEqual(result.count("█"), 5)
 
 
 class TestRegisterSubcommand(unittest.TestCase):
@@ -569,6 +653,76 @@ class TestDbBackedReaders(unittest.TestCase):
         self.assertEqual(summary["session_count"], 1)
 
 
+class TestMetricsSnapshot(unittest.TestCase):
+    """Dashboard v2: one snapshot feeds both --json and render_console."""
+
+    def _build(self, **kw):
+        base = dict(
+            workspace=None, audit_logs=[], workflow_metrics=[],
+            run_snapshots=[], skill_snapshots=[], anomaly_entries=[],
+        )
+        base.update(kw)
+        return MetricsSnapshot.build(**base)
+
+    def test_to_dict_carries_schema_version(self):
+        snap = self._build()
+        d = snap.to_dict()
+        self.assertEqual(d["schema_version"], SCHEMA_VERSION)
+        self.assertIn("generated_at", d)
+        # canonical single key -- no divergent "tiers" vs "security_tiers"
+        self.assertIn("security_tiers", d)
+        self.assertNotIn("tiers", d)
+
+    def test_empty_snapshot_has_schema_version(self):
+        d = MetricsSnapshot.empty().to_dict()
+        self.assertEqual(d["schema_version"], SCHEMA_VERSION)
+        self.assertEqual(d["security_tiers"]["total"], 0)
+        self.assertEqual(d["agent_invocations"]["total"], 0)
+
+    def test_native_agents_segregated_in_snapshot(self):
+        metrics = [
+            {"agent": "developer", "timestamp": "2026-04-15T10:00:00Z", "exit_code": 0, "output_length": 100},
+            {"agent": "Explore", "timestamp": "2026-04-15T10:00:00Z", "exit_code": 0, "output_length": 100},
+        ]
+        snap = self._build(workflow_metrics=metrics)
+        gaia_agents = {a["name"] for a in snap.agent_invocations["agents"]}
+        native_agents = {a["name"] for a in snap.native_agent_activity["agents"]}
+        self.assertIn("developer", gaia_agents)
+        self.assertNotIn("Explore", gaia_agents)
+        self.assertIn("Explore", native_agents)
+
+    def test_header_today_distinct_from_all_time(self):
+        # P0 fix #1: today count and all-time count are separate keys, not
+        # the same accumulated number.
+        old = "2020-01-01T10:00:00Z"
+        metrics = [
+            {"agent": "developer", "timestamp": old, "exit_code": 0, "output_length": 10},
+            {"agent": "developer", "timestamp": old, "exit_code": 0, "output_length": 10},
+        ]
+        snap = self._build(workflow_metrics=metrics)
+        self.assertEqual(snap.agent_invocations["total"], 2)
+        self.assertEqual(snap.agent_invocations["today_count"], 0)
+
+    def test_render_console_does_not_raise(self):
+        now = datetime.now(timezone.utc).isoformat()
+        audit = [{"tier": "T0", "command": "git status", "timestamp": now},
+                 {"tier": "T3", "command": "git push", "timestamp": now}]
+        metrics = [{"agent": "developer", "timestamp": now, "exit_code": 0,
+                    "output_length": 500, "output_tokens_approx": 120,
+                    "plan_status": "COMPLETE"}]
+        snap = self._build(audit_logs=audit, workflow_metrics=metrics)
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            render_console(snap)
+        out = buf.getvalue()
+        self.assertIn("SECURITY TIER USAGE", out)
+        self.assertIn("┌", out)  # box-drawing present
+        self.assertIn("█", out)  # bar glyph present
+        self.assertIn("schema_version=", out)
+
+
 class TestCmdMetrics(unittest.TestCase):
     def setUp(self):
         # Isolate every cmd_metrics test from the real ~/.gaia/gaia.db: with
@@ -624,6 +778,7 @@ class TestCmdMetrics(unittest.TestCase):
             self.assertEqual(rc, 0)
             data = json.loads(output)
             # Empty state must return full schema with zero values (not a "message" wrapper)
+            self.assertEqual(data["schema_version"], SCHEMA_VERSION)
             self.assertIn("security_tiers", data)
             self.assertIn("cmd_types", data)
             self.assertIn("agent_invocations", data)
@@ -653,9 +808,11 @@ class TestCmdMetrics(unittest.TestCase):
 
             self.assertEqual(rc, 0)
             data = json.loads(output)
+            self.assertEqual(data["schema_version"], SCHEMA_VERSION)
             self.assertIn("security_tiers", data)
             self.assertIn("cmd_types", data)
             self.assertIn("agent_invocations", data)
+            self.assertIn("native_agent_activity", data)
             self.assertEqual(data["security_tiers"]["total"], 2)
 
     def test_dashboard_output_contains_sections(self):
@@ -677,9 +834,9 @@ class TestCmdMetrics(unittest.TestCase):
                 output = buf.getvalue()
 
             self.assertEqual(rc, 0)
-            self.assertIn("Security Tier", output)
-            self.assertIn("Command Type", output)
-            self.assertIn("Activity Today", output)
+            self.assertIn("SECURITY TIER USAGE", output)
+            self.assertIn("COMMAND TYPE BREAKDOWN", output)
+            self.assertIn("ACTIVITY TODAY", output)
 
     def test_agent_detail_view(self):
         with tempfile.TemporaryDirectory() as tmp:

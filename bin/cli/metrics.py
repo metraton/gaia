@@ -2,15 +2,24 @@
 gaia metrics -- Usage analytics: tier classification, agent invocations,
 anomaly counters.
 
+Dashboard v2: cmd_metrics() computes one MetricsSnapshot (see the
+MetricsSnapshot dataclass below) per invocation and feeds it to both
+render_console() and json.dumps() -- the data is calculated exactly once,
+under one canonical set of keys, versioned via schema_version.
+
 Displays system metrics dashboard:
   - Security tier usage distribution
   - Command type breakdown
   - Top commands by frequency
-  - Agent invocations
+  - Agent invocations (Gaia specialists only)
+  - Native agent activity (Explore/Plan/claude-code-guide/general-purpose,
+    segregated so harness noise doesn't drown out Gaia specialist signal)
   - Agent outcomes
-  - Token usage (approx)
-  - Anomaly summary (last 30 days)
-  - Activity today
+  - Token usage (real, transcript-parsed when available; approx/chars-4
+    fallback labeled as such)
+  - Anomaly summary (last 30 days, severity-sorted so a rare critical/error
+    entry can't be buried behind a high-volume low-severity type)
+  - Activity today (UTC calendar day -- audit timestamps are UTC)
 
 With --agent NAME shows a detail view for that agent.
 
@@ -21,12 +30,14 @@ Data sources:
                                  (context_metrics JSON column)
     - episode_anomalies table -> anomaly summary
   .claude/logs/audit-*.jsonl  (security tier events -> tier usage, command
-                               breakdown, top commands)
+                               breakdown, top commands; last ~30d retention,
+                               not filtered by workspace)
 
 Flags:
   --agent NAME      Show detail view for a specific agent
   --workspace NAME  Workspace identity override (default: gaia.project.current())
-  --json            Machine-readable output
+  --json            Machine-readable output (MetricsSnapshot.to_dict(), versioned
+                     via schema_version)
 """
 
 import fnmatch
@@ -34,8 +45,46 @@ import json
 import os
 import re
 import sys
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional
+
+
+# Schema version for the JSON contract emitted by MetricsSnapshot.to_dict().
+# Bump this whenever a section's shape changes in a way a machine consumer
+# (future web/API surface) would need to branch on.
+SCHEMA_VERSION = "1"
+
+
+# ---------------------------------------------------------------------------
+# Native agent segregation
+# ---------------------------------------------------------------------------
+
+_FALLBACK_NATIVE_AGENTS = frozenset({"Explore", "Plan", "general-purpose", "claude-code-guide"})
+
+
+def _native_agent_names() -> frozenset:
+    """Harness-native Claude Code agent names.
+
+    Reuses the canonical ``NATIVE_AGENTS`` list from
+    hooks/modules/tools/task_validator.py -- the same list the Task-tool
+    validator uses to recognize non-Gaia dispatch targets -- instead of
+    re-declaring it here. Falls back to a mirrored literal if the hooks
+    package cannot be imported (e.g. metrics.py invoked standalone).
+    """
+    _bin_dir = Path(__file__).resolve().parent.parent
+    _repo_root = _bin_dir.parent
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+    try:
+        from hooks.modules.tools.task_validator import NATIVE_AGENTS
+        return frozenset(NATIVE_AGENTS)
+    except Exception:
+        return _FALLBACK_NATIVE_AGENTS
+
+
+NATIVE_AGENT_NAMES = _native_agent_names()
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +193,41 @@ def _open_store(root: Path, workspace_override: str = None):
     return con, ws
 
 
+def _extract_real_token_fields(raw_context_metrics) -> dict:
+    """Pull real (transcript-parsed) token counts out of an episode's
+    ``context_metrics`` JSON blob.
+
+    Mirrors the ``metrics`` dict shape written by
+    hooks/modules/audit/workflow_recorder.py: alongside the always-present
+    ``output_tokens_approx`` (chars/4 heuristic), a transcript-backed run also
+    carries ``output_tokens_real`` / ``input_tokens`` / ``cache_creation_tokens``
+    / ``cache_read_tokens``. Returns all four keys, each ``None`` when absent,
+    so ``_calculate_token_usage`` can tell "real" from "approx" per entry.
+    """
+    fields = {
+        "output_tokens_real": None,
+        "input_tokens": None,
+        "cache_creation_tokens": None,
+        "cache_read_tokens": None,
+    }
+    if not raw_context_metrics:
+        return fields
+    try:
+        blob = json.loads(raw_context_metrics)
+    except (json.JSONDecodeError, TypeError):
+        return fields
+    if isinstance(blob, dict) and isinstance(blob.get("metrics"), dict):
+        metrics = blob["metrics"]
+    else:
+        metrics = blob
+    if not isinstance(metrics, dict):
+        return fields
+    for key in fields:
+        if key in metrics:
+            fields[key] = metrics[key]
+    return fields
+
+
 def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
     """Agent-session rows from the gaia.db ``episodes`` table (T6 migration).
 
@@ -151,6 +235,13 @@ def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
     output_length/output_tokens_approx -- the fields the agent-invocation,
     agent-outcome, and token-usage calculators consume. Replaces the dead
     episodic-memory/index.json + workflow-episodic-memory/metrics.jsonl reads.
+
+    Each row also carries the real-token fields extracted from
+    ``context_metrics`` (output_tokens_real / input_tokens /
+    cache_creation_tokens / cache_read_tokens, all ``None`` when the episode
+    has no transcript-backed metrics) so token-usage reporting can prefer real
+    counts over the chars/4 approximation. The raw ``context_metrics`` blob
+    itself is not retained on the row -- only its extracted token fields.
     """
     con, ws = _open_store(root, workspace_override)
     if con is None:
@@ -161,7 +252,8 @@ def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
                 rows = con.execute(
                     "SELECT episode_id, workspace, timestamp, session_id, task_id, "
                     "agent, type, title, plan_status, outcome, exit_code, "
-                    "duration_seconds, output_length, output_tokens_approx, tier "
+                    "duration_seconds, output_length, output_tokens_approx, tier, "
+                    "context_metrics "
                     "FROM episodes WHERE workspace = ? AND agent IS NOT NULL "
                     "ORDER BY timestamp DESC",
                     (ws,),
@@ -170,11 +262,18 @@ def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
                 rows = con.execute(
                     "SELECT episode_id, workspace, timestamp, session_id, task_id, "
                     "agent, type, title, plan_status, outcome, exit_code, "
-                    "duration_seconds, output_length, output_tokens_approx, tier "
+                    "duration_seconds, output_length, output_tokens_approx, tier, "
+                    "context_metrics "
                     "FROM episodes WHERE agent IS NOT NULL "
                     "ORDER BY timestamp DESC"
                 ).fetchall()
-            return [dict(r) for r in rows]
+            result = []
+            for r in rows:
+                row = dict(r)
+                raw_cm = row.pop("context_metrics", None)
+                row.update(_extract_real_token_fields(raw_cm))
+                result.append(row)
+            return result
         finally:
             con.close()
     except Exception:
@@ -260,7 +359,7 @@ def _read_anomaly_entries(root: Path, workspace_override: str = None) -> list:
             if ws:
                 rows = con.execute(
                     "SELECT ea.episode_id AS episode_id, ea.timestamp AS timestamp, "
-                    "ea.type AS type, e.agent AS agent "
+                    "ea.type AS type, ea.severity AS severity, e.agent AS agent "
                     "FROM episode_anomalies ea "
                     "LEFT JOIN episodes e ON e.episode_id = ea.episode_id "
                     "WHERE ea.workspace = ? "
@@ -270,7 +369,7 @@ def _read_anomaly_entries(root: Path, workspace_override: str = None) -> list:
             else:
                 rows = con.execute(
                     "SELECT ea.episode_id AS episode_id, ea.timestamp AS timestamp, "
-                    "ea.type AS type, e.agent AS agent "
+                    "ea.type AS type, ea.severity AS severity, e.agent AS agent "
                     "FROM episode_anomalies ea "
                     "LEFT JOIN episodes e ON e.episode_id = ea.episode_id "
                     "ORDER BY ea.timestamp DESC"
@@ -291,7 +390,7 @@ def _read_anomaly_entries(root: Path, workspace_override: str = None) -> list:
                 "metrics": {"agent": r["agent"] or "unknown"},
             }
             order.append(ep)
-        grouped[ep]["anomalies"].append({"type": r["type"]})
+        grouped[ep]["anomalies"].append({"type": r["type"], "severity": r["severity"]})
     return [grouped[ep] for ep in order]
 
 
@@ -400,9 +499,16 @@ def _format_chars(n) -> str:
     return str(n)
 
 
-def _make_bar(percentage: float, max_width: int = 14) -> str:
-    filled = max(0, round((percentage / 100) * max_width))
-    return "#" * filled
+def _make_bar(percentage: float, width: int = 24) -> str:
+    """Fixed-width Unicode bar: filled cells (█) + empty cells (░).
+
+    Unlike the old ``#``-only bar (which returned only the filled prefix and
+    relied on the caller's ``:<N`` string format for padding), this returns
+    the full ``width``-length string so callers can drop straight into a
+    fixed-column box row without separate padding.
+    """
+    filled = max(0, min(width, round((percentage / 100) * width)))
+    return "█" * filled + "░" * (width - filled)
 
 
 def _count_values(values: list) -> dict:
@@ -537,6 +643,23 @@ def _calculate_error_rate(audit_logs: list) -> dict:
     }
 
 
+def _split_native_agents(workflow_metrics: list) -> tuple:
+    """Separate harness-native Claude Code agents from Gaia domain specialists.
+
+    Native agents (Explore, Plan, claude-code-guide, general-purpose -- see
+    ``NATIVE_AGENT_NAMES``) are utility subagents built into the harness, not
+    Gaia specialists. Explore alone can dwarf every Gaia specialist's
+    invocation count, which drowns out the invocation/outcome/token reads
+    that exist to gauge Gaia specialist usage. Returns
+    ``(gaia_metrics, native_metrics)``.
+    """
+    gaia, native = [], []
+    for r in workflow_metrics:
+        target = native if (r.get("agent") or "") in NATIVE_AGENT_NAMES else gaia
+        target.append(r)
+    return gaia, native
+
+
 def _calculate_agent_invocations(workflow_metrics: list) -> dict:
     today = datetime.now(timezone.utc).date().isoformat()
     today_count = sum(1 for r in workflow_metrics if (r.get("timestamp") or "").startswith(today))
@@ -587,19 +710,57 @@ def _calculate_agent_outcomes(workflow_metrics: list):
 
 
 def _calculate_token_usage(workflow_metrics: list):
-    with_tokens = [r for r in workflow_metrics if isinstance(r.get("output_tokens_approx"), (int, float))]
+    """Aggregate output-token usage per agent, preferring real counts.
+
+    Each entry may carry ``output_tokens_real`` (transcript-parsed
+    usage.output_tokens, set by workflow_recorder.py when a transcript was
+    available) alongside the always-present ``output_tokens_approx``
+    (chars/4 heuristic). The "effective" total per entry is the real count
+    when present, degrading to the approximation otherwise -- both the
+    per-entry and the aggregate output are labeled so a caller can tell which
+    source backed the number. When any entry carries input/cache token data,
+    the totals for those are surfaced too (None when no entry has them, so a
+    workspace with no transcript-backed episodes doesn't show a false zero).
+    """
+    with_tokens = [
+        r
+        for r in workflow_metrics
+        if isinstance(r.get("output_tokens_real"), (int, float))
+        or isinstance(r.get("output_tokens_approx"), (int, float))
+    ]
     if not with_tokens:
         return None
 
     agent_map = {}
+    grand_total = 0
+    real_count = 0
+    total_input = 0
+    total_cache_creation = 0
+    total_cache_read = 0
+    has_input_data = False
+
     for e in with_tokens:
         name = e.get("agent") or "unknown"
-        if name not in agent_map:
-            agent_map[name] = {"total": 0, "count": 0}
-        agent_map[name]["total"] += e["output_tokens_approx"]
-        agent_map[name]["count"] += 1
+        real = e.get("output_tokens_real")
+        is_real = isinstance(real, (int, float))
+        effective = real if is_real else (e.get("output_tokens_approx") or 0)
+        if is_real:
+            real_count += 1
+        grand_total += effective
 
-    grand_total = sum(e["output_tokens_approx"] for e in with_tokens)
+        if name not in agent_map:
+            agent_map[name] = {"total": 0, "count": 0, "real_count": 0}
+        agent_map[name]["total"] += effective
+        agent_map[name]["count"] += 1
+        if is_real:
+            agent_map[name]["real_count"] += 1
+
+        if isinstance(e.get("input_tokens"), (int, float)):
+            has_input_data = True
+            total_input += e["input_tokens"]
+            total_cache_creation += e.get("cache_creation_tokens") or 0
+            total_cache_read += e.get("cache_read_tokens") or 0
+
     agents = sorted(
         [
             {
@@ -607,34 +768,75 @@ def _calculate_token_usage(workflow_metrics: list):
                 "total": v["total"],
                 "avg": round(v["total"] / v["count"]) if v["count"] else 0,
                 "count": v["count"],
+                "source": "real" if v["real_count"] == v["count"] else ("mixed" if v["real_count"] else "approx"),
             }
             for n, v in agent_map.items()
         ],
         key=lambda x: -x["total"],
     )
-    return {"agents": agents, "grand_total": grand_total, "entry_count": len(with_tokens)}
+    return {
+        "agents": agents,
+        "grand_total": grand_total,
+        "entry_count": len(with_tokens),
+        "real_count": real_count,
+        "approx_count": len(with_tokens) - real_count,
+        "input_tokens": total_input if has_input_data else None,
+        "cache_creation_tokens": total_cache_creation if has_input_data else None,
+        "cache_read_tokens": total_cache_read if has_input_data else None,
+    }
+
+
+_SEVERITY_RANK = {"critical": 3, "error": 2, "warning": 1, "info": 0, "unknown": -1}
 
 
 def _calculate_anomaly_summary(anomaly_entries: list):
+    """Anomaly summary over the last 30 days, sorted so severity beats volume.
+
+    A single high-volume, low-severity type (e.g. ``pipe_retroactive``, a
+    warning fired on every pipe) can otherwise dominate a plain count-sorted
+    list and bury a rare but critical entry (e.g.
+    ``response_contract_violation``). ``by_type`` sorts by severity rank
+    first, count second, so critical/error entries always surface above
+    warning/info noise regardless of how often the noisy type fires.
+    ``by_severity`` gives the aggregate breakdown for a one-line read.
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     entries = [e for e in anomaly_entries if e and (e.get("timestamp") or "") >= cutoff]
     if not entries:
         return None
 
     type_counts = {}
+    type_severity = {}
+    severity_counts = {}
     agent_counts = {}
     for e in entries:
         agent = (e.get("metrics") or {}).get("agent", "unknown")
         for anomaly in e.get("anomalies") or []:
             t = anomaly.get("type", "unknown")
+            sev = anomaly.get("severity") or "unknown"
             type_counts[t] = type_counts.get(t, 0) + 1
+            severity_counts[sev] = severity_counts.get(sev, 0) + 1
             agent_counts[agent] = agent_counts.get(agent, 0) + 1
+            if _SEVERITY_RANK.get(sev, -1) > _SEVERITY_RANK.get(type_severity.get(t, "unknown"), -1):
+                type_severity[t] = sev
 
     total = sum(type_counts.values())
     by_type = sorted(
-        [{"type": t, "count": c, "percentage": c / total * 100 if total else 0}
-         for t, c in type_counts.items()],
-        key=lambda x: -x["count"],
+        [
+            {
+                "type": t,
+                "count": c,
+                "percentage": c / total * 100 if total else 0,
+                "severity": type_severity.get(t, "unknown"),
+            }
+            for t, c in type_counts.items()
+        ],
+        key=lambda x: (-_SEVERITY_RANK.get(x["severity"], -1), -x["count"]),
+    )
+    by_severity = sorted(
+        [{"severity": s, "count": c, "percentage": c / total * 100 if total else 0}
+         for s, c in severity_counts.items()],
+        key=lambda x: -_SEVERITY_RANK.get(x["severity"], -1),
     )
     by_agent = _sorted_counts(agent_counts)[:5]
 
@@ -642,6 +844,7 @@ def _calculate_anomaly_summary(anomaly_entries: list):
         "total": total,
         "session_count": len(entries),
         "by_type": by_type,
+        "by_severity": by_severity,
         "by_agent": by_agent,
     }
 
@@ -740,158 +943,379 @@ def _calculate_context_update_summary(run_snapshots: list):
 
 
 # ---------------------------------------------------------------------------
-# Display functions
+# MetricsSnapshot -- unified data model (dashboard v2)
+#
+# Before this model, cmd_metrics() ran the 11 calculators TWICE -- once for
+# --json, once for the console display -- and the two branches carried
+# divergent key names for the same data (the JSON branch's "security_tiers"
+# vs. the display branch's "tiers"). MetricsSnapshot is computed exactly
+# once per invocation and fed to both json.dumps(snapshot.to_dict()) and
+# render_console(snapshot), so there is one source of truth for both data
+# and canonical key names. schema_version makes the JSON shape a contract a
+# future web/API consumer can version against.
 # ---------------------------------------------------------------------------
 
-def _display_metrics(data: dict):
-    SEP = "=" * 52
+@dataclass
+class MetricsSnapshot:
+    schema_version: str
+    generated_at: str
+    workspace: Optional[str]
+    audit_entry_count: int
+    security_tiers: dict
+    cmd_types: dict
+    top_cmds: list
+    agent_invocations: dict
+    native_agent_activity: dict
+    error_stats: dict
+    agent_outcomes: Optional[dict]
+    token_usage: Optional[dict]
+    anomaly_summary: Optional[dict]
+    runtime_skills: dict
+    context_snapshots: Optional[dict]
+    context_updates: Optional[dict]
+    agent_filter: Optional[str] = None
 
-    print("\nGaia System Metrics")
-    print(SEP)
+    def to_dict(self) -> dict:
+        return asdict(self)
 
-    tiers = data["tiers"]
-    cmd_types = data["cmd_types"]
-    top_cmds = data["top_cmds"]
-    agent_inv = data["agent_invocations"]
-    error_stats = data["error_stats"]
-    audit_total = data["audit_total"]
-    agent_outcomes = data["agent_outcomes"]
-    token_usage = data["token_usage"]
-    anomaly_summary = data["anomaly_summary"]
-    runtime_skills = data["runtime_skills"]
-    ctx_snapshots = data["context_snapshots"]
-    ctx_updates = data["context_updates"]
+    @classmethod
+    def build(
+        cls,
+        *,
+        workspace: Optional[str],
+        audit_logs: list,
+        workflow_metrics: list,
+        run_snapshots: list,
+        skill_snapshots: list,
+        anomaly_entries: list,
+        agent_filter: Optional[str] = None,
+    ) -> "MetricsSnapshot":
+        gaia_metrics, native_metrics = _split_native_agents(workflow_metrics)
+        return cls(
+            schema_version=SCHEMA_VERSION,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            workspace=workspace,
+            audit_entry_count=len(audit_logs),
+            security_tiers=_calculate_tier_usage(audit_logs),
+            cmd_types=_calculate_command_type_breakdown(audit_logs),
+            top_cmds=_calculate_top_commands(audit_logs),
+            agent_invocations=_calculate_agent_invocations(gaia_metrics),
+            native_agent_activity=_calculate_agent_invocations(native_metrics),
+            error_stats=_calculate_error_rate(audit_logs),
+            agent_outcomes=_calculate_agent_outcomes(gaia_metrics),
+            token_usage=_calculate_token_usage(gaia_metrics),
+            anomaly_summary=_calculate_anomaly_summary(anomaly_entries),
+            runtime_skills=_calculate_runtime_skill_summary(skill_snapshots, run_snapshots),
+            context_snapshots=_calculate_context_snapshot_summary(run_snapshots),
+            context_updates=_calculate_context_update_summary(run_snapshots),
+            agent_filter=agent_filter,
+        )
+
+    @classmethod
+    def empty(cls, workspace: Optional[str] = None) -> "MetricsSnapshot":
+        empty_inv = {"agents": [], "total": 0, "today_count": 0}
+        return cls(
+            schema_version=SCHEMA_VERSION,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+            workspace=workspace,
+            audit_entry_count=0,
+            security_tiers={"total": 0, "distribution": [], "today_count": 0, "today_t3": 0, "peak_hour": None, "peak_count": 0},
+            cmd_types={"total": 0, "breakdown": []},
+            top_cmds=[],
+            agent_invocations=dict(empty_inv),
+            native_agent_activity=dict(empty_inv),
+            error_stats={"total": 0, "errors": 0, "error_rate": 0, "limited_by_api": False},
+            agent_outcomes=None,
+            token_usage=None,
+            anomaly_summary=None,
+            runtime_skills={"explicit_count": 0, "run_default_count": 0, "agent_count": 0, "latest_profiles": [], "top_skills": []},
+            context_snapshots=None,
+            context_updates=None,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Render -- hand-rolled Unicode box-drawing (zero new dependencies)
+# ---------------------------------------------------------------------------
+
+_BOX_W = 74  # interior width, excluding the two border characters
+
+_TIER_LABELS = {"T0": "read-only", "T1": "validation", "T2": "dry-run", "T3": "mutating"}
+_SEVERITY_LABELS = {"critical": "CRIT", "error": "ERR ", "warning": "WARN", "info": "INFO", "unknown": "?   "}
+
+
+def _box_top(title: str, right_label: str = "") -> str:
+    left = f"─ {title} "
+    right = f" {right_label} ─" if right_label else "─"
+    fill = max(0, _BOX_W - len(left) - len(right))
+    return "┌" + left + "─" * fill + right + "┐"
+
+
+def _box_row(text: str = "") -> str:
+    content = f" {text}" if text else ""
+    if len(content) > _BOX_W:
+        content = content[: _BOX_W - 1] + "…"
+    return "│" + content.ljust(_BOX_W) + "│"
+
+
+def _box_divider(label: str = "") -> str:
+    left = f"── {label} " if label else ""
+    fill = max(0, _BOX_W - len(left))
+    return "├" + left + "─" * fill + "┤"
+
+
+def _box_bottom() -> str:
+    return "└" + "─" * _BOX_W + "┘"
+
+
+def _print_box(title: str, rows: list, legend: list = None, right_label: str = "") -> None:
+    print(_box_top(title, right_label))
+    for r in rows:
+        print(_box_row(r))
+    if legend:
+        print(_box_divider("legend"))
+        for l in legend:
+            print(_box_row(l))
+    print(_box_bottom())
+    print()
+
+
+def render_console(snapshot: MetricsSnapshot) -> None:
+    """Render the dashboard from a single, already-computed MetricsSnapshot.
+
+    Every section is a box: a title bar (with an at-a-glance right-aligned
+    total), the data rows, and an embedded legend explaining what the metric
+    IS and any non-obvious classification behind it -- not just the values.
+    """
+    print("\nGaia System Metrics  (dashboard v2)")
+    ws_label = snapshot.workspace or "unfiltered (all workspaces)"
+    print(f"Generated {snapshot.generated_at}  |  workspace: {ws_label}")
+    print()
 
     # Security Tier Usage
-    print(f"\nSecurity Tier Usage  ({tiers['total']} operations)")
-    tier_label = {"T0": "read-only", "T1": "validation", "T2": "simulation", "T3": "realization"}
+    tiers = snapshot.security_tiers
+    rows = []
     if tiers["total"] == 0:
-        print("  no tier data")
+        rows.append("no tier data")
     else:
         for item in tiers["distribution"]:
             tier = item["tier"]
-            count = item["count"]
-            pct = item["percentage"]
-            bar = _make_bar(pct, 14)
-            label = tier_label.get(tier, tier)
-            suffix = "  realization (!)" if tier == "T3" else f"  {label}"
-            print(f"  {tier:<4} {count:>4}  {bar:<14}  {pct:>5.1f}%{suffix}")
+            bar = _make_bar(item["percentage"], 24)
+            label = _TIER_LABELS.get(tier, tier)
+            warn = " ⚠ " if tier == "T3" else "   "
+            rows.append(f"{tier:<3}{warn}{label:<11}{item['count']:>4}  {bar}  {item['percentage']:>5.1f}%")
+    legend = [
+        "T0 read-only / T1 local validation / T2 dry-run — none require approval",
+        "T3 = mutates state — REQUIRES approval before it runs",
+        "Surprises: curl is T0 unless -X POST/--data; a bare `python3 script.py`",
+        "defaults to T3 when the script body can't be resolved (conservative)",
+        "Window: last ~30d (audit-log retention), not filtered by workspace",
+    ]
+    _print_box("SECURITY TIER USAGE", rows, legend, right_label=f"{tiers['total']} ops")
 
     # Command Type Breakdown
-    print(f"\nCommand Type Breakdown  (derived from {audit_total} audit entries)")
-    if not cmd_types["breakdown"]:
-        print("  no command data")
+    ct = snapshot.cmd_types
+    rows = []
+    if not ct["breakdown"]:
+        rows.append("no command data")
     else:
-        for item in cmd_types["breakdown"]:
-            bar = _make_bar(item["percentage"], 10)
-            print(f"  {item['type']:<12} {item['count']:>4}  {bar:<10}  {item['percentage']:>5.1f}%")
+        for item in ct["breakdown"]:
+            bar = _make_bar(item["percentage"], 20)
+            rows.append(f"{item['type']:<12}{item['count']:>4}  {bar}  {item['percentage']:>5.1f}%")
+    legend = ["Classified from Bash tool_name entries in audit-*.jsonl",
+              "Window: last ~30d (audit-log retention), not filtered by workspace"]
+    _print_box("COMMAND TYPE BREAKDOWN", rows, legend, right_label=f"{snapshot.audit_entry_count} entries")
 
     # Top Commands
-    print("\nTop Commands")
-    if not top_cmds:
-        print("  no command data")
+    rows = []
+    if not snapshot.top_cmds:
+        rows.append("no command data")
     else:
-        for item in top_cmds:
-            warn = "  (!)" if item["t3count"] > 0 else ""
-            print(f"  {item['label']:<30} {item['count']:>4}  {item['tier']}{warn}")
+        for item in snapshot.top_cmds:
+            warn = " ⚠" if item["t3count"] > 0 else "  "
+            rows.append(f"{item['label']:<30}{item['count']:>4}  {item['tier']:<4}{warn}")
+    legend = ["⚠ marks a label with at least one T3 (mutating) invocation",
+              "Window: last ~30d (audit-log retention), not filtered by workspace"]
+    _print_box("TOP COMMANDS", rows, legend)
 
-    # Agent Invocations
-    if agent_inv["today_count"] > 0:
-        agent_header = f"({agent_inv['today_count']} sessions today)"
+    # Agent Invocations (Gaia specialists only)
+    inv = snapshot.agent_invocations
+    rows = []
+    if not inv["agents"]:
+        rows.append("no invocation data")
     else:
-        agent_header = f"({agent_inv['total']} total)"
-    print(f"\nAgent Invocations  {agent_header}")
-    if not agent_inv["agents"]:
-        print("  no invocation data")
-    else:
-        for item in agent_inv["agents"]:
-            bar = _make_bar(item["percentage"], 8)
-            avg = f"avg {_format_chars(item['avg_output']):>6} chars"
-            ok_pct = item["success_rate"]
-            ok_str = f"{ok_pct:.0f}% ok"
-            print(f"  {item['name']:<24} {item['count']:>3}  {bar:<8}  {avg}  {ok_str}")
-        print("  tip: gaia metrics --agent <name>  for detail view")
+        for item in inv["agents"]:
+            bar = _make_bar(item["percentage"], 14)
+            rows.append(
+                f"{item['name']:<22}{item['count']:>3}  {bar}  "
+                f"avg {_format_chars(item['avg_output']):>6} chars  {item['success_rate']:>3.0f}% ok"
+            )
+        rows.append("")
+        rows.append("tip: gaia metrics --agent <name>  for detail view")
+    legend = [
+        "Gaia domain specialists only -- harness-native agents (Explore, Plan,",
+        "claude-code-guide, general-purpose) are in Native Agent Activity below",
+        "Header splits today vs all-time; the breakdown rows above are all-time",
+    ]
+    _print_box(
+        "AGENT INVOCATIONS",
+        rows,
+        legend,
+        right_label=f"{inv['today_count']} invocations today · {inv['total']} all-time",
+    )
+
+    # Native Agent Activity (segregated -- P1 fix: Explore et al. are harness
+    # noise, not Gaia specialist signal)
+    native = snapshot.native_agent_activity
+    if native["total"] > 0:
+        rows = []
+        for item in native["agents"]:
+            bar = _make_bar(item["percentage"], 14)
+            rows.append(f"{item['name']:<22}{item['count']:>3}  {bar}  {item['percentage']:>5.1f}%")
+        legend = [
+            "Harness-native utility agents, NOT Gaia domain specialists --",
+            "excluded from Agent Invocations/Outcomes/Token Usage above so those",
+            "reads measure Gaia specialists, not harness plumbing (e.g. Explore)",
+        ]
+        _print_box(
+            "NATIVE AGENT ACTIVITY (not Gaia specialists)",
+            rows,
+            legend,
+            right_label=f"{native['today_count']} today · {native['total']} all-time",
+        )
 
     # Agent Outcomes
-    if agent_outcomes:
-        print(f"\nAgent Outcomes  ({agent_outcomes['total']} sessions with status)")
-        for item in agent_outcomes["distribution"]:
-            bar = _make_bar(item["percentage"], 10)
-            print(f"  {item['status']:<16} {item['count']:>3}  {bar:<10}  {item['percentage']:>5.1f}%")
+    if snapshot.agent_outcomes:
+        ao = snapshot.agent_outcomes
+        rows = []
+        for item in ao["distribution"]:
+            bar = _make_bar(item["percentage"], 20)
+            rows.append(f"{item['status']:<16}{item['count']:>3}  {bar}  {item['percentage']:>5.1f}%")
+        _print_box(
+            "AGENT OUTCOMES",
+            rows,
+            ["Gaia specialists only -- same segregation as Agent Invocations above"],
+            right_label=f"{ao['total']} invocations with status",
+        )
 
     # Token Usage
-    if token_usage:
-        print(f"\nToken Usage (approx)  total: ~{_format_tokens(token_usage['grand_total'])}")
-        for item in token_usage["agents"]:
-            print(
-                f"  {item['name']:<24} {item['count']:>3} sessions"
-                f"  total {_format_tokens(item['total']):>6}"
-                f"  avg {_format_tokens(item['avg']):>6}"
+    if snapshot.token_usage:
+        tu = snapshot.token_usage
+        rows = []
+        for item in tu["agents"]:
+            rows.append(
+                f"{item['name']:<22}{item['count']:>3} inv  total {_format_tokens(item['total']):>6}  "
+                f"avg {_format_tokens(item['avg']):>6}  ({item['source']})"
             )
+        legend = [
+            f"real = transcript-parsed usage.output_tokens ({tu['real_count']} entries); "
+            f"approx = chars/4 ({tu['approx_count']} entries)",
+        ]
+        if tu["input_tokens"] is not None:
+            legend.append(
+                f"input {_format_tokens(tu['input_tokens'])}  "
+                f"cache-write {_format_tokens(tu['cache_creation_tokens'])}  "
+                f"cache-read {_format_tokens(tu['cache_read_tokens'])}"
+            )
+        _print_box("TOKEN USAGE", rows, legend, right_label=f"~{_format_tokens(tu['grand_total'])} total")
 
     # Runtime Skill Snapshots
-    if runtime_skills and runtime_skills["agent_count"] > 0:
-        rs = runtime_skills
-        print(
-            f"\nRuntime Skill Snapshots  ({rs['agent_count']} agents, "
-            f"{rs['explicit_count']} explicit, {rs['run_default_count']} run defaults)"
-        )
+    rs = snapshot.runtime_skills
+    if rs["agent_count"] > 0:
+        rows = []
         for profile in rs["latest_profiles"][:6]:
             model = profile.get("model") or "default"
-            print(
-                f"  {profile['agent']:<24} model {model:<8} "
-                f"skills {profile['skills_count']:>2}  tools {len(profile['tools']):>2}  "
-                f"{_format_skills(profile['skills'], 3)}"
+            rows.append(
+                f"{profile['agent']:<22}model {model:<8}skills {profile['skills_count']:>2}  "
+                f"tools {len(profile['tools']):>2}  {_format_skills(profile['skills'], 3)}"
             )
         if len(rs["latest_profiles"]) > 6:
-            print(f"  ... {len(rs['latest_profiles']) - 6} more agents with captured snapshots")
-        print(f"  Common skills: {_format_count_summary(rs['top_skills'])}")
+            rows.append(f"... {len(rs['latest_profiles']) - 6} more agents with captured snapshots")
+        rows.append(f"Common skills: {_format_count_summary(rs['top_skills'])}")
+        legend = [
+            "Runtime Skill Snapshot = which model/tools/skills the harness actually",
+            "loaded for that agent's latest dispatch -- not its .md declaration",
+        ]
+        _print_box("RUNTIME SKILL SNAPSHOTS", rows, legend, right_label=f"{rs['agent_count']} agents")
 
     # Context Snapshot Summary
-    if ctx_snapshots:
-        print(f"\nContext Snapshot Summary  ({ctx_snapshots['total']} sessions)")
-        print(f"  Primary surfaces: {_format_count_summary(ctx_snapshots['primary_surfaces'])}")
-        print(f"  Multi-surface:    {ctx_snapshots['multi_surface_count']}/{ctx_snapshots['total']} sessions")
-        print(f"  Contract sections: {_format_count_summary(ctx_snapshots['contract_sections'])}")
-        if ctx_snapshots["writable_sections"]:
-            print(f"  Writable scope:   {_format_count_summary(ctx_snapshots['writable_sections'])}")
+    if snapshot.context_snapshots:
+        cs = snapshot.context_snapshots
+        rows = [
+            f"Primary surfaces:  {_format_count_summary(cs['primary_surfaces'])}",
+            f"Multi-surface:     {cs['multi_surface_count']}/{cs['total']} invocations",
+            f"Contract sections: {_format_count_summary(cs['contract_sections'])}",
+        ]
+        if cs["writable_sections"]:
+            rows.append(f"Writable scope:    {_format_count_summary(cs['writable_sections'])}")
+        legend = [
+            "Context Snapshot Summary = which surface/contract sections the",
+            "orchestrator injected into agents' project context per invocation",
+        ]
+        _print_box("CONTEXT SNAPSHOT SUMMARY", rows, legend, right_label=f"{cs['total']} invocations")
 
     # Context Updates
-    if ctx_updates:
-        print(f"\nContext Updates  ({ctx_updates['updated_runs']}/{ctx_updates['total_runs']} sessions updated)")
-        print(f"  Rejected writes:  {ctx_updates['rejected_runs']} sessions")
-        print(f"  Updated sections: {_format_count_summary(ctx_updates['updated_sections'])}")
-        if ctx_updates["rejected_sections"]:
-            print(f"  Rejected sections: {_format_count_summary(ctx_updates['rejected_sections'])}")
+    if snapshot.context_updates:
+        cu = snapshot.context_updates
+        rows = [
+            f"Updated sections:  {_format_count_summary(cu['updated_sections'])}",
+            f"Rejected writes:   {cu['rejected_runs']} invocations",
+        ]
+        if cu["rejected_sections"]:
+            rows.append(f"Rejected sections: {_format_count_summary(cu['rejected_sections'])}")
+        _print_box("CONTEXT UPDATES", rows, right_label=f"{cu['updated_runs']}/{cu['total_runs']} updated")
 
     # Anomaly Summary
-    if anomaly_summary and anomaly_summary["total"] > 0:
-        a = anomaly_summary
-        print(f"\nAnomaly Summary (last 30 days)  {a['total']} anomalies across {a['session_count']} sessions")
+    if snapshot.anomaly_summary and snapshot.anomaly_summary["total"] > 0:
+        a = snapshot.anomaly_summary
+        rows = []
         for item in a["by_type"]:
-            bar = _make_bar(item["percentage"], 10)
-            print(f"  {item['type']:<28} {item['count']:>3}  {bar:<10}  {item['percentage']:>5.1f}%")
+            sev = _SEVERITY_LABELS.get(item.get("severity", "unknown"), "?   ")
+            bar = _make_bar(item["percentage"], 16)
+            rows.append(f"[{sev}] {item['type']:<26}{item['count']:>3}  {bar}  {item['percentage']:>5.1f}%")
         if a["by_agent"]:
-            print(f"  Agents: {_format_count_summary(a['by_agent'])}")
+            rows.append(f"Agents: {_format_count_summary(a['by_agent'])}")
+        legend = [
+            "CRIT/ERR need attention now; WARN/INFO are informational. Sorted by",
+            "severity first, count second -- a high-volume WARN (e.g.",
+            "pipe_retroactive) can never bury a rarer CRIT/ERR entry below it",
+        ]
+        _print_box(
+            "ANOMALY SUMMARY (last 30 days)",
+            rows,
+            legend,
+            right_label=f"{a['total']} across {a['session_count']} invocations",
+        )
 
     # Activity Today
-    print("\nActivity Today")
-    print(f"  Total calls:   {tiers['today_count']}")
-    print(f"  T3 operations: {tiers['today_t3']}" + (" (!)" if tiers["today_t3"] > 0 else ""))
+    rows = [
+        f"Total calls:   {tiers['today_count']}",
+        f"T3 operations: {tiers['today_t3']}" + ("  ⚠" if tiers["today_t3"] > 0 else ""),
+    ]
     if tiers["peak_hour"] is not None:
-        print(f"  Peak hour:     {tiers['peak_hour']}:00-{tiers['peak_hour']}:59  ({tiers['peak_count']} calls)")
+        rows.append(f"Peak hour:     {tiers['peak_hour']}:00-{tiers['peak_hour']}:59 UTC  ({tiers['peak_count']} calls)")
     else:
-        print("  Peak hour:     no data for today")
+        rows.append("Peak hour:     no data for today")
 
-    if error_stats["limited_by_api"]:
-        print("  Error rate:    n/a  (hook API limitation -- exit_code always 0)")
-    elif error_stats["total"] == 0:
-        print("  Error rate:    no exit_code data")
+    err = snapshot.error_stats
+    if err["limited_by_api"]:
+        rows.append("Error rate:    n/a (hook API limitation -- exit_code always 0)")
+    elif err["total"] == 0:
+        rows.append("Error rate:    no exit_code data")
     else:
-        print(f"  Error rate:    {error_stats['errors']}/{error_stats['total']} ({error_stats['error_rate']:.1f}%)")
+        rows.append(f"Error rate:    {err['errors']}/{err['total']} ({err['error_rate']:.1f}%)")
+    legend = [
+        "'Today' = UTC calendar day. Audit timestamps are UTC (fixed from a",
+        "prior local-time-vs-UTC mismatch that could misplace entries near",
+        "midnight); this section was the one affected by that bug",
+    ]
+    _print_box("ACTIVITY TODAY", rows, legend)
 
-    print("\n" + SEP)
-    print("Source: ~/.gaia/gaia.db (episodes, episode_anomalies)  |  .claude/logs/audit-*.jsonl\n")
+    print(
+        f"schema_version={snapshot.schema_version}  |  "
+        "source: ~/.gaia/gaia.db (episodes, episode_anomalies)  |  "
+        ".claude/logs/audit-*.jsonl\n"
+    )
 
 
 def _display_agent_detail(root: Path, agent_name: str, data: dict):
@@ -1017,12 +1441,12 @@ def _display_agent_detail(root: Path, agent_name: str, data: dict):
         print("  no context update or anomaly data")
     else:
         if agent_ctx_updates:
-            print(f"  Context updated:   {agent_ctx_updates['updated_runs']}/{agent_ctx_updates['total_runs']} sessions")
+            print(f"  Context updated:   {agent_ctx_updates['updated_runs']}/{agent_ctx_updates['total_runs']} invocations")
             print(f"  Updated sections:  {_format_count_summary(agent_ctx_updates['updated_sections'])}")
             if agent_ctx_updates["rejected_sections"]:
                 print(f"  Rejected sections: {_format_count_summary(agent_ctx_updates['rejected_sections'])}")
         if agent_anomaly_total:
-            print(f"  Anomalies:         {agent_anomaly_total} across {len(agent_anomalies_entries)} sessions")
+            print(f"  Anomalies:         {agent_anomaly_total} across {len(agent_anomalies_entries)} invocations")
             print(f"  Types:             {_format_count_summary(agent_anomaly_by_type)}")
 
     # Top Commands (correlated from audit log -- approximate)
@@ -1148,94 +1572,43 @@ def cmd_metrics(args) -> int:
     anomaly_entries = _read_anomaly_entries(root, workspace_override)
 
     if not audit_logs and not workflow_metrics and not run_snapshots and not skill_snapshots and not anomaly_entries:
+        snapshot = MetricsSnapshot.empty(workspace_override)
         if as_json:
-            empty_output = {
-                "security_tiers": {"total": 0, "distribution": [], "today_count": 0, "today_t3": 0, "peak_hour": None, "peak_count": 0},
-                "cmd_types": {"total": 0, "breakdown": []},
-                "top_cmds": [],
-                "agent_invocations": {"agents": [], "total": 0, "today_count": 0},
-                "error_stats": {"total": 0, "errors": 0, "error_rate": 0, "limited_by_api": False},
-                "agent_outcomes": None,
-                "token_usage": None,
-                "anomaly_summary": None,
-                "runtime_skills": {"explicit_count": 0, "run_default_count": 0, "agent_count": 0, "latest_profiles": [], "top_skills": []},
-                "context_snapshots": None,
-                "context_updates": None,
-            }
-            print(json.dumps(empty_output))
+            print(json.dumps(snapshot.to_dict(), indent=2))
         else:
             print("\nNo metrics data available yet")
             print("Metrics will be generated as you use the system\n")
         return 0
 
-    if as_json:
-        # Compute all metrics and return as JSON
-        tiers = _calculate_tier_usage(audit_logs)
-        cmd_types = _calculate_command_type_breakdown(audit_logs)
-        top_cmds = _calculate_top_commands(audit_logs)
-        agent_inv = _calculate_agent_invocations(workflow_metrics)
-        error_stats = _calculate_error_rate(audit_logs)
-        agent_outcomes = _calculate_agent_outcomes(workflow_metrics)
-        token_usage = _calculate_token_usage(workflow_metrics)
-        anomaly_summary = _calculate_anomaly_summary(anomaly_entries)
-        runtime_skills = _calculate_runtime_skill_summary(skill_snapshots, run_snapshots)
-        ctx_snapshots = _calculate_context_snapshot_summary(run_snapshots)
-        ctx_updates = _calculate_context_update_summary(run_snapshots)
-
-        output = {
-            "security_tiers": tiers,
-            "cmd_types": cmd_types,
-            "top_cmds": top_cmds,
-            "agent_invocations": agent_inv,
-            "error_stats": error_stats,
-            "agent_outcomes": agent_outcomes,
-            "token_usage": token_usage,
-            "anomaly_summary": anomaly_summary,
-            "runtime_skills": runtime_skills,
-            "context_snapshots": ctx_snapshots,
-            "context_updates": ctx_updates,
+    # The --agent detail view (non-JSON) stays a single-pass path of its own:
+    # it renders raw episode/audit rows for one agent rather than the
+    # aggregate dashboard, so there is no double-computation to unify here.
+    if agent_name and not as_json:
+        data = {
+            "workflow_metrics": workflow_metrics,
+            "audit_logs": audit_logs,
+            "run_snapshots": run_snapshots,
+            "skill_snapshots": skill_snapshots,
+            "anomaly_entries": anomaly_entries,
         }
-        if agent_name:
-            output["agent_filter"] = agent_name
-        print(json.dumps(output, indent=2))
+        _display_agent_detail(root, agent_name, data)
         return 0
 
-    data = {
-        "workflow_metrics": workflow_metrics,
-        "audit_logs": audit_logs,
-        "run_snapshots": run_snapshots,
-        "skill_snapshots": skill_snapshots,
-        "anomaly_entries": anomaly_entries,
-    }
+    # Build the unified snapshot ONCE -- both --json and the console render
+    # read from this single computation (dashboard v2, dim #18).
+    snapshot = MetricsSnapshot.build(
+        workspace=workspace_override,
+        audit_logs=audit_logs,
+        workflow_metrics=workflow_metrics,
+        run_snapshots=run_snapshots,
+        skill_snapshots=skill_snapshots,
+        anomaly_entries=anomaly_entries,
+        agent_filter=agent_name,
+    )
 
-    if agent_name:
-        _display_agent_detail(root, agent_name, data)
+    if as_json:
+        print(json.dumps(snapshot.to_dict(), indent=2))
     else:
-        tiers = _calculate_tier_usage(audit_logs)
-        cmd_types = _calculate_command_type_breakdown(audit_logs)
-        top_cmds = _calculate_top_commands(audit_logs)
-        agent_inv = _calculate_agent_invocations(workflow_metrics)
-        error_stats = _calculate_error_rate(audit_logs)
-        agent_outcomes = _calculate_agent_outcomes(workflow_metrics)
-        token_usage = _calculate_token_usage(workflow_metrics)
-        anomaly_summary = _calculate_anomaly_summary(anomaly_entries)
-        runtime_skills = _calculate_runtime_skill_summary(skill_snapshots, run_snapshots)
-        ctx_snapshots = _calculate_context_snapshot_summary(run_snapshots)
-        ctx_updates = _calculate_context_update_summary(run_snapshots)
-
-        _display_metrics({
-            "tiers": tiers,
-            "cmd_types": cmd_types,
-            "top_cmds": top_cmds,
-            "agent_invocations": agent_inv,
-            "error_stats": error_stats,
-            "audit_total": len(audit_logs),
-            "agent_outcomes": agent_outcomes,
-            "token_usage": token_usage,
-            "anomaly_summary": anomaly_summary,
-            "runtime_skills": runtime_skills,
-            "context_snapshots": ctx_snapshots,
-            "context_updates": ctx_updates,
-        })
+        render_console(snapshot)
 
     return 0
