@@ -305,8 +305,15 @@ class TestMarketplaceJson:
         clones the repo and the full plugin tree (agents, skills, hooks) ships
         intact -- the npm-source model dropped the skills/ tree, so the plugin
         surface uses github while npm remains the CLI-only surface.
-        `source.repo` is the `owner/name` slug; no version is pinned so the
-        install resolves the repo's current default ref.
+        `source.repo` is the `owner/name` slug.
+
+        `source.ref` is OPTIONAL and pins the install to a release tag
+        (`v<version>`) so installs are reproducible instead of tracking moving
+        default-branch HEAD. release:prepare (bumpMarketplace) writes it
+        atomically with the version at every release cut, so it never goes
+        stale. This test is tolerant when it is absent (refless resolves the
+        repo's current default ref -- a valid pre-pin state) and strict when
+        present: a pinned ref MUST equal `v<plugin version>`.
         """
         data = json.loads(self.marketplace_path.read_text())
         for plugin in data["plugins"]:
@@ -321,6 +328,12 @@ class TestMarketplaceJson:
                 f"Plugin '{plugin['name']}' source.repo must be 'metraton/gaia', "
                 f"got {source.get('repo')!r}"
             )
+            ref = source.get("ref")
+            if ref is not None:
+                assert ref == f"v{plugin['version']}", (
+                    f"Plugin '{plugin['name']}' source.ref must be "
+                    f"'v{plugin['version']}' (the release tag) when pinned, got {ref!r}"
+                )
 
 
 class TestMarketplaceRegistrable:
