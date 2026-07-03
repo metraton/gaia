@@ -191,6 +191,29 @@ class TestReadWorkflowMetrics(unittest.TestCase):
                 result = _read_workflow_metrics(root)
         self.assertEqual(result, [])
 
+    def test_workspace_override_wins_over_project_current(self):
+        """Explicit --workspace beats gaia.project.current() resolution."""
+        episodes = [
+            {"episode_id": "ep-1", "agent": "developer", "workspace": "me",
+             "timestamp": "2026-04-15T10:00:00Z"},
+            {"episode_id": "ep-2", "agent": "gaia-operator", "workspace": "other-ws",
+             "timestamp": "2026-04-15T11:00:00Z"},
+        ]
+        db = _make_in_memory_db(episodes)
+        import gaia.store.writer as _writer_mod
+        import gaia.project as _project_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            with patch.object(_writer_mod, "_connect", lambda *a, **k: db):
+                # project.current() resolves to "me" -- the default path --
+                # but the explicit override must take precedence.
+                with patch.object(_project_mod, "current", lambda **k: "me"):
+                    result = _read_workflow_metrics(root, workspace_override="other-ws")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["agent"], "gaia-operator")
+
 
 class TestFormatHelpers(unittest.TestCase):
     def test_truncate_short_string(self):
@@ -275,6 +298,22 @@ class TestRegisterSubcommand(unittest.TestCase):
         args = parser.parse_args(["history", "--json"])
         self.assertTrue(args.json)
 
+    def test_workspace_flag_default_none(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["history"])
+        self.assertIsNone(args.workspace)
+
+    def test_workspace_flag_explicit(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["history", "--workspace", "other-ws"])
+        self.assertEqual(args.workspace, "other-ws")
+
     def test_short_flags(self):
         import argparse
         parser = argparse.ArgumentParser()
@@ -294,7 +333,8 @@ class TestCmdHistory(unittest.TestCase):
     we patch cli.history._read_workflow_metrics to return controlled data.
     """
 
-    def _make_args(self, today=False, blocked=False, agent=None, limit=20, as_json=False):
+    def _make_args(self, today=False, blocked=False, agent=None, limit=20,
+                   as_json=False, workspace=None):
         import argparse
         ns = argparse.Namespace()
         ns.today = today
@@ -302,6 +342,7 @@ class TestCmdHistory(unittest.TestCase):
         ns.agent = agent
         ns.limit = limit
         ns.json = as_json
+        ns.workspace = workspace
         return ns
 
     def _make_root(self) -> Path:
@@ -494,6 +535,23 @@ class TestCmdHistory(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("developer", output)
             self.assertIn("COMPLETE", output)
+        finally:
+            import shutil
+            shutil.rmtree(root)
+
+    def test_workspace_flag_forwarded_to_reader(self):
+        """cmd_history passes args.workspace through to _read_workflow_metrics."""
+        root = self._make_root()
+        try:
+            args = self._make_args(as_json=True, workspace="other-ws")
+            with patch("cli.history._find_project_root", return_value=root):
+                with patch("cli.history._read_workflow_metrics", return_value=[]) as m_wf:
+                    import io
+                    from contextlib import redirect_stdout
+                    with redirect_stdout(io.StringIO()):
+                        rc = cmd_history(args)
+            self.assertEqual(rc, 0)
+            m_wf.assert_called_once_with(root, "other-ws")
         finally:
             import shutil
             shutil.rmtree(root)

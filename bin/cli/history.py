@@ -13,6 +13,7 @@ Flags:
   --blocked / -b       Show only BLOCKED or NEEDS_INPUT sessions
   --agent / -a NAME    Filter by agent name
   --limit / -n N       Max sessions to show (default 20)
+  --workspace NAME     Workspace identity override (default: gaia.project.current())
   --json               Machine-readable output
 """
 
@@ -48,13 +49,16 @@ def _find_project_root() -> Path:
 # Data readers
 # ---------------------------------------------------------------------------
 
-def _read_workflow_metrics(root: Path) -> list:
+def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
     """
     Read agent session history from gaia.db episodes table.
 
     T6 migration: primary source is now the episodes table in gaia.db.
     The legacy episodic-memory/index.json and workflow-episodic-memory/metrics.jsonl
     files are no longer read here.
+
+    ``workspace_override`` -- explicit ``--workspace`` value from the CLI.
+    When set, it wins over ``gaia.project.current()`` resolution.
 
     Returns a list of episode dicts (rows with an 'agent' field).
     """
@@ -71,10 +75,13 @@ def _read_workflow_metrics(root: Path) -> list:
     except ImportError:
         return []
 
-    try:
-        ws = _project_current(cwd=root)
-    except Exception:
-        ws = None
+    if workspace_override:
+        ws = workspace_override
+    else:
+        try:
+            ws = _project_current(cwd=root)
+        except Exception:
+            ws = None
 
     try:
         con = _store_connect()
@@ -200,6 +207,10 @@ def register(subparsers):
         help="Maximum number of sessions to show (default: 20)",
     )
     p.add_argument(
+        "--workspace", default=None,
+        help="Workspace identity override. Default: gaia.project.current().",
+    )
+    p.add_argument(
         "--json",
         action="store_true",
         default=False,
@@ -213,6 +224,7 @@ def cmd_history(args) -> int:
     root = _find_project_root()
     claude_dir = root / ".claude"
     as_json = getattr(args, "json", False)
+    workspace_override = getattr(args, "workspace", None)
 
     if not claude_dir.exists():
         if as_json:
@@ -222,7 +234,7 @@ def cmd_history(args) -> int:
             print("  Run: gaia scan\n")
         return 1
 
-    entries = _read_workflow_metrics(root)
+    entries = _read_workflow_metrics(root, workspace_override)
 
     if not entries:
         if as_json:
