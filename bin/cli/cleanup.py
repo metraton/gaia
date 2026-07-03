@@ -90,20 +90,6 @@ RETENTION_POLICY = [
         "label": "Episodic memory episodes",
     },
     {
-        "key": "workflowMetrics",
-        "type": "truncate-jsonl",
-        "file": ".claude/project-context/workflow-episodic-memory/metrics.jsonl",
-        "max_days": 90,
-        "label": "Workflow metrics",
-    },
-    {
-        "key": "anomalies",
-        "type": "truncate-jsonl",
-        "file": ".claude/project-context/workflow-episodic-memory/anomalies.jsonl",
-        "max_days": 90,
-        "label": "Anomalies",
-    },
-    {
         "key": "legacyLogs",
         "type": "legacy",
         "dir": ".claude/logs",
@@ -725,8 +711,6 @@ def cmd_cleanup(args) -> int:
         "hook_logs_days": 14,
         "response_contracts_days": 7,
         "episodic_episodes_days": 90,
-        "workflow_metrics_days": 90,
-        "anomalies_days": 90,
         "legacy_logs": "all removed",
         "anomaly_flag_hours": 1,
     }
@@ -739,8 +723,6 @@ def cmd_cleanup(args) -> int:
             print("  Hook logs:           14 days")
             print("  Response contracts:   7 days")
             print("  Episodic episodes:   90 days")
-            print("  Workflow metrics:    90 days")
-            print("  Anomalies:           90 days")
             print("  Legacy logs:         all removed")
             print("  Anomaly flag:         1 hour TTL")
             if dry_run:

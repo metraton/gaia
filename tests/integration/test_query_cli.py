@@ -83,20 +83,41 @@ def _seed_episode(db_path: Path, episode_id: str, *, agent: str,
                   plan_status: str | None = "COMPLETE",
                   outcome: str = "success",
                   timestamp: str = "2026-05-07T11:00:00Z",
+                  context_metrics: dict | None = None,
                   workspace: str = "me") -> None:
     _ensure_workspace(db_path, workspace)
+    cm = json.dumps(context_metrics) if context_metrics is not None else None
     con = sqlite3.connect(str(db_path))
     try:
         con.execute(
             "INSERT INTO episodes (episode_id, workspace, timestamp, agent, "
-            "                      type, title, plan_status, outcome) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "                      type, title, plan_status, outcome, "
+            "                      context_metrics) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (episode_id, workspace, timestamp, agent, type_, title,
-             plan_status, outcome),
+             plan_status, outcome, cm),
         )
         con.commit()
     finally:
         con.close()
+
+
+def _metrics_blob(*, compliance_total, grade, input_tokens, output_real,
+                  cache_read=0, cache_creation=0, duration_ms=1000,
+                  tool_calls=5, api_calls=8, model="claude-sonnet-5") -> dict:
+    """Build a context_metrics blob matching the workflow recorder's shape."""
+    return {"metrics": {
+        "compliance_score": {"total": compliance_total, "grade": grade,
+                             "deductions": []},
+        "input_tokens": input_tokens,
+        "output_tokens_real": output_real,
+        "cache_read_tokens": cache_read,
+        "cache_creation_tokens": cache_creation,
+        "duration_ms": duration_ms,
+        "tool_call_count": tool_calls,
+        "api_call_count": api_calls,
+        "model_used": model,
+    }}
 
 
 def _seed_harness_event(db_path: Path, *, type_: str, ts: str,
@@ -139,6 +160,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         group_by=None,
         count=False,
         snippets=False,
+        metrics=False,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -400,6 +422,157 @@ def test_query_group_by_agent_buckets(tmp_db, tmp_path, monkeypatch, capsys):
     assert by_agent == {"developer": 2, "orchestrator": 1}
 
 
+def test_query_metrics_projects_context_metrics_fields(tmp_db, tmp_path,
+                                                       monkeypatch, capsys):
+    """--metrics projects context_metrics telemetry into each row's raw."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_episode(
+        tmp_db, "ep_m1", agent="developer",
+        timestamp="2026-05-07T01:00:00Z",
+        context_metrics=_metrics_blob(compliance_total=85, grade="B",
+                                      input_tokens=4826, output_real=2759,
+                                      cache_read=120000),
+    )
+
+    args = _make_args(metrics=True, format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    assert len(out) == 1
+    raw = out[0]["raw"]
+    assert raw["compliance_score"] == 85
+    assert raw["compliance_grade"] == "B"
+    assert raw["input_tokens"] == 4826
+    assert raw["output_tokens_real"] == 2759
+    assert raw["model_used"] == "claude-sonnet-5"
+    # summary carries the projected metrics
+    assert "compliance=85/B" in out[0]["summary"]
+
+
+def test_query_metrics_forces_episodes_surface(tmp_db, tmp_path,
+                                               monkeypatch, capsys):
+    """--metrics scopes to episodes even when other surfaces have rows."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_memory(tmp_db, "m1", "project", "body",
+                 updated_at="2026-05-07T01:00:00Z")
+    _seed_harness_event(tmp_db, type_="command.executed",
+                        ts="2026-05-07T02:00:00Z", result="ok: ls")
+    _seed_episode(tmp_db, "ep_only", agent="developer",
+                  timestamp="2026-05-07T03:00:00Z",
+                  context_metrics=_metrics_blob(compliance_total=70, grade="C",
+                                                input_tokens=100, output_real=50))
+
+    # surface left at default "all" -- --metrics must override to episodes.
+    args = _make_args(metrics=True, format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    surfaces = {r["surface"] for r in out}
+    assert surfaces == {"episodes"}
+
+
+def test_query_metrics_excludes_rows_without_blob(tmp_db, tmp_path,
+                                                  monkeypatch, capsys):
+    """Episodes with NULL context_metrics are excluded from --metrics."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_episode(tmp_db, "ep_with", agent="developer",
+                  timestamp="2026-05-07T02:00:00Z",
+                  context_metrics=_metrics_blob(compliance_total=60, grade="C",
+                                                input_tokens=10, output_real=5))
+    _seed_episode(tmp_db, "ep_without", agent="developer",
+                  timestamp="2026-05-07T01:00:00Z")  # no context_metrics
+
+    args = _make_args(metrics=True, format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    ids = {r["raw"]["episode_id"] for r in out}
+    assert ids == {"ep_with"}
+
+
+def test_query_metrics_group_by_agent_aggregates(tmp_db, tmp_path,
+                                                 monkeypatch, capsys):
+    """--metrics --group-by=agent yields avg compliance + token sums."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_episode(tmp_db, "ep_d1", agent="developer",
+                  timestamp="2026-05-07T01:00:00Z",
+                  context_metrics=_metrics_blob(compliance_total=80, grade="B",
+                                                input_tokens=1000, output_real=500,
+                                                cache_read=10000))
+    _seed_episode(tmp_db, "ep_d2", agent="developer",
+                  timestamp="2026-05-07T02:00:00Z",
+                  context_metrics=_metrics_blob(compliance_total=60, grade="C",
+                                                input_tokens=2000, output_real=1000,
+                                                cache_read=20000))
+    _seed_episode(tmp_db, "ep_o1", agent="orchestrator",
+                  timestamp="2026-05-07T03:00:00Z",
+                  context_metrics=_metrics_blob(compliance_total=90, grade="A",
+                                                input_tokens=500, output_real=250,
+                                                cache_read=5000))
+
+    args = _make_args(metrics=True, group_by="agent", format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    by_agent = {r["agent"]: r for r in out}
+    assert by_agent["developer"]["count"] == 2
+    assert by_agent["developer"]["avg_compliance_score"] == 70.0  # (80+60)/2
+    assert by_agent["developer"]["input_tokens"] == 3000  # summed
+    assert by_agent["developer"]["output_tokens_real"] == 1500
+    assert by_agent["developer"]["cache_read_tokens"] == 30000
+    assert by_agent["orchestrator"]["avg_compliance_score"] == 90.0
+
+
+def test_query_metrics_count_single_bucket(tmp_db, tmp_path,
+                                           monkeypatch, capsys):
+    """--metrics --count (no group-by) yields one (all) aggregate bucket."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    for i in range(2):
+        _seed_episode(tmp_db, f"ep_{i}", agent="developer",
+                      timestamp=f"2026-05-07T0{i}:00:00Z",
+                      context_metrics=_metrics_blob(compliance_total=50, grade="F",
+                                                    input_tokens=100, output_real=50))
+
+    args = _make_args(metrics=True, count=True, format="json")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = json.loads(capsys.readouterr().out)
+    assert len(out) == 1
+    assert out[0]["count"] == 2
+    assert out[0]["avg_compliance_score"] == 50.0
+    assert out[0]["input_tokens"] == 200
+
+
+def test_query_metrics_table_render(tmp_db, tmp_path, monkeypatch, capsys):
+    """--metrics default table renders compliance + token columns."""
+    from cli.query import cmd_query
+
+    monkeypatch.chdir(tmp_path)
+    _seed_episode(tmp_db, "ep_t1", agent="developer",
+                  timestamp="2026-05-07T01:00:00Z",
+                  context_metrics=_metrics_blob(compliance_total=82, grade="B",
+                                                input_tokens=4826, output_real=2759))
+
+    args = _make_args(metrics=True, format="table")
+    rc = cmd_query(args)
+    assert rc == 0, capsys.readouterr()
+    out = capsys.readouterr().out
+    assert "COMPL" in out
+    assert "MODEL" in out
+    assert "developer" in out
+    assert "82" in out
+
+
 def test_query_registers_subcommand_choice():
     """``gaia query`` is wired into the argparse tree."""
     import cli.query as query_mod
@@ -418,5 +591,6 @@ def test_query_registers_subcommand_choice():
     assert "--group-by" in help_text
     assert "--count" in help_text
     assert "--snippets" in help_text
+    assert "--metrics" in help_text
     # Examples present in epilog
     assert "Examples:" in help_text

@@ -164,6 +164,49 @@ def _query_memory(
     return out
 
 
+# Metric fields projected out of episodes.context_metrics when metrics=True.
+# The workflow recorder nests these under the "metrics" key of the JSON blob
+# (T4 episodic-workflow-to-db); a few older migrated rows store them at the
+# top level, so each extraction COALESCEs the nested path with the flat one.
+# json1 is compiled into SQLite by default -- no schema migration required.
+_METRIC_JSON_FIELDS = (
+    # (output column, json leaf path under $.metrics / $)
+    ("compliance_score", "compliance_score.total"),
+    ("compliance_grade", "compliance_score.grade"),
+    ("input_tokens", "input_tokens"),
+    ("cache_creation_tokens", "cache_creation_tokens"),
+    ("cache_read_tokens", "cache_read_tokens"),
+    ("output_tokens_real", "output_tokens_real"),
+    ("duration_ms", "duration_ms"),
+    ("tool_call_count", "tool_call_count"),
+    ("api_call_count", "api_call_count"),
+    ("model_used", "model_used"),
+)
+
+# Numeric metric fields summed by aggregate_metrics.
+_METRIC_SUM_FIELDS = (
+    "input_tokens",
+    "cache_creation_tokens",
+    "cache_read_tokens",
+    "output_tokens_real",
+    "tool_call_count",
+    "api_call_count",
+)
+
+
+def _metric_select_columns() -> str:
+    """Build the json_extract projection clause for --metrics queries."""
+    cols = []
+    for out_col, leaf in _METRIC_JSON_FIELDS:
+        cols.append(
+            f"COALESCE("
+            f"json_extract(context_metrics, '$.metrics.{leaf}'), "
+            f"json_extract(context_metrics, '$.{leaf}')"
+            f") AS {out_col}"
+        )
+    return ", ".join(cols)
+
+
 def _query_episodes(
     con: sqlite3.Connection,
     *,
@@ -174,6 +217,7 @@ def _query_episodes(
     agent_filter: str | None,
     failed: bool,
     limit: int,
+    metrics: bool = False,
 ) -> list[dict]:
     where = []
     params: list[Any] = []
@@ -198,12 +242,18 @@ def _query_episodes(
             "(plan_status IN ('BLOCKED', 'NEEDS_INPUT') "
             "OR (outcome IS NOT NULL AND outcome NOT IN ('success', '')))"
         )
+    if metrics:
+        # Only rows that actually carry a metrics blob can project fields.
+        where.append("context_metrics IS NOT NULL")
 
-    sql = (
-        "SELECT episode_id, workspace, timestamp, session_id, task_id, agent, "
-        "type, title, plan_status, outcome, exit_code, duration_seconds "
-        "FROM episodes"
+    base_cols = (
+        "episode_id, workspace, timestamp, session_id, task_id, agent, "
+        "type, title, plan_status, outcome, exit_code, duration_seconds"
     )
+    if metrics:
+        sql = f"SELECT {base_cols}, {_metric_select_columns()} FROM episodes"
+    else:
+        sql = f"SELECT {base_cols} FROM episodes"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY timestamp DESC LIMIT ?"
@@ -217,13 +267,30 @@ def _query_episodes(
         ps = d.get("plan_status") or ""
         oc = d.get("outcome") or ""
         bits = [title or d.get("episode_id", "")]
-        tail = []
-        if ps:
-            tail.append(f"plan_status={ps}")
-        if oc and oc != ps:
-            tail.append(f"outcome={oc}")
-        if tail:
-            bits.append("[" + ", ".join(tail) + "]")
+        if metrics:
+            # Metrics view: lead with the projected metric fields.
+            mtail = []
+            cs = d.get("compliance_score")
+            if cs is not None:
+                grade = d.get("compliance_grade") or ""
+                mtail.append(f"compliance={cs}{('/' + grade) if grade else ''}")
+            it = d.get("input_tokens")
+            ot = d.get("output_tokens_real")
+            if it is not None or ot is not None:
+                mtail.append(f"tok in={it if it is not None else '?'} out_real={ot if ot is not None else '?'}")
+            model = d.get("model_used")
+            if model:
+                mtail.append(f"model={model}")
+            if mtail:
+                bits.append("[" + ", ".join(mtail) + "]")
+        else:
+            tail = []
+            if ps:
+                tail.append(f"plan_status={ps}")
+            if oc and oc != ps:
+                tail.append(f"outcome={oc}")
+            if tail:
+                bits.append("[" + ", ".join(tail) + "]")
         out.append({
             "surface": "episodes",
             "timestamp": d.get("timestamp") or "",
@@ -435,6 +502,87 @@ def group_and_count(
     return out
 
 
+def aggregate_metrics(
+    rows: list[dict],
+    *,
+    group_by: str | None,
+) -> list[dict]:
+    """Roll up ``--metrics`` episode rows into per-group summaries.
+
+    Each output bucket carries ``count``, ``avg_compliance_score`` (over rows
+    that have one), ``avg_duration_ms``, and the sum of every field in
+    ``_METRIC_SUM_FIELDS``. When ``group_by`` is ``None`` a single ``(all)``
+    bucket is returned. Reuses the same ``VALID_GROUP_BY`` keys as
+    :func:`group_and_count`; metric values are read from each row's ``raw``.
+    Group order is descending count, ties broken alphabetically.
+    """
+    if group_by and group_by not in VALID_GROUP_BY:
+        raise ValueError(
+            f"invalid group_by '{group_by}'; must be one of {list(VALID_GROUP_BY)}"
+        )
+
+    buckets: dict[str, dict] = {}
+    for r in rows:
+        raw = r.get("raw") or {}
+        if group_by is None:
+            key = "(all)"
+        elif group_by == "day":
+            key = _truncate_day(r.get("timestamp"))
+        elif group_by == "surface":
+            key = r.get("surface") or ""
+        else:
+            key = r.get(group_by) or raw.get(group_by) or ""
+
+        b = buckets.get(key)
+        if b is None:
+            b = {
+                "count": 0,
+                "compliance_sum": 0.0,
+                "compliance_n": 0,
+                "duration_sum": 0.0,
+                "duration_n": 0,
+            }
+            for f in _METRIC_SUM_FIELDS:
+                b[f] = 0
+            buckets[key] = b
+
+        b["count"] += 1
+        cs = raw.get("compliance_score")
+        if isinstance(cs, (int, float)):
+            b["compliance_sum"] += cs
+            b["compliance_n"] += 1
+        dm = raw.get("duration_ms")
+        if isinstance(dm, (int, float)):
+            b["duration_sum"] += dm
+            b["duration_n"] += 1
+        for f in _METRIC_SUM_FIELDS:
+            v = raw.get(f)
+            if isinstance(v, (int, float)):
+                b[f] += v
+
+    out = []
+    for key, b in buckets.items():
+        row = {
+            "count": b["count"],
+            "avg_compliance_score": (
+                round(b["compliance_sum"] / b["compliance_n"], 1)
+                if b["compliance_n"] else None
+            ),
+            "avg_duration_ms": (
+                round(b["duration_sum"] / b["duration_n"])
+                if b["duration_n"] else None
+            ),
+        }
+        for f in _METRIC_SUM_FIELDS:
+            row[f] = b[f]
+        if group_by:
+            row[group_by] = key
+        out.append(row)
+
+    out.sort(key=lambda d: (-d["count"], str(d.get(group_by) if group_by else "")))
+    return out
+
+
 def cross_surface_query(
     *,
     surface: str = "all",
@@ -446,6 +594,7 @@ def cross_surface_query(
     agent: str | None = None,
     command_like: str | None = None,
     failed: bool = False,
+    metrics: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
     """Run a cross-surface analytical query against the substrate.
@@ -475,6 +624,13 @@ def cross_surface_query(
                        outcome != success; harness_events: severity=error or
                        result starting with fail/error). Memory surface
                        has no notion of "failed" -- ignored there.
+        metrics:       When True, the episodes surface projects the per-turn
+                       telemetry stored in ``episodes.context_metrics``
+                       (compliance_score, token counts, duration_ms,
+                       tool/api call counts, model_used) via json_extract.
+                       Only affects the episodes surface. Pair with
+                       :func:`aggregate_metrics` for per-agent/-surface
+                       rollups.
         db_path:       Optional explicit substrate path (tests).
 
     Returns:
@@ -511,6 +667,7 @@ def cross_surface_query(
                 agent_filter=agent,
                 failed=failed,
                 limit=last,
+                metrics=metrics,
             ))
         if surface in ("harness_events", "all"):
             results.extend(_query_harness_events(
@@ -539,6 +696,7 @@ __all__ = [
     "parse_when",
     "cross_surface_query",
     "group_and_count",
+    "aggregate_metrics",
     "_highlight_snippet",
     "_extract_text_needle",
     "_row_text_for_snippet",
