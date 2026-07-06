@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Architecture Overview</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem('theme');
+    const dark = saved ? saved === 'dark' : true;
+    document.documentElement.classList.toggle('dark', dark);
+  })();
+</script>
+<style>
+  :root {
+    --bg:#FAF9F5; --surface:#FFFFFF; --surface2:#F0EEE6;
+    --ink:#141413; --body:#3D3D3A; --muted:#87867F;
+    --line:#D1CFC5; --line-soft:#E6E3DA;
+    --clay:#D97757; --clay-soft:rgba(217,119,87,0.10);
+    --olive:#6E8B4E; --olive-soft:rgba(110,139,78,0.12);
+    --crit:#C0472F; --crit-soft:rgba(192,71,47,0.09);
+    --warn:#C08A2E; --warn-soft:rgba(192,138,46,0.10);
+    --gold:#C9A45C; --blue:#5B7E96;
+    --strong:#2F7A3D; --strong-soft:rgba(47,122,61,0.14);
+    --zone:rgba(20,20,19,0.022); --zone-line:#D1CFC5;
+    --serif:Charter,"Bitstream Charter","Sitka Text",Cambria,Georgia,serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    /* ── 8pt spacing scale (design tokens) ── */
+    --s-1:4px; --s-2:8px; --s-3:16px; --s-4:24px; --s-5:32px; --s-6:48px; --s-7:64px;
+  }
+  html.dark {
+    --bg:#141413; --surface:#1F1F1D; --surface2:#2A2A28;
+    --ink:#FAF9F5; --body:#D1CFC5; --muted:#8C8B83;
+    --line:#3D3D3A; --line-soft:#2A2A28;
+    --clay:#E48A6E; --clay-soft:rgba(228,138,110,0.14);
+    --olive:#9DB07C; --olive-soft:rgba(157,176,124,0.15);
+    --crit:#E8735A; --crit-soft:rgba(232,115,90,0.15);
+    --warn:#E0AE55; --warn-soft:rgba(224,174,85,0.14);
+    --gold:#D4B36F; --blue:#7FA3BC;
+    --strong:#4ECB6B; --strong-soft:rgba(78,203,107,0.18);
+    --zone:rgba(250,249,245,0.028); --zone-line:#3D3D3A;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html,body { height:100%; }
+  body {
+    background:var(--bg); color:var(--body); font-family:var(--sans);
+    -webkit-font-smoothing:antialiased; display:flex; flex-direction:column; overflow:hidden;
+  }
+
+  /* ── minimalist scrollbars ── thin, semi-transparent, edge-hugging, no
+     track chrome; theme-aware via the token colors. Applies to every scroll
+     container (page + the stage/canvas internal scroll), vertical and
+     horizontal. Firefox: scrollbar-width/color; WebKit: ::-webkit-scrollbar*. */
+  * { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--line); border-radius:8px; border:2px solid transparent; background-clip:padding-box; }
+  ::-webkit-scrollbar-thumb:hover { background:var(--muted); background-clip:padding-box; }
+  ::-webkit-scrollbar-corner { background:transparent; }
+
+  /* ── top bar ── */
+  .bar { display:flex; align-items:center; gap:16px 20px; flex-wrap:wrap;
+    padding:20px 28px 0; flex:none; }
+  /* the header controls (prev · toggle · next · page · theme) travel as ONE
+     block: never allowed to break apart from each other, they wrap as a unit. */
+  .nav-cluster { display:flex; align-items:center; gap:12px; flex-wrap:nowrap;
+    flex:0 0 auto; white-space:nowrap; }
+  .bar h1 { font-family:var(--mono); font-weight:700; font-size:23px; line-height:1.25; color:var(--ink); letter-spacing:-0.01em; }
+  .bar .sub { font-family:var(--mono); font-size:12px; color:var(--muted); letter-spacing:0.05em; line-height:1.4; margin-top:3px; }
+  .spacer { flex:1; }
+
+  /* page navigator — [ ‹ ] [ TITLE 1 ] [ TITLE 2 ] … [ › ]. Page names are
+     VISIBLE tabs in `order`; the current one is highlighted, the rest dimmed
+     but legible. Click a tab or use the arrows. For 3+ pages a sliding window
+     centered on the selection shows current + neighbours. */
+  .pagenav { display:flex; align-items:center; gap:8px; }
+  .navbtn { display:inline-flex; align-items:center; justify-content:center; font-family:var(--mono);
+    font-size:18px; line-height:1; width:38px; height:38px; padding:0; border:1px solid var(--line);
+    border-radius:8px; background:transparent; color:var(--muted); cursor:pointer;
+    transition:color .15s ease, border-color .15s ease; }
+  /* explicit states, and NO style loss on click: hover and keyboard focus share
+     one rule; :active/:focus never strip the base border/background. */
+  .navbtn:hover:not(:disabled), .navbtn:focus-visible:not(:disabled) { color:var(--ink); border-color:var(--muted); outline:none; }
+  .navbtn:disabled { opacity:0.3; cursor:default; }
+  /* page-name tabs */
+  .pagetabs { display:flex; align-items:center; gap:2px; border:1px solid var(--line); border-radius:9px; overflow:hidden; }
+  .pagetab { font-family:var(--mono); font-size:13px; letter-spacing:0.05em; text-transform:uppercase;
+    padding:10px 18px; background:transparent; color:var(--muted); border:none; cursor:pointer;
+    white-space:nowrap; transition:color .15s ease, background .15s ease; }
+  .pagetab:hover:not(.on) { color:var(--ink); }
+  .pagetab.on { background:var(--ink); color:var(--bg); font-weight:700; }
+
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { font-family:var(--mono); font-size:12.5px; letter-spacing:0.03em; padding:7px 14px;
+    border:1px solid var(--line); border-radius:999px; background:transparent; color:var(--muted); cursor:pointer; transition:all .15s ease; }
+  .chip:hover { color:var(--ink); border-color:var(--muted); }
+  .chip.on { background:var(--clay-soft); border-color:var(--clay); color:var(--ink); font-weight:600; }
+  html.dark .chip.on { background:rgba(228,138,110,0.22); border-color:var(--clay); color:var(--ink); }
+  #themeToggle { font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:0.08em;
+    padding:9px 16px; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--muted); cursor:pointer; }
+  #themeToggle:hover { color:var(--ink); border-color:var(--muted); }
+
+  /* ── deck / acts ── */
+  .deck { flex:1; position:relative; min-height:0; }
+  .act { position:absolute; inset:0; display:none; flex-direction:column; }
+  .act.active { display:flex; }
+
+  /* the filter chips are the lower tier of the SAME unified control bar:
+     matched horizontal padding (28px) makes them contiguous with the header
+     above, the shared border-bottom closes the bar as one component, and the
+     chips group wraps together as a block rather than piece-by-piece. */
+  .actbar { display:flex; align-items:center; gap:12px 14px; flex-wrap:wrap;
+    padding:12px 28px 14px; flex:none; border-bottom:1px solid var(--line-soft); }
+  .actbar .note { font-family:var(--mono); font-size:13.5px; line-height:1.5; color:var(--ink); font-weight:500; }
+
+  /* outer frame: consistent breathing room on all four sides of the stage.
+     --frame-top anchors the stage to the exact rhythm of the header→chips
+     gap above it: bar bottom-padding (20px) + bar border (1px) + actbar
+     top-padding (14px) = 35px. Matched exactly rather than rounded to the
+     8pt grid, so the stage's top inset reads as the same gap by eye. */
+  :root { --frame-v:28px; --frame-h:40px; --frame-top:35px;
+    /* coarse responsive breakpoints (configurable; read by engine.js). Above
+       --bp-tablet the author's columns are honored with no width collapse. */
+    --bp-tablet:768px; --bp-phone:480px; }
+
+  /* stage content width — derived from tokens, not hardcoded, so it tracks
+     --box-min / spacing changes instead of drifting out of sync:
+       wide-w  = 3 boxes (--box-min) + 2 inner gaps (--s-2) + zone padding (--s-3 * 2)
+       env-w   = wide-w + gap to side column (--s-2) + side-col width + envelope padding (--s-3 * 2)
+       content = 2 side columns + 2 canvas gaps (--s-4) + env-w + canvas padding (--s-3 * 2)
+       stage   = content + left/right frame (--frame-h * 2)
+     with --box-min:280 this resolves to ~2048px — enough for a left side
+     column + envelope (wide 3-col main + narrow side column) + right side
+     column to sit side by side with no vertical scroll and no collapse. */
+  :root {
+    --side-col-w:320px;
+    --wide-w:calc(var(--box-min) * 3 + var(--s-2) * 2 + var(--s-3) * 2);
+    --env-w:calc(var(--wide-w) + var(--s-2) + var(--side-col-w) + var(--s-3) * 2);
+    --stage-content-w:calc(var(--side-col-w) * 2 + var(--s-4) * 2 + var(--env-w) + var(--s-3) * 2);
+    --stage-max:calc(var(--stage-content-w) + var(--frame-h) * 2);
+  }
+  /* Stage is FULL-WIDTH (no --stage-max cap): the canvas spans the screen and
+     the content centers itself (see .mos-plane margin-inline:auto). --stage-max
+     is retained above for reference only and no longer caps the stage. */
+  .stage { flex:1; position:relative; min-height:0; width:100%; margin-inline:auto; }
+  /* the stage is the responsive container: the canvas queries the space it
+     actually has (works under split-screen / narrow panes), not the viewport. */
+  .stage { container-type:inline-size; container-name:stage; }
+
+  /* highlight (chip-driven) — no lines: chips light the relevant boxes/zones */
+  .stage.flowing .zone { opacity:0.34; }
+
+  /* ── unified detail/flow panel (anchored bottom-center, shared by both uses) ── */
+  .panel { position:absolute; left:50%; bottom:24px; transform:translateX(-50%);
+    z-index:60; width:min(920px, 94%); max-width:920px;
+    padding:24px 40px 26px; border-radius:16px; background:var(--surface);
+    border:1px solid var(--line); border-left:4px solid var(--clay);
+    box-shadow:0 18px 52px rgba(0,0,0,0.24); text-align:center; display:none; }
+  .panel.show { display:block; }
+  html.dark .panel { box-shadow:0 18px 52px rgba(0,0,0,0.5); }
+  .p-head { display:flex; align-items:baseline; justify-content:center; gap:12px;
+    flex-wrap:wrap; margin-bottom:12px; padding:0 32px; }
+  .p-head .p-kicker { font-family:var(--mono); font-size:13px; letter-spacing:0.08em;
+    text-transform:uppercase; color:var(--clay); }
+  .p-head h3 { font-family:var(--mono); font-weight:700; font-size:24px; color:var(--ink); letter-spacing:-0.01em; }
+  .p-summary { font-family:var(--mono); font-size:17px; line-height:1.65; color:var(--body); }
+  .p-summary b { color:var(--ink); font-weight:600; }
+  .p-summary code { font-family:var(--mono); font-size:15px; color:var(--clay); }
+  .p-summary ol { list-style:none; margin:0; padding:0; }
+  .p-summary ol li { margin:8px 0; }
+  .p-summary ol li code { font-family:var(--mono); font-size:14px; color:var(--clay); }
+  .p-facts { display:none; font-family:var(--mono); font-size:13px; letter-spacing:0.02em; color:var(--muted);
+    margin-top:14px; padding-top:14px; border-top:1px solid var(--line-soft); }
+  .p-facts.show { display:block; }
+  .p-note { display:none; font-family:var(--mono); margin-top:14px; font-size:14px; line-height:1.55; color:var(--warn); }
+  .p-note.show { display:block; }
+
+  /* ═══════════════ HTML + CSS-Grid layout (the one and only engine) ═══════════════ */
+  .canvas { position:absolute; top:var(--frame-top); right:var(--frame-h); bottom:var(--frame-v); left:var(--frame-h);
+    display:flex; align-items:flex-start; justify-content:center; gap:var(--s-4); padding:var(--s-3); overflow:auto; }
+  /* positional wrappers — generic (pos-left / pos-right are the narrow
+     side columns; pos-center / .env flow as the wide middle). CSS knows the
+     positions declared in the data, never any domain-specific zone names. */
+  .canvas > .pos-left, .canvas > .pos-right {
+    flex:0 1 clamp(var(--side-col-w), 18%, 360px); display:flex; min-width:var(--zone-min); }
+  .canvas > .env, .canvas > .pos-center { flex:1 1 auto; display:flex; min-width:var(--zone-min); }
+  /* coherent vertical floor for the top-level zones */
+  .pos-left > .zone, .pos-right > .zone, .env { min-height:var(--zone-min-h); }
+  .pos-left > .zone, .pos-right > .zone, .env { width:100%; }
+  .pos-left > .zone, .pos-right > .zone { align-self:flex-start; }
+
+  /* ── MOSAIC layout (page.columns ≥ 1) ──
+     Excel-style: distinct widths, arbitrary rows, filling the canvas. The
+     envelope/subsection nesting is orthogonal — a cell can still hold its own
+     inner grid.
+
+     MASONRY: horizontal placement (which column, how wide) is fixed by the data
+     (data-mos-col / data-mos-span); VERTICAL placement is computed by
+     engine.js `layoutMosaic`, which absolutely-positions each `.mos-cell` inside
+     a relatively-positioned `.mos-plane` so that every column packs upward
+     independently. A short cell no longer holds a tall row-mate's Y — the cell
+     below falls up to the first free slot in its column(s), removing the big
+     vertical gaps the old fixed-row layout left under short cells.
+
+     WHY NOT CSS-GRID (or `grid-template-rows:masonry`): a cell can be an
+     envelope whose OWN inline-size container query (`.env-body` flips
+     row→column under 620px, see below) grows substantially taller once it lands
+     at its real column width — and Chromium's grid track-sizing does not
+     re-measure `auto`/masonry tracks after such a nested container query
+     resolves, so the track is left shorter than the cell and the tall cell
+     visually overflows into the next row (verified previously: the computed row
+     track under-measured a wide envelope by over 1000px). The JS masonry pass
+     instead reads each cell's FINAL rendered height AFTER its width (hence its
+     container queries) is applied — a plain post-layout measurement that can
+     never under-measure — so the packing always matches reality. That is the
+     same guarantee the old flex `.mos-row` gave, now used per-column. */
+  .canvas.mosaic { display:block; padding:var(--s-3); scrollbar-gutter:stable; --mos-gap:var(--s-4); }
+  /* The plane's width is the widest row's intrinsic width (set inline by
+     engine.js); margin-inline:auto CENTERS it when it is narrower than the
+     canvas, and collapses to 0 (fill + horizontal scroll, start reachable)
+     when it is wider — standard block behaviour, which is why the canvas stays
+     display:block here. */
+  .canvas.mosaic .mos-plane { position:relative; margin-inline:auto; }
+  /* Wide (intrinsic) state: engine.js sets position/left/width/top inline from
+     each cell's measured intrinsic width; the cell only needs its floors here.
+     No content-cap: a section's width IS its intrinsic column width (declared
+     columns × --box-min), so it never stretches to fill and never collapses
+     below its columns — the diagram grows and the canvas scrolls instead. */
+  .canvas.mosaic .mos-cell { min-width:0; min-height:var(--zone-min-h); }
+  /* Coarse, whole-diagram responsive collapse (tablet/phone only; desktop keeps
+     the author's columns). engine.js reads the STAGE width and toggles three
+     classes at the --bp-tablet / --bp-phone breakpoints:
+       • mos-stacked (≤ tablet): plane becomes a single flex column, every cell
+         full width, stacking in DOM order (row order, then `order`);
+       • mos-narrow  (phone < w ≤ tablet): every multi-col grid capped at 2 cols;
+       • mos-mono    (≤ phone): every grid to a single column.
+     Driven by the engine (the wide state is JS-positioned), not a per-zone
+     container query — that per-zone collapse was the bug that overrode the
+     author's declared columns. */
+  .canvas.mosaic.mos-stacked .mos-plane { display:flex; flex-direction:column; gap:var(--s-4); height:auto; width:auto; }
+  .canvas.mosaic.mos-stacked .mos-cell { position:static; width:100%; }
+  .canvas.mosaic.mos-narrow .zone:not(.single) .zone-grid { grid-template-columns:repeat(2, minmax(0,1fr)); }
+  .canvas.mosaic.mos-mono .zone-grid { grid-template-columns:minmax(0,1fr); }
+
+  /* ── zones ── */
+  .zone { position:relative; container-type:inline-size;
+    background:var(--zone); border:1px solid var(--zone-line); border-style:dashed; border-radius:16px;
+    padding:var(--s-3); display:flex; flex-direction:column; gap:var(--s-2); transition:opacity .2s ease; }
+  .zone.danger { background:var(--crit-soft); border-color:var(--crit); }
+  .zone.safe { background:var(--olive-soft); border-color:var(--olive); }
+  .zone.envelope { background:none; border-color:var(--line); border-style:dashed; }
+
+  .zone-header { display:flex; flex-direction:column; gap:var(--s-1); }
+  .zone-header .ztitle { font-family:var(--mono); font-size:clamp(13px,0.85vw,14.5px); letter-spacing:0.1em;
+    text-transform:uppercase; color:var(--muted); }
+  .zone-header .zsub { font-family:var(--mono); font-size:12px; color:var(--muted); opacity:0.8; }
+  .zone.danger .ztitle, .zone.danger .zsub { color:var(--crit); }
+  .zone.safe .ztitle, .zone.safe .zsub { color:var(--olive); }
+  .zone.envelope .ztitle { color:var(--ink); opacity:0.75; }
+  .zone-header.sub-header { margin-top:var(--s-2); }
+
+  /* parametrized grid: --cols (set inline by the engine) drives the column
+     count at wide widths; the container queries below step it down. Single
+     zones (direct components, no subsection) are forced to 1 column. */
+  /* Tracks floored at --box-min: the grid's min-content width = cols × box-min,
+     so the zone (and its mosaic cell) is intrinsically wide enough for its
+     declared columns and never collapses a track to nothing. This is what makes
+     `columns` authoritative for width. */
+  .zone-grid { display:grid; grid-template-columns:repeat(var(--cols,1), minmax(var(--box-min),1fr)); gap:var(--s-2); align-items:start; }
+  .zone.single .zone-grid { grid-template-columns:minmax(0,1fr); }
+
+  /* An envelope wraps its children: first = wide main column,
+     rest = narrow side column(s). Generic env-main / env-side.
+     Both sub-zones must be able to CEDE width symmetrically: env-side is
+     flex-shrink:1 (not 0) with a min-content floor, so a wide side zone does
+     not stay rigidly wide and crush the main column in the intermediate band.
+     Each keeps a min-content floor so neither collapses below its longest word. */
+  .env-body { display:flex; gap:var(--s-2); align-items:flex-start; min-width:min-content; }
+  .env-body > .env-main { flex:1 1 auto; min-width:min-content; }
+  /* all non-main sub-zones live in ONE narrow lateral column that stacks them
+     vertically — the envelope is always main + side-stack, never N columns. */
+  .env-body > .env-side-group { flex:0 1 clamp(var(--side-col-w), 18%, 360px); min-width:min-content;
+    display:flex; flex-direction:column; gap:var(--s-2); align-self:stretch; }
+  .env-side-group > .zone { width:100%; }
+
+  /* envelope COLUMNS grid: N sibling columns, each stacking its
+     sub-zones vertically. Equal-width thirds by default, each floored at
+     min-content so nothing collapses. */
+  .env-body.env-grid { display:flex; gap:var(--s-2); align-items:flex-start; min-width:min-content; }
+  .env-body.env-grid > .env-col { flex:1 1 0; min-width:min-content;
+    display:flex; flex-direction:column; gap:var(--s-2); }
+  .env-body.env-grid > .env-col > .zone { width:100%; }
+
+  /* envelope BANDED grid (unified span): the envelope is a `columns`-wide
+     mosaic laid out as measured flex-rows. Each `.env-row` is a flex row; each
+     `.env-cell` (a .zone) takes flex ∝ its `--span`. A full-width band is a
+     lone cell with span = columns; a 2-column row is two span-1 cells. Flex
+     rows (NOT CSS-grid auto-rows) keep this immune to the nested container-query
+     height under-measure — the row's cross-size is measured from the cells'
+     final laid-out height (same guarantee the top-level masonry relies on). */
+  .env-body.env-rows { flex-direction:column; align-items:stretch; }
+  .env-body.env-rows > .env-row { display:flex; gap:var(--s-2); align-items:flex-start; min-width:min-content; }
+  .env-body.env-rows > .env-row > .env-cell { flex:var(--span,1) var(--span,1) 0; min-width:min-content; }
+
+  /* Envelope internals collapse to a column ONLY when the whole diagram is
+     stacked (coarse responsive, driven by engine.js via .mos-stacked at
+     ≤ --bp-tablet) — NOT by the envelope's own transient inline width. The old
+     per-envelope container queries (760px env-grid, 620px env-rows, 620px flat)
+     are removed: they fired during the intrinsic-width measurement pass and
+     collapsed the bands, so the cell measured narrow and its bands then didn't
+     fit when expanded. At desktop the envelope always lays its bands out in
+     rows; only a genuinely stacked diagram flips them to a column. */
+  .canvas.mosaic.mos-stacked .env-body,
+  .canvas.mosaic.mos-stacked .env-body.env-grid { flex-direction:column; }
+  .canvas.mosaic.mos-stacked .env-body > .env-main,
+  .canvas.mosaic.mos-stacked .env-body > .env-side-group,
+  .canvas.mosaic.mos-stacked .env-body.env-grid > .env-col { flex:0 0 auto; width:100%; min-width:0; }
+  .canvas.mosaic.mos-stacked .env-body.env-rows > .env-row { flex-direction:column; }
+  .canvas.mosaic.mos-stacked .env-body.env-rows > .env-row > .env-cell { flex:0 0 auto; width:100%; min-width:0; }
+
+  /* ── boxes ──
+     --box-min matches a 3-column-span box width (~280px) so every zone sizes
+     its boxes uniformly; narrow zones widen to accommodate it. */
+  :root {
+    --box-min:280px;
+    /* one mosaic column unit = a box + the inner gap; span × --col-unit is the
+       width a top-level cell reserves before its intrinsic content width wins
+       (engine.js layoutMosaic). */
+    --col-unit:calc(var(--box-min) + var(--s-2));
+    /* shared, fixed floor for the top-level zones. --zone-min keeps them from
+       collapsing narrower than one box plus zone padding; --zone-min-h keeps
+       them from collapsing vertically to a sliver. */
+    --zone-min:calc(var(--box-min) + var(--s-3) * 2);   /* 280 + 32 = 312px */
+    --zone-min-h:180px;
+  }
+  .box { cursor:pointer; background:var(--surface); border:1.5px solid var(--line); border-radius:10px;
+    padding:var(--s-2) var(--s-3); display:flex; flex-direction:column; gap:2px;
+    /* Floor at the box's own min-content (its longest word), not a fixed
+       --box-min and not clamped to 100%. Restores the intrinsic floor a grid
+       item normally has (which minmax(0,1fr) erased), so a box never renders
+       narrower than its longest word and titles wrap by whole words instead of
+       collapsing character-by-character. */
+    min-width:min-content; overflow-wrap:break-word; word-break:normal;
+    transition:border-color .15s ease, box-shadow .15s ease, opacity .2s ease; }
+  .box:hover { border-color:var(--muted); }
+  .box .k { font-family:var(--mono); font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:var(--muted); }
+  .box .t { font-family:var(--mono); font-size:clamp(16px,1.1vw,19px); font-weight:700; color:var(--ink);
+    letter-spacing:-0.01em; margin-bottom:2px; }
+  .box .m { font-family:var(--mono); font-size:12.5px; line-height:1.45; color:var(--muted); }
+  .box.crit { background:var(--crit-soft); border-color:var(--crit); }
+  .box.crit .k { color:var(--crit); }
+  .box.warn { background:var(--warn-soft); border-color:var(--warn); }
+  .box.warn .k { color:var(--warn); }
+  .box.ok { background:var(--olive-soft); border-color:var(--olive); }
+  .box.ok .k { color:var(--olive); }
+  .box.strong { background:var(--strong-soft); border-color:var(--strong); border-width:2px; }
+  .box.strong .k { color:var(--strong); }
+  .box.ext { border-style:dashed; }
+  .box.store { background:var(--surface2); }
+
+  /* selection + chip-driven highlight */
+  .box.sel { border-color:var(--clay) !important; box-shadow:0 0 0 2px var(--clay); }
+  /* zones nest their boxes, so we must NOT dim the container via opacity (that
+     would cap lit children). Keep containers opaque; dim headers + boxes. */
+  .stage.flowing .canvas .zone { opacity:1; }
+  .stage.flowing .canvas .zone-header { opacity:0.34; }
+  .stage.flowing .canvas .zone.lit .zone-header { opacity:1; }
+  .stage.flowing .box { opacity:0.18; }
+  .stage.flowing .box.lit { opacity:1; box-shadow:0 0 0 1px currentColor inset; }
+
+  /* NOTE: the old per-zone container-query collapse (720px→2col, 380px→1col) is
+     intentionally REMOVED. Column count is authoritative per the author's
+     `columns`; viewport width never reduces it. Responsive reduction is now
+     coarse and whole-diagram only (.mos-narrow / .mos-mono above), gated by the
+     stage width at the --bp-tablet / --bp-phone breakpoints. */
+  /* single-column reflow driven by the STAGE's own width (container query),
+     not the viewport — so a narrow split-screen pane stacks correctly even
+     when the window is wide. DOM order is the declared section order, which is
+     the desired top-to-bottom stack order. */
+  @container stage (max-width: 768px) {   /* mirrors --bp-tablet (legacy layout) */
+    .canvas { flex-direction:column; overflow:auto; }
+    .canvas > .pos-left, .canvas > .env, .canvas > .pos-center, .canvas > .pos-right { flex:0 0 auto; }
+    .pos-left > .zone, .pos-right > .zone, .env { width:100%; }
+    .env-body { flex-direction:column; }
+    .env-body > .env-main, .env-body > .env-side { flex:0 0 auto; min-width:min-content; width:100%; }
+  }
+
+  /* ═══════════════ HELP / TUTORIAL HUD (modal) ═══════════════
+     A global, static tutorial. It lives OUTSIDE .deck/.stage/.canvas (direct
+     children of <body>), position:fixed — so the mosaic masonry pass
+     (engine.js layoutMosaic) and its ResizeObserver never see it and it cannot
+     perturb the diagram layout. All colors come from the existing design tokens,
+     so light/dark theming is automatic with zero JS. Toggled by the H key or the
+     "?" button in the top bar (wiring in engine.js). */
+  #helpBtn { font-family:var(--mono); font-size:15px; font-weight:700; line-height:1;
+    width:38px; height:38px; padding:0; display:inline-flex; align-items:center; justify-content:center;
+    border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--muted); cursor:pointer;
+    transition:color .15s ease, border-color .15s ease; }
+  #helpBtn:hover, #helpBtn:focus-visible { color:var(--ink); border-color:var(--muted); outline:none; }
+
+  .help-backdrop { position:fixed; inset:0; z-index:200; display:none;
+    background:rgba(20,20,19,0.44); backdrop-filter:blur(2px); }
+  .help-backdrop.show { display:block; }
+  .help-modal { position:fixed; z-index:201; left:50%; top:50%; transform:translate(-50%,-50%);
+    display:none; flex-direction:column; width:min(980px,92vw); max-height:88vh; overflow:auto;
+    background:var(--surface); border:1px solid var(--line); border-left:4px solid var(--clay);
+    border-radius:16px; box-shadow:0 24px 64px rgba(0,0,0,0.34); padding:28px 32px 30px; }
+  .help-modal.show { display:flex; }
+  .help-modal:focus { outline:none; }
+  html.dark .help-modal { box-shadow:0 24px 64px rgba(0,0,0,0.6); }
+
+  .help-head { display:flex; align-items:baseline; gap:6px 12px; flex-wrap:wrap; }
+  .help-head .h-kicker { font-family:var(--mono); font-size:12px; letter-spacing:0.1em; text-transform:uppercase; color:var(--clay); }
+  .help-head h2 { font-family:var(--mono); font-weight:700; font-size:22px; color:var(--ink); letter-spacing:-0.01em; }
+  .help-close { margin-left:auto; font-family:var(--mono); font-size:20px; line-height:1; width:34px; height:34px;
+    border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--muted); cursor:pointer;
+    transition:color .15s ease, border-color .15s ease; }
+  .help-close:hover, .help-close:focus-visible { color:var(--ink); border-color:var(--muted); outline:none; }
+  .help-intro { font-family:var(--mono); font-size:14px; line-height:1.6; color:var(--body); margin:12px 0 20px; }
+  .help-intro b { color:var(--ink); font-weight:600; }
+
+  .help-grid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
+  @media (max-width:720px) { .help-grid { grid-template-columns:minmax(0,1fr); } }
+  .help-card { border:1px solid var(--line-soft); border-radius:12px; background:var(--surface2);
+    padding:16px 18px; display:flex; flex-direction:column; gap:10px; }
+  .help-card .h-illo { width:100%; height:96px; display:block; }
+  .help-card h3 { font-family:var(--mono); font-size:14px; font-weight:700; color:var(--ink); letter-spacing:0.02em; }
+  .help-card p { font-family:var(--mono); font-size:12.5px; line-height:1.55; color:var(--muted); }
+  .help-card p b { color:var(--body); font-weight:600; }
+  .help-card p code { font-family:var(--mono); color:var(--clay); }
+  .help-card .h-try { color:var(--clay); font-weight:600; }
+
+  .help-foot { display:flex; flex-wrap:wrap; gap:10px 18px; margin-top:20px; padding-top:16px;
+    border-top:1px solid var(--line-soft); font-family:var(--mono); font-size:12px; color:var(--muted); align-items:center; }
+  .help-foot kbd { font-family:var(--mono); font-size:11px; color:var(--ink); background:var(--surface);
+    border:1px solid var(--line); border-radius:5px; padding:2px 7px; margin:0 1px; }
+
+  /* SVG mini-illustration primitives — all token-driven so they recolor with
+     the theme. Class names mirror the box/zone variant vocabulary. */
+  .h-illo text { font-family:var(--mono); fill:var(--muted); }
+  .h-illo .il-box    { fill:var(--surface); stroke:var(--muted); stroke-width:1.5; }
+  .h-illo .il-zone   { fill:none; stroke:var(--zone-line); stroke-width:1.5; stroke-dasharray:4 3; }
+  .h-illo .il-crit   { fill:var(--crit-soft); stroke:var(--crit); stroke-width:1.5; }
+  .h-illo .il-warn   { fill:var(--warn-soft); stroke:var(--warn); stroke-width:1.5; }
+  .h-illo .il-ok     { fill:var(--olive-soft); stroke:var(--olive); stroke-width:1.5; }
+  .h-illo .il-strong { fill:var(--strong-soft); stroke:var(--strong); stroke-width:2; }
+  .h-illo .il-ext    { fill:none; stroke:var(--muted); stroke-width:1.5; stroke-dasharray:4 3; }
+  .h-illo .il-store  { fill:var(--surface2); stroke:var(--muted); stroke-width:1.5; }
+  .h-illo .il-clay   { fill:var(--clay-soft); stroke:var(--clay); stroke-width:1.5; }
+  .h-illo .il-accent { fill:none; stroke:var(--clay); stroke-width:1.5; }
+  .h-illo .il-ink    { fill:var(--ink); }
+  .h-illo .il-muted  { fill:var(--muted); }
+  .h-illo .il-guide line { stroke:var(--line); stroke-width:1; stroke-dasharray:2 3; }
+  .h-illo .il-dim { opacity:0.18; }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div>
+    <h1>Architecture Overview</h1>
+    <div class="sub">Data-driven architecture diagram</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="nav-cluster">
+    <div class="pagenav" id="pagenav">
+      <button class="navbtn" id="prev" title="Previous (←)" aria-label="Previous page">‹</button>
+      <div class="pagetabs" id="pagetabs"></div>
+      <button class="navbtn" id="next" title="Next (→)" aria-label="Next page">›</button>
+    </div>
+    <button id="helpBtn" title="Help (H)" aria-label="Help">?</button>
+    <button id="themeToggle">Theme</button>
+  </div>
+</div>
+
+<!-- The deck is populated entirely by engine/engine.js from window.__DOC__.
+     data/data.generated.js is produced by engine/build-data.mjs from the YAML
+     manifest + page files under data/. To change content, edit the YAML and
+     re-run `npm run build` — never edit generated markup here by hand.
+     The bar title/subtitle above are neutral placeholders; the engine
+     overwrites them at load from document.yaml (title/subtitle). -->
+<div class="deck" id="deck"></div>
+
+<!-- ── Help / tutorial HUD (static, global) ──────────────────────────────────
+     Sibling of .deck (NOT inside .stage/.canvas) so it never enters the mosaic
+     masonry pass. Opened by the "?" button or the H key; closed by Esc / × /
+     backdrop / H (wiring lives at the tail of engine/engine.js). Every color is
+     a design token, so the whole panel + its SVG drawings theme automatically. -->
+<div class="help-backdrop" data-help-backdrop></div>
+<div class="help-modal" data-help-modal role="dialog" aria-modal="true" aria-label="How to read this diagram" tabindex="-1">
+  <div class="help-head">
+    <span class="h-kicker">Guide</span>
+    <h2>How to read this diagram</h2>
+    <button class="help-close" data-help-close title="Close (Esc)" aria-label="Close help">×</button>
+  </div>
+  <p class="help-intro">This diagram is meant to <b>explain itself</b>. Here is the whole visual
+    vocabulary — what each shape, color and control means. <b>Try the chips at the top of the page as you read.</b></p>
+
+  <div class="help-grid">
+
+    <!-- 1 · COMPONENT -->
+    <div class="help-card">
+      <svg class="h-illo" viewBox="0 0 260 96" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <rect class="il-box" x="70" y="12" width="120" height="72" rx="8"/>
+        <rect class="il-clay" x="82" y="24" width="44" height="10" rx="3"/>
+        <rect class="il-ink" x="82" y="42" width="86" height="11" rx="2"/>
+        <rect class="il-muted" x="82" y="60" width="96" height="6" rx="2"/>
+        <rect class="il-muted" x="82" y="70" width="70" height="6" rx="2"/>
+      </svg>
+      <h3>1 · Component</h3>
+      <p>The atom of the diagram: one <b>box</b>. It carries a small status
+        badge, a <b>title</b>, and a short description. <span class="h-try">Click any box</span>
+        to open its full detail in the bottom bar.</p>
+    </div>
+
+    <!-- 2 · STATUS / VARIANT -->
+    <div class="help-card">
+      <svg class="h-illo" viewBox="0 0 260 96" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <rect class="il-box"    x="8"   y="34" width="42" height="30" rx="6"/>
+        <rect class="il-crit"   x="58"  y="34" width="42" height="30" rx="6"/>
+        <rect class="il-warn"   x="108" y="34" width="42" height="30" rx="6"/>
+        <rect class="il-ok"     x="158" y="34" width="42" height="30" rx="6"/>
+        <rect class="il-ext"    x="208" y="34" width="42" height="30" rx="6"/>
+        <rect class="il-clay"   x="14"  y="40" width="24" height="7" rx="2"/>
+        <text x="8" y="80" font-size="9">neutral · risk · weak · safe · external</text>
+      </svg>
+      <h3>2 · Status &amp; variant</h3>
+      <p>The <b>status</b> is the word on the badge (<code>ENTRY</code>,
+        <code>EXPOSED</code>, <code>WEAK</code>, <code>NEW</code>, <code>HARDENED</code>…).
+        The <b>variant</b> is the color/border that carries the meaning: red = risk,
+        amber = weak, green = safe/new, dashed = external.</p>
+    </div>
+
+    <!-- 3 · SECTION -->
+    <div class="help-card">
+      <svg class="h-illo" viewBox="0 0 260 96" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <rect class="il-zone" x="30" y="10" width="200" height="76" rx="12"/>
+        <rect class="il-muted" x="42" y="20" width="62" height="7" rx="2"/>
+        <rect class="il-box" x="42" y="36" width="80" height="40" rx="6"/>
+        <rect class="il-box" x="138" y="36" width="80" height="40" rx="6"/>
+      </svg>
+      <h3>3 · Section (zone)</h3>
+      <p>A <b>dashed zone</b> that groups related components under a title.
+        Its own color flags the whole group — a red zone (danger) or a green
+        zone (safe) qualifies everything inside it.</p>
+    </div>
+
+    <!-- 4 · SUBSECTION -->
+    <div class="help-card">
+      <svg class="h-illo" viewBox="0 0 260 96" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <rect class="il-zone" x="30" y="6" width="200" height="84" rx="12"/>
+        <rect class="il-muted" x="42" y="12" width="52" height="6" rx="2"/>
+        <rect class="il-box" x="42" y="22" width="80" height="18" rx="5"/>
+        <rect class="il-box" x="130" y="22" width="80" height="18" rx="5"/>
+        <rect class="il-muted" x="42" y="48" width="52" height="6" rx="2"/>
+        <rect class="il-box" x="42" y="58" width="80" height="18" rx="5"/>
+        <rect class="il-box" x="130" y="58" width="80" height="18" rx="5"/>
+      </svg>
+      <h3>4 · Subsection</h3>
+      <p>A section can split into <b>labeled subsections</b>, each its own little
+        grid of components — a second level of grouping inside one zone.</p>
+    </div>
+
+    <!-- 5 · ENVELOPE -->
+    <div class="help-card">
+      <svg class="h-illo" viewBox="0 0 260 96" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <rect class="il-zone" x="8" y="8" width="244" height="80" rx="12"/>
+        <rect class="il-muted" x="18" y="14" width="74" height="6" rx="2"/>
+        <rect class="il-zone" x="18" y="26" width="150" height="54" rx="8"/>
+        <rect class="il-box" x="26" y="36" width="60" height="36" rx="5"/>
+        <rect class="il-box" x="98" y="36" width="60" height="36" rx="5"/>
+        <rect class="il-zone" x="178" y="26" width="66" height="54" rx="8"/>
+        <rect class="il-box" x="186" y="36" width="50" height="36" rx="5"/>
+      </svg>
+      <h3>5 · Envelope</h3>
+      <p>A section that <b>wraps other sections</b> — a borderless dashed boundary
+        drawn around them (e.g. a cloud environment holding several zones).</p>
+    </div>
+
+    <!-- 6 · COLUMNS / ROWS / SPAN -->
+    <div class="help-card">
+      <svg class="h-illo" viewBox="0 0 260 96" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <g class="il-guide">
+          <line x1="59"  y1="14" x2="59"  y2="82"/>
+          <line x1="106" y1="14" x2="106" y2="82"/>
+          <line x1="153" y1="14" x2="153" y2="82"/>
+          <line x1="200" y1="14" x2="200" y2="82"/>
+        </g>
+        <rect class="il-clay" x="12" y="16" width="90" height="28" rx="5"/>
+        <rect class="il-box"  x="106" y="16" width="136" height="28" rx="5"/>
+        <rect class="il-box"  x="12" y="50" width="90" height="28" rx="5"/>
+        <text x="18" y="34" font-size="9">span 2</text>
+        <text x="150" y="34" font-size="9">span 3</text>
+        <text x="18" y="68" font-size="9">row 2</text>
+      </svg>
+      <h3>6 · Columns, rows &amp; span</h3>
+      <p>The canvas is a grid of <b>columns</b>. Each cell declares its <b>row</b>
+        and how many columns it <b>spans</b>. Columns are authoritative: a wide
+        diagram <b>scrolls sideways</b> rather than shrinking its cells.</p>
+    </div>
+
+    <!-- 7 · CHIPS / FILTERS -->
+    <div class="help-card">
+      <svg class="h-illo" viewBox="0 0 260 96" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+        <rect class="il-box"  x="14" y="8" width="46" height="16" rx="8"/>
+        <rect class="il-clay" x="66" y="8" width="54" height="16" rx="8"/>
+        <rect class="il-box"  x="126" y="8" width="46" height="16" rx="8"/>
+        <path class="il-accent" d="M92 27 L92 41"/>
+        <path class="il-accent" d="M87 36 L92 42 L97 36"/>
+        <rect class="il-clay" x="14" y="52" width="44" height="30" rx="5"/>
+        <rect class="il-clay" x="118" y="52" width="44" height="30" rx="5"/>
+        <g class="il-dim">
+          <rect class="il-box" x="66" y="52" width="44" height="30" rx="5"/>
+          <rect class="il-box" x="170" y="52" width="44" height="30" rx="5"/>
+          <rect class="il-box" x="222" y="52" width="30" height="30" rx="5"/>
+        </g>
+      </svg>
+      <h3>7 · Chips = flows</h3>
+      <p>The chips at the top are <b>flows</b>. Tap one to <b>spotlight</b> every
+        component in that flow and dim the rest; the bottom bar then explains the
+        flow step by step. Tap <b>All</b> to reset. <span class="h-try">Try it above.</span></p>
+    </div>
+
+  </div>
+
+  <div class="help-foot">
+    <span><kbd>H</kbd> open / close this guide</span>
+    <span><kbd>←</kbd><kbd>→</kbd> change page</span>
+    <span><kbd>Esc</kbd> close</span>
+    <span>Click a box for its details · click a chip to highlight a flow</span>
+  </div>
+</div>
+
+<script src="data/data.generated.js"></script>
+<script src="engine/engine.js"></script>
+</body>
+</html>
