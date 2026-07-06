@@ -259,7 +259,7 @@ class PrePublishValidator {
 
     const criticalFiles = [
       'package.json',
-      'bin/gaia-scan',
+      'bin/cli/scan.py',
       'tools/context/context_provider.py',
       'hooks/pre_tool_use.py',
     ];
