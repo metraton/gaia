@@ -58,6 +58,10 @@ skills/
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
+├── diagram-builder/       # Domain: turn an idea into a portable, data-driven diagram deck (facilitation method + dialect + 5 modes)
+│   ├── GLOSSARY.md        # canonical dialect terms + status/variant enums
+│   ├── reference.md       # facilitation method (idea→ASCII→YAML), field schema, engine gotchas, modes, build/verify loop
+│   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/verify.mjs, seed data/ (see assets/README.md)
 ├── execution/             # Post-approval execution discipline
 ├── fast-queries/          # Quick diagnostic scripts for cloud/system state
 ├── gaia-compact/          # Orchestrator: structured /compact prompt with preservation contract
@@ -127,6 +131,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
 - `jira-ticket-writing` — formula for Jira Stories and Subtasks; user-invocable, `user-invocable: true`
 - `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, `user-invocable: true`
+- `diagram-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); carries the dialect vocabulary so the orchestrator can propose a decomposition and the agent can author it; delegates the visual check to `visual-verify`; loaded on demand by description match, `user-invocable: true`
 
 **Skill types:**
 

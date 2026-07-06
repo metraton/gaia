@@ -1,0 +1,12 @@
+# Document manifest — the single source of which pages render, in what order.
+# name / order / visible live ONLY here; the page file owns id + content.
+# See the diagram-builder dialect reference for the full schema.
+title: "Diagram Deck"
+subtitle: "A portable, data-driven diagram — edit data/ and run npm run build"
+
+pages:
+  - id: overview
+    name: "Overview"
+    order: 1
+    visible: true
+    file: pages/overview.yaml
