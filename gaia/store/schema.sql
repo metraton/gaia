@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS projects (
     status           TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'missing'; scanner-owned (soft-delete)
     missing_since    TEXT,           -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned
     project_identity TEXT,           -- stable, vantage-independent project identity (git-common-dir realpath > normalized remote > realpath path); scanner-owned. NULL allowed for legacy/uninitialized rows. The partial unique index idx_projects_identity collapses the SAME physical repo scanned from different workspaces/roots into ONE row. See workspace-identity brief M1-T2.
+    description      TEXT,           -- human-authored summary/purpose of the project; agent-owned. Never written by the scan path (gaia.store.writer._PROJECTS_AGENT_OWNED); survives any number of scanner rescans unchanged. Added v23 (workspace-identity brief M3-T9).
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -148,6 +149,40 @@ CREATE TABLE IF NOT EXISTS features (
 CREATE INDEX IF NOT EXISTS idx_features_workspace ON features(workspace);
 CREATE INDEX IF NOT EXISTS idx_features_status ON features(status);
 CREATE INDEX IF NOT EXISTS idx_features_topic_key ON features(topic_key);
+
+-- ---------------------------------------------------------------------------
+-- project_facets: the per-project stack fingerprint (M3/T8, AC-6).
+--
+-- Homogeneous rows + discriminator (the memory-type pattern, a stepping stone
+-- toward a future graph): the languages, frameworks (with version), build
+-- tools, and detected infrastructure/deployment/orchestration aspects the
+-- scanners derive for a repo are persisted as facet rows here rather than as
+-- ad-hoc columns on `projects`. `scope` is a generic, extensible vocabulary
+-- (language, framework, build, infrastructure, deployment, orchestration,
+-- ci_cd, ...) so a new aspect (e.g. documentation, data/ml) needs no schema
+-- change -- only a new scope value. `key` is the detected name (e.g. "python",
+-- "nestjs", "terraform") and `value` its detail/version (e.g. a framework
+-- version, a manifest path, an IaC base path) or NULL when there is no detail.
+--
+-- 100% scanner-owned: there are no agent-owned columns here. Every `gaia scan`
+-- run refreshes the fingerprint by upserting the current facets (keyed on
+-- (workspace, project, scope, key), coalesce-safe) and pruning the stale ones
+-- for the project -- a rescan REFRESHES without duplicating.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS project_facets (
+    workspace  TEXT NOT NULL,  -- FK -> workspaces.name
+    project    TEXT NOT NULL,  -- FK -> projects.name within the same workspace
+    scope      TEXT NOT NULL,  -- generic facet scope (language|framework|build|infrastructure|deployment|orchestration|ci_cd|...); scanner-owned
+    key        TEXT NOT NULL,  -- detected name within the scope (e.g. 'python', 'nestjs', 'terraform'); scanner-owned
+    value      TEXT,           -- detail/version for the facet (e.g. framework version, manifest path); scanner-owned
+    scanner_ts TEXT,           -- ISO8601 timestamp of last scan; scanner-owned
+    PRIMARY KEY (workspace, project, scope, key),
+    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE,
+    FOREIGN KEY (workspace, project) REFERENCES projects(workspace, name) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_facets_workspace ON project_facets(workspace);
+CREATE INDEX IF NOT EXISTS idx_project_facets_scope ON project_facets(scope);
 
 -- ---------------------------------------------------------------------------
 -- tf_modules: Terraform module definitions tracked in the workspace

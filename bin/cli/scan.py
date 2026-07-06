@@ -79,6 +79,15 @@ def _render_human(report, *, dry_run: bool) -> None:
                 f"  - workspace={p['workspace']} project={container} "
                 f"repo={p['repo']}{slot_note} path={p.get('path')} [{applied}]"
             )
+            # M3/T8 (AC-6): the stack fingerprint (facet rows) for this repo.
+            facets = p.get("facets") or []
+            if facets:
+                summary = ", ".join(
+                    f"{f['scope']}:{f['key']}"
+                    + (f"={f['value']}" if f.get("value") else "")
+                    for f in facets
+                )
+                print(f"      facets: {summary}")
 
     if report.warnings:
         # M2-T6 (AC-5): would-be collisions are surfaced explicitly, never

@@ -238,10 +238,13 @@ class ScanReport:
         repos_found: One ``{"repo", "path"}`` dict per discovered git repo.
         projects: One dict per matched repo:
             ``{repo, project, container, workspace, project_identity, path,
-            applied}``. ``container`` is the proyecto level (shared across the
-            repos of a multi-repo container; equals ``repo`` on R4 collapse);
-            ``project`` is the DB storage slot (collision-disambiguated);
-            ``path`` is the repo's own absolute path (M2-T4/T5).
+            facets, applied}``. ``container`` is the proyecto level (shared
+            across the repos of a multi-repo container; equals ``repo`` on R4
+            collapse); ``project`` is the DB storage slot
+            (collision-disambiguated); ``path`` is the repo's own absolute path
+            (M2-T4/T5). ``facets`` is the repo's stack fingerprint (M3/T8,
+            AC-6) -- a list of ``{scope, key, value}`` rows previewed on a
+            dry-run and persisted to ``project_facets`` on apply.
         errors: One dict per no-match repo: ``{repo, W, suggestion}`` (R3).
         ambiguities: One dict per deeper-than-3 repo:
             ``{repo, extra_levels}``.
@@ -255,6 +258,11 @@ class ScanReport:
             path, message}``.
         marked_missing: Count of project rows soft-marked missing during
             reconcile (R5). Zero in dry-run.
+        facet_failures: One dict per repo whose facet persistence raised
+            (M3/T8). Per-repo isolation: a facet write error is collected here
+            and never aborts the scan. Empty on a clean run and always empty in
+            dry-run (facets are only persisted on apply). Shape:
+            ``{workspace, project, path, error}``.
         error: A top-level error string when the scan could not run at all
             (e.g. no git repos under root). None on a normal run.
     """
@@ -266,6 +274,7 @@ class ScanReport:
     ambiguities: list[dict] = field(default_factory=list)
     warnings: list[dict] = field(default_factory=list)
     marked_missing: int = 0
+    facet_failures: list[dict] = field(default_factory=list)
     error: Optional[str] = None
 
     def to_dict(self) -> dict:
@@ -277,6 +286,7 @@ class ScanReport:
             "ambiguities": self.ambiguities,
             "warnings": self.warnings,
             "marked_missing": self.marked_missing,
+            "facet_failures": self.facet_failures,
             "error": self.error,
         }
 
@@ -297,6 +307,7 @@ SCAN_AGENT = "gaia-system"
 # Tables the scan agent must be able to write for population to succeed.
 _SCAN_TABLES = [
     "workspaces", "projects", "apps", "services", "libraries", "features",
+    "project_facets",
     "integrations", "gaia_installations",
     "tf_modules", "tf_live", "releases", "workloads", "clusters_defined",
 ]
@@ -399,6 +410,41 @@ def _reconcile(
     return mark_missing_in("projects", workspace, surviving_keys, db_path=db_path)
 
 
+def _facet_target(
+    project_identity: Optional[str],
+    fallback_workspace: str,
+    fallback_name: str,
+    *,
+    db_path: Path | None,
+) -> tuple[str, str]:
+    """Resolve the (workspace, name) where the canonical projects row lives.
+
+    Facets are FK-bound to ``projects(workspace, name)``. Under M1-T1
+    identity-collapse the persisted row for a repo may live under a DIFFERENT
+    (workspace, name) than the one this scan run classified -- the same
+    physical repo scanned from a second root under another workspace collapses
+    onto its first-seen row. Writing facets to the classified (workspace,
+    name) would then violate the FK. Look the row up by its stable
+    ``project_identity`` and return that row's actual (workspace, name); fall
+    back to the classified values when the identity is absent or unmatched
+    (e.g. a brand-new row, or a legacy DB without the identity column).
+    """
+    if not project_identity:
+        return fallback_workspace, fallback_name
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT workspace, name FROM projects WHERE project_identity = ?",
+            (project_identity,),
+        ).fetchone()
+    finally:
+        con.close()
+    if row is not None:
+        return row["workspace"], row["name"]
+    return fallback_workspace, fallback_name
+
+
 def scan(
     root: Path,
     W: str,
@@ -460,10 +506,46 @@ def scan(
 
         ws_claims = claimed_by_ws.setdefault(c.workspace, {})
 
+        # M3/T8 (AC-6): compute the repo's stack fingerprint (languages,
+        # frameworks with version, build tools, detected infra/deployment/
+        # orchestration) as facet rows. This runs the read-only scanner
+        # orchestrator over the repo and maps its output to
+        # {scope, key, value} facets. Always full (no --deep mode) and
+        # side-effect-free -- persistence happens only on apply, below.
+        from tools.scan.store_populator import compute_facets
+        facets = compute_facets(Path(c.path))
+
         applied = False
         if apply:
             applied, final_name = _upsert(c, agent=agent, db_path=db_path)
             surviving_by_ws.setdefault(c.workspace, []).append(final_name)
+            # Persist the scanner-owned facets for this repo. The facets FK
+            # references projects(workspace, name), so they MUST be written to
+            # the workspace/name where the canonical projects row ACTUALLY
+            # lives -- which, under identity-collapse, may differ from
+            # (c.workspace, final_name): the same physical repo scanned from a
+            # second root under a different workspace collapses onto its
+            # first-seen row (M1-T1 writer identity-collapse). Resolve the row
+            # by its stable project_identity and target that (workspace, name).
+            facet_ws, facet_name = _facet_target(
+                c.project_identity, c.workspace, final_name, db_path=db_path
+            )
+            # Per-repo isolation (mirrors scan_workspace_to_store): a facet
+            # write error must NEVER abort the whole scan -- collect it and
+            # continue. The projects row itself is already committed above.
+            from tools.scan.store_populator import populate_facets
+            try:
+                populate_facets(
+                    facet_ws, facet_name, Path(c.path), agent,
+                    db_path=db_path, facets=facets,
+                )
+            except Exception as exc:  # pragma: no cover -- non-fatal isolation
+                report.facet_failures.append({
+                    "workspace": facet_ws,
+                    "project": facet_name,
+                    "path": c.path,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
         else:
             from gaia.store.writer import preview_project_name
             final_name = preview_project_name(
@@ -515,6 +597,11 @@ def scan(
             # M2-T4 (AC-3): each repo carries its own absolute path, distinct
             # from the project/container grouping.
             "path": c.path,
+            # M3/T8 (AC-6): the stack fingerprint persisted for this repo as
+            # rows in project_facets. On a dry-run this is the PREVIEW of what
+            # would be written (nothing is persisted); on apply it is exactly
+            # what populate_facets wrote. Each item is {scope, key, value}.
+            "facets": facets,
             "applied": applied,
         })
 

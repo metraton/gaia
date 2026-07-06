@@ -5,9 +5,12 @@ refreshed on every scan, never treated as frozen agent input.
 The ownership map (``gaia/store/writer.py``) is the single source of truth for
 which columns the scan path may write:
 
-  * ``_PROJECTS_AGENT_OWNED`` is EMPTY in M1 -- ``role`` is auto-detected by
-    ``tools/scan/role_detector.py`` and refreshed every scan, so it is NOT
-    agent-owned. (M3/T9 adds ``description`` to this set.)
+  * ``_PROJECTS_AGENT_OWNED == {description}`` (M3/T9, schema v23). In M1 this
+    set was empty; T9 added the agent-owned ``projects.description`` column and
+    registered it here so the scan path (``strip_agent_owned=True``) can never
+    write it. ``role`` remains scanner-owned -- it is auto-detected by
+    ``tools/scan/role_detector.py`` and refreshed every scan, so it is NOT in
+    this set.
   * ``_APPS_AGENT_OWNED = {description, status}`` -- these are the agent-owned
     columns the scan path may never write.
 
@@ -54,11 +57,16 @@ def test_role_is_not_projects_agent_owned():
     assert "topic_key" not in writer._PROJECTS_AGENT_OWNED
 
 
-def test_projects_agent_owned_empty_in_m1():
-    """M1 ships no agent-owned projects column (description arrives in M3/T9)."""
+def test_projects_agent_owned_is_description_after_t9():
+    """M3/T9 (schema v23) makes ``description`` the sole agent-owned projects
+    column. In M1 this set was empty; T9 added it. The set must be explicit
+    and verified -- not silently drifting.
+
+    ``role`` stays OUT of the set (scanner-owned, refreshed every scan)."""
     from gaia.store import writer
 
-    assert writer._PROJECTS_AGENT_OWNED == frozenset()
+    assert writer._PROJECTS_AGENT_OWNED == frozenset({"description"})
+    assert "role" not in writer._PROJECTS_AGENT_OWNED
 
 
 def test_apps_agent_owned_is_description_and_status():
