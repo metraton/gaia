@@ -2283,6 +2283,129 @@ class TestScriptFileEvasionNoFalsePositiveRegression:
         assert result.is_mutative is True
 
 
+class TestExecSinkStringArgInScriptFile:
+    """Closes the quoted-string exec-sink evasion in the script-file CODE lane
+    (``_scan_exec_sink_string_args`` shared with the inline ``-c``/``-e`` path).
+
+    Before the fix, the code lane (``node deploy.js``, ``ruby x.rb``, ...) ran
+    only ``is_blocked_command`` + the verb scanner per line.  A mutation handed
+    to an exec sink as a STRING LITERAL -- ``execSync("kubectl delete ...")`` --
+    was invisible: the quotes make the whole command one token the verb scanner
+    cannot split, and the universal exec-sink patterns were only applied on the
+    inline path, never the script-file lane.  The two lanes now share one
+    exec-sink detector, so ``node deploy.js`` classifies identically to the
+    inline ``node -e "..."`` form.
+
+    False-positive mitigation is pinned by the ``*_benign_*`` cases: escalation
+    fires ONLY when the extracted inner command is itself mutative, so a
+    read-only ``execSync("ls")`` stays safe.
+    """
+
+    # ---- Mutative inner command -> escalated to T3 (matches inline) ----
+
+    def test_node_file_execsync_kubectl_delete_is_mutative(self, tmp_path):
+        """The target case: node deploy.js with execSync("kubectl delete ...")
+        must classify T3, matching ``node -e "execSync('kubectl delete ...')"``."""
+        script = tmp_path / "deploy.js"
+        script.write_text(
+            'const { execSync } = require("child_process");\n'
+            'execSync("kubectl delete deployment foo");\n'
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_node_file_spawn_mutative_arg_is_mutative(self, tmp_path):
+        script = tmp_path / "run.js"
+        script.write_text('spawnSync("terraform apply -auto-approve");\n')
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+
+    def test_ruby_file_system_rm_is_mutative(self, tmp_path):
+        script = tmp_path / "task.rb"
+        script.write_text('system("rm -rf /tmp/build")\n')
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is True
+
+    def test_ruby_file_backtick_kubectl_apply_is_mutative(self, tmp_path):
+        script = tmp_path / "bt.rb"
+        script.write_text('out = `kubectl apply -f x.yaml`\n')
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is True
+
+    def test_perl_file_system_gcloud_delete_is_mutative(self, tmp_path):
+        script = tmp_path / "op.pl"
+        script.write_text('system("gcloud compute instances delete vm1");\n')
+        result = detect_mutative_command(f"perl {script}")
+        assert result.is_mutative is True
+
+    def test_php_file_shell_exec_mutative(self, tmp_path):
+        script = tmp_path / "run.php"
+        script.write_text(
+            "<?php\nshell_exec(\"aws s3 rm s3://bucket/key\");\n"
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is True
+
+    def test_node_file_execsync_blocked_inner_is_mutative(self, tmp_path):
+        """A blocked command (rm -rf /) inside the sink string is caught by the
+        inner is_blocked_command check, not merely the mutative scanner."""
+        script = tmp_path / "wipe.js"
+        script.write_text('execSync("rm -rf /");\n')
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+
+    # ---- Benign inner command -> NOT escalated (FP mitigation) ----
+
+    def test_node_file_execsync_ls_stays_safe(self, tmp_path):
+        script = tmp_path / "read.js"
+        script.write_text(
+            'const { execSync } = require("child_process");\n'
+            'const out = execSync("ls -la");\n'
+            'console.log(out.toString());\n'
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    def test_ruby_file_system_echo_stays_safe(self, tmp_path):
+        script = tmp_path / "ok.rb"
+        script.write_text('system("echo hello")\n')
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is False
+
+    def test_node_regex_exec_non_command_stays_safe(self, tmp_path):
+        """``/re/.exec("some string")`` extracts a non-command string that does
+        not classify mutative, so the generic ``exec(`` match does not escalate."""
+        script = tmp_path / "re.js"
+        script.write_text(
+            'const m = /foo-(\\\\d+)/.exec("some arbitrary input value");\n'
+            'console.log(m);\n'
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    def test_perl_file_system_read_only_stays_safe(self, tmp_path):
+        script = tmp_path / "r.pl"
+        script.write_text('system("cat /etc/hostname");\nprint "done\\n";\n')
+        result = detect_mutative_command(f"perl {script}")
+        assert result.is_mutative is False
+
+    # ---- Inline path parity preserved (shared helper, no regression) ----
+
+    def test_inline_node_execsync_mutative_unchanged(self):
+        result = detect_mutative_command(
+            "node -e \"execSync('kubectl delete deployment foo')\""
+        )
+        assert result.is_mutative is True
+
+    def test_inline_python_readonly_unchanged(self):
+        """Python inline that parses clean as read-only stays safe -- the shared
+        exec-sink helper runs AFTER the Python AST early-return, so AST-clean
+        Python behavior is unchanged."""
+        result = detect_mutative_command("python3 -c 'print(sum([1, 2, 3]))'")
+        assert result.is_mutative is False
+
+
 class TestCamelCaseIdentifierFalsePositiveFix:
     """Word-boundary discipline for camelCase splitting (recognized-CLI guard).
 
