@@ -2838,6 +2838,475 @@ def wipe_workspace(workspace: str, *, db_path: Path | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Surgical reconciliation helpers (workspace-identity brief, M4/T10)
+# ---------------------------------------------------------------------------
+#
+# `gaia scan` reconciles the `projects` table workspace-by-workspace: it
+# upserts the repos it finds under the SCANNED workspace and prunes
+# (mark_missing_in / delete_missing_in) only WITHIN that same workspace. Two
+# consequences make a plain rescan unable to repair historical drift:
+#
+#   1. A stale row with project_identity=NULL living under a DIFFERENT
+#      workspace than the one being scanned is never collapsed (the identity-
+#      collapse path in upsert_project only fires for a non-null identity) and
+#      never pruned (prune is scoped to the scanned workspace) -- so a rescan
+#      RESURRECTS the repo as a fresh duplicate row and leaves the stale row
+#      ORPHANED under its old workspace.
+#   2. project_context_contracts is not touched by scan at all, so a contract
+#      written under the wrong workspace can only be corrected by moving it.
+#
+# wipe_workspace is too blunt for a LIVE workspace: it CASCADE-deletes the
+# workspaces row and EVERY child (projects, memory, briefs, episodes, PCC).
+# The two helpers below are the surgical, workspace-preserving primitives that
+# repair drift without destroying collateral:
+#
+#   delete_projects    -- remove matching `projects` rows within one workspace,
+#                         leaving the workspace row + non-project children intact.
+#   relocate_contracts -- re-key project_context_contracts rows between
+#                         workspaces (the only correction path for mis-keyed PCC).
+# ---------------------------------------------------------------------------
+
+_PROJECT_DELETE_FILTER_KEYS = ("group_name", "status", "names", "path", "project_identity")
+
+
+def delete_projects(
+    workspace: str,
+    *,
+    group_name: str | None = None,
+    status: str | None = None,
+    names: Sequence[str] | None = None,
+    path: str | None = None,
+    project_identity: str | None = None,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Targeted deletion of rows from `projects` within a SINGLE workspace.
+
+    Unlike :func:`wipe_workspace` (which deletes the workspaces row and CASCADEs
+    the ENTIRE workspace -- projects, memory, briefs, episodes, PCC), this
+    deletes ONLY matching `projects` rows. The workspaces row and every
+    NON-project child (memory, project_context_contracts, briefs, episodes)
+    survive untouched. Project-scoped children (apps, libraries, services,
+    features, project_facets, tf_modules, tf_live, releases, workloads,
+    clusters_defined) CASCADE via their FK (workspace, project) ->
+    projects(workspace, name), and the projects_fts mirror is kept in sync by
+    the projects_fts_delete trigger.
+
+    This is the surgery tool for reconciling stale project rows that live under
+    a LIVE workspace which must NOT be wiped -- e.g. workspace 'me' hosts the
+    live gaia + metraton.github.io projects alongside 28 stale 'github-repos'
+    group rows whose on-disk directory no longer exists.
+
+    Scope guard: `workspace` is REQUIRED and at least one additional filter must
+    be supplied. A call with no filter beyond workspace raises ValueError -- it
+    would delete every project in the workspace, which is what wipe_workspace is
+    for. Filters are AND-combined:
+
+        group_name        -- projects.group_name = ?
+        status            -- projects.status = ?         (e.g. 'missing')
+        names             -- projects.name IN (?, ...)
+        path              -- projects.path = ?
+        project_identity  -- projects.project_identity = ?
+
+    Args:
+        workspace: Workspace name (projects.workspace). Required scope guard.
+        group_name: Match projects.group_name exactly.
+        status: Match projects.status exactly ('active' | 'missing').
+        names: Match projects.name against this collection (IN clause).
+        path: Match projects.path exactly.
+        project_identity: Match projects.project_identity exactly.
+        dry_run: When True, delete nothing; return the matched rows so a caller
+            can preview exactly what WOULD be deleted.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied"|"preview", "workspace": ws, "deleted": n,
+         "matched": [{"name","group_name","status","path"}...]}.
+
+    Raises:
+        ValueError: when no filter beyond `workspace` is supplied.
+    """
+    if not workspace:
+        raise ValueError("delete_projects: workspace is required")
+
+    names_list = list(names) if names else None
+    has_filter = any(
+        v is not None
+        for v in (group_name, status, names_list, path, project_identity)
+    )
+    if not has_filter:
+        raise ValueError(
+            "delete_projects: at least one filter beyond `workspace` is "
+            "required (group_name/status/names/path/project_identity). To "
+            "delete the entire workspace use wipe_workspace()."
+        )
+
+    where = ["workspace = ?"]
+    params: list[Any] = [workspace]
+    if group_name is not None:
+        where.append("group_name = ?")
+        params.append(group_name)
+    if status is not None:
+        where.append("status = ?")
+        params.append(status)
+    if path is not None:
+        where.append("path = ?")
+        params.append(path)
+    if project_identity is not None:
+        where.append("project_identity = ?")
+        params.append(project_identity)
+    if names_list is not None:
+        placeholders = ", ".join(["?"] * len(names_list))
+        where.append(f"name IN ({placeholders})")
+        params.extend(names_list)
+    where_sql = " AND ".join(where)
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            rows = con.execute(
+                f"SELECT name, group_name, status, path FROM projects "
+                f"WHERE {where_sql}",
+                params,
+            ).fetchall()
+            matched = [dict(r) for r in rows]
+
+            if dry_run:
+                con.commit()
+                return {
+                    "status": "preview",
+                    "workspace": workspace,
+                    "deleted": 0,
+                    "matched": matched,
+                }
+
+            cur = con.execute(f"DELETE FROM projects WHERE {where_sql}", params)
+            deleted = cur.rowcount
+            con.commit()
+            return {
+                "status": "applied",
+                "workspace": workspace,
+                "deleted": deleted,
+                "matched": matched,
+            }
+        except Exception:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+
+
+def relocate_contracts(
+    from_workspace: str,
+    to_workspace: str,
+    contracts: Sequence[str],
+    *,
+    on_conflict: str = "error",
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Re-key ``project_context_contracts`` rows from one workspace to another.
+
+    `gaia scan` never touches project_context_contracts, so a contract written
+    under the wrong workspace (e.g. AOS project context mis-keyed to the 'me'
+    workspace) can only be corrected by moving the row. This re-keys the named
+    contracts by UPDATEing the ``workspace`` PK column IN PLACE -- payload,
+    metadata and updated_at are preserved, and the ``trg_pcc_history`` AFTER
+    UPDATE trigger records the move in project_context_contracts_history.
+
+    ``to_workspace`` must satisfy the FK to workspaces(name); it is created via
+    :func:`_ensure_workspace_row` when absent. The PK is
+    (workspace, contract_name), so if (to_workspace, contract) ALREADY exists
+    ``on_conflict`` decides:
+
+        'error'     -- raise ValueError, move nothing (default; never clobber)
+        'skip'      -- leave both rows; report the contract under 'skipped'
+        'overwrite' -- delete the target row first, then move the source row
+
+    Idempotent: a contract already absent from ``from_workspace`` is reported
+    under 'missing' and is a no-op, so re-running after a partial apply is safe.
+
+    Args:
+        from_workspace: Source workspace (current, wrong key).
+        to_workspace: Destination workspace (correct key).
+        contracts: Contract names to move (project_context_contracts.contract_name).
+        on_conflict: 'error' | 'skip' | 'overwrite' (see above).
+        dry_run: When True, mutate nothing; report the classification only.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied"|"preview", "from": ..., "to": ...,
+         "moved": [...], "skipped": [...], "missing": [...], "overwritten": [...]}.
+
+    Raises:
+        ValueError: on invalid on_conflict, empty contracts, from==to, or an
+            unresolved PK conflict when on_conflict='error'.
+    """
+    if on_conflict not in ("error", "skip", "overwrite"):
+        raise ValueError(
+            f"relocate_contracts: invalid on_conflict {on_conflict!r}; "
+            f"must be 'error', 'skip', or 'overwrite'"
+        )
+    contract_list = list(contracts)
+    if not contract_list:
+        raise ValueError("relocate_contracts: at least one contract is required")
+    if from_workspace == to_workspace:
+        raise ValueError(
+            "relocate_contracts: from_workspace and to_workspace are identical"
+        )
+
+    moved: list[str] = []
+    skipped: list[str] = []
+    missing: list[str] = []
+    overwritten: list[str] = []
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            if not dry_run:
+                _ensure_workspace_row(con, to_workspace)
+
+            for name in contract_list:
+                src = con.execute(
+                    "SELECT 1 FROM project_context_contracts "
+                    "WHERE workspace = ? AND contract_name = ?",
+                    (from_workspace, name),
+                ).fetchone()
+                if src is None:
+                    missing.append(name)
+                    continue
+
+                dst = con.execute(
+                    "SELECT 1 FROM project_context_contracts "
+                    "WHERE workspace = ? AND contract_name = ?",
+                    (to_workspace, name),
+                ).fetchone()
+                if dst is not None:
+                    if on_conflict == "error":
+                        raise ValueError(
+                            f"relocate_contracts: target already has contract "
+                            f"{name!r} under workspace {to_workspace!r} "
+                            f"(on_conflict='error')"
+                        )
+                    if on_conflict == "skip":
+                        skipped.append(name)
+                        continue
+                    # overwrite
+                    if not dry_run:
+                        con.execute(
+                            "DELETE FROM project_context_contracts "
+                            "WHERE workspace = ? AND contract_name = ?",
+                            (to_workspace, name),
+                        )
+                    overwritten.append(name)
+
+                if not dry_run:
+                    con.execute(
+                        "UPDATE project_context_contracts SET workspace = ? "
+                        "WHERE workspace = ? AND contract_name = ?",
+                        (to_workspace, from_workspace, name),
+                    )
+                moved.append(name)
+
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+
+    return {
+        "status": "preview" if dry_run else "applied",
+        "from": from_workspace,
+        "to": to_workspace,
+        "moved": moved,
+        "skipped": skipped,
+        "missing": missing,
+        "overwritten": overwritten,
+    }
+
+
+def relocate_memory(
+    from_workspace: str,
+    to_workspace: str,
+    names: Sequence[str],
+    *,
+    on_conflict: str = "error",
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Re-key curated ``memory`` rows (and their intra-set ``memory_links``)
+    between workspaces -- the mirror of :func:`relocate_contracts` for the
+    curated memory table.
+
+    `gaia scan` never touches ``memory``, so a memory row written under the
+    wrong workspace (e.g. the 'project_gaia_roadmap' / 'user_blog_articles'
+    notes mis-keyed to the 'rnd' workspace but belonging to 'me') can only be
+    corrected by moving the row. This re-keys the named rows by UPDATEing the
+    ``workspace`` PK column IN PLACE: every other column (type, description,
+    body, origin_session_id, updated_at, class, status) is preserved untouched,
+    and the ``memory_au`` AFTER UPDATE trigger keeps the ``memory_fts`` mirror
+    in sync (workspace is an FTS column, so the mirror row is rewritten).
+
+    memory_links follow the notes: a link under ``from_workspace`` whose BOTH
+    endpoints are in the moved set is re-keyed to ``to_workspace`` (the edge
+    travels with the pair). A link with only ONE endpoint in the moved set
+    cannot stay consistent under the single-workspace link model -- it is left
+    in place and reported under 'partial_links' rather than silently broken.
+
+    ``to_workspace`` must satisfy the FK to workspaces(name); it is created via
+    :func:`_ensure_workspace_row` when absent. PK is (workspace, name); on a
+    (to_workspace, name) collision ``on_conflict`` decides:
+
+        'error'     -- raise ValueError, move nothing (default; never clobber)
+        'skip'      -- leave both rows; report the name under 'skipped'
+        'overwrite' -- delete the target row first, then move the source row
+
+    Idempotent: a name already absent from ``from_workspace`` is reported under
+    'missing' and is a no-op, so re-running after a partial apply is safe.
+
+    Subject to the curated-memory write guard
+    (:func:`_assert_dispatch_can_write_memory`): like every other memory
+    mutator, this refuses writes from a NON-curator subagent dispatch. Run it
+    from a human shell or the orchestrator/operator context.
+
+    Returns:
+        {"status": "applied"|"preview", "from": ..., "to": ...,
+         "moved": [...], "skipped": [...], "missing": [...],
+         "overwritten": [...],
+         "links_moved": [{"src","dst","kind"}...],
+         "partial_links": [{"src","dst","kind"}...]}.
+
+    Raises:
+        ValueError: invalid on_conflict, empty names, from==to, or an
+            unresolved PK conflict when on_conflict='error'.
+        MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
+    """
+    _assert_dispatch_can_write_memory()
+
+    if on_conflict not in ("error", "skip", "overwrite"):
+        raise ValueError(
+            f"relocate_memory: invalid on_conflict {on_conflict!r}; "
+            f"must be 'error', 'skip', or 'overwrite'"
+        )
+    name_list = list(names)
+    if not name_list:
+        raise ValueError("relocate_memory: at least one name is required")
+    if from_workspace == to_workspace:
+        raise ValueError(
+            "relocate_memory: from_workspace and to_workspace are identical"
+        )
+
+    moved: list[str] = []
+    skipped: list[str] = []
+    missing: list[str] = []
+    overwritten: list[str] = []
+    links_moved: list[dict] = []
+    partial_links: list[dict] = []
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            if not dry_run:
+                _ensure_workspace_row(con, to_workspace)
+
+            for name in name_list:
+                src = con.execute(
+                    "SELECT 1 FROM memory WHERE workspace = ? AND name = ?",
+                    (from_workspace, name),
+                ).fetchone()
+                if src is None:
+                    missing.append(name)
+                    continue
+
+                dst = con.execute(
+                    "SELECT 1 FROM memory WHERE workspace = ? AND name = ?",
+                    (to_workspace, name),
+                ).fetchone()
+                if dst is not None:
+                    if on_conflict == "error":
+                        raise ValueError(
+                            f"relocate_memory: target already has memory "
+                            f"{name!r} under workspace {to_workspace!r} "
+                            f"(on_conflict='error')"
+                        )
+                    if on_conflict == "skip":
+                        skipped.append(name)
+                        continue
+                    # overwrite: drop the target row first (memory_ad keeps FTS
+                    # in sync); its own links under `to` are left as-is.
+                    if not dry_run:
+                        con.execute(
+                            "DELETE FROM memory WHERE workspace = ? AND name = ?",
+                            (to_workspace, name),
+                        )
+                    overwritten.append(name)
+
+                if not dry_run:
+                    con.execute(
+                        "UPDATE memory SET workspace = ? "
+                        "WHERE workspace = ? AND name = ?",
+                        (to_workspace, from_workspace, name),
+                    )
+                moved.append(name)
+
+            # Re-key links that live entirely within the moved set.
+            moved_set = set(moved)
+            if moved_set:
+                link_rows = con.execute(
+                    "SELECT src_name, dst_name, kind FROM memory_links "
+                    "WHERE workspace = ?",
+                    (from_workspace,),
+                ).fetchall()
+                for lr in link_rows:
+                    src_in = lr["src_name"] in moved_set
+                    dst_in = lr["dst_name"] in moved_set
+                    if not (src_in or dst_in):
+                        continue
+                    entry = {
+                        "src": lr["src_name"],
+                        "dst": lr["dst_name"],
+                        "kind": lr["kind"],
+                    }
+                    if src_in and dst_in:
+                        if not dry_run:
+                            con.execute(
+                                "UPDATE memory_links SET workspace = ? "
+                                "WHERE workspace = ? AND src_name = ? "
+                                "AND dst_name = ? AND kind = ?",
+                                (to_workspace, from_workspace,
+                                 lr["src_name"], lr["dst_name"], lr["kind"]),
+                            )
+                        links_moved.append(entry)
+                    else:
+                        # Only one endpoint moves -- cannot stay consistent;
+                        # leave it in place and report it.
+                        partial_links.append(entry)
+
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+
+    return {
+        "status": "preview" if dry_run else "applied",
+        "from": from_workspace,
+        "to": to_workspace,
+        "moved": moved,
+        "skipped": skipped,
+        "missing": missing,
+        "overwritten": overwritten,
+        "links_moved": links_moved,
+        "partial_links": partial_links,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Public API: approval_grants (DB-backed command_set grant store, M3)
 # ---------------------------------------------------------------------------
 # These functions are the authoritative write path for the approval_grants
