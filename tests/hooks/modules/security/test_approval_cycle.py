@@ -37,7 +37,6 @@ from modules.security.approval_grants import (
     check_approval_grant,
     confirm_grant,
     consume_grant,
-    consume_session_grants,
     generate_nonce,
     get_pending_approvals_for_session,
 )
@@ -655,16 +654,16 @@ class TestConsumeGrant:
 
 
 class TestDefaultTTL:
-    """Test 10: DEFAULT_GRANT_TTL_MINUTES is 60 (Brief 71, Change 3a).
+    """Test 10: DEFAULT_GRANT_TTL_MINUTES is 5 (approvals redesign, M1).
 
-    The active-grant retry window moved 5 -> 60 so a cross-session
-    human-in-the-loop approval does not expire before it is consumed.
+    The grant is consumed at the match, so the active-grant retry window only
+    needs to cover the block -> approve -> retry round trip.
     """
 
-    def test_default_ttl_is_sixty_minutes(self):
-        """DEFAULT_GRANT_TTL_MINUTES should be 60."""
-        assert DEFAULT_GRANT_TTL_MINUTES == 60, (
-            f"Expected grant TTL=60 (Change 3a), got {DEFAULT_GRANT_TTL_MINUTES}"
+    def test_default_ttl_is_five_minutes(self):
+        """DEFAULT_GRANT_TTL_MINUTES should be 5."""
+        assert DEFAULT_GRANT_TTL_MINUTES == 5, (
+            f"Expected grant TTL=5 (M1), got {DEFAULT_GRANT_TTL_MINUTES}"
         )
 
 
@@ -902,9 +901,11 @@ class TestConsumeGrantAtSubagentStop:
         deny (DB pending)
           -> activate (DB grant via activate_db_pending_by_prefix)
           -> retry ALLOWED + grant CONSUMED in the same step
-          -> second retry RE-BLOCKED (the consumed grant cannot match again)
-          -> consume_session_grants() at SubagentStop is an idempotent sweep
-             (nothing left to consume because the retry already consumed it).
+          -> second retry RE-BLOCKED (the consumed grant cannot match again).
+
+    (The former consume_session_grants() SubagentStop sweep was removed in the
+    approvals redesign M1: grants are consumed at the match, so there is no
+    session-end sweep to assert.)
 
     Single-use is the security invariant: a grant consumed by a matching
     retry must never match a second time within its TTL window. There is no
@@ -1021,7 +1022,6 @@ class TestConsumeGrantAtSubagentStop:
         )
         assert not result3.allowed, "command must re-block after its grant is consumed"
 
-        # Step 6: SubagentStop sweep is idempotent -- the retry already consumed
-        # the grant, so there is nothing confirmed-but-unused left to sweep.
-        consumed = consume_session_grants(session_id)
-        assert consumed == 0, "no grant should remain to consume at SubagentStop"
+        # (M1) There is no SubagentStop grant sweep: the grant was already
+        # consumed at the match, and any unmatched grant would simply expire on
+        # its short TTL rather than be swept at session end.

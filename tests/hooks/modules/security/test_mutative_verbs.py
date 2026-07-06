@@ -2283,6 +2283,134 @@ class TestScriptFileEvasionNoFalsePositiveRegression:
         assert result.is_mutative is True
 
 
+class TestCamelCaseIdentifierFalsePositiveFix:
+    """Word-boundary discipline for camelCase splitting (recognized-CLI guard).
+
+    Bug (confirmed live): scanning a read-only Playwright ``.js`` file forced
+    spurious T3.  The verb scanner camelCase-split JS identifiers whose FIRST
+    fragment is a mutative verb -- ``execPath`` / ``execSync`` -> ``exec``,
+    ``setState`` -> ``set``, ``stopPropagation`` -> ``stop``, ``postMessage``
+    -> ``post`` -- at the subcommand position (semantic_index == 1).  Those
+    identifiers were treated as CLI subcommands of a language keyword base
+    (``const``, ``let``, ``{``), which is nonsense.
+
+    Fix: the camelCase split only fires when ``family != "unknown"`` (the base
+    token is a recognized CLI).  Whole-token and hyphen matching are NOT gated,
+    so real mutations still classify correctly regardless of base recognition.
+    """
+
+    # ---- Source-code lines: SAFE when scanned as source (from_source_code) ----
+    # These call detect_mutative_command with from_source_code=True, which is
+    # exactly how the script-content lane invokes it for a non-shell source
+    # file.  camelCase splitting is suppressed so a language identifier whose
+    # first fragment is a verb is not read as a CLI subcommand.
+
+    def test_js_const_execpath_assignment_is_safe(self):
+        """`const execPath = ...` must not camelCase-split to the verb 'exec'."""
+        result = detect_mutative_command(
+            "const execPath = findCachedChromium();", from_source_code=True,
+        )
+        assert result.is_mutative is False
+
+    def test_js_destructured_execsync_is_safe(self):
+        """`const { execSync } = require('child_process')` line: the identifier
+        execSync must not be read as a mutative 'exec' subcommand."""
+        result = detect_mutative_command(
+            "const { execSync } = require('child_process');",
+            from_source_code=True,
+        )
+        assert result.is_mutative is False
+
+    def test_js_setstate_identifier_is_safe(self):
+        """`let setState = useState()` must not split to the verb 'set'."""
+        result = detect_mutative_command(
+            "let setState = useState();", from_source_code=True,
+        )
+        assert result.is_mutative is False
+
+    def test_js_stoppropagation_identifier_is_safe(self):
+        """A bare `stopPropagation` token must not split to the verb 'stop'."""
+        result = detect_mutative_command(
+            "const stopPropagation = handler;", from_source_code=True,
+        )
+        assert result.is_mutative is False
+
+    def test_source_code_flag_default_false_preserves_camelcase(self):
+        """Contract guard: with the default (from_source_code=False, i.e. a
+        shell command line) camelCase splitting is NOT suppressed -- so the
+        flag genuinely gates behavior and shell scripts keep full semantics."""
+        recognized = detect_mutative_command("aws batchDelete --table foo")
+        assert recognized.is_mutative is True
+        # Same token, but declared as source -> suppressed.
+        as_source = detect_mutative_command(
+            "aws batchDelete --table foo", from_source_code=True,
+        )
+        assert as_source.is_mutative is False
+
+    def test_readonly_playwright_js_file_is_safe(self, tmp_path):
+        """A read-only Playwright screenshot .js (executablePath / execPath /
+        camelCase Playwright API) must classify NON-mutative when run via
+        `node <file>` -- this is the visual-verify method the bug broke."""
+        script = tmp_path / "screenshot.js"
+        script.write_text(
+            "const fs = require('fs');\n"
+            "const chromeBinary = findCachedChromium();\n"
+            "const browser = await chromium.launch({\n"
+            "  executablePath: chromeBinary,\n"
+            "  args: ['--no-sandbox'],\n"
+            "});\n"
+            "const page = await browser.newPage({ viewport: { width: 1440 } });\n"
+            "await page.goto(url);\n"
+            "await page.screenshot({ path: file, fullPage: true });\n"
+            "await browser.close();\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    # ---- True positives that must STILL block (no weakening) ----
+
+    def test_recognized_cli_camelcase_still_mutative(self):
+        """`aws batchDelete` (recognized CLI, family != unknown) must still
+        split to the mutative verb 'delete'."""
+        result = detect_mutative_command("aws batchDelete --table foo")
+        assert result.is_mutative is True
+        assert result.verb == "delete"
+
+    def test_unknown_cli_whole_token_install_still_mutative(self):
+        """`mytool install pkg`: whole-token 'install' is NOT gated by family,
+        so an unrecognized CLI's real mutation still classifies MUTATIVE."""
+        result = detect_mutative_command("mytool install pkg")
+        assert result.is_mutative is True
+        assert result.verb == "install"
+
+    def test_node_file_real_exec_still_mutative(self, tmp_path):
+        """A node file that actually runs a mutation via execSync('kubectl
+        apply') must stay MUTATIVE (fires on the whole-token 'apply')."""
+        script = tmp_path / "migrate.js"
+        script.write_text(
+            "const cp = require('child_process');\n"
+            "cp.execSync('kubectl apply -f x.yaml');\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+
+    def test_bash_file_rsync_delete_still_mutative(self, tmp_path):
+        """A bash script with a destructive `rsync --delete` line must stay
+        MUTATIVE -- caught by the --delete dangerous-flag scan, a path the
+        camelCase guard does not touch."""
+        script = tmp_path / "sync.sh"
+        script.write_text("#!/bin/bash\nrsync --delete src/ dst/\n")
+        result = detect_mutative_command(f"bash {script}")
+        assert result.is_mutative is True
+
+    def test_bash_file_git_tag_still_mutative(self, tmp_path):
+        """A bash script with a real `git tag` line must stay MUTATIVE."""
+        script = tmp_path / "release.sh"
+        script.write_text("#!/bin/bash\ngit tag v1.2.3\n")
+        result = detect_mutative_command(f"bash {script}")
+        assert result.is_mutative is True
+
+
 class TestPythonModulePipReDispatch:
     """Brief 91, AC-7: ``python -m pip install`` must classify IDENTICALLY to
     ``pip install`` (MUTATIVE/T3).  Before the fix, the module name ``pip`` was

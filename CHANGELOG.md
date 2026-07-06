@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Approval grants redesign: a grant is single-use and consumed at match (before the command executes), TTL cut from 60 to 5 minutes. Approving is now coupled to execution — approval triggers an automatic verbatim re-dispatch of the approved command instead of a separate resume step. `COMMAND_SET` batches simplified to the hook-minted path only (>= 2 T3 sub-commands blocked in one compound Bash call, content-derived `approval_id`, 5-minute TTL); the plan-first batch declaration flow and the `gaia approvals derive-id` CLI are retired — there is no agent-declared or CLI-derived batch id, only the one the hook mints from the blocked chain.
+
+### Removed
+
+- Cross-session surfacing of pending approvals: the SessionStart `[ACTIONABLE]` pending-approvals block and the per-turn pending feed are removed. Pending approvals (24h TTL, unchanged) no longer surface outside the turn that produced them.
+- `consume_session_grants` mechanism, superseded by the consumed-at-match single-use grant model.
+
 ## [5.1.0] - 2026-07-03
 
 ## [5.1.0-rc.4] - 2026-07-03

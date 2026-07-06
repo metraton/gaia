@@ -79,6 +79,12 @@ probe-*.md
 # AC-evidence store) is NOT excluded by this rule.
 /evidence/
 
+# Stray root-level Gaia DB (0-byte connect-then-abort leak / relative --db-path).
+# The canonical DB lives at ~/.gaia/gaia.db (GAIA_DATA_DIR); a gaia.db at the
+# repo root is always a leak. Anchored with a leading slash so legitimate .db
+# files elsewhere in the repo are NOT ignored.
+/gaia.db
+
 # Cosmic-ray mutation-testing session databases (ephemeral per-run scratch).
 # The permanent config lives at tests/evals/mutation-security-core.toml and IS
 # tracked; the .sqlite session files it produces are regenerable and are not.

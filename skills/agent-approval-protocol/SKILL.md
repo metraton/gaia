@@ -15,14 +15,11 @@ the status and event vocabularies, and how to confirm a grant is active. The
 tables below are the canonical schema -- relay them verbatim, do not author them.
 
 The orchestrator presents this contract to the user from a **trusted source**,
-never by dispatching a subagent to verify or derive it (it has no shell). The
-primary source is the per-turn `[PENDING-APPROVALS-VERIFIED]` block injected at
-`UserPromptSubmit` (`build_verified_pending_approvals` in
-`hooks/modules/session/session_manifest.py`), which carries every pending that
-has survived >= 1 turn, each already DB-read and fingerprint-verified
-(`verified: true`). For a pending emitted in the current turn -- not yet in the
-block -- the fallback is the subagent's relayed `approval_request`. The
-**integrity boundary is grant activation**, not presentation:
+never by dispatching a subagent to verify or derive it (it has no shell for
+that). Approvals are **in-loop and single-session**: the source is the
+subagent's same-turn relayed `approval_request` (there is no cross-turn or
+cross-session resurfacing of pendings -- no injected verified-pendings block).
+The **integrity boundary is grant activation**, not presentation:
 `verify_fingerprint` (`gaia/approvals/chain.py`) runs when the user selects the
 Approve label, so a tampered payload fails to form a grant regardless of how it
 was presented. See `Skill('orchestrator-present-approval')` for the presentation
@@ -38,17 +35,18 @@ the hash chain, grant activation, reading a granted approval from Python -- see
 For a **singular** T3 approval (the hook-block path),
 `store._generate_approval_id()` returns `P-{uuid4().hex}` (e.g.
 `P-b1bdfbb0b9474bf5b3f86b1f6a213f7a`) -- a random, unique id the subagent relays
-verbatim. For a **plan-first `COMMAND_SET`** the id is instead **content-derived**
-by `store.derive_command_set_id()`: `P-<first 32 hex of
-sha256(canonical(command strings))>`. The two share the `P-` prefix and 32-hex
-length but differ in origin -- the command_set id is deterministic (minted at
-SubagentStop intake), and once the pending has survived a turn the orchestrator
-reads that id directly from the injected `[PENDING-APPROVALS-VERIFIED]` block
-(no derive-dispatch, no DB search); the singular id is random and the subagent
-relays it directly for the same-turn case. The `P-` prefix is mandatory in both
-cases: without it the PostToolUse
-hook cannot do targeted grant activation. The first 8 hex chars after `P-` are
-the nonce prefix shown in option labels: `[P-b1bdfbb0]`.
+verbatim. For a **`COMMAND_SET`** (a chain of >= 2 T3 sub-commands blocked in one
+Bash call) the id is instead **content-derived** by `store.derive_command_set_id()`:
+`P-<first 32 hex of sha256(canonical(command strings))>`. The two share the `P-`
+prefix and 32-hex length and, critically, share the same delivery path: both
+arrive in the same `[T3_BLOCKED]` denial the hook returns at block time
+(`bash_validator._validate_compound_command` mints the COMMAND_SET the moment it
+classifies >= 2 chained sub-commands as ungranted T3), and the subagent relays
+whichever `approval_id` it receives verbatim into its `approval_request` --
+there is no separate derivation step for either shape. The `P-` prefix is
+mandatory in both cases: without it the PostToolUse hook cannot do targeted
+grant activation. The first 8 hex chars after `P-` are the nonce prefix shown in
+option labels: `[P-b1bdfbb0]`.
 
 ## APPROVAL_REQUEST contract shape
 
@@ -81,10 +79,12 @@ becomes `rollback` in the contract; `commands` (`[exact_content]`) and
 
 There is no `batch_scope` field: the `verb_family` grant was removed. For a
 single blocked command, each gets its own single-use `SCOPE_SEMANTIC_SIGNATURE`
-grant. For a batch of >= 2 T3 commands known up-front, emit a `command_set`
-list and **no** `approval_id` -- the SubagentStop intake mints a single
-`COMMAND_SET` grant (one consent covers all). See
-`Skill('orchestrator-present-approval')` for the orchestrator side.
+grant. For a chain of >= 2 T3 sub-commands blocked in one Bash call, the hook
+mints a single `COMMAND_SET` grant at block time and returns its
+content-derived `approval_id` in the same `[T3_BLOCKED]` denial shape -- the
+agent relays it exactly like a singular `approval_id`; it never emits a
+`command_set` without one. See `Skill('orchestrator-present-approval')` for the
+orchestrator side.
 
 ## Status vocabularies -- distinct columns, opposite casing, never collapse
 
@@ -125,10 +125,10 @@ whose command never ran, or that ran through the redirect-sanitized path.
 - The payload's integrity is enforced at grant **activation**, not at
   presentation: `chain.verify_fingerprint(approval_id, payload_json, con)` runs
   when the user selects the Approve label, and a mismatch raises
-  `ChainTamperError` so the grant never forms. The orchestrator presents from a
-  trusted source (the injected `[PENDING-APPROVALS-VERIFIED]` block, already
-  fingerprint-verified by the hook; or a same-turn relayed `approval_request`)
-  and never dispatches a subagent to verify or derive the approval.
+  `ChainTamperError` so the grant never forms. The orchestrator presents from
+  the subagent's same-turn relayed `approval_request` (approvals are in-loop and
+  single-session -- no injected verified-pendings block) and never dispatches a
+  subagent to verify or derive the approval.
 
 For the grant activation walk-through, fingerprint internals, reading a granted
 approval from Python, and the retry-blocked-again diagnosis, see `reference.md`.

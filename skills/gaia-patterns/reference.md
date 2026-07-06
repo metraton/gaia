@@ -22,7 +22,7 @@ Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
 | `hooks/post_compact.py` | PostCompact | (all) |
 | `hooks/elicitation_result.py` | ElicitationResult | (all) |
 
-SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop, [ACTIONABLE] pending approvals). UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome. SubagentStart injects two memory blocks into every dispatched agent: `## Memory Index` (episodic atoms ranked by relevance to the task) and `## Workspace Memory` (curated persistent memory atoms — user preferences, key decisions, project facts — stored in `~/.gaia/gaia.db` and scoped to the workspace).
+SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop). Pending approvals are not part of this manifest -- approvals are in-loop and single-session, with no cross-session resurfacing (no `[ACTIONABLE]` block, no per-turn verified-pendings feed); see `pending-approvals` skill. UserPromptSubmit injects per-turn signals only: deterministic `## Surface Routing Recommendation` and a first-run welcome. SubagentStart injects two memory blocks into every dispatched agent: `## Memory Index` (episodic atoms ranked by relevance to the task) and `## Workspace Memory` (curated persistent memory atoms — user preferences, key decisions, project facts — stored in `~/.gaia/gaia.db` and scoped to the workspace).
 
 ### Hook Modules (13 packages)
 
@@ -34,7 +34,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_injector`, `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Project-context injection, freshness checks, contract loading |
 | `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | agent_contract_handoff validation, skill verification, transcript analysis |
-| `session/` | `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders, pending-approval scanner |
+| `session/` | `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders; `pending_scanner` is retired (cross-session pending surfacing removed -- formatting helpers only remain) |
 | `orchestrator/` | `delegate_mode` | Delegation mode detection |
 | `validation/` | `commit_validator` | Git commit validation |
 | `scanning/` | `scan_trigger` | Auto-scan trigger |

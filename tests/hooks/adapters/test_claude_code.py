@@ -518,8 +518,11 @@ class TestAdaptSubagentStopSessionId:
 
         adapter.adapt_subagent_stop(event)
 
-        assert captured.get("consumed_session_id") == event.session_id, (
-            "adapt_subagent_stop must consume grants for the session_id "
+        # (M1) The grant sweep was removed; the session_id resolution (Bug B) is
+        # now observed via cleanup_approval, which still receives the event's
+        # session_id rather than the env-derived synthetic id.
+        assert captured.get("cleanup_session_id") == event.session_id, (
+            "adapt_subagent_stop must run SubagentStop hygiene for the session_id "
             "carried by the stdin event (Bug B). Falling back to the "
             "env-derived synthetic id breaks cleanup for the real "
             "session that owned the pending approval."

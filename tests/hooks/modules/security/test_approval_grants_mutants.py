@@ -283,14 +283,14 @@ class TestApprovalGrantMutants:
 
 
 # ===========================================================================
-# _grant_ttl_minutes -- 60 fallback (3 survivors)
+# _grant_ttl_minutes -- 5 fallback (M1)
 # ===========================================================================
 class TestGrantTtlMinutesMutants:
-    def test_fallback_is_sixty_when_import_fails(self, monkeypatch):
-        """When the gaia.store.writer import is unavailable, the fallback is 60
-        (line 126 NumberReplacer). Force the import to raise and assert 60.
-        Also kills the ExceptionReplacer on the try (line 125): if the except
-        body were replaced, a 60 would not be returned on import failure."""
+    def test_fallback_is_five_when_import_fails(self, monkeypatch):
+        """When the gaia.store.writer import is unavailable, the fallback is 5
+        (the M1 value). Force the import to raise and assert 5. Also kills the
+        ExceptionReplacer on the try: if the except body were replaced, a 5
+        would not be returned on import failure."""
         import builtins
         real_import = builtins.__import__
 
@@ -300,7 +300,7 @@ class TestGrantTtlMinutesMutants:
             return real_import(name, *args, **kwargs)
 
         monkeypatch.setattr(builtins, "__import__", _boom)
-        assert _grant_ttl_minutes() == 60
+        assert _grant_ttl_minutes() == 5
 
 
 # ===========================================================================
@@ -1519,93 +1519,6 @@ class TestGetGrantsDirMutants:
         assert ag._grants_dir_created is True
 
 
-class TestConsumeSessionGrantsMutants:
-    """consume_session_grants() -- the sweep loop over PENDING confirmed rows.
-
-    The function opens gaia.store.writer._connect() and iterates the result of
-    cur.fetchall(). We patch _connect to return a fake connection yielding
-    TUPLE rows (the branch the code handles via row[0]) and mock
-    consume_db_semantic_grant, so the loop / guard / count mutants are observed.
-    """
-
-    class _FakeCur:
-        def __init__(self, rows):
-            self._rows = rows
-        def execute(self, *a, **k):
-            return self
-        def fetchall(self):
-            return self._rows
-        def close(self):
-            pass
-
-    class _FakeCon:
-        def __init__(self, rows):
-            self._rows = rows
-        def execute(self, *a, **k):
-            return TestConsumeSessionGrantsMutants._FakeCur(self._rows)
-        def close(self):
-            pass
-
-    def _patch_con(self, monkeypatch, rows):
-        monkeypatch.setattr(
-            "gaia.store.writer._connect",
-            lambda *a, **k: TestConsumeSessionGrantsMutants._FakeCon(rows),
-        )
-
-    def test_counts_each_successfully_consumed_grant(self, monkeypatch):
-        """Two PENDING rows both consume => count 2 (lines 605-612). Kills the
-        ZeroIterationForLoop on the sweep, the AddNot on `if not approval_id`,
-        and pins the per-success increment (count must equal consumed count)."""
-        self._patch_con(monkeypatch, [("P-a",), ("P-b",)])
-        monkeypatch.setattr(
-            "gaia.store.writer.consume_db_semantic_grant", lambda *a, **k: True
-        )
-        assert ag.consume_session_grants(session_id="s") == 2
-
-    def test_only_consumed_grants_are_counted(self, monkeypatch):
-        """When consume returns False the count does NOT increment (line 611
-        `if consumed`). With two rows where consume returns False, count is 0.
-        Kills the AddNot on `if consumed` (an inverted guard would count the
-        failures)."""
-        self._patch_con(monkeypatch, [("P-a",), ("P-b",)])
-        monkeypatch.setattr(
-            "gaia.store.writer.consume_db_semantic_grant", lambda *a, **k: False
-        )
-        assert ag.consume_session_grants(session_id="s") == 0
-
-    def test_falsy_approval_id_is_skipped(self, monkeypatch):
-        """A row with a falsy approval_id is skipped via continue (lines 607-608)
-        and does not reach consume. Kills the AddNot on `if not approval_id` and
-        the ReplaceContinueWithBreak: the second (valid) row must still consume."""
-        self._patch_con(monkeypatch, [("",), ("P-b",)])
-        consume = MagicMock(return_value=True)
-        monkeypatch.setattr("gaia.store.writer.consume_db_semantic_grant", consume)
-        assert ag.consume_session_grants(session_id="s") == 1
-        consume.assert_called_once_with("P-b")
-
-    def test_per_row_consume_exception_is_non_fatal(self, monkeypatch):
-        """When consume raises for one row, the inner except swallows it and the
-        sweep continues to the next row (lines 617-621). Kills the
-        ExceptionReplacer on that inner except: a propagated error would abort
-        the sweep and the surviving good row would not be counted."""
-        self._patch_con(monkeypatch, [("P-bad",), ("P-good",)])
-
-        def _consume(aid):
-            if aid == "P-bad":
-                raise RuntimeError("boom")
-            return True
-        monkeypatch.setattr("gaia.store.writer.consume_db_semantic_grant", _consume)
-        assert ag.consume_session_grants(session_id="s") == 1
-
-    def test_outer_exception_returns_zero(self, monkeypatch):
-        """When _connect raises, the outer except returns 0 (lines 623-624).
-        Kills the ExceptionReplacer on the outer except."""
-        def _boom(*a, **k):
-            raise RuntimeError("db down")
-        monkeypatch.setattr("gaia.store.writer._connect", _boom)
-        assert ag.consume_session_grants(session_id="s") == 0
-
-
 class TestCheckApprovalGrantSessionAndDetail:
     """check_approval_grant -- default-session branch + granted_at + verb except."""
 
@@ -2105,22 +2018,6 @@ class TestSmallBehavioralSurvivorsBatch3:
             "gaia.store.writer.consume_db_semantic_grant", lambda *a, **k: True
         )
         assert ag.consume_grant("git push") is True
-
-    # ----- consume_session_grants default session -----
-    def test_consume_session_grants_resolves_default_session(self, monkeypatch):
-        """session_id falsy => _get_session_id() is used (lines 578-579). Kills
-        the AddNot / Delete_Not on `if not session_id`."""
-        called = MagicMock(return_value="resolved")
-        monkeypatch.setattr(
-            "modules.security.approval_grants._get_session_id", called
-        )
-        # _connect raises so the body short-circuits to 0, but the session
-        # resolution at the top has already run.
-        def _boom(*a, **k):
-            raise RuntimeError("stop")
-        monkeypatch.setattr("gaia.store.writer._connect", _boom)
-        ag.consume_session_grants()  # no session
-        assert called.call_count == 1
 
     # ----- load_pending_by_nonce_prefix all_sessions + continue + sort -----
     def test_load_pending_queries_all_sessions(self, monkeypatch):
@@ -3066,31 +2963,6 @@ class TestStatusAppliedAndDivisorM1Final:
         )
         assert ok is False
 
-    def test_consume_session_grants_row_index_zero(self, monkeypatch):
-        """Line 606 `row[0]` NumberReplacer. The SELECT projects approval_id as
-        column 0. A 3-element tuple row where each slot differs discriminates ALL
-        NumberReplacer variants: index 0 -> 'P-want', index 1 -> 'P-wrong-1',
-        index -1 -> 'P-wrong-last'. We assert the id PASSED to consume is the
-        column-0 value, so `row[0]`->`row[1]`/`row[-1]` (any flip) is caught."""
-        seen = []
-        class _Cur:
-            def execute(self, *a, **k): return self
-            def fetchall(self):
-                return [("P-want", "P-wrong-1", "P-wrong-last")]
-        class _Con:
-            def execute(self, *a, **k): return _Cur()
-            def close(self): pass
-        monkeypatch.setattr("gaia.store.writer._connect", lambda *a, **k: _Con())
-        def _consume(approval_id, *a, **k):
-            seen.append(approval_id)
-            return True
-        monkeypatch.setattr(
-            "gaia.store.writer.consume_db_semantic_grant", _consume
-        )
-        count = ag.consume_session_grants("sess")
-        assert count == 1
-        assert seen == ["P-want"]  # column 0; any index flip selects a wrong id
-
     def test_db_row_ts_init_zero_when_no_created_at(self):
         """Line 751 `ts: float = 0.0` NumberReplacer. A row with NO created_at
         leaves ts at its init 0.0, surfaced as the dict's 'timestamp'. A mutated
@@ -3309,16 +3181,16 @@ class TestModuleConstantsAndFlagsAC5:
     """Module-level constants and process-global flags whose mutated value is
     observable through the public API."""
 
-    def test_command_set_ttl_is_sixty_minutes(self, writer_db):
-        """`DEFAULT_COMMAND_SET_TTL_MINUTES = 60` (line 1540, NumberReplacer
-        60->N x2). create_command_set_grant stamps expires_at = now + ttl. With
-        the default ttl the persisted expiry must be ~60 min ahead; a mutated
-        constant (61 or 59) shifts the stored expires_at by a full minute, which
-        the row assertion below detects to the second."""
+    def test_command_set_ttl_is_five_minutes(self, writer_db):
+        """`DEFAULT_COMMAND_SET_TTL_MINUTES = 5` (NumberReplacer 5->N).
+        create_command_set_grant stamps expires_at = now + ttl. With the default
+        ttl the persisted expiry must be ~5 min ahead; a mutated constant (4 or
+        6) shifts the stored expires_at by a full minute, which the row assertion
+        below detects to the second."""
         before = datetime.now(timezone.utc)
         ok = create_command_set_grant(
             command_set=[{"command": "git push", "rationale": "r"}],
-            approval_id="P-ttl60check",
+            approval_id="P-ttl5check",
             session_id="s",
             db_path=str(writer_db),
         )
@@ -3327,7 +3199,7 @@ class TestModuleConstantsAndFlagsAC5:
         try:
             row = con.execute(
                 "SELECT expires_at FROM approval_grants WHERE approval_id=?",
-                ("P-ttl60check",),
+                ("P-ttl5check",),
             ).fetchone()
         finally:
             con.close()
@@ -3336,12 +3208,12 @@ class TestModuleConstantsAndFlagsAC5:
             tzinfo=timezone.utc
         )
         delta_min = (expires - before).total_seconds() / 60.0
-        # The true TTL is exactly 60; allow a few seconds of execution slack but
-        # reject the 59 / 61 mutants (which land ~1 min off).
-        assert 59.5 < delta_min < 60.5
-        # And confirm the imported constant value itself is 60 (kills both
+        # The true TTL is exactly 5; allow a few seconds of execution slack but
+        # reject the 4 / 6 mutants (which land ~1 min off).
+        assert 4.5 < delta_min < 5.5
+        # And confirm the imported constant value itself is 5 (kills both
         # NumberReplacer directions directly).
-        assert DEFAULT_COMMAND_SET_TTL_MINUTES == 60
+        assert DEFAULT_COMMAND_SET_TTL_MINUTES == 5
 
     def test_check_grant_resets_found_expired_flag_to_false(self, monkeypatch):
         """`_last_check_found_expired = False` (line 464, ReplaceFalseWithTrue).

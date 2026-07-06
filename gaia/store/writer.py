@@ -59,7 +59,7 @@ _KNOWN_TABLES = {
 
 
 # ---------------------------------------------------------------------------
-# Semantic-grant lifetime (Brief 71, Change 3a)
+# Semantic-grant lifetime (approvals redesign, M1)
 # ---------------------------------------------------------------------------
 #
 # APPROVAL_GRANT_TTL_MINUTES is the default lifetime of an ACTIVE semantic grant
@@ -71,21 +71,23 @@ _KNOWN_TABLES = {
 # 24h), which is how long an UNANSWERED approval waits for the user. The two must
 # not be conflated: a 24h pending window lets a human come back the next day,
 # while the grant window is the short, post-approval execution horizon. Collapsing
-# them would either shrink the approval wait to 1h (a regression) or stretch the
+# them would either shrink the approval wait to 5m (a regression) or stretch the
 # grant lifetime to 24h (a security weakening). See the regression guards in
 # tests/hooks/test_pending_scanner_cleanup.py::TestTTLConstants.
 #
-# The value moved 5 -> 60 (Change 3a) so that a human-in-the-loop approval which
-# crosses a session boundary (block under the subagent session, approve under the
-# orchestrator, retry under the subagent) does not silently expire before it can
-# be consumed. 60 aligns with the 1-hour staleness horizon.
+# The value is 5 minutes (approvals redesign, M1). The grant is consumed AT THE
+# MATCH (bash_validator flips the row PENDING->CONSUMED when it authorizes the
+# command in PreToolUse, before execution), so this short window only needs to
+# cover the block -> approve -> retry round trip; a grant that is never presented
+# to a matching retry simply expires. Replay protection comes from consume-at-
+# match plus this short TTL, not from a long-lived grant.
 #
 # It lives HERE, in gaia.store.writer, because writer is the dependency leaf of
 # the approval planes: gaia.approvals.store already imports from this module
 # (_connect) and the hooks approval_grants module already imports
 # insert_semantic_grant from here, while writer imports neither -- so any consumer
 # can read this constant without a circular import.
-APPROVAL_GRANT_TTL_MINUTES = 60
+APPROVAL_GRANT_TTL_MINUTES = 5
 
 
 # ---------------------------------------------------------------------------
@@ -3009,10 +3011,10 @@ def insert_semantic_grant(
             Retained for audit only -- check_db_semantic_grant() matches
             cross-session (Brief 71), so this is NOT used to scope lookup.
         ttl_minutes: Grant lifetime in minutes. Defaults to
-            APPROVAL_GRANT_TTL_MINUTES (60), aligning the grant lifetime with the
-            1-hour staleness horizon so a human-in-the-loop approval crossing a
-            session boundary does not silently expire before the subagent can
-            consume it. This is the GRANT window, distinct from the 24h pending
+            APPROVAL_GRANT_TTL_MINUTES (5). The grant is consumed AT THE MATCH,
+            so this short window only needs to cover the block -> approve ->
+            retry round trip; a grant never presented to a matching retry simply
+            expires. This is the GRANT window, distinct from the 24h pending
             window (DEFAULT_PENDING_TTL_MINUTES).
         db_path: Optional explicit DB path (used by tests).
 
@@ -3517,9 +3519,9 @@ def consume_db_file_path_grant(
 # ---------------------------------------------------------------------------
 #
 # Foundation scaffolding for the grant-lifecycle FS-to-DB migration (v20).
-# These helpers are called by the upcoming confirm_grant and
-# consume_session_grants migration; callers are NOT wired yet -- only the DB
-# write path is provided here.
+# confirm_db_grant() backs the confirm_grant flow. (The former
+# consume_session_grants SubagentStop sweep was removed in the approvals
+# redesign M1 -- grants are consumed at the match and expire on their short TTL.)
 #
 #   confirm_db_grant()          -- sets confirmed=1 on a PENDING grant row;
 #                                  used when the user explicitly confirms a

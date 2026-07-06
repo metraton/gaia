@@ -126,12 +126,11 @@ def subagent_stop_hook(task_info, agent_output):
 
         cleanup_approval(agent_type)
 
-        # Consume all confirmed grants -- subagent session is over
-        try:
-            from modules.security.approval_grants import consume_session_grants
-            consume_session_grants(session_id)
-        except Exception:
-            pass
+        # NOTE (approvals redesign, M1): grants are consumed AT THE MATCH by
+        # bash_validator, not swept at SubagentStop. A grant never presented to a
+        # matching retry stays PENDING and expires on its own short (5m) TTL, so
+        # an unmatched grant must survive the subagent ending. The former
+        # consume_session_grants() sweep has been removed.
 
         commands_executed = extract_commands_from_evidence(agent_output)
 

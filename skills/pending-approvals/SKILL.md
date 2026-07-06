@@ -1,6 +1,6 @@
 ---
 name: pending-approvals
-description: Use when the user invokes approvals directly -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX", "approve P-", "reject P-" -- or when SessionStart injected an [ACTIONABLE] pending approvals block
+description: Use when the user invokes approvals directly -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX", "approve P-", "reject P-"
 metadata:
   user-invocable: true
   type: technique
@@ -9,11 +9,14 @@ metadata:
 # Pending Approvals
 
 `pending-approvals` is the workflow the orchestrator follows when the *user*
-drives an approval -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX" --
-or when `build_pending_approvals_block` (`hooks/modules/session/session_manifest.py`)
-injects an `[ACTIONABLE] Pending approvals` block at SessionStart. The
-orchestrator's role here is to translate user intent into the right `gaia
-approvals` subcommand against the right store.
+drives an approval -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX".
+Approvals are **in-loop and single-session**: a pending is raised and resolved
+within the same session, and there is no proactive surfacing of it outside
+that flow -- no `[ACTIONABLE]` block at SessionStart, no per-turn resurfacing.
+The orchestrator's role here is to translate an explicit user ask into the
+right `gaia approvals` subcommand against the right store. See "Approvals do
+not resurface across sessions" below for what does and does not survive
+cross-session.
 
 For the universal envelope of an approval payload see `agent-approval-protocol`;
 for how the orchestrator relays a *subagent-initiated* APPROVAL_REQUEST into
@@ -44,15 +47,33 @@ The practical consequence: `revoke` is the DB-aware single-id verb; `reject` and
 row as terminated, use `revoke`. Bulk DB cleanup currently has no first-class
 CLI -- it requires a Python loop over `store.revoke()`.
 
-## When SessionStart injects the [ACTIONABLE] block
+## Approvals do not resurface across sessions
 
-1. Present the summary to the user -- the scanner has already formatted each
-   row as `P-{nonce_prefix8}  {command}  [{danger_verb}]  {age}`.
-2. Wait for the user to choose: "ver P-XXXX", "aprobar P-XXXX", "rechazar P-XXXX",
-   or a bulk operation.
+Pendings are in-loop: they are raised by a blocked T3 command in the current
+session and expected to be resolved in that same session, by the user acting
+on the block message or asking directly ("ver pendientes", "aprobar P-XXXX").
+There is no automatic resumption surface -- no `[ACTIONABLE]` block injected
+at SessionStart, no per-turn feed of verified pendings. If the user does not
+act on a pending in the session where it was raised, it is not re-presented
+later; it simply ages toward expiry.
 
-Do not silently act on the block. The block is a prompt to the user, not an
-instruction to the orchestrator.
+Two things survive cross-session, and neither is surfacing:
+
+- **Hygiene.** `gaia approvals clean` (and the periodic grant-expiry sweep)
+  still drains orphaned pendings and expired grants regardless of which
+  session created them. This is housekeeping, not a resumption prompt to the
+  user -- it never asks "do you want to resume P-XXXX?".
+- **Session-agnostic grant matching.** The DB lookup that checks whether a
+  retried command has an active grant (`check_db_semantic_grant`) is not
+  scoped to a single session_id, because the block -> approve -> re-dispatch
+  cycle can legitimately span the subagent's session and the orchestrator's
+  session inside the SAME user-facing turn. This is an implementation detail
+  of one in-loop approval, not a mechanism for reaching back into a prior
+  session's unresolved pendings.
+
+When the user explicitly asks to see pendings from another session (e.g.
+`gaia approvals pending --all-sessions`), that is a deliberate, user-invoked
+query -- distinct from proactive resurfacing, and still supported.
 
 ## When user says "ver P-XXXX"
 
@@ -74,16 +95,31 @@ instruction to the orchestrator.
    `hooks/modules/security/approval_grants.py`) covers DB rows and the legacy
    path covers filesystem pendings.
 3. On `"Approve"`, the ElicitationResult hook writes `SHOWN` + `APPROVED`
-   events and the grant activates in the current session.
-4. Dispatch a one-shot agent to execute the command using the dispatch template
-   in `reference.md` (preflight + recovery, `mode` per target).
+   events and activates a single-use grant (5-minute TTL) in the current
+   session.
+4. Approving IS the order to execute -- there is no separate "should I run it
+   now" step. The orchestrator immediately re-dispatches a one-shot agent with
+   the verbatim command using the dispatch template in `reference.md`
+   (preflight + recovery, `mode` per target).
 
-The CLI `gaia approvals approve P-XXXX` is the cross-session admin path: it
-inserts `APPROVED` directly in the DB and does **not** create a hook-side grant.
-Use it only when the user explicitly wants the CLI-only path (audit, marking a
-row from a different session as decided). For any approval that needs to
-execute the blocked command in this session, AskUserQuestion is the only path
-that activates the grant.
+The grant is consumed **at match** -- the moment the retried command
+authorizes against the grant, before it executes -- not after the command
+finishes. This has two consequences:
+
+- If the re-dispatched subagent dies before it reaches the command (crash,
+  turn limit, disconnect), the grant is still alive; a re-dispatch within the
+  5-minute TTL reuses it without a new approval.
+- If the command reached the point of match and then executed and failed, the
+  grant was already consumed. Do not retry inside the window expecting it to
+  still work -- report the failure and request a fresh approval.
+
+The CLI `gaia approvals approve P-XXXX` is the explicit, user-invoked admin
+path: it inserts `APPROVED` directly in the DB and does **not** create a
+hook-side grant, so it does **not** trigger the approve-executes-automatically
+flow above. Use it only when the user explicitly wants the CLI-only path
+(audit, marking a row from a different session as decided). For any approval
+that needs to execute the blocked command in this session, AskUserQuestion is
+the only path that activates the grant and the automatic re-dispatch.
 
 ## When user says "rechazar P-XXXX" / "reject P-XXXX"
 
@@ -102,8 +138,11 @@ filesystem pending.
 ## Bulk cleanup
 
 Offer bulk cleanup when the user says "limpia todos los pendings", "borra los
-pendientes", or when SessionStart surfaces 5+ orphaned pendings the user has
-not engaged with.
+pendientes", or when the user explicitly checks `gaia approvals pending
+--all-sessions` and finds a backlog of orphaned rows. This is never something
+the orchestrator surfaces proactively -- there is no SessionStart scan that
+counts stale pendings and offers to clean them; the user has to ask, or to
+have already looked.
 
 - `gaia approvals reject-all` -- bulk soft-reject across the **filesystem** queue.
   Returns "0 rejected" when the queue is empty. Does not touch DB rows.
@@ -112,8 +151,9 @@ not engaged with.
   transitions every pending older than 24 h (`DEFAULT_PENDING_TTL_MINUTES`) to
   `revoked` via `store.revoke()`, then runs `cleanup_expired_grants` to clean
   expired filesystem grant files. Runs without a T3 prompt (consent-reducing,
-  listed in `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS`). Use this when
-  `gaia approvals pending --all-sessions` shows a backlog of stale rows.
+  listed in `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS`). This is hygiene, not
+  surfacing: it drains orphans without presenting them for resumption. Use it
+  when `gaia approvals pending --all-sessions` shows a backlog of stale rows.
 
 Do not report "bulk cleanup done" after `reject-all` alone -- it only clears
 the filesystem queue. Run `gaia approvals clean` to drain the DB backlog, then
@@ -135,6 +175,17 @@ may still want to approve.
   DB rows. Pick the verb by store, or be ready to fall back.
 - Dispatching execution before AskUserQuestion returns "Approve" -- the grant
   does not activate until the ElicitationResult hook fires.
+- Asking the user a second time whether to execute after they selected
+  "Approve" -- approving already is the order to execute; re-dispatch the
+  verbatim command immediately, do not insert an extra confirmation turn.
+- Retrying a T3 command inside the 5-minute grant window after it already
+  executed and failed -- the grant was consumed at match, before execution;
+  a failed run needs a fresh approval, not a retry.
+- Presenting a pending as resumed from a prior session via an `[ACTIONABLE]`
+  block or a per-turn feed -- that surfacing no longer exists. A pending not
+  resolved in the session where it was raised is not re-presented; only an
+  explicit user query (`gaia approvals pending --all-sessions`) or the
+  hygiene sweep (`gaia approvals clean`) touches it afterward.
 - Using `rm` on a `pending-*.json` file -- deletion itself is T3 and blocks.
   The legacy soft-reject path rewrites the file in place; use it.
 

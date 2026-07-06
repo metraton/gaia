@@ -16,6 +16,37 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# Architectural test-DB isolation (mirror of tests/conftest.py)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gaia_data_dir(tmp_path, monkeypatch):
+    """Point GAIA_DATA_DIR at a per-test tmp dir so no scan test can reach the
+    real ~/.gaia or leak a gaia.db into the cwd.
+
+    tools/scan/tests/ is a sibling of tests/ and therefore does NOT inherit the
+    autouse _isolate_gaia_data_dir fixture defined in tests/conftest.py. Without
+    this, any scan test that drives a writer/reader without an explicit db_path
+    (e.g. scan_workspace_to_store -> set_workspace_last_scan_at /
+    populate_gaia_installations with db_path=None) resolves through
+    gaia.paths.db_path() and silently writes to the developer's real
+    ~/.gaia/gaia.db -- a locally-masked leak that also fails on a clean CI runner.
+
+    This function-scoped autouse fixture redirects the *fallback* resolution to a
+    per-test tmp directory and clears GAIA_DB / GAIA_DB_PATH so no ambient
+    override can reach the real home. Tests that set their own GAIA_DATA_DIR
+    (fixture-first ordering) or pass an explicit db_path= are unaffected.
+    """
+    data_dir = tmp_path / "_gaia_isolated_data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("GAIA_DB", raising=False)
+    monkeypatch.delenv("GAIA_DB_PATH", raising=False)
+    yield
+
+
+# ---------------------------------------------------------------------------
 # Basic project fixtures
 # ---------------------------------------------------------------------------
 

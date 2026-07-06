@@ -89,6 +89,8 @@ skills/
 │   └── reference.md
 ├── session-reflection/    # End-of-session reflection on conversational arc
 ├── skill-creation/        # How to design and write new skills
+├── visual-verify/         # Technique: screenshot a UI/HTML with cached Chromium and read the result (user-invocable)
+│   └── scripts/           # screenshot.js -- zero-install Playwright capture
 └── reference.md           # Cross-skill reference index
 ```
 
@@ -124,6 +126,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `schedule-task` — dispatch parameter templates
 - `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
 - `jira-ticket-writing` — formula for Jira Stories and Subtasks; user-invocable, `user-invocable: true`
+- `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, `user-invocable: true`
 
 **Skill types:**
 

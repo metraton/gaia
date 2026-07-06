@@ -163,16 +163,17 @@ if __name__ == "__main__":
         except Exception as _ag_exc:
             logger.debug("cleanup_expired_grants failed (non-fatal): %s", _ag_exc)
 
-        # TTL-sweep stale DB pending approvals (AC-2). Previously this only ran
-        # at SubagentStop (via approval_cleanup.cleanup()), so a pending that
-        # aged past DEFAULT_PENDING_TTL_MINUTES while no subagent was dispatched
-        # (or orphaned by a dead/other session) kept re-surfacing in the
-        # SessionStart [ACTIONABLE] block every session. Running the sweep here
-        # too -- GLOBAL across sessions, same as the SubagentStop sweep --
-        # transitions genuinely stale rows to 'expired' before
-        # build_session_context() below scans for pendings to inject, so they
-        # no longer re-appear. force=True semantics do not apply here (there is
-        # no throttle on this sweep); non-fatal like the grant cleanup above.
+        # TTL-sweep stale DB pending approvals (AC-2). This is pure hygiene:
+        # pendings are no longer surfaced into the session context, but the DB
+        # is still the canonical pending store (read on demand by `gaia
+        # approvals` and by session-agnostic grant matching), so orphans that
+        # aged past DEFAULT_PENDING_TTL_MINUTES must still be reaped. The sweep
+        # also runs at SubagentStop (via approval_cleanup.cleanup()); running it
+        # here too -- GLOBAL across sessions, same as the SubagentStop sweep --
+        # transitions genuinely stale rows to 'expired' even when no subagent is
+        # dispatched (or a session dies). force=True semantics do not apply here
+        # (there is no throttle on this sweep); non-fatal like the grant cleanup
+        # above.
         try:
             from modules.security.approval_cleanup import expire_db_pendings
             _expired_pendings = expire_db_pendings(agent_type="session_start", session_id=_sid)
@@ -212,8 +213,9 @@ if __name__ == "__main__":
         # whatever the DB already holds, it does not scan.
 
         # Build the SessionStart manifest (Phase 4). Combines the Environment
-        # block, agentic-loop resume, and pending approvals into a one-shot
-        # additionalContext payload. Fully fail-safe -- an empty manifest just
+        # block, projects index, agentic-loop resume, and workspace memory into
+        # a one-shot additionalContext payload (pending approvals are no longer
+        # surfaced). Fully fail-safe -- an empty manifest just
         # means no hookSpecificOutput in the response, which Claude Code
         # treats as "nothing to inject".
         additional_context = ""

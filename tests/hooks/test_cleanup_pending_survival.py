@@ -172,8 +172,8 @@ class TestFreshPendingSurvivesSubagentStop:
         )
 
     def test_fresh_pending_still_scannable_after_unrelated_stop(self, writer_db):
-        """A pending emitted in the session is still returned by list_pending /
-        scan_pending_db after an unrelated subagent's Stop (empty preserve)."""
+        """A pending emitted in the session is still returned by list_pending
+        after an unrelated subagent's Stop (empty preserve)."""
         from modules.security.approval_cleanup import cleanup
         from gaia.approvals.store import list_pending
 
