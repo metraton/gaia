@@ -49,10 +49,12 @@ rows. The legacy filesystem path has its own prefix scan over the
 `pending-*.json` glob. Both are activated by the same `gaia approvals show
 P-XXXX` call — `cmd_show_v2` checks DB first, filesystem second.
 
-## Summary Format (SessionStart injection)
+## List Format (explicit "ver pendientes" only)
 
-`build_pending_approvals_block` in `hooks/modules/session/session_manifest.py`
-scans both stores and formats each row identically:
+There is no automatic injection of this list anymore -- render it only in
+response to the user explicitly asking to see pending approvals (`gaia
+approvals pending` for the current session, `--all-sessions` when the user
+asks across sessions):
 
 ```
 Tienes N aprobaciones pendientes:
@@ -63,8 +65,9 @@ P-{nonce[0:8]}  {command}  [{danger_verb}]  hace {age}
 Di "ver P-XXXX" para detalles o "aprobar P-XXXX" para ejecutar.
 ```
 
-Cross-session rows (where `session_id` differs from the current session) are
-annotated with `[session anterior]`.
+When rendering an `--all-sessions` result, annotate rows whose `session_id`
+differs from the current session with `[otra sesion]` so the user knows which
+ones are not from the current in-loop flow.
 
 ## Detail View Format
 
@@ -99,20 +102,25 @@ AskUserQuestion(
 ```
 
 The PostToolUse hook checks `answer.lower().startswith("approve")` to activate the grant.
-"Reject" (or any non-"Approve" answer) does NOT activate the grant.
+"Reject" (or any non-"Approve" answer) does NOT activate the grant. Activation
+is not the end of the turn -- selecting "Approve" both activates the grant
+(single-use, 5-minute TTL, consumed at match) AND is the signal to
+immediately re-dispatch the verbatim command. There is no intermediate step
+where the orchestrator asks whether to proceed.
 
 ## Post-Approval Dispatch Template
 
-After AskUserQuestion returns "Approve", dispatch a one-shot agent with the
-approved command. The prompt structure is the same regardless of store; the
-only difference is whether to include the nonce (same-session) or omit it
-(cross-session, where the grant was pre-activated by the ElicitationResult hook).
+The moment AskUserQuestion returns "Approve", dispatch a one-shot agent with
+the approved command -- approving IS the execute order, so this dispatch is
+automatic, not a separate decision. Pass the nonce: approvals are in-loop and
+single-session, so the pending being approved always belongs to the current
+session and the grant is always activated fresh in it.
 
 ### Dispatch prompt structure
 
 ```
 Ejecuta este comando aprobado por el usuario. No requiere confirmacion adicional.
-{Nonce: {nonce}  -- only for same-session dispatch}
+Nonce: {nonce}
 Comando: {command}
 Directorio: {cwd}
 
@@ -147,22 +155,20 @@ The Gaia grant activates on the blocked command signature — that covers the Ga
 
 The dispatch is single-turn and cannot split: if the bundle emits APPROVAL_REQUEST mid-execution, the orchestrator must re-dispatch fresh with the same mode, not SendMessage resume — mode does not survive resume.
 
-### Same-session dispatch
+### Dispatch on approval
 
-When the approval originates in the current session — pass the nonce:
+Approvals are in-loop and single-session, so there is one dispatch shape, not
+a same-session/cross-session split:
 
 1. Build the dispatch prompt with nonce, command, and cwd (if available)
-2. Dispatch the one-shot agent
+2. Dispatch the one-shot agent immediately -- approving already is the order
+   to execute, this is not a step the orchestrator deliberates on
 3. The hook finds the nonce, activates the grant via `activate_db_pending_by_prefix`, and allows the T3 operation through
-
-### Cross-session dispatch
-
-When the approval originates in a prior session — the original nonce is stale:
-
-1. The PostToolUse ElicitationResult hook has already activated the grant under the current session (keyed by command signature, not nonce)
-2. Build the dispatch prompt with command and cwd (if available), no nonce
-3. Dispatch the one-shot agent
-4. The hook finds the pre-activated grant by signature and allows the T3 operation through
+4. If this dispatch dies before reaching the command, a fresh re-dispatch
+   within the 5-minute grant TTL reuses the same activated grant. If the
+   command reached and executed but failed, the grant was already consumed at
+   match -- do not re-dispatch expecting the same grant to work; a new
+   approval is required.
 
 ### Recovery scope guardrail
 
@@ -176,16 +182,10 @@ If the only path forward requires remote mutation, the agent reports the failure
 
 ## Complete Flow Example
 
-### Same-session path (DB-backed approval)
+### In-loop, single-session path (DB-backed approval)
 
 ```
-SessionStart
-  → build_pending_approvals_block scans DB (store.list_pending) + filesystem
-  → injects summary into additionalContext
-
-User sees:
-  "Tienes 1 aprobación pendiente:
-   P-8072af8  kubectl apply -f manifest.yaml  [apply]  hace 2 min"
+Subagent attempts T3 command -> hook blocks it, mints P-8072af8
 
 User: "ver P-8072af8"
   → orchestrator runs: gaia approvals show P-8072af8
@@ -195,35 +195,23 @@ User: "ver P-8072af8"
 User: "aprobar P-8072af8"
   → orchestrator calls AskUserQuestion with all 5 fields visible
   → user selects "Approve -- kubectl apply -f manifest.yaml [P-8072af80]"
-  → PostToolUse ElicitationResult hook activates grant via activate_db_pending_by_prefix
-  → orchestrator dispatches one-shot agent with nonce + command
-  → agent runs command; hook validates nonce and allows T3 through
+  → PostToolUse ElicitationResult hook activates a single-use, 5-minute-TTL
+    grant via activate_db_pending_by_prefix
+  → approving is the execute order: orchestrator immediately dispatches a
+    one-shot agent with nonce + command, no separate confirmation
+  → agent runs command; hook matches the grant (consuming it at match, before
+    execution) and allows T3 through
   → agent returns COMPLETE
 ```
 
-### Cross-session path (DB-backed approval, prior session)
+If the dispatched agent dies before reaching the command, a fresh re-dispatch
+within the 5-minute window reuses the still-alive grant. If the command
+executed and failed, the grant was already consumed -- report the failure and
+request a new approval rather than retrying.
 
-```
-SessionStart (new session)
-  → build_pending_approvals_block scans DB (store.list_pending) + filesystem
-  → DB row has session_id from prior session
-  → scanner annotates entry with [session anterior]
-  → injects summary into additionalContext
-
-User sees:
-  "Tienes 1 aprobación pendiente:
-   P-8072af8  kubectl apply -f manifest.yaml  [apply]  hace 5 min  [session anterior]"
-
-User: "aprobar P-8072af8"
-  → orchestrator runs: gaia approvals show P-8072af8
-  → cmd_show_v2 returns detail (DB row)
-  → orchestrator calls AskUserQuestion with all 5 fields visible
-  → user selects "Approve -- kubectl apply -f manifest.yaml [P-8072af80]"
-  → PostToolUse ElicitationResult hook activates grant in current session (by command signature)
-  → orchestrator dispatches one-shot agent with command only (no nonce)
-  → agent runs command; hook finds pre-activated grant and allows T3 through
-  → agent returns COMPLETE
-```
+There is no SessionStart or per-turn surfacing step in this flow anymore: the
+pending is raised and resolved within the same session, driven entirely by
+the user directly asking ("ver P-XXXX", "aprobar P-XXXX").
 
 ### Filesystem-only path (legacy pending, no DB row)
 
@@ -232,10 +220,10 @@ This path applies when a `pending-{nonce}.json` exists in
 an approval generated before the DB-first migration).
 
 `gaia approvals show P-XXXX` falls back to the filesystem automatically via
-`cmd_show_v2` — the orchestrator flow is identical to the same-session path
-above. The difference is rejection: use `gaia approvals reject P-XXXX` (not
-`revoke`, which targets DB rows). Bulk cleanup uses `gaia approvals reject-all`
-and `gaia approvals clean`.
+`cmd_show_v2` — the orchestrator flow is otherwise identical to the in-loop
+path above. The difference is rejection: use `gaia approvals reject P-XXXX`
+(not `revoke`, which targets DB rows). Bulk cleanup uses `gaia approvals
+reject-all` and `gaia approvals clean`.
 
 ## Filesystem Pending File Location (legacy)
 

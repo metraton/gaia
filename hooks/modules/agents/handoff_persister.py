@@ -17,191 +17,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def _normalize_command_set(raw) -> list:
-    """Coerce a raw ``command_set`` into the canonical ``[{command, rationale}]``.
-
-    Mirrors the normalization in ``bash_validator._build_sealed_payload`` and
-    ``approval_grants.activate_db_pending_by_prefix`` so the intake writes the
-    exact shape the activation/consume sides expect. Items without a non-empty
-    ``command`` are dropped; ``rationale`` defaults to "".
-    """
-    out: list = []
-    if isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict) and item.get("command"):
-                out.append(
-                    {
-                        "command": item["command"],
-                        "rationale": item.get("rationale", ""),
-                    }
-                )
-    return out
-
-
-def _filter_mutative_command_set(items: list) -> list:
-    """Keep only the command_set items whose command is mutative/T3.
-
-    The consume side (``bash_validator._validate_single_command``) gates the
-    whole COMMAND_SET match path on ``detect_mutative_command(command).is_mutative``:
-    a command that the matcher does not see as mutative NEVER reaches
-    ``match_command_set_grant`` and its index is therefore NEVER consumed. If
-    such a command is included in the grant's ``command_set``, ``len(consumed)``
-    can never reach ``len(command_set)`` and the grant is stuck PENDING forever
-    (it never flips to CONSUMED). To stay in lockstep with the consume gate, the
-    intake filters with the EXACT same predicate, dropping non-mutative commands
-    (e.g. ``touch``, ``ls``, ``cat``) before the grant is ever minted.
-
-    Items that fail to classify (import error, unexpected exception) are kept --
-    failing open here is safer than silently dropping a command from a consent
-    batch the user is about to approve.
-    """
-    try:
-        from modules.security.mutative_verbs import detect_mutative_command
-    except ImportError:
-        import pathlib as _pl
-        import sys as _sys
-
-        _hooks_root = _pl.Path(__file__).resolve().parent.parent.parent
-        _sys.path.insert(0, str(_hooks_root))
-        from modules.security.mutative_verbs import detect_mutative_command
-
-    kept: list = []
-    for item in items:
-        command = item.get("command", "")
-        try:
-            if detect_mutative_command(command).is_mutative:
-                kept.append(item)
-        except Exception:
-            # Fail open: if classification raises, keep the item rather than
-            # silently dropping a command from the user's consent batch.
-            kept.append(item)
-    return kept
-
-
-def _intake_command_set_pending(
-    approval_req: dict,
-    *,
-    agent_id,
-    session_id: str,
-) -> str | None:
-    """INTAKE bridge: plan-first COMMAND_SET envelope -> ONE pending row.
-
-    When a subagent emits an ``APPROVAL_REQUEST`` whose ``approval_request``
-    carries a ``command_set`` of >= 2 ``{command, rationale}`` items and NO
-    ``approval_id`` (plan-first: the batch is declared up-front, before any
-    command was attempted/blocked), this persists exactly ONE pending approval
-    whose ``payload_json`` contains the ``command_set`` key. That is the signal
-    ``activate_db_pending_by_prefix`` reads (Step 3b) to branch into
-    ``create_command_set_grant`` on user approval.
-
-    Mutative filtering (Thread a): the command_set is first reduced to ONLY the
-    commands the consume side will treat as mutative/T3 -- see
-    ``_filter_mutative_command_set``. Non-mutative commands (``touch``, ``ls``,
-    ...) never reach the bash_validator matcher, so leaving them in the grant
-    would strand its ``consumed_indexes_json`` short of completion and pin the
-    grant at PENDING forever. After filtering:
-
-      * >= 2 mutative items  -> mint the COMMAND_SET over exactly those items.
-      * exactly 1 mutative   -> NOT a batch. Return None; the caller falls
-        through to the singular ``approval_id`` path and the lone command is
-        gated by the normal hook-block / SCOPE_SEMANTIC_SIGNATURE flow when the
-        agent attempts it. We deliberately do NOT degrade-to-singular here: this
-        function's contract is "mint a COMMAND_SET or stand aside", and the
-        singular flow is owned end-to-end by the hook block path -- minting a
-        singular row from here would duplicate that ownership.
-      * 0 mutative           -> nothing to approve. Return None (no pending).
-
-    A raw ``command_set`` of <= 1 item is likewise not a batch and returns None
-    before filtering, preserving the original contract (never mint for one
-    command, never degrade a batch the other way) and the working plan-first
-    flow for genuine multi-command mutative batches.
-
-    Returns the minted ``approval_id`` (``P-{uuid4hex}``) on success, or None
-    when this is not a plan-first command_set envelope (no action taken).
-    """
-    if not isinstance(approval_req, dict):
-        return None
-    # Plan-first is defined by command_set present AND no approval_id. A request
-    # that already carries an approval_id was minted by the hook block path; it
-    # is the singular flow and must not be re-intaken here.
-    if approval_req.get("approval_id"):
-        return None
-
-    raw_items = _normalize_command_set(approval_req.get("command_set"))
-    if len(raw_items) < 2:
-        # 0 or 1 item: not a batch. Singular path owns it.
-        return None
-
-    # Reduce to the mutative/T3 commands only -- the exact predicate the consume
-    # side uses to decide whether a command reaches the COMMAND_SET matcher.
-    command_set_items = _filter_mutative_command_set(raw_items)
-    if len(command_set_items) < 2:
-        # After filtering there is no batch left: either every command was
-        # non-mutative (0 -> nothing to approve) or just one mutative command
-        # remained (1 -> singular path owns it). Either way, no COMMAND_SET.
-        logger.info(
-            "INTAKE: command_set not minted -- %d/%d items mutative after filter "
-            "(need >= 2 for a batch)",
-            len(command_set_items), len(raw_items),
-        )
-        return None
-
-    # Build a sealed_payload that mirrors bash_validator._build_sealed_payload's
-    # COMMAND_SET shape: command_set verbatim + commands listing every string.
-    # Carry through the subagent's operation/risk fields when present so the
-    # orchestrator's presentation has real values, falling back to neutral
-    # COMMAND_SET defaults otherwise.
-    first_command = command_set_items[0]["command"]
-    sealed_payload = {
-        "operation": approval_req.get("operation")
-        or f"COMMAND_SET intercepted: {len(command_set_items)} commands under one consent",
-        "exact_content": approval_req.get("exact_content") or first_command,
-        "scope": approval_req.get("scope")
-        or (first_command.split()[0] if first_command.strip() else "unknown"),
-        "risk_level": approval_req.get("risk_level") or "medium",
-        "rollback_hint": approval_req.get("rollback") or approval_req.get("rollback_hint"),
-        "rationale": approval_req.get("rationale")
-        or (
-            f"A batch of {len(command_set_items)} related T3 commands requires user "
-            "approval under one consent per the COMMAND_SET policy."
-        ),
-        "commands": [it["command"] for it in command_set_items],
-        "command_set": command_set_items,
-    }
-
-    try:
-        from gaia.approvals.store import derive_command_set_id, insert_requested
-    except ImportError:
-        import pathlib as _pl
-        import sys as _sys
-
-        _repo_root = _pl.Path(__file__).resolve().parent.parent.parent.parent
-        _sys.path.insert(0, str(_repo_root))
-        from gaia.approvals.store import derive_command_set_id, insert_requested
-
-    # Derive the PUBLIC approval_id deterministically from the post-filter
-    # mutative command strings. Because the id is content-derived (not uuid4),
-    # the orchestrator reproduces the SAME id from the command_set it reads in
-    # the contract via `gaia approvals derive-id` -- no DB search, no
-    # cross-session miss. The list passed here is the SAME list the CLI helper
-    # derives over (post-mutative-filter), so both sides agree.
-    derived_id = derive_command_set_id(
-        [it["command"] for it in command_set_items]
-    )
-
-    approval_id = insert_requested(
-        sealed_payload,
-        agent_id=agent_id,
-        session_id=session_id or None,
-        approval_id=derived_id,
-    )
-    logger.info(
-        "INTAKE: plan-first COMMAND_SET pending created approval_id=%s items=%d",
-        (approval_id or "")[:16], len(command_set_items),
-    )
-    return approval_id
-
-
 def persist_handoff(
     parsed_contract,
     agent_output: str,
@@ -226,36 +41,6 @@ def persist_handoff(
     import sys as _sys
 
     agent_id = task_info.get("agent_id") or task_info.get("agent") or "unknown"
-
-    # ---------------------------------------------------------------------
-    # INTAKE bridge (plan-first COMMAND_SET) -- run FIRST and INDEPENDENTLY.
-    #
-    # Minting the pending COMMAND_SET approval is the security-critical path:
-    # it is the consent the user must act on. It must not be coupled to the
-    # audit handoff-row write below -- if insert_agent_contract_handoff fails
-    # for any reason, the user must still get the approval to review. So the
-    # intake runs in its own isolated try, before the handoff-row write.
-    #
-    # Only plan-first envelopes act here: command_set >= 2 items AND no
-    # approval_id. A <= 1 item set or a request that already carries an
-    # approval_id (hook-block / singular path) is a no-op for the intake.
-    # ---------------------------------------------------------------------
-    minted_command_set_id = None
-    if parsed_contract is not None:
-        _env = parsed_contract if isinstance(parsed_contract, dict) else {}
-        _approval_req = _env.get("approval_request")
-        if isinstance(_approval_req, dict):
-            try:
-                minted_command_set_id = _intake_command_set_pending(
-                    _approval_req,
-                    agent_id=agent_id,
-                    session_id=session_id,
-                )
-            except Exception as _intake_exc:
-                logger.warning(
-                    "M4: COMMAND_SET intake failed (non-blocking): %s",
-                    _intake_exc,
-                )
 
     try:
         # Prefer a sibling gaia package if installed; fall back to the repo
@@ -317,11 +102,11 @@ def persist_handoff(
             envelope = parsed_contract if isinstance(parsed_contract, dict) else {}
             approval_req = envelope.get("approval_request")
             if approval_req and isinstance(approval_req, dict):
-                # The approval_id is either the one the subagent relayed (hook-block
-                # / singular path) or the one the INTAKE bridge just minted for a
-                # plan-first COMMAND_SET. Either way it points at the pending row
-                # the handoff_approvals audit row should link to.
-                approval_id = approval_req.get("approval_id") or minted_command_set_id
+                # The approval_id is the one the subagent relayed (the hook-block
+                # / singular path, or a compound-command COMMAND_SET minted by
+                # bash_validator). It points at the pending row the
+                # handoff_approvals audit row should link to.
+                approval_id = approval_req.get("approval_id")
 
                 if approval_id:
                     # Look up the grant to determine the decision at stop time.

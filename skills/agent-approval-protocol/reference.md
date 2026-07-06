@@ -17,12 +17,11 @@ The fingerprint is verified at grant **activation**, not at presentation.
 re-canonicalizes the payload, recomputes the fingerprint, and compares it
 against the fingerprint stored on the `REQUESTED` event; a mismatch raises
 `ChainTamperError` and the grant never forms -- a security boundary, not a
-recoverable UX issue. The per-turn `[PENDING-APPROVALS-VERIFIED]` builder
-(`build_verified_pending_approvals`) applies the same check when assembling the
-injected block, so only fingerprint-clean pendings reach the orchestrator marked
-`verified: true`. The orchestrator therefore presents from that already-verified
-block (or a same-turn relayed `approval_request`) and never dispatches to verify
-the payload itself.
+recoverable UX issue. Approvals are in-loop and single-session: the orchestrator
+presents from the subagent's same-turn relayed `approval_request` (there is no
+cross-turn or cross-session resurfacing of pendings, and no injected
+verified-pendings block) and never dispatches to verify the payload itself --
+the fingerprint check at activation is the only integrity gate.
 
 ## Hash chain
 
@@ -49,12 +48,21 @@ hook calls `approval_grants.activate_db_pending_by_prefix()`, which:
    `status='PENDING'`, keyed by the same `approval_id`.
 
 On the retry, `writer.check_db_semantic_grant()` finds that grant (scope +
-status PENDING + not expired + session match), and `bash_validator` immediately
-calls `writer.consume_db_semantic_grant()` to flip it to `status='CONSUMED'`
-(single-use, replay protection). A second attempt within the TTL will not match.
+status PENDING + not expired), and `bash_validator` immediately calls
+`writer.consume_db_semantic_grant()` **at the match, before the command
+executes**, flipping it to `status='CONSUMED'` (single-use, replay protection).
+The lookup is **session-agnostic** by design -- the block-approve-re-dispatch
+cycle can legitimately span the subagent's session and the orchestrator's, so
+replay protection comes from the CONSUMED status + the 5-minute TTL, not from
+session scoping. A second attempt, or a retry after the command executed and
+failed, will not match; a fresh approval is required. The one survival case is a
+dispatch that dies before reaching the command -- the grant stays PENDING and a
+re-dispatch within the 5-minute TTL reuses it.
 
-No nonce or `approval_id` is relayed through SendMessage; activation is entirely
-hook-driven by the label the user selected.
+Approving is the order to execute: on the Approve label the orchestrator
+re-dispatches the verbatim command automatically. No nonce or `approval_id` is
+relayed through SendMessage; activation is entirely hook-driven by the label the
+user selected.
 
 ## Reading a granted approval
 

@@ -47,7 +47,7 @@ The current model is:
     pending approval via AskUserQuestion. It carries a semantic signature
     (base command + semantic tokens + normalized flags), is **session-agnostic**
     (see check_db_semantic_grant in gaia.store.writer), and lives for
-    ``APPROVAL_GRANT_TTL_MINUTES`` (60 minutes, the value reflected by
+    ``APPROVAL_GRANT_TTL_MINUTES`` (5 minutes, the value reflected by
     DEFAULT_GRANT_TTL_MINUTES above).
 
 2.  The grant is **consumed on the matching retry**, NOT at SubagentStop and
@@ -71,9 +71,9 @@ Each command in the set is approved explicitly by the user and consumed
 individually.  The legacy verb_family path has been removed.
 
 NOTE: the filesystem helpers below (write_pending_approval, the
-grant-{session}-*.json scanners, consume_session_grants) are the DEPRECATED
-fallback plane retained for grants created before the DB cutover. The active
-flow runs through the DB plane in gaia.store.writer.
+grant-{session}-*.json scanners) are the DEPRECATED fallback plane retained for
+grants created before the DB cutover. The active flow runs through the DB plane
+in gaia.store.writer.
 """
 
 from __future__ import annotations
@@ -115,7 +115,7 @@ def _grant_ttl_minutes() -> int:
     without a circular import (writer never imports this module back). We resolve
     it lazily here, mirroring every other gaia.store import in this file, because
     the hooks package can be imported before the `gaia` package is on sys.path;
-    a module-level import would crash hook load in that window. The 60-minute
+    a module-level import would crash hook load in that window. The 5-minute
     fallback equals the canonical value, so the two never disagree even if the
     lazy import is briefly unavailable.
     """
@@ -123,12 +123,13 @@ def _grant_ttl_minutes() -> int:
         from gaia.store.writer import APPROVAL_GRANT_TTL_MINUTES as _ttl
         return _ttl
     except Exception:
-        return 60
+        return 5
 
 
-# Default GRANT TTL in minutes -- the active-grant retry window. Moved 5 -> 60
-# (Change 3a) so a cross-session human-in-the-loop approval does not expire
-# before it is consumed; sourced from APPROVAL_GRANT_TTL_MINUTES in writer.
+# Default GRANT TTL in minutes -- the active-grant retry window (approvals
+# redesign, M1). The grant is consumed AT THE MATCH, so a short 5-minute window
+# is enough to cover the block -> approve -> retry round trip; sourced from
+# APPROVAL_GRANT_TTL_MINUTES in writer (the single point of truth).
 DEFAULT_GRANT_TTL_MINUTES = _grant_ttl_minutes()
 
 # Default PENDING TTL in minutes (24 hours). DELIBERATELY distinct from the grant
@@ -556,76 +557,6 @@ def consume_grant(command: str, session_id: str = None) -> bool:
     return False
 
 
-def consume_session_grants(session_id: str = None) -> int:
-    """Proactively consume confirmed DB grants for a session at session end.
-
-    Called at SubagentStop as a defense-in-depth measure.  Since G3 cutover
-    the authoritative grant plane is the DB only; this function sweeps all
-    PENDING approval_grants rows whose confirmed=1 and marks them CONSUMED
-    so unused grants cannot be replayed after the session closes.
-
-    The primary replay guard remains consume-on-retry (bash_validator calls
-    consume_db_semantic_grant after each allowed command) -- this function
-    is a secondary sweep that catches any confirmed but unused DB grants that
-    were never retried in the session.
-
-    Args:
-        session_id: Session ID to scope consumption (defaults to env var).
-
-    Returns:
-        Number of DB grants consumed (0 when none found or on error).
-    """
-    if not session_id:
-        session_id = _get_session_id()
-
-    consumed_count = 0
-    try:
-        from gaia.store.writer import consume_db_semantic_grant
-        import gaia.store.writer as _sw
-
-        con = _sw._connect()
-        try:
-            # Find all PENDING, confirmed semantic grants (session-scoped
-            # for this sweep -- we only clean up what this session created).
-            cur = con.execute(
-                """
-                SELECT approval_id
-                FROM approval_grants
-                WHERE scope = 'SCOPE_SEMANTIC_SIGNATURE'
-                  AND status = 'PENDING'
-                  AND confirmed = 1
-                  AND (session_id = ? OR session_id IS NULL)
-                """,
-                (session_id,),
-            )
-            rows = cur.fetchall()
-        finally:
-            con.close()
-
-        for row in rows:
-            approval_id = row[0] if isinstance(row, tuple) else row.get("approval_id")
-            if not approval_id:
-                continue
-            try:
-                consumed = consume_db_semantic_grant(approval_id)
-                if consumed:
-                    consumed_count += 1
-                    logger.info(
-                        "Grant consumed at SubagentStop (DB): approval_id=%s",
-                        approval_id[:16],
-                    )
-            except Exception as _ce:
-                logger.debug(
-                    "consume_session_grants: DB consume failed for %s (non-fatal): %s",
-                    approval_id[:16], _ce,
-                )
-
-    except Exception as e:
-        logger.error("Error consuming session grants (DB): %s", e)
-
-    return consumed_count
-
-
 def confirm_grant(command: str, session_id: str = None) -> bool:
     """Set confirmed=1 on the first PENDING DB grant matching command.
 
@@ -873,11 +804,11 @@ def write_pending_approval_for_file(
     DB-primary since Task E of the approval redesign: persists to
     gaia.approvals.store (gaia.db) first using insert_requested() with
     approval_id = "P-" + nonce.  The filesystem write is removed entirely --
-    scan_pending_db() surfaces file-path pendings exactly like T3 command
-    pendings now that the DB carries them.
+    file-path pendings live in the DB exactly like T3 command pendings and are
+    read on demand via `gaia approvals`.
 
     The sealed_payload uses:
-      - exact_content  = file_path          (surfaced as "command" by scan_pending_db)
+      - exact_content  = file_path          (the blocked file path)
       - operation      = "FILE_WRITE command intercepted: write"
       - scope          = SCOPE_FILE_PATH constant
       - scope_signature = serialised ApprovalSignature for check/activation
@@ -1014,9 +945,9 @@ def find_pending_for_file(
     if not stripped:
         return None
 
-    # DB path: query all pending rows (all_sessions=True -- see scan_pending_db
-    # for the rationale: the host session id inside a subagent is the subagent's
-    # id, not the orchestrator's, so session-scoping would silently miss the row).
+    # DB path: query all pending rows (all_sessions=True). The host session id
+    # inside a subagent is the subagent's id, not the orchestrator's, so
+    # session-scoping would silently miss the row.
     try:
         from gaia.approvals.store import list_pending
         rows = list_pending(all_sessions=True)
@@ -1291,7 +1222,8 @@ def activate_db_pending_by_prefix(
         # consume side is unchanged; this is the create side that was orphaned.
         #
         # Precondition: ``command_set`` in the payload is already pre-filtered to
-        # mutative commands by ``_intake_command_set_pending`` (handoff_persister,
+        # mutative commands by the compound-command intake in bash_validator
+        # (``_validate_compound_command`` -> ``decide_t3_outcome(command_set=...)``,
         # the only producer of these pending records in production). Activation
         # therefore assumes every item is consumable and does NOT re-filter here;
         # do not add a filtering step at this site -- it would silently drop items
@@ -1532,12 +1464,12 @@ def activate_db_pending_by_prefix(
 # string and requires fresh approval. Each item in the set is single-use.
 
 # COMMAND_SET grant TTL in minutes. Aligned to the singular active-grant TTL
-# (DEFAULT_GRANT_TTL_MINUTES / APPROVAL_GRANT_TTL_MINUTES = 60) so a batch of
-# commands approved under one consent gets the same cross-session retry window
-# as a single approved command -- the block-approve-retry flow legitimately
-# spans sessions, and a shorter window would expire the batch before the
-# subagent could consume every item.
-DEFAULT_COMMAND_SET_TTL_MINUTES = 60
+# (DEFAULT_GRANT_TTL_MINUTES / APPROVAL_GRANT_TTL_MINUTES = 5) so a batch of
+# commands approved under one consent gets the same short retry window as a
+# single approved command -- the block-approve-retry flow is same-session and
+# single-use, so 5 minutes is enough to consume every item while keeping the
+# grant's live window tight.
+DEFAULT_COMMAND_SET_TTL_MINUTES = 5
 
 
 def create_command_set_grant(

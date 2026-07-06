@@ -1,20 +1,12 @@
 #!/usr/bin/env python3
-"""Tests for the pending-approval session-liveness filter (T13).
+"""Tests for the pending-approval session-liveness filter (CLI path).
 
-Task E: liveness filtering moved OUT of the SessionStart block.
-``build_pending_approvals_block()`` is now DB-only (``scan_pending_db``,
-all_sessions=True) -- the DB is per-machine so cross-session leakage is
-impossible and no liveness exclusion is applied there.
-
-The liveness filter (``exclude_live_sessions=True``) now lives in the CLI
+M2: cross-session surfacing of pendings has been removed -- there is no
+SessionStart [ACTIONABLE] block and no ``build_pending_approvals_block``. The
+liveness filter (``exclude_live_sessions=True``) lives solely in the CLI
 discovery path ``_scan_pending_shared`` (used by ``gaia approvals list
---orphans-only`` and ``reject-all``). These tests therefore validate the
-liveness axis against that function -- the new home of the filter -- and
-keep one DB-only assertion for the SessionStart block to confirm it no
-longer applies a liveness filter.
-
-The shape/format of the [ACTIONABLE] block is covered by
-``tests/hooks/modules/session/test_session_manifest.py``.
+--orphans-only`` and ``reject-all``). These tests validate the liveness axis
+against that function -- its only home.
 """
 
 import os
@@ -32,7 +24,6 @@ sys.path.insert(0, str(HOOKS_DIR))
 BIN_DIR = Path(__file__).parent.parent.parent / "bin"
 sys.path.insert(0, str(BIN_DIR))
 
-from modules.session.session_manifest import build_pending_approvals_block
 from modules.core.paths import clear_path_cache
 import cli.approvals as approvals_mod
 
@@ -144,40 +135,8 @@ def _ids_from_shared(rows):
     return {"P-" + r["nonce"][:8] for r in rows}
 
 
-class TestBlockIsDbOnlyNoLivenessFilter:
-    """Task E: the SessionStart block is DB-only and applies NO liveness filter.
-
-    The DB is per-machine, so every pending row is the same user; surfacing
-    them all in the [ACTIONABLE] block is correct. Liveness filtering moved to
-    the CLI discovery path (``_scan_pending_shared``) -- see the classes below.
-    """
-
-    def test_block_surfaces_all_db_pendings_regardless_of_session(
-        self, monkeypatch, db_store
-    ):
-        from unittest.mock import patch
-        _store, insert_pending = db_store
-        insert_pending("cmd-alive", "alive-session", _approval_id("alive001"))
-        insert_pending("cmd-dead", "dead-session", _approval_id("dead0001"))
-
-        # Even with a session reported alive, the block does NOT filter it out:
-        # the block no longer calls get_live_sessions at all.
-        with patch(
-            "modules.session.session_registry.get_live_sessions",
-            return_value={"alive-session"},
-        ):
-            result = build_pending_approvals_block()
-
-        assert result.startswith("[ACTIONABLE]")
-        assert "P-alive001" in result, (
-            "Task E: the DB-only block surfaces every pending row; the "
-            "per-machine DB means there is no cross-session leak to filter."
-        )
-        assert "P-dead0001" in result
-
-
 # ---------------------------------------------------------------------------
-# Liveness filter now lives in the CLI discovery path (_scan_pending_shared)
+# Liveness filter lives in the CLI discovery path (_scan_pending_shared)
 # ---------------------------------------------------------------------------
 
 class TestExcludeLiveSessionsInCliScan:

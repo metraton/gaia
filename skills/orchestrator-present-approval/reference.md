@@ -121,45 +121,53 @@ individually (`create_command_set_grant` and `match_command_set_grant` in
 `approval_grants.py`).
 
 **Current state of the code: all three sides are wired -- intake, activation,
-consume.** It is a **plan-first** flow: the subagent declares the batch up-front
-by emitting an `APPROVAL_REQUEST` whose `approval_request` carries a
-`command_set` list and **no** `approval_id`.
+consume.** The batch is minted **at block time**, from a chain the subagent
+attempted -- there is no plan-first declaration step. The subagent chains >= 2
+T3 sub-commands into one Bash call (e.g. `git add -A && git commit -m
+'v1.2.0' && git push origin main`); if the hook classifies >= 2 of the chained
+components as ungranted T3, it groups them under one consent and denies the
+Bash call with the same `[T3_BLOCKED]` shape as a singular block.
 
-- **Intake.** The SubagentStop processor
-  `hooks/modules/agents/handoff_persister.py` ->
-  `_intake_command_set_pending()` reads the `command_set`; when it holds **>= 2**
-  items it calls `gaia.approvals.store.insert_requested()` with a payload that
-  contains the `command_set` key, minting **exactly ONE** pending `COMMAND_SET`
-  approval with one `approval_id`. A set of `<= 1` item is declined (no
-  COMMAND_SET is minted for one command).
+- **Intake.** `bash_validator._validate_compound_command()` runs a
+  non-minting pre-pass (`_is_ungranted_t3_component`) over the chain's
+  components; when **>= 2** are ungranted T3, it calls
+  `decide_t3_outcome(command_set=chain_set)`, which builds a sealed_payload
+  carrying the `command_set` key and calls
+  `gaia.approvals.store.insert_requested()`, minting **exactly ONE** pending
+  `COMMAND_SET` approval with one content-derived `approval_id`
+  (`derive_command_set_id`). A chain with `<= 1` ungranted-T3 component is not
+  a batch: the per-component singular path owns it (no COMMAND_SET is minted
+  for one command).
 - **Activation.** When the user approves, `activate_db_pending_by_prefix()`
   (`hooks/modules/security/approval_grants.py`) reads `payload["command_set"]`,
   and because it has > 1 item branches at **Step 3b** into
   `create_command_set_grant()`, inserting ONE `COMMAND_SET` grant row (status
-  `PENDING`, `command_set_json` holding the whole set, 60-min TTL via
-  `DEFAULT_COMMAND_SET_TTL_MINUTES`) instead of a singular
-  `SCOPE_SEMANTIC_SIGNATURE` grant.
+  `PENDING`, `command_set_json` holding the whole set, 5-minute TTL aligned to
+  the singular grant via `DEFAULT_COMMAND_SET_TTL_MINUTES`) instead of a
+  singular `SCOPE_SEMANTIC_SIGNATURE` grant.
 - **Consume.** On each retry, `bash_validator` calls `match_command_set_grant()`
-  (byte-for-byte index match), then `mark_command_set_item_consumed()`; a
-  consumed index never matches again (replay protection), and when every index
-  is consumed the grant flips to `CONSUMED`.
+  (byte-for-byte index match), then `mark_command_set_item_consumed()` **at
+  match, before the command executes**; a consumed index never matches again
+  (replay protection), and when every index is consumed the grant flips to
+  `CONSUMED`.
 
 **Practical consequence:** a `batch_scope` field still does nothing -- the signal
 is `command_set`. To approve a sweep of N related commands under one consent,
-present the single `COMMAND_SET` approval the intake minted: show **all N
+present the single `COMMAND_SET` approval the block minted: show **all N
 commands** in the question body, with **one** Approve label carrying **one**
-`[P-{nonce8}]` suffix. The user gives one consent; each command then runs on its
-own retry within the 60-minute window. You do NOT issue N separate approvals.
+`[P-{nonce8}]` suffix. Approving is the order to execute -- the orchestrator
+re-dispatches the batch immediately; each command runs on its own retry within
+the 5-minute window. You do NOT issue N separate approvals.
 
-**Reading the batch id and commands -- from the block, not by dispatch.** Once
-the minted `COMMAND_SET` pending has survived a turn, it appears in the injected
-`[PENDING-APPROVALS-VERIFIED]` block with its content-derived `approval_id` and
-all N commands attached (`build_verified_pending_approvals` in
-`hooks/modules/session/session_manifest.py`). Read the id and the commands
-straight from that block -- the orchestrator has no shell and must NOT dispatch
-`gaia approvals derive-id` or any verify command. For a command_set emitted in
-the CURRENT turn (not yet in the block), present from the subagent's relayed
-`approval_request`, which carries the same `command_set`.
+**Reading the batch id -- arrives in the same relay, no derivation needed.** The
+N commands and the `approval_id` both come straight from the relayed
+`approval_request`, in the same `[T3_BLOCKED]` shape as a singular block --
+`bash_validator` mints the content-derived id
+(`derive_command_set_id`, `gaia/approvals/store.py`) at the moment it denies
+the chain, and the subagent relays it in-turn like it would any `approval_id`.
+There is no cross-turn hop and no shell-based derivation to perform: the
+singular path and the COMMAND_SET path use the identical delivery mechanism,
+differing only in whether the id is random (uuid4) or content-derived.
 
 ## Grant Activation Mechanics
 
@@ -172,25 +180,34 @@ message ends with `approval_id: P-{...}` (`build_t3_blocked_denial_message` in
 `hooks/modules/security/approval_messages.py`).
 
 The orchestrator presents via AskUserQuestion with the `[P-xxxxxxxx]` label,
-reading the `approval_id` and fields from the injected
-`[PENDING-APPROVALS-VERIFIED]` block (primary) or, for a same-turn pending not
-yet in the block, from the subagent's relayed `approval_request` (fallback). It
-does not dispatch to verify or derive. When the user selects the Approve label,
-the **ElicitationResult hook**
+reading the `approval_id` and fields from the subagent's same-turn relayed
+`approval_request` -- singular or `COMMAND_SET`, the delivery is identical. It
+does not dispatch a subagent to verify or derive either shape. See "On batch
+intents" above for how a `COMMAND_SET` id is minted at the same block that
+produces a singular id. When the user selects the Approve label, the
+**ElicitationResult hook**
 (`hooks/elicitation_result.py`) fires and calls
 `activate_db_pending_by_prefix()`, which:
 
-1. finds the pending `approvals` row by prefix (`get_pending(all_sessions=True)`),
+1. finds the pending `approvals` row by prefix (`get_pending(all_sessions=True)` --
+   the lookup stays session-agnostic so the approve step, which can run under a
+   different session than the block, still finds the row),
 2. writes `SHOWN` then `APPROVED` events and flips `approvals.status` to `approved`,
-3. inserts a `SCOPE_SEMANTIC_SIGNATURE` row into `approval_grants` (status `PENDING`),
+3. inserts a `SCOPE_SEMANTIC_SIGNATURE` row into `approval_grants` (status
+   `PENDING`) with a 5-minute TTL,
 4. also writes a legacy filesystem grant file as a deprecated fallback (the DB
    path is primary; filesystem remains as a fallback consumer-side path).
 
-On the subagent's retry, `check_approval_grant()` (DB-primary path in
-`hooks/modules/security/approval_grants.py`) calls `check_db_semantic_grant()`
-(`gaia/store/writer.py`); on a match, `bash_validator` immediately calls
-`consume_db_semantic_grant()` to set the grant `status='CONSUMED'`. The grant
-is single-use -- a second attempt within the TTL window will not match.
+Approving is the order to execute: the orchestrator re-dispatches the verbatim
+command immediately. On the subagent's retry, `check_approval_grant()`
+(DB-primary path in `hooks/modules/security/approval_grants.py`) calls
+`check_db_semantic_grant()` (`gaia/store/writer.py`); on a match, `bash_validator`
+immediately calls `consume_db_semantic_grant()` to set the grant
+`status='CONSUMED'` **at match, before the command executes**. The grant is
+single-use -- a second attempt, or a retry after the command executed and
+failed, will not match. The one survival case is a dispatch that dies before
+reaching the command: the grant stays `PENDING` and a re-dispatch within the
+5-minute TTL reuses it.
 
 No nonce or `approval_id` is relayed through SendMessage; activation is entirely
 hook-driven by the label the user selected.

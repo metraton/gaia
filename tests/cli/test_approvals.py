@@ -130,7 +130,7 @@ def _make_v12_schema(con):
 
 
 def _sealed_payload(command, verb="push", category="GIT_PUSH", scope=None):
-    """Build a sealed_payload dict that scan_pending_db / _scan_pending_shared parse."""
+    """Build a sealed_payload dict that _scan_pending_shared parses."""
     return {
         "operation": f"{category} command intercepted: {verb}",
         "exact_content": command,

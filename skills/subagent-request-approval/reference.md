@@ -16,12 +16,11 @@ payload from the intercepted command and calls
 3. writes the `REQUESTED` event to the DB.
 
 The block message you receive (`[T3_BLOCKED] ...`) ends with `approval_id: P-{...}`.
-You relay that token plus the operation details. For the current turn the
-orchestrator presents from your relay; once the pending survives a turn it
-appears in the per-turn `[PENDING-APPROVALS-VERIFIED]` block, already
-fingerprint-verified by the hook. Payload integrity is enforced at grant
-activation (`verify_fingerprint`), so the orchestrator never dispatches to
-verify or derive your request.
+You relay that token plus the operation details. Approvals are in-loop and
+single-session: the orchestrator presents from your relay in the same
+turn/session -- there is no per-turn or cross-session resurfacing of pendings.
+Payload integrity is enforced at grant activation (`verify_fingerprint`), so the
+orchestrator never dispatches to verify or derive your request.
 
 Source: `bash_validator._build_sealed_payload()`, the subagent block path in
 `bash_validator._validate_single_command()`; `gaia/approvals/store.py`
@@ -83,42 +82,42 @@ items, each matched byte-for-byte and consumed individually
 All three sides are now wired end-to-end -- **intake**, **activation**, and
 **consume** -- so one consent covers N commands.
 
-**Intake -- plan-first, one pending.** The batch is declared up-front: you emit
-an `APPROVAL_REQUEST` whose `approval_request` carries a `command_set` list and
-**no `approval_id`** (you have attempted nothing). The production intake caller
-is the SubagentStop processor `handoff_persister.persist_handoff()`, which calls
-`_intake_command_set_pending()`. That helper normalizes the `command_set` and,
-when it holds **>= 2** `{command, rationale}` items, builds a sealed_payload
-carrying the `command_set` key (mirroring the shape
-`bash_validator._build_sealed_payload()` emits) and calls
+**Intake -- at the block, from a chain you attempted.** There is no
+plan-first declaration step. You attempt a **single Bash call that chains >= 2
+T3 sub-commands** (e.g. `git add -A && git commit -m 'v1.2.0' && git push
+origin main`); the hook's compound-command classifier
+(`bash_validator._validate_compound_command`) runs a non-minting pre-pass
+(`_is_ungranted_t3_component`) over the chain's components, and when **>= 2**
+of them are ungranted T3, it calls `decide_t3_outcome(command_set=chain_set)`,
+which builds a sealed_payload carrying the `command_set` key (mirroring the
+shape `_build_sealed_payload()` emits for a single command) and calls
 `gaia.approvals.store.insert_requested()` -- minting **exactly ONE** pending
-`COMMAND_SET` approval with one `approval_id`. A set of length `<= 1` is not a
-batch: the intake declines and the singular semantic-signature path owns it (no
-COMMAND_SET is ever minted for one command). The intake runs independently of
-the audit handoff-row write, so a batch consent is never lost to an unrelated
-DB failure.
+`COMMAND_SET` approval with one `approval_id`, denied with the **same
+`[T3_BLOCKED]` shape as a singular block**. A chain with `<= 1` ungranted-T3
+component is not a batch: the per-component singular path owns it (no
+COMMAND_SET is ever minted for one command).
 
-**The COMMAND_SET `approval_id` is content-derived, not uuid4.** Unlike the
-singular hook-block path (which mints `P-{uuid4hex}`), the intake derives the id
-from the command_set content via `gaia.approvals.store.derive_command_set_id()`:
+**The COMMAND_SET `approval_id` is content-derived, not uuid4.** Like the
+singular hook-block path (which mints `P-{uuid4hex}`), the chain-intake path
+derives the id from the command_set content via
+`gaia.approvals.store.derive_command_set_id()`:
 `P-<first 32 hex of sha256(canonical(post-filter command strings))>`. It then
 passes that id to `insert_requested(..., approval_id=...)` as the pending row id.
-The point is reproducibility without a fragile uuid4: a uuid4 minted at
-SubagentStop could not be recovered by the parent (Claude Code #5812), but a
-content-derived id needs no recovery -- the same canonicalization
-(`chain.canonical_payload`) and mutative filter always yield the same id. Once
-the minted pending survives a turn, the orchestrator reads that id (and all N
-commands) straight from the injected `[PENDING-APPROVALS-VERIFIED]` block -- no
-DB lookup and no `gaia approvals derive-id` dispatch; for the mint turn it
-presents from the `command_set` in your relay. The id is
+The point is reproducibility without a fragile uuid4: a retry of the identical
+chain reproduces the identical id, so `insert_requested`'s fingerprint dedup
+reuses the same pending instead of minting a duplicate. Because the id arrives
+in the same `[T3_BLOCKED]` denial you relay for any T3 command, you never
+compute, derive, or reproduce it -- you relay whatever `approval_id` the block
+gives you, exactly like the singular path. The id is
 **order-sensitive** (the consume side matches positionally) and **content-only**
 (rationale/session/agent are not folded in, so both sides agree from the command
 list alone). Idempotency follows the existing fingerprint dedup: two identical
 command sets map to one id.
 
-**Envelope shape.** The sealed_payload the intake writes carries a `command_set`
-key holding the verbatim list of `{command, rationale}` items, and `commands`
-listing every command string in the set:
+**Envelope shape.** The sealed_payload the chain-intake writes carries a
+`command_set` key holding the chain's components (`rationale` is always `""` --
+it is built by the hook from the chain, not authored by the subagent), and
+`commands` listing every command string in the set:
 
 ```json
 {
@@ -126,9 +125,9 @@ listing every command string in the set:
   "exact_content": "git add -A",
   "commands": ["git add -A", "git commit -m 'v1.2.0'", "git push origin main"],
   "command_set": [
-    {"command": "git add -A",             "rationale": "stage release files"},
-    {"command": "git commit -m 'v1.2.0'", "rationale": "record the release commit"},
-    {"command": "git push origin main",   "rationale": "publish to the remote"}
+    {"command": "git add -A",             "rationale": ""},
+    {"command": "git commit -m 'v1.2.0'", "rationale": ""},
+    {"command": "git push origin main",   "rationale": ""}
   ]
 }
 ```
@@ -138,42 +137,43 @@ ElicitationResult hook (`approval_grants.activate_db_pending_by_prefix()`)
 detects the `command_set` and branches to `approval_grants.create_command_set_grant()`,
 which inserts a single `COMMAND_SET` grant row into `approval_grants`
 (status `PENDING`, `command_set_json` holding the whole set). The grant TTL is
-**60 minutes** (`DEFAULT_COMMAND_SET_TTL_MINUTES`), aligned to the singular
-active-grant TTL so the batch does not expire mid-consume across sessions.
+**5 minutes** (`DEFAULT_COMMAND_SET_TTL_MINUTES`), aligned to the singular
+active-grant TTL. Approving is the order to execute -- the orchestrator
+re-dispatches the batch immediately.
 
 **Consume -- item by item, replay-protected.** On each retry,
 `bash_validator._validate_single_command()` calls `match_command_set_grant()`,
 which finds the matching command's index byte-for-byte and returns it; the
-validator then calls `mark_command_set_item_consumed()`, appending that index to
-`consumed_indexes_json`. A consumed index never matches again (replay
-protection), and when every index is consumed the grant flips to `CONSUMED`.
-Wrapping an approved command -- adding `cd`, a redirect, a pipe, or a flag --
-produces a different string and matches nothing in the set; it requires fresh
-approval.
+validator then calls `mark_command_set_item_consumed()` **at match, before the
+command executes**, appending that index to `consumed_indexes_json`. A consumed
+index never matches again (replay protection), and when every index is consumed
+the grant flips to `CONSUMED`. Wrapping an approved command -- adding `cd`, a
+redirect, a pipe, or a flag -- produces a different string and matches nothing
+in the set; it requires fresh approval.
 
-**Consequence:** for a set of N related T3 commands, emit the `command_set`
-envelope and the user approves once. Each command runs on its own retry,
-single-use within the 60-minute window.
+**Consequence:** for a set of N related T3 commands that genuinely belong
+together, chain them into one Bash call, let the hook block the chain, relay
+the `approval_id` from that block, and the user approves once. Each command
+runs on its own retry, single-use, within the 5-minute window.
 
 ## Status to emit -- with vs without approval_id
 
 Always `plan_status: "APPROVAL_REQUEST"`. The presence of `approval_id` tells the
 orchestrator which path:
 
-- **With `approval_id`** -- the hook blocked a single command; the orchestrator
-  presents from your relay (current turn) or the injected
-  `[PENDING-APPROVALS-VERIFIED]` block (later turns), and the single-use semantic
-  grant activates on user approval (fingerprint checked at activation).
-- **Without `approval_id`, with a `command_set` of >= 2 items** -- plan-first
-  batch. The SubagentStop intake processor mints ONE pending `COMMAND_SET` with a
-  **content-derived** id (`derive_command_set_id`). The orchestrator reads that
-  id and the N commands from the injected `[PENDING-APPROVALS-VERIFIED]` block
-  (no derive-dispatch), or, for the mint turn, from the `command_set` in your
-  relay, then presents the single approval (N commands, one nonce). See
-  "Batch / COMMAND_SET -- wired" above.
-- **Without `approval_id` and without a multi-item `command_set`** -- plan-first
-  single (you are presenting one T3 plan before attempting); the orchestrator
-  gates on user consent before any execution.
+- **With `approval_id`** -- the hook blocked a command, singular or a
+  COMMAND_SET chain; either way the orchestrator presents from your same-turn
+  relay (approvals are in-loop, single-session -- no later-turn resurfacing).
+  A singular block activates a single-use semantic grant on user approval
+  (fingerprint checked at activation), consumed at match. A COMMAND_SET block
+  (`command_set` of >= 2 items alongside the `approval_id`) activates one
+  `COMMAND_SET` grant covering the whole chain; each sub-command is consumed
+  byte-for-byte at its own match. See "Batch / COMMAND_SET -- wired" above.
+- **Without `approval_id` and without a `command_set`** -- you are presenting
+  one T3 plan before attempting; the orchestrator gates on user consent before
+  any execution. There is no state where a `command_set` appears without an
+  `approval_id` -- batching is always minted at the block, never declared
+  ahead of an attempt.
 
 ## Examples
 

@@ -1,20 +1,24 @@
 """Tests for the deterministic, content-derived COMMAND_SET approval_id.
 
-These tests prove the fix for the cross-session miss on plan-first COMMAND_SET
-approvals: the SubagentStop intake mints a CONTENT-derived id (not uuid4) so the
-orchestrator can reproduce the SAME id from the command_set it reads in the
-contract, with NO DB search.
+The COMMAND_SET producer is the compound-command intake in bash_validator
+(``_validate_compound_command`` -> ``decide_t3_outcome(command_set=...)``): a
+chain ``a && b`` of >= 2 T3 sub-commands mints ONE pending whose id is derived
+from the sub-command strings via ``gaia.approvals.store.derive_command_set_id``.
+The id is CONTENT-derived (not uuid4) so a retry of the same chain reproduces
+the same id and reuses the pending via fingerprint dedup.
 
 Covers:
   * derive_command_set_id() is deterministic and order-sensitive.
-  * The intake (_intake_command_set_pending) writes the pending row under the
-    id derive_command_set_id() produces over the same (post-filter) commands.
-  * The orchestrator-side derivation (the gaia.approvals.store function the CLI
-    `derive-id` calls) yields the SAME id as the DB-minted pending row -- no
-    search needed.
+  * A pending inserted under a supplied derived id (the exact bash_validator
+    path) carries an intact hash chain and a verifiable fingerprint.
   * Singular T3 approvals still use a uuid4 id (unaffected).
-  * Fingerprint dedup / idempotency still holds, and the deterministic id flows
-    through verify_fingerprint / chain integrity unchanged.
+  * Fingerprint dedup / idempotency still holds (and wins over a supplied id).
+
+Note: the plan-first SubagentStop intake (``_intake_command_set_pending``) and
+its CLI mirror (``gaia approvals derive-id``) were retired -- the orchestrator
+has no shell to reproduce an id, so that flow never reached it. The remaining
+producer is bash_validator's compound-command mint, exercised end-to-end by
+tests/integration/test_command_set_chain_ac8.py.
 """
 
 from __future__ import annotations
@@ -37,7 +41,6 @@ from gaia.approvals.store import (  # noqa: E402
     get_by_id,
 )
 from gaia.approvals.chain import (  # noqa: E402
-    canonical_payload,
     fingerprint_payload,
     validate_chain,
     verify_fingerprint,
@@ -95,82 +98,31 @@ def test_derive_ignores_rationale_and_session():
 
 
 # ---------------------------------------------------------------------------
-# THE PROOF: intake mint-id == derive_command_set_id == orchestrator derivation
+# The bash_validator path: pending inserted under the supplied derived id
+# carries an intact hash chain and a verifiable fingerprint.
 # ---------------------------------------------------------------------------
 
-def test_intake_pending_row_id_equals_derived_id(gaia_db):
-    """The id _intake_command_set_pending writes as the pending row id equals
-    derive_command_set_id() over the same (post-filter mutative) commands.
-    """
-    from modules.agents.handoff_persister import _intake_command_set_pending
-
-    # All mutative so the filter keeps them all.
-    commands = ["git push origin main", "terraform apply -auto-approve"]
-    approval_req = {
-        "command_set": _command_set(commands),
-        # plan-first: NO approval_id
-    }
-
-    minted_id = _intake_command_set_pending(
-        approval_req, agent_id="agent-x", session_id="sess-1"
-    )
-    assert minted_id is not None
-    assert minted_id.startswith("P-")
-
-    # Orchestrator-side derivation: it has only the command strings (post-filter
-    # they are all mutative here), no DB access.
-    orchestrator_id = derive_command_set_id(commands)
-    assert minted_id == orchestrator_id, (
-        f"mint-id {minted_id!r} must equal orchestrator-derived id {orchestrator_id!r}"
-    )
-
-    # The pending row actually exists under that id (no search was needed to find it).
-    row = get_by_id(minted_id)
-    assert row is not None
-    assert row["status"] == "pending"
-
-
-def test_intake_filters_nonmutative_before_deriving(gaia_db):
-    """When the raw command_set mixes non-mutative commands, the intake derives
-    over the POST-FILTER mutative list -- and the orchestrator reproduces it by
-    applying the same filter (here we feed the post-filter list directly).
-    """
-    from modules.agents.handoff_persister import (
-        _intake_command_set_pending,
-        _filter_mutative_command_set,
-    )
-
-    raw_commands = ["ls -la", "git push origin main", "cat file", "terraform apply"]
-    approval_req = {"command_set": _command_set(raw_commands)}
-
-    minted_id = _intake_command_set_pending(
-        approval_req, agent_id="agent-y", session_id="sess-2"
-    )
-    assert minted_id is not None
-
-    # Reproduce the orchestrator path: same filter, then derive.
-    filtered = _filter_mutative_command_set(
-        [{"command": c, "rationale": ""} for c in raw_commands]
-    )
-    filtered_cmds = [it["command"] for it in filtered]
-    assert minted_id == derive_command_set_id(filtered_cmds)
-    # Sanity: the non-mutative ls/cat were dropped before derivation.
-    assert "ls -la" not in filtered_cmds
-    assert "cat file" not in filtered_cmds
-
-
 def test_derived_id_flows_through_fingerprint_and_chain(gaia_db):
-    """The deterministic id still carries an intact hash chain and a verifiable
-    fingerprint -- the security properties are unchanged.
+    """A COMMAND_SET pending minted the way bash_validator does it -- supplying
+    the content-derived id to insert_requested -- still carries an intact hash
+    chain and a verifiable fingerprint. The security properties are unchanged.
     """
-    from modules.agents.handoff_persister import _intake_command_set_pending
-
     commands = ["git push origin main", "gcloud run deploy svc"]
-    approval_req = {"command_set": _command_set(commands)}
-    minted_id = _intake_command_set_pending(
-        approval_req, agent_id="agent-z", session_id="sess-3"
+    supplied = derive_command_set_id(commands)
+    sealed_payload = {
+        "operation": "COMMAND_SET",
+        "exact_content": commands[0],
+        "scope": "git",
+        "risk_level": "medium",
+        "rollback_hint": None,
+        "rationale": "release batch",
+        "commands": commands,
+        "command_set": _command_set(commands),
+    }
+    minted_id = insert_requested(
+        sealed_payload, agent_id="agent-z", session_id="sess-3", approval_id=supplied
     )
-    assert minted_id == derive_command_set_id(commands)
+    assert minted_id == supplied
 
     row = get_by_id(minted_id)
     payload_json = row["payload_json"]
@@ -255,66 +207,3 @@ def test_fingerprint_dedup_reuses_existing_pending(gaia_db):
     finally:
         con.close()
     assert len(rows) == 1
-
-
-def test_intake_idempotent_same_command_set(gaia_db):
-    """Two identical plan-first command_sets map to the same id (matches the
-    existing fingerprint idempotency -- acceptable per design).
-    """
-    from modules.agents.handoff_persister import _intake_command_set_pending
-
-    commands = ["git push origin main", "terraform apply"]
-    req = {"command_set": _command_set(commands)}
-    a = _intake_command_set_pending(dict(req), agent_id="a", session_id="s1")
-    b = _intake_command_set_pending(dict(req), agent_id="a", session_id="s2")
-    assert a == b == derive_command_set_id(commands)
-
-
-# ---------------------------------------------------------------------------
-# CLI derive-id mirrors the store function
-# ---------------------------------------------------------------------------
-
-def test_cli_derive_id_matches_store(monkeypatch):
-    """`gaia approvals derive-id` (cmd_derive_id) yields the same id as the
-    store function for the same post-filter command list.
-    """
-    import importlib
-    sys.path.insert(0, str(_REPO_ROOT / "bin"))
-    approvals_cli = importlib.import_module("cli.approvals")
-
-    commands = ["git push origin main", "terraform apply -auto-approve"]
-
-    class _Args:
-        commands_json = '[{"command": "git push origin main"}, {"command": "terraform apply -auto-approve"}]'
-        no_filter = False
-        json = True
-
-    captured = {}
-    monkeypatch.setattr("builtins.print", lambda *a, **k: captured.setdefault("out", a[0] if a else ""))
-    rc = approvals_cli.cmd_derive_id(_Args())
-    assert rc == 0
-    import json as _json
-    out = _json.loads(captured["out"])
-    assert out["approval_id"] == derive_command_set_id(commands)
-
-
-def test_cli_derive_id_reports_non_batch(monkeypatch):
-    """With fewer than 2 mutative commands after filter, derive-id reports no
-    COMMAND_SET (singular path owns it) and exits 1.
-    """
-    import importlib
-    sys.path.insert(0, str(_REPO_ROOT / "bin"))
-    approvals_cli = importlib.import_module("cli.approvals")
-
-    class _Args:
-        commands_json = '["ls -la", "git push origin main"]'  # only 1 mutative
-        no_filter = False
-        json = True
-
-    captured = {}
-    monkeypatch.setattr("builtins.print", lambda *a, **k: captured.setdefault("out", a[0] if a else ""))
-    rc = approvals_cli.cmd_derive_id(_Args())
-    assert rc == 1
-    import json as _json
-    out = _json.loads(captured["out"])
-    assert out["approval_id"] is None

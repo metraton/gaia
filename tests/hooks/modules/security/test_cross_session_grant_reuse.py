@@ -16,7 +16,7 @@ PENDING->CONSUMED replay guard, expires_at TTL):
   * _find_pending_in_db()          -- dedup queries all_sessions=True.
   * insert_requested()             -- fingerprint idempotency: identical payload
                                       reuses the existing pending id.
-  * APPROVAL_GRANT_TTL_MINUTES = 60 -- grant-lifetime source (distinct from the
+  * APPROVAL_GRANT_TTL_MINUTES = 5 -- grant-lifetime source (distinct from the
                                       24h pending TTL, which is unchanged).
   * _consumed_grant_exists()       -- session-agnostic CONSUMED replay guard.
 
@@ -378,11 +378,11 @@ def test_find_pending_in_db_cross_session(iso_db):
 # 7. insert_semantic_grant default TTL is 60 minutes
 # ---------------------------------------------------------------------------
 
-def test_grant_ttl_default_is_60_minutes(iso_db):
+def test_grant_ttl_default_is_5_minutes(iso_db):
     from gaia.store.writer import insert_semantic_grant, APPROVAL_GRANT_TTL_MINUTES
     import gaia.store.writer as swriter
 
-    assert APPROVAL_GRANT_TTL_MINUTES == 60
+    assert APPROVAL_GRANT_TTL_MINUTES == 5
 
     command = "terraform apply"
     approval_id = "P-ttl-default-test"
@@ -410,11 +410,11 @@ def test_grant_ttl_default_is_60_minutes(iso_db):
     expires = datetime.strptime(row["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
         tzinfo=timezone.utc
     )
-    # expires_at should be ~60 min after the call instant (allow 2-min slack).
-    lower = before + timedelta(minutes=60) - timedelta(minutes=2)
-    upper = after + timedelta(minutes=60) + timedelta(minutes=2)
+    # expires_at should be ~5 min after the call instant (allow 2-min slack).
+    lower = before + timedelta(minutes=5) - timedelta(minutes=2)
+    upper = after + timedelta(minutes=5) + timedelta(minutes=2)
     assert lower <= expires <= upper, (
-        f"expires_at {expires} not ~60min from now ({before}..{after})"
+        f"expires_at {expires} not ~5min from now ({before}..{after})"
     )
 
 

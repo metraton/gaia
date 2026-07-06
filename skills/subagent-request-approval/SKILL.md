@@ -48,16 +48,14 @@ The `approval_id` is the `P-{...}` token tying this request to its `REQUESTED`
 row in the DB. Fields written only in prose are invisible to the presentation --
 the user would approve blind.
 
-**What your relay is for: same-turn immediacy.** Your `approval_request` is the
-orchestrator's source only for the CURRENT turn. The orchestrator's primary
-source is the per-turn `[PENDING-APPROVALS-VERIFIED]` block injected at
-`UserPromptSubmit`, which carries every pending that has survived >= 1 turn,
-already DB-read and fingerprint-verified. But that block was built before you
-ran this turn, so a pending you mint now is not in it yet -- the orchestrator
-presents it from your relay until the next turn's block picks it up. You emit the
-same fields either way; nothing on your side changes. The orchestrator never
-dispatches a subagent to verify or derive your request -- integrity is enforced
-at grant activation, not at presentation.
+**What your relay is for: in-loop, same-session presentation.** Your
+`approval_request` is the orchestrator's source for presenting this approval to
+the user. Approvals are in-loop and single-session: there is no per-turn or
+cross-session resurfacing of pendings, so the orchestrator presents from your
+relay in the same turn/session you emit it -- it does not wait for the pending
+to reappear later. The orchestrator never dispatches a subagent to verify or
+derive your request -- integrity is enforced at grant activation, not at
+presentation.
 
 ## Non-negotiable rules
 
@@ -71,64 +69,63 @@ at grant activation, not at presentation.
   attempt of a not-yet-pending command mints a new token and churns the audit
   trail. If you lost the `approval_id`, re-attempt once for a new one.
 - **Never author the payload or fingerprint.** The hook built it; relay, do not recompute.
-- **The grant is single-use.** It is consumed on your first matching retry. A
-  second run within the TTL will not match -- it needs a fresh approval.
+- **The grant is single-use.** It is consumed at the match, before the command
+  executes. A second run -- or a retry after the command executed and failed --
+  will not match; it needs a fresh approval. (The only survival case is a
+  dispatch that dies before reaching the command: the grant stays live for its
+  5-minute TTL and a re-dispatch within that window reuses it.)
 
-## Batch / many-command intents -- COMMAND_SET as a judgment, not a default
+## Batch / many-command intents -- COMMAND_SET happens at the block, not by declaration
 
-Grouping commands under one consent is a **judgment call you earn, not the
-reflex you reach for**. The default is singular, just-in-time approval: attempt
-the command, let the hook block it, request that one. Reach for `COMMAND_SET`
-**only when all three hold** -- the batch is already **known** (the commands are
-determined, not predicted), there are **>= 2** of them, and grouping **actually
-reduces friction** versus approving each as it arrives. If any fails (a single
-command, a sequential flow where the next depends on the last's output, or a
-set you cannot yet name), use the singular path. The principle with its
-consequence: **grouping trades the user's per-command visibility for fewer
-prompts; make that trade only when the batch is real and known, because a batch
-you guessed at asks the user to approve commands that may never run.**
+Grouping commands under one consent is **not something you construct** -- it is
+something the hook detects when you attempt the commands. There is no
+plan-first step where you declare a batch before attempting anything. The
+mechanism is identical in spirit to the singular flow -- **attempt first, let
+the hook decide, relay the `approval_id` it gives you**:
 
-The hard prohibition this rules out: **never invent or predict commands just to
-have something to group.** Speculatively enumerating a `command_set` to "save
-turns" inverts the cost -- it manufactures ceremony (a multi-command consent
-surface) around work that was never determined, which is more overhead than the
-just-in-time blocks it was meant to avoid. If you do not already know the
-commands, you do not have a batch.
+- Run each independent T3 command as its own Bash call, one at a time, and let
+  each be blocked and approved on its own. This remains the default.
+- Run a **single Bash call that chains >= 2 T3 sub-commands you already know
+  belong together** (e.g. `git add -A && git commit -m 'v1.2.0' && git push
+  origin main`) only when the commands are genuinely meant to execute as one
+  compound operation. If the hook classifies **two or more** of the chained
+  sub-commands as ungranted T3, it groups them under **one** consent
+  automatically -- you do not ask for that grouping, you do not build a
+  `command_set` field, and you do not decide whether batching happens.
 
-When the three conditions do hold, emit an `APPROVAL_REQUEST` whose
-`approval_request` carries a `command_set` -- a list of `{command, rationale}`
-items -- and **no `approval_id`** (nothing has been attempted yet). The
-per-command rationale is what makes the grouped consent honest: the user sees
-why each *known* command is in the batch before approving (D10).
+**Never chain commands solely to manufacture a batch.** Reaching for `&&`
+between commands that do not need to run together, just to reduce the number of
+approvals, inverts the cost the same way inventing commands would: it trades
+the user's per-command visibility for a grouping you engineered rather than one
+that reflects real, already-known work.
 
-What happens to that envelope: the SubagentStop processor
-(`hooks/modules/agents/handoff_persister.py` -> `_intake_command_set_pending`)
-reads the `command_set`, and when it holds **>= 2** items it calls
-`gaia.approvals.store.insert_requested` with a payload containing the
-`command_set` key. That mints **exactly ONE pending `COMMAND_SET` approval**
-with one `approval_id` -- so a batch of N commands is **one consent, N
-commands**, not N approvals. A set of `<= 1` item is not a batch: it does not
-mint a COMMAND_SET (use the normal singular block path for a single command).
+## What arrives when the hook groups a chain
 
-You still emit the `command_set` with **no `approval_id`** -- nothing changes on
-your side. What changed underneath: the minted `approval_id` is now
-**content-derived** from the command_set
+When the hook's compound-command classifier
+(`bash_validator._validate_compound_command`) finds **>= 2** ungranted-T3
+sub-commands in the chain you ran, it mints **exactly ONE** `COMMAND_SET`
+pending covering the whole chain (`decide_t3_outcome(command_set=...)`) and
+denies the Bash call with the **same denial shape as a singular block**: a
+`[T3_BLOCKED]` message ending in `approval_id: P-{...}`. You relay that
+`approval_id` into your `approval_request` **exactly as you would for one
+command** -- there is no separate contract shape for a batch. The hook has
+already built the sealed payload's `commands` and `command_set` fields for you
+from the chain; you never author them.
+
+The only internal difference from a singular block: for a COMMAND_SET the
+`approval_id` is **content-derived** from the chain's commands
 (`derive_command_set_id` -> `P-<first 32 hex of sha256(canonical commands)>`),
-not a random uuid4. You do not compute or emit it (you cannot hash reliably, and
-you have nothing to attempt yet); the value is purely internal. The reason it
-matters: the content-derived id is reproducible without a uuid4 that could be
-lost across sessions. Once the minted pending has survived a turn, the
-orchestrator reads it -- with all N commands -- straight from the injected
-`[PENDING-APPROVALS-VERIFIED]` block (no DB search, no derive-dispatch); for the
-turn you mint it in, the orchestrator presents from the `command_set` in your
-relay. Your contract stays the same -- `command_set` of `{command, rationale}`
-items, no `approval_id`.
+not a random uuid4 -- so retrying the identical chain reproduces the identical
+id and reuses the same pending. This is purely internal to the hook; you relay
+whatever `approval_id` the block gives you, singular or batch, the same way.
 
 On the user's approval, that one pending activates into a single `COMMAND_SET`
-grant (60-minute TTL); each item is then consumed byte-for-byte on its own
-retry, with replay protection, until the whole set is `CONSUMED`. See
-`reference.md` for the envelope shape, the intake processor, the grant TTL, and
-the consume path.
+grant (5-minute TTL, aligned to the singular grant); each sub-command is then
+consumed byte-for-byte **at its match, before it executes**, with replay
+protection, until the whole set is `CONSUMED`. Approving is the order to
+execute -- the orchestrator re-dispatches the approved chain immediately. See
+`reference.md` for the envelope shape, the chain-intake classifier, the grant
+TTL, and the consume path.
 
 ## Pointers
 
@@ -142,7 +139,7 @@ the consume path.
 - **Approval fields in prose only** -- the orchestrator parses JSON; prose is invisible and the user approves blind.
 - **Paraphrased `exact_content`** -- one drifted token is a re-block.
 - **Fabricating `approval_id`, fingerprint, or `sealed_payload`** -- the orchestrator validates against the DB; invented values never match.
-- **Reusing a prior approval** -- single-use, consumed on first retry.
+- **Reusing a prior approval** -- single-use, consumed at match (before execution); a used grant, or one whose command already ran, needs a fresh approval.
 - **Emitting `batch_scope`** -- the field does not exist; it is ignored.
-- **Grouping by reflex** -- reaching for `COMMAND_SET` because a batch *might* form, instead of because a known batch of >= 2 already exists that grouping makes cheaper. The default is singular just-in-time; grouping is the exception you justify.
-- **Predicting commands to fill a batch** -- inventing commands you have not determined so a `command_set` has >= 2 items. You cannot ask consent for work that does not yet exist; the speculative batch is pure overhead.
+- **Authoring a `command_set` yourself** -- you never build or declare one; the hook mints it from a chain you attempted, and you relay the resulting `approval_id` exactly like a singular block.
+- **Chaining commands with `&&` just to force a batch** -- manufacturing a compound command out of unrelated work to get one consent instead of several is the same violation as inventing commands: only chain work that is genuinely meant to run together.

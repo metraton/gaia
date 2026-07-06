@@ -330,15 +330,23 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
 
 ## Notes on multi-command APPROVAL_REQUEST sweeps
 
-**Just-in-time (unknown batch):** when T3 commands appear one at a time as the
-agent works, each blocked command produces its own `APPROVAL_REQUEST` with an
+**Per-command (default):** when T3 commands appear one at a time as the agent
+works, each blocked command produces its own `APPROVAL_REQUEST` with an
 `approval_id` (shape identical to example 4 above). Do not emit `batch_scope`
 -- it is ignored.
 
-**Plan-first (known batch):** when the agent knows >= 2 T3 commands up-front,
-emit ONE `APPROVAL_REQUEST` carrying a `command_set` list of `{command,
-rationale}` items and **no** `approval_id`. The SubagentStop intake
-(`handoff_persister._intake_command_set_pending`) mints a single `COMMAND_SET`
-approval; the orchestrator presents it as one consent covering all N commands.
-Each command then runs on its own retry, byte-for-byte matched and consumed
-individually.
+**Compound-command batch (hook-minted, not agent-declared):** there is no
+plan-first step and no `gaia approvals derive-id` call -- you never construct
+or request a batch id yourself. When the agent runs a single Bash call that
+chains >= 2 T3 sub-commands it already knows belong together (e.g. `git add
+-A && git commit -m 'v1.2.0' && git push origin main`), and the hook's
+compound-command classifier (`bash_validator._validate_compound_command`)
+finds >= 2 of those sub-commands ungranted, it blocks the whole call and mints
+ONE `COMMAND_SET` pending covering the chain (`decide_t3_outcome(command_set=
+...)`), with a single content-derived `approval_id`
+(`derive_command_set_id`). The block's denial message ends in that
+`approval_id`, exactly like a singular block -- relay it verbatim into
+`approval_request` the same way as example 4; you do not author the
+`command_set` field. TTL is 5 minutes, same as the singular grant. Each
+sub-command is then consumed byte-for-byte on its own retry, before it
+executes, until the whole set is `CONSUMED`.

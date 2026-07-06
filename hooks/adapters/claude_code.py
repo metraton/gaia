@@ -1433,18 +1433,12 @@ class ClaudeCodeAdapter(HookAdapter):
                 preserve_nonces=preserved_nonces if preserved_nonces else None,
             )
 
-            # Consume all confirmed grants for this session -- the subagent
-            # is done, so grants should not survive past its lifetime.
-            try:
-                from modules.security.approval_grants import consume_session_grants
-                consumed = consume_session_grants(session_id)
-                if consumed:
-                    logger.info(
-                        "SubagentStop consumed %d grant(s) for session %s",
-                        consumed, session_id[:12],
-                    )
-            except Exception as exc:
-                logger.debug("Grant consumption at SubagentStop failed (non-fatal): %s", exc)
+            # NOTE (approvals redesign, M1): grants are consumed AT THE MATCH by
+            # bash_validator (PENDING->CONSUMED when the command is authorized in
+            # PreToolUse), NOT swept at SubagentStop. A grant that was never
+            # presented to a matching retry stays PENDING and expires on its own
+            # short (5m) TTL, so it must survive the subagent ending. The former
+            # consume_session_grants() sweep has been removed.
 
             commands_executed = extract_commands_from_evidence(agent_output)
 

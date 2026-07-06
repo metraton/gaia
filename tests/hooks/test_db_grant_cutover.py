@@ -627,3 +627,142 @@ class TestFlagPathFullCycleViaValidator:
         assert n_pending == 1, (
             f"identical flag-path retries must keep ONE pending row, found {n_pending}"
         )
+
+
+# ---------------------------------------------------------------------------
+# M1 AC-2: the grant is consumed AT THE MATCH, not on execution success
+# ---------------------------------------------------------------------------
+
+class TestConsumeAtMatch:
+    """The grant flips PENDING->CONSUMED the moment bash_validator AUTHORIZES the
+    command (PreToolUse, before it runs). Consumption does not depend on the
+    command's exit: a match consumes it. A second validate() of the same command
+    is therefore denied.
+    """
+
+    def _block_and_activate(self, command, session_id):
+        """Block the command (mint pending), then simulate user approval by
+        activating the grant. Returns the approval_id (now a PENDING grant)."""
+        import re
+        from modules.tools.bash_validator import validate_bash_command
+        from modules.security.approval_grants import activate_db_pending_by_prefix
+
+        blocked = validate_bash_command(
+            command, is_subagent=True, session_id=session_id
+        )
+        assert not blocked.allowed, "T3 command must block on first attempt"
+        reason = blocked.block_response["hookSpecificOutput"]["permissionDecisionReason"]
+        m = re.search(r"approval_id:\s*(P-[0-9a-f-]+)", reason)
+        assert m, f"deny reason must carry an approval_id: {reason}"
+        approval_id = m.group(1)
+
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        act = activate_db_pending_by_prefix(nonce_prefix, current_session_id=session_id)
+        assert act.success, f"activation must succeed: {act.reason}"
+        return approval_id
+
+    def test_match_consumes_grant_and_stamps_consumed_at(self, file_db):
+        """The authorizing validate() marks the row CONSUMED with consumed_at."""
+        db_path, assert_con = file_db
+        command = "git push origin main"
+        session_id = "test-cutover-session"
+
+        from modules.tools.bash_validator import validate_bash_command
+
+        approval_id = self._block_and_activate(command, session_id)
+
+        # Before the match: the grant is PENDING, not yet consumed.
+        row_before = assert_con.execute(
+            "SELECT status, consumed_at FROM approval_grants WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        assert row_before[0] == "PENDING", "grant must be PENDING before the match"
+        assert row_before[1] is None, "consumed_at must be unset before the match"
+
+        # The match: bash_validator AUTHORIZES the command (PreToolUse).
+        allowed = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        assert allowed.allowed, f"grant must authorize the retry, got: {allowed.reason}"
+
+        # Consumption happened AT the match, independent of any execution outcome.
+        row_after = assert_con.execute(
+            "SELECT status, consumed_at FROM approval_grants WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        assert row_after[0] == "CONSUMED", (
+            f"grant must be CONSUMED at the match, got: {row_after[0]!r}"
+        )
+        assert row_after[1] is not None, "consumed_at must be stamped at the match"
+
+    def test_second_validate_of_same_command_is_denied(self, file_db):
+        """A second validate() of the same command is denied (single-use)."""
+        db_path, assert_con = file_db
+        command = "kubectl delete pod mypod"
+        session_id = "test-cutover-session"
+
+        from modules.tools.bash_validator import validate_bash_command
+
+        self._block_and_activate(command, session_id)
+
+        first = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        assert first.allowed, "first (matching) validate must authorize"
+
+        second = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        assert not second.allowed, (
+            "second validate of the same command must be denied -- the grant was "
+            "consumed at the first match (replay protection)"
+        )
+
+
+# ---------------------------------------------------------------------------
+# M1 AC-3: an unconsumed grant stays alive and is matched by a fresh validate()
+# ---------------------------------------------------------------------------
+
+class TestGrantReuse:
+    """A grant created but NEVER presented to a matching validate() (the subagent
+    died / lost context before reaching the command) stays PENDING and alive, and
+    is matched by a fresh validate() within the (5-minute) TTL window.
+    """
+
+    def test_unconsumed_grant_reusable_within_ttl(self, file_db):
+        """Grant activated but not matched stays PENDING, then a fresh validate()
+        within the TTL matches and authorizes it."""
+        db_path, assert_con = file_db
+        command = "terraform apply -auto-approve"
+        session_id = "test-cutover-session"
+
+        import gaia.approvals.store as astore
+        from modules.security.approval_grants import (
+            activate_db_pending_by_prefix,
+            check_approval_grant,
+        )
+        from modules.tools.bash_validator import validate_bash_command
+
+        payload = _build_sealed_payload(command)
+        approval_id = astore.insert_requested(payload, session_id=session_id)
+        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
+        act = activate_db_pending_by_prefix(nonce_prefix, current_session_id=session_id)
+        assert act.success, f"activation must succeed: {act.reason}"
+
+        # The subagent never presented the command to validate(): the grant is
+        # still PENDING and its expires_at is in the future (fresh, within TTL).
+        row = assert_con.execute(
+            "SELECT status, expires_at FROM approval_grants WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        assert row[0] == "PENDING", "an un-presented grant must stay PENDING"
+
+        # A fresh validate() within the window still matches the live grant...
+        grant = check_approval_grant(command, session_id=session_id)
+        assert grant is not None, (
+            "an unconsumed grant must be matchable by a fresh check within its TTL"
+        )
+
+        # ...and authorizing through the validator consumes it (single-use).
+        allowed = validate_bash_command(command, is_subagent=True, session_id=session_id)
+        assert allowed.allowed, f"fresh validate must authorize the live grant: {allowed.reason}"
+
+        row2 = assert_con.execute(
+            "SELECT status FROM approval_grants WHERE approval_id = ?",
+            (approval_id,),
+        ).fetchone()
+        assert row2[0] == "CONSUMED", "the fresh match must consume the grant"

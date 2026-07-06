@@ -8,7 +8,6 @@ from disk, processes, and external state.
 
 import json
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -21,7 +20,6 @@ from modules.session import session_manifest
 from modules.session.session_manifest import (
     build_agentic_loop_block,
     build_environment_block,
-    build_pending_approvals_block,
     build_session_context,
     build_workspace_memory_block,
 )
@@ -124,144 +122,15 @@ class TestBuildAgenticLoopBlock:
 
 
 # ---------------------------------------------------------------------------
-# build_pending_approvals_block
-# ---------------------------------------------------------------------------
-
-def _make_fake_pending(nonce_short: str, session_id: str):
-    """Build a filesystem-style fake pending dict."""
-    return {
-        "nonce_short": nonce_short,
-        "nonce_full": nonce_short + ("0" * (32 - len(nonce_short))),
-        "command": f"fake-cmd-{nonce_short}",
-        "verb": "update",
-        "category": "MUTATIVE",
-        "age_human": "1 hora",
-        "timestamp": time.time() - 3600,
-        "context": {},
-        "scope_type": "semantic_signature",
-        "cross_session": False,
-        "pending_session_id": session_id,
-    }
-
-
-def _make_fake_pending_db(nonce_short: str, session_id: str):
-    """Build a DB-style fake pending dict (as returned by scan_pending_db)."""
-    nonce_full = nonce_short + ("0" * (32 - len(nonce_short)))
-    return {
-        "nonce_short": nonce_short,
-        "nonce_full": nonce_full,
-        "command": f"fake-db-cmd-{nonce_short}",
-        "verb": "delete",
-        "category": "DESTRUCTIVE",
-        "age_human": "1 hora",
-        "timestamp": time.time() - 3600,
-        "context": {"source": "db", "description": "test op", "risk": "high", "rollback": None},
-        "scope_type": "db",
-        "cross_session": False,
-        "pending_session_id": session_id,
-        "_approval_id": f"P-{nonce_full}",
-    }
-
-
-class TestBuildPendingApprovalsBlock:
-    def test_returns_empty_when_no_pendings(self, monkeypatch):
-        import modules.session.pending_scanner as ps
-        monkeypatch.setattr(ps, "scan_pending_db", lambda: [])
-        monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-empty")
-
-        result = build_pending_approvals_block()
-        assert result == ""
-
-    def test_returns_actionable_block_with_db_pendings(self, monkeypatch):
-        """DB pendings (primary path) must surface in the [ACTIONABLE] block."""
-        import modules.session.pending_scanner as ps
-        db_pendings = [_make_fake_pending_db("abcd1234", "sess-main")]
-        monkeypatch.setattr(ps, "scan_pending_db", lambda: db_pendings)
-        monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-main")
-
-        result = build_pending_approvals_block()
-        assert "[ACTIONABLE]" in result
-        assert "P-abcd1234" in result
-
-    def test_returns_empty_when_db_empty(self, monkeypatch):
-        """When DB returns no pending rows, the block is empty (DB-only since Task E)."""
-        import modules.session.pending_scanner as ps
-        monkeypatch.setattr(ps, "scan_pending_db", lambda: [])
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-fs")
-
-        result = build_pending_approvals_block()
-        assert result == "", (
-            "Task E: FS supplement is retired; an empty DB must yield an empty block."
-        )
-
-    def test_db_is_sole_source_multiple_pendings(self, monkeypatch):
-        """Multiple DB pendings all surface; no deduplication needed since DB is sole source."""
-        import modules.session.pending_scanner as ps
-        db_pendings = [
-            _make_fake_pending_db("abcd1234", "sess-x"),
-            _make_fake_pending_db("deadbeef", "sess-x"),
-        ]
-        monkeypatch.setattr(ps, "scan_pending_db", lambda: db_pendings)
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-x")
-
-        result = build_pending_approvals_block()
-        assert "[ACTIONABLE]" in result
-        assert "P-abcd1234" in result
-        assert "P-deadbeef" in result
-        # Each approval must appear exactly once.
-        assert result.count("P-abcd1234") == 1
-        assert result.count("P-deadbeef") == 1
-
-    def test_failsafe_when_db_scanner_raises(self, monkeypatch):
-        """When scan_pending_db raises, the block must still be "" (fail-safe)."""
-        import modules.session.pending_scanner as ps
-
-        def _boom_db():
-            raise RuntimeError("simulated DB failure")
-
-        monkeypatch.setattr(ps, "scan_pending_db", _boom_db)
-        monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-x")
-
-        # Must not raise.
-        assert build_pending_approvals_block() == ""
-
-    def test_failsafe_when_scanner_raises(self, monkeypatch):
-        """When scan_pending_db raises, return "" without propagating (DB-only since Task E)."""
-        import modules.session.pending_scanner as ps
-
-        def _boom(*a, **kw):
-            raise RuntimeError("simulated scanner failure")
-
-        monkeypatch.setattr(ps, "scan_pending_db", _boom)
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-x")
-
-        # Must not raise.
-        assert build_pending_approvals_block() == ""
-
-    def test_command_set_pending_surfaces_correctly(self, monkeypatch):
-        """A COMMAND_SET DB pending (multi-command) must surface with
-        the correct P-id and command summary in the [ACTIONABLE] block."""
-        import modules.session.pending_scanner as ps
-        cs_pending = _make_fake_pending_db("cs001234", "sess-y")
-        cs_pending["command"] = "[2 commands] kubectl delete pod foo"
-        monkeypatch.setattr(ps, "scan_pending_db", lambda: [cs_pending])
-        monkeypatch.setattr(ps, "scan_pending_approvals", lambda *a, **kw: [])
-        monkeypatch.setenv("CLAUDE_SESSION_ID", "sess-y")
-
-        result = build_pending_approvals_block()
-        assert "[ACTIONABLE]" in result
-        assert "P-cs001234" in result
-        assert "[2 commands]" in result
-
-
-# ---------------------------------------------------------------------------
 # build_session_context (assembler)
 # ---------------------------------------------------------------------------
 
 class TestBuildSessionContext:
+    """Pending approvals are no longer surfaced (M2): the assembler concatenates
+    Environment, Projects, agentic-loop resume, and Workspace Memory -- there is
+    no pending-approvals block in the join.
+    """
+
     def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
         monkeypatch.setattr(
             session_manifest, "build_environment_block", lambda: "ENV BLOCK"
@@ -273,21 +142,19 @@ class TestBuildSessionContext:
             session_manifest, "build_agentic_loop_block", lambda: "LOOP BLOCK"
         )
         monkeypatch.setattr(
-            session_manifest, "build_pending_approvals_block", lambda: "PEND BLOCK"
-        )
-        monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
         )
 
         result = build_session_context()
         assert result == (
-            "ENV BLOCK\n\nPROJ BLOCK\n\nLOOP BLOCK\n\nPEND BLOCK\n\nMEM BLOCK"
+            "ENV BLOCK\n\nPROJ BLOCK\n\nLOOP BLOCK\n\nMEM BLOCK"
         ), (
             "Blocks must be joined with exactly one blank line separator -- "
             "markdown convention; agents render this as paragraph breaks. "
-            "Project Context — Projects sits right after Environment. The "
-            "Contract Index is no longer injected into the session manifest."
+            "Project Context — Projects sits right after Environment. Pending "
+            "approvals are no longer part of the manifest."
         )
+        assert "[ACTIONABLE]" not in result
 
     def test_skips_empty_blocks_in_join(self, monkeypatch):
         """Empty blocks must not leave dangling blank lines in the output."""
@@ -304,14 +171,11 @@ class TestBuildSessionContext:
             session_manifest, "build_agentic_loop_block", lambda: ""
         )
         monkeypatch.setattr(
-            session_manifest, "build_pending_approvals_block", lambda: "PEND BLOCK"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda: ""
+            session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
         )
 
         result = build_session_context()
-        assert result == "ENV BLOCK\n\nPEND BLOCK"
+        assert result == "ENV BLOCK\n\nMEM BLOCK"
         assert "\n\n\n" not in result, (
             "Triple-newline indicates an empty block sneaked into the join."
         )
@@ -330,9 +194,6 @@ class TestBuildSessionContext:
             session_manifest, "build_agentic_loop_block", lambda: ""
         )
         monkeypatch.setattr(
-            session_manifest, "build_pending_approvals_block", lambda: ""
-        )
-        monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda: ""
         )
 
@@ -348,9 +209,6 @@ class TestBuildSessionContext:
         )
         monkeypatch.setattr(
             session_manifest, "build_agentic_loop_block", lambda: "LOOP"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_pending_approvals_block", lambda: "PEND"
         )
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda: ""

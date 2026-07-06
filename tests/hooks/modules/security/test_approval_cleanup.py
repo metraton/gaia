@@ -279,3 +279,98 @@ class TestErrorResilience:
 
         # Second row succeeded
         assert result is True
+
+
+# ---------------------------------------------------------------------------
+# M1 AC-3: SubagentStop hygiene must NOT consume unmatched grants
+# ---------------------------------------------------------------------------
+
+class TestSubagentStopHygiene:
+    """Grants are consumed AT THE MATCH by bash_validator; the former
+    consume_session_grants() sweep at SubagentStop has been removed (approvals
+    redesign, M1). A grant never presented to a matching retry must stay PENDING
+    and expire on its own short TTL -- SubagentStop leaves it untouched.
+    """
+
+    def test_consume_session_grants_removed(self):
+        """The SubagentStop grant sweep is fully removed (removal invariant)."""
+        import modules.security.approval_grants as ag
+
+        assert not hasattr(ag, "consume_session_grants"), (
+            "consume_session_grants must be fully removed (M1): SubagentStop no "
+            "longer sweeps grants -- consumption happens at the match."
+        )
+
+    def test_subagent_stop_does_not_consume_unmatched_grant(self, tmp_path, monkeypatch):
+        """A PENDING grant that no retry matched survives the subagent ending.
+
+        Since there is no SubagentStop grant sweep, an activated-but-never-matched
+        grant remains PENDING (matchable within its TTL) rather than being
+        consumed when the subagent stops.
+        """
+        import sqlite3
+        import gaia.store.writer as swriter
+        from modules.security.approval_scopes import (
+            SCOPE_SEMANTIC_SIGNATURE,
+            build_approval_signature,
+        )
+
+        db_path = tmp_path / "hygiene_grants.db"
+
+        def _make_db():
+            con = sqlite3.connect(str(db_path))
+            con.row_factory = sqlite3.Row
+            con.execute("PRAGMA foreign_keys = ON")
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS approval_grants (
+                    approval_id           TEXT PRIMARY KEY,
+                    agent_id              TEXT,
+                    session_id            TEXT,
+                    command_set_json      TEXT NOT NULL,
+                    scope                 TEXT NOT NULL DEFAULT 'COMMAND_SET',
+                    created_at            TEXT NOT NULL
+                        DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+                    expires_at            TEXT,
+                    status                TEXT NOT NULL DEFAULT 'PENDING',
+                    consumed_indexes_json TEXT,
+                    consumed_at           TEXT,
+                    revoked_at            TEXT
+                );
+                """
+            )
+            con.commit()
+            return con
+
+        _make_db().close()
+        monkeypatch.setattr(swriter, "_connect", lambda db_path=None: _make_db())
+
+        command = "terraform apply"
+        sig = build_approval_signature(
+            command,
+            scope_type=SCOPE_SEMANTIC_SIGNATURE,
+            danger_verb="apply",
+            danger_category="MUTATIVE",
+        )
+        assert sig is not None
+
+        res = swriter.insert_semantic_grant(
+            approval_id="P-hygiene-unmatched-0000",
+            command=command,
+            scope_signature=sig.to_dict(),
+            agent_id="a",
+            session_id="S_sub",
+        )
+        assert res.get("status") == "applied", f"grant insert failed: {res}"
+
+        # The subagent ends WITHOUT ever presenting the command to a matching
+        # retry. There is no SubagentStop grant sweep to consume it, so the grant
+        # must still be PENDING and matchable within its TTL (from any session).
+        row = swriter.check_db_semantic_grant(command, session_id="S_orch")
+        assert row is not None, (
+            "an unmatched grant must survive SubagentStop and stay matchable (M1)"
+        )
+        assert row["status"] == "PENDING", (
+            f"unmatched grant must remain PENDING after SubagentStop, "
+            f"got: {row['status']!r}"
+        )

@@ -40,42 +40,40 @@ itself never needs a verify-dispatch.
 The orchestrator has no shell. It MUST NOT dispatch a subagent solely to derive
 or verify an approval before presenting -- that dispatch is both unnecessary
 (the integrity check runs at activation, below) and harmful (its SubagentStop
-can sweep the very pending being verified). Instead, present from one of two
-**trusted** sources:
+can sweep the very pending being verified). Approvals are **in-loop and
+single-session**: there is no per-turn feed of previously-seen pendings
+anymore. Present from one of two **trusted**, in-session sources:
 
-1. **Primary -- the injected `[PENDING-APPROVALS-VERIFIED]` block.** A per-turn
-   hook (`hooks/modules/session/session_manifest.py`) injects, on every
-   `UserPromptSubmit`, every pending that has survived >= 1 turn. Each row in
-   that block has already been DB-read and fingerprint-verified by the hook
-   (`build_verified_pending_approvals` -- only rows whose payload re-canonicalizes
-   to the fingerprint stored on their `REQUESTED` event appear, each marked
-   `verified: true`). **Present directly from this block** -- the fields, the
-   full `approval_id`, and (for batches) the whole `command_set` with its minted
-   id are all there. No DB query, no `derive-id`, no dispatch.
-2. **Fallback -- same-turn relay.** A pending a subagent emits during the
-   CURRENT turn will not be in this turn's block yet: the block is built at
-   `UserPromptSubmit`, before the subagent ran. For that case present from the
-   subagent's relayed `approval_request`. This is justified because the pending
-   was freshly minted in THIS session by a trusted dispatch, AND integrity is
-   enforced at grant **activation** (`verify_fingerprint` fires when the user
-   selects the Approve label), not at presentation. The old pre-presentation
-   verify was redundant belt-and-suspenders; it is removed.
+1. **The subagent's same-turn relayed `approval_request`.** This is the normal
+   case: the pending was freshly minted THIS turn by a trusted dispatch, and
+   integrity is enforced at grant **activation** (`verify_fingerprint` fires
+   when the user selects the Approve label), not at presentation -- so no
+   pre-presentation verify dispatch is needed.
+2. **An explicit, user-invoked lookup.** If the user asks again later in the
+   same session ("ver P-XXXX", "aprobar P-XXXX" without a fresh relay in this
+   turn), read the pending via `gaia approvals show P-XXXX` per
+   `pending-approvals` -- a direct, user-driven query, not a proactive feed.
 
-Once the pending survives a turn it appears in the injected block, so the relay
-is only ever needed for the same-turn case.
+There is no automatic resurfacing of pendings across turns or sessions; do not
+look for or expect an injected verified-pendings block.
 
-**For a `command_set` (plan-first batch) you do not derive the id -- you read it
-from the block.** The hook mints the `approval_id` at SubagentStop
-(`_intake_command_set_pending` -- see Rule 3) from the **content** of the
-command_set (`derive_command_set_id` in `gaia/approvals/store.py`,
-`P-<first 32 hex of sha256(canonical(command list))>`). Once that pending has
-survived a turn, the `[PENDING-APPROVALS-VERIFIED]` block carries it with its
-minted `approval_id` and all N commands already attached -- so you read the id
-and the commands straight from the block. **No `gaia approvals derive-id`
-dispatch is needed.** For a command_set emitted in the CURRENT turn (not yet in
-the block), present from the subagent's relayed `approval_request`, which carries
-the same `command_set`; the content-derived id reaches you when the pending
-appears in the next turn's block.
+**The singular in-loop path is the clean case.** When the hook blocks one T3
+command, the subagent receives the `approval_id` in the `[T3_BLOCKED]` message
+and relays it in its `approval_request`. You present directly from that relay --
+the id is right there, no shell and no block needed.
+
+**A `command_set` batch arrives the same way.** When a subagent chains >= 2 T3
+sub-commands in one Bash call (e.g. `git add -A && git commit -m 'v1.2.0' &&
+git push origin main`) and the hook classifies >= 2 of them as ungranted T3, it
+mints ONE `COMMAND_SET` pending at block time
+(`bash_validator._validate_compound_command`) with a content-derived
+`approval_id` (`derive_command_set_id` in `gaia/approvals/store.py`,
+`P-<first 32 hex of sha256(canonical(command list))>`), and denies the Bash
+call with the same `[T3_BLOCKED]` shape as a singular block. The subagent
+relays that `approval_id` in its `approval_request` -- exactly like the
+singular path, no shell and no derive step needed on your side. There is no
+plan-first declaration to wait for: the batch id is always already in the
+relay you received this turn.
 
 ## Mandatory presentation -- 5 labeled fields + nonce-suffixed label
 
@@ -102,13 +100,12 @@ whose `id` starts with `P-{prefix}`. Without the suffix no grant is created.
 See `template.md` for the canonical layout and `reference.md` -> "GOOD vs BAD
 Examples" for full presentations.
 
-Fields above are extracted from your trusted source. From the injected
-`[PENDING-APPROVALS-VERIFIED]` block (the primary path) they appear under the
-canonical names shown here (`operation`, `exact_content`, `scope`, `risk_level`,
-`rationale`, `rollback_hint`). From a same-turn relayed `approval_request` (the
-fallback) the rollback field arrives under the key `rollback` -- map it to
-ROLLBACK the same way. Either way you copy values verbatim; you do not re-author
-them.
+Fields above are extracted from your trusted source -- the subagent's relayed
+`approval_request` (or, for a later-turn user query, the `gaia approvals show`
+result). In the `approval_request` the rollback field arrives under the key
+`rollback`; from `gaia approvals show` it arrives as `rollback_hint`. Map
+either to ROLLBACK the same way. Either way you copy values verbatim; you do
+not re-author them.
 
 ## Rules
 
@@ -116,40 +113,52 @@ them.
    A redirect, a `cd` prefix, a `time` wrapper, or an unapproved flag is a
    different statement and an immediate re-block on the retry. The runtime grant match is semantic (see `execution`), but the discipline at presentation is verbatim — any drift you tolerate at relay can become a re-block at retry.
 
-2. **Single-use, no carry-over.** Approval inserts one `SCOPE_SEMANTIC_SIGNATURE`
-   grant consumed by the first retry (`consume_db_semantic_grant` in
-   `gaia/store/writer.py`). A second invocation is a new APPROVAL_REQUEST.
+2. **Single-use, consumed at match, 5-minute TTL.** Approval inserts one
+   `SCOPE_SEMANTIC_SIGNATURE` grant that is consumed **at the moment the
+   retried command matches it** -- before it executes, not after
+   (`consume_db_semantic_grant` in `gaia/store/writer.py`) -- and lives for a
+   5-minute TTL. A second invocation, or a retry after the command executed and
+   failed, is a new APPROVAL_REQUEST. The one case the grant survives is a
+   dispatch that dies before reaching the command: a re-dispatch within the
+   5 minutes reuses the still-alive grant.
 
-3. **Batch grant is `COMMAND_SET` -- one consent, N commands.** Legacy
-   `verb_family` was removed; its replacement, `COMMAND_SET`, is now wired
-   end-to-end (intake, activation, consume). When a subagent emits a plan-first
-   `APPROVAL_REQUEST` carrying a `command_set` of >= 2 `{command, rationale}`
-   items and **no** `approval_id`, the SubagentStop processor
-   (`handoff_persister._intake_command_set_pending`) mints ONE pending
-   `COMMAND_SET` with one content-derived `approval_id`. Once that pending has
-   survived a turn it appears in the injected `[PENDING-APPROVALS-VERIFIED]`
-   block with its minted `approval_id` and all N commands -- **read the id and
-   commands from the block; do not dispatch `gaia approvals derive-id`.** (A
-   command_set emitted in the current turn is presented from the subagent's
-   relayed `approval_request`.) You present that single approval: list
-   **all N commands** in the question body, but use **one** Approve label with
-   **one** `[P-{nonce8}]` suffix -- one consent covers the whole batch. On
-   approval, `activate_db_pending_by_prefix` Step 3b creates a single
-   `COMMAND_SET` grant (60-min TTL); each command is consumed byte-for-byte on
-   its own retry. `batch_scope` is still ignored (the signal is `command_set`).
-   See `reference.md` -> "On batch intents".
+3. **Approving IS the order to execute.** When the user selects the Approve
+   label, the ElicitationResult hook activates the grant and the orchestrator
+   **immediately re-dispatches the verbatim command** -- there is no separate
+   "should I run it now?" turn. Approve and execute are one coupled action.
 
-   You present the batch the subagent chose to send; you do not steer it toward
-   batching. Whether grouping is warranted is the subagent's judgment (known
-   batch, >= 2, friction reduced -- see `subagent-request-approval`). A singular
-   approval arriving where you imagined a batch is not a defect to correct: the
-   default is just-in-time, and a batch you would have manufactured asks the
-   user to consent to commands that may never run.
+4. **Batch grant is `COMMAND_SET` -- one consent, N commands, id arrives in the
+   same relay.** Legacy `verb_family` was removed; its replacement,
+   `COMMAND_SET`, is wired end-to-end in the hook layer (intake, activation,
+   consume). When a subagent chains >= 2 T3 sub-commands in one Bash call and
+   the hook classifies >= 2 of them as ungranted T3,
+   `bash_validator._validate_compound_command` mints ONE pending `COMMAND_SET`
+   **at block time**, with a content-derived `approval_id`, and denies the
+   Bash call with the same `[T3_BLOCKED]` shape as a singular block. The
+   subagent relays that `approval_id` -- together with the `commands` /
+   `command_set` fields the hook built -- in the same `approval_request` it
+   would use for one command; there is no separate no-`approval_id` shape to
+   wait for. You present a single approval: list **all N commands** in the
+   question body, but use **one** Approve label with **one** `[P-{nonce8}]`
+   suffix -- one consent covers the whole batch. On approval,
+   `activate_db_pending_by_prefix` Step 3b creates a single `COMMAND_SET` grant
+   (5-minute TTL, aligned to the singular grant); each command is consumed
+   byte-for-byte at its match, before it executes. `batch_scope` is still ignored
+   (the signal is `command_set`). See `reference.md` -> "On batch intents".
 
-4. **Re-dispatch, do not resume.** `mode` does not survive a SendMessage resume:
+   You present the batch the subagent's chained command produced; you do not
+   steer it toward chaining. Whether grouping is warranted is the subagent's
+   judgment made before it attempts the chain (see `subagent-request-approval`).
+   A singular approval arriving where you imagined a batch is not a defect to
+   correct: the default is just-in-time, and a batch a subagent would have
+   manufactured by chaining unrelated commands asks the user to consent to
+   work that does not need to run together.
+
+5. **Re-dispatch, do not resume.** `mode` does not survive a SendMessage resume:
    the resume runs in `default` and re-blocks the next protected operation even
-   after the Gaia grant activated. Prefer a fresh re-dispatch with the same
-   `mode` and the verbatim `exact_content`; the DB grant lives in the session
+   after the Gaia grant activated. The automatic execute-on-approve of Rule 3 is
+   therefore always a fresh re-dispatch with the same `mode` and the verbatim
+   `exact_content`, never a SendMessage resume; the DB grant lives in the session
    and is found by the re-dispatched subagent. See `reference.md` ->
    "Re-dispatch instead of resume" for the underlying mechanism (mode is
    per-dispatch).
@@ -165,7 +174,9 @@ wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
 | **Show specifics on both surfaces** -- "I can summarize / the label is enough" | The COMANDO field in the question body must be the verbatim command (not a summary, not "the above"); the option label must name the specific action (not just "Approve"). The user sees both surfaces; missing specificity on either is a blind-consent failure. |
 | "I'll skip the [P-...] suffix, it's cosmetic" | The hook extracts the nonce from the label to find the right pending row; without it, targeted activation fails and no grant is created. |
 | "Similar command, slightly different path -- I'll reuse / wrap it" | Grants match the statement signature byte-for-byte. Any wrapper, redirect, flag, or path drift is a different signature and a fresh re-block. |
-| "The same command emitted a new approval_id" | Grants are single-use and consumed on the first retry. A second run is a new APPROVAL_REQUEST -- approve again. |
-| "I'll set batch_scope to approve many at once" | `batch_scope` is ignored -- but a real batch path exists: a plan-first `command_set` (>= 2 items, no `approval_id`) is intaken into ONE pending `COMMAND_SET`. Present that single approval (N commands shown, one `[P-...]` nonce, one consent), not N separate approvals. |
+| "The same command emitted a new approval_id" | Grants are single-use, consumed at match (before execution). A second run -- or a retry after the command executed and failed -- is a new APPROVAL_REQUEST. Approve again. |
+| "After they approve, I'll ask whether to run it" | Approving IS the order to execute. On the Approve label the orchestrator immediately re-dispatches the verbatim command -- no intermediate confirmation turn. |
+| "I'll set batch_scope to approve many at once" | `batch_scope` is ignored -- but a real batch path exists: a subagent chaining >= 2 T3 sub-commands in one Bash call gets blocked with ONE pending `COMMAND_SET` and one `approval_id`, same as a singular block. Present that single approval (N commands shown, one `[P-...]` nonce, one consent), not N separate approvals. |
 | "I can paraphrase a field before relaying" | The fingerprint covers all sealed fields and is checked at grant **activation** (`verify_fingerprint`, when the user selects the Approve label); a paraphrase there raises `ChainTamperError` and the grant never forms. Relay verbatim so activation succeeds. |
-| **"I'll dispatch a subagent to verify or derive the approval before presenting"** | The orchestrator has no shell and must NEVER dispatch to verify or derive an approval. The pending arrives **already verified** in the injected `[PENDING-APPROVALS-VERIFIED]` block (DB-read + fingerprint-checked by the per-turn hook, `verified: true`) -- present from it. For a same-turn pending not yet in the block, present from the subagent's relayed `approval_request`. A verify/derive dispatch is unnecessary (integrity is enforced at activation) and harmful (its SubagentStop can sweep the very pending). For `command_set`, read the minted `approval_id` and all commands from the block -- do not run `gaia approvals derive-id`. |
+| "I'll wait for the pending to resurface next turn / next session" | There is no cross-turn or cross-session resurfacing anymore -- no `[ACTIONABLE]` SessionStart block, no per-turn verified-pendings feed. Approvals are in-loop and single-session: present from the subagent's same-turn relayed `approval_request` (or a user's explicit `gaia approvals show`), and resolve within the session. |
+| **"I'll dispatch a subagent to verify or derive the approval before presenting"** | The orchestrator must NEVER dispatch a subagent to verify or derive an approval, singular or `COMMAND_SET`. Present from the subagent's same-turn relayed `approval_request`; integrity is enforced at grant **activation** (`verify_fingerprint`), not at presentation, so a pre-presentation verify is unnecessary. A `COMMAND_SET`'s content-derived `approval_id` arrives in the same relay as a singular block -- there is nothing to derive. |

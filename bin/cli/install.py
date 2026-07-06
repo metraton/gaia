@@ -295,7 +295,7 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
 
     env = os.environ.copy()
     if db_path:
-        env["GAIA_DB"] = str(Path(db_path).expanduser())
+        env["GAIA_DB"] = str(Path(db_path).expanduser().resolve())
 
     cmd = ["bash", str(_BOOTSTRAP_SCRIPT)]
 
@@ -355,7 +355,9 @@ def _seed_contract_permissions(db_path: str | None, quiet: bool) -> dict:
 
     env = os.environ.copy()
     resolved_db = (
-        str(Path(db_path).expanduser()) if db_path else str(Path("~/.gaia/gaia.db").expanduser())
+        str(Path(db_path).expanduser().resolve())
+        if db_path
+        else str(Path("~/.gaia/gaia.db").expanduser().resolve())
     )
     cmd = [sys.executable, str(_SEED_CONTRACT_PERMS), "--db-path", resolved_db]
 

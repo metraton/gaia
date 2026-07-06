@@ -408,21 +408,35 @@ _SCRIPT_FILE_INTERPRETERS: FrozenSet[str] = frozenset({
     "node", "ruby", "perl", "php",
 })
 
+# Non-shell, non-Python interpreters: their script files are SOURCE CODE in a
+# programming language, not shell command lists.  Their content lane is "code"
+# rather than "shell" so the regex classifier suppresses camelCase subcommand
+# splitting -- a camelCase token in JS/Ruby/etc. (``execPath``, ``setState``)
+# is a language identifier, not a CLI subcommand.  Suppressing it removes only
+# false positives: whole-token verbs and command aliases (``rm``/``cp`` used
+# bare), dangerous flags, and blocked-command patterns are still scanned, and
+# camelCase multi-word tokens embedded inside a quoted string argument were
+# never matched anyway (the quote makes the whole string a single token).
+_NON_SHELL_SCRIPT_INTERPRETERS: FrozenSet[str] = frozenset({
+    "node", "ruby", "perl", "php",
+})
+
 # File extensions whose interpreter is implied by ``./script`` (no explicit
 # interpreter token).  Maps the extension to the analysis lane used for its
 # content: "python" routes through the AST analyzer, "shell" through the
-# blocked/mutative regex layer.
+# blocked/mutative regex layer, "code" through the same regex layer but with
+# camelCase subcommand splitting suppressed (non-shell source languages).
 _SHEBANG_EXT_LANES: Dict[str, str] = {
     ".py": "python",
     ".sh": "shell",
     ".bash": "shell",
     ".zsh": "shell",
-    ".js": "shell",
-    ".mjs": "shell",
-    ".cjs": "shell",
-    ".rb": "shell",
-    ".pl": "shell",
-    ".php": "shell",
+    ".js": "code",
+    ".mjs": "code",
+    ".cjs": "code",
+    ".rb": "code",
+    ".pl": "code",
+    ".php": "code",
 }
 
 # Cap on bytes read from a script file during classification.  A script larger
@@ -1043,7 +1057,9 @@ def _is_subcommand_identifier(token: str) -> bool:
 # ============================================================================
 
 @functools.lru_cache(maxsize=128)
-def detect_mutative_command(command: str) -> MutativeResult:
+def detect_mutative_command(
+    command: str, from_source_code: bool = False,
+) -> MutativeResult:
     """Analyze a shell command and return a structured mutative assessment.
 
     Simplified algorithm (CLI-agnostic):
@@ -1056,6 +1072,15 @@ def detect_mutative_command(command: str) -> MutativeResult:
 
     Args:
         command: Raw shell command string.
+        from_source_code: True when ``command`` is a single line drawn from a
+            non-shell SOURCE file (``.js``/``.ts``/``.rb``/...) being scanned
+            by the script-content classifier, rather than a shell command line
+            or a line from a shell script.  When True, camelCase subcommand
+            splitting is suppressed: a camelCase token in source is a language
+            identifier (``execPath``, ``setState``), not a CLI subcommand, and
+            splitting it produced spurious mutative matches.  Whole-token and
+            hyphen matching are unaffected.  Defaults to False so shell command
+            lines and shell scripts keep the full camelCase behavior.
 
     Returns:
         MutativeResult with full classification details.
@@ -1577,12 +1602,27 @@ def detect_mutative_command(command: str) -> MutativeResult:
         # semantic_index == 1.  Without this guard, ``pytest
         # tests/test_install.py::TestStop`` splits ``TestStop`` and matches
         # ``stop``, misclassifying the whole command as MUTATIVE.
+        #
+        # Source-code guard (word-boundary discipline for non-shell script
+        # content): camelCase multi-word tokens are split so a CLI subcommand
+        # like ``batchDelete`` -> ``delete`` is caught.  But when the scanned
+        # content is a non-shell SOURCE language (``.js``/``.ts``/``.rb`` etc.,
+        # see ``from_source_code``), a camelCase token is overwhelmingly a
+        # source identifier, not a CLI subcommand -- ``execPath``/``execSync``
+        # -> ``exec``, ``setState`` -> ``set``, ``stopPropagation`` -> ``stop``,
+        # ``postMessage`` -> ``post``, ``createElement`` -> ``create``.
+        # Splitting those forced spurious T3 on read-only scripts.  The guard
+        # fires ONLY for source-code content, so shell command lines and shell
+        # scripts (``aws batchDelete``, ``mytool batchDelete``) are unchanged,
+        # and whole-token / hyphen matching (``mytool install``, ``git tag``)
+        # is never gated.
         raw_token = semantics.semantic_head_tokens_raw[semantic_index] if semantic_index < len(semantics.semantic_head_tokens_raw) else token
         camel_parts = split_camel_case(raw_token)
         if (
             semantic_index == 1
             and len(camel_parts) > 1
             and _is_subcommand_identifier(raw_token)
+            and not from_source_code
         ):
             for part in camel_parts:
                 if part in MUTATIVE_VERBS:
@@ -1826,7 +1866,12 @@ def _resolve_script_argument(
         return None
 
     if base_cmd in _SCRIPT_FILE_INTERPRETERS:
-        lane = "python" if base_cmd in _PYTHON_INTERPRETERS else "shell"
+        if base_cmd in _PYTHON_INTERPRETERS:
+            lane = "python"
+        elif base_cmd in _NON_SHELL_SCRIPT_INTERPRETERS:
+            lane = "code"
+        else:
+            lane = "shell"
         defer_flags = _INTERP_NON_SCRIPT_VALUE_FLAGS.get(base_cmd, frozenset())
         # Walk the args (original casing) and return the first true positional
         # -- the script file.  Standalone interpreter switches (-u, -O, -x, ...)
@@ -1966,11 +2011,17 @@ def _check_script_file(
             )
         # parse_failed -> fall through to the shell/regex lane below.
 
-    return _classify_script_content_by_regex(content, script_path, family)
+    # "code" lane (non-shell source: node/ruby/perl/php) suppresses camelCase
+    # subcommand splitting so language identifiers are not read as CLI verbs;
+    # "shell" lane keeps the full command semantics.
+    return _classify_script_content_by_regex(
+        content, script_path, family, from_source_code=(lane == "code"),
+    )
 
 
 def _classify_script_content_by_regex(
     content: str, script_path: str, family: str,
+    from_source_code: bool = False,
 ) -> MutativeResult:
     """Classify shell / non-Python script content via the existing regex layer.
 
@@ -1983,6 +2034,11 @@ def _classify_script_content_by_regex(
     * ``detect_mutative_command`` -- the CLI-agnostic mutative engine, reused
       per logical line so a ``kubectl apply`` or ``curl -X POST`` inside the
       file is detected the same way it would be on the command line.
+
+    ``from_source_code`` is forwarded to ``detect_mutative_command`` so that
+    non-shell source content (``.js``/``.rb``/...) suppresses camelCase
+    subcommand splitting -- a source identifier like ``execPath`` must not be
+    read as the CLI verb ``exec``.  Shell-script content leaves it False.
 
     This reuses the existing layers rather than introducing a new parser, per
     the design constraint.
@@ -2007,7 +2063,7 @@ def _classify_script_content_by_regex(
                     ),
                 )
 
-        line_result = detect_mutative_command(line)
+        line_result = detect_mutative_command(line, from_source_code=from_source_code)
         if line_result.is_mutative:
             return MutativeResult(
                 is_mutative=True,
