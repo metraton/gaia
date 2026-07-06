@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-session surfacing of pending approvals: the SessionStart `[ACTIONABLE]` pending-approvals block and the per-turn pending feed are removed. Pending approvals (24h TTL, unchanged) no longer surface outside the turn that produced them.
 - `consume_session_grants` mechanism, superseded by the consumed-at-match single-use grant model.
 
+## [5.1.1] - 2026-07-06
+
 ## [5.1.0] - 2026-07-03
 
 ## [5.1.0-rc.4] - 2026-07-03
