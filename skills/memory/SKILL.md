@@ -211,6 +211,36 @@ in place. There is no separate `update` command.
 - **`project_*` / `user_*` / `feedback_*`**: free-form markdown.
   Treat as anchors unless the content is a running thread.
 
+### Project-scoped memory: reference `project_ref`, not the workspace
+
+Memory rows are keyed by `(workspace, name)`, but a workspace is a
+container that can be renamed, split, or hold a project that later
+moves elsewhere (scan-v2: a project row re-keyed by a `movido`
+adjudication carries `superseded_by`, but the memory row stays under
+its original `workspace` key unless a human runs `move-memory`). A
+`project_*` note that means "this is true of project X" should record
+that fact durably rather than only implicitly through the workspace it
+happens to live in today.
+
+`memory.project_ref` (schema v25, scan-v2 SV1) is the stable anchor for
+this: it should hold the project's `project_identity` -- the same
+vantage-independent identity scan writes onto `projects.project_identity`
+(git-common-dir realpath > normalized remote > realpath path). When you
+author a `project_*` memory row about a specific project (not the whole
+workspace), populate `project_ref` with that project's `project_identity`
+(`gaia context query "SELECT project_identity FROM projects WHERE
+workspace=? AND name=?"` to look it up). A note keyed this way remains
+correctly attributed even after the project physically moves workspace --
+the `project_ref` value does not change on a move, only the `projects`
+row's `(workspace, name)` does. A `project_*` note about the workspace as
+a whole (not a single project within it) legitimately leaves `project_ref`
+NULL.
+
+This is a convention, not yet CLI-enforced: `gaia memory add` does not
+currently expose a `--project-ref` flag, so populate the column with a
+follow-up `gaia context query` UPDATE (or `gaia memory edit`, once it
+gains field support) until the write path is extended.
+
 ## Curate flow
 
 Run periodically (or when `gaia memory stats` shows conflicts > 0,

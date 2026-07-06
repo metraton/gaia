@@ -130,6 +130,12 @@ def _query_memory(
         where.append("type = ?")
         params.append(type_filter)
 
+    # scan-v2 SV3: tombstoned rows (deleted_at non-NULL) are soft-deleted and
+    # must never surface in a query. delete_memory() stamps deleted_at instead
+    # of physically removing the row, so this filter is what keeps a tombstone
+    # invisible to `gaia query` / cross_surface_query.
+    where.append("deleted_at IS NULL")
+
     sql = (
         "SELECT workspace, name, type, description, body, origin_session_id, "
         "updated_at "

@@ -3,7 +3,7 @@ migrate_workspace.py -- B5 rescan-real-workspaces-with-backup
 
 Migrates a real workspace to ~/.gaia/gaia.db via:
   1. Grant scanner agent permissions (idempotent)
-  2. wipe_workspace(<identity>)
+  2. wipe_workspace(<identity>, preserve_memory=True)  -- SV3: memory survives
   3. scan_workspace_to_store (populate projects + infra + orchestration)
   4. Verify row counts
   5. Print diff JSON
@@ -153,9 +153,14 @@ def migrate(workspace_root: Path, verify_only: bool, diff_path: Path, db_path: P
     print(f"[migrate] snapshot before: {before}")
 
     if not verify_only:
-        # Wipe existing workspace rows (FK CASCADE cleans children)
-        wipe_workspace(identity, db_path=db_path)
-        print(f"[migrate] wiped workspace {identity!r}")
+        # Wipe existing workspace rows so the re-scan repopulates projects +
+        # infra + orchestration cleanly. scan-v2 SV3 (Vector 4): pass
+        # preserve_memory=True EXPLICITLY -- a re-ingest must never destroy
+        # curated memory. The CASCADE still clears scannable children; memory +
+        # memory_links + the workspaces row are captured and restored by
+        # wipe_workspace.
+        wipe_workspace(identity, preserve_memory=True, db_path=db_path)
+        print(f"[migrate] wiped workspace {identity!r} (memory preserved)")
 
     # Scan repos via store_populator (deterministic: all repos under
     # workspace_root attributed to `identity`; _list_repos discovers them).

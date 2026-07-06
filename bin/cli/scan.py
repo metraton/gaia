@@ -109,6 +109,46 @@ def _render_human(report, *, dry_run: bool) -> None:
         for e in report.errors:
             print(f"  - repo={e['repo']} --workspace={e['W']}: {e['suggestion']}")
 
+    # SV2: cross-DB detection blocks (alerts only -- the human adjudicates).
+    if report.move_candidates:
+        print(f"{prefix}MOVE CANDIDATES (remote match, human adjudicates):")
+        for m in report.move_candidates:
+            src, dst = m["from"], m["to"]
+            print(
+                f"  ~ {src['workspace']}/{src['project']} ({src['path']}) -> "
+                f"{dst['workspace']}/{dst['project']} ({dst['path']}) "
+                f"remote={m['remote']} confidence={m['confidence']}"
+            )
+
+    if report.vanished:
+        print(f"{prefix}VANISHED:")
+        for v in report.vanished:
+            since = v["missing_since"] if v["missing_since"] else ("pending" if dry_run else None)
+            print(
+                f"  - {v['workspace']}/{v['project']} path={v['path']} "
+                f"remote={v['remote']} missing_since={since}"
+            )
+
+    if report.rename_candidates:
+        print(f"{prefix}RENAME CANDIDATES (folder basename != stored name):")
+        for r in report.rename_candidates:
+            print(
+                f"  ? {r['workspace']}/{r['project']} path={r['path']} "
+                f"expected_name={r['expected_name']}"
+            )
+
+    if report.orphaned_autored:
+        print(f"{prefix}ORPHANED CONTEXT (vanished project carried authored content):")
+        for o in report.orphaned_autored:
+            print(
+                f"  ! {o['workspace']}/{o['project']}: {o['description']!r} "
+                f"(workspace holds {o['memory_count']} memory note(s), "
+                f"{o['brief_count']} open brief(s))"
+            )
+
+    if report.diff:
+        print(f"{prefix}diff               : {report.diff}")
+
     if not dry_run:
         print(f"{prefix}marked_missing     : {report.marked_missing}")
 

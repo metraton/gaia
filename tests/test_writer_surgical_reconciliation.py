@@ -1,20 +1,22 @@
 """Tests for the surgical reconciliation writers (workspace-identity brief, M4/T10).
 
-Covers the two workspace-preserving primitives added to gaia.store.writer:
+Covers the workspace-preserving primitive added to gaia.store.writer:
 
-    delete_projects    -- targeted deletion of `projects` rows within ONE
-                          workspace, leaving the workspaces row and every
-                          non-project child (memory, PCC, briefs, episodes)
-                          intact -- the surgical alternative to wipe_workspace
-                          for a LIVE workspace.
     relocate_contracts -- re-key project_context_contracts rows between
                           workspaces (the only correction path for a mis-keyed
                           contract, since `gaia scan` never touches that table).
 
-Plus a classification guard: the two CLI verbs that wrap these writers
-(`gaia context delete-projects`, `gaia context move-contracts`) must be gated
+Plus a classification guard: the CLI verbs that wrap these writers
+(`gaia context move-contracts`, `gaia context move-memory`) must be gated
 as T3 by the security hook via their verb tokens, and their --dry-run form
 must downgrade to non-mutative (T2/preview).
+
+NOTE (scan-v2 SV4): a `delete_projects` writer + `gaia context delete-projects`
+CLI verb previously lived here (targeted hard-deletion of `projects` rows).
+Both were removed -- agents must never hold the power to hard-delete project
+rows; it was a one-time reconciliation tool, not a standing capability. See
+`tests/unit/test_resolve_move_candidate.py` for the sanctioned move-adjudication
+path (re-key + tombstone via `superseded_by`, never a hard delete).
 
 All tests run against a fresh temp DB (writer._connect materializes schema.sql
 on first connect); the real ~/.gaia/gaia.db is never touched.
@@ -39,7 +41,6 @@ if str(_HOOKS_DIR) not in sys.path:
 
 from gaia.store import writer  # noqa: E402
 from gaia.store.writer import (  # noqa: E402
-    delete_projects,
     relocate_contracts,
     relocate_memory,
 )
@@ -155,171 +156,6 @@ def _project_names(db_path: Path, workspace: str) -> set:
         return {r["name"] for r in rows}
     finally:
         con.close()
-
-
-# ===========================================================================
-# delete_projects
-# ===========================================================================
-
-class TestDeleteProjectsByGroup:
-    """The github-repos case: delete a stale group inside a LIVE workspace."""
-
-    def _seed_me(self, db):
-        _seed_workspace(db, "me")
-        # Live survivors (no group / not github-repos).
-        _seed_project(db, "me", "gaia", status="active")
-        _seed_project(db, "me", "metraton.github.io", status="active")
-        # Stale github-repos group (dir no longer exists on disk).
-        for n in ("engram", "skills", "taskmaster"):
-            _seed_project(db, "me", n, group_name="github-repos", status="missing")
-        # A live-workspace collateral row that must survive the surgery.
-        con = _conn(db)
-        con.execute(
-            "INSERT INTO memory (workspace, name, type, body, class) "
-            "VALUES ('me', 'project_note', 'project', 'keep me', 'log')"
-        )
-        con.commit()
-        con.close()
-        _seed_pcc(db, "me", "project_identity", '{"gaia": {}}')
-
-    def test_deletes_only_the_group(self, db):
-        self._seed_me(db)
-        res = delete_projects("me", group_name="github-repos", db_path=db)
-        assert res["status"] == "applied"
-        assert res["deleted"] == 3
-        # Survivors intact, group gone.
-        assert _project_names(db, "me") == {"gaia", "metraton.github.io"}
-
-    def test_workspace_row_survives(self, db):
-        self._seed_me(db)
-        delete_projects("me", group_name="github-repos", db_path=db)
-        con = _conn(db)
-        row = con.execute("SELECT name FROM workspaces WHERE name='me'").fetchone()
-        con.close()
-        assert row is not None  # NOT wiped
-
-    def test_memory_and_pcc_survive(self, db):
-        self._seed_me(db)
-        delete_projects("me", group_name="github-repos", db_path=db)
-        con = _conn(db)
-        mem = con.execute("SELECT COUNT(*) c FROM memory WHERE workspace='me'").fetchone()["c"]
-        pcc = con.execute(
-            "SELECT COUNT(*) c FROM project_context_contracts WHERE workspace='me'"
-        ).fetchone()["c"]
-        con.close()
-        assert mem == 1  # collateral memory preserved
-        assert pcc == 1  # collateral PCC preserved
-
-
-class TestDeleteProjectsFilters:
-    def test_by_status(self, db):
-        _seed_workspace(db, "rnd")
-        _seed_project(db, "rnd", "a", status="missing")
-        _seed_project(db, "rnd", "b", status="missing")
-        _seed_project(db, "rnd", "live", status="active")
-        res = delete_projects("rnd", status="missing", db_path=db)
-        assert res["deleted"] == 2
-        assert _project_names(db, "rnd") == {"live"}
-
-    def test_by_names(self, db):
-        _seed_workspace(db, "rnd")
-        for n in ("terraform", "ai-project-guidance", "keep"):
-            _seed_project(db, "rnd", n, status="missing")
-        res = delete_projects("rnd", names=["terraform", "ai-project-guidance"], db_path=db)
-        assert res["deleted"] == 2
-        assert _project_names(db, "rnd") == {"keep"}
-
-    def test_by_path(self, db):
-        _seed_workspace(db, "qxo")
-        _seed_project(db, "qxo", "qxo-monorepo", status="missing",
-                      path="/home/jorge/ws/aaxis/qxo/qxo-monorepo")
-        _seed_project(db, "qxo", "other", status="missing", path="/somewhere/else")
-        res = delete_projects("qxo", path="/home/jorge/ws/aaxis/qxo/qxo-monorepo", db_path=db)
-        assert res["deleted"] == 1
-        assert _project_names(db, "qxo") == {"other"}
-
-    def test_by_identity(self, db):
-        _seed_workspace(db, "w")
-        _seed_project(db, "w", "p1", pid="git-common-dir:/abc")
-        _seed_project(db, "w", "p2", pid="git-common-dir:/xyz")
-        res = delete_projects("w", project_identity="git-common-dir:/abc", db_path=db)
-        assert res["deleted"] == 1
-        assert _project_names(db, "w") == {"p2"}
-
-    def test_filters_are_anded(self, db):
-        _seed_workspace(db, "me")
-        _seed_project(db, "me", "x", group_name="github-repos", status="missing")
-        _seed_project(db, "me", "y", group_name="github-repos", status="active")
-        # group + status together: only the missing github-repos row.
-        res = delete_projects("me", group_name="github-repos", status="missing", db_path=db)
-        assert res["deleted"] == 1
-        assert _project_names(db, "me") == {"y"}
-
-    def test_scoped_to_workspace(self, db):
-        # Same group name in two workspaces: only the named workspace is touched.
-        _seed_workspace(db, "me")
-        _seed_workspace(db, "other")
-        _seed_project(db, "me", "x", group_name="g", status="missing")
-        _seed_project(db, "other", "x", group_name="g", status="missing")
-        delete_projects("me", group_name="g", db_path=db)
-        assert _project_names(db, "me") == set()
-        assert _project_names(db, "other") == {"x"}
-
-
-class TestDeleteProjectsCascade:
-    def test_child_apps_cascade_but_survivors_keep_theirs(self, db):
-        _seed_workspace(db, "me")
-        _seed_project(db, "me", "doomed", group_name="github-repos", status="missing")
-        _seed_project(db, "me", "gaia", status="active")
-        con = _conn(db)
-        con.execute("INSERT INTO apps (workspace, project, name) VALUES ('me','doomed','svc')")
-        con.execute("INSERT INTO apps (workspace, project, name) VALUES ('me','gaia','cli')")
-        con.commit()
-        con.close()
-
-        delete_projects("me", group_name="github-repos", db_path=db)
-
-        con = _conn(db)
-        doomed_apps = con.execute(
-            "SELECT COUNT(*) c FROM apps WHERE project='doomed'"
-        ).fetchone()["c"]
-        gaia_apps = con.execute(
-            "SELECT COUNT(*) c FROM apps WHERE project='gaia'"
-        ).fetchone()["c"]
-        con.close()
-        assert doomed_apps == 0  # cascaded away with its project
-        assert gaia_apps == 1    # survivor's children untouched
-
-
-class TestDeleteProjectsSafety:
-    def test_no_filter_raises(self, db):
-        _seed_workspace(db, "me")
-        with pytest.raises(ValueError, match="at least one filter"):
-            delete_projects("me", db_path=db)
-
-    def test_empty_workspace_raises(self, db):
-        with pytest.raises(ValueError, match="workspace is required"):
-            delete_projects("", group_name="g", db_path=db)
-
-    def test_dry_run_deletes_nothing(self, db):
-        _seed_workspace(db, "me")
-        _seed_project(db, "me", "x", group_name="github-repos", status="missing")
-        res = delete_projects("me", group_name="github-repos", dry_run=True, db_path=db)
-        assert res["status"] == "preview"
-        assert res["deleted"] == 0
-        assert len(res["matched"]) == 1
-        assert _project_names(db, "me") == {"x"}  # still there
-
-    def test_matched_reports_row_detail(self, db):
-        _seed_workspace(db, "me")
-        _seed_project(db, "me", "engram", group_name="github-repos",
-                      status="missing", path="/gone/engram")
-        res = delete_projects("me", group_name="github-repos", dry_run=True, db_path=db)
-        m = res["matched"][0]
-        assert m["name"] == "engram"
-        assert m["group_name"] == "github-repos"
-        assert m["status"] == "missing"
-        assert m["path"] == "/gone/engram"
 
 
 # ===========================================================================
@@ -582,9 +418,12 @@ class TestRelocateMemoryLinks:
         assert rnd_links == 0
         assert me_links == 1
 
-    def test_partial_link_left_in_place_and_reported(self, db):
-        # Link a->c where only 'a' is moved: cannot stay consistent, so it is
-        # left under 'rnd' and reported as a partial link.
+    def test_partial_link_removed_and_reported(self, db):
+        # Link a->c where only 'a' is moved: cannot stay consistent under the
+        # single-workspace link model. scan-v2 SV3 REMOVES the now-dangling edge
+        # (its endpoint left the workspace) and reports it under partial_links,
+        # rather than leaving it behind as silent corruption. Both memory rows
+        # (the data) survive untouched -- only the broken edge is dropped.
         _seed_memory(db, "rnd", "a", body="a")
         _seed_memory(db, "rnd", "c", body="c")
         _seed_memory_link(db, "rnd", "a", "c", "relates_to")
@@ -596,8 +435,13 @@ class TestRelocateMemoryLinks:
         con = _conn(db)
         rnd_links = con.execute(
             "SELECT COUNT(*) c FROM memory_links WHERE workspace='rnd'").fetchone()["c"]
+        # the moved row 'a' still exists (under 'me'); 'c' still exists (under
+        # 'rnd'); only the dangling edge is gone.
+        mem_rows = con.execute(
+            "SELECT COUNT(*) c FROM memory").fetchone()["c"]
         con.close()
-        assert rnd_links == 1  # untouched
+        assert rnd_links == 0  # dangling link removed
+        assert mem_rows == 2   # both memory rows preserved
 
 
 class TestRelocateMemoryConflictAndSafety:
@@ -703,35 +547,190 @@ class TestRelocateMemoryConflictAndSafety:
 
 
 # ===========================================================================
+# resolve_move_candidate (scan-v2 SV4 move adjudication)
+# ===========================================================================
+
+from gaia.store.writer import resolve_move_candidate  # noqa: E402
+
+
+def _project_row(db_path: Path, workspace: str, name: str) -> dict | None:
+    con = _conn(db_path)
+    try:
+        row = con.execute(
+            "SELECT workspace, name, status, project_identity, superseded_by, "
+            "missing_since FROM projects WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+class TestResolveMoveMovidoSupersede:
+    """The realistic post-scan state: BOTH rows exist. 'movido' tombstones the
+    old row + writes superseded_by pointing at the successor identity, leaving
+    both rows in place (never hard-delete)."""
+
+    def _seed_two_rows(self, db):
+        # Old (from) row: missing tombstone at the old location, carrying its
+        # pre-move identity + an agent-authored description.
+        _seed_workspace(db, "old-ws")
+        _seed_project(db, "old-ws", "moved-proj",
+                      status="missing", path="/old/moved-proj",
+                      pid="old/location/.git")
+        con = _conn(db)
+        con.execute(
+            "UPDATE projects SET description = 'the payments engine' "
+            "WHERE workspace='old-ws' AND name='moved-proj'"
+        )
+        con.commit()
+        con.close()
+        # New (to) row: active successor at the new location, new identity.
+        _seed_workspace(db, "new-ws")
+        _seed_project(db, "new-ws", "moved-proj",
+                      status="active", path="/new/moved-proj",
+                      pid="new/location/.git")
+
+    def test_rekeys_and_writes_superseded_by_and_keeps_link(self, db):
+        self._seed_two_rows(db)
+        res = resolve_move_candidate(
+            "old-ws", "moved-proj", "new-ws", "moved-proj", db_path=db
+        )
+        assert res["status"] == "applied"
+        assert res["action"] == "superseded"
+        assert res["superseded_by"] == "new/location/.git"
+
+        # The link: old row is a tombstone pointing forward to the successor.
+        old = _project_row(db, "old-ws", "moved-proj")
+        assert old is not None, "old row must NOT be hard-deleted"
+        assert old["status"] == "missing"
+        assert old["superseded_by"] == "new/location/.git"
+        assert old["missing_since"] is not None
+
+        # The successor is the active canonical at the new (workspace, name).
+        new = _project_row(db, "new-ws", "moved-proj")
+        assert new is not None
+        assert new["status"] == "active"
+        assert new["project_identity"] == "new/location/.git"
+
+    def test_both_rows_survive_no_hard_delete(self, db):
+        self._seed_two_rows(db)
+        resolve_move_candidate("old-ws", "moved-proj", "new-ws", "moved-proj", db_path=db)
+        con = _conn(db)
+        n = con.execute("SELECT COUNT(*) c FROM projects").fetchone()["c"]
+        con.close()
+        assert n == 2  # both rows preserved; the move only linked them
+
+    def test_agent_description_not_auto_moved_only_proposed(self, db):
+        self._seed_two_rows(db)
+        # Seed collateral memory + PCC still keyed to the OLD workspace.
+        _seed_memory(db, "old-ws", "project_payments", body="notes")
+        _seed_pcc(db, "old-ws", "project_identity", "{}")
+        res = resolve_move_candidate(
+            "old-ws", "moved-proj", "new-ws", "moved-proj", db_path=db
+        )
+        # PROPOSED, not moved: the counts are reported for a follow-up
+        # move-memory / move-contracts, but nothing was relocated.
+        assert res["proposed_relocations"]["memory"] == 1
+        assert res["proposed_relocations"]["contracts"] == 1
+        con = _conn(db)
+        mem_still = con.execute(
+            "SELECT COUNT(*) c FROM memory WHERE workspace='old-ws'").fetchone()["c"]
+        pcc_still = con.execute(
+            "SELECT COUNT(*) c FROM project_context_contracts WHERE workspace='old-ws'"
+        ).fetchone()["c"]
+        con.close()
+        assert mem_still == 1  # NOT auto-moved
+        assert pcc_still == 1  # NOT auto-moved
+
+    def test_dry_run_mutates_nothing(self, db):
+        self._seed_two_rows(db)
+        res = resolve_move_candidate(
+            "old-ws", "moved-proj", "new-ws", "moved-proj", dry_run=True, db_path=db
+        )
+        assert res["status"] == "preview"
+        assert res["action"] == "superseded"
+        assert res["superseded_by"] == "new/location/.git"
+        old = _project_row(db, "old-ws", "moved-proj")
+        assert old["superseded_by"] is None  # nothing written
+
+
+class TestResolveMoveMovidoRekey:
+    """Defensive path: the successor row does NOT exist yet. 'movido' re-keys
+    the old row in place, preserving its data (identity, description travel)."""
+
+    def test_rekeys_old_row_in_place(self, db):
+        _seed_workspace(db, "old-ws")
+        _seed_project(db, "old-ws", "moved-proj",
+                      status="missing", path="/old/moved-proj",
+                      pid="stable/identity/.git")
+        _seed_workspace(db, "new-ws")  # successor slot is free
+
+        res = resolve_move_candidate(
+            "old-ws", "moved-proj", "new-ws", "moved-proj", db_path=db
+        )
+        assert res["action"] == "rekeyed"
+        # Old key is gone (re-keyed), data landed at the new key intact.
+        assert _project_row(db, "old-ws", "moved-proj") is None
+        new = _project_row(db, "new-ws", "moved-proj")
+        assert new is not None
+        assert new["status"] == "active"
+        assert new["project_identity"] == "stable/identity/.git"  # data preserved
+        # Still exactly one row -- re-key, not a copy.
+        con = _conn(db)
+        n = con.execute("SELECT COUNT(*) c FROM projects").fetchone()["c"]
+        con.close()
+        assert n == 1
+
+
+class TestResolveMoveSafety:
+    def test_missing_old_row_raises(self, db):
+        _seed_workspace(db, "new-ws")
+        _seed_project(db, "new-ws", "p", status="active")
+        with pytest.raises(ValueError, match="old row"):
+            resolve_move_candidate("old-ws", "ghost", "new-ws", "p", db_path=db)
+
+    def test_identical_from_to_raises(self, db):
+        _seed_workspace(db, "w")
+        _seed_project(db, "w", "p", status="active")
+        with pytest.raises(ValueError, match="identical"):
+            resolve_move_candidate("w", "p", "w", "p", db_path=db)
+
+
+# ===========================================================================
 # T3 classification guard for the CLI verbs
 # ===========================================================================
 
 class TestCliVerbsClassifyAsT3:
     """The verbs wrapping these writers must gate as T3 via the security hook.
 
-    delete-projects -> hyphen-splits to 'delete' (in MUTATIVE_VERBS)
     move-contracts  -> hyphen-splits to 'move'   (in MUTATIVE_VERBS)
+    move-project    -> hyphen-splits to 'move'   (in MUTATIVE_VERBS)
     """
 
     def _detect(self, cmd):
         from modules.security.mutative_verbs import detect_mutative_command
         return detect_mutative_command(cmd)
 
-    def test_delete_projects_is_mutative(self):
-        r = self._detect("gaia context delete-projects --workspace me --group github-repos")
+    def test_move_project_is_mutative(self):
+        r = self._detect(
+            "gaia context move-project --decision movido "
+            "--from-workspace old --from-name p --to-workspace new --to-name p"
+        )
         assert r.is_mutative is True
+
+    def test_move_project_dry_run_downgrades(self):
+        r = self._detect(
+            "gaia context move-project --decision movido "
+            "--from-workspace old --from-name p --to-workspace new --to-name p --dry-run"
+        )
+        assert r.is_mutative is False
 
     def test_move_contracts_is_mutative(self):
         r = self._detect(
             "gaia context move-contracts --from me --to aaxis --contract project_identity"
         )
         assert r.is_mutative is True
-
-    def test_delete_projects_dry_run_downgrades(self):
-        r = self._detect(
-            "gaia context delete-projects --workspace me --group github-repos --dry-run"
-        )
-        assert r.is_mutative is False  # simulation override
 
     def test_move_contracts_dry_run_downgrades(self):
         r = self._detect(
@@ -783,32 +782,6 @@ class TestCliWiring:
         from cli.context import cmd_context
         return cmd_context
 
-    def test_delete_projects_dry_run_dispatches(self, db, monkeypatch, capsys):
-        self._seed(db)
-        monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
-        cmd_context = self._import_cli()
-        rc = cmd_context(self._args(
-            context_cmd="delete-projects", workspace="me", group="github-repos",
-            status=None, name=None, path=None, identity=None,
-            dry_run=True, json=True, yes=False,
-        ))
-        out = capsys.readouterr().out
-        assert rc == 0
-        assert "engram" in out
-        # nothing deleted
-        assert _project_names(db, "me") == {"engram", "gaia"}
-
-    def test_delete_projects_requires_a_filter(self, db, monkeypatch, capsys):
-        self._seed(db)
-        monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
-        cmd_context = self._import_cli()
-        rc = cmd_context(self._args(
-            context_cmd="delete-projects", workspace="me", group=None,
-            status=None, name=None, path=None, identity=None,
-            dry_run=True, json=False, yes=False,
-        ))
-        assert rc == 2  # refuses without a filter beyond --workspace
-
     def test_move_contracts_dry_run_dispatches(self, db, monkeypatch, capsys):
         self._seed(db)
         monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
@@ -848,3 +821,52 @@ class TestCliWiring:
             "SELECT COUNT(*) c FROM memory WHERE workspace='rnd'").fetchone()["c"]
         con.close()
         assert rnd == 1  # dry-run mutated nothing
+
+    def _mp_args(self, **kw):
+        base = dict(
+            context_cmd="move-project", decision="movido",
+            from_workspace="old-ws", from_name="moved-proj",
+            to_workspace="new-ws", to_name="moved-proj",
+            dry_run=False, json=True, yes=True,
+        )
+        base.update(kw)
+        return self._args(**base)
+
+    def _seed_move(self, db):
+        _seed_workspace(db, "old-ws")
+        _seed_project(db, "old-ws", "moved-proj", status="missing",
+                      path="/old/moved-proj", pid="old/.git")
+        _seed_workspace(db, "new-ws")
+        _seed_project(db, "new-ws", "moved-proj", status="active",
+                      path="/new/moved-proj", pid="new/.git")
+
+    def test_move_project_movido_apply_supersedes(self, db, monkeypatch, capsys):
+        self._seed_move(db)
+        monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+        cmd_context = self._import_cli()
+        rc = cmd_context(self._mp_args())
+        assert rc == 0
+        old = _project_row(db, "old-ws", "moved-proj")
+        assert old["status"] == "missing"
+        assert old["superseded_by"] == "new/.git"
+
+    def test_move_project_movido_dry_run_mutates_nothing(self, db, monkeypatch, capsys):
+        self._seed_move(db)
+        monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+        cmd_context = self._import_cli()
+        rc = cmd_context(self._mp_args(dry_run=True))
+        assert rc == 0
+        old = _project_row(db, "old-ws", "moved-proj")
+        assert old["superseded_by"] is None  # nothing written
+
+    def test_move_project_duplicado_is_noop_leaves_both(self, db, monkeypatch, capsys):
+        self._seed_move(db)
+        monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+        cmd_context = self._import_cli()
+        rc = cmd_context(self._mp_args(decision="duplicado"))
+        assert rc == 0
+        # Both rows untouched: no supersede, both keep original status.
+        old = _project_row(db, "old-ws", "moved-proj")
+        new = _project_row(db, "new-ws", "moved-proj")
+        assert old["status"] == "missing" and old["superseded_by"] is None
+        assert new["status"] == "active"

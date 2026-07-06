@@ -1004,6 +1004,9 @@ def _cmd_get_relevant(args) -> int:
                 "SELECT name, type, description, updated_at, class, status "
                 "FROM memory "
                 "WHERE workspace = ? "
+                # scan-v2 SV3: a soft-deleted (tombstoned) row must not be
+                # injected into the SessionStart memory block.
+                "  AND deleted_at IS NULL "
                 "  AND name NOT IN ("
                 "    SELECT dst_name FROM memory_links "
                 "    WHERE workspace = ? AND kind = 'supersedes'"
@@ -1384,18 +1387,27 @@ def _cmd_curated_show(args) -> int:
 
 
 def _cmd_delete(args) -> int:
-    """Hard-delete a curated memory row (FTS5 mirror cleared via trigger)."""
+    """Soft-delete (tombstone) a curated memory row -- scan-v2 SV3.
+
+    By default this is a SOFT delete: the row's ``deleted_at`` is stamped so the
+    row and its body survive (recoverable, invisible to reads). ``--hard``
+    performs the irreversible physical DELETE, reserved for explicit human
+    curation. Both paths keep the FTS5 mirror in sync via triggers.
+    """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
     skip_confirm = getattr(args, "yes", False)
+    hard = getattr(args, "hard", False)
 
     try:
         from gaia.store.writer import get_memory, delete_memory
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
-    row = get_memory(workspace, name)
+    # For a hard delete we may target a row that is already tombstoned; reach it
+    # via include_deleted so a soft-then-hard flow works.
+    row = get_memory(workspace, name, include_deleted=hard)
     if row is None:
         return _err(
             f"memory '{name}' not found in workspace '{workspace}'",
@@ -1403,7 +1415,8 @@ def _cmd_delete(args) -> int:
         )
 
     if not skip_confirm:
-        prompt = f"Delete memory '{name}' (type={row['type']})? [y/N] "
+        verb = "HARD-delete (irreversible)" if hard else "delete (tombstone)"
+        prompt = f"{verb} memory '{name}' (type={row['type']})? [y/N] "
         try:
             answer = input(prompt)
         except EOFError:
@@ -1417,7 +1430,7 @@ def _cmd_delete(args) -> int:
             return 0
 
     try:
-        deleted = delete_memory(workspace, name)
+        deleted = delete_memory(workspace, name, hard=hard)
     except PermissionError as exc:
         return _err(str(exc), as_json)
     if not deleted:
@@ -1426,15 +1439,18 @@ def _cmd_delete(args) -> int:
             as_json,
         )
 
+    mode = "hard" if hard else "tombstone"
     if as_json:
         print(json.dumps({
             "deleted": True,
+            "mode": mode,
             "name": name,
             "workspace": workspace,
             "previous_type": row["type"],
         }, indent=2, default=str))
     else:
-        print(f"Deleted memory '{name}' (workspace={workspace!r}, "
+        verb = "Hard-deleted" if hard else "Tombstoned"
+        print(f"{verb} memory '{name}' (workspace={workspace!r}, "
               f"previous_type={row['type']!r})")
     return 0
 
@@ -1937,10 +1953,18 @@ def register(subparsers):
     # -- delete -------------------------------------------------------------
     delete_p = actions.add_parser(
         "delete",
-        help="Hard-delete a curated memory row",
-        description="Drop the row; the FTS5 mirror is cleared via trigger.",
+        help="Soft-delete (tombstone) a curated memory row; --hard to purge",
+        description=(
+            "Tombstone the row by default (deleted_at stamped; row + body "
+            "survive, invisible to reads, recoverable). Use --hard for the "
+            "irreversible physical DELETE (explicit human curation only)."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  gaia memory delete project_old --yes\n",
+        epilog=(
+            "Examples:\n"
+            "  gaia memory delete project_old --yes\n"
+            "  gaia memory delete project_old --hard --yes\n"
+        ),
     )
     delete_p.add_argument("name", help="Curated memory slug.")
     delete_p.add_argument("--workspace", default=None, metavar="W",
@@ -1948,6 +1972,11 @@ def register(subparsers):
     delete_p.add_argument(
         "--yes", action="store_true", default=False,
         help="Skip confirm prompt. bool. Default: false.",
+    )
+    delete_p.add_argument(
+        "--hard", action="store_true", default=False,
+        help="Physically DELETE the row (irreversible). Default: false "
+             "(soft-delete/tombstone).",
     )
     delete_p.add_argument(
         "--json", action="store_true", default=False,
