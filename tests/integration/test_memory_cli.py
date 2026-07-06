@@ -283,19 +283,41 @@ def test_curated_show_not_found(tmp_db, tmp_path, monkeypatch, capsys):
 
 
 def test_delete_curated_with_yes(tmp_db, tmp_path, monkeypatch, capsys):
+    """scan-v2 SV3: the default `gaia memory delete` is a SOFT delete
+    (tombstone). The row and its body survive; it just becomes invisible to
+    reads (get_memory returns None)."""
     from cli.memory import _cmd_delete
+    from gaia.store.writer import get_memory
 
     monkeypatch.chdir(tmp_path)
     _seed_curated(tmp_db, "doomed-mem", "project", "body")
     assert _read_memory_row(tmp_db, "me", "doomed-mem") is not None
 
     args = argparse.Namespace(name="doomed-mem", workspace="me",
-                              yes=True, json=False)
+                              yes=True, json=False, hard=False)
+    rc = _cmd_delete(args)
+    assert rc == 0, capsys.readouterr()
+    # Row physically survives (tombstone), but is invisible to reads.
+    raw = _read_memory_row(tmp_db, "me", "doomed-mem")
+    assert raw is not None, "soft-delete must NOT physically remove the row"
+    assert get_memory("me", "doomed-mem", db_path=tmp_db) is None
+    # Zero filesystem side effects
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_delete_curated_hard_removes_row(tmp_db, tmp_path, monkeypatch, capsys):
+    """scan-v2 SV3: `gaia memory delete --hard` physically removes the row
+    (explicit human curation)."""
+    from cli.memory import _cmd_delete
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "doomed-mem", "project", "body")
+
+    args = argparse.Namespace(name="doomed-mem", workspace="me",
+                              yes=True, json=False, hard=True)
     rc = _cmd_delete(args)
     assert rc == 0, capsys.readouterr()
     assert _read_memory_row(tmp_db, "me", "doomed-mem") is None
-    # Zero filesystem side effects
-    assert not (tmp_path / ".claude").exists()
 
 
 def test_delete_curated_aborts_on_no(tmp_db, tmp_path, monkeypatch, capsys):

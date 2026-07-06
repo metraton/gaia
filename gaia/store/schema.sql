@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS projects (
     missing_since    TEXT,           -- ISO8601 timestamp when status set to 'missing'; NULL if active; scanner-owned
     project_identity TEXT,           -- stable, vantage-independent project identity (git-common-dir realpath > normalized remote > realpath path); scanner-owned. NULL allowed for legacy/uninitialized rows. The partial unique index idx_projects_identity collapses the SAME physical repo scanned from different workspaces/roots into ONE row. See workspace-identity brief M1-T2.
     description      TEXT,           -- human-authored summary/purpose of the project; agent-owned. Never written by the scan path (gaia.store.writer._PROJECTS_AGENT_OWNED); survives any number of scanner rescans unchanged. Added v23 (workspace-identity brief M3-T9).
+    superseded_by    TEXT,           -- points to the successor project_identity after a 'movido' adjudication; NULL until then. Column added v25 (scan-v2 SV1); populated in SV4.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -700,6 +701,8 @@ CREATE TABLE IF NOT EXISTS memory (
     updated_at        TEXT,
     class             TEXT NOT NULL DEFAULT 'log' CHECK (class IN ('anchor', 'thread', 'log')),  -- v4/v11
     status            TEXT,  -- v4: lifecycle for class=thread (open|carry_forward|graduated|closed)
+    project_ref       TEXT,  -- remote-stable project anchor for project-scoped memory (projects.project_identity); NULL until populated. Column added v25 (scan-v2 SV1); populated/used in SV3.
+    deleted_at        TEXT,  -- tombstone marker (scan-v2 SV3). NULL = live row; non-NULL ISO8601 = soft-deleted. delete_memory() sets this instead of DELETE so the row + body survive; hard DELETE is reserved for explicit human curation (delete_memory(hard=True)). All read paths filter `deleted_at IS NULL`. Column added v26.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -759,6 +762,82 @@ CREATE TABLE IF NOT EXISTS memory_links (
 
 CREATE INDEX IF NOT EXISTS memory_links_src ON memory_links(workspace, src_name);
 CREATE INDEX IF NOT EXISTS idx_memory_links_dst_kind ON memory_links(workspace, dst_name, kind);
+
+-- ---------------------------------------------------------------------------
+-- memory_history: provenance / version audit trail for `memory` rows
+-- (scan-v2 SV3). trg_memory_history fires AFTER UPDATE on `memory` to capture
+-- before/after of the columns that carry data or lineage -- the same pattern
+-- as trg_pcc_history / trg_project_history above, applied to `memory`.
+--
+-- This single trigger blinds three memory-loss vectors at the SQL layer, so
+-- no code path can bypass it:
+--   * archive-on-upsert: upsert_memory()'s ON CONFLICT DO UPDATE fires this
+--     trigger, so the PREVIOUS body is archived under before_body before it is
+--     overwritten -- the body is never lost, every version is recoverable.
+--   * tombstone-on-delete: delete_memory() soft-deletes by setting deleted_at;
+--     that UPDATE lands a history row (before_deleted_at NULL -> after non-NULL).
+--   * relocate origin trace: relocate_memory() re-keys workspace; the trigger
+--     records before_workspace -> after_workspace, preserving the move origin.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS memory_history (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace          TEXT NOT NULL,  -- FK -> workspaces.name (current workspace at time of change)
+    name               TEXT NOT NULL,  -- memory slug (current name at time of change)
+    before_workspace   TEXT,
+    after_workspace    TEXT,
+    before_body        TEXT,
+    after_body         TEXT,
+    before_type        TEXT,
+    after_type         TEXT,
+    before_description TEXT,
+    after_description  TEXT,
+    before_status      TEXT,
+    after_status       TEXT,
+    before_deleted_at  TEXT,
+    after_deleted_at   TEXT,
+    changed_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    changed_by_agent   TEXT,  -- optional: GAIA_DISPATCH_AGENT at write time (NULL when trigger-populated)
+    FOREIGN KEY (workspace) REFERENCES workspaces(name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_history_workspace_name ON memory_history(workspace, name);
+
+-- trg_memory_history: fires AFTER UPDATE on `memory` whenever body, workspace,
+-- type, description, status, or deleted_at changes. Uses `IS NOT` (not `!=`)
+-- so a transition to/from NULL (e.g. deleted_at NULL -> timestamp on tombstone,
+-- or description cleared) is still detected -- SQL `!=` against NULL is NULL
+-- (falsy) and would silently miss it. Runs independently of the memory_au
+-- trigger (that one only re-indexes memory_fts and is unaffected by this
+-- trigger's columns).
+CREATE TRIGGER IF NOT EXISTS trg_memory_history
+AFTER UPDATE ON memory
+WHEN OLD.body IS NOT NEW.body
+   OR OLD.workspace IS NOT NEW.workspace
+   OR OLD.type IS NOT NEW.type
+   OR OLD.description IS NOT NEW.description
+   OR OLD.status IS NOT NEW.status
+   OR OLD.deleted_at IS NOT NEW.deleted_at
+BEGIN
+    INSERT INTO memory_history (
+        workspace, name,
+        before_workspace, after_workspace,
+        before_body, after_body,
+        before_type, after_type,
+        before_description, after_description,
+        before_status, after_status,
+        before_deleted_at, after_deleted_at,
+        changed_at
+    ) VALUES (
+        NEW.workspace, NEW.name,
+        OLD.workspace, NEW.workspace,
+        OLD.body, NEW.body,
+        OLD.type, NEW.type,
+        OLD.description, NEW.description,
+        OLD.status, NEW.status,
+        OLD.deleted_at, NEW.deleted_at,
+        strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    );
+END;
 
 -- ---------------------------------------------------------------------------
 -- project_context_contracts: project-context.json reconstructed as (workspace, contract) rows
@@ -1029,6 +1108,66 @@ BEGIN
         ) = 0
         THEN RAISE(ABORT, 'approvals: status change requires a preceding event in approval_events')
     END;
+END;
+
+-- ---------------------------------------------------------------------------
+-- project_history: provenance/lineage audit trail for `projects` rows
+-- (scan-v2 SV1). trg_project_history fires AFTER UPDATE on `projects` to
+-- capture before/after path/workspace/name/status at the SQL layer -- the
+-- same pattern as trg_pcc_history / project_context_contracts_history above,
+-- applied to `projects` instead of `project_context_contracts`.
+--
+-- This gives a connected timeline for both move (path/workspace/name change)
+-- and soft-delete (status -> 'missing'): every mutation that scan-v2 cares
+-- about lands here without the scanner needing to write history explicitly.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS project_history (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace         TEXT NOT NULL,  -- FK -> workspaces.name (current workspace at time of change)
+    name              TEXT NOT NULL,  -- FK -> projects.name within that workspace (current name at time of change)
+    before_path       TEXT,
+    after_path        TEXT,
+    before_workspace  TEXT,
+    after_workspace   TEXT,
+    before_name       TEXT,
+    after_name        TEXT,
+    before_status     TEXT,
+    after_status      TEXT,
+    changed_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    FOREIGN KEY (workspace) REFERENCES workspaces(name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_history_workspace_name ON project_history(workspace, name);
+
+-- trg_project_history: fires AFTER UPDATE on `projects` whenever path,
+-- workspace, name, or status changes (move or soft-delete). Uses `IS NOT`
+-- (not `!=`) so a transition to/from NULL (e.g. path cleared) is still
+-- detected -- SQL `!=` against NULL is NULL (falsy) and would silently miss
+-- it. Runs independently of the projects_fts_update trigger (that one only
+-- re-indexes name/role/primary_language into projects_fts and is unaffected
+-- by this trigger's columns).
+CREATE TRIGGER IF NOT EXISTS trg_project_history
+AFTER UPDATE ON projects
+WHEN OLD.path IS NOT NEW.path
+   OR OLD.workspace IS NOT NEW.workspace
+   OR OLD.name IS NOT NEW.name
+   OR OLD.status IS NOT NEW.status
+BEGIN
+    INSERT INTO project_history (
+        workspace, name,
+        before_path, after_path,
+        before_workspace, after_workspace,
+        before_name, after_name,
+        before_status, after_status,
+        changed_at
+    ) VALUES (
+        NEW.workspace, NEW.name,
+        OLD.path, NEW.path,
+        OLD.workspace, NEW.workspace,
+        OLD.name, NEW.name,
+        OLD.status, NEW.status,
+        strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+    );
 END;
 
 -- ---------------------------------------------------------------------------

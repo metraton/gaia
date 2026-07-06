@@ -348,20 +348,29 @@ def _cmd_query(args) -> int:
 
 
 def _cmd_wipe(args) -> int:
-    """Handle `gaia context wipe --workspace W [--yes]`.
+    """Handle `gaia context wipe --workspace W [--yes] [--purge-memory]`.
 
-    Deletes all rows for the workspace (CASCADE removes children).
-    Requires interactive confirmation unless --yes is passed.
+    Deletes the scannable rows for the workspace (CASCADE removes children).
+    scan-v2 SV3: curated memory is PRESERVED across the wipe by default; pass
+    --purge-memory to also destroy it (explicit human curation). Requires
+    interactive confirmation unless --yes is passed.
     """
     workspace = getattr(args, "workspace", None)
     if not workspace:
         print("gaia context wipe: --workspace is required", file=sys.stderr)
         return 2
 
+    purge_memory = getattr(args, "purge_memory", False)
     if not getattr(args, "yes", False):
+        mem_note = (
+            "curated memory WILL ALSO BE DESTROYED"
+            if purge_memory
+            else "curated memory will be PRESERVED"
+        )
         try:
             ans = input(
-                f"gaia context wipe: about to delete ALL rows for workspace {workspace!r}.\n"
+                f"gaia context wipe: about to delete workspace {workspace!r} "
+                f"rows ({mem_note}).\n"
                 f"Type 'yes' to confirm: "
             )
         except EOFError:
@@ -376,82 +385,119 @@ def _cmd_wipe(args) -> int:
         print(f"gaia context wipe: failed to import store: {exc}", file=sys.stderr)
         return 1
 
+    purge_memory = getattr(args, "purge_memory", False)
     try:
-        wipe_workspace(workspace)
+        # scan-v2 SV3 (Vector 4): preserve curated memory across the wipe by
+        # default. --purge-memory is the explicit-human-curation escape hatch
+        # that restores the original full CASCADE (memory destroyed).
+        wipe_workspace(workspace, preserve_memory=not purge_memory)
     except Exception as exc:
         print(f"gaia context wipe: error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Wiped workspace: {workspace}")
+    if purge_memory:
+        print(f"Wiped workspace (memory PURGED): {workspace}")
+    else:
+        print(f"Wiped workspace (memory preserved): {workspace}")
     return 0
 
 
-def _cmd_delete_projects(args) -> int:
-    """Handle ``gaia context delete-projects --workspace W [filters] [--dry-run] [--yes]``.
+def _cmd_move_project(args) -> int:
+    """Handle ``gaia context move-project --decision D --from-workspace W1
+    --from-name N1 --to-workspace W2 --to-name N2 [--dry-run] [--yes] [--json]``.
 
-    Targeted deletion of `projects` rows within a SINGLE workspace, leaving the
-    workspaces row and every non-project child (memory, PCC, briefs, episodes)
-    intact -- the surgical alternative to `wipe` for a LIVE workspace. At least
-    one filter beyond --workspace is required.
+    EXECUTES a human-adjudicated scan-v2 move_candidate. `gaia scan` only
+    DETECTS and REPORTS a move (as `move_candidates`); this is the write path
+    that resolves one:
+
+      --decision movido    -> re-key / supersede the OLD projects row to link it
+                              to the successor (writes `superseded_by`, never
+                              hard-deletes). Curated memory / contracts are only
+                              PROPOSED for relocation, not auto-moved -- use
+                              `move-memory` / `move-contracts` for those.
+      --decision duplicado -> structural no-op: both rows are legitimately
+      --decision worktree     independent and are left exactly as they are.
+
+    Named with a leading `move` token so it hyphen-splits to a MUTATIVE_VERB and
+    gates as T3 without any security-layer change (same convention as
+    `move-contracts` / `move-memory`); `--dry-run` downgrades to a preview.
     """
-    workspace = getattr(args, "workspace", None)
-    if not workspace:
-        print("gaia context delete-projects: --workspace is required", file=sys.stderr)
-        return 2
-
-    group_name = getattr(args, "group", None)
-    status = getattr(args, "status", None)
-    path = getattr(args, "path", None)
-    project_identity = getattr(args, "identity", None)
-    names = getattr(args, "name", None) or None
+    decision = getattr(args, "decision", None)
+    from_ws = getattr(args, "from_workspace", None)
+    from_name = getattr(args, "from_name", None)
+    to_ws = getattr(args, "to_workspace", None)
+    to_name = getattr(args, "to_name", None)
     dry_run = getattr(args, "dry_run", False)
     as_json = getattr(args, "json", False)
 
-    if not any(v is not None for v in (group_name, status, names, path, project_identity)):
+    if decision not in ("movido", "duplicado", "worktree"):
         print(
-            "gaia context delete-projects: at least one filter beyond --workspace "
-            "is required (--group/--status/--name/--path/--identity). To delete an "
-            "entire workspace use `gaia context wipe`.",
+            "gaia context move-project: --decision must be one of "
+            "movido/duplicado/worktree",
+            file=sys.stderr,
+        )
+        return 2
+    if not all((from_ws, from_name, to_ws, to_name)):
+        print(
+            "gaia context move-project: --from-workspace/--from-name/"
+            "--to-workspace/--to-name are all required",
             file=sys.stderr,
         )
         return 2
 
+    # duplicado / worktree: legitimate independent rows -> structural no-op.
+    if decision in ("duplicado", "worktree"):
+        result = {
+            "status": "noop",
+            "decision": decision,
+            "from": {"workspace": from_ws, "name": from_name},
+            "to": {"workspace": to_ws, "name": to_name},
+            "reason": (
+                f"decision {decision!r}: both rows are legitimately independent "
+                "-- left untouched (no re-key, no supersede)."
+            ),
+        }
+        if as_json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(f"[{decision}] no-op: left both project rows untouched "
+                  f"({from_ws}/{from_name} and {to_ws}/{to_name}).")
+        return 0
+
+    # movido:
     try:
-        from gaia.store.writer import delete_projects
+        from gaia.store.writer import resolve_move_candidate
     except Exception as exc:
-        print(f"gaia context delete-projects: failed to import store: {exc}", file=sys.stderr)
+        print(f"gaia context move-project: failed to import store: {exc}", file=sys.stderr)
         return 1
 
-    # Preview first (always), so both --dry-run and the confirmation prompt show
-    # exactly which rows are in scope.
-    preview = delete_projects(
-        workspace,
-        group_name=group_name,
-        status=status,
-        names=names,
-        path=path,
-        project_identity=project_identity,
-        dry_run=True,
-    )
-    matched = preview["matched"]
+    try:
+        preview = resolve_move_candidate(
+            from_ws, from_name, to_ws, to_name, dry_run=True,
+        )
+    except ValueError as exc:
+        print(f"gaia context move-project: {exc}", file=sys.stderr)
+        return 1
 
     if dry_run:
         if as_json:
             print(json.dumps(preview, indent=2, default=str))
         else:
-            print(f"[dry-run] delete-projects would remove {len(matched)} row(s) from workspace {workspace!r}:")
-            for r in matched:
-                print(f"  - {r['name']}  (group={r['group_name']}, status={r['status']}, path={r['path']})")
-        return 0
-
-    if not matched:
-        print(f"gaia context delete-projects: no matching rows in workspace {workspace!r}")
+            print(f"[dry-run] move-project (movido) {from_ws}/{from_name} -> "
+                  f"{to_ws}/{to_name}:")
+            print(f"  action        : {preview['action']}")
+            print(f"  superseded_by : {preview['superseded_by']}")
+            rel = preview["proposed_relocations"]
+            print(f"  proposed relocations (NOT auto-moved): "
+                  f"memory={rel['memory']} contracts={rel['contracts']}")
+            print("  -> relocate collateral with `gaia context move-memory` / "
+                  "`move-contracts` if desired.")
         return 0
 
     if not getattr(args, "yes", False):
-        print(f"About to delete {len(matched)} project row(s) from workspace {workspace!r}:")
-        for r in matched:
-            print(f"  - {r['name']}  (group={r['group_name']}, status={r['status']})")
+        print(f"About to resolve move (movido): re-key/supersede "
+              f"{from_ws}/{from_name} -> {to_ws}/{to_name} "
+              f"(action={preview['action']}, no hard-delete).")
         try:
             ans = input("Type 'yes' to confirm: ")
         except EOFError:
@@ -460,18 +506,20 @@ def _cmd_delete_projects(args) -> int:
             print("Aborted (no confirmation).")
             return 1
 
-    result = delete_projects(
-        workspace,
-        group_name=group_name,
-        status=status,
-        names=names,
-        path=path,
-        project_identity=project_identity,
-    )
+    try:
+        result = resolve_move_candidate(from_ws, from_name, to_ws, to_name)
+    except ValueError as exc:
+        print(f"gaia context move-project: {exc}", file=sys.stderr)
+        return 1
+
     if as_json:
         print(json.dumps(result, indent=2, default=str))
     else:
-        print(f"Deleted {result['deleted']} project row(s) from workspace {workspace!r}")
+        rel = result["proposed_relocations"]
+        print(f"Resolved move (movido): {from_ws}/{from_name} -> {to_ws}/{to_name} "
+              f"(action={result['action']}, superseded_by={result['superseded_by']}).")
+        print(f"Proposed (NOT moved): memory={rel['memory']} contracts={rel['contracts']} "
+              f"still keyed to {from_ws!r} -- relocate with move-memory/move-contracts.")
     return 0
 
 
@@ -739,33 +787,13 @@ def register(subparsers) -> None:
         default=False,
         help="Skip interactive confirmation",
     )
-
-    # gaia context delete-projects --workspace W [filters]
-    # (T3: the verb token 'delete-projects' hyphen-splits to 'delete', which is
-    # in the security hook's MUTATIVE_VERBS -- so the command is gated as T3
-    # without any change to the security layer.)
-    del_parser = ctx_subparsers.add_parser(
-        "delete-projects",
-        help="Delete matching `projects` rows within one workspace (leaves workspace + PCC/memory intact)",
+    wipe_parser.add_argument(
+        "--purge-memory",
+        action="store_true",
+        default=False,
+        help="Also destroy curated memory (default: memory is preserved across "
+             "the wipe). Explicit human curation only.",
     )
-    del_parser.add_argument("--workspace", metavar="W", required=True,
-                            help="Workspace to operate within (scope guard)")
-    del_parser.add_argument("--group", metavar="G", default=None,
-                            help="Match projects.group_name")
-    del_parser.add_argument("--status", metavar="S", default=None,
-                            help="Match projects.status (e.g. 'missing')")
-    del_parser.add_argument("--name", metavar="N", action="append", default=None,
-                            help="Match projects.name (repeatable)")
-    del_parser.add_argument("--path", metavar="P", default=None,
-                            help="Match projects.path")
-    del_parser.add_argument("--identity", metavar="I", default=None,
-                            help="Match projects.project_identity")
-    del_parser.add_argument("--dry-run", action="store_true", default=False,
-                            help="Preview matched rows without deleting")
-    del_parser.add_argument("--json", action="store_true", default=False,
-                            help="Emit JSON")
-    del_parser.add_argument("--yes", action="store_true", default=False,
-                            help="Skip interactive confirmation")
 
     # gaia context move-contracts --from W1 --to W2 --contract C ...
     # (T3: the verb token 'move-contracts' hyphen-splits to 'move', which is in
@@ -813,6 +841,33 @@ def register(subparsers) -> None:
     mm_parser.add_argument("--yes", action="store_true", default=False,
                            help="Skip interactive confirmation")
 
+    # gaia context move-project --decision D --from-workspace/--from-name
+    #                           --to-workspace/--to-name
+    # (T3: the verb token 'move-project' hyphen-splits to 'move', which is in
+    # MUTATIVE_VERBS -- gated as T3 without touching the security layer. This is
+    # the write path that EXECUTES a scan-v2 move_candidate a human adjudicated.)
+    mp_parser = ctx_subparsers.add_parser(
+        "move-project",
+        help="Resolve an adjudicated scan-v2 move_candidate (re-key/supersede a projects row)",
+    )
+    mp_parser.add_argument("--decision", required=True,
+                           choices=("movido", "duplicado", "worktree"),
+                           help="Human adjudication of the move_candidate")
+    mp_parser.add_argument("--from-workspace", dest="from_workspace", metavar="W1", required=True,
+                           help="Old row workspace (move_candidate from.workspace)")
+    mp_parser.add_argument("--from-name", dest="from_name", metavar="N1", required=True,
+                           help="Old row name (move_candidate from.project)")
+    mp_parser.add_argument("--to-workspace", dest="to_workspace", metavar="W2", required=True,
+                           help="Successor workspace (move_candidate to.workspace)")
+    mp_parser.add_argument("--to-name", dest="to_name", metavar="N2", required=True,
+                           help="Successor name (move_candidate to.project)")
+    mp_parser.add_argument("--dry-run", action="store_true", default=False,
+                           help="Preview the resolution without mutating")
+    mp_parser.add_argument("--json", action="store_true", default=False,
+                           help="Emit JSON")
+    mp_parser.add_argument("--yes", action="store_true", default=False,
+                           help="Skip interactive confirmation")
+
 
 def cmd_context(args) -> int:
     """Dispatch handler for `gaia context`."""
@@ -829,12 +884,12 @@ def cmd_context(args) -> int:
         return _cmd_query(args)
     if context_cmd == "wipe":
         return _cmd_wipe(args)
-    if context_cmd == "delete-projects":
-        return _cmd_delete_projects(args)
     if context_cmd == "move-contracts":
         return _cmd_move_contracts(args)
     if context_cmd == "move-memory":
         return _cmd_move_memory(args)
+    if context_cmd == "move-project":
+        return _cmd_move_project(args)
 
     # No sub-action: print help for the context subcommand
     import argparse

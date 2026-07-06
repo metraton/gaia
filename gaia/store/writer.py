@@ -1346,6 +1346,18 @@ def upsert_memory(
     workspace_path: Path | None = None,
 ) -> dict:
     """Upsert a curated-memory row in the ``memory`` table.
+
+    Archive-on-upsert (scan-v2 SV3): when this overwrites an existing row, the
+    ``memory_au``... no -- the ``trg_memory_history`` AFTER UPDATE trigger fires
+    on the ON CONFLICT DO UPDATE below and archives the PREVIOUS ``body`` (and
+    workspace/type/description/status/deleted_at) into ``memory_history`` before
+    the new value lands. The prior version is never lost; no explicit archival
+    code is needed here because the guarantee is enforced at the SQL layer for
+    every write path, not just this one.
+
+    Resurrection: re-adding a slug that was soft-deleted clears ``deleted_at``
+    (the row returns to the live set). The clearing is captured by the same
+    history trigger.
     """
     _assert_dispatch_can_write_memory()
 
@@ -1385,7 +1397,8 @@ def upsert_memory(
                     description       = excluded.description,
                     body              = excluded.body,
                     origin_session_id = excluded.origin_session_id,
-                    updated_at        = excluded.updated_at
+                    updated_at        = excluded.updated_at,
+                    deleted_at        = NULL
                 """,
                 (workspace, name, type, description, body,
                  origin_session_id, now),
@@ -1415,15 +1428,49 @@ def delete_memory(
     workspace: str,
     name: str,
     *,
+    hard: bool = False,
     db_path: Path | None = None,
 ) -> bool:
-    """Hard-delete a curated memory row."""
+    """Soft-delete (tombstone) a curated memory row -- scan-v2 SV3.
+
+    By default this is a SOFT delete: the row's ``deleted_at`` column is stamped
+    with the current UTC timestamp instead of the row being physically removed.
+    The row and its ``body`` survive (recoverable, and re-addable via
+    :func:`upsert_memory`, which clears the tombstone). The ``trg_memory_history``
+    trigger records the tombstone transition (before_deleted_at NULL -> after
+    non-NULL). All read paths filter ``deleted_at IS NULL`` so a tombstoned row
+    is invisible to normal queries.
+
+    A tombstone is idempotent: calling delete_memory on an already-tombstoned
+    row is a no-op (the row is not re-stamped and no new history row is written).
+
+    ``hard=True`` performs the real physical DELETE. This is the ONLY path that
+    destroys the row and its body, and it exists exclusively for explicit human
+    curation ("never hard-delete curated memory except by explicit human
+    curation" -- decision_scan_v2_memory_loss_vectors). The CLI surfaces it via
+    ``gaia memory delete --hard`` behind the existing confirmation prompt.
+
+    Returns True when a row was affected (tombstoned or hard-deleted), False
+    when no live row matched (already tombstoned, or absent).
+    """
     _assert_dispatch_can_write_memory()
     con = _connect(db_path)
     try:
+        if hard:
+            cur = con.execute(
+                "DELETE FROM memory WHERE workspace = ? AND name = ?",
+                (workspace, name),
+            )
+            con.commit()
+            return cur.rowcount > 0
+        # Soft delete: stamp deleted_at only on a currently-live row. The
+        # `deleted_at IS NULL` guard makes a repeated tombstone a no-op (no
+        # spurious history row, no timestamp churn).
+        now = _now_iso()
         cur = con.execute(
-            "DELETE FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
+            "UPDATE memory SET deleted_at = ?, updated_at = ? "
+            "WHERE workspace = ? AND name = ? AND deleted_at IS NULL",
+            (now, now, workspace, name),
         )
         con.commit()
         return cur.rowcount > 0
@@ -1908,6 +1955,7 @@ def search_memory_curated(
             JOIN memory m ON m.rowid = memory_fts.rowid
             WHERE memory_fts MATCH ?
               AND m.workspace = ?
+              AND m.deleted_at IS NULL
             ORDER BY rank
             LIMIT ?
             """,
@@ -1935,17 +1983,26 @@ def get_memory(
     workspace: str,
     name: str,
     *,
+    include_deleted: bool = False,
     db_path: Path | None = None,
 ) -> dict | None:
-    """Return a curated memory row as a dict, or ``None`` when missing."""
+    """Return a curated memory row as a dict, or ``None`` when missing.
+
+    Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
+    default so a soft-deleted memory reads as absent. Pass
+    ``include_deleted=True`` to reach a tombstoned row (e.g. for an explicit
+    hard-delete or a recovery inspection).
+    """
     con = _connect(db_path)
     try:
-        row = con.execute(
+        sql = (
             "SELECT workspace, name, type, description, body, "
-            "       origin_session_id, updated_at "
-            "FROM memory WHERE workspace = ? AND name = ?",
-            (workspace, name),
-        ).fetchone()
+            "       origin_session_id, updated_at, deleted_at "
+            "FROM memory WHERE workspace = ? AND name = ?"
+        )
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        row = con.execute(sql, (workspace, name)).fetchone()
         if row is None:
             return None
         return {k: row[k] for k in row.keys()}
@@ -1957,23 +2014,28 @@ def list_memory(
     workspace: str,
     *,
     type: str | None = None,
+    include_deleted: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """List curated memory rows, optionally filtered by ``type``."""
+    """List curated memory rows, optionally filtered by ``type``.
+
+    Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
+    default; pass ``include_deleted=True`` to include them.
+    """
     con = _connect(db_path)
     try:
-        if type is None:
-            rows = con.execute(
-                "SELECT name, type, description, updated_at "
-                "FROM memory WHERE workspace = ? ORDER BY name",
-                (workspace,),
-            ).fetchall()
-        else:
-            rows = con.execute(
-                "SELECT name, type, description, updated_at "
-                "FROM memory WHERE workspace = ? AND type = ? ORDER BY name",
-                (workspace, type),
-            ).fetchall()
+        where = ["workspace = ?"]
+        params: list = [workspace]
+        if type is not None:
+            where.append("type = ?")
+            params.append(type)
+        if not include_deleted:
+            where.append("deleted_at IS NULL")
+        sql = (
+            "SELECT name, type, description, updated_at "
+            "FROM memory WHERE " + " AND ".join(where) + " ORDER BY name"
+        )
+        rows = con.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     finally:
         con.close()
@@ -2820,15 +2882,86 @@ def reorder_tasks(
 # Public API: wipe_workspace
 # ---------------------------------------------------------------------------
 
-def wipe_workspace(workspace: str, *, db_path: Path | None = None) -> None:
+def _reinsert_row(con: sqlite3.Connection, table: str, row: sqlite3.Row) -> None:
+    """Re-INSERT a captured ``sqlite3.Row`` back into ``table`` verbatim.
+
+    Column list is derived from the row's own keys, so the helper survives
+    schema evolution without hard-coding column names. Used by
+    :func:`wipe_workspace` to restore memory / memory_links / the workspaces row
+    after a CASCADE wipe.
+    """
+    cols = list(row.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    col_list = ", ".join(cols)
+    con.execute(
+        f"INSERT INTO {table} ({col_list}) VALUES ({placeholders})",
+        tuple(row[c] for c in cols),
+    )
+
+
+def wipe_workspace(
+    workspace: str,
+    *,
+    preserve_memory: bool = True,
+    db_path: Path | None = None,
+) -> None:
     """Delete the workspaces row for `workspace`. FK CASCADE removes all
     child rows (projects, apps, integrations, etc.) automatically.
+
+    Memory preservation (scan-v2 SV3, Vector 4)
+    -------------------------------------------
+    ``memory`` and ``memory_links`` are FK'd to ``workspaces`` with ON DELETE
+    CASCADE, so a naive workspace delete DESTROYS all curated memory for the
+    workspace. That is the loss vector `migrate_workspace.py` triggered on every
+    re-scan. This function now DECOUPLES memory from the CASCADE at the app
+    layer -- the safer of the two options (the alternative, changing the FK to
+    ON DELETE SET NULL / RESTRICT, would require a full ``memory`` table rebuild
+    per the v21->v22 precedent).
+
+    With ``preserve_memory=True`` (the DEFAULT): inside a single transaction the
+    memory rows, memory_links rows, and the workspaces row itself are captured
+    BEFORE the delete; the CASCADE then fires as normal; and the workspaces row
+    (with its identity / created_at / status preserved) plus every memory /
+    memory_links row is re-inserted. Net effect: projects and all scannable
+    children are cleared (what a re-scan wants), while curated memory survives
+    untouched. The memory_ai / memory_links insert triggers keep the FTS mirror
+    consistent.
+
+    ``preserve_memory=False`` performs the original full CASCADE (memory
+    destroyed). This exists ONLY for explicit human curation -- e.g.
+    ``gaia context wipe --purge-memory`` behind its confirmation prompt --
+    honouring "never hard-delete curated memory except by explicit human
+    curation".
     """
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
         try:
-            con.execute("DELETE FROM workspaces WHERE name = ?", (workspace,))
+            if preserve_memory:
+                ws_row = con.execute(
+                    "SELECT * FROM workspaces WHERE name = ?", (workspace,)
+                ).fetchone()
+                mem_rows = con.execute(
+                    "SELECT * FROM memory WHERE workspace = ?", (workspace,)
+                ).fetchall()
+                link_rows = con.execute(
+                    "SELECT * FROM memory_links WHERE workspace = ?", (workspace,)
+                ).fetchall()
+
+                con.execute("DELETE FROM workspaces WHERE name = ?", (workspace,))
+
+                # Restore the workspaces row (only when it existed) so the FK
+                # target for the re-inserted memory is present again, then the
+                # memory + links. If the workspace had no row, there was nothing
+                # to preserve and the delete was a no-op.
+                if ws_row is not None:
+                    _reinsert_row(con, "workspaces", ws_row)
+                    for r in mem_rows:
+                        _reinsert_row(con, "memory", r)
+                    for r in link_rows:
+                        _reinsert_row(con, "memory_links", r)
+            else:
+                con.execute("DELETE FROM workspaces WHERE name = ?", (workspace,))
             con.commit()
         except Exception:
             con.rollback()
@@ -2857,144 +2990,20 @@ def wipe_workspace(workspace: str, *, db_path: Path | None = None) -> None:
 #
 # wipe_workspace is too blunt for a LIVE workspace: it CASCADE-deletes the
 # workspaces row and EVERY child (projects, memory, briefs, episodes, PCC).
-# The two helpers below are the surgical, workspace-preserving primitives that
-# repair drift without destroying collateral:
+# The helper below is the surgical, workspace-preserving primitive that
+# repairs drift without destroying collateral:
 #
-#   delete_projects    -- remove matching `projects` rows within one workspace,
-#                         leaving the workspace row + non-project children intact.
 #   relocate_contracts -- re-key project_context_contracts rows between
 #                         workspaces (the only correction path for mis-keyed PCC).
+#
+# NOTE: a `delete_projects` sibling (targeted deletion of `projects` rows)
+# existed here as a one-time reconciliation tool (workspace-identity brief
+# M4/T10) and was removed in scan-v2 SV4 -- agents must never hold the power
+# to hard-delete project rows; `mark_missing_in` (soft-delete, scanner-owned)
+# and the resolve-move adjudication (re-key + tombstone, see
+# `resolve_move_candidate` below) are the only sanctioned paths that touch a
+# project row's lifecycle.
 # ---------------------------------------------------------------------------
-
-_PROJECT_DELETE_FILTER_KEYS = ("group_name", "status", "names", "path", "project_identity")
-
-
-def delete_projects(
-    workspace: str,
-    *,
-    group_name: str | None = None,
-    status: str | None = None,
-    names: Sequence[str] | None = None,
-    path: str | None = None,
-    project_identity: str | None = None,
-    dry_run: bool = False,
-    db_path: Path | None = None,
-) -> dict:
-    """Targeted deletion of rows from `projects` within a SINGLE workspace.
-
-    Unlike :func:`wipe_workspace` (which deletes the workspaces row and CASCADEs
-    the ENTIRE workspace -- projects, memory, briefs, episodes, PCC), this
-    deletes ONLY matching `projects` rows. The workspaces row and every
-    NON-project child (memory, project_context_contracts, briefs, episodes)
-    survive untouched. Project-scoped children (apps, libraries, services,
-    features, project_facets, tf_modules, tf_live, releases, workloads,
-    clusters_defined) CASCADE via their FK (workspace, project) ->
-    projects(workspace, name), and the projects_fts mirror is kept in sync by
-    the projects_fts_delete trigger.
-
-    This is the surgery tool for reconciling stale project rows that live under
-    a LIVE workspace which must NOT be wiped -- e.g. workspace 'me' hosts the
-    live gaia + metraton.github.io projects alongside 28 stale 'github-repos'
-    group rows whose on-disk directory no longer exists.
-
-    Scope guard: `workspace` is REQUIRED and at least one additional filter must
-    be supplied. A call with no filter beyond workspace raises ValueError -- it
-    would delete every project in the workspace, which is what wipe_workspace is
-    for. Filters are AND-combined:
-
-        group_name        -- projects.group_name = ?
-        status            -- projects.status = ?         (e.g. 'missing')
-        names             -- projects.name IN (?, ...)
-        path              -- projects.path = ?
-        project_identity  -- projects.project_identity = ?
-
-    Args:
-        workspace: Workspace name (projects.workspace). Required scope guard.
-        group_name: Match projects.group_name exactly.
-        status: Match projects.status exactly ('active' | 'missing').
-        names: Match projects.name against this collection (IN clause).
-        path: Match projects.path exactly.
-        project_identity: Match projects.project_identity exactly.
-        dry_run: When True, delete nothing; return the matched rows so a caller
-            can preview exactly what WOULD be deleted.
-        db_path: Optional explicit DB path (used by tests).
-
-    Returns:
-        {"status": "applied"|"preview", "workspace": ws, "deleted": n,
-         "matched": [{"name","group_name","status","path"}...]}.
-
-    Raises:
-        ValueError: when no filter beyond `workspace` is supplied.
-    """
-    if not workspace:
-        raise ValueError("delete_projects: workspace is required")
-
-    names_list = list(names) if names else None
-    has_filter = any(
-        v is not None
-        for v in (group_name, status, names_list, path, project_identity)
-    )
-    if not has_filter:
-        raise ValueError(
-            "delete_projects: at least one filter beyond `workspace` is "
-            "required (group_name/status/names/path/project_identity). To "
-            "delete the entire workspace use wipe_workspace()."
-        )
-
-    where = ["workspace = ?"]
-    params: list[Any] = [workspace]
-    if group_name is not None:
-        where.append("group_name = ?")
-        params.append(group_name)
-    if status is not None:
-        where.append("status = ?")
-        params.append(status)
-    if path is not None:
-        where.append("path = ?")
-        params.append(path)
-    if project_identity is not None:
-        where.append("project_identity = ?")
-        params.append(project_identity)
-    if names_list is not None:
-        placeholders = ", ".join(["?"] * len(names_list))
-        where.append(f"name IN ({placeholders})")
-        params.extend(names_list)
-    where_sql = " AND ".join(where)
-
-    con = _connect(db_path)
-    try:
-        con.execute("BEGIN")
-        try:
-            rows = con.execute(
-                f"SELECT name, group_name, status, path FROM projects "
-                f"WHERE {where_sql}",
-                params,
-            ).fetchall()
-            matched = [dict(r) for r in rows]
-
-            if dry_run:
-                con.commit()
-                return {
-                    "status": "preview",
-                    "workspace": workspace,
-                    "deleted": 0,
-                    "matched": matched,
-                }
-
-            cur = con.execute(f"DELETE FROM projects WHERE {where_sql}", params)
-            deleted = cur.rowcount
-            con.commit()
-            return {
-                "status": "applied",
-                "workspace": workspace,
-                "deleted": deleted,
-                "matched": matched,
-            }
-        except Exception:
-            con.rollback()
-            raise
-    finally:
-        con.close()
 
 
 def relocate_contracts(
@@ -3153,8 +3162,17 @@ def relocate_memory(
     memory_links follow the notes: a link under ``from_workspace`` whose BOTH
     endpoints are in the moved set is re-keyed to ``to_workspace`` (the edge
     travels with the pair). A link with only ONE endpoint in the moved set
-    cannot stay consistent under the single-workspace link model -- it is left
-    in place and reported under 'partial_links' rather than silently broken.
+    cannot stay consistent under the single-workspace link model -- scan-v2 SV3
+    DELETES that now-dangling edge (its endpoint left the workspace) and reports
+    it under 'partial_links'. The link is derived graph metadata, not curated
+    memory: both endpoint rows survive untouched; only the broken edge is
+    removed, so nothing is lost silently and no dangling reference is left
+    behind.
+
+    Provenance (scan-v2 SV3): the workspace re-key UPDATE fires the
+    ``trg_memory_history`` trigger, which records before_workspace ->
+    after_workspace for each moved row -- the origin of every move is preserved
+    in ``memory_history`` automatically, no explicit trace-write needed.
 
     ``to_workspace`` must satisfy the FK to workspaces(name); it is created via
     :func:`_ensure_workspace_row` when absent. PK is (workspace, name); on a
@@ -3282,8 +3300,25 @@ def relocate_memory(
                             )
                         links_moved.append(entry)
                     else:
-                        # Only one endpoint moves -- cannot stay consistent;
-                        # leave it in place and report it.
+                        # Only one endpoint moved. Under the single-workspace
+                        # link model this edge is now referentially dangling:
+                        # one of its endpoints no longer exists under
+                        # ``from_workspace`` and cannot be re-homed to
+                        # ``to_workspace`` (the other endpoint stayed). Leaving
+                        # it in place is silent corruption -- scan-v2 SV3 removes
+                        # the dangling edge and reports it under 'partial_links'
+                        # so nothing is lost silently. A link is derived graph
+                        # metadata, not curated memory: both endpoint rows (the
+                        # data) survive untouched; only the broken edge is
+                        # dropped. Never touches memory rows.
+                        if not dry_run:
+                            con.execute(
+                                "DELETE FROM memory_links "
+                                "WHERE workspace = ? AND src_name = ? "
+                                "AND dst_name = ? AND kind = ?",
+                                (from_workspace, lr["src_name"],
+                                 lr["dst_name"], lr["kind"]),
+                            )
                         partial_links.append(entry)
 
             con.commit()
@@ -3303,6 +3338,190 @@ def relocate_memory(
         "overwritten": overwritten,
         "links_moved": links_moved,
         "partial_links": partial_links,
+    }
+
+
+# ---------------------------------------------------------------------------
+# scan-v2 SV4: move-candidate adjudication (superseded_by write / re-key).
+#
+# `gaia scan` (SV2) only DETECTS and REPORTS a move -- it pairs a project that
+# vanished from one workspace 1:1 (by normalized remote) with a project that
+# appeared in another, and emits a `move_candidate`. It never mutates the
+# lineage. A human then adjudicates each candidate; `resolve_move_candidate`
+# below is the write path that EXECUTES an adjudicated 'movido' decision.
+#
+# Post-scan, a detected move leaves TWO rows in `projects`:
+#   * the OLD row (the `from` side): now status='missing' (soft-deleted by the
+#     reconcile pass), still carrying the pre-move project_identity (its
+#     git-common-dir at the old location) and any agent-owned `description`.
+#   * the NEW row (the `to` side): freshly upserted, status='active', carrying
+#     a DIFFERENT project_identity (the git-common-dir changed when the repo
+#     physically moved). This is the successor.
+#
+# The 'movido' adjudication links the two WITHOUT ever hard-deleting either:
+#   * When the successor row ALREADY exists (the realistic post-scan state, and
+#     the only state a move_candidate is ever emitted from): the old row is
+#     tombstoned (status='missing') and its `superseded_by` column is set to the
+#     successor's project_identity -- the forward link that records "this row's
+#     project moved to the row bearing identity X". Both rows survive; the
+#     successor stays the active canonical at the new (workspace, name). A
+#     merge/re-key of the old row ONTO the successor slot is impossible without
+#     destroying the successor row (a hard delete), which the no-hard-delete
+#     principle forbids -- so the link, not a key rewrite, is the mechanism.
+#   * When the successor row does NOT exist (defensive path, e.g. adjudicating
+#     from a cross-DB or dry-run report where the new location was never
+#     scanned into its own row): the OLD row is RE-KEYED in place -- its
+#     (workspace, name) is updated to the successor location and status flipped
+#     back to 'active'. The row (identity, description, remote) travels intact;
+#     the re-key preserves the data.
+#
+# Agent-authored collateral (curated `memory`, `project_context_contracts`) is
+# NEVER auto-moved here -- it is only PROPOSED. The human relocates it
+# deliberately via `gaia context move-memory` / `move-contracts` once the move
+# is confirmed. This function touches only the `projects` lineage.
+#
+# 'duplicado' / 'worktree' decisions are a structural no-op: both rows are
+# legitimately independent and are left exactly as they are (see the CLI
+# `--decision` handling; this writer is only invoked for 'movido').
+# ---------------------------------------------------------------------------
+
+def resolve_move_candidate(
+    from_workspace: str,
+    from_name: str,
+    to_workspace: str,
+    to_name: str,
+    *,
+    dry_run: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Execute a 'movido' adjudication of a scan-v2 move_candidate.
+
+    Links the OLD (``from``) project row to its successor (``to``) without ever
+    hard-deleting a row. Two branches (see the module comment above):
+
+      * successor row EXISTS  -> tombstone the old row (status='missing') and
+        write ``superseded_by`` = successor.project_identity on it. Both rows
+        survive; the successor stays the active canonical. action='superseded'.
+      * successor row ABSENT  -> re-key the old row in place: update its
+        (workspace, name) to the successor location, flip status back to
+        'active', clear missing_since. The row's data travels intact.
+        action='rekeyed'.
+
+    Curated memory / PCC are NOT moved here -- they are proposed for a separate
+    `move-memory` / `move-contracts` step. This function only touches the
+    `projects` lineage.
+
+    Args:
+        from_workspace: Old row workspace (move_candidate ``from.workspace``).
+        from_name: Old row name (move_candidate ``from.project``).
+        to_workspace: Successor workspace (move_candidate ``to.workspace``).
+        to_name: Successor name (move_candidate ``to.project``).
+        dry_run: When True, mutate nothing; report the branch + successor
+            identity that WOULD be written.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied"|"preview", "action": "superseded"|"rekeyed",
+         "from": {"workspace","name"}, "to": {"workspace","name"},
+         "superseded_by": <successor project_identity or None>,
+         "proposed_relocations": {"memory": <n>, "contracts": <n>}}.
+
+    Raises:
+        ValueError: when the old row does not exist, or from == to.
+    """
+    if not from_workspace or not from_name:
+        raise ValueError("resolve_move_candidate: from_workspace and from_name are required")
+    if not to_workspace or not to_name:
+        raise ValueError("resolve_move_candidate: to_workspace and to_name are required")
+    if (from_workspace, from_name) == (to_workspace, to_name):
+        raise ValueError(
+            "resolve_move_candidate: from and to are identical -- nothing to resolve"
+        )
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            old = con.execute(
+                "SELECT workspace, name, project_identity, status "
+                "FROM projects WHERE workspace = ? AND name = ?",
+                (from_workspace, from_name),
+            ).fetchone()
+            if old is None:
+                raise ValueError(
+                    f"resolve_move_candidate: old row "
+                    f"({from_workspace!r}, {from_name!r}) not found"
+                )
+
+            successor = con.execute(
+                "SELECT workspace, name, project_identity, status "
+                "FROM projects WHERE workspace = ? AND name = ?",
+                (to_workspace, to_name),
+            ).fetchone()
+
+            # Count agent-authored collateral still keyed to the OLD workspace,
+            # so the caller can PROPOSE (never auto-execute) its relocation.
+            proposed_memory = con.execute(
+                "SELECT COUNT(*) FROM memory WHERE workspace = ? "
+                "AND deleted_at IS NULL",
+                (from_workspace,),
+            ).fetchone()[0]
+            proposed_contracts = con.execute(
+                "SELECT COUNT(*) FROM project_context_contracts WHERE workspace = ?",
+                (from_workspace,),
+            ).fetchone()[0]
+
+            now = _now_iso()
+
+            if successor is not None:
+                # Realistic post-scan state: two rows. Tombstone the old row and
+                # link it forward to the successor identity. Never hard-delete.
+                action = "superseded"
+                superseded_by = successor["project_identity"]
+                if not dry_run:
+                    con.execute(
+                        "UPDATE projects SET status = 'missing', "
+                        "missing_since = COALESCE(missing_since, ?), "
+                        "superseded_by = ? "
+                        "WHERE workspace = ? AND name = ?",
+                        (now, superseded_by, from_workspace, from_name),
+                    )
+                    # Ensure the successor is the active canonical row.
+                    con.execute(
+                        "UPDATE projects SET status = 'active', missing_since = NULL "
+                        "WHERE workspace = ? AND name = ?",
+                        (to_workspace, to_name),
+                    )
+            else:
+                # Successor slot is free: re-key the old row in place. The row's
+                # identity + description + remote travel with it (data preserved).
+                action = "rekeyed"
+                superseded_by = old["project_identity"]
+                if not dry_run:
+                    con.execute(
+                        "UPDATE projects SET workspace = ?, name = ?, "
+                        "status = 'active', missing_since = NULL "
+                        "WHERE workspace = ? AND name = ?",
+                        (to_workspace, to_name, from_workspace, from_name),
+                    )
+
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+
+    return {
+        "status": "preview" if dry_run else "applied",
+        "action": action,
+        "from": {"workspace": from_workspace, "name": from_name},
+        "to": {"workspace": to_workspace, "name": to_name},
+        "superseded_by": superseded_by,
+        "proposed_relocations": {
+            "memory": proposed_memory,
+            "contracts": proposed_contracts,
+        },
     }
 
 

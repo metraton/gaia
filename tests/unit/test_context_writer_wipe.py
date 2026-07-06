@@ -1,8 +1,14 @@
 """
 Tests for gaia.store.writer.wipe_workspace.
 
-Verifies FK CASCADE deletion: wiping a workspace removes all child rows in
-projects, apps, integrations, and other workspace-scoped tables.
+Verifies FK CASCADE deletion: wiping a workspace removes all scannable child
+rows in projects, apps, integrations, and other workspace-scoped tables.
+
+scan-v2 SV3 (Vector 4): wipe_workspace preserves curated memory by default
+(preserve_memory=True) -- the workspaces row and memory/memory_links are
+captured and restored around the CASCADE. preserve_memory=False restores the
+original full-CASCADE behaviour (explicit human purge). These tests cover both
+modes.
 """
 
 from __future__ import annotations
@@ -18,8 +24,9 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 def test_wipe_workspace_cascades(tmp_db):
-    """wipe_workspace('me') deletes rows in projects, apps, integrations cascading
-    from workspaces via FK ON DELETE CASCADE."""
+    """wipe_workspace('me', preserve_memory=False) deletes rows in projects,
+    apps, integrations cascading from workspaces via FK ON DELETE CASCADE, and
+    removes the workspaces row itself (the explicit full-purge path)."""
     from gaia.store import upsert_project, upsert_app, wipe_workspace
     from gaia.store.writer import _connect
 
@@ -50,8 +57,8 @@ def test_wipe_workspace_cascades(tmp_db):
     assert con.execute("SELECT COUNT(*) FROM integrations WHERE workspace='me'").fetchone()[0] == 1
     con.close()
 
-    # Wipe
-    wipe_workspace("me", db_path=tmp_db)
+    # Wipe (explicit full purge: preserve_memory=False)
+    wipe_workspace("me", preserve_memory=False, db_path=tmp_db)
 
     # Post-condition: all rows gone
     con = _connect(tmp_db)
@@ -65,6 +72,35 @@ def test_wipe_workspace_cascades(tmp_db):
     other = con.execute("SELECT COUNT(*) FROM projects WHERE workspace='other-ws'").fetchone()[0]
     assert other == 0
     con.close()
+
+
+def test_wipe_default_preserves_memory_and_workspace(tmp_db):
+    """scan-v2 SV3: the DEFAULT wipe (preserve_memory=True) clears scannable
+    children but preserves the workspaces row and curated memory."""
+    from gaia.store import upsert_project, wipe_workspace
+    from gaia.store.writer import upsert_memory, get_memory, _connect
+
+    con = _connect(tmp_db)
+    con.execute(
+        "INSERT OR REPLACE INTO agent_permissions (table_name, agent_name, allow_write) VALUES (?, ?, 1)",
+        ("projects", "developer"),
+    )
+    con.commit()
+    con.close()
+
+    assert upsert_project("me", "gaia", {"role": "infra"}, agent="developer", db_path=tmp_db)["status"] == "applied"
+    upsert_memory("me", "project_keep", type="project", body="survive", db_path=tmp_db)
+
+    wipe_workspace("me", db_path=tmp_db)  # default preserve_memory=True
+
+    con = _connect(tmp_db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM workspaces WHERE name='me'").fetchone()[0] == 1
+        assert con.execute("SELECT COUNT(*) FROM projects WHERE workspace='me'").fetchone()[0] == 0
+    finally:
+        con.close()
+    row = get_memory("me", "project_keep", db_path=tmp_db)
+    assert row is not None and row["body"] == "survive"
 
 
 def test_wipe_idempotent(tmp_db):
