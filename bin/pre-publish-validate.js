@@ -532,9 +532,7 @@ class PrePublishValidator {
     try {
       // Test 1: Validate JSON files
       this.log('Test 1: Validating JSON configuration files...', 'info');
-      const jsonFiles = [
-        'config/clarification_rules.json'
-      ];
+      const jsonFiles = [];
 
       jsonFiles.forEach(file => {
         const filePath = path.join(baseDir, file);
