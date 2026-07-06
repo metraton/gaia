@@ -46,6 +46,7 @@ _KNOWN_TABLES = {
     "libraries",
     "services",
     "features",
+    "project_facets",
     "tf_modules",
     "tf_live",
     "releases",
@@ -387,13 +388,15 @@ def mark_workspace_demoted(
 #     future agent-driven write) keeps full write access -- the flag gates
 #     the SCAN PATH specifically, not the column in the abstract.
 #
-# Extensible: M3/T9 adds "description" to _PROJECTS_AGENT_OWNED once that
-# column exists, without touching this mechanism.
-_PROJECTS_AGENT_OWNED: frozenset = frozenset()
+# M3/T9: `description` is agent-owned (schema v23, scripts/migrations/
+# v22_to_v23.sql). The scan path (strip_agent_owned=True) can never write it,
+# regardless of what a caller's `fields` dict happens to contain -- it is
+# stripped by _present_fields before the coalesce-or-omit step, same
+# mechanism already proven for apps.description/status in M1.
+_PROJECTS_AGENT_OWNED: frozenset = frozenset({"description"})
 # NOTE: `role` is NOT agent-owned here (M1-T3): it is auto-detected by
 # tools/scan/role_detector.py and refreshed on every scan, so it belongs to
-# the scanner. No agent-owned column exists on `projects` until M3/T9 adds
-# `description`. See schema.sql's `role` column comment for the same note.
+# the scanner. See schema.sql's `role` column comment for the same note.
 _APPS_AGENT_OWNED: frozenset = frozenset({"description", "status"})
 
 
@@ -539,7 +542,7 @@ def preview_project_name(
 # Public API: upsert_project
 # ---------------------------------------------------------------------------
 
-_PROJECT_FIELDS = ("role", "remote_url", "platform", "primary_language", "group_name", "path", "status", "missing_since", "project_identity")
+_PROJECT_FIELDS = ("role", "remote_url", "platform", "primary_language", "group_name", "path", "status", "missing_since", "project_identity", "description")
 
 
 def _projects_has_identity_column(con: sqlite3.Connection) -> bool:
@@ -842,6 +845,7 @@ def delete_missing_in(
                 "libraries": ("project", "name"),
                 "services": ("project", "name"),
                 "features": ("project", "name"),
+                "project_facets": ("project", "scope", "key"),
                 "tf_modules": ("project", "name"),
                 "tf_live": ("project", "name"),
                 "releases": ("project", "name"),
@@ -1035,6 +1039,7 @@ def bulk_upsert(
         "libraries": ("project", "name"),
         "services": ("project", "name"),
         "features": ("project", "name"),
+        "project_facets": ("project", "scope", "key"),
         "tf_modules": ("project", "name"),
         "tf_live": ("project", "name"),
         "releases": ("project", "name"),

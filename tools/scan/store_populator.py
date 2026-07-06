@@ -34,7 +34,7 @@ to mutate the SQLite store directly.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from tools.scan.role_detector import detect_role
 
@@ -554,6 +554,189 @@ def populate_libraries(
     surviving_l = [(project, l["name"]) for l in libraries]
     out["libraries"]["deleted"] = _safe_delete_missing(
         "libraries", workspace, project, surviving_l, db_path
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Facets populator (M3/T8, AC-6): the per-project stack fingerprint
+# ---------------------------------------------------------------------------
+
+# Generic, extensible scope vocabulary for the stack fingerprint. Adding a new
+# aspect (e.g. "documentation", "data_ml") is a new value here plus a mapping
+# branch in `stack_output_to_facets` -- NO schema change (the `project_facets`
+# table stores homogeneous rows keyed by (workspace, project, scope, key)).
+FACET_SCOPES = (
+    "language",
+    "framework",
+    "build",
+    "infrastructure",
+    "deployment",
+    "orchestration",
+    "ci_cd",
+)
+
+
+def stack_output_to_facets(sections: Mapping[str, Any]) -> list[dict]:
+    """Map merged scanner ``sections`` to a flat, de-duplicated facet list.
+
+    Pure function (no I/O): translates the orchestrator's merged section data
+    (``stack``, ``infrastructure``, ``orchestration``) into
+    ``{"scope", "key", "value"}`` rows using the generic :data:`FACET_SCOPES`
+    vocabulary. Shared by :func:`compute_facets` (which runs the scanners) and
+    by any caller that already holds the sections dict, so the dry-run preview
+    and the apply-path write derive facets identically.
+
+    Scope mapping:
+      * ``stack.languages``   -> scope ``language``    (value = manifest path)
+      * ``stack.frameworks``  -> scope ``framework``   (value = version)
+      * ``stack.build_tools`` -> scope ``build``       (value = lock file / detected_by)
+      * ``infrastructure.iac``            -> scope ``infrastructure`` (value = base_path)
+      * ``infrastructure.cloud_providers``-> scope ``infrastructure`` (value = detected_by)
+      * ``infrastructure.containers``     -> scope ``deployment``     (value = first file)
+      * ``orchestration.{helm,kustomize,kubernetes}`` -> scope ``orchestration``
+      * ``orchestration.gitops`` / ``service_mesh``   -> scope ``orchestration``
+
+    De-duplication is on ``(scope, key)`` (the facet PK fragment), first write
+    wins -- so an IaC tool detected at several base paths yields one facet.
+    """
+    facets: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add(scope: str, key: Any, value: Any) -> None:
+        if not key:
+            return
+        pk = (scope, str(key))
+        if pk in seen:
+            return
+        seen.add(pk)
+        facets.append({
+            "scope": scope,
+            "key": str(key),
+            "value": (str(value) if value is not None else None),
+        })
+
+    if not isinstance(sections, Mapping):
+        return facets
+
+    stack = sections.get("stack") or {}
+    if isinstance(stack, Mapping):
+        for lang in stack.get("languages", []) or []:
+            if isinstance(lang, Mapping):
+                _add("language", lang.get("name"), lang.get("manifest"))
+        for fw in stack.get("frameworks", []) or []:
+            if isinstance(fw, Mapping):
+                _add("framework", fw.get("name"), fw.get("version"))
+        for bt in stack.get("build_tools", []) or []:
+            if isinstance(bt, Mapping):
+                _add("build", bt.get("name"), bt.get("lock_file") or bt.get("detected_by"))
+
+    infra = sections.get("infrastructure") or {}
+    if isinstance(infra, Mapping):
+        for entry in infra.get("iac", []) or []:
+            if isinstance(entry, Mapping):
+                _add("infrastructure", entry.get("tool"), entry.get("base_path"))
+        for prov in infra.get("cloud_providers", []) or []:
+            if isinstance(prov, Mapping):
+                _add("infrastructure", prov.get("name"), prov.get("detected_by"))
+        for cont in infra.get("containers", []) or []:
+            if isinstance(cont, Mapping):
+                files = cont.get("files") or []
+                first = files[0] if files else None
+                _add("deployment", cont.get("tool"), first)
+
+    orch = sections.get("orchestration") or {}
+    if isinstance(orch, Mapping):
+        for simple_key in ("helm", "kustomize", "kubernetes"):
+            sub = orch.get(simple_key) or {}
+            if isinstance(sub, Mapping) and sub.get("detected"):
+                _add("orchestration", simple_key, None)
+        gitops = orch.get("gitops") or {}
+        if isinstance(gitops, Mapping) and gitops.get("tool"):
+            _add("orchestration", gitops.get("tool"), gitops.get("config_path"))
+        mesh = orch.get("service_mesh") or {}
+        if isinstance(mesh, Mapping) and mesh.get("tool"):
+            _add("orchestration", mesh.get("tool"), None)
+
+    return facets
+
+
+def compute_facets(project_path: Path) -> list[dict]:
+    """Run the scanners over ``project_path`` and return its stack fingerprint.
+
+    Read-only: runs the scanner orchestrator (no DB writes) and maps the merged
+    sections to facet rows via :func:`stack_output_to_facets`. Used by the
+    dry-run preview (no persistence) AND, indirectly, by :func:`populate_facets`
+    when the caller did not precompute the facets. Never raises -- a scanner
+    failure degrades to an empty fingerprint rather than aborting the scan.
+    """
+    from tools.scan.config import ScanConfig
+    from tools.scan.core import run_scanners
+
+    try:
+        output = run_scanners(project_path, ScanConfig(project_root=project_path))
+        sections = output.context.get("sections", {}) or {}
+    except Exception:
+        return []
+    return stack_output_to_facets(sections)
+
+
+def populate_facets(
+    workspace: str,
+    project: str,
+    project_path: Path,
+    agent: str,
+    *,
+    db_path: Path | None = None,
+    facets: list[dict] | None = None,
+) -> dict:
+    """Persist a project's stack fingerprint into the ``project_facets`` table.
+
+    ``project_facets`` is wholly scanner-owned, so the write is a refresh:
+    upsert the current facet rows (keyed on (workspace, project, scope, key),
+    coalesce-safe via ``bulk_upsert``), then prune the stale ones for THIS
+    project (facet-scoped :func:`_safe_delete_missing_facets`). A rescan
+    therefore REFRESHES the fingerprint without duplicating and without
+    touching any other project's facets.
+
+    Args:
+        workspace: Workspace identity (workspaces.name).
+        project: Parent project name (must reference a projects row -- the
+            caller upserts the project BEFORE calling this so the FK holds).
+        project_path: Repo root to fingerprint when ``facets`` is not supplied.
+        agent: Agent name for the permission gate.
+        db_path: Optional explicit DB path (test override).
+        facets: Optional precomputed facet list (from :func:`compute_facets`).
+            Passing it avoids a second scanner run when the caller already
+            produced the fingerprint for a dry-run preview.
+
+    Returns:
+        Dict with a ``project_facets`` sub-key containing ``upsert`` and
+        ``deleted`` counts.
+    """
+    from gaia.store import bulk_upsert
+
+    if facets is None:
+        facets = compute_facets(project_path)
+
+    out: dict = {"project_facets": {}}
+    rows = [
+        {
+            "project": project,
+            "scope": f["scope"],
+            "key": f["key"],
+            "value": f.get("value"),
+            "scanner_ts": _now_iso(),
+        }
+        for f in facets
+    ]
+    if rows:
+        out["project_facets"]["upsert"] = bulk_upsert(
+            "project_facets", workspace, rows, agent, db_path=db_path
+        )
+    surviving = [(project, f["scope"], f["key"]) for f in facets]
+    out["project_facets"]["deleted"] = _safe_delete_missing_facets(
+        workspace, project, surviving, db_path
     )
     return out
 
@@ -1689,3 +1872,41 @@ def _safe_delete_missing(
     full_surviving = list(surviving_set) + foreign
 
     return delete_missing_in(table, workspace, full_surviving, db_path=db_path)
+
+
+def _safe_delete_missing_facets(
+    workspace: str,
+    project: str,
+    surviving: Iterable[tuple],
+    db_path: Path | None,
+) -> int:
+    """Prune stale ``project_facets`` rows for ``project`` only.
+
+    Mirror of :func:`_safe_delete_missing` for the facets PK shape
+    ``(project, scope, key)``: reads every facet row for the workspace, folds
+    the OTHER projects' rows into the surviving set so a refresh of one
+    project never prunes a sibling's facets, then delegates to
+    ``delete_missing_in`` (which deletes by the (workspace, project, scope, key)
+    PK). Returns the number of rows pruned.
+    """
+    from gaia.store import delete_missing_in
+    from gaia.store.writer import _connect
+
+    surviving = list(surviving)
+
+    con = _connect(db_path)
+    try:
+        cur = con.execute(
+            "SELECT project, scope, key FROM project_facets WHERE workspace = ?",
+            (workspace,),
+        )
+        all_rows = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+    finally:
+        con.close()
+
+    foreign = [(p, s, k) for (p, s, k) in all_rows if p != project]
+    full_surviving = list(set(surviving)) + foreign
+
+    return delete_missing_in(
+        "project_facets", workspace, full_surviving, db_path=db_path
+    )
