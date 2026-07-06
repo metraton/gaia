@@ -225,21 +225,40 @@ happens to live in today.
 `memory.project_ref` (schema v25, scan-v2 SV1) is the stable anchor for
 this: it should hold the project's `project_identity` -- the same
 vantage-independent identity scan writes onto `projects.project_identity`
-(git-common-dir realpath > normalized remote > realpath path). When you
-author a `project_*` memory row about a specific project (not the whole
-workspace), populate `project_ref` with that project's `project_identity`
-(`gaia context query "SELECT project_identity FROM projects WHERE
-workspace=? AND name=?"` to look it up). A note keyed this way remains
-correctly attributed even after the project physically moves workspace --
-the `project_ref` value does not change on a move, only the `projects`
-row's `(workspace, name)` does. A `project_*` note about the workspace as
-a whole (not a single project within it) legitimately leaves `project_ref`
-NULL.
+(git-common-dir realpath > normalized remote > realpath path). A note keyed
+this way remains correctly attributed even after the project physically
+moves workspace -- the `project_ref` value does not change on a move, only
+the `projects` row's `(workspace, name)` does. A `project_*` note about the
+workspace as a whole (not a single project within it) legitimately leaves
+`project_ref` NULL.
 
-This is a convention, not yet CLI-enforced: `gaia memory add` does not
-currently expose a `--project-ref` flag, so populate the column with a
-follow-up `gaia context query` UPDATE (or `gaia memory edit`, once it
-gains field support) until the write path is extended.
+**CLI-enforced (N3, forward-only):** `gaia memory add` exposes `--project=<name>`,
+resolved within `--workspace` to that project's `projects.project_identity`
+and persisted as `memory.project_ref`:
+
+```bash
+gaia memory add --name=project_x_status --type=project \
+  --project=x --workspace=me --body="..."
+```
+
+If you already hold the stable identity string (e.g. scripting across
+workspaces), pass it directly with `--project-ref=<identity>` instead --
+mutually exclusive with `--project`. Neither flag guesses: an unknown
+project name, or a project row that has no `project_identity` yet (legacy
+row, or not yet scanned), is a clear error, not a silent NULL.
+
+Anchoring is **forward-only, by design**. Historical rows written before
+this mechanism existed stay `project_ref IS NULL` -- the one-time automatic
+backfill in `scripts/migrations/v25_to_v26.sql` (guarded on "workspace hosts
+exactly one active project") populated 0 rows in practice, because the
+memory-row-to-project mapping is genuinely ambiguous whenever a workspace
+hosts more than one project (proven ambiguous on real data: nfi_newco /
+bildwiz). That migration is applied and immutable; it is not re-run or
+extended. Going forward, only whoever writes a `project_*` row -- the one
+who actually knows which project it is about -- anchors it, via `--project`
+at write time. `upsert_memory()` treats `project_ref` with the same
+coalesce-or-omit discipline as `topic_key`: omitting it on a later update
+never clobbers a previously-set anchor back to NULL.
 
 ## Curate flow
 

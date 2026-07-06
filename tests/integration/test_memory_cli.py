@@ -46,11 +46,34 @@ def _read_memory_row(db_path: Path, workspace: str, name: str) -> dict | None:
     con.row_factory = sqlite3.Row
     try:
         row = con.execute(
-            "SELECT workspace, name, type, description, body, origin_session_id, "
-            "updated_at FROM memory WHERE workspace = ? AND name = ?",
+            "SELECT workspace, name, type, description, body, project_ref, "
+            "origin_session_id, updated_at FROM memory WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         return dict(row) if row is not None else None
+    finally:
+        con.close()
+
+
+def _seed_project(db_path: Path, workspace: str, name: str,
+                   project_identity: str | None = None,
+                   status: str = "active") -> None:
+    """Seed a minimal `projects` row for --project resolution tests.
+
+    Bypasses upsert_project's permission gate (a plain read-only lookup does
+    not need one); inserts directly via the writer's `_connect` so the schema
+    is materialized first.
+    """
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        con.execute("INSERT OR IGNORE INTO workspaces (name) VALUES (?)", (workspace,))
+        con.execute(
+            "INSERT INTO projects (workspace, name, project_identity, status) "
+            "VALUES (?, ?, ?, ?)",
+            (workspace, name, project_identity, status),
+        )
+        con.commit()
     finally:
         con.close()
 
@@ -211,6 +234,124 @@ def test_add_missing_required_flags(tmp_db, tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert rc == 1
     assert "body" in captured.err.lower()
+
+
+# ---------------------------------------------------------------------------
+# N3: --project / --project-ref forward-only anchoring
+# ---------------------------------------------------------------------------
+
+def _add_args(**overrides) -> argparse.Namespace:
+    """Base Namespace for `_cmd_add`, with N3 project fields defaulted."""
+    base = dict(
+        name="proj-mem", type="project", body="body text",
+        description=None, workspace="me", json=False,
+        project=None, project_ref=None,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
+
+def test_add_project_flag_anchors_project_ref(tmp_db, tmp_path, monkeypatch, capsys):
+    """`--project=<name>` resolves to the project's project_identity and
+    persists it as memory.project_ref."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    _seed_project(tmp_db, "me", "x", project_identity="github.com/me/x")
+
+    args = _add_args(name="anchored-mem", project="x")
+    rc = _cmd_add(args)
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "anchored-mem")
+    assert row is not None
+    assert row["project_ref"] == "github.com/me/x"
+
+
+def test_add_without_project_flag_leaves_project_ref_null(tmp_db, tmp_path,
+                                                           monkeypatch, capsys):
+    """Omitting --project leaves memory.project_ref NULL (forward-only;
+    historical/organizational rows are not guessed at)."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    args = _add_args(name="unanchored-mem")
+    rc = _cmd_add(args)
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "unanchored-mem")
+    assert row is not None
+    assert row["project_ref"] is None
+
+
+def test_add_project_flag_not_found_errors_clearly(tmp_db, tmp_path,
+                                                    monkeypatch, capsys):
+    """An unknown --project name is a clear error -- never guessed."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    args = _add_args(name="ghost-project-mem", project="does-not-exist")
+    rc = _cmd_add(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "not found" in captured.err.lower()
+    assert _read_memory_row(tmp_db, "me", "ghost-project-mem") is None
+
+
+def test_add_project_flag_no_identity_errors_clearly(tmp_db, tmp_path,
+                                                      monkeypatch, capsys):
+    """A project that exists but carries no project_identity yet (legacy /
+    unscanned row) is a clear error, not a silent NULL anchor."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    _seed_project(tmp_db, "me", "unscanned", project_identity=None)
+
+    args = _add_args(name="no-identity-mem", project="unscanned")
+    rc = _cmd_add(args)
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "project_identity" in captured.err.lower()
+    assert _read_memory_row(tmp_db, "me", "no-identity-mem") is None
+
+
+def test_add_project_ref_flag_anchors_directly(tmp_db, tmp_path,
+                                               monkeypatch, capsys):
+    """`--project-ref=<identity>` anchors directly, bypassing name resolution."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    args = _add_args(name="direct-ref-mem", project_ref="github.com/me/direct")
+    rc = _cmd_add(args)
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "direct-ref-mem")
+    assert row is not None
+    assert row["project_ref"] == "github.com/me/direct"
+
+
+def test_add_update_without_project_flag_preserves_existing_anchor(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """A later `add` (update) that omits --project must NOT clobber a
+    previously-anchored project_ref back to NULL (coalesce-or-omit)."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    _seed_project(tmp_db, "me", "x", project_identity="github.com/me/x")
+
+    rc1 = _cmd_add(_add_args(name="sticky-mem", project="x", body="v1"))
+    assert rc1 == 0, capsys.readouterr()
+    assert _read_memory_row(tmp_db, "me", "sticky-mem")["project_ref"] == "github.com/me/x"
+
+    # Second call: same slug, no --project this time.
+    rc2 = _cmd_add(_add_args(name="sticky-mem", body="v2"))
+    assert rc2 == 0, capsys.readouterr()
+    row = _read_memory_row(tmp_db, "me", "sticky-mem")
+    assert row["body"] == "v2", "the update itself must still land"
+    assert row["project_ref"] == "github.com/me/x", (
+        "omitting --project on update must not erase an existing anchor"
+    )
 
 
 # ---------------------------------------------------------------------------

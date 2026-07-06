@@ -1334,6 +1334,74 @@ def _validate_curated_slug(name: str, type: str) -> None:
             )
 
 
+def resolve_project_ref(
+    workspace: str,
+    project_name: str,
+    *,
+    db_path: Path | None = None,
+) -> str:
+    """Resolve a ``projects.name`` within ``workspace`` to its stable
+    ``project_identity`` anchor -- the value ``upsert_memory(project_ref=...)``
+    expects (N3 forward-only anchoring).
+
+    Looks up the exact ``(workspace, project_name)`` row -- the same lookup
+    documented as the manual convention in ``skills/memory/SKILL.md`` before
+    this function existed (``SELECT project_identity FROM projects WHERE
+    workspace=? AND name=?``). Never guesses: raises ``ValueError`` with an
+    actionable message when the project does not exist, when more than one
+    row matches (structurally guarded against by the ``(workspace, name)``
+    primary key, but checked defensively), or when the matching row has not
+    yet been assigned a ``project_identity`` (e.g. a legacy pre-v18 row, or a
+    project scanned before the identity column was populated) -- anchoring to
+    an absent identity would be a guess, not a resolution.
+
+    Args:
+        workspace: Workspace name (matches ``projects.workspace``).
+        project_name: Project basename (matches ``projects.name``).
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        The resolved ``project_identity`` string.
+
+    Raises:
+        ValueError: project not found, ambiguous, or has no project_identity.
+    """
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            "SELECT project_identity FROM projects WHERE workspace = ? AND name = ?",
+            (workspace, project_name),
+        ).fetchall()
+    finally:
+        con.close()
+
+    if not rows:
+        raise ValueError(
+            f"project {project_name!r} not found in workspace {workspace!r}; "
+            f"cannot anchor memory to it. Check the name with "
+            f"`gaia context query \"SELECT name FROM projects WHERE "
+            f"workspace='{workspace}'\"`."
+        )
+    if len(rows) > 1:
+        # Structurally unreachable today ((workspace, name) is the projects
+        # PK), kept as a defensive guard against a future schema change that
+        # relaxes that constraint -- "never guess" applies here too.
+        raise ValueError(
+            f"project {project_name!r} is ambiguous in workspace {workspace!r} "
+            f"({len(rows)} matching rows); cannot anchor memory to a single "
+            f"identity without guessing."
+        )
+    identity = rows[0]["project_identity"]
+    if not identity:
+        raise ValueError(
+            f"project {project_name!r} in workspace {workspace!r} has no "
+            f"project_identity yet (legacy row, or not yet scanned); "
+            f"cannot anchor memory to it without guessing. Run `gaia scan` "
+            f"first."
+        )
+    return identity
+
+
 def upsert_memory(
     workspace: str,
     name: str,
@@ -1342,6 +1410,7 @@ def upsert_memory(
     body: str,
     description: str | None = None,
     origin_session_id: str | None = None,
+    project_ref: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -1358,6 +1427,29 @@ def upsert_memory(
     Resurrection: re-adding a slug that was soft-deleted clears ``deleted_at``
     (the row returns to the live set). The clearing is captured by the same
     history trigger.
+
+    ``project_ref`` -- forward-only remote-stable project anchor (N3, scan-v2
+    SV3 follow-up). The v25/v26 columns/migration exist, but the automatic
+    backfill in ``scripts/migrations/v25_to_v26.sql`` (guarded on "workspace
+    hosts exactly one active project") is a one-time, already-applied
+    historical statement that populated 0 rows in practice -- the
+    memory-row-to-project mapping is ambiguous whenever a workspace hosts more
+    than one project, and NEVER guessed. There is no live code that re-runs or
+    depends on that guard; going forward, ``project_ref`` is anchored
+    explicitly, at write time, by whoever calls this function knowing which
+    project a ``project``-type row is about (see ``gaia memory add --project``
+    in ``bin/cli/memory.py``, which resolves a project name to its
+    ``projects.project_identity`` via :func:`resolve_project_ref` before
+    calling here).
+
+    Coalesce-or-omit (same discipline as ``topic_key`` elsewhere in this
+    module): ``project_ref=None`` (the default) never touches an existing
+    anchor -- an update that does not mention the project leaves a
+    previously-set anchor intact instead of clobbering it back to NULL. Pass
+    an explicit identity string to set or overwrite it. There is no "clear"
+    sentinel; once anchored, forward-only re-anchoring is the only write path
+    (matches the existing ``topic_key`` COALESCE convention -- no precedent in
+    this module for an explicit-NULL clear on a coalesced column).
     """
     _assert_dispatch_can_write_memory()
 
@@ -1390,18 +1482,19 @@ def upsert_memory(
             con.execute(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
-                                    origin_session_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                                    project_ref, origin_session_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
                     body              = excluded.body,
+                    project_ref       = COALESCE(excluded.project_ref, project_ref),
                     origin_session_id = excluded.origin_session_id,
                     updated_at        = excluded.updated_at,
                     deleted_at        = NULL
                 """,
                 (workspace, name, type, description, body,
-                 origin_session_id, now),
+                 project_ref, origin_session_id, now),
             )
             con.commit()
             return {
@@ -1996,7 +2089,7 @@ def get_memory(
     con = _connect(db_path)
     try:
         sql = (
-            "SELECT workspace, name, type, description, body, "
+            "SELECT workspace, name, type, description, body, project_ref, "
             "       origin_session_id, updated_at, deleted_at "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
