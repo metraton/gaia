@@ -59,6 +59,7 @@ specs/
 *.egg-info/
 *.tgz
 .npm-cache/
+/dist/
 
 # Gaia brief evidence: raw artifacts ignored, INDEX.md committed for auditability
 .claude/project-context/briefs/*/evidence/*
