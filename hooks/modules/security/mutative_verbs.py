@@ -578,6 +578,101 @@ _UNIVERSAL_DANGEROUS_PATTERNS: Tuple[Tuple[_re.Pattern, str, str], ...] = (
 )
 
 # ---------------------------------------------------------------------------
+# Exec-sink string-argument extraction (SHARED: inline code path + script-file
+# code lane)
+# ---------------------------------------------------------------------------
+# ``_scan_exec_sink_string_args`` is the single detector both the inline
+# ``-c``/``-e`` path (``_check_inline_code``) and the script-file "code" lane
+# (``_classify_script_content_by_regex``) call, so exec-sink detection cannot
+# diverge between them.
+#
+# The problem it closes: a command handed to a subprocess sink as a STRING
+# LITERAL -- ``execSync("kubectl delete deployment foo")`` -- is invisible to
+# the verb scanner because the quotes make the whole command a single token.
+# The inline path caught the sink CALL via ``_UNIVERSAL_DANGEROUS_PATTERNS``,
+# but the script-file lane never ran those patterns, so ``node deploy.js`` with
+# an ``execSync(...)`` mutation slipped through as READ_ONLY.
+#
+# False-positive mitigation (required): this is the PROCESS_EXECUTION subset of
+# the universal patterns -- ONLY the call forms that take a command string --
+# NOT the full pattern set (which would flag every legitimate fs.writeFile /
+# fetch / URL literal in a real source file).  Escalation is gated on the
+# EXTRACTED INNER command itself classifying mutative/blocked, so a benign
+# ``execSync("ls")`` is not escalated.
+#
+# ``exec``/``system`` are intentionally generic (they match ruby/perl/php
+# ``system(...)`` and node ``exec(...)``); the inner-command gate keeps the
+# false-positive cost near zero -- ``regex.exec("literal")`` extracts
+# ``literal``, which is not a mutative command, so nothing escalates.
+_EXEC_SINK_STRING_ARG_RE = _re.compile(
+    r"\b(?:execSync|execFileSync|execFile|spawnSync|spawn|shell_exec|passthru|"
+    r"proc_open|system|popen|Popen|exec)\s*\(\s*"
+    r"(?P<q>['\"])(?P<cmd>(?:[^'\"\\]|\\.)*)(?P=q)"
+)
+# Backtick / ``%x{...}`` shell execution (ruby / perl / php): the body IS the
+# command handed to the shell.
+_EXEC_SINK_BACKTICK_RE = _re.compile(r"`([^`\n]{2,})`")
+_EXEC_SINK_PERCENT_X_RE = _re.compile(r"%x[\{\(\[]([^\}\)\]\n]{2,})[\}\)\]]")
+
+
+def _scan_exec_sink_string_args(code: str, family: str) -> "Optional[MutativeResult]":
+    """Extract shell commands handed to exec sinks and re-classify them.
+
+    Shared by ``_check_inline_code`` (inline ``-c``/``-e`` payloads) and
+    ``_classify_script_content_by_regex`` (``node deploy.js`` script files) so
+    exec-sink detection cannot diverge between the two lanes.
+
+    For each exec-sink call whose first argument is a string literal
+    (``execSync("...")``, ``system("...")``, ``spawn("...")``, ...) and for each
+    backtick / ``%x{}`` shell body, the extracted command is re-classified with
+    ``is_blocked_command`` and ``detect_mutative_command``.  A MUTATIVE result
+    is returned ONLY when the inner command is itself blocked or mutative -- a
+    benign inner command (``execSync("ls")``) yields ``None`` (false-positive
+    mitigation).
+    """
+    candidates: List[str] = []
+    for m in _EXEC_SINK_STRING_ARG_RE.finditer(code):
+        candidates.append(m.group("cmd"))
+    for m in _EXEC_SINK_BACKTICK_RE.finditer(code):
+        candidates.append(m.group(1))
+    for m in _EXEC_SINK_PERCENT_X_RE.finditer(code):
+        candidates.append(m.group(1))
+
+    for raw_inner in candidates:
+        inner = raw_inner.strip()
+        if not inner:
+            continue
+        if _is_blocked_command is not None:
+            blocked = _is_blocked_command(inner)
+            if blocked.is_blocked:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb="exec-sink-blocked-cmd",
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"exec-sink argument is a blocked command: "
+                        f"{blocked.category}"
+                    ),
+                )
+        inner_result = detect_mutative_command(inner)
+        if inner_result.is_mutative:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=inner_result.verb,
+                dangerous_flags=inner_result.dangerous_flags,
+                cli_family=family,
+                confidence=inner_result.confidence,
+                reason=(
+                    f"exec-sink argument '{inner}' -> {inner_result.reason}"
+                ),
+            )
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Layer 3: Heuristic safety classification
 # ---------------------------------------------------------------------------
 _SUSPICIOUS_HEURISTICS: Tuple[Tuple[_re.Pattern, str], ...] = (
@@ -2078,6 +2173,28 @@ def _classify_script_content_by_regex(
                 ),
             )
 
+        # Exec-sink string-argument re-classification (shared with the inline
+        # code path via ``_scan_exec_sink_string_args``).  A source line like
+        # ``execSync("kubectl delete ...")`` hides a mutative command inside a
+        # string literal the verb scanner cannot see (the quotes make it one
+        # token).  Extract the command handed to a known exec sink and
+        # re-classify it; escalate ONLY when the inner command is itself
+        # mutative/blocked, so a benign ``execSync("ls")`` is not escalated.
+        sink_result = _scan_exec_sink_string_args(line, family)
+        if sink_result is not None and sink_result.is_mutative:
+            return MutativeResult(
+                is_mutative=True,
+                category=sink_result.category,
+                verb=sink_result.verb,
+                dangerous_flags=sink_result.dangerous_flags,
+                cli_family=family,
+                confidence=sink_result.confidence,
+                reason=(
+                    f"Script '{script_path}' exec-sink invokes mutative "
+                    f"command: {sink_result.reason}"
+                ),
+            )
+
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
@@ -2295,6 +2412,16 @@ def _check_inline_code(command: str, base_cmd: str, family: str, skip_length_che
                     command, base_cmd, family, skip_length_check,
                 )
             # parse_failed=True -> fall through to regex layer 2b below.
+
+    # ---- Layer 2a: Exec-sink string-argument re-classification ----
+    # Shared with the script-file code lane (``_classify_script_content_by_regex``)
+    # so the two lanes cannot diverge on how a command handed to a subprocess
+    # sink is detected.  Runs before the broader Layer 2b keyword scan.  For a
+    # payload that already parsed cleanly as Python this point is unreachable
+    # (the AST block returned above), so Python behavior is unchanged.
+    sink_result = _scan_exec_sink_string_args(command, family)
+    if sink_result is not None and sink_result.is_mutative:
+        return sink_result
 
     # ---- Layer 2b: Universal dangerous API keyword patterns ----
     for pattern, label, category in _UNIVERSAL_DANGEROUS_PATTERNS:
