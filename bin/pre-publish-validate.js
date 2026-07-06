@@ -208,6 +208,11 @@ class PrePublishValidator {
   validateNodeModules() {
     this.log('Step 4: Validating node_modules installation...', 'info');
 
+    if (this.dryRun) {
+      this.log('[DRY RUN] skipping node_modules version validation', 'info');
+      return;
+    }
+
     if (!fs.existsSync(NODE_MODULES_INSTALL)) {
       this.log(`⚠️  ${PKG_NAME} not found in node_modules, installing...`, 'warning');
       this.reinstallNodeModules();
