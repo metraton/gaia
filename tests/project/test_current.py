@@ -40,7 +40,14 @@ def test_normalize_remote_empty_input():
 
 
 # ---------------------------------------------------------------------------
-# current() -- with git remote (level 1)
+# current() -- PATH-based resolution in a git repo (M2-T7, AC-9)
+#
+# The contract changed with M2-T7: current() is PATH-first, not
+# git-remote-first. A git repo resolves to its repository-ROOT basename
+# (lowercased), NOT to the normalized remote. The remote-derived identity
+# still exists but is captured separately in workspaces.identity by the store
+# writer (which reads the remote directly). See
+# tests/unit/test_project_current_path_based.py for the full AC-9 cases.
 # ---------------------------------------------------------------------------
 
 def _init_git_repo(path: Path, remote_url: str | None = None) -> None:
@@ -53,19 +60,31 @@ def _init_git_repo(path: Path, remote_url: str | None = None) -> None:
         )
 
 
-def test_current_with_ssh_remote(tmp_path):
-    _init_git_repo(tmp_path, "git@github.com:Metraton/Gaia-Dev.git")
-    assert current(cwd=tmp_path) == "github.com/metraton/gaia-dev"
+def test_current_in_git_repo_uses_path_not_ssh_remote(tmp_path):
+    """A repo with an SSH remote resolves to the repo-root path basename, NOT
+    the normalized remote (path-first, AC-9)."""
+    repo = tmp_path / "gaia-dev"
+    repo.mkdir()
+    _init_git_repo(repo, "git@github.com:Metraton/Gaia-Dev.git")
+    assert current(cwd=repo) == "gaia-dev"
 
 
-def test_current_with_https_remote(tmp_path):
-    _init_git_repo(tmp_path, "https://github.com/Metraton/Gaia.git")
-    assert current(cwd=tmp_path) == "github.com/metraton/gaia"
+def test_current_in_git_repo_uses_path_not_https_remote(tmp_path):
+    """A repo with an HTTPS remote resolves to the repo-root path basename."""
+    repo = tmp_path / "gaia"
+    repo.mkdir()
+    _init_git_repo(repo, "https://github.com/Metraton/Gaia.git")
+    assert current(cwd=repo) == "gaia"
 
 
-def test_current_with_bitbucket_remote(tmp_path):
-    _init_git_repo(tmp_path, "https://bitbucket.org/aaxisdigital/bildwiz.git")
-    assert current(cwd=tmp_path) == "bitbucket.org/aaxisdigital/bildwiz"
+def test_current_in_git_repo_ignores_remote_host(tmp_path):
+    """The remote host/org never appears in the identity; the path wins."""
+    repo = tmp_path / "bildwiz"
+    repo.mkdir()
+    _init_git_repo(repo, "https://bitbucket.org/aaxisdigital/bildwiz.git")
+    result = current(cwd=repo)
+    assert result == "bildwiz"
+    assert "bitbucket.org" not in result
 
 
 # ---------------------------------------------------------------------------

@@ -237,10 +237,22 @@ class ScanReport:
             matched it, else None (no repo matched -> pure error report).
         repos_found: One ``{"repo", "path"}`` dict per discovered git repo.
         projects: One dict per matched repo:
-            ``{repo, project, workspace, project_identity, applied}``.
+            ``{repo, project, container, workspace, project_identity, path,
+            applied}``. ``container`` is the proyecto level (shared across the
+            repos of a multi-repo container; equals ``repo`` on R4 collapse);
+            ``project`` is the DB storage slot (collision-disambiguated);
+            ``path`` is the repo's own absolute path (M2-T4/T5).
         errors: One dict per no-match repo: ``{repo, W, suggestion}`` (R3).
         ambiguities: One dict per deeper-than-3 repo:
             ``{repo, extra_levels}``.
+        warnings: One dict per would-be collision (M2-T6, AC-5). A collision
+            is any repo whose requested project slot ``(workspace, project)``
+            was already occupied by a DIFFERENT physical repo, forcing the
+            writer to disambiguate the DB slot name. Under the pre-M1 model
+            these repos silently overwrote each other; T1 stopped the data
+            loss, and T6 makes the event VISIBLE instead of silent. Shape:
+            ``{kind, repo, workspace, requested_project, assigned_project,
+            path, message}``.
         marked_missing: Count of project rows soft-marked missing during
             reconcile (R5). Zero in dry-run.
         error: A top-level error string when the scan could not run at all
@@ -252,6 +264,7 @@ class ScanReport:
     projects: list[dict] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)
     ambiguities: list[dict] = field(default_factory=list)
+    warnings: list[dict] = field(default_factory=list)
     marked_missing: int = 0
     error: Optional[str] = None
 
@@ -262,6 +275,7 @@ class ScanReport:
             "projects": self.projects,
             "errors": self.errors,
             "ambiguities": self.ambiguities,
+            "warnings": self.warnings,
             "marked_missing": self.marked_missing,
             "error": self.error,
         }
@@ -319,8 +333,14 @@ def _upsert(
     *,
     agent: str,
     db_path: Path | None,
-) -> bool:
-    """Persist one matched repo as a projects row (R5 upsert). Returns applied.
+) -> tuple[bool, str]:
+    """Persist one matched repo as a projects row (R5 upsert).
+
+    Returns ``(applied, final_name)``. ``final_name`` may differ from
+    ``classification.project`` when the writer detected a genuine
+    repo-name collision (AC-2, M1-T1): a DIFFERENT physical repo already
+    occupying ``(workspace, classification.project)`` never gets silently
+    overwritten -- the writer disambiguates instead.
 
     Reuses the writer's identity-collapse UPSERT (keyed on ``project_identity``
     via the partial unique index) so the SAME physical repo scanned from
@@ -353,8 +373,12 @@ def _upsert(
         agent=agent,
         db_path=db_path,
         workspace_path=repo_path,
+        # `gaia scan` IS the scan path -- structurally guarantee it can never
+        # write a projects.* agent-owned column (M1-T2/T3).
+        strip_agent_owned=True,
     )
-    return res.get("status") == "applied"
+    final_name = res.get("name") or classification.project
+    return res.get("status") == "applied", final_name
 
 
 def _reconcile(
@@ -416,6 +440,14 @@ def scan(
     # (workspace, project) set this run discovered (R5).
     surviving_by_ws: dict[str, list[str]] = {}
 
+    # Per-workspace {name: project_identity} of names already resolved earlier
+    # in THIS batch (M1-T1, AC-2). A real apply=True run commits each repo's
+    # upsert sequentially, so a later repo in the batch already sees an
+    # earlier repo's committed row when the writer checks for collisions --
+    # but a dry-run writes nothing, so this in-memory map lets the preview
+    # simulate the same sequential-commit visibility without touching the DB.
+    claimed_by_ws: dict[str, dict[str, str]] = {}
+
     for repo in repos:
         c = classify_repo(repo, W)
         if not c.matched:
@@ -426,16 +458,63 @@ def scan(
         if c.ambiguity:
             report.ambiguities.append(c.ambiguity)
 
+        ws_claims = claimed_by_ws.setdefault(c.workspace, {})
+
         applied = False
         if apply:
-            applied = _upsert(c, agent=agent, db_path=db_path)
-            surviving_by_ws.setdefault(c.workspace, []).append(c.project)
+            applied, final_name = _upsert(c, agent=agent, db_path=db_path)
+            surviving_by_ws.setdefault(c.workspace, []).append(final_name)
+        else:
+            from gaia.store.writer import preview_project_name
+            final_name = preview_project_name(
+                c.workspace, c.project, c.project_identity,
+                db_path=db_path, extra_claimed=ws_claims,
+            )
+        ws_claims[final_name] = c.project_identity
+
+        # M2-T6 (AC-5): a would-be collision is now VISIBLE, not silent. When
+        # the writer/preview had to disambiguate the DB slot (final_name differs
+        # from the requested project), a DIFFERENT physical repo already held
+        # ``(workspace, c.project)``. Under the pre-M1 model these repos
+        # overwrote each other with no signal; T1 stopped the loss and T6
+        # surfaces the event as an explicit warning so no colliding repo is
+        # ever merged/renamed silently.
+        if final_name != c.project:
+            report.warnings.append({
+                "kind": "repo_collision",
+                "repo": c.repo,
+                "workspace": c.workspace,
+                "requested_project": c.project,
+                "assigned_project": final_name,
+                "path": c.path,
+                "message": (
+                    f"repo {c.repo!r} at {c.path} would collide on project "
+                    f"slot ({c.workspace!r}, {c.project!r}) already held by a "
+                    f"different repo; assigned distinct slot {final_name!r} "
+                    f"instead of overwriting."
+                ),
+            })
 
         report.projects.append({
             "repo": c.repo,
-            "project": c.project,
+            "project": final_name,
+            # M2-T4/T5 vocabulary (workspace -> proyecto -> repo):
+            #   * ``container`` is the PROYECTO level -- the classified project
+            #     that groups one or more repos. For a multi-repo container
+            #     (N>1) every repo shares the same ``container`` (e.g. three
+            #     repos under "desing-repos" all carry container="desing-repos"),
+            #     so grouping the report by ``container`` yields "one project
+            #     with >1 repo" (AC-4). For a singleton (R4 collapse) the
+            #     container equals the repo name, so container == repo (AC-4
+            #     "project==repo"). Distinct from ``project`` (the DB storage
+            #     slot, which M1 collision-disambiguates to keep N distinct
+            #     (workspace, name) rows -- desing-repos, desing-repos-2, ...).
+            "container": c.project,
             "workspace": c.workspace,
             "project_identity": c.project_identity,
+            # M2-T4 (AC-3): each repo carries its own absolute path, distinct
+            # from the project/container grouping.
+            "path": c.path,
             "applied": applied,
         })
 

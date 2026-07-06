@@ -173,20 +173,31 @@ def _applied(extra: dict | None = None) -> dict:
 # ---------------------------------------------------------------------------
 
 def _resolve_identity(workspace: str, workspace_path: Path | None = None) -> str:
-    """Resolve workspace identity.
+    """Resolve workspace identity -- REMOTE-derived, read directly (M2-T7).
 
-    Rule (post-fix):
+    Rule:
       * If ``workspace_path`` is provided AND ``workspace_path / .git`` exists
         (the workspace root is itself a git project), resolve identity from
-        the git remote of that directory via ``gaia.project.current``.
+        the git remote of that directory, read DIRECTLY via
+        ``gaia.project._git_remote_origin`` + ``_normalize_remote``.
       * Otherwise (organizational workspace -- no .git at the root), the
         identity IS the workspace name. We do NOT leak the remote of a child
         project up to the workspace row.
 
-    This prevents the historical contamination where a workspace like ``me``
-    received the identity of its first scanned child project.
+    This deliberately does NOT go through ``gaia.project.current()``. As of
+    M2-T7 (AC-9) ``current()`` is PATH-based (it answers "which workspace am I
+    in" by disk location, not by remote). The ``workspaces.identity`` column,
+    however, must remain the normalized git remote (``host/owner/repo``) so two
+    clones of the same remote collapse to the same identity row (the B0 design
+    in ``tools/scan/store_populator.py``). Reading the remote directly here
+    decouples the identity column from ``current()``'s path-first behavior and
+    preserves the remote-derived semantic.
 
-    Falls back to the workspace string itself when path resolution fails.
+    This also prevents the historical contamination where a workspace like
+    ``me`` received the identity of its first scanned child project.
+
+    Falls back to the workspace string itself when path resolution fails or no
+    remote is configured.
 
     Args:
         workspace:      Workspace name used as the fallback / organizational identity.
@@ -202,10 +213,12 @@ def _resolve_identity(workspace: str, workspace_path: Path | None = None) -> str
     try:
         if not (workspace_path / ".git").is_dir():
             return workspace.lower()
-        from gaia.project import current as _project_current
-        ident = _project_current(cwd=workspace_path)
-        if ident and ident != "global":
-            return ident
+        from gaia.project import _git_remote_origin, _normalize_remote
+        remote = _git_remote_origin(workspace_path)
+        if remote:
+            ident = _normalize_remote(remote)
+            if ident:
+                return ident
     except Exception:
         pass
     return workspace.lower()
@@ -351,6 +364,178 @@ def mark_workspace_demoted(
 
 
 # ---------------------------------------------------------------------------
+# Column ownership map (coalesce-or-omit + agent-owned protection)
+# ---------------------------------------------------------------------------
+#
+# Ported from tools/scan/orchestrator.py's SCANNER_OWNED_TOP_LEVEL /
+# AGENT_ENRICHED_SECTIONS split (the retired project-context.json ownership
+# model) down to the DB write path (workspace-identity brief, M1-T2).
+#
+# Semantics:
+#   * Coalesce-or-omit: a column is only written when its key is PRESENT in
+#     the caller's `fields` mapping (even when the value is explicitly None,
+#     e.g. ``missing_since=None`` to reactivate a project). A key ABSENT from
+#     `fields` is left OUT of the INSERT/UPDATE entirely -- the column keeps
+#     its current value instead of being forced to NULL just because a given
+#     scan run's payload did not mention it. This is the fix for the
+#     "columns go NULL when a rescan omits them" clobber.
+#   * Agent-owned protection: a column named in the table's `_AGENT_OWNED`
+#     set is stripped from `fields` before the coalesce-or-omit step
+#     whenever the caller passes ``strip_agent_owned=True`` -- the scan path
+#     (bulk_upsert's projects/apps branches, populate_project) always does.
+#     A direct caller that does NOT set ``strip_agent_owned`` (tests, or any
+#     future agent-driven write) keeps full write access -- the flag gates
+#     the SCAN PATH specifically, not the column in the abstract.
+#
+# Extensible: M3/T9 adds "description" to _PROJECTS_AGENT_OWNED once that
+# column exists, without touching this mechanism.
+_PROJECTS_AGENT_OWNED: frozenset = frozenset()
+# NOTE: `role` is NOT agent-owned here (M1-T3): it is auto-detected by
+# tools/scan/role_detector.py and refreshed on every scan, so it belongs to
+# the scanner. No agent-owned column exists on `projects` until M3/T9 adds
+# `description`. See schema.sql's `role` column comment for the same note.
+_APPS_AGENT_OWNED: frozenset = frozenset({"description", "status"})
+
+
+def _present_fields(
+    fields: Mapping[str, Any],
+    recognized: Sequence[str],
+    *,
+    strip: frozenset = frozenset(),
+) -> dict:
+    """Return the subset of `recognized` keys actually supplied in `fields`.
+
+    Powers coalesce-or-omit: building the INSERT/UPDATE column list from this
+    dict's keys means an omitted scanner-owned column is never forced to NULL,
+    and (when `strip` names the table's agent-owned columns) the scan path can
+    never write agent-owned data regardless of what its payload happens to
+    include.
+    """
+    return {k: fields[k] for k in recognized if k in fields and k not in strip}
+
+
+def _find_collision_free_name(
+    con: sqlite3.Connection,
+    workspace: str,
+    name: str,
+    project_identity: str | None,
+) -> str:
+    """Return a `projects.name` guaranteed not to collide with a DIFFERENT
+    physical repo already occupying ``(workspace, name)``.
+
+    Two distinct repos (distinct ``project_identity``) can legitimately share
+    a basename under the same workspace (e.g. two "foo" repos nested under
+    different containers). Without this guard, upserting the second one would
+    silently overwrite the first via the ``(workspace, name)`` UNIQUE
+    constraint -- the collision-key defect (workspace-identity brief, AC-2).
+
+    Read-only (issues no writes) so it is safe to call from a dry-run preview
+    as well as from inside upsert_project's write transaction. When the
+    existing occupant shares the SAME identity (or the slot is free, or the
+    slot's identity is unset/legacy), the name is returned unchanged --
+    disambiguation only fires for a CONFIRMED different physical repo.
+
+    Args:
+        con: Open connection (used read-only here).
+        workspace: Workspace name.
+        name: Candidate project name.
+        project_identity: The NEW row's stable identity, or None/empty (in
+            which case no collision can be detected and `name` is returned
+            unchanged).
+
+    Returns:
+        `name` unchanged, or `name` suffixed with `-2`, `-3`, ... until a free
+        (or same-identity) slot is found.
+    """
+    if not project_identity:
+        return name
+
+    def _occupied_by_other(candidate: str) -> bool:
+        row = con.execute(
+            "SELECT project_identity FROM projects WHERE workspace = ? AND name = ?",
+            (workspace, candidate),
+        ).fetchone()
+        existing_identity = row["project_identity"] if row else None
+        return bool(existing_identity) and existing_identity != project_identity
+
+    if not _occupied_by_other(name):
+        return name
+
+    suffix = 2
+    while True:
+        candidate = f"{name}-{suffix}"
+        if not _occupied_by_other(candidate):
+            return candidate
+        suffix += 1
+
+
+def preview_project_name(
+    workspace: str,
+    name: str,
+    project_identity: str | None,
+    *,
+    db_path: Path | None = None,
+    extra_claimed: Mapping[str, str] | None = None,
+) -> str:
+    """Read-only preview of the name :func:`upsert_project` would actually use.
+
+    Lets a dry-run report the REAL, collision-free name without writing
+    anything. ``extra_claimed`` lets a caller iterating a batch of repos in
+    one pass (e.g. ``tools/scan/classify.py::scan``) fold in names already
+    "claimed" earlier in the SAME batch -- names that a real ``apply=True``
+    run would already have committed to the DB by the time a later repo in
+    the batch is processed (commits are sequential), but that a dry-run,
+    which writes nothing, cannot see via the DB alone.
+
+    Args:
+        workspace: Workspace name.
+        name: Candidate project name.
+        project_identity: The repo's stable identity, or None/empty.
+        db_path: Optional explicit DB path (used by tests).
+        extra_claimed: Optional ``{name: project_identity}`` map of names
+            already claimed earlier in the same in-progress batch.
+
+    Returns:
+        The name that would be used, disambiguated if needed.
+    """
+    if not project_identity:
+        return name
+    if extra_claimed and name in extra_claimed:
+        if extra_claimed[name] == project_identity:
+            return name
+        # In-memory collision against an earlier repo in this same batch --
+        # resolve purely in-memory first (no DB round trip needed to know
+        # this slot is taken), then fall through to the DB-aware resolver
+        # starting from the first candidate suffix.
+        suffix = 2
+        while True:
+            candidate = f"{name}-{suffix}"
+            claimed_identity = extra_claimed.get(candidate)
+            if claimed_identity is None:
+                break
+            if claimed_identity == project_identity:
+                return candidate
+            suffix += 1
+        name = candidate
+
+    # Dry-run touches-nothing guarantee: never let a PREVIEW materialize the
+    # DB. `_connect()` runs schema.sql when the file is absent, which would
+    # create the data dir during a --dry-run scan (regression caught by
+    # tests/cli/test_scan.py::test_dry_run_does_not_touch_db). A DB that does
+    # not yet exist has zero rows to collide with, so the in-memory
+    # `extra_claimed` resolution above is already the complete answer.
+    resolved = db_path if db_path is not None else _db_path()
+    if not resolved.exists():
+        return name
+
+    con = _connect(resolved)
+    try:
+        return _find_collision_free_name(con, workspace, name, project_identity)
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API: upsert_project
 # ---------------------------------------------------------------------------
 
@@ -378,6 +563,7 @@ def upsert_project(
     *,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
+    strip_agent_owned: bool = False,
 ) -> dict:
     """Upsert a projects row, enforcing per-agent write permission.
 
@@ -387,26 +573,39 @@ def upsert_project(
         fields: Dict of column->value pairs. Recognized keys:
             ``role``, ``remote_url``, ``platform``, ``primary_language``,
             ``group_name``, ``path``, ``status``, ``missing_since``,
-            ``project_identity``. When ``project_identity`` is non-null and the
-            live schema carries the column (v18+), the UPSERT collapses on that
-            stable identity: the SAME physical repo scanned from different
-            workspaces/roots updates the existing row IN PLACE (preserving its
-            original (workspace, name) PK) instead of inserting a duplicate.
-            ``status`` defaults to 'active' when not provided. ``missing_since``
-            defaults to NULL. On re-upsert of a live project (status='active')
-            the scanner should pass status='active' and missing_since=None to
-            reactivate a previously-missing project; default values handle this
-            when the caller omits both fields.
+            ``project_identity``. A key ABSENT from `fields` is coalesce-or-
+            omit: the column keeps its current value instead of being forced
+            to NULL (see the ownership map above `_PROJECTS_AGENT_OWNED`). A
+            key present with value None (e.g. ``missing_since=None``) is an
+            explicit write -- this is how the scanner reactivates a
+            previously-missing project (pass status='active' and
+            missing_since=None together). When ``project_identity`` is
+            non-null and the live schema carries the column (v18+), the
+            UPSERT collapses on that stable identity: the SAME physical repo
+            scanned from different workspaces/roots updates the existing row
+            IN PLACE (preserving its original (workspace, name) PK) instead
+            of inserting a duplicate. ``status`` defaults to 'active' when
+            not provided (or explicitly None).
         agent: Agent name. Must have allow_write=1 for table 'projects' in
             agent_permissions.
-        topic_key: Optional dimension key.
+        topic_key: Optional dimension key. Coalesced: an explicit value
+            overwrites; omitting it (None) preserves the existing value
+            instead of nulling it on every rescan.
         db_path: Optional explicit DB path (used by tests).
         workspace_path: Directory whose git remote supplies the workspaces.identity
             value. Pass ``project_path`` from the scanner for correct
             multi-workspace ingestion.
+        strip_agent_owned: When True (the scan path -- bulk_upsert's
+            projects branch, populate_project), any key in
+            ``_PROJECTS_AGENT_OWNED`` is dropped from `fields` before the
+            coalesce-or-omit step, regardless of what the caller supplied.
+            Direct callers (tests, future agent-driven writes) leave this
+            False and keep full write access.
 
     Returns:
-        {"status": "applied"} on success.
+        {"status": "applied", "name": <final name used, disambiguated if a
+        genuine repo-name collision was detected -- see
+        :func:`_find_collision_free_name`>} on success.
         {"status": "rejected", "reason": "not_authorized"} if the agent lacks
         write permission for the 'projects' table.
     """
@@ -418,13 +617,19 @@ def upsert_project(
         con.execute("BEGIN")
         try:
             _ensure_workspace_row(con, workspace, workspace_path)
-            data = {k: fields.get(k) for k in _PROJECT_FIELDS}
-            # Default status to 'active' when not explicitly provided.
-            # This ensures newly-inserted rows and re-upserted live projects
-            # always carry an explicit status value.
-            status_val = data["status"] if data["status"] is not None else "active"
+
+            present = _present_fields(
+                fields, _PROJECT_FIELDS,
+                strip=_PROJECTS_AGENT_OWNED if strip_agent_owned else frozenset(),
+            )
+            # Default status to 'active' when not explicitly provided (or
+            # explicitly None). Newly-inserted rows and re-upserted live
+            # projects always carry an explicit status value -- unchanged
+            # historical default.
+            if present.get("status") is None:
+                present["status"] = "active"
             now = _now_iso()
-            project_identity = data["project_identity"]
+            project_identity = present.get("project_identity")
 
             # Identity-collapse path (M1-T2): when a stable project_identity is
             # supplied AND the live schema carries the column, the SAME physical
@@ -434,102 +639,74 @@ def upsert_project(
             # one) and UPDATE it IN PLACE, preserving its original (workspace,
             # name) PK -- the first-seen vantage wins, later scans only refresh
             # the row's scanner-owned columns. This is what makes the
-            # "same repo from two roots -> 0 duplicates" query hold.
+            # "same repo from two roots -> 0 duplicates" query hold. Only the
+            # columns actually PRESENT in `fields` are updated (coalesce-or-
+            # omit); scanner-owned columns this call didn't mention keep their
+            # current value instead of being nulled.
             if has_identity_col and project_identity:
                 existing = con.execute(
                     "SELECT workspace, name FROM projects WHERE project_identity = ?",
                     (project_identity,),
                 ).fetchone()
                 if existing is not None:
+                    set_parts = [f"{c} = ?" for c in present.keys()]
+                    set_parts += ["scanner_ts = ?", "topic_key = COALESCE(?, topic_key)"]
+                    params = list(present.values()) + [now, topic_key]
                     con.execute(
-                        """
-                        UPDATE projects SET
-                            role = ?,
-                            remote_url = ?,
-                            platform = ?,
-                            primary_language = ?,
-                            scanner_ts = ?,
-                            topic_key = ?,
-                            group_name = ?,
-                            path = ?,
-                            status = ?,
-                            missing_since = ?,
-                            project_identity = ?
-                        WHERE workspace = ? AND name = ?
-                        """,
-                        (
-                            data["role"], data["remote_url"], data["platform"],
-                            data["primary_language"], now, topic_key,
-                            data["group_name"], data["path"],
-                            status_val, data["missing_since"], project_identity,
-                            existing["workspace"], existing["name"],
-                        ),
+                        f"UPDATE projects SET {', '.join(set_parts)} "
+                        f"WHERE workspace = ? AND name = ?",
+                        (*params, existing["workspace"], existing["name"]),
                     )
                     con.commit()
-                    return _applied()
+                    return _applied({"name": existing["name"]})
+
+            # No identity match -- this is a NEW row (or a legacy DB with no
+            # identity column). Resolve a collision-free name so a DIFFERENT
+            # physical repo sharing this basename never silently overwrites
+            # an existing, unrelated row (AC-2).
+            final_name = name
+            if has_identity_col and project_identity:
+                final_name = _find_collision_free_name(con, workspace, name, project_identity)
 
             if has_identity_col:
+                insert_cols = ["workspace", "name"] + list(present.keys()) + ["scanner_ts", "topic_key"]
+                insert_vals = [workspace, final_name] + list(present.values()) + [now, topic_key]
+                update_clause_parts = [f"{c} = excluded.{c}" for c in present.keys()]
+                update_clause_parts += [
+                    "scanner_ts = excluded.scanner_ts",
+                    "topic_key = COALESCE(excluded.topic_key, topic_key)",
+                ]
                 con.execute(
-                    """
-                    INSERT INTO projects (workspace, name, role, remote_url, platform,
-                                          primary_language, scanner_ts, topic_key,
-                                          group_name, path, status, missing_since,
-                                          project_identity)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(workspace, name) DO UPDATE SET
-                        role = excluded.role,
-                        remote_url = excluded.remote_url,
-                        platform = excluded.platform,
-                        primary_language = excluded.primary_language,
-                        scanner_ts = excluded.scanner_ts,
-                        topic_key = excluded.topic_key,
-                        group_name = excluded.group_name,
-                        path = excluded.path,
-                        status = excluded.status,
-                        missing_since = excluded.missing_since,
-                        project_identity = excluded.project_identity
-                    """,
-                    (
-                        workspace, name,
-                        data["role"], data["remote_url"], data["platform"],
-                        data["primary_language"], now, topic_key,
-                        data["group_name"], data["path"],
-                        status_val, data["missing_since"], project_identity,
-                    ),
+                    f"INSERT INTO projects ({', '.join(insert_cols)}) "
+                    f"VALUES ({', '.join(['?'] * len(insert_cols))}) "
+                    f"ON CONFLICT(workspace, name) DO UPDATE SET {', '.join(update_clause_parts)}",
+                    insert_vals,
                 )
             else:
                 # Backward-compat: un-migrated DB without project_identity.
+                # No collision-free naming is possible without an identity
+                # signal -- degrades to the historical (workspace, name) key.
+                # Drop `project_identity` from `present`: the legacy schema
+                # does not carry that column at all.
+                legacy_present = {k: v for k, v in present.items() if k != "project_identity"}
+                insert_cols = ["workspace", "name"] + list(legacy_present.keys()) + ["scanner_ts", "topic_key"]
+                insert_vals = [workspace, final_name] + list(legacy_present.values()) + [now, topic_key]
+                update_clause_parts = [f"{c} = excluded.{c}" for c in legacy_present.keys()]
+                update_clause_parts += [
+                    "scanner_ts = excluded.scanner_ts",
+                    "topic_key = COALESCE(excluded.topic_key, topic_key)",
+                ]
                 con.execute(
-                    """
-                    INSERT INTO projects (workspace, name, role, remote_url, platform,
-                                          primary_language, scanner_ts, topic_key,
-                                          group_name, path, status, missing_since)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(workspace, name) DO UPDATE SET
-                        role = excluded.role,
-                        remote_url = excluded.remote_url,
-                        platform = excluded.platform,
-                        primary_language = excluded.primary_language,
-                        scanner_ts = excluded.scanner_ts,
-                        topic_key = excluded.topic_key,
-                        group_name = excluded.group_name,
-                        path = excluded.path,
-                        status = excluded.status,
-                        missing_since = excluded.missing_since
-                    """,
-                    (
-                        workspace, name,
-                        data["role"], data["remote_url"], data["platform"],
-                        data["primary_language"], now, topic_key,
-                        data["group_name"], data["path"],
-                        status_val, data["missing_since"],
-                    ),
+                    f"INSERT INTO projects ({', '.join(insert_cols)}) "
+                    f"VALUES ({', '.join(['?'] * len(insert_cols))}) "
+                    f"ON CONFLICT(workspace, name) DO UPDATE SET {', '.join(update_clause_parts)}",
+                    insert_vals,
                 )
             con.commit()
         except Exception:
             con.rollback()
             raise
-        return _applied()
+        return _applied({"name": final_name})
     finally:
         con.close()
 
@@ -550,6 +727,7 @@ def upsert_app(
     topic_key: str | None = None,
     *,
     db_path: Path | None = None,
+    strip_agent_owned: bool = False,
 ) -> dict:
     """Upsert an apps row, enforcing per-agent write permission.
 
@@ -559,9 +737,19 @@ def upsert_app(
                  ``projects`` table).
         name: App name.
         fields: Dict with optional keys ``kind``, ``description``, ``status``.
+            A key ABSENT from `fields` is coalesce-or-omit: the column keeps
+            its current value instead of being forced to NULL. A key present
+            (even with value None) is an explicit write.
         agent: Agent name. Requires allow_write=1 for table 'apps'.
-        topic_key: Optional dimension key.
+        topic_key: Optional dimension key. Coalesced: an explicit value
+            overwrites; omitting it (None) preserves the existing value.
         db_path: Optional explicit DB path (used by tests).
+        strip_agent_owned: When True (the scan path -- bulk_upsert's apps
+            branch), ``description`` and ``status`` (``_APPS_AGENT_OWNED``)
+            are dropped from `fields` before the coalesce-or-omit step,
+            regardless of what the caller supplied. Direct callers (tests,
+            future agent-driven writes) leave this False and keep full
+            write access.
 
     Returns:
         {"status": "applied"} on success.
@@ -584,24 +772,23 @@ def upsert_app(
                     "INSERT INTO projects (workspace, name, scanner_ts) VALUES (?, ?, ?)",
                     (workspace, project, _now_iso()),
                 )
-            data = {k: fields.get(k) for k in _APP_FIELDS}
+            present = _present_fields(
+                fields, _APP_FIELDS,
+                strip=_APPS_AGENT_OWNED if strip_agent_owned else frozenset(),
+            )
+            now = _now_iso()
+            insert_cols = ["workspace", "project", "name"] + list(present.keys()) + ["topic_key", "scanner_ts"]
+            insert_vals = [workspace, project, name] + list(present.values()) + [topic_key, now]
+            update_clause_parts = [f"{c} = excluded.{c}" for c in present.keys()]
+            update_clause_parts += [
+                "topic_key = COALESCE(excluded.topic_key, topic_key)",
+                "scanner_ts = excluded.scanner_ts",
+            ]
             con.execute(
-                """
-                INSERT INTO apps (workspace, project, name, kind, description, status,
-                                  topic_key, scanner_ts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(workspace, project, name) DO UPDATE SET
-                    kind = excluded.kind,
-                    description = excluded.description,
-                    status = excluded.status,
-                    topic_key = excluded.topic_key,
-                    scanner_ts = excluded.scanner_ts
-                """,
-                (
-                    workspace, project, name,
-                    data["kind"], data["description"], data["status"],
-                    topic_key, _now_iso(),
-                ),
+                f"INSERT INTO apps ({', '.join(insert_cols)}) "
+                f"VALUES ({', '.join(['?'] * len(insert_cols))}) "
+                f"ON CONFLICT(workspace, project, name) DO UPDATE SET {', '.join(update_clause_parts)}",
+                insert_vals,
             )
             con.commit()
         except Exception:
@@ -801,6 +988,10 @@ def bulk_upsert(
     applied = 0
     rejected = 0
     if table == "projects":
+        # bulk_upsert is exclusively the scan path's batch writer (see the
+        # module docstring: "populators NEVER touch agent-owned columns") --
+        # strip_agent_owned=True enforces that structurally, regardless of
+        # what a row dict happens to include.
         for r in rows_list:
             res = upsert_project(
                 workspace,
@@ -809,6 +1000,7 @@ def bulk_upsert(
                 agent,
                 topic_key=r.get("topic_key"),
                 db_path=db_path,
+                strip_agent_owned=True,
             )
             if res.get("status") == "applied":
                 applied += 1
@@ -826,6 +1018,7 @@ def bulk_upsert(
                 agent,
                 topic_key=r.get("topic_key"),
                 db_path=db_path,
+                strip_agent_owned=True,
             )
             if res.get("status") == "applied":
                 applied += 1

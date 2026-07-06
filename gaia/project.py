@@ -1,13 +1,20 @@
 """
 gaia.project -- Workspace identity model and consolidate operations.
 
-Workspace identity is derived from the git remote URL, normalized to the
-canonical form ``host/owner/repo`` (lowercase, no protocol, no .git suffix).
+Workspace identity (``current()``) is PATH-based (M2-T7, AC-9): it is derived
+from the repository's location on disk, not from the git remote, so it is
+stable regardless of remote state and converges across vantage points (root,
+subdirectory, linked worktree of the same repo all resolve identically).
 
-Three-level fallback:
-  1. Git remote URL normalized to canonical form (primary)
-  2. Directory name in lowercase (when no git remote)
-  3. Literal ``"global"`` (when neither git remote nor identifiable directory)
+Three-level resolution:
+  1. Git repo -> basename of the repository ROOT (via git-common-dir)
+  2. Directory name in lowercase (when not a git repo)
+  3. Literal ``"global"`` (when neither a git repo nor an identifiable name)
+
+The remote-derived canonical identity (``host/owner/repo``) is still produced
+by :func:`_normalize_remote`, but it is captured separately in the
+``workspaces.identity`` column by the store writer, which reads the remote
+directly -- it no longer flows through ``current()``.
 
 Patterns inspired by engram (https://github.com/koaning/engram), MIT License.
 No runtime dependency on engram.
@@ -142,12 +149,28 @@ def git_common_dir(cwd: Path | str | None = None) -> str | None:
 
 
 def current(cwd: Path | str | None = None) -> str:
-    """Return the workspace identity for the given directory.
+    """Return the workspace identity for the given directory -- PATH-BASED.
 
-    Three-level fallback:
-      1. Git remote URL normalized to canonical form (``host/owner/repo``)
-      2. Directory basename in lowercase
-      3. Literal ``"global"`` (no git, no identifiable directory)
+    Resolution is PATH-first (M2-T7, AC-9), NOT git-remote-first. The identity
+    is derived from the repository's own location on disk, so it is stable
+    regardless of remote state and converges across vantage points:
+
+      1. Git repo -> the basename of the REPOSITORY ROOT, resolved via
+         ``git rev-parse --git-common-dir`` (:func:`git_common_dir`). Because
+         the common dir is identical from the repo root, any nested
+         subdirectory, and any linked worktree, two different working-directory
+         paths of the SAME repo always resolve to the SAME identity -- and the
+         git remote never decides the identity ahead of the path.
+      2. Not a git repo -> the basename of ``cwd`` in lowercase.
+      3. Literal ``"global"`` (no git, no identifiable directory name).
+
+    The git remote URL is deliberately NOT consulted here. The remote-derived
+    canonical identity still exists, but it is captured separately in the
+    ``workspaces.identity`` column by the store writer
+    (``gaia/store/writer.py::_resolve_identity``), which reads the remote
+    directly -- so ``current()`` answering "which workspace am I in" stays
+    coherent with the path-anchored scan model (workspace -> proyecto -> repo)
+    while the remote identity is preserved where it belongs.
 
     Args:
         cwd: Directory to resolve identity for. Defaults to ``Path.cwd()``.
@@ -162,14 +185,20 @@ def current(cwd: Path | str | None = None) -> str:
         # If resolve fails (broken symlink, permission), fall back to global
         return "global"
 
-    # Level 1: git remote URL
-    remote = _git_remote_origin(target)
-    if remote:
-        normalized = _normalize_remote(remote)
-        if normalized:
-            return normalized
+    # Level 1 (PATH-based): repository root basename, vantage-independent.
+    # git_common_dir collapses root / subdir / worktree of the same repo to
+    # one path, so the identity does not diverge across vantage points and
+    # does not depend on the remote.
+    common = git_common_dir(target)
+    if common:
+        # The common dir (e.g. ``/x/repo/.git``) sits inside the repo root;
+        # its parent is the repository root directory.
+        repo_root = Path(common).parent
+        name = repo_root.name.lower().strip()
+        if name:
+            return name
 
-    # Level 2: directory basename
+    # Level 2: directory basename (not a git repo).
     name = target.name.lower().strip()
     if name:
         return name

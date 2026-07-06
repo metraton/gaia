@@ -161,15 +161,23 @@ def populate_project(
         agent=agent,
         db_path=db_path,
         workspace_path=project_path,
+        # populate_project IS the scan path -- structurally guarantee it can
+        # never write a projects.* agent-owned column (M1-T2/T3), regardless
+        # of what a future edit to the `fields` dict above might add.
+        strip_agent_owned=True,
     )
     applied = 1 if res.get("status") == "applied" else 0
+    # AC-2 (M1-T1): the writer may have disambiguated `name` when a DIFFERENT
+    # physical repo already occupies (workspace, name) -- always report the
+    # name actually persisted, not the raw basename this call started with.
+    final_name = res.get("name") or name
     return {
         "applied": applied,
         "rejected": 1 - applied,
         "role": role,
         "identity": workspace,
         "project_identity": project_identity,
-        "name": name,
+        "name": final_name,
         "group_name": group_name,
     }
 

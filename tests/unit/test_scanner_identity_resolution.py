@@ -11,15 +11,24 @@ separated them cleanly:
     ``--workspace`` classifier decides the workspace, and the populator records
     it verbatim.
   * ``workspaces.identity`` (the DB column) is still resolved by the WRITER
-    (``gaia.store.writer._resolve_identity``), which is unchanged: when the
-    workspace root is ITSELF a git repo (``workspace_path/.git`` exists), the
-    column captures the git-remote-derived canonical form; otherwise it defaults
-    to the workspace name. That writer behavior is a separate layer from the
-    removed scan inference and remains covered below.
+    (``gaia.store.writer._resolve_identity``): when the workspace root is
+    ITSELF a git repo (``workspace_path/.git`` exists), the column captures the
+    git-remote-derived canonical form; otherwise it defaults to the workspace
+    name. That writer behavior is a separate layer from the removed scan
+    inference and remains covered below.
+
+    M2-T7 (AC-9) decoupling: the writer now reads the git remote DIRECTLY
+    (``gaia.project._git_remote_origin`` + ``_normalize_remote``) instead of
+    through ``gaia.project.current()``. ``current()`` became PATH-based, so it
+    can no longer be the source of the remote-derived identity column. The
+    INTENT is unchanged and asserted here -- ``workspaces.identity`` is still
+    the normalized git remote -- but it is now proven via a REAL remote on the
+    repo (the direct-read path), not via a monkeypatched ``current()``.
 """
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -52,18 +61,20 @@ def test_populate_project_identity_is_the_workspace(tmp_db, tmp_path, monkeypatc
     _grant(con, "projects", "developer")
     con.close()
 
-    # Build a fake project with an "Application" marker and a .git dir so the
-    # WRITER's _resolve_identity treats the workspace root as a git project and
-    # resolves the remote into workspaces.identity.
+    # Build a fake project with an "Application" marker and a REAL git repo
+    # (with a real origin remote) so the WRITER's _resolve_identity treats the
+    # workspace root as a git project and reads the remote DIRECTLY into
+    # workspaces.identity (M2-T7 decoupling -- no current() monkeypatch).
     fake_repo = tmp_path / "fake-repo"
     fake_repo.mkdir()
     (fake_repo / "package.json").write_text("{}")
-    (fake_repo / ".git").mkdir()
-
-    # The writer resolves workspaces.identity via gaia.project.current().
+    subprocess.run(["git", "init", "--quiet"], cwd=str(fake_repo), check=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", "git@github.com:Metraton/Fake-Repo.git"],
+        cwd=str(fake_repo), check=True,
+    )
+    # The writer normalizes that remote directly -> host/owner/repo, lowercased.
     expected_ws_identity = "github.com/metraton/fake-repo"
-    import gaia.project as project_mod
-    monkeypatch.setattr(project_mod, "current", lambda cwd=None: expected_ws_identity)
 
     from tools.scan.store_populator import populate_project
 
@@ -109,10 +120,9 @@ def test_populate_project_identity_is_workspace_when_no_git(
     fake_repo.mkdir()
     (fake_repo / "pyproject.toml").write_text("[tool.poetry]\nname = \"x\"\n")
 
-    # current() would return a basename, but with no .git the writer never calls
-    # it -- it defaults workspaces.identity to the workspace name.
-    import gaia.project as project_mod
-    monkeypatch.setattr(project_mod, "current", lambda cwd=None: "no-remote-repo")
+    # No .git at the root -> the writer never reads a remote and defaults
+    # workspaces.identity to the workspace name. (M2-T7: the writer no longer
+    # consults current() at all for identity, so no monkeypatch is needed.)
 
     from tools.scan.store_populator import populate_project
 
