@@ -13,10 +13,17 @@ Mutating subcommands operate on the curated ``memory`` table in
 ``~/.gaia/gaia.db`` (the project-level / user-level / feedback notes):
 
   add --name=<slug> --type=<project|user|feedback> --body="..."
-      [--description=...] [--workspace=<ws>] [--json]
+      [--description=...] [--workspace=<ws>]
+      [--project=<name> | --project-ref=<identity>] [--json]
                                           DB-only writer; no filesystem side
                                           effects (no .md under
                                           ~/.claude/projects/.../memory/).
+                                          --project anchors memory.project_ref
+                                          (N3, forward-only) by resolving a
+                                          project name within --workspace to
+                                          its stable project_identity; never
+                                          guesses (clear error if the project
+                                          does not exist or has no identity).
 """
 
 from __future__ import annotations
@@ -706,6 +713,8 @@ def _cmd_add(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
+    project_flag = getattr(args, "project", None)
+    project_ref_flag = getattr(args, "project_ref", None)
 
     if not name:
         return _err("--name is required", as_json)
@@ -731,7 +740,8 @@ def _cmd_add(args) -> int:
 
     try:
         from gaia.store.writer import (
-            upsert_memory, reclassify_memory, VALID_MEMORY_TYPES,
+            upsert_memory, reclassify_memory, resolve_project_ref,
+            VALID_MEMORY_TYPES,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -742,6 +752,19 @@ def _cmd_add(args) -> int:
             as_json,
         )
 
+    # N3: forward-only project_ref anchor. --project resolves a project name
+    # (within `workspace`) to its stable project_identity; --project-ref
+    # passes an already-known identity directly. Neither guesses: an
+    # unresolvable --project is a clear error, never a silent NULL.
+    project_ref = None
+    if project_flag is not None:
+        try:
+            project_ref = resolve_project_ref(workspace, project_flag)
+        except ValueError as exc:
+            return _err(str(exc), as_json)
+    elif project_ref_flag is not None:
+        project_ref = project_ref_flag
+
     try:
         res = upsert_memory(
             workspace,
@@ -749,6 +772,7 @@ def _cmd_add(args) -> int:
             type=mem_type,
             body=body,
             description=description,
+            project_ref=project_ref,
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -796,6 +820,8 @@ def _cmd_add(args) -> int:
             "body_preview": snippet,
             "updated_at": res.get("updated_at"),
         }
+        if project_ref is not None:
+            out["project_ref"] = project_ref
         if reclassify_result is not None:
             out["class"] = reclassify_result["class"]
             out["memory_status"] = reclassify_result["memory_status"]
@@ -805,6 +831,8 @@ def _cmd_add(args) -> int:
         print(f"{verb} memory '{name}' (type={mem_type}, workspace={workspace})")
         if description:
             print(f"  description: {description}")
+        if project_ref is not None:
+            print(f"  project_ref: {project_ref}")
         print(f"  body: {snippet}")
         if reclassify_result is not None:
             print(
@@ -2160,6 +2188,25 @@ def register(subparsers):
     )
     add_p.add_argument("--description", default=None,
                        help="Short summary. Shown in list.")
+    _add_project_group = add_p.add_mutually_exclusive_group()
+    _add_project_group.add_argument(
+        "--project", default=None,
+        help=(
+            "N3: anchor this memory to a project by NAME (resolved within "
+            "--workspace to its stable projects.project_identity, persisted "
+            "as memory.project_ref). Forward-only: errors clearly if the "
+            "project does not exist or has no project_identity yet -- never "
+            "guesses. Mutually exclusive with --project-ref."
+        ),
+    )
+    _add_project_group.add_argument(
+        "--project-ref", dest="project_ref", default=None,
+        help=(
+            "N3: anchor this memory directly to a known stable "
+            "project_identity string, bypassing name resolution. Use "
+            "--project instead unless you already hold the identity value."
+        ),
+    )
     add_p.add_argument(
         "--class", dest="class_", default=None,
         choices=("anchor", "thread", "log"),
