@@ -68,9 +68,26 @@ def _render_human(report, *, dry_run: bool) -> None:
         print(f"{prefix}projects:")
         for p in report.projects:
             applied = "applied" if p["applied"] else ("would-apply" if dry_run else "not-applied")
+            # Show the workspace -> proyecto (container) -> repo hierarchy plus
+            # the repo's own absolute path (M2-T4/T5). ``project`` (the DB
+            # storage slot) is shown only when it differs from the proyecto
+            # (i.e. when M1 collision-disambiguation renamed the slot).
+            container = p.get("container", p["project"])
+            slot = p["project"]
+            slot_note = f" slot={slot}" if slot != container else ""
             print(
-                f"  - repo={p['repo']} project={p['project']} "
-                f"workspace={p['workspace']} [{applied}]"
+                f"  - workspace={p['workspace']} project={container} "
+                f"repo={p['repo']}{slot_note} path={p.get('path')} [{applied}]"
+            )
+
+    if report.warnings:
+        # M2-T6 (AC-5): would-be collisions are surfaced explicitly, never
+        # silently merged/renamed.
+        print(f"{prefix}WARNING -- repo collisions (would-be silent data loss):")
+        for w in report.warnings:
+            print(
+                f"  ! repo={w['repo']} requested_project={w['requested_project']} "
+                f"-> assigned={w['assigned_project']} path={w.get('path')}"
             )
 
     if report.ambiguities:
