@@ -36,6 +36,9 @@ from cli.dev import (  # noqa: E402
     install_tarball,
     wire_workspace_via_installed_gaia,
     link_source_into_workspace,
+    content_address_tarball,
+    prune_sibling_tarballs,
+    rewrite_workspace_dep_spec,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -534,8 +537,11 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             # Never leaks into the workspace itself.
             self.assertFalse(any(workspace.glob("*.tgz")))
             # Persists -- this is the regression guard: the old default
-            # deleted this directory before cmd_dev returned.
-            self.assertTrue(captured["tarball"].exists())
+            # deleted this directory before cmd_dev returned. The packed
+            # tarball now survives under its content-addressed name (gaia dev
+            # renames it in place before install), so assert the dest dir
+            # still holds a tarball rather than the pre-rename filename.
+            self.assertTrue(any(captured["dest_dir"].glob("*.tgz")))
             self.assertEqual(captured["dest_dir"], default_pack_dest(workspace))
 
     def test_second_consecutive_pack_run_succeeds_no_enoent(self):
@@ -603,7 +609,9 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
                     ))
 
             self.assertEqual(rc, 0)
-            self.assertTrue((pack_dest / "pkg.tgz").exists())
+            # Content-addressed in place: the pre-rename `pkg.tgz` becomes
+            # `pkg+<sha8>.tgz`, so assert a tarball survives in pack_dest.
+            self.assertTrue(any(pack_dest.glob("*.tgz")))
 
 
 class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
@@ -731,6 +739,152 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
 
             # DB must exist ONLY at the isolated tmp path.
             self.assertTrue((data_dir / "gaia.db").exists())
+
+
+# ---------------------------------------------------------------------------
+# content_address_tarball -- content-hashed filename for pnpm store freshness
+# ---------------------------------------------------------------------------
+
+class TestContentAddressTarball(unittest.TestCase):
+    def test_renames_with_content_hash_suffix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tb = Path(tmp) / "jaguilar87-gaia-5.1.1.tgz"
+            tb.write_bytes(b"payload-A")
+            new_path = content_address_tarball(tb)
+            # Original name is gone; new name carries +<sha8> before .tgz.
+            self.assertFalse(tb.exists())
+            self.assertTrue(new_path.exists())
+            self.assertTrue(new_path.name.startswith("jaguilar87-gaia-5.1.1+"))
+            self.assertTrue(new_path.name.endswith(".tgz"))
+            suffix = new_path.name[len("jaguilar87-gaia-5.1.1+"):-len(".tgz")]
+            self.assertEqual(len(suffix), 8)
+            int(suffix, 16)  # must be hex
+
+    def test_same_content_yields_same_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            t1 = Path(tmp) / "jaguilar87-gaia-5.1.1.tgz"
+            t1.write_bytes(b"identical-bytes")
+            n1 = content_address_tarball(t1)
+            t2 = Path(tmp) / "again" / "jaguilar87-gaia-5.1.1.tgz"
+            t2.parent.mkdir()
+            t2.write_bytes(b"identical-bytes")
+            n2 = content_address_tarball(t2)
+            self.assertEqual(n1.name, n2.name)
+
+    def test_changed_content_yields_different_name(self):
+        # The core cache-bust property: a same-version repack with CHANGED
+        # content must produce a different filename (-> new pnpm store key).
+        with tempfile.TemporaryDirectory() as tmp:
+            a = Path(tmp) / "a" / "jaguilar87-gaia-5.1.1.tgz"
+            b = Path(tmp) / "b" / "jaguilar87-gaia-5.1.1.tgz"
+            a.parent.mkdir()
+            b.parent.mkdir()
+            a.write_bytes(b"content-one")
+            b.write_bytes(b"content-two")
+            na = content_address_tarball(a)
+            nb = content_address_tarball(b)
+            self.assertNotEqual(na.name, nb.name)
+
+    def test_no_double_suffix_when_rehashed(self):
+        # Feeding an already-hashed name back in re-hashes the base version,
+        # never stacks a second +<sha8>.
+        with tempfile.TemporaryDirectory() as tmp:
+            tb = Path(tmp) / "jaguilar87-gaia-5.1.1+deadbeef.tgz"
+            tb.write_bytes(b"x")
+            new_path = content_address_tarball(tb)
+            self.assertEqual(new_path.name.count("+"), 1)
+            self.assertTrue(new_path.name.startswith("jaguilar87-gaia-5.1.1+"))
+
+
+# ---------------------------------------------------------------------------
+# prune_sibling_tarballs -- reclaim stale content-addressed siblings
+# ---------------------------------------------------------------------------
+
+class TestPruneSiblingTarballs(unittest.TestCase):
+    def test_removes_siblings_except_kept(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            keep = d / "jaguilar87-gaia-5.1.1+aaaaaaaa.tgz"
+            old1 = d / "jaguilar87-gaia-5.1.1+bbbbbbbb.tgz"
+            old2 = d / "jaguilar87-gaia-5.1.0.tgz"  # legacy un-suffixed
+            for p in (keep, old1, old2):
+                p.write_bytes(b"x")
+
+            removed = prune_sibling_tarballs(keep)
+
+            self.assertTrue(keep.exists())
+            self.assertFalse(old1.exists())
+            self.assertFalse(old2.exists())
+            self.assertEqual(set(removed), {old1.name, old2.name})
+
+    def test_noop_when_only_kept_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            keep = Path(tmp) / "jaguilar87-gaia-5.1.1+aaaaaaaa.tgz"
+            keep.write_bytes(b"x")
+            removed = prune_sibling_tarballs(keep)
+            self.assertEqual(removed, [])
+            self.assertTrue(keep.exists())
+
+
+# ---------------------------------------------------------------------------
+# rewrite_workspace_dep_spec -- keep package.json in lockstep with install
+# ---------------------------------------------------------------------------
+
+class TestRewriteWorkspaceDepSpec(unittest.TestCase):
+    def test_rewrites_stale_spec(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws"
+            ws.mkdir()
+            (ws / "package.json").write_text(json.dumps({
+                "name": "consumer",
+                "dependencies": {"@jaguilar87/gaia": "file:gaia/jaguilar87-gaia-5.1.0.tgz"},
+            }) + "\n")
+            tarball = Path(tmp) / "cache" / "jaguilar87-gaia-5.1.1+abcd1234.tgz"
+            tarball.parent.mkdir()
+            tarball.write_bytes(b"x")
+
+            res = rewrite_workspace_dep_spec(ws, tarball)
+
+            self.assertEqual(res["action"], "updated")
+            data = json.loads((ws / "package.json").read_text())
+            spec = data["dependencies"]["@jaguilar87/gaia"]
+            self.assertTrue(spec.startswith("file:"))
+            self.assertIn("jaguilar87-gaia-5.1.1+abcd1234.tgz", spec)
+
+    def test_noop_when_spec_already_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws"
+            ws.mkdir()
+            tarball = Path(tmp) / "jaguilar87-gaia-5.1.1+abcd1234.tgz"
+            tarball.write_bytes(b"x")
+            rel = os.path.relpath(tarball, ws)
+            (ws / "package.json").write_text(json.dumps({
+                "dependencies": {"@jaguilar87/gaia": f"file:{rel}"},
+            }) + "\n")
+
+            res = rewrite_workspace_dep_spec(ws, tarball)
+            self.assertEqual(res["action"], "noop")
+
+    def test_skipped_when_no_package_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ws = Path(tmp) / "ws"
+            ws.mkdir()
+            tarball = Path(tmp) / "x.tgz"
+            tarball.write_bytes(b"x")
+            res = rewrite_workspace_dep_spec(ws, tarball)
+            self.assertEqual(res["action"], "skipped")
+
+
+# ---------------------------------------------------------------------------
+# The dev-pack workspace marker was REMOVED alongside `gaia release sync-local`
+# (its only reader). Guard against reintroduction.
+# ---------------------------------------------------------------------------
+
+class TestWorkspaceMarkerRemoved(unittest.TestCase):
+    def test_marker_symbols_are_gone(self):
+        self.assertFalse(hasattr(dev_mod, "write_workspace_marker"))
+        self.assertFalse(hasattr(dev_mod, "read_workspace_marker"))
+        self.assertFalse(hasattr(dev_mod, "_WORKSPACE_MARKER"))
 
 
 if __name__ == "__main__":

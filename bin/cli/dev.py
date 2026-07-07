@@ -54,6 +54,7 @@ DB bootstrap) is never duplicated between them or against `gaia install`.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -323,6 +324,107 @@ def default_pack_dest(workspace: Path) -> Path:
     return cache_dir() / "dev-pack" / workspace_id(cwd=workspace)
 
 
+def content_address_tarball(tarball: Path) -> Path:
+    """Rename *tarball* to ``<stem>+<sha8>.tgz`` in place (same directory).
+
+    Inserts a content hash of the tarball's bytes before the ``.tgz``
+    extension: ``jaguilar87-gaia-5.1.1.tgz`` -> ``jaguilar87-gaia-5.1.1+<sha8>.tgz``.
+    Because pnpm keys a ``file:`` dependency's virtual-store entry by the
+    spec PATH (not by content), a changed-content repack at the same version
+    now yields a NEW filename -> a NEW store key -> a forced fresh
+    extraction. Identical content yields the identical name (idempotent, no
+    churn). The tarball's INTERNAL ``package.json`` version is never touched.
+
+    Returns the new path. If the derived name already exists (same content
+    re-packed), the freshly packed tarball replaces it atomically.
+    """
+    sha8 = _pack_helpers.content_hash8(tarball)
+    name = tarball.name
+    stem = name[:-4] if name.endswith(".tgz") else name
+    # Guard against double-suffixing if a hashed tarball is ever re-fed in.
+    if "+" in stem:
+        stem = stem.split("+", 1)[0]
+    new_path = tarball.with_name(f"{stem}+{sha8}.tgz")
+    if new_path != tarball:
+        os.replace(tarball, new_path)  # atomic within the same directory
+    return new_path
+
+
+def prune_sibling_tarballs(keep: Path) -> list[str]:
+    """Delete every ``*.tgz`` in ``keep.parent`` except *keep*.
+
+    ``default_pack_dest`` is a per-workspace directory dedicated to dev-pack
+    tarballs, so pruning its other ``.tgz`` files reclaims the stale
+    content-addressed siblings from earlier runs (and the legacy un-suffixed
+    tarball). Pruned only AFTER the new tarball is installed and the
+    workspace ``package.json`` spec is rewritten to point at *keep*, so the
+    ENOENT invariant that ``default_pack_dest`` documents (never delete the
+    tarball the workspace's ``file:`` dependency currently references) holds:
+    by prune time nothing references the removed files.
+
+    Returns the names removed. Never raises.
+    """
+    removed: list[str] = []
+    try:
+        keep_resolved = keep.resolve()
+        for sibling in keep.parent.glob("*.tgz"):
+            try:
+                if sibling.resolve() == keep_resolved:
+                    continue
+                sibling.unlink()
+                removed.append(sibling.name)
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return removed
+
+
+def rewrite_workspace_dep_spec(workspace: Path, tarball: Path) -> dict[str, Any]:
+    """Rewrite ``dependencies['@jaguilar87/gaia']`` in the workspace
+    ``package.json`` to ``file:<tarball>`` so it matches exactly what was
+    installed.
+
+    Closes the package.json <-> lockfile desync: ``pnpm add`` records its own
+    resolved spec in the lockfile, but a stale hand-authored or prior-tool
+    ``file:`` spec could linger in ``package.json`` and diverge. Writing the
+    spec explicitly (relative to the workspace when possible, else absolute)
+    keeps the two authoritative sources agreeing.
+
+    Idempotent: a no-op when the spec already matches. Never raises; returns
+    the ``{action, path, details}`` contract the install helpers use.
+    """
+    pkg_path = workspace / "package.json"
+    try:
+        rel = os.path.relpath(tarball, workspace)
+        # Prefer the relative form (portable, matches how pnpm records the
+        # dev-pack path) unless it escapes into an absolute-only location.
+        spec = f"file:{rel}"
+    except (ValueError, OSError):
+        spec = f"file:{tarball}"
+
+    try:
+        if not pkg_path.is_file():
+            return {"action": "skipped", "path": str(pkg_path), "details": "no package.json to rewrite"}
+        data = json.loads(pkg_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"action": "error", "path": str(pkg_path), "details": f"could not read package.json: {exc}"}
+
+    deps = data.get("dependencies")
+    if not isinstance(deps, dict):
+        return {"action": "skipped", "path": str(pkg_path), "details": "no dependencies map"}
+
+    if deps.get(_NPM_PACKAGE_NAME) == spec:
+        return {"action": "noop", "path": str(pkg_path), "details": f"spec already {spec}"}
+
+    deps[_NPM_PACKAGE_NAME] = spec
+    try:
+        pkg_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return {"action": "error", "path": str(pkg_path), "details": f"could not write package.json: {exc}"}
+    return {"action": "updated", "path": str(pkg_path), "details": f"pinned {_NPM_PACKAGE_NAME} -> {spec}"}
+
+
 def _run_pack_mode(
     workspace: Path,
     *,
@@ -348,12 +450,42 @@ def _run_pack_mode(
     if pack_res["action"] == "error":
         return 1
 
-    tarball = pack_res["tarball"]
+    # Content-address the packed tarball's FILENAME so a same-version repack
+    # with changed content gets a new pnpm store key -> a forced fresh
+    # extraction (the packaged version stays clean). See
+    # content_address_tarball for the mechanism.
+    tarball = content_address_tarball(Path(pack_res["tarball"]))
+    _report_step(
+        name="content-address tarball",
+        result={"action": "created", "path": str(tarball), "details": f"-> {tarball.name}"},
+        quiet=quiet,
+        verbose=verbose,
+    )
+
     install_res = install_tarball(workspace, tarball)
     pm = install_res.get("package_manager", "npm")
     _report_step(name=f"{pm} install", result=install_res, quiet=quiet, verbose=verbose)
     if install_res["action"] == "error":
         return 1
+
+    # Keep package.json's file: spec in lockstep with what was actually
+    # installed, so package.json and the lockfile never diverge.
+    spec_res = rewrite_workspace_dep_spec(workspace, tarball)
+    _report_step(name="package.json spec", result=spec_res, quiet=quiet, verbose=verbose)
+    if spec_res["action"] == "error":
+        return 1
+
+    # Reclaim stale content-addressed siblings from earlier runs. Done AFTER
+    # install + spec rewrite so the file: dependency the workspace now points
+    # at (this tarball) is never the one removed (ENOENT invariant).
+    pruned = prune_sibling_tarballs(tarball)
+    if pruned:
+        _report_step(
+            name="prune old tarballs",
+            result={"action": "updated", "path": str(tarball.parent), "details": f"removed {len(pruned)}: {', '.join(pruned)}"},
+            quiet=quiet,
+            verbose=verbose,
+        )
 
     wire_res = wire_workspace_via_installed_gaia(workspace, quiet=quiet)
     _report_step(name="gaia install (wire)", result=wire_res, quiet=quiet, verbose=verbose)
