@@ -33,7 +33,12 @@ import cli.memory as memory_mod
 
 def _make_fake_modules(monkeypatch, *, search_results=None, episode=None,
                        count=0, conflicts=None, score=0.5):
-    """Inject fake tools.memory.* modules via monkeypatch."""
+    """Inject fake tools.memory.* modules via monkeypatch.
+
+    ``search_results``/``count`` are accepted for call-site compatibility but
+    no longer wired: the legacy ``search_store`` module was retired and episode
+    stats now read gaia.db (patched via ``_patch_db_stats``).
+    """
 
     # Ensure parent namespace modules exist in sys.modules and create fresh
     # ones so that attribute lookups (from tools.memory import X) always
@@ -43,15 +48,6 @@ def _make_fake_modules(monkeypatch, *, search_results=None, episode=None,
     tools_memory_mod = types.ModuleType("tools.memory")
     monkeypatch.setitem(sys.modules, "tools", tools_mod)
     monkeypatch.setitem(sys.modules, "tools.memory", tools_memory_mod)
-
-    # --- search_store ---
-    fake_ss = types.ModuleType("tools.memory.search_store")
-    _sr = search_results if search_results is not None else []
-    fake_ss.search = lambda query, max_results=10: _sr
-    fake_ss.count = lambda: count
-    monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
-    # Also set as attribute so `from tools.memory import search_store` works
-    tools_memory_mod.search_store = fake_ss
 
     # --- scoring ---
     fake_scoring = types.ModuleType("tools.memory.scoring")
@@ -78,7 +74,7 @@ def _make_fake_modules(monkeypatch, *, search_results=None, episode=None,
     monkeypatch.setitem(sys.modules, "tools.memory.conflict_detector", fake_cd)
     tools_memory_mod.conflict_detector = fake_cd
 
-    return fake_ss, fake_scoring, fake_episodic, fake_cd
+    return fake_scoring, fake_episodic, fake_cd
 
 
 # ---------------------------------------------------------------------------
@@ -233,100 +229,89 @@ class TestRegisterMemorySubcommand:
 # Tests: search
 # ---------------------------------------------------------------------------
 
-class TestCmdSearch:
-    """_cmd_search via cmd_memory dispatch."""
+class TestCmdSearchEpisodes:
+    """`gaia memory search --scope=episodes` via _cmd_search_scoped.
 
-    def test_search_returns_results_json(self, monkeypatch, capsys):
-        """Two hits enriched with episodic data → valid JSON with id/title/score/date/snippet."""
-        _make_fake_modules(
-            monkeypatch,
-            search_results=[
-                {"episode_id": "ep_001", "rank": 0.9},
-                {"episode_id": "ep_002", "rank": 0.7},
+    Episodic search reads the canonical episodes_fts index in gaia.db through
+    _search_episodes_fts_from_db (the retired search_store module's
+    replacement). Tests patch that reader so no real DB is required.
+    """
+
+    def test_episodes_scope_returns_results_json(self, monkeypatch, capsys):
+        """Two FTS hits → JSON with id/title/rank/date/snippet per episode."""
+        monkeypatch.setattr(memory_mod, "_resolve_workspace", lambda w: "me")
+        monkeypatch.setattr(
+            memory_mod, "_search_episodes_fts_from_db",
+            lambda query, workspace=None, limit=10: [
+                {
+                    "episode_id": "ep_001",
+                    "title": "My Episode",
+                    "timestamp": "2026-04-10T10:00:00Z",
+                    "enriched_prompt": "Some content here",
+                    "fts_rank": -1.5,
+                },
+                {
+                    "episode_id": "ep_002",
+                    "title": "Other Episode",
+                    "timestamp": "2026-04-11T10:00:00Z",
+                    "prompt": "Second body",
+                    "fts_rank": -0.9,
+                },
             ],
-            episode={
-                "episode_id": "ep_001",
-                "title": "My Episode",
-                "timestamp": "2026-04-10T10:00:00Z",
-                "retrieval_count": 1,
-                "tags": ["gaia"],
-                "enriched_prompt": "Some content here",
-            },
-            score=0.42,
         )
 
         args = SimpleNamespace(
-            json=True,
-            query="my query",
-            limit=10,
-            func=memory_mod._cmd_search,
+            json=True, query="my query", limit=10, scope="episodes",
+            workspace=None, func=memory_mod._cmd_search_scoped,
         )
         rc = memory_mod.cmd_memory(args)
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert "results" in data
+        assert data["scope"] == "episodes"
         assert len(data["results"]) == 2
-
         first = data["results"][0]
-        assert "id" in first
-        assert "title" in first
-        assert "score" in first
-        assert "date" in first
-        assert "snippet" in first
+        for key in ("id", "title", "rank", "date", "snippet"):
+            assert key in first
         assert first["id"] == "ep_001"
         assert first["title"] == "My Episode"
+        assert first["date"] == "2026-04-10"
 
-    def test_search_empty_results_ok(self, monkeypatch, capsys):
-        """Empty FTS5 results → {"results": []} without error."""
-        _make_fake_modules(monkeypatch, search_results=[])
+    def test_episodes_scope_empty_results_ok(self, monkeypatch, capsys):
+        """No FTS hits → {"scope": "episodes", "results": []} without error."""
+        monkeypatch.setattr(memory_mod, "_resolve_workspace", lambda w: "me")
+        monkeypatch.setattr(
+            memory_mod, "_search_episodes_fts_from_db",
+            lambda query, workspace=None, limit=10: [],
+        )
 
         args = SimpleNamespace(
-            json=True,
-            query="nothing",
-            limit=10,
-            func=memory_mod._cmd_search,
+            json=True, query="nothing", limit=10, scope="episodes",
+            workspace=None, func=memory_mod._cmd_search_scoped,
         )
         rc = memory_mod.cmd_memory(args)
 
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
-        assert data == {"results": []}
+        assert data == {"scope": "episodes", "results": []}
 
-    def test_search_human_output_no_crash(self, monkeypatch, capsys):
-        """Human output (no --json) should print without crashing on empty results."""
-        _make_fake_modules(monkeypatch, search_results=[])
+    def test_episodes_scope_human_output_no_crash(self, monkeypatch, capsys):
+        """Human output (no --json) prints without crashing on empty results."""
+        monkeypatch.setattr(memory_mod, "_resolve_workspace", lambda w: "me")
+        monkeypatch.setattr(
+            memory_mod, "_search_episodes_fts_from_db",
+            lambda query, workspace=None, limit=10: [],
+        )
 
         args = SimpleNamespace(
-            json=False,
-            query="test",
-            limit=5,
-            func=memory_mod._cmd_search,
+            json=False, query="test", limit=5, scope="episodes",
+            workspace=None, func=memory_mod._cmd_search_scoped,
         )
         rc = memory_mod.cmd_memory(args)
 
         assert rc == 0
         out = capsys.readouterr().out
-        assert "No results found" in out
-
-    def test_search_without_search_store_returns_error(self, monkeypatch, capsys):
-        """When search_store is None (ImportError), returns exit 1 + error JSON."""
-        # Patch the import function directly so that the real module (which may
-        # already be cached in sys.modules or as an attribute of tools.memory)
-        # does not leak through when tests run after test_search_store.py.
-        monkeypatch.setattr(memory_mod, "_import_search_store", lambda: None)
-
-        args = SimpleNamespace(
-            json=True,
-            query="test",
-            limit=10,
-            func=memory_mod._cmd_search,
-        )
-        rc = memory_mod.cmd_memory(args)
-
-        assert rc == 1
-        data = json.loads(capsys.readouterr().out)
-        assert "error" in data
+        assert "No episode results found" in out
 
 
 # ---------------------------------------------------------------------------
@@ -695,8 +680,15 @@ class TestJsonFlag:
     """Verify --json flag produces machine-readable output for all subcommands."""
 
     def test_search_json_is_parseable(self, monkeypatch, capsys):
-        _make_fake_modules(monkeypatch, search_results=[])
-        args = SimpleNamespace(json=True, query="x", limit=5, func=memory_mod._cmd_search)
+        monkeypatch.setattr(memory_mod, "_resolve_workspace", lambda w: "me")
+        monkeypatch.setattr(
+            memory_mod, "_search_episodes_fts_from_db",
+            lambda query, workspace=None, limit=10: [],
+        )
+        args = SimpleNamespace(
+            json=True, query="x", limit=5, scope="episodes",
+            workspace=None, func=memory_mod._cmd_search_scoped,
+        )
         memory_mod.cmd_memory(args)
         data = json.loads(capsys.readouterr().out)
         assert isinstance(data, dict)

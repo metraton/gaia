@@ -89,14 +89,6 @@ def _memory_base(project_root: Path) -> Path:
 # Lazy imports
 # ---------------------------------------------------------------------------
 
-def _import_search_store():
-    try:
-        from tools.memory import search_store
-        return search_store
-    except ImportError:
-        return None
-
-
 def _import_episodic():
     try:
         from tools.memory.episodic import EpisodicMemory
@@ -196,83 +188,6 @@ def _is_rich_body(body: str) -> bool:
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
-
-def _cmd_search(args) -> int:
-    """Handle `gaia memory search <query> [--limit N]`."""
-    as_json = getattr(args, "json", False)
-    query = args.query
-    limit = getattr(args, "limit", 10)
-
-    search_store = _import_search_store()
-    EpisodicMemory = _import_episodic()
-    score_memory = _import_scoring()
-
-    if search_store is None:
-        return _err("search_store module not available", as_json)
-
-    raw_results = search_store.search(query, max_results=limit)
-
-    results = []
-    for hit in raw_results:
-        episode_id = hit.get("episode_id", "")
-        rank = hit.get("rank", 0.0)
-
-        # Enrich via episodic module
-        episode = None
-        if EpisodicMemory is not None:
-            try:
-                mem = EpisodicMemory()
-                episode = mem.get_episode(episode_id)
-            except Exception:
-                episode = None
-
-        if episode is None:
-            # Minimal record from rank alone
-            results.append({
-                "id": episode_id,
-                "title": "",
-                "score": 0.0,
-                "date": "",
-                "snippet": "",
-            })
-            continue
-
-        # Compute hybrid score
-        days = _days_old(episode.get("timestamp", ""))
-        retrieval_count = int(episode.get("retrieval_count", 0))
-        if score_memory is not None:
-            try:
-                hybrid_score = score_memory(days_old=days, retrieval_count=retrieval_count)
-            except Exception:
-                hybrid_score = 0.0
-        else:
-            hybrid_score = 0.0
-
-        # Snippet: first 120 chars of enriched_prompt or prompt
-        text = episode.get("enriched_prompt") or episode.get("prompt") or ""
-        snippet = text[:120] + ("..." if len(text) > 120 else "")
-
-        results.append({
-            "id": episode_id,
-            "title": episode.get("title") or "",
-            "score": round(hybrid_score, 4),
-            "date": episode.get("timestamp", "")[:10],  # YYYY-MM-DD
-            "snippet": snippet,
-        })
-
-    output = {"results": results}
-    if as_json:
-        print(json.dumps(output, indent=2))
-    else:
-        if not results:
-            print("No results found.")
-        else:
-            for i, r in enumerate(results, 1):
-                print(f"\n{i}. [{r['score']:.4f}] {r['title'] or r['id']}")
-                print(f"   Date: {r['date']}")
-                print(f"   {r['snippet']}")
-    return 0
-
 
 def _query_episodes_from_db(workspace: str | None = None) -> list[dict]:
     """Query episodes from gaia.db. Returns list of episode dicts.
@@ -374,49 +289,24 @@ def _search_episodes_fts_from_db(
 ) -> list[dict]:
     """FTS5 search over episodes_fts in gaia.db.
 
-    Returns list of episode dicts enriched with an fts_rank field.
-    Falls back to empty list on any error (non-blocking).
+    Thin wrapper around the canonical reader
+    ``gaia.store.reader.search_episodes_fts`` (the single implementation
+    shared with the context injector). Resolves the default workspace here so
+    the CLI keeps scoping results to the current project. Returns episode
+    dicts enriched with an ``fts_rank`` field; empty list on any error.
     """
     try:
         import sys as _sys
         _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
         if str(_REPO_ROOT) not in _sys.path:
             _sys.path.insert(0, str(_REPO_ROOT))
-        from gaia.store.writer import _connect as _store_connect
+        from gaia.store.reader import search_episodes_fts as _search_fts
         from gaia.project import current as _project_current
     except ImportError:
         return []
 
     ws = workspace or _project_current()
-    try:
-        con = _store_connect()
-        try:
-            # FTS5 MATCH with bm25 ranking; rank is negative (higher = more relevant)
-            if ws:
-                rows = con.execute(
-                    "SELECT e.*, rank AS fts_rank "
-                    "FROM episodes_fts "
-                    "JOIN episodes e ON e.rowid = episodes_fts.rowid "
-                    "WHERE episodes_fts MATCH ? AND e.workspace = ? "
-                    "ORDER BY rank "
-                    "LIMIT ?",
-                    (query, ws, limit),
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT e.*, rank AS fts_rank "
-                    "FROM episodes_fts "
-                    "JOIN episodes e ON e.rowid = episodes_fts.rowid "
-                    "WHERE episodes_fts MATCH ? "
-                    "ORDER BY rank "
-                    "LIMIT ?",
-                    (query, limit),
-                ).fetchall()
-            return [dict(r) for r in rows]
-        finally:
-            con.close()
-    except Exception:
-        return []
+    return _search_fts(query, workspace=ws, limit=limit)
 
 
 def _cmd_stats(args) -> int:
@@ -1719,14 +1609,15 @@ def _cmd_link(args) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Override _cmd_search: add --scope for curated/episodes/both
+# gaia memory search: --scope for memory/episodes/both
 # ---------------------------------------------------------------------------
 
 def _cmd_search_scoped(args) -> int:
-    """Wrapper around the legacy ``_cmd_search`` that honours ``--scope``.
+    """Handle ``gaia memory search`` with a ``--scope`` selector.
 
     Valid scopes:
-      * ``episodes`` -- FTS5 over the legacy ``episodic-memory`` index.
+      * ``episodes`` -- FTS5 over ``episodes_fts`` in gaia.db (canonical
+                        episodic index, via _search_episodes_fts_from_db).
       * ``memory``   -- FTS5 over the ``memory_fts`` mirror of the curated
                         ``memory`` table (preferred name).
       * ``both``     -- combined episodes + curated memory (default).

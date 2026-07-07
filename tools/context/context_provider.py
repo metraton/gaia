@@ -19,8 +19,8 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 # Ensure the package root is on sys.path so that `tools.memory.scoring` and
-# `tools.memory.search_store` resolve when this module is imported in-process
-# by hooks (e.g. context_injector) or invoked via the CLI entry point.
+# `gaia.store.reader` resolve when this module is imported in-process by hooks
+# (e.g. context_injector) or invoked via the CLI entry point.
 # Pattern: same as hooks/pre_tool_use.py line 22.
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PACKAGE_ROOT not in sys.path:
@@ -313,12 +313,6 @@ except ImportError:
         _rank_episodes = None
         _HAS_SCORING = False
 
-try:
-    from tools.memory.search_store import search as fts5_search
-except ImportError:
-    fts5_search = None
-
-
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters."""
     return len(text) // 4
@@ -331,7 +325,9 @@ def _build_memory_index_table(index_episodes: List[Dict[str, Any]]) -> str:
     for i, ep in enumerate(index_episodes, 1):
         title = ep.get("title", "")[:40]
         ep_type = ep.get("type", "unknown")
-        score = ep.get("relevance_score", ep.get("_score", 0.0))
+        score = ep.get("relevance_score")
+        if score is None:
+            score = ep.get("_score", 0.0)
         # Calculate age from timestamp field
         ts = ep.get("timestamp", "")
         try:
@@ -369,11 +365,17 @@ def load_relevant_episodes(
 ) -> Dict[str, Any]:
     """Load relevant historical episodes using 2-layer progressive disclosure.
 
-    Layer 1 (always): A compact markdown table of all scored memory sources
+    Source of truth: the ``episodes`` / ``episodes_fts`` tables in
+    ``~/.gaia/gaia.db`` (episodic memory is DB-canonical -- one row per agent
+    turn, indexed by the schema's FTS5 triggers). The legacy filesystem layout
+    (``.claude/project-context/episodic-memory/index.json`` + ``episodes.jsonl``)
+    is no longer created on the canonical path and is not read here.
+
+    Layer 1 (always): a compact markdown table of the FTS5-matched episodes
     (~200 tokens), returned under the ``memory_index`` key.
 
-    Layer 2 (selective): Full content of top-N episodes ranked by
-    ``tools.memory.scoring.rank_episodes()``, loaded only within the
+    Layer 2 (selective): the top-N episodes ranked by
+    ``tools.memory.scoring.rank_episodes()``, included only within the
     remaining token budget.
 
     Parameters
@@ -381,7 +383,7 @@ def load_relevant_episodes(
     user_task:
         Free-text description of the user's current task.
     max_episodes:
-        Legacy cap on the number of full episodes to include (Layer 2).
+        Cap on the number of full episodes to include (Layer 2).
     max_tokens:
         Total token budget for the episodic memory block.  Reads from
         ``GAIA_MEMORY_TOKEN_BUDGET`` env var when not supplied explicitly.
@@ -400,94 +402,85 @@ def load_relevant_episodes(
             max_tokens = 2000
 
     try:
-        index_file = Path(".claude/project-context/episodic-memory/index.json")
-        if not index_file.exists():
+        # Resolve the current workspace so retrieval is project-scoped.
+        try:
+            from gaia.project import current as _project_current
+            workspace = _project_current()
+        except Exception:
+            workspace = None
+
+        # --- FTS5 over episodes_fts in gaia.db (canonical shared reader) ---
+        try:
+            from gaia.store.reader import (
+                search_episodes_fts as _search_fts,
+                sanitize_episodes_fts_query as _sanitize_fts,
+            )
+        except ImportError as _imp_err:
+            print(
+                f"Warning: gaia.store.reader unavailable, skipping memory: {_imp_err}",
+                file=sys.stderr,
+            )
             return {}
 
-        with open(index_file) as f:
-            index = json.load(f)
+        fts_query = _sanitize_fts(user_task)
+        rows = _search_fts(
+            fts_query, workspace=workspace, limit=max_episodes * 3,
+        ) if fts_query else []
 
-        all_index_episodes = index.get("episodes", [])
-        if not all_index_episodes:
+        if not rows:
             return {}
 
-        # --- Layer 1: Memory Index -- compact markdown table (~200 tokens, always included) ---
-        layer1_text = _build_memory_index_table(all_index_episodes)
+        # Normalize DB rows into episode dicts with the 'id' key the table
+        # builder and scorer expect.
+        all_episodes: List[Dict[str, Any]] = []
+        for r in rows:
+            ep = dict(r)
+            ep["id"] = ep.get("episode_id", "")
+            all_episodes.append(ep)
+
+        print(
+            f"FTS5 search returned {len(all_episodes)} candidates for retrieval",
+            file=sys.stderr,
+        )
+
+        # --- Layer 1: Memory Index -- compact markdown table (always included) ---
+        layer1_text = _build_memory_index_table(all_episodes)
         layer1_tokens = _estimate_tokens(layer1_text)
         remaining_budget = max_tokens - layer1_tokens
 
-        # --- Score and rank episodes: hybrid FTS5 + keyword fallback ---
-        # Build a lookup map from episode id to index entry for fast access
-        ep_by_id = {ep["id"]: ep for ep in all_index_episodes if "id" in ep}
-
-        # Try FTS5 first; results are BM25-ranked (better quality)
-        fts5_ids: List[str] = []
-        if fts5_search is not None:
-            try:
-                fts5_results = fts5_search(user_task, max_results=max_episodes * 3)
-                fts5_ids = [r["episode_id"] for r in fts5_results if "episode_id" in r]
-                print(
-                    f"FTS5 search returned {len(fts5_ids)} candidates for retrieval",
-                    file=sys.stderr,
-                )
-            except Exception as _fts_err:
-                print(
-                    f"Warning: FTS5 search failed (non-fatal): {_fts_err}",
-                    file=sys.stderr,
-                )
-                fts5_ids = []
-
-        # Build ranked list: FTS5 hits first, then fill with keyword/scoring results
-        fts5_id_set = set(fts5_ids)
-
-        # Keyword/scoring baseline (used to fill gaps and as full fallback)
+        # --- Rank by keyword relevance x memory strength (decay) ---
         if _HAS_SCORING and _rank_episodes is not None:
-            keyword_ranked = _rank_episodes(all_index_episodes, user_task)
+            ranked = _rank_episodes(all_episodes, user_task)
         else:
-            keyword_ranked = sorted(
-                [dict(ep, _score=_fallback_keyword_score(ep, user_task)) for ep in all_index_episodes],
+            ranked = sorted(
+                [dict(ep, _score=_fallback_keyword_score(ep, user_task)) for ep in all_episodes],
                 key=lambda x: x["_score"],
                 reverse=True,
             )
 
-        # If FTS5 found candidates, prepend them (with decay scoring if available)
-        if fts5_ids:
-            fts5_episodes = [ep_by_id[eid] for eid in fts5_ids if eid in ep_by_id]
-            if _HAS_SCORING and _rank_episodes is not None:
-                fts5_episodes = _rank_episodes(fts5_episodes, user_task)
-            else:
-                # Assign a generous score so they sort above keyword results
-                fts5_episodes = [dict(ep, _score=max(ep.get("_score", 0.0), 0.5)) for ep in fts5_episodes]
-            # Fill remaining slots with keyword results not already in FTS5 set
-            keyword_fill = [ep for ep in keyword_ranked if ep.get("id") not in fts5_id_set]
-            ranked = fts5_episodes + keyword_fill
-        else:
-            # FTS5 not available or returned nothing — fall back entirely to keyword
-            ranked = keyword_ranked
+        # Prefer episodes with positive relevance; if scoring finds none
+        # (matched only on tags/enriched text), fall back to FTS rank order so
+        # a genuine match still surfaces.
+        candidates = [ep for ep in ranked if ep.get("_score", 0.0) > 0.0]
+        if not candidates:
+            candidates = all_episodes
 
-        # --- Layer 2: full content of top episodes within remaining budget ---
+        # --- Layer 2: top episodes within remaining budget ---
         full_episodes = []
         tokens_used = 0
-        for ep in ranked:
+        for ep in candidates:
             if len(full_episodes) >= max_episodes:
                 break
-            score = ep.get("_score", 0.0)
-            if score <= 0.05:
-                continue
             if remaining_budget <= 0:
                 break
 
-            full_ep = load_full_episode(ep["id"], index_file.parent)
-            if not full_ep:
-                continue
-
             episode_entry = {
-                "id": full_ep["id"],
-                "title": full_ep["title"],
-                "type": full_ep["type"],
-                "relevance": round(score, 4),
-                "lessons_learned": full_ep.get("lessons_learned", [])[:2],
-                "resolution": full_ep.get("resolution", "")[:200],
+                "id": ep.get("id") or ep.get("episode_id", ""),
+                "title": ep.get("title") or "",
+                "type": ep.get("type") or "",
+                "relevance": round(ep.get("_score", 0.0), 4),
+                "outcome": ep.get("outcome") or "",
+                "plan_status": ep.get("plan_status") or "",
             }
             entry_text = json.dumps(episode_entry)
             entry_tokens = _estimate_tokens(entry_text)
@@ -507,56 +500,13 @@ def load_relevant_episodes(
             result["summary"] = f"Found {len(full_episodes)} relevant historical episodes"
             print(
                 f"Added {len(full_episodes)} historical episodes to context "
-                f"(budget={max_tokens}, used≈{layer1_tokens + tokens_used})",
+                f"(budget={max_tokens}, used~{layer1_tokens + tokens_used})",
                 file=sys.stderr,
             )
         else:
             print(
-                f"Memory index built ({len(all_index_episodes)} entries, "
+                f"Memory index built ({len(all_episodes)} entries, "
                 f"no full episodes within score/budget threshold)",
-                file=sys.stderr,
-            )
-
-        # --- Retrieval strengthening: update retrieval_count + last_retrieved ---
-        # Failure here must never block context injection.
-        try:
-            if full_episodes:
-                import tempfile as _tempfile
-                from datetime import datetime as _datetime
-
-                selected_ids = {ep["id"] for ep in full_episodes}
-                now_iso = _datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-                updated = False
-                for entry in index.get("episodes", []):
-                    if entry.get("id") in selected_ids:
-                        entry["retrieval_count"] = entry.get("retrieval_count", 0) + 1
-                        entry["last_retrieved"] = now_iso
-                        updated = True
-
-                if updated:
-                    index_path = index_file.resolve()
-                    index_dir = index_path.parent
-                    fd, tmp_path = _tempfile.mkstemp(
-                        dir=str(index_dir), suffix=".tmp", prefix="index_"
-                    )
-                    try:
-                        with _os.fdopen(fd, "w", encoding="utf-8") as tf:
-                            json.dump(index, tf, indent=2)
-                        _os.rename(tmp_path, str(index_path))
-                        print(
-                            f"Retrieval strengthening: updated {len(selected_ids)} episode(s)",
-                            file=sys.stderr,
-                        )
-                    except Exception:
-                        try:
-                            _os.unlink(tmp_path)
-                        except Exception:
-                            pass
-                        raise
-        except Exception as _rs_err:
-            print(
-                f"Warning: retrieval_count update failed (non-fatal): {_rs_err}",
                 file=sys.stderr,
             )
 
@@ -565,24 +515,6 @@ def load_relevant_episodes(
     except Exception as e:
         print(f"Warning: Could not load episodic memory: {e}", file=sys.stderr)
         return {}
-
-
-def load_full_episode(episode_id: str, memory_dir: Path) -> Optional[Dict[str, Any]]:
-    """Load full episode details from JSONL file."""
-    try:
-        episodes_file = memory_dir / "episodes.jsonl"
-        if episodes_file.exists():
-            with open(episodes_file) as f:
-                for line in f:
-                    try:
-                        episode = json.loads(line)
-                        if episode.get("id") == episode_id:
-                            return episode
-                    except Exception:
-                        continue
-    except Exception:
-        pass
-    return None
 
 
 # ============================================================================

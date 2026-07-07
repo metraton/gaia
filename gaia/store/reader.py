@@ -696,6 +696,92 @@ def cross_surface_query(
     return results
 
 
+# ---------------------------------------------------------------------------
+# Episodic FTS5 search -- canonical reader over episodes_fts in gaia.db
+# ---------------------------------------------------------------------------
+#
+# episodes_fts is a content-linked FTS5 table (content='episodes') kept in
+# sync by INSERT/UPDATE/DELETE triggers declared in schema.sql. This is the
+# single canonical full-text index over episodic memory; the legacy
+# tools/memory/search_store.py (a separate search.db file) was retired in
+# favour of these two helpers, which both the ``gaia memory search`` CLI and
+# the context injector (tools/context/context_provider.py) call.
+
+
+def sanitize_episodes_fts_query(query: str) -> str:
+    """Turn a free-text string into an FTS5-safe prefix query.
+
+    Each whitespace-delimited word becomes a prefix term (``word*``) so that
+    "approval" matches "approvals"/"approving". Hyphens are treated as token
+    separators (FTS5 strips them at index time), and characters that would
+    break FTS5 MATCH syntax (quotes, stray ``*``) are removed. An empty or
+    whitespace-only input yields an empty string, which callers use to skip
+    the query entirely.
+
+    This preserves the tokenisation behaviour of the retired
+    ``search_store._sanitize_query`` so free-text prompts (e.g. the context
+    injector's ``user_task``) still produce meaningful matches instead of
+    erroring on raw punctuation.
+    """
+    query = (query or "").replace("-", " ")
+    words = query.split()
+    safe = [w.replace('"', "").replace("'", "").strip("*") for w in words if w]
+    return " ".join(w + "*" for w in safe if w)
+
+
+def search_episodes_fts(
+    query: str,
+    *,
+    workspace: str | None = None,
+    limit: int = 10,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """FTS5 search over ``episodes_fts`` in gaia.db.
+
+    Returns a list of episode dicts (all columns of the matched ``episodes``
+    row) enriched with an ``fts_rank`` field (bm25 rank; lower = more
+    relevant). Results are ordered by rank. When ``workspace`` is given the
+    match is restricted to that workspace.
+
+    Fails safe: any import/DB/MATCH error yields an empty list so callers
+    (CLI search, context injection) never block on a search failure. The
+    ``query`` is passed to MATCH verbatim -- callers wanting prefix/free-text
+    behaviour should pre-process it with :func:`sanitize_episodes_fts_query`.
+    """
+    if not query or not query.strip():
+        return []
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        if workspace:
+            rows = con.execute(
+                "SELECT e.*, rank AS fts_rank "
+                "FROM episodes_fts "
+                "JOIN episodes e ON e.rowid = episodes_fts.rowid "
+                "WHERE episodes_fts MATCH ? AND e.workspace = ? "
+                "ORDER BY rank "
+                "LIMIT ?",
+                (query, workspace, limit),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT e.*, rank AS fts_rank "
+                "FROM episodes_fts "
+                "JOIN episodes e ON e.rowid = episodes_fts.rowid "
+                "WHERE episodes_fts MATCH ? "
+                "ORDER BY rank "
+                "LIMIT ?",
+                (query, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
 __all__ = [
     "VALID_SURFACES",
     "VALID_GROUP_BY",
@@ -703,6 +789,8 @@ __all__ = [
     "cross_surface_query",
     "group_and_count",
     "aggregate_metrics",
+    "sanitize_episodes_fts_query",
+    "search_episodes_fts",
     "_highlight_snippet",
     "_extract_text_needle",
     "_row_text_for_snippet",

@@ -12,6 +12,7 @@ Checks (in order):
   45. schema-version     - gaia.db schema_version matches CLI expectation
   47. schema-ddl         - live CHECK constraints match schema.sql (ledger-vs-DDL)
   50. symlinks           - .claude/ symlinks resolve
+  55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
   60. identity           - orchestrator agent configured
   65. agent-routing      - surface-routing primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
@@ -839,6 +840,67 @@ def check_symlinks(project_root: Path) -> dict:
     return _result("Symlinks", severity, f"{valid}/{total} valid", "Run `gaia scan` to recreate symlinks")
 
 
+def _semver_tuple(v) -> tuple:
+    """Coarse MAJOR.MINOR.PATCH tuple for version comparison (prerelease/build
+    metadata dropped). Unknown/unreadable versions sort lowest."""
+    if not isinstance(v, str) or not v:
+        return (-1,)
+    base = v.split("+", 1)[0].split("-", 1)[0]
+    out = []
+    for part in base.split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out) if out else (-1,)
+
+
+@register_check("Symlinks freshness", order=55)
+def check_symlinks_freshness(project_root: Path) -> dict:
+    """Warn when .claude/hooks resolves to an OLDER package than installed.
+
+    The .claude/hooks symlink can survive a reinstall while still pointing at
+    a stale package extraction (e.g. an old pnpm virtual-store entry), so
+    hooks keep running old code even though node_modules/@jaguilar87/gaia was
+    updated. Compares the version at the symlink's resolved package root
+    against the top-level installed package's version.
+    """
+    name = "Symlinks freshness"
+    hooks_link = project_root / ".claude" / "hooks"
+    nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
+
+    installed = _read_json(nm_gaia / "package.json")
+    installed_ver = installed.get("version") if installed else None
+    if not installed_ver:
+        # Plugin-mode / no local node_modules package -- nothing to compare.
+        return _result(name, "info", "no installed node_modules package to compare against")
+
+    if not hooks_link.exists():
+        return _result(name, "info", ".claude/hooks not present")
+
+    try:
+        resolved = hooks_link.resolve(strict=True)
+    except OSError:
+        return _result(
+            name, "warning", ".claude/hooks does not resolve",
+            "Run `gaia install` to repair symlinks",
+        )
+
+    # resolved is <pkg>/hooks -> its parent is the package root.
+    target = _read_json(resolved.parent / "package.json")
+    target_ver = target.get("version") if target else None
+    if target_ver is None:
+        return _result(name, "info", f"hooks -> {resolved} (version unknown); installed {installed_ver}")
+
+    if _semver_tuple(target_ver) < _semver_tuple(installed_ver):
+        return _result(
+            name, "warning",
+            f".claude/hooks resolves to gaia {target_ver} but {installed_ver} is installed",
+            "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the current package",
+        )
+    return _result(name, "pass", f"hooks at {target_ver} matches installed {installed_ver}")
+
+
 @register_check("Identity", order=60)
 def check_identity(project_root: Path) -> dict:
     """Check orchestrator agent is configured."""
@@ -1278,32 +1340,35 @@ def _apply_agent_fix(project_root: Path) -> dict:
 
 
 def _apply_fts5_backfill(project_root: Path) -> dict:
-    """Run FTS5 backfill and return a fix-result dict."""
+    """Rebuild the episodes_fts index from the episodes table in gaia.db.
+
+    ``episodes_fts`` is a content-linked FTS5 table (``content='episodes'``)
+    kept in sync by INSERT/UPDATE/DELETE triggers declared in schema.sql. When
+    it drifts from the content table (e.g. rows inserted before the triggers
+    existed, or a corrupted index), the canonical repair is the FTS5
+    ``'rebuild'`` command, which re-derives the full index from ``episodes``.
+    This replaced the legacy backfill that re-read the now-dead
+    ``episodes.jsonl`` filesystem file via tools/memory/search_store.py.
+    """
     try:
         import sys as _sys
         pkg_root = str(_package_root())
         if pkg_root not in _sys.path:
             _sys.path.insert(0, pkg_root)
-
-        # Ensure backfill_fts5 finds the correct project root by setting cwd context
-        # via the module's own _find_project_root (walks up from cwd).
-        # We temporarily add project_root to env if needed, but the module uses cwd.
-        import os as _os
-        orig_cwd = _os.getcwd()
-        try:
-            _os.chdir(project_root)
-            from tools.memory import backfill_fts5  # noqa: PLC0415
-            rc = backfill_fts5.main()
-        finally:
-            _os.chdir(orig_cwd)
-
-        if rc == 0:
-            return {"name": "fts5_backfill", "status": "applied", "detail": "FTS5 index rebuilt successfully"}
-        return {"name": "fts5_backfill", "status": "failed", "detail": f"backfill_fts5.main() returned {rc}"}
+        from gaia.store.writer import _connect as _store_connect
     except ImportError as exc:
-        return {"name": "fts5_backfill", "status": "failed", "detail": f"Cannot import backfill_fts5: {exc}"}
+        return {"name": "fts5_backfill", "status": "failed", "detail": f"gaia.store.writer not importable: {exc}"}
+
+    try:
+        con = _store_connect()
+        try:
+            con.execute("INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')")
+            con.commit()
+        finally:
+            con.close()
+        return {"name": "fts5_backfill", "status": "applied", "detail": "episodes_fts rebuilt from episodes table"}
     except Exception as exc:
-        return {"name": "fts5_backfill", "status": "failed", "detail": f"Backfill error: {exc}"}
+        return {"name": "fts5_backfill", "status": "failed", "detail": f"FTS5 rebuild failed: {exc}"}
 
 
 @register_check("Memory store", order=110)

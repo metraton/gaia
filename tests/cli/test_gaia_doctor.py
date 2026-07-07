@@ -679,13 +679,9 @@ class TestSummaryLineFormat:
         import types
         fake_tm = types.ModuleType("tools.memory")
         fake_scoring = types.ModuleType("tools.memory.scoring")
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 0
         fake_tm.scoring = fake_scoring
-        fake_tm.search_store = fake_ss
         monkeypatch.setitem(sys.modules, "tools.memory", fake_tm)
         monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
 
         args = SimpleNamespace(json=False, fix=False, workspace=str(healthy_project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
@@ -745,12 +741,14 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 21 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
+        # 22 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
         # last-install-error, workspace-initialized, schema-version) +
         # 1 schema-DDL-consistency added by the migration framework rewrite +
         # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1) +
-        # 1 agent-routing (surface-routing primary agents resolve to files).
-        assert len(data["checks"]) == 21
+        # 1 agent-routing (surface-routing primary agents resolve to files) +
+        # 1 symlinks-freshness (.claude/hooks resolves to the installed pkg
+        #   version -- install-local staleness fix).
+        assert len(data["checks"]) == 22
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -815,13 +813,9 @@ class TestCmdDoctorJson:
         import types
         fake_tm = types.ModuleType("tools.memory")
         fake_scoring = types.ModuleType("tools.memory.scoring")
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 0
         fake_tm.scoring = fake_scoring
-        fake_tm.search_store = fake_ss
         monkeypatch.setitem(sys.modules, "tools.memory", fake_tm)
         monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
 
         args = SimpleNamespace(json=True, fix=False, workspace=str(healthy_project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
@@ -1172,6 +1166,49 @@ class TestCheckMemoryScoring:
 # Tests: T4 --fix flow
 # ---------------------------------------------------------------------------
 
+class _FakeGaiaConn:
+    """Minimal fake gaia.db connection for doctor's memory checks.
+
+    Drives ``episodes_fts`` / ``episodes`` COUNT(*) queries from a shared
+    mutable ``state`` dict and emulates the FTS5 ``'rebuild'`` command used by
+    the migrated _apply_fts5_backfill (which re-derives the index from the
+    ``episodes`` content table). Replaces the retired search_store.count()
+    mocks the fix tests used before.
+    """
+
+    class _Cur:
+        def __init__(self, value):
+            self._value = value
+
+        def fetchone(self):
+            return self._value
+
+    def __init__(self, state, fail_rebuild=False):
+        self._state = state
+        self._fail_rebuild = fail_rebuild
+
+    def execute(self, sql, *args):
+        s = " ".join(sql.split())
+        if "'rebuild'" in s:  # INSERT INTO episodes_fts(episodes_fts) VALUES('rebuild')
+            if self._fail_rebuild:
+                raise RuntimeError("simulated FTS5 rebuild failure")
+            self._state["indexed"] = self._state["total"]
+            return self._Cur(None)
+        if "sqlite_master" in s:  # check_memory_dirs: episodes table present
+            return self._Cur(("episodes",))
+        if "episodes_fts" in s:
+            return self._Cur((self._state["indexed"],))
+        if "FROM episodes" in s:
+            return self._Cur((self._state["total"],))
+        return self._Cur(None)
+
+    def commit(self):
+        pass
+
+    def close(self):
+        pass
+
+
 class TestCmdDoctorFix:
     """Test --fix flow in cmd_doctor."""
 
@@ -1222,39 +1259,21 @@ class TestCmdDoctorFix:
         em_dir = pc_dir / "episodic-memory"
         em_dir.mkdir()
 
-        # index.json with 10 episodes but no search.db (triggers info + warning)
-        episodes = [{"episode_id": f"ep_{i}", "title": f"Ep {i}"} for i in range(10)]
-        (em_dir / "index.json").write_text(json.dumps({"episodes": episodes}))
-
         return tmp_path
 
-    def test_fix_applies_backfill_when_count_warning(self, tmp_path, monkeypatch, capsys):
-        """--fix should call backfill when fts5_count is warning, and fixes list is non-empty."""
+    def test_fix_applies_backfill_when_index_empty(self, tmp_path, monkeypatch, capsys):
+        """--fix should rebuild episodes_fts when the index is empty.
+
+        The autouse gaia.db isolation fixture gives each test a fresh, empty
+        gaia.db, so check_memory_fts5_db (order 120) resolves to severity=info
+        (episodes_fts present but empty), which drives --fix to run the FTS5
+        rebuild. The migrated _apply_fts5_backfill runs the rebuild against the
+        real (empty) content table and reports "applied".
+        """
         project = self._make_memory_project(tmp_path)
 
-        import types
-
-        # Fake search_store: first call returns 5 (warning), second returns 10 (pass after fix)
-        call_count = {"n": 0}
-        fake_ss = types.ModuleType("tools.memory.search_store")
-
-        def _count():
-            call_count["n"] += 1
-            return 5 if call_count["n"] == 1 else 10
-
-        fake_ss.count = _count
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
-
-        # Fake backfill_fts5.main returns 0
-        fake_bf = types.ModuleType("tools.memory.backfill_fts5")
-        fake_bf.main = lambda: 0
-        monkeypatch.setitem(sys.modules, "tools.memory.backfill_fts5", fake_bf)
-        # Also ensure tools.memory package mock propagates
-        if "tools.memory" not in sys.modules:
-            monkeypatch.setitem(sys.modules, "tools.memory", types.ModuleType("tools.memory"))
-
         args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
-        rc = doctor_mod.cmd_doctor(args)
+        doctor_mod.cmd_doctor(args)
 
         data = json.loads(capsys.readouterr().out)
         fixes = data.get("fixes", [])
@@ -1263,53 +1282,18 @@ class TestCmdDoctorFix:
         assert fts5_fixes[0]["status"] == "applied"
 
     def test_fix_noop_when_already_indexed(self, tmp_path, monkeypatch, capsys):
-        """--fix should be a no-op (fixes=[]) when FTS5 index is at 100%."""
+        """--fix should be a no-op (fixes=[]) when the FTS5 index is at 100%."""
         project = self._make_memory_project(tmp_path)
 
-        import types
-
-        # search.db exists and count == 10 (100%) — no warning triggered
-        em_dir = project / ".claude" / "project-context" / "episodic-memory"
-        (em_dir / "search.db").write_bytes(b"fake db")
-
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 10
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
-        # check_memory_fts5_count does `from tools.memory import search_store`,
-        # which binds the attribute on the (already-imported) tools.memory
-        # package object, NOT the sys.modules child entry. Patch the package
-        # attribute too so the mock is honored regardless of whether the real
-        # package is already cached -- otherwise the real search_store.count()
-        # (0 against an isolated/empty DB) drives a spurious warning + backfill.
-        import importlib
-        tm = sys.modules.get("tools.memory") or importlib.import_module("tools.memory")
-        monkeypatch.setitem(sys.modules, "tools.memory", tm)
-        monkeypatch.setattr(tm, "search_store", fake_ss, raising=False)
-
-        # check_memory_fts5_db (order 120) is the OTHER backfill trigger: it
-        # queries episodes_fts in gaia.db and returns severity=info when the
-        # table is empty, which on its own drives --fix to backfill. Under
-        # real test isolation (empty per-test DB) that info path always fires;
-        # locally it was masked by the developer's populated ~/.gaia. Point
-        # _connect at a DB whose episodes_fts has a row so the check resolves
-        # to "pass" and the no-op assertion reflects the intended state.
-        import sqlite3
+        # Point gaia.store.writer._connect at a fake connection reporting a
+        # fully-indexed episodes_fts (indexed == total > 0): check_memory_fts5_db
+        # resolves to pass and check_memory_fts5_count to pass, so neither
+        # backfill trigger fires.
         import gaia.store.writer as _writer_mod
-        fts_db = tmp_path / "fts5_db.db"
-        _con = sqlite3.connect(str(fts_db))
-        _con.execute(
-            "CREATE VIRTUAL TABLE episodes_fts USING fts5("
-            "episode_id UNINDEXED, prompt, enriched_prompt, tags, title)"
-        )
-        _con.execute("INSERT INTO episodes_fts (episode_id, title) VALUES ('e1', 't')")
-        _con.commit()
-        _con.close()
+        state = {"indexed": 10, "total": 10}
         monkeypatch.setattr(
-            _writer_mod, "_connect", lambda *a, **k: sqlite3.connect(str(fts_db))
+            _writer_mod, "_connect", lambda *a, **k: _FakeGaiaConn(state)
         )
-
-        # Ensure no stale backfill_fts5 mock from a previous test affects this run
-        monkeypatch.delitem(sys.modules, "tools.memory.backfill_fts5", raising=False)
 
         args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
@@ -1321,10 +1305,11 @@ class TestCmdDoctorFix:
         """--json without --fix should still include fixes: [] in output."""
         project = self._make_memory_project(tmp_path)
 
-        import types
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 10
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
+        import gaia.store.writer as _writer_mod
+        state = {"indexed": 10, "total": 10}
+        monkeypatch.setattr(
+            _writer_mod, "_connect", lambda *a, **k: _FakeGaiaConn(state)
+        )
 
         args = SimpleNamespace(json=True, fix=False, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
@@ -1345,13 +1330,13 @@ class TestCmdDoctorFix:
         data.pop("agent", None)
         settings_path.write_text(json.dumps(data))
 
-        # Avoid spurious FTS5 fix triggering -- pre-create search.db and stub count
-        import types
-        em_dir = project / ".claude" / "project-context" / "episodic-memory"
-        (em_dir / "search.db").write_bytes(b"fake db")
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 10
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
+        # Keep the FTS5 checks quiet so the assertion isolates the agent fix:
+        # a fully-indexed fake episodes_fts means no backfill fix is added.
+        import gaia.store.writer as _writer_mod
+        state = {"indexed": 10, "total": 10}
+        monkeypatch.setattr(
+            _writer_mod, "_connect", lambda *a, **k: _FakeGaiaConn(state)
+        )
 
         # Pre-condition: check_identity flags "No agent field"
         pre_check = doctor_mod.check_identity(project)
@@ -1387,13 +1372,12 @@ class TestCmdDoctorFix:
         data["env"]["EXTRA_VAR"] = "kept"
         settings_path.write_text(json.dumps(data))
 
-        # Stub FTS5 to avoid noise
-        import types
-        em_dir = project / ".claude" / "project-context" / "episodic-memory"
-        (em_dir / "search.db").write_bytes(b"fake db")
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 10
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
+        # Keep the FTS5 checks quiet (fully-indexed fake) so only the agent fix runs.
+        import gaia.store.writer as _writer_mod
+        state = {"indexed": 10, "total": 10}
+        monkeypatch.setattr(
+            _writer_mod, "_connect", lambda *a, **k: _FakeGaiaConn(state)
+        )
 
         args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
@@ -1407,18 +1391,18 @@ class TestCmdDoctorFix:
         assert post["permissions"]["deny"]  # untouched
 
     def test_fix_failed_backfill_reported(self, tmp_path, monkeypatch, capsys):
-        """If backfill fails (rc != 0), fix status should be 'failed'."""
+        """If the FTS5 rebuild raises, the fix status should be 'failed'."""
         project = self._make_memory_project(tmp_path)
 
-        import types
-
-        fake_ss = types.ModuleType("tools.memory.search_store")
-        fake_ss.count = lambda: 3  # 30% — warning
-        monkeypatch.setitem(sys.modules, "tools.memory.search_store", fake_ss)
-
-        fake_bf = types.ModuleType("tools.memory.backfill_fts5")
-        fake_bf.main = lambda: 1  # simulate failure
-        monkeypatch.setitem(sys.modules, "tools.memory.backfill_fts5", fake_bf)
+        # Empty index (indexed=0) makes check_memory_fts5_db resolve to info,
+        # driving --fix to rebuild; the fake connection raises on the rebuild
+        # command so _apply_fts5_backfill reports "failed".
+        import gaia.store.writer as _writer_mod
+        state = {"indexed": 0, "total": 0}
+        monkeypatch.setattr(
+            _writer_mod, "_connect",
+            lambda *a, **k: _FakeGaiaConn(state, fail_rebuild=True),
+        )
 
         args = SimpleNamespace(json=True, fix=True, workspace=str(project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)

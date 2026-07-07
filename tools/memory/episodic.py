@@ -26,11 +26,6 @@ from typing import Dict, List, Any, Optional, Union
 import re
 from dataclasses import dataclass, asdict, field
 
-try:
-    from tools.memory.search_store import index_episode as _fts5_index
-except ImportError:
-    _fts5_index = None
-
 
 def _ensure_gaia_store_importable() -> None:
     """Ensure ``gaia.store.writer`` is importable from sys.path.

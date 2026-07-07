@@ -3,7 +3,7 @@
 #
 # Reemplaza:
 #   - scripts/seed_agent_permissions.py
-#   - tools/memory/backfill_fts5.py (sólo la parte de FTS5 mirrors del schema)
+#   - tools/memory/backfill_fts5.py (retirado; sólo cubría la parte de FTS5 mirrors del schema)
 #   - cualquier inicialización dispersa via Python de la DB
 #
 # Principios:
