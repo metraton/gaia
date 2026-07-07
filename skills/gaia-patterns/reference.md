@@ -1,6 +1,6 @@
 # Gaia Patterns -- Reference
 
-Package: `@jaguilar87/gaia` v5.0.0-rc1 | Node >=18 | Python >=3.9
+Package: `@jaguilar87/gaia` v5.1.1 | Node >=18 | Python >=3.9
 
 ---
 
