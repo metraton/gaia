@@ -13,6 +13,8 @@ gaia dev --workspace <TARGET> --mode link           # --mode link: symlink sourc
 ```
 `gaia dev` (`bin/cli/dev.py`) is what the manual sequences below collapse into. `--mode pack` runs `npm pack` (via the shared `_pack_helpers.pack_tarball` primitive) against the CURRENT source tree, installs the freshly packed tarball into `<TARGET>`'s `node_modules` (npm or pnpm, auto-detected from lockfile/workspace markers), then wires `.claude/` and bootstraps the DB by invoking the freshly-installed copy's own `gaia install --workspace <TARGET>` -- reflecting a real shippable version and exercising the exact machinery a real consumer would. `--mode link` symlinks `<TARGET>/node_modules/@jaguilar87/gaia` straight at this source tree (no pack, no install) and wires in-process, for the tightest possible loop when fidelity to the shipped tarball does not matter yet. Extra flags: `--keep-tarball`, `--pack-dest <dir>`, `--quiet`, `--verbose` -- see `gaia dev --help`.
 
+`gaia dev` is **T3** (it installs into a workspace) and will block for approval before it runs; the `gaia` launcher and `python3 <path>/bin/gaia dev` classify identically. It runs **no tests** (the fast loop stays cheap; tests are Layer 2/3 + CI) and prints a **restart notice** on success -- restart Claude Code before testing, since the harness pins hook commands at session start (see `SKILL.md` -> "Reloading a change").
+
 **What `gaia dev --mode pack` wraps** (for diagnosing which step failed, or working entirely by hand):
 
 *tarball (fidelity to what ships):*
@@ -65,13 +67,15 @@ Scanning is NOT part of install. `gaia scan` is a separate, on-demand flow that 
 
 **Revert:** reinstall a published version over the same workspace (`pnpm add @jaguilar87/gaia@rc` or `@latest`); the next install wins. `--fresh` is the more aggressive lever.
 
-**Picking up the change:** see `SKILL.md` -> "Reloading a change". npm/pnpm hook edits reload automatically; plugin-surface changes need `/reload-plugins`; a slash-command change needs a full restart.
+**Picking up the change:** see `SKILL.md` -> "Reloading a change". After `gaia dev` re-installs, **restart Claude Code** -- the harness pins hook commands at session start and does not hot-reload, so the open session keeps running the OLD hooks until restarted (`gaia dev` prints this notice). Plugin-surface skill/agent changes need `/reload-plugins`; a slash-command change needs a full restart.
 
 Under `--target local` the settings-preservation check is **skipped** (no pre-install snapshot of the real workspace is possible); the other checks run.
 
 ## Layer 2 runbook -- pre-release (confidence gate, both surfaces, local only)
 
 Zero network. Proves both install surfaces and reproduces CI before any tag exists.
+
+`gaia release check` (and `gaia release publish`) validate what will be **PUBLISHED**, which lives only in the SOURCE checkout (the pre-publish validator needs devDependencies, the pack/dry-run gates need `build/gaia.manifest.json`, `npm test` needs `tests/` -- all excluded from the slim installed copy). They resolve the canonical source via `resolve_source_root` and **fail loud** if no source checkout is reachable rather than silently validating the slim installed copy. Run them **from the source checkout** (`python3 <checkout>/bin/gaia release check`) or set `GAIA_SOURCE_ROOT` -- do not expect the bare launcher invoked from a consumer workspace to locate the source for you.
 
 **Primary path -- one command, all four gates, always run:**
 ```
@@ -184,6 +188,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 | `Permission denied` invoking a hook `.py` | Exec bit lost on cross-platform checkout | Hooks are invoked via `python3 <script>` (see `build-plugin.py` `generate_hooks_json`), so the exec bit should not matter; if it does, update to a build that uses the `python3 <script>` invoker. |
 | Agent says "no conozco Gaia" or "developer agent does not exist" | `settings.local.json` missing or mis-wired (npm surface) | Re-run `gaia install`. In plugin surface, `/reload-plugins`. |
 | Same approved command emits a fresh `approval_id` on retry | Not a bug -- single-use per sub-agent invocation is intentional | Re-approve. Each blocked command produces its own approval; there is no batch grant. See `orchestrator-present-approval/SKILL.md` -> Rule 3. |
+| A T3 release command (`git push`, `gh release`, `gaia dev`) is re-blocked right after you approved it | The grant signature binds to the **cwd** the command was approved in; an execution environment that resets cwd between calls (e.g. an agent harness) signs the retry from a different cwd, so it no longer matches the grant | Invoke T3 commands with **absolute paths** (`git -C <abs> push`, `gaia dev --workspace <abs>`, run `gh` from an explicit dir) so the signed command is cwd-independent and the grant matches on retry |
 
 ## Schema Migration Protocol
 

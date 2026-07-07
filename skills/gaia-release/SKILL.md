@@ -37,9 +37,13 @@ gaia dev --workspace <TARGET>
 
 Both modes always wire through `gaia install`'s own logic (no duplicated wiring code); `gaia dev --help` documents the full flag set (`--workspace`, `--mode pack|link`, `--keep-tarball`, `--pack-dest`, `--quiet`, `--verbose`).
 
+Two properties of `gaia dev` shape the flow:
+- **It is T3.** `gaia dev` installs into a workspace, so it is classified state-mutating (anchored in `COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES`, `mutative_verbs.py`) and **blocks for approval** before it runs -- expected, not a failure. The `gaia` launcher and `python3 <path>/bin/gaia dev` classify identically (the `bin/gaia` dispatcher re-dispatches through the classifier), so approval behaves the same from either entry point.
+- **It runs NO tests.** Install local is deliberately cheap -- edit, install, restart, poke. The L1 test subset runs in Layer 2 (`gaia release check`) and Layer 3 (`gaia release publish`) and in CI, never in this fast loop.
+
 **Then, without being asked:**
 1. Run `gaia-verify` in `live` mode against `<TARGET>`. If any check fails, jump to `reference.md` -> "Diagnostic guide".
-2. **Pick up the change.** How depends on the surface (see "Reloading a change" below) -- do not blanket-tell the user to restart.
+2. **Restart Claude Code to pick up the change.** `gaia dev` prints an explicit restart notice on success (both modes) because the harness pins each hook's command at session start and does NOT hot-reload -- the open session keeps running the OLD hooks until it is restarted, so a freshly installed fix is inert until then. Heed the notice; do not tell the user the change is live without it. (Plugin-surface skill/agent changes differ -- see "Reloading a change".)
 
 Installing into a *different* workspace or wiping install metadata first is the same intention with a different target -- see `reference.md` -> "Layer 1 runbook" for the `--workspace` and `--fresh` forms, and for the raw `pnpm pack` / `npm run gaia:install-local` sequence `gaia dev` wraps (useful when diagnosing a failure inside the wrapped steps). Always pass `--workspace` explicitly when invoking from inside the gaia repo: the self-referencing `node_modules/@jaguilar87/gaia/` entry tricks auto-detect (guarded by `is_gaia_repo_root()` in `validate-sandbox.sh`, but explicit is safer).
 
@@ -85,11 +89,11 @@ For the raw command forms `gaia release publish` wraps, the schema-migration loc
 
 ## Reloading a change
 
-A fresh install or an edit is invisible until Claude Code picks it up, and *how* it picks it up depends on the surface -- do not reflexively tell the user to restart:
+A fresh install or an edit is invisible until Claude Code picks it up, and *how* depends on what changed:
 
-- **npm / pnpm surface (symlinked source):** hook modules reload **automatically** via the file-watcher -- no `/reload-plugins`, no restart. Editing a hook under the symlinked package takes effect on the next tool call.
-- **plugin surface (cloned git repo in CC's plugin cache):** changes require **`/reload-plugins`** in-session to refresh skills, agents, hooks, and MCP servers. A source edit only reaches this surface after the marketplace re-pulls the git source (or a fresh local dry-run mount); the plugin cache holds the cloned repo at the installed ref, not your working tree.
-- **Both surfaces:** adding or renaming a **slash-command** needs a **full restart** -- `/reload-plugins` loads skills into context but does not rebuild the slash-command parser index.
+- **After `gaia dev` (a re-install) -- restart Claude Code.** The harness snapshots each hook's command (and the `settings.local.json` hook registration) at **session start** and does not hot-reload it, so an open session keeps running the OLD hooks until it is restarted -- a freshly installed fix is inert until then. `gaia dev` prints this restart notice on success (both modes); heed it. This is why the fast loop is *edit source -> `gaia dev` -> restart -> test*, not *edit -> test*.
+- **plugin surface (cloned git repo in CC's plugin cache):** skills, agents, hooks, and MCP servers refresh with **`/reload-plugins`** in-session. A source edit only reaches this surface after the marketplace re-pulls the git source (or a fresh local dry-run mount); the plugin cache holds the cloned repo at the installed ref, not your working tree.
+- **Any surface, slash-command change:** adding or renaming a **slash-command** needs a **full restart** -- `/reload-plugins` loads skills into context but does not rebuild the slash-command parser index.
 
 ## CI/CD
 
@@ -118,7 +122,8 @@ A fresh install or an edit is invisible until Claude Code picks it up, and *how*
 - **Rebase to reconcile a diverged remote** -- forces a tag move, hard-denied locally. Merge instead.
 - **Single-surface testing** -- a change can pass the npm sandbox and break the plugin mount, or vice versa. Layer 2 runs both surfaces for a reason.
 - **Stale root manifests** -- editing `build/gaia.manifest.json` or a hook entry without regenerating means the tarball ships a stale `hooks/hooks.json`. `prepack` regenerates at every `npm pack`, and `release:prepare` regenerates via `generate:plugin-root`; the dry-run packs fresh, so a stale manifest surfaces there.
-- **Blanket "restart Claude Code"** -- npm/pnpm hooks reload automatically; only the plugin surface needs `/reload-plugins`, and only a slash-command change needs a full restart. See "Reloading a change".
+- **Skipping the restart after `gaia dev`** -- the harness pins hook commands at session start, so a reinstalled fix is inert in the open session until Claude Code is restarted. `gaia dev` prints the notice for exactly this reason; do not report the change as live without a restart. (Plugin-surface skill/agent changes take `/reload-plugins`; a slash-command change takes a full restart -- see "Reloading a change".)
+- **Running tests in the install-local loop** -- Layer 1 (`gaia dev`) is deliberately cheap and runs NO tests; the L1 suite belongs to `gaia release check` / `gaia release publish` and CI. Adding a test gate to the fast loop defeats its purpose.
 - **Assuming a `postinstall` ran** -- there is none. The DB is bootstrapped lazily on first `gaia` CLI use; under pnpm a lifecycle hook would never fire anyway. If the DB is missing, run any `gaia` command (or `gaia install`), not "re-run postinstall".
 - **Local npm publish** -- bypasses the pipeline's pack + validate + sandbox gate.
 - **Treating a green publish as a live local install** -- a publish updates the registry; it does NOT touch a workspace installed from a local `file:` tarball. Those workspaces keep running the pre-release dev-pack code until step (h) reinstalls them (`gaia dev --workspace <TARGET>`); `gaia doctor`'s Install provenance check surfaces which ones are stale. Confusing "published" with "running locally" is exactly how a fixed release keeps exhibiting the old bug in a local workspace.
