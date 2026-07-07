@@ -71,6 +71,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -80,7 +81,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-# bin/cli/release.py -> bin/cli -> bin -> gaia/ (this source tree's root)
+# bin/cli/release.py -> bin/cli -> bin -> gaia/ (the tree THIS module lives in).
+# NOTE: when `bin/gaia` is invoked via the installed launcher, __file__ resolves
+# to the slim installed copy under node_modules -- NOT the source checkout. That
+# copy lacks the dev-only files a release gate must validate (build/gaia.manifest.json,
+# tests/, devDependencies). `release check`/`publish` therefore resolve the
+# canonical SOURCE via `resolve_source_root()` below, not this raw path.
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 if str(_PACKAGE_ROOT) not in sys.path:
@@ -132,6 +138,88 @@ def _run(cmd: list[str], *, cwd: Path, timeout: int) -> tuple[int | None, str, s
         return result.returncode, (result.stdout or ""), (result.stderr or "")
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, "", str(exc)
+
+
+# ---------------------------------------------------------------------------
+# Canonical source-checkout resolution
+# ---------------------------------------------------------------------------
+# `gaia release check`/`publish` validate what will be PUBLISHED. What ships
+# lives ONLY in the source checkout: the pre-publish validator needs
+# devDependencies (chalk), the plugin-dryrun/pack steps need
+# build/gaia.manifest.json, and `npm test` needs tests/. The npm-packed
+# install copy is slim -- it excludes all three -- so validating it is
+# meaningless and fails spuriously (4/4). These commands therefore ALWAYS
+# resolve the canonical source tree, independent of which copy of `bin/gaia`
+# the launcher invoked. When source cannot be located we FAIL LOUDLY rather
+# than silently validate the slim copy.
+
+def _is_source_checkout(path: Path) -> bool:
+    """True when *path* is a Gaia SOURCE checkout, not a slim install copy.
+
+    Anchored on the exact dev-only artifacts the npm pack excludes and the
+    release gates require: the plugin manifest, the test suite, and a
+    package.json. The slim installed copy lacks the first two, so it correctly
+    fails this predicate.
+    """
+    return (
+        (path / "build" / "gaia.manifest.json").is_file()
+        and (path / "tests").is_dir()
+        and (path / "package.json").is_file()
+    )
+
+
+def _git_toplevel(start: Path) -> Path | None:
+    """Return the git worktree root containing *start*, or None."""
+    rc, out, _ = _run(
+        ["git", "-C", str(start), "rev-parse", "--show-toplevel"],
+        cwd=start,
+        timeout=10,
+    )
+    if rc == 0 and out.strip():
+        return Path(out.strip()).resolve()
+    return None
+
+
+def resolve_source_root() -> tuple[Path | None, str | None]:
+    """Resolve the canonical Gaia SOURCE checkout for release operations.
+
+    Order (first hit wins):
+      1. GAIA_SOURCE_ROOT env override -- explicit escape hatch for CI / a
+         checkout in a non-standard location. Validated before use.
+      2. The executing copy itself, when it IS a source checkout -- this is the
+         `python3 <checkout>/bin/gaia release check` path (the common developer
+         invocation), where __file__ already lands inside the source tree.
+      3. The git worktree root of the executing copy, when that root is a source
+         checkout.
+
+    Returns (root, None) on success, or (None, error) when no source checkout is
+    reachable -- the caller surfaces the error and refuses to validate the slim
+    installed copy.
+    """
+    env = os.environ.get("GAIA_SOURCE_ROOT")
+    if env:
+        cand = Path(env).expanduser().resolve()
+        if _is_source_checkout(cand):
+            return cand, None
+        return None, (
+            f"GAIA_SOURCE_ROOT={cand} is not a Gaia source checkout "
+            f"(missing build/gaia.manifest.json or tests/)."
+        )
+
+    if _is_source_checkout(_PACKAGE_ROOT):
+        return _PACKAGE_ROOT, None
+
+    top = _git_toplevel(_PACKAGE_ROOT)
+    if top is not None and _is_source_checkout(top):
+        return top, None
+
+    return None, (
+        "no Gaia source checkout found. `release check`/`publish` validate what "
+        "will be PUBLISHED, which lives only in the source tree (the installed "
+        "package is a slim copy without build/gaia.manifest.json or tests/). "
+        "Run from the source checkout, e.g. "
+        "`python3 <checkout>/bin/gaia release check`, or set GAIA_SOURCE_ROOT."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -662,7 +750,12 @@ def cmd_release_check(args: argparse.Namespace) -> int:
     functional = bool(getattr(args, "functional", False))
     quiet = bool(getattr(args, "quiet", False))
 
-    results = run_release_check(_PACKAGE_ROOT, functional=functional)
+    root, err = resolve_source_root()
+    if err:
+        print(f"gaia release check: {err}", file=sys.stderr)
+        return 1
+
+    results = run_release_check(root, functional=functional)
     _report(results, quiet=quiet)
 
     return 1 if any(r["status"] == "FAIL" for r in results) else 0
@@ -681,7 +774,12 @@ def cmd_release_publish(args: argparse.Namespace) -> int:
     dry_run = bool(getattr(args, "dry_run", False))
     quiet = bool(getattr(args, "quiet", False))
 
-    version, err = resolve_publish_version(_PACKAGE_ROOT, version_arg)
+    root, src_err = resolve_source_root()
+    if src_err:
+        print(f"gaia release publish: {src_err}", file=sys.stderr)
+        return 1
+
+    version, err = resolve_publish_version(root, version_arg)
     if err:
         print(f"gaia release publish: {err}", file=sys.stderr)
         return 1
@@ -690,7 +788,7 @@ def cmd_release_publish(args: argparse.Namespace) -> int:
         _report_publish_plan(version, build_publish_plan(version), quiet=quiet)
         return 0
 
-    results = run_release_publish(_PACKAGE_ROOT, version)
+    results = run_release_publish(root, version)
     _report(results, quiet=quiet, title=f"gaia release publish -- Layer 3 trigger sequence (v{version})")
 
     return 1 if any(r["status"] == "FAIL" for r in results) else 0

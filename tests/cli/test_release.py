@@ -49,6 +49,8 @@ from cli.release import (  # noqa: E402
     run_release_check,
     run_release_publish,
     resolve_publish_version,
+    resolve_source_root,
+    _is_source_checkout,
     build_publish_plan,
     step_release_prepare,
     step_git_commit,
@@ -618,6 +620,128 @@ class TestResolvePublishVersion(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# resolve_source_root -- release check/publish ALWAYS validate the source tree,
+# never the slim installed copy, regardless of which bin/gaia copy was invoked.
+# ---------------------------------------------------------------------------
+
+class TestIsSourceCheckout(unittest.TestCase):
+    def _make_source(self, tmp: str) -> Path:
+        root = Path(tmp)
+        (root / "build").mkdir()
+        (root / "build" / "gaia.manifest.json").write_text("{}")
+        (root / "tests").mkdir()
+        (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}')
+        return root
+
+    def test_true_for_full_source_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(_is_source_checkout(self._make_source(tmp)))
+
+    def test_false_for_slim_install_copy_missing_manifest_and_tests(self):
+        # A slim npm-packed copy has package.json but neither build/gaia.manifest.json
+        # nor tests/ -- exactly the copy that produced the 4/4 spurious failures.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}')
+            self.assertFalse(_is_source_checkout(root))
+
+    def test_false_when_only_manifest_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "build").mkdir()
+            (root / "build" / "gaia.manifest.json").write_text("{}")
+            (root / "package.json").write_text("{}")
+            self.assertFalse(_is_source_checkout(root))
+
+
+class TestResolveSourceRoot(unittest.TestCase):
+    def _make_source(self, tmp: str) -> Path:
+        root = Path(tmp)
+        (root / "build").mkdir()
+        (root / "build" / "gaia.manifest.json").write_text("{}")
+        (root / "tests").mkdir()
+        (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}')
+        return root
+
+    def test_env_override_wins_when_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._make_source(tmp)
+            with patch.dict(os.environ, {"GAIA_SOURCE_ROOT": str(src)}):
+                root, err = resolve_source_root()
+        self.assertIsNone(err)
+        self.assertEqual(root, src.resolve())
+
+    def test_env_override_invalid_returns_error_not_fallthrough(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # env points at a non-source dir -> explicit error, no silent fallback.
+            with patch.dict(os.environ, {"GAIA_SOURCE_ROOT": tmp}):
+                root, err = resolve_source_root()
+        self.assertIsNone(root)
+        self.assertIn("not a Gaia source checkout", err)
+
+    def test_uses_executing_copy_when_it_is_a_source_checkout(self):
+        # The `python3 <checkout>/bin/gaia release check` path: _PACKAGE_ROOT is
+        # itself the source tree.
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._make_source(tmp)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("GAIA_SOURCE_ROOT", None)
+                with patch("cli.release._PACKAGE_ROOT", src):
+                    root, err = resolve_source_root()
+        self.assertIsNone(err)
+        self.assertEqual(root, src)
+
+    def test_falls_back_to_git_toplevel_when_executing_copy_is_slim(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = self._make_source(tmp)
+            slim = Path(tmp) / "node_modules" / "gaia"
+            slim.mkdir(parents=True)
+            (slim / "package.json").write_text("{}")  # slim, not a source checkout
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("GAIA_SOURCE_ROOT", None)
+                with patch("cli.release._PACKAGE_ROOT", slim):
+                    with patch("cli.release._git_toplevel", return_value=src):
+                        root, err = resolve_source_root()
+        self.assertIsNone(err)
+        self.assertEqual(root, src)
+
+    def test_fails_loudly_when_no_source_reachable(self):
+        # Slim executing copy, no env override, git finds nothing -> error, and
+        # crucially it does NOT return the slim copy.
+        with tempfile.TemporaryDirectory() as tmp:
+            slim = Path(tmp)
+            (slim / "package.json").write_text("{}")
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop("GAIA_SOURCE_ROOT", None)
+                with patch("cli.release._PACKAGE_ROOT", slim):
+                    with patch("cli.release._git_toplevel", return_value=None):
+                        root, err = resolve_source_root()
+        self.assertIsNone(root)
+        self.assertIn("no Gaia source checkout found", err)
+
+    def test_cmd_release_check_refuses_slim_copy_without_running_gates(self):
+        # cmd_release_check must surface the source-resolution error and never
+        # invoke the gates against a slim copy.
+        args = argparse.Namespace(functional=False, quiet=True)
+        with patch("cli.release.resolve_source_root", return_value=(None, "no Gaia source checkout found. ...")):
+            with patch("cli.release.run_release_check") as mock_run:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_release_check(args)
+        self.assertEqual(rc, 1)
+        mock_run.assert_not_called()
+
+    def test_cmd_release_check_passes_resolved_source_to_gates(self):
+        args = argparse.Namespace(functional=False, quiet=True)
+        sentinel = Path("/tmp/canonical-source")
+        with patch("cli.release.resolve_source_root", return_value=(sentinel, None)):
+            with patch("cli.release.run_release_check", return_value=[]) as mock_run:
+                with redirect_stdout(io.StringIO()):
+                    cmd_release_check(args)
+        mock_run.assert_called_once()
+        self.assertEqual(mock_run.call_args.args[0], sentinel)
+
+
+# ---------------------------------------------------------------------------
 # build_publish_plan -- the --dry-run preview (AC-3)
 # ---------------------------------------------------------------------------
 
@@ -929,7 +1053,9 @@ class TestCmdReleasePublish(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "package.json").write_text(json.dumps({"version": "5.0.5"}))
-            with patch("cli.release._PACKAGE_ROOT", root), \
+            # publish resolves the canonical source first, then reads the
+            # version from it -- point source resolution at the tempdir.
+            with patch("cli.release.resolve_source_root", return_value=(root, None)), \
                  patch("cli.release.run_release_publish") as mock_run:
                 with redirect_stdout(io.StringIO()) as out:
                     rc = cmd_release_publish(args)
@@ -945,7 +1071,7 @@ class TestCmdReleasePublish(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "package.json").write_text(json.dumps({"version": "5.0.5"}))
-            with patch("cli.release._PACKAGE_ROOT", root):
+            with patch("cli.release.resolve_source_root", return_value=(root, None)):
                 with redirect_stdout(io.StringIO()):
                     rc = cmd_release_publish(args)
         self.assertEqual(rc, 0)
@@ -1095,6 +1221,30 @@ class TestGaiaEntrypointVersionDestCollision(unittest.TestCase):
             msg=f"stdout: {result.stdout}\nstderr: {result.stderr}",
         )
         self.assertIn(pkg_version, result.stdout)
+
+
+# ---------------------------------------------------------------------------
+# `gaia release sync-local` was REMOVED (the provenance intelligence moved to
+# `gaia doctor`'s "Install provenance" check). Guard against reintroduction.
+# ---------------------------------------------------------------------------
+
+class TestSyncLocalRemoved(unittest.TestCase):
+    def test_no_sync_local_subparser(self):
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["release", "sync-local", "--dry-run"])
+
+    def test_sync_local_symbols_are_gone(self):
+        self.assertFalse(hasattr(release_mod, "cmd_release_sync_local"))
+        self.assertFalse(hasattr(release_mod, "enumerate_dev_pack_workspaces"))
+
+    def test_release_default_usage_omits_sync_local(self):
+        args = argparse.Namespace()
+        with redirect_stdout(io.StringIO()) as out:
+            cmd_release(args)
+        self.assertNotIn("sync-local", out.getvalue())
 
 
 if __name__ == "__main__":
