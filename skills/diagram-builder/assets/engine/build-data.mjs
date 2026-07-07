@@ -39,6 +39,10 @@ const pages = manifest.pages
 const doc = {
   title: manifest.title,
   subtitle: manifest.subtitle,
+  // optional — passthrough only, no default here; the seed document.yaml
+  // pre-populates it. Absent from the manifest -> absent on window.__DOC__ ->
+  // engine.js's `if (barVer && doc.version)` guard skips rendering cleanly.
+  version: manifest.version,
   pages
 };
 

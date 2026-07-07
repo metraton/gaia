@@ -297,11 +297,14 @@
           const cell = buildZone(child, detailRegistry);
           cell.classList.add('env-cell');
           cell.style.setProperty('--span', String(span));
-          // flex-basis = the child's own content width; flex-grow = span, so a
-          // band splits the leftover by span while each cell keeps room for its
+          // Intrinsic width = the child's own content width; flex-grow = span, so
+          // a band splits the leftover by span while each cell keeps room for its
           // real columns (deterministic — no reliance on grid min-content
-          // propagating through the flex chain).
-          cell.style.flexBasis = zoneContentWidth(child, t) + 'px';
+          // propagating through the flex chain). Written to a custom property
+          // (not inline flex-basis) so the mos-stacked reset in index.html can
+          // still win the cascade when the diagram collapses — see the
+          // "CASCADE FIX" comment there for why an inline flex-basis broke it.
+          cell.style.setProperty('--intrinsic-w', zoneContentWidth(child, t) + 'px');
           rowEl.appendChild(cell);
         }
         body.appendChild(rowEl);
@@ -322,7 +325,9 @@
           colW = Math.max(colW, zoneContentWidth(child, t));
           col.appendChild(buildZone(child, detailRegistry));
         });
-        if (col.children.length) { col.style.flexBasis = colW + 'px'; body.appendChild(col); }
+        // See the --intrinsic-w note above buildEnvelope's BANDED branch: a
+        // custom property, not inline flex-basis, so mos-stacked can override it.
+        if (col.children.length) { col.style.setProperty('--intrinsic-w', colW + 'px'); body.appendChild(col); }
       });
       zone.appendChild(body);
       return zone;
@@ -336,10 +341,13 @@
       if (!child) { console.warn('[engine] envelope references unknown section:', childId); return; }
       consumed.add(childId);
       const childZone = buildZone(child, detailRegistry);
-      if (idx === 0) { childZone.classList.add('env-main'); childZone.style.flexBasis = zoneContentWidth(child, t) + 'px'; body.appendChild(childZone); }
+      // Same --intrinsic-w custom-property pattern as the other two envelope
+      // modes above (not inline flex-basis) — see the CASCADE FIX comment in
+      // index.html for why.
+      if (idx === 0) { childZone.classList.add('env-main'); childZone.style.setProperty('--intrinsic-w', zoneContentWidth(child, t) + 'px'); body.appendChild(childZone); }
       else { sideW = Math.max(sideW, zoneContentWidth(child, t)); sideGroup.appendChild(childZone); }
     });
-    if (sideGroup.children.length) { sideGroup.style.flexBasis = sideW + 'px'; body.appendChild(sideGroup); }
+    if (sideGroup.children.length) { sideGroup.style.setProperty('--intrinsic-w', sideW + 'px'); body.appendChild(sideGroup); }
     zone.appendChild(body);
     return zone;
   }
@@ -707,14 +715,92 @@
 
     chips.forEach(c => c.addEventListener('click', () => setFlow(c.dataset.flow)));
     nodes.forEach(n => n.addEventListener('click', () => showDetail(n)));
+
+    // ── grab & pan (drag-to-scroll the canvas) ──
+    // .canvas is the overflow:auto scroll container (index.html). Wheel/
+    // trackpad already scroll it; this adds click-and-drag panning on top,
+    // scoped to THIS act's canvas only — chips (in .actbar, outside .canvas)
+    // and the panel (a sibling of .canvas on .stage, not inside it) are
+    // untouched, and nothing here calls layoutMosaic or observes size, so the
+    // ResizeObserver-driven masonry pass is unaffected. Touch already pans
+    // natively via the browser's own overflow scrolling and is left alone.
+    const canvas = stage.querySelector('.canvas');
+    if (canvas) {
+      let dragging = false, moved = false, captured = false;
+      let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+      let suppressClick = false;
+      // Configurable via --pan-drag-threshold (index.html), same pattern as
+      // the --bp-tablet / --bp-phone breakpoints read in layoutMosaic below —
+      // px of pointer travel below which a pointerdown→up is a CLICK (opens
+      // the box's detail panel) rather than a PAN.
+      const DRAG_THRESHOLD = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pan-drag-threshold')) || 5;
+
+      // Disambiguation: showDetail is bound directly on each box (above) and
+      // fires during the click event's bubble/target phase. This listener is
+      // registered on .canvas in the CAPTURE phase, so it runs first (capture
+      // travels root→target, before the event reaches the box); stopping
+      // propagation there prevents the box's own click handler from ever
+      // firing for a drag-release, without touching the box wiring itself.
+      canvas.addEventListener('click', e => {
+        if (suppressClick) { suppressClick = false; e.stopPropagation(); }
+      }, true);
+
+      canvas.addEventListener('pointerdown', e => {
+        if (e.button !== 0) return; // left button / touch / pen primary only
+        dragging = true; moved = false;
+        startX = e.clientX; startY = e.clientY;
+        startLeft = canvas.scrollLeft; startTop = canvas.scrollTop;
+        // NOTE: pointer capture is deliberately NOT taken here. Capturing on
+        // pointerdown redirects the subsequent `click` event to the canvas,
+        // which starves each box's own click handler and breaks the detail
+        // panel on a plain click. Capture is taken lazily, only once real drag
+        // motion is detected (below) — a pure click never captures, so it
+        // reaches the box normally.
+      });
+
+      canvas.addEventListener('pointermove', e => {
+        if (!dragging) return;
+        const dx = e.clientX - startX, dy = e.clientY - startY;
+        if (!moved && Math.hypot(dx, dy) >= DRAG_THRESHOLD) {
+          moved = true;
+          canvas.classList.add('dragging');
+          // Now that this is a genuine drag, capture the pointer so panning
+          // keeps tracking even if the cursor leaves the canvas. Safe here: a
+          // drag always ends by suppressing the click, so redirecting the
+          // click target to the canvas no longer starves any box handler.
+          try { canvas.setPointerCapture(e.pointerId); captured = true; } catch (_) { /* ignore */ }
+        }
+        if (moved) {
+          canvas.scrollLeft = startLeft - dx;
+          canvas.scrollTop = startTop - dy;
+        }
+      });
+
+      const endDrag = e => {
+        if (!dragging) return;
+        dragging = false;
+        if (moved) suppressClick = true; // this was a pan, not a click on a box
+        canvas.classList.remove('dragging');
+        moved = false;
+        if (captured && e && e.pointerId != null) { try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ } }
+        captured = false;
+      };
+      canvas.addEventListener('pointerup', endDrag);
+      canvas.addEventListener('pointercancel', endDrag);
+    }
   }
 
   // ── mount ──
   const bar = document.querySelector('.bar');
   const barTitle = document.querySelector('.bar h1');
   const barSub = document.querySelector('.bar .sub');
+  const barVer = document.querySelector('.bar .ver');
   if (barTitle && doc.title) barTitle.textContent = doc.title;
   if (barSub && doc.subtitle) barSub.textContent = doc.subtitle;
+  // `version` is optional (data/document.yaml) — the node stays empty (and
+  // :empty-collapsed, see index.html) when it is absent, so an older seed
+  // with no version degrades with no visible change.
+  if (barVer && doc.version) barVer.textContent = 'v' + doc.version;
   if (document.title && doc.title) document.title = doc.title;
 
   const deck = document.getElementById('deck');

@@ -68,6 +68,14 @@
     flex:0 0 auto; white-space:nowrap; }
   .bar h1 { font-family:var(--mono); font-weight:700; font-size:23px; line-height:1.25; color:var(--ink); letter-spacing:-0.01em; }
   .bar .sub { font-family:var(--mono); font-size:12px; color:var(--muted); letter-spacing:0.05em; line-height:1.4; margin-top:3px; }
+  /* deck version — set by data/document.yaml `version` (optional) and rendered
+     by engine.js after the subtitle; same mono/muted styling as .sub, one size
+     down and dimmer so it reads as a footnote rather than competing with it.
+     The node stays in the markup empty when `version` is omitted; :empty
+     collapses it to display:none with no JS branching needed on the HTML
+     side — engine.js only ever writes text, never toggles visibility. */
+  .bar .ver { font-family:var(--mono); font-size:11px; color:var(--muted); letter-spacing:0.05em; line-height:1.4; margin-top:2px; opacity:0.65; }
+  .bar .ver:empty { display:none; }
   .spacer { flex:1; }
 
   /* page navigator — [ ‹ ] [ TITLE 1 ] [ TITLE 2 ] … [ › ]. Page names are
@@ -122,7 +130,12 @@
   :root { --frame-v:28px; --frame-h:40px; --frame-top:35px;
     /* coarse responsive breakpoints (configurable; read by engine.js). Above
        --bp-tablet the author's columns are honored with no width collapse. */
-    --bp-tablet:768px; --bp-phone:480px; }
+    --bp-tablet:768px; --bp-phone:480px;
+    /* grab & pan (configurable; read by engine.js): pointer travel, in px,
+       below which a pointerdown→up on the canvas is a CLICK (opens a box's
+       detail panel) rather than a PAN. Raise it on a project with jitter-prone
+       input devices; lower it for a snappier drag threshold. */
+    --pan-drag-threshold:5px; }
 
   /* stage content width — derived from tokens, not hardcoded, so it tracks
      --box-min / spacing changes instead of drifting out of sync:
@@ -178,7 +191,14 @@
 
   /* ═══════════════ HTML + CSS-Grid layout (the one and only engine) ═══════════════ */
   .canvas { position:absolute; top:var(--frame-top); right:var(--frame-h); bottom:var(--frame-v); left:var(--frame-h);
-    display:flex; align-items:flex-start; justify-content:center; gap:var(--s-4); padding:var(--s-3); overflow:auto; }
+    display:flex; align-items:flex-start; justify-content:center; gap:var(--s-4); padding:var(--s-3); overflow:auto;
+    cursor:grab; }
+  /* grab & pan (wiring in engine.js): the canvas itself shows an open-hand
+     cursor at rest; while actively dragging it flips to the closed-hand and
+     suppresses text selection. `.box` keeps its own `cursor:pointer` (more
+     specific, declared below) so boxes still read as clickable. */
+  .canvas.dragging { cursor:grabbing; }
+  .canvas.dragging, .canvas.dragging * { user-select:none; }
   /* positional wrappers — generic (pos-left / pos-right are the narrow
      side columns; pos-center / .env flow as the wide middle). CSS knows the
      positions declared in the data, never any domain-specific zone names. */
@@ -279,9 +299,20 @@
   .env-body { display:flex; gap:var(--s-2); align-items:flex-start; min-width:min-content; }
   .env-body > .env-main { flex:1 1 auto; min-width:min-content; }
   /* all non-main sub-zones live in ONE narrow lateral column that stacks them
-     vertically — the envelope is always main + side-stack, never N columns. */
+     vertically — the envelope is always main + side-stack, never N columns.
+     BIG-EMPTY-RECTANGLE FIX: this used to carry `align-self:stretch`, which
+     forces the group's cross-size (HEIGHT, since .env-body is a row-direction
+     flex container) to match its tall row-mate (env-main). The group's own
+     child is a `.zone` in a column flex with no flex-grow, so it never grows
+     to fill that forced height — the leftover became a large empty rectangle
+     below the last box, at ANY width (confirmed: reproduces even on a wide
+     desktop viewport where env-main is a 4-row grid and env-side-group holds
+     a single short zone). `align-items:flex-start` on .env-body (the line
+     above) is already the correct cross-axis rule for every child; the
+     side-group no longer overrides it, so it sizes to its own content like
+     env-main does — no reserved-but-unfilled height. */
   .env-body > .env-side-group { flex:0 1 clamp(var(--side-col-w), 18%, 360px); min-width:min-content;
-    display:flex; flex-direction:column; gap:var(--s-2); align-self:stretch; }
+    display:flex; flex-direction:column; gap:var(--s-2); }
   .env-side-group > .zone { width:100%; }
 
   /* envelope COLUMNS grid: N sibling columns, each stacking its
@@ -302,6 +333,23 @@
   .env-body.env-rows { flex-direction:column; align-items:stretch; }
   .env-body.env-rows > .env-row { display:flex; gap:var(--s-2); align-items:flex-start; min-width:min-content; }
   .env-body.env-rows > .env-row > .env-cell { flex:var(--span,1) var(--span,1) 0; min-width:min-content; }
+
+  /* CASCADE FIX (deck-wide vertical-gap bug): engine.js used to write each
+     child's analytic content width as an INLINE flex-basis on these same
+     elements. An inline style always wins the cascade over a stylesheet rule,
+     so at ≤768px — when .mos-stacked flips these same containers to
+     flex-direction:column below — that leftover inline WIDTH was read as a
+     HEIGHT, leaving a tall empty gap under short content. Fix: engine.js now
+     writes the width into the --intrinsic-w custom property instead of
+     inline flex-basis; these rules apply it as flex-basis at the SAME
+     specificity as (and positioned in source AFTER) each mode's own shorthand
+     above, so they win on desktop. The .mos-stacked reset below has strictly
+     HIGHER specificity (an extra ancestor class) regardless of source order,
+     so it always wins there and flex-basis correctly resolves to auto/0
+     (content height) on collapse — no gap. */
+  .env-body > .env-main, .env-body > .env-side-group { flex-basis: var(--intrinsic-w, auto); }
+  .env-body.env-grid > .env-col { flex-basis: var(--intrinsic-w, auto); }
+  .env-body.env-rows > .env-row > .env-cell { flex-basis: var(--intrinsic-w, 0); }
 
   /* Envelope internals collapse to a column ONLY when the whole diagram is
      stacked (coarse responsive, driven by engine.js via .mos-stacked at
@@ -461,6 +509,7 @@
   <div>
     <h1>Architecture Overview</h1>
     <div class="sub">Data-driven architecture diagram</div>
+    <div class="ver"></div>
   </div>
   <div class="spacer"></div>
   <div class="nav-cluster">

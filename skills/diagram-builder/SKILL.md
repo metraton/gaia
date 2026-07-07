@@ -145,6 +145,16 @@ Each mode's step-by-step procedure is in `reference.md`:
 4. **New section/zone** — add a section and place it in the mosaic.
 5. **Add/edit components** — populate a section or subsection.
 
+## Versioning
+
+The diagram has a `version` (`document.version`, optional). Bump it when you
+make a significant change — a new section, a reworked layout, a page added or
+removed — so a viewer glancing at the header can tell what changed or which
+cut of the deck they are looking at. If a pipeline provides the version
+(injecting it at build or deploy time), let the pipeline own it instead of
+hand-editing the seed. It renders in the header, after the subtitle; omit the
+field and nothing shows.
+
 ## Where the rest lives
 
 - `GLOSSARY.md` — the canonical dialect terms + the `status` and `variant`

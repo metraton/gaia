@@ -160,6 +160,7 @@ makes the engine reusable across diagrams. `js-yaml` (build) and `playwright`
 ```yaml
 title: "Deck title"          # required
 subtitle: "…"                # optional
+version: "0.1.0"              # optional — free-form (semver recommended)
 pages:
   - id: current-state        # required — must match page.id in the file
     name: "Current state"    # required — visible label (rename without breaking refs)
@@ -173,6 +174,15 @@ whether they show. `name` / `order` / `visible` live **only** here — the page
 file must not repeat them. `page.id` lives in both (as a cross-reference the
 build validates). The build discards `visible: false` pages, sorts the rest by
 `order`, then merges each file.
+
+`version` is a plain passthrough: `build-data.mjs` copies it onto
+`window.__DOC__.version` with no default and no validation, and `engine.js`
+renders it in the header — after the subtitle, in the same mono/muted style,
+one size down — only when the field is present (`if (barVer && doc.version)`).
+Omit it and the header shows nothing where it would go; the `.ver` node stays
+empty and `:empty` collapses it in index.html, so an older deck with no
+`version` degrades with zero visible change. See the versioning rule in
+`SKILL.md` for when to bump it.
 
 ## The page file (`data/pages/<id>.yaml`)
 

@@ -39,6 +39,7 @@ these terms.
 | `note` | `component.note` | A warning-style note (`⚠ …`) shown separately in the panel. |
 | `steps` | `filter.steps` | The flow explanation shown when a filter chip is clicked. |
 | `kicker` | presentation | The small uppercase eyebrow that renders a component's `status`. `status` is the data; `kicker` is the rendered role. |
+| `version` | `document.version` | Optional free-form string on the manifest (semver recommended, e.g. `"0.1.0"`). Rendered in the header after the subtitle; omitted entirely when absent. See the versioning rule in `SKILL.md`. |
 
 ## The `status` enum (the kicker badge)
 

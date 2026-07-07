@@ -1,10 +1,9 @@
 // GENERATED FILE — do not edit by hand.
 // Produced by build-data.mjs from data/document.yaml + data/pages/*.yaml.
-// Committed so the deck renders under file:// with zero tooling; regenerate
-// with `npm run build` after editing any YAML under data/.
 window.__DOC__ = {
   "title": "Diagram Deck",
   "subtitle": "A portable, data-driven diagram — edit data/ and run npm run build",
+  "version": "0.1.0",
   "pages": [
     {
       "id": "overview",

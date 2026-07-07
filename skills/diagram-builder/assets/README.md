@@ -34,6 +34,10 @@ assets/
   override with `DIAGRAM_SHOTS_DIR`), not into the project — the repo stays clean.
 - **The dialect** (every field + the `status`/`variant` enums) is documented in
   the diagram-builder skill: `../GLOSSARY.md` and `../reference.md`.
+- **`document.yaml`'s optional `version`** renders in the header — bump it on a
+  meaningful change (see the versioning rule in `../SKILL.md`). The engine also
+  supports click-and-drag panning on the canvas (grab/grabbing cursor) as a
+  free interaction alongside wheel/trackpad scroll.
 
 ## Genericized from the reference artifact
 
