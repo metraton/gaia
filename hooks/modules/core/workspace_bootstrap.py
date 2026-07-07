@@ -9,26 +9,101 @@ Workaround: on first hook fire, create <workspace>/.claude/hooks as a symlink
 cache. This mirrors the pattern in bin/gaia-update.js updateSymlinks().
 """
 
+import json
 import logging
 import os
 import platform
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 
+def _read_pkg_version(pkg_root: Path) -> Optional[str]:
+    """Best-effort read of ``package.json`` ``version`` at *pkg_root*.
+
+    Returns the version string, or None on any error (missing file,
+    unreadable, no version field). Never raises.
+    """
+    try:
+        data = json.loads((pkg_root / "package.json").read_text(encoding="utf-8"))
+        v = data.get("version")
+        return v if isinstance(v, str) and v else None
+    except Exception:
+        return None
+
+
+def _version_tuple(v: Optional[str]) -> tuple:
+    """Coarse comparable tuple from a semver-ish string.
+
+    Compares on MAJOR.MINOR.PATCH only (prerelease/build metadata dropped),
+    which is enough to decide "is the installed package at least as new as
+    the executing copy". Unknown/unreadable versions sort lowest so a missing
+    version never wins the freshness comparison.
+    """
+    if not v:
+        return (-1,)
+    base = v.split("+", 1)[0].split("-", 1)[0]
+    out = []
+    for part in base.split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out) if out else (-1,)
+
+
+def _pick_fresher_hooks_dir(exec_hooks_dir: Path, nm_gaia: Path, nm_hooks: Path) -> Path:
+    """Return whichever hooks dir belongs to the fresher gaia package.
+
+    Prefers the top-level installed package (``nm_hooks``) when it exists and
+    its version is >= the executing copy's version; otherwise keeps the
+    executing copy (``exec_hooks_dir``). The executing copy's package root is
+    ``exec_hooks_dir.parent`` (``.../gaia/hooks`` -> ``.../gaia``). Never
+    raises; on any doubt it falls back to the executing copy, preserving the
+    prior behaviour.
+    """
+    try:
+        if not nm_hooks.exists():
+            return exec_hooks_dir
+        nm_ver = _version_tuple(_read_pkg_version(nm_gaia))
+        exec_ver = _version_tuple(_read_pkg_version(exec_hooks_dir.parent))
+        if nm_ver >= exec_ver:
+            return nm_hooks
+    except Exception:
+        pass
+    return exec_hooks_dir
+
+
 def ensure_workspace_hooks_link() -> None:
-    """Create or repair <workspace>/.claude/hooks → plugin cache hooks dir.
+    """Create or repair <workspace>/.claude/hooks → the FRESHEST gaia hooks dir.
 
     Never raises. All failures are logged as warnings so that a broken
     workspace layout never prevents the hook from running its real logic.
+
+    Freshness fix: the desired target is the top-level installed package's
+    hooks dir (``<workspace>/node_modules/@jaguilar87/gaia/hooks``) whenever
+    it is present and at least as new as the EXECUTING copy. The executing
+    copy (``__file__``'s hooks dir) can be an OLDER extraction -- e.g. a stale
+    pnpm virtual-store entry -- so anchoring the link to "wherever this file
+    runs from" pins the workspace to old code. Comparing package versions and
+    re-pointing at the fresher install is what lets a new install actually
+    reach the runtime.
     """
     try:
         # hooks/modules/core/workspace_bootstrap.py → up 3 levels = hooks/
+        # of the EXECUTING copy (may be a stale installed extraction).
         cache_hooks_dir = Path(__file__).resolve().parent.parent.parent
 
-        workspace_hooks_dir = Path.cwd() / ".claude" / "hooks"
+        workspace = Path.cwd()
+        workspace_hooks_dir = workspace / ".claude" / "hooks"
+
+        # Prefer the top-level installed package's hooks dir when it is at
+        # least as new as the executing copy -- this is the freshness anchor.
+        nm_gaia = workspace / "node_modules" / "@jaguilar87" / "gaia"
+        nm_hooks = nm_gaia / "hooks"
+        cache_hooks_dir = _pick_fresher_hooks_dir(cache_hooks_dir, nm_gaia, nm_hooks)
 
         # Case 1: real directory with files — npm install placed real files,
         # nothing to do. Check via lstat to avoid following symlinks.
@@ -53,7 +128,16 @@ def ensure_workspace_hooks_link() -> None:
                 current_target = Path(os.readlink(workspace_hooks_dir))
                 if not current_target.is_absolute():
                     current_target = (workspace_hooks_dir.parent / current_target).resolve()
-                if current_target == cache_hooks_dir and cache_hooks_dir.exists():
+                # Compare CANONICAL paths: the desired target may itself be a
+                # package-manager symlink (e.g. node_modules/@jaguilar87/gaia
+                # under pnpm) that resolves to the same real dir the current
+                # link already points at -- resolving both sides avoids a
+                # needless recreate while still catching a genuinely different
+                # (older) target.
+                if (
+                    cache_hooks_dir.exists()
+                    and current_target.resolve(strict=False) == cache_hooks_dir.resolve(strict=False)
+                ):
                     # Already correct — no-op.
                     return
             except OSError as exc:

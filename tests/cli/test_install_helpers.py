@@ -284,6 +284,57 @@ class TestManageSymlinks(unittest.TestCase):
             self.assertEqual(res["action"], "updated")
             self.assertFalse((workspace / ".claude" / "agents").exists())
 
+    def test_repoints_stale_but_existing_symlink_to_new_package(self):
+        # Freshness fix: a symlink pointing at an OLD package location that
+        # still exists on disk must be re-pointed at the desired package --
+        # previously it was classified "valid" and left stale, so a new
+        # install never reached the runtime (the .claude/hooks pin bug).
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            old_pkg = Path(tmp) / "old-pkg"
+            new_pkg = Path(tmp) / "new-pkg"
+            (old_pkg / "hooks").mkdir(parents=True)
+            (new_pkg / "hooks").mkdir(parents=True)
+            # Wire .claude/hooks at the OLD (but still existing) package.
+            (workspace / ".claude" / "hooks").symlink_to(old_pkg / "hooks")
+
+            res = helpers.manage_symlinks(workspace, plugin_root=new_pkg)
+
+            self.assertEqual(res["action"], "updated")
+            self.assertIn("hooks", " ".join(res["fixed"]))
+            self.assertEqual(
+                (workspace / ".claude" / "hooks").resolve(),
+                (new_pkg / "hooks").resolve(),
+            )
+
+    def test_symlink_is_stale_flags_divergent_existing_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            claude = Path(tmp) / ".claude"
+            claude.mkdir()
+            old_pkg = Path(tmp) / "old"
+            new_pkg = Path(tmp) / "new"
+            (old_pkg / "hooks").mkdir(parents=True)
+            (new_pkg / "hooks").mkdir(parents=True)
+            link = claude / "hooks"
+            link.symlink_to(old_pkg / "hooks")
+
+            stale, reason = helpers._symlink_is_stale(link, new_pkg)
+            self.assertTrue(stale)
+            self.assertIsNotNone(reason)
+
+    def test_symlink_is_stale_false_when_target_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            claude = Path(tmp) / ".claude"
+            claude.mkdir()
+            pkg = Path(tmp) / "pkg"
+            (pkg / "hooks").mkdir(parents=True)
+            link = claude / "hooks"
+            link.symlink_to(pkg / "hooks")
+
+            stale, _ = helpers._symlink_is_stale(link, pkg)
+            self.assertFalse(stale)
+
 
 # ---------------------------------------------------------------------------
 # register_plugin

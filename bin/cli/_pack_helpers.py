@@ -24,10 +24,32 @@ every `bin/cli/*.py` file but only registers modules that expose a
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
 from typing import Any
+
+
+def content_hash8(path: Path) -> str:
+    """Return the first 8 hex chars of the SHA-256 of *path*'s bytes.
+
+    Used to give a packed tarball a content-addressed filename
+    (``jaguilar87-gaia-<version>+<sha8>.tgz``) so a SAME-version repack with
+    changed content produces a NEW filename -> a NEW pnpm virtual-store key
+    (pnpm keys a ``file:`` dependency's store entry by the spec PATH, not by
+    content) -> a forced fresh extraction. Identical content yields an
+    identical hash, so an unchanged repack does not churn the store. The
+    tarball's INTERNAL ``package.json`` version is untouched -- only the
+    on-disk filename carries the suffix.
+
+    Streams the file in 64 KiB chunks; never raises for a readable file.
+    """
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()[:8]
 
 
 def pack_tarball(
@@ -132,4 +154,4 @@ def pack_tarball(
     }
 
 
-__all__ = ["pack_tarball"]
+__all__ = ["pack_tarball", "content_hash8"]

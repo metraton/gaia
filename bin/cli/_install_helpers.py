@@ -339,7 +339,24 @@ _SYMLINK_FILES = ["CHANGELOG.md"]
 
 
 def _symlink_is_stale(link: Path, plugin_root: Path) -> tuple[bool, str | None]:
-    """Return (stale, reason). Stale if the symlink target no longer exists."""
+    """Return (stale, reason).
+
+    A symlink is stale when EITHER:
+
+      * its target no longer exists (dangling), OR
+      * its resolved target no longer matches the DESIRED package location
+        (``plugin_root / link.name``) -- even when the old target still
+        exists.
+
+    The second case is the fix for the stale-symlink defect: a workspace
+    previously wired to an OLDER installed copy (e.g. a prior pnpm virtual-
+    store entry that is still on disk) must be re-pointed at the freshly
+    installed package. Without this, ``manage_symlinks`` classified a
+    valid-but-old link as "valid" and never repaired it, so a new install
+    never reached the runtime -- ``.claude/hooks`` (and agents/skills/...)
+    kept resolving to the old code. ``plugin_root`` was previously accepted
+    but unused; it is now the anchor for the desired target.
+    """
     try:
         raw = os.readlink(link)
     except OSError:
@@ -352,6 +369,21 @@ def _symlink_is_stale(link: Path, plugin_root: Path) -> tuple[bool, str | None]:
 
     if not target.exists():
         return True, f"target missing: {raw}"
+
+    # Desired target for this link: the same-named entry under the package
+    # root we are installing from. Compare CANONICAL paths so a link that
+    # already resolves to the desired package (possibly via an intermediate
+    # package-manager symlink) is left untouched, while one resolving to a
+    # different (older) location is repaired.
+    desired = plugin_root / link.name
+    try:
+        target_real = target.resolve(strict=False)
+        desired_real = desired.resolve(strict=False)
+    except OSError:
+        return False, None
+
+    if desired.exists() and target_real != desired_real:
+        return True, f"points to {target_real}, expected {desired_real}"
 
     return False, None
 
