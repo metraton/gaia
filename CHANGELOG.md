@@ -16,6 +16,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-session surfacing of pending approvals: the SessionStart `[ACTIONABLE]` pending-approvals block and the per-turn pending feed are removed. Pending approvals (24h TTL, unchanged) no longer surface outside the turn that produced them.
 - `consume_session_grants` mechanism, superseded by the consumed-at-match single-use grant model.
 
+## [5.1.2] - 2026-07-07
+
+### Added
+
+- `gaia doctor`: new install-provenance check that distinguishes a local working-tree install from an npm install, plus structural checks — component-naming (component name vs. its directory) and skill-cross-refs (dangling cross-references between skills).
+
+### Changed
+
+- `gaia dev` is now classified as T3 (state-mutating) and the `bin/gaia` dispatcher re-dispatches through the security classifier, giving launcher parity between the `gaia` launcher and `python3 <path>/bin/gaia` — the same command is classified identically no matter which entry point invokes it.
+- `resolve_source_root`: `gaia release check` and `gaia release publish` now validate the canonical source tree rather than the installed copy under `.claude/`, so release validation no longer inspects a stale installed artifact.
+- Docs: `security-tiers` and `gaia-release` updated for the new install flows.
+
+### Fixed
+
+- Dev-pack tarballs are now content-addressed, and stale-but-present symlinks are freshened/repointed on install. Previously a stale symlink left the installed copy diverged from source, so a local install was not reflected in the runtime; the install now repoints those symlinks so the running system matches the packed source.
+
+### Removed
+
+- `gaia release sync-local` subcommand, along with the workspace marker it relied on.
+
 ## [5.1.1] - 2026-07-06
 
 ## [5.1.0] - 2026-07-03
