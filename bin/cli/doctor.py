@@ -12,7 +12,10 @@ Checks (in order):
   45. schema-version     - gaia.db schema_version matches CLI expectation
   47. schema-ddl         - live CHECK constraints match schema.sql (ledger-vs-DDL)
   50. symlinks           - .claude/ symlinks resolve
+  52. component-naming   - skill/agent frontmatter name matches dir/file name
+  53. skill-cross-refs   - agent `skills:` refs resolve to skills/<name>/SKILL.md
   55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
+  57. install-provenance - local (file:) vs npm install; local freshness vs source
   60. identity           - orchestrator agent configured
   65. agent-routing      - surface-routing primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
@@ -899,6 +902,335 @@ def check_symlinks_freshness(project_root: Path) -> dict:
             "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the current package",
         )
     return _result(name, "pass", f"hooks at {target_ver} matches installed {installed_ver}")
+
+
+# Directory names skipped when scanning the source tree for its newest mtime:
+# heavy/generated trees that are irrelevant to whether the SOURCE the install
+# was packed from has changed. Keeps the freshness walk fast and deterministic.
+_PROVENANCE_SKIP_DIRS = frozenset({
+    "node_modules", ".git", "__pycache__", ".pytest_cache", ".tmp",
+    "dist", ".venv", "venv", ".mypy_cache", ".ruff_cache",
+})
+
+
+def _newest_source_mtime(source_root: Path) -> float:
+    """Return the newest mtime among source files, skipping heavy dirs.
+
+    Deterministic and offline (pure filesystem stat), bounded by pruning the
+    generated/vendored trees in ``_PROVENANCE_SKIP_DIRS`` and any dotdir so
+    ``gaia doctor`` stays fast. Returns 0.0 when the tree is unreadable.
+    """
+    newest = 0.0
+    try:
+        for dirpath, dirnames, filenames in os.walk(source_root):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in _PROVENANCE_SKIP_DIRS and not d.startswith(".")
+            ]
+            for fn in filenames:
+                try:
+                    m = os.stat(os.path.join(dirpath, fn)).st_mtime
+                    if m > newest:
+                        newest = m
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return newest
+
+
+def _gaia_dep_spec(project_root: Path) -> "str | None":
+    """The workspace's declared @jaguilar87/gaia dependency spec, or None.
+
+    A ``file:`` spec means a LOCAL (dev) install; a registry range/semver means
+    an NPM install. Reads dependencies then devDependencies.
+    """
+    pkg = _read_json(project_root / "package.json")
+    if not pkg:
+        return None
+    for key in ("dependencies", "devDependencies"):
+        deps = pkg.get(key)
+        if isinstance(deps, dict) and "@jaguilar87/gaia" in deps:
+            spec = deps["@jaguilar87/gaia"]
+            if isinstance(spec, str):
+                return spec
+    return None
+
+
+@register_check("Install provenance", order=57)
+def check_install_provenance(project_root: Path) -> dict:
+    """Detect HOW @jaguilar87/gaia was installed and check freshness against
+    the CORRECT baseline.
+
+    Provenance replaces the retired `gaia release sync-local` command: the
+    intelligence of "am I running something stale / where did this install come
+    from?" belongs in a fast diagnostic, not a mass action command.
+
+      * LOCAL (dependency spec ``file:...``) -> is the installed content fresh
+        vs the dev SOURCE it was packed from? Reuses `resolve_source_root`
+        (from cli.release) to locate source, then compares the newest source
+        mtime against the installed package's extraction time.
+      * NPM (registry spec) -> is the installed version behind the latest? That
+        comparison needs a network round-trip, so it is NOT done here (see the
+        offline note below); the check reports mode + installed version and
+        points at `npm outdated`.
+
+    Offline-first and deterministic by design: this check makes no network
+    call. See the module docstring's severity contract.
+    """
+    name = "Install provenance"
+    nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
+    installed = _read_json(nm_gaia / "package.json")
+    installed_ver = installed.get("version") if installed else None
+    spec = _gaia_dep_spec(project_root)
+
+    # No installed package and no declared dep -> plugin-mode / not a
+    # node_modules install. Nothing to reason about.
+    if not installed_ver and not spec:
+        return _result(name, "info", "no node_modules @jaguilar87/gaia install detected (plugin-mode?)")
+
+    is_local = spec is not None and spec.startswith("file:")
+
+    if is_local:
+        try:
+            from cli.release import resolve_source_root  # noqa: PLC0415
+            source_root, _src_err = resolve_source_root()
+        except Exception as exc:  # pragma: no cover - defensive
+            source_root, _src_err = None, str(exc)
+
+        if source_root is None:
+            return _result(
+                name, "info",
+                f"local (file:) install {installed_ver or '?'}; source not locatable for a freshness check",
+                "Run doctor from the Gaia source checkout, or set GAIA_SOURCE_ROOT, to compare against source",
+            )
+
+        try:
+            extracted = nm_gaia.resolve(strict=True)
+            installed_mtime = (extracted / "package.json").stat().st_mtime
+        except OSError:
+            return _result(
+                name, "warning",
+                "local (file:) install but node_modules/@jaguilar87/gaia does not resolve",
+                f"Run `gaia dev --workspace {project_root}` to reinstall",
+            )
+
+        if _newest_source_mtime(source_root) > installed_mtime:
+            return _result(
+                name, "warning",
+                f"local (file:) install {installed_ver or '?'} is STALE: source at {source_root} "
+                f"has changes newer than the installed copy",
+                f"Run `gaia dev --workspace {project_root}` to repack the current source",
+            )
+        return _result(
+            name, "pass",
+            f"local (file:) install {installed_ver or '?'} is fresh vs source at {source_root}",
+        )
+
+    # NPM (registry) install: offline, so report mode + version and defer the
+    # latest-version comparison to an explicit, network-using command.
+    return _result(
+        name, "info",
+        f"npm (registry) install {installed_ver or '?'}; latest-version check skipped (offline)",
+        "Check for a newer release with `npm outdated @jaguilar87/gaia` (network), then `gaia update`",
+    )
+
+
+def _frontmatter_block(path: Path) -> "str | None":
+    """Return the YAML frontmatter block (between the first two `---` fences).
+
+    Component definitions (skills' SKILL.md, agents' <name>.md) open with a
+    ``---`` fenced frontmatter block. Returns the text BETWEEN the fences, or
+    None when the file is unreadable or has no opening ``---`` on line 1.
+
+    Deliberately regex/string-based, not a YAML parse: doctor.py ships with
+    zero third-party deps (stdlib only, like _extract_check_values), and the
+    two fields these checks read (`name`, `skills`) are simple enough that a
+    full YAML engine would be dead weight.
+    """
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    if not text.startswith("---"):
+        return None
+    # Split on fence lines. parts[0] == "" (before first ---), parts[1] == body.
+    import re  # noqa: PLC0415
+    parts = re.split(r"(?m)^---\s*$", text, maxsplit=2)
+    if len(parts) < 3:
+        return None
+    return parts[1]
+
+
+def _frontmatter_name(path: Path) -> "str | None":
+    """Extract the `name:` value from a component's frontmatter, or None."""
+    block = _frontmatter_block(path)
+    if block is None:
+        return None
+    import re  # noqa: PLC0415
+    m = re.search(r"(?m)^name:\s*(.+?)\s*$", block)
+    if not m:
+        return None
+    # Strip optional surrounding quotes.
+    return m.group(1).strip().strip("'\"")
+
+
+def _frontmatter_skills(path: Path) -> "list[str]":
+    """Extract the `skills:` list items from an agent's frontmatter.
+
+    Supports the block-list form used across agents/*.md::
+
+        skills:
+          - agent-protocol
+          - security-tiers
+
+    Returns [] when there is no `skills:` key or the block is unreadable.
+    """
+    block = _frontmatter_block(path)
+    if block is None:
+        return []
+    import re  # noqa: PLC0415
+    lines = block.splitlines()
+    skills: list[str] = []
+    in_skills = False
+    for line in lines:
+        if re.match(r"(?m)^skills:\s*$", line):
+            in_skills = True
+            continue
+        if in_skills:
+            item = re.match(r"^\s*-\s*(.+?)\s*$", line)
+            if item:
+                skills.append(item.group(1).strip().strip("'\""))
+                continue
+            # A non-list, non-blank line ends the skills block.
+            if line.strip() and not line.startswith(" "):
+                break
+    return skills
+
+
+@register_check("Component naming", order=52)
+def check_component_naming(project_root: Path) -> dict:
+    """Check each skill/agent's frontmatter `name:` matches its dir/file name.
+
+    Deterministic structural check migrated from the gaia-audit skill (which
+    used to run it inline). Two conventions are enforced:
+      - skills/<dir>/SKILL.md must declare ``name: <dir>``.
+      - agents/<name>.md must declare ``name: <name>``.
+
+    A mismatch silently breaks skill/agent resolution (the loader keys on the
+    directory/file name, not the declared name), so it is an error. Files with
+    no parseable frontmatter `name:` are reported separately as a warning --
+    they are malformed but not necessarily a name collision.
+
+    Advisory (info) when the skills/ and agents/ dirs are absent -- an
+    un-scanned workspace, not a naming fault.
+    """
+    skills_dir = project_root / ".claude" / "skills"
+    agents_dir = project_root / ".claude" / "agents"
+
+    if not skills_dir.is_dir() and not agents_dir.is_dir():
+        return _result(
+            "Component naming", "info", "no skills/ or agents/ dirs found",
+            "Run `gaia scan` or `gaia update`",
+        )
+
+    mismatches: list[str] = []
+    missing_name: list[str] = []
+    checked = 0
+
+    # Skills: each subdir with a SKILL.md.
+    if skills_dir.is_dir():
+        for entry in sorted(skills_dir.iterdir()):
+            skill_md = entry / "SKILL.md"
+            if not (entry.is_dir() and skill_md.is_file()):
+                continue
+            checked += 1
+            declared = _frontmatter_name(skill_md)
+            if declared is None:
+                missing_name.append(f"skills/{entry.name}/SKILL.md")
+            elif declared != entry.name:
+                mismatches.append(
+                    f"skills/{entry.name}/SKILL.md declares name='{declared}'"
+                )
+
+    # Agents: each <name>.md (skip README.md and other non-agent docs).
+    if agents_dir.is_dir():
+        for entry in sorted(agents_dir.glob("*.md")):
+            if entry.name == "README.md":
+                continue
+            checked += 1
+            declared = _frontmatter_name(entry)
+            stem = entry.stem
+            if declared is None:
+                missing_name.append(f"agents/{entry.name}")
+            elif declared != stem:
+                mismatches.append(
+                    f"agents/{entry.name} declares name='{declared}'"
+                )
+
+    if mismatches:
+        return _result(
+            "Component naming", "error",
+            f"{len(mismatches)} name/dir mismatch(es): {'; '.join(mismatches)}",
+            "Rename the component's frontmatter `name:` to match its "
+            "directory/file name (the loader keys on the path, not the name).",
+        )
+    if missing_name:
+        return _result(
+            "Component naming", "warning",
+            f"{len(missing_name)} component(s) with no parseable frontmatter "
+            f"name: {', '.join(missing_name)}",
+            "Add a `name:` field to the component's frontmatter.",
+        )
+    return _result("Component naming", "pass", f"{checked} components name-matched")
+
+
+@register_check("Skill cross-refs", order=53)
+def check_skill_cross_refs(project_root: Path) -> dict:
+    """Check that every skill an agent declares resolves to a real skill dir.
+
+    Deterministic cross-reference check migrated from the gaia-audit skill.
+    Each agents/<name>.md frontmatter carries a ``skills:`` block-list; every
+    entry must resolve to ``skills/<entry>/SKILL.md``. A dangling reference
+    means the agent will fail skill injection at dispatch time, so it is an
+    error -- the same severity model as check_agent_resolution, which validates
+    the router's agent references.
+
+    Advisory (info) when the agents/ dir is absent (un-scanned workspace).
+    """
+    agents_dir = project_root / ".claude" / "agents"
+    skills_dir = project_root / ".claude" / "skills"
+
+    if not agents_dir.is_dir():
+        return _result(
+            "Skill cross-refs", "info", "no agents/ dir found",
+            "Run `gaia scan` or `gaia update`",
+        )
+
+    dangling: list[str] = []
+    checked_refs = 0
+
+    for entry in sorted(agents_dir.glob("*.md")):
+        if entry.name == "README.md":
+            continue
+        for skill_name in _frontmatter_skills(entry):
+            checked_refs += 1
+            if not (skills_dir / skill_name / "SKILL.md").is_file():
+                dangling.append(f"{entry.name} -> '{skill_name}'")
+
+    if dangling:
+        return _result(
+            "Skill cross-refs", "error",
+            f"{len(dangling)} dangling skill reference(s): {', '.join(dangling)}",
+            "Fix the agent's `skills:` list or create the missing "
+            "skills/<name>/SKILL.md (agents fail skill injection otherwise).",
+        )
+
+    if checked_refs == 0:
+        return _result(
+            "Skill cross-refs", "info", "no skill references declared in agents",
+        )
+    return _result("Skill cross-refs", "pass", f"{checked_refs} skill references resolve")
 
 
 @register_check("Identity", order=60)

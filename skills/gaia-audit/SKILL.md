@@ -85,11 +85,12 @@ structural checks -- name-vs-dir, dangling cross-ref -- defer to
   and `skill-creation` define what good looks like per type. This skill
   invokes them; it does not restate their rules.
 - **`gaia doctor` owns the deterministic checks.** Mechanical,
-  non-judgment checks -- name-vs-directory mismatch, dangling cross-ref,
-  frontmatter validity -- belong in `gaia doctor`, which runs them the
-  same way every time. *Follow-up (pending):* those deterministic checks
-  are not yet all migrated into doctor; until they are, run them inline
-  during step 2, but the destination is doctor, not this skill.
+  non-judgment checks -- name-vs-directory mismatch (`check_component_naming`,
+  order 52) and dangling skill cross-ref (`check_skill_cross_refs`, order 53)
+  -- live in `gaia doctor`, which runs them the same way every time. Do not
+  re-run them inline here; run `gaia doctor` (or `gaia doctor --json`) for the
+  structural pass and spend this skill's cycle on the judgment work the
+  deterministic checks cannot do.
 
 ## Output
 

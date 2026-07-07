@@ -70,7 +70,7 @@ def healthy_project(tmp_path):
 
     # Agent definition
     agents_dir = claude_dir / "agents"
-    (agents_dir / "gaia-orchestrator.md").write_text("---\nagent: gaia-orchestrator\n---")
+    (agents_dir / "gaia-orchestrator.md").write_text("---\nname: gaia-orchestrator\nagent: gaia-orchestrator\n---")
 
     # settings.local.json -- hooks carry the full canonical event set, matching
     # what merge_local_hooks copies from hooks.json in npm mode.
@@ -741,14 +741,18 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 22 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
+        # 25 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
         # last-install-error, workspace-initialized, schema-version) +
         # 1 schema-DDL-consistency added by the migration framework rewrite +
         # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1) +
         # 1 agent-routing (surface-routing primary agents resolve to files) +
         # 1 symlinks-freshness (.claude/hooks resolves to the installed pkg
-        #   version -- install-local staleness fix).
-        assert len(data["checks"]) == 22
+        #   version -- install-local staleness fix) +
+        # 2 deterministic structural checks migrated from gaia-audit
+        #   (component-naming order 52, skill-cross-refs order 53) +
+        # 1 install-provenance (order 57 -- local vs npm install + local
+        #   freshness vs source; replaces `gaia release sync-local`).
+        assert len(data["checks"]) == 25
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1228,7 +1232,7 @@ class TestCmdDoctorFix:
         (claude_dir / "CHANGELOG.md").write_text("# Changelog")
 
         agents_dir = claude_dir / "agents"
-        (agents_dir / "gaia-orchestrator.md").write_text("---\nagent: gaia-orchestrator\n---")
+        (agents_dir / "gaia-orchestrator.md").write_text("---\nname: gaia-orchestrator\nagent: gaia-orchestrator\n---")
 
         (claude_dir / "settings.local.json").write_text(json.dumps({
             "agent": "gaia-orchestrator",
@@ -1411,3 +1415,217 @@ class TestCmdDoctorFix:
         fixes = data.get("fixes", [])
         assert len(fixes) == 1
         assert fixes[0]["status"] == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Tests: deterministic structural checks migrated from gaia-audit
+# ---------------------------------------------------------------------------
+
+
+def _write_skill(claude_dir: Path, dir_name: str, declared_name: str) -> None:
+    """Create skills/<dir_name>/SKILL.md declaring `name: <declared_name>`."""
+    skill_dir = claude_dir / "skills" / dir_name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {declared_name}\ndescription: test\n---\n\n# body\n"
+    )
+
+
+def _write_agent(claude_dir: Path, file_stem: str, declared_name: str,
+                 skills: "list[str] | None" = None) -> None:
+    """Create agents/<file_stem>.md declaring `name:` and an optional skills list."""
+    agents_dir = claude_dir / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    fm = [f"---", f"name: {declared_name}", "description: test"]
+    if skills is not None:
+        fm.append("skills:")
+        for s in skills:
+            fm.append(f"  - {s}")
+    fm.append("---")
+    (agents_dir / f"{file_stem}.md").write_text("\n".join(fm) + "\n\n# body\n")
+
+
+class TestCheckComponentNaming:
+    """Test check_component_naming (name-vs-directory match)."""
+
+    def test_all_match(self, tmp_path):
+        """Pass when every skill dir and agent file matches its frontmatter name."""
+        claude = tmp_path / ".claude"
+        _write_skill(claude, "gaia-audit", "gaia-audit")
+        _write_skill(claude, "memory", "memory")
+        _write_agent(claude, "gaia-system", "gaia-system")
+        r = doctor_mod.check_component_naming(tmp_path)
+        assert r["severity"] == "pass"
+        assert "3 components" in r["detail"]
+
+    def test_skill_mismatch_is_error(self, tmp_path):
+        """Error when a skill's frontmatter name differs from its directory."""
+        claude = tmp_path / ".claude"
+        _write_skill(claude, "gaia-audit", "gaia-self-check")  # stale rename
+        r = doctor_mod.check_component_naming(tmp_path)
+        assert r["severity"] == "error"
+        assert "gaia-audit" in r["detail"]
+        assert "gaia-self-check" in r["detail"]
+
+    def test_agent_mismatch_is_error(self, tmp_path):
+        """Error when an agent file name differs from its frontmatter name."""
+        claude = tmp_path / ".claude"
+        _write_agent(claude, "gaia-system", "gaia-sistema")
+        r = doctor_mod.check_component_naming(tmp_path)
+        assert r["severity"] == "error"
+        assert "gaia-system.md" in r["detail"]
+
+    def test_missing_name_is_warning(self, tmp_path):
+        """Warn (not error) when a component has no parseable frontmatter name."""
+        claude = tmp_path / ".claude"
+        skill_dir = claude / "skills" / "no-name"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("---\ndescription: no name here\n---\n")
+        r = doctor_mod.check_component_naming(tmp_path)
+        assert r["severity"] == "warning"
+        assert "no-name" in r["detail"]
+
+    def test_readme_ignored(self, tmp_path):
+        """agents/README.md is not treated as an agent definition."""
+        claude = tmp_path / ".claude"
+        _write_agent(claude, "gaia-system", "gaia-system")
+        (claude / "agents" / "README.md").write_text("# Agents\n")
+        r = doctor_mod.check_component_naming(tmp_path)
+        assert r["severity"] == "pass"
+
+    def test_no_dirs_is_info(self, tmp_path):
+        """Info (advisory) when neither skills/ nor agents/ exist."""
+        (tmp_path / ".claude").mkdir()
+        r = doctor_mod.check_component_naming(tmp_path)
+        assert r["severity"] == "info"
+
+
+class TestCheckSkillCrossRefs:
+    """Test check_skill_cross_refs (dangling cross-reference detection)."""
+
+    def test_all_refs_resolve(self, tmp_path):
+        """Pass when every agent-declared skill resolves to a real skill dir."""
+        claude = tmp_path / ".claude"
+        _write_skill(claude, "agent-protocol", "agent-protocol")
+        _write_skill(claude, "security-tiers", "security-tiers")
+        _write_agent(claude, "gaia-system", "gaia-system",
+                     skills=["agent-protocol", "security-tiers"])
+        r = doctor_mod.check_skill_cross_refs(tmp_path)
+        assert r["severity"] == "pass"
+        assert "2 skill references resolve" in r["detail"]
+
+    def test_dangling_ref_is_error(self, tmp_path):
+        """Error when an agent references a skill that does not exist."""
+        claude = tmp_path / ".claude"
+        _write_skill(claude, "agent-protocol", "agent-protocol")
+        _write_agent(claude, "gaia-system", "gaia-system",
+                     skills=["agent-protocol", "ghost-skill"])
+        r = doctor_mod.check_skill_cross_refs(tmp_path)
+        assert r["severity"] == "error"
+        assert "ghost-skill" in r["detail"]
+        assert "gaia-system.md" in r["detail"]
+
+    def test_no_refs_declared_is_info(self, tmp_path):
+        """Info when agents exist but declare no skills."""
+        claude = tmp_path / ".claude"
+        _write_agent(claude, "gaia-system", "gaia-system")
+        r = doctor_mod.check_skill_cross_refs(tmp_path)
+        assert r["severity"] == "info"
+
+    def test_no_agents_dir_is_info(self, tmp_path):
+        """Info (advisory) when the agents/ dir is absent."""
+        (tmp_path / ".claude").mkdir()
+        r = doctor_mod.check_skill_cross_refs(tmp_path)
+        assert r["severity"] == "info"
+
+
+# ---------------------------------------------------------------------------
+# Tests: check_install_provenance (order=57) -- the intelligence that replaced
+# `gaia release sync-local`: detect local (file:) vs npm install and check
+# freshness against the correct baseline, offline and deterministic.
+# ---------------------------------------------------------------------------
+
+class TestCheckInstallProvenance:
+    def _install(self, workspace: Path, version: str) -> Path:
+        """Create node_modules/@jaguilar87/gaia/package.json under *workspace*."""
+        pkg = workspace / "node_modules" / "@jaguilar87" / "gaia"
+        pkg.mkdir(parents=True)
+        (pkg / "package.json").write_text(
+            json.dumps({"name": "@jaguilar87/gaia", "version": version})
+        )
+        return pkg
+
+    def _workspace_pkg(self, workspace: Path, spec: str) -> None:
+        (workspace / "package.json").write_text(
+            json.dumps({"name": "my-app", "dependencies": {"@jaguilar87/gaia": spec}})
+        )
+
+    def _source_checkout(self, root: Path) -> Path:
+        (root / "build").mkdir(parents=True)
+        (root / "build" / "gaia.manifest.json").write_text("{}")
+        (root / "tests").mkdir()
+        (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}')
+        return root
+
+    def test_no_install_detected_is_info(self, tmp_path):
+        r = doctor_mod.check_install_provenance(tmp_path)
+        assert r["severity"] == "info"
+        assert "plugin-mode" in r["detail"]
+
+    def test_npm_install_reports_offline_and_registry(self, tmp_path):
+        self._install(tmp_path, "5.1.1")
+        self._workspace_pkg(tmp_path, "^5.1.1")
+        r = doctor_mod.check_install_provenance(tmp_path)
+        assert r["severity"] == "info"
+        assert "npm (registry)" in r["detail"]
+        assert "offline" in r["detail"]
+
+    def test_local_install_fresh_is_pass(self, tmp_path, monkeypatch):
+        import os
+        source = self._source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        pkg = self._install(ws, "5.1.1")
+        self._workspace_pkg(ws, "file:../src/x.tgz")
+        # Install is NEWER than every source file -> fresh.
+        old = 1_000.0
+        for p in source.rglob("*"):
+            if p.is_file():
+                os.utime(p, (old, old))
+        os.utime(pkg / "package.json", (2_000.0, 2_000.0))
+        monkeypatch.setenv("GAIA_SOURCE_ROOT", str(source))
+        r = doctor_mod.check_install_provenance(ws)
+        assert r["severity"] == "pass"
+        assert "fresh" in r["detail"]
+
+    def test_local_install_stale_is_warning(self, tmp_path, monkeypatch):
+        import os
+        source = self._source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        pkg = self._install(ws, "5.1.1")
+        self._workspace_pkg(ws, "file:../src/x.tgz")
+        # A source file is NEWER than the install -> stale.
+        os.utime(pkg / "package.json", (1_000.0, 1_000.0))
+        (source / "newer.py").write_text("x = 1\n")
+        os.utime(source / "newer.py", (5_000.0, 5_000.0))
+        monkeypatch.setenv("GAIA_SOURCE_ROOT", str(source))
+        r = doctor_mod.check_install_provenance(ws)
+        assert r["severity"] == "warning"
+        assert "STALE" in r["detail"]
+        assert "gaia dev" in r["fix"]
+
+    def test_local_install_source_not_locatable_is_info(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        self._install(ws, "5.1.1")
+        self._workspace_pkg(ws, "file:../src/x.tgz")
+        monkeypatch.delenv("GAIA_SOURCE_ROOT", raising=False)
+        # Force resolve_source_root to find no source: point release._PACKAGE_ROOT
+        # at a non-source dir and stub git discovery to None.
+        import cli.release as release_mod
+        monkeypatch.setattr(release_mod, "_PACKAGE_ROOT", tmp_path / "not-source")
+        monkeypatch.setattr(release_mod, "_git_toplevel", lambda start: None)
+        r = doctor_mod.check_install_provenance(ws)
+        assert r["severity"] == "info"
+        assert "not locatable" in r["detail"]
