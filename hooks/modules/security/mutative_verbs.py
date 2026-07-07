@@ -19,7 +19,7 @@ Categories retained internally for verb classification:
 import functools
 import logging
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
 from .command_semantics import analyze_command
@@ -350,6 +350,29 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
     ("gaia", "approvals"): frozenset({
         "revoke", "reject", "reject-all", "clean",
     }),
+}
+
+
+# ============================================================================
+# Command+Subcommand Tier UPGRADES (anchored) — the symmetric opposite of
+# COMMAND_SUBCOMMAND_TIER_EXCEPTIONS above.
+# ----------------------------------------------------------------------------
+# Some project-CLI subcommands perform a state-mutating INSTALL but carry no
+# verb in MUTATIVE_VERBS, so they would fall through to Step 4 and classify
+# READ_ONLY "by elimination" — silently un-gated. `gaia dev` (npm pack +
+# install into a workspace's node_modules + wire .claude/ symlinks + bootstrap
+# the DB) is exactly this case. Anchor it MUTATIVE (T3) explicitly.
+#
+# Key:   (base_cmd, subcommand)  — subcommand is non_flag_tokens[0].
+# Value: None            => the WHOLE subcommand group is mutative regardless
+#                           of the trailing verb (e.g. `gaia dev`).
+#        FrozenSet[str]  => mutative ONLY when non_flag_tokens[1] is in the set.
+#
+# The `--help` override (Step 3.5 above) keeps `gaia dev --help` READ_ONLY, and
+# any simulation flag (Step 3) is handled above this check. This dict lives
+# inside the hooks directory and is itself T3-protected.
+COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES: Dict[Tuple[str, str], Optional[FrozenSet[str]]] = {
+    ("gaia", "dev"): None,
 }
 
 
@@ -1465,6 +1488,39 @@ def detect_mutative_command(
                 reason=f"Git local-only subcommand '{git_subcmd}' is safe",
             )
 
+    # --- Step 3d.5: Command+subcommand mutative UPGRADE (anchored) ---
+    # The symmetric opposite of the downgrade exception in Step 3e: anchor a
+    # state-mutating install subcommand to MUTATIVE when it carries no verb in
+    # MUTATIVE_VERBS and would otherwise reach Step 4 and be READ_ONLY "by
+    # elimination". Covers `gaia dev` (whole group). Placed AFTER the
+    # simulation-flag (Step 3) and --help (Step 3.5) overrides, so
+    # `--dry-run`/`--help` still win and keep those invocations non-mutative.
+    if semantics.non_flag_tokens:
+        upgrade_key = (base_cmd, semantics.non_flag_tokens[0])
+        if upgrade_key in COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES:
+            allowed = COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES[upgrade_key]
+            upgrade_verb = (
+                semantics.non_flag_tokens[1]
+                if len(semantics.non_flag_tokens) > 1 else ""
+            )
+            if allowed is None or upgrade_verb in allowed:
+                anchored_verb = (
+                    semantics.non_flag_tokens[0] if allowed is None else upgrade_verb
+                )
+                trailing = f" {upgrade_verb}" if allowed is not None else ""
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=anchored_verb,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"State-mutating install "
+                        f"'{base_cmd} {semantics.non_flag_tokens[0]}{trailing}' "
+                        f"anchored MUTATIVE (T3) by config"
+                    ),
+                )
+
     # --- Step 3e: Command+subcommand tier exception (anchored) ---
     # Some project-CLI subcommand groups (e.g., `gaia brief`, `gaia ac`) are
     # local-only planning bookkeeping: edit/set-status/add/remove only touch a
@@ -1940,6 +1996,90 @@ def _check_python_module_runner(
     )
 
 
+# Body markers that together identify bin/gaia (the unified Gaia CLI dispatcher)
+# with near-zero false-positive risk. BOTH must appear in the file for the
+# re-dispatch to fire, so an unrelated user script named ``bin/gaia`` is not
+# matched.
+_GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_plugins")
+
+
+def _check_gaia_cli_dispatcher(
+    script_path: str, content: str, semantics: "CommandSemantics", family: str,
+) -> "Optional[MutativeResult]":
+    """Re-dispatch ``<python> <path>/bin/gaia <subcmd> ...`` as ``gaia <subcmd> ...``.
+
+    bin/gaia is the unified Gaia CLI dispatcher; its own body calls
+    ``subprocess.run(...)`` for the lazy DB bootstrap. Python AST analysis of that
+    body (the ``lane == "python"`` branch in ``_check_script_file``) flags the
+    subprocess call as mutative, so EVERY ``python3 <path>/bin/gaia <subcmd>``
+    invocation would classify T3 -- including read-only subcommands (``doctor``,
+    ``release check``, ``--dry-run`` flows). The real effect is determined
+    entirely by the SUBCOMMAND, exactly as the installed launcher form
+    ``gaia <subcmd>`` is classified. So when the script is recognized as the gaia
+    dispatcher (basename ``gaia`` + parent dir ``bin`` + a body signature, to
+    avoid matching an unrelated ``bin/gaia``), reconstruct the equivalent
+    ``gaia <args...>`` command from the tokens AFTER the script positional and
+    re-run ``detect_mutative_command`` on it. The result is IDENTICAL to the
+    launcher form: ``dev`` stays T3 via ``COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES``,
+    ``install`` stays T3 via ``MUTATIVE_VERBS``, ``--dry-run`` / ``--help`` stay
+    non-mutative, and read-only subcommands (``doctor``, ``release check``) stay T0.
+
+    This mirrors the ``_check_python_module_runner`` re-dispatch precedent and is
+    narrowly scoped to the gaia dispatcher; it is NOT a general bypass of
+    subprocess.run detection for arbitrary Python scripts.
+
+    Returns ``None`` when the script is not the gaia dispatcher, so the caller
+    continues with ordinary AST/regex script analysis.
+    """
+    import os
+
+    if os.path.basename(script_path) != "gaia":
+        return None
+    if os.path.basename(os.path.dirname(script_path)) != "bin":
+        return None
+    if not all(sig in content for sig in _GAIA_DISPATCHER_SIGNATURE):
+        return None
+
+    # Tokens AFTER the script positional are the gaia argv.
+    raw_tokens = semantics.tokens
+    try:
+        idx = raw_tokens.index(script_path)
+    except ValueError:
+        return None
+    sub_args = raw_tokens[idx + 1:]
+
+    if not sub_args:
+        # `python3 bin/gaia` with no subcommand prints help -- read-only.
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="gaia-cli",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                f"gaia CLI dispatcher '{script_path}' invoked with no subcommand "
+                f"(prints help, read-only)"
+            ),
+        )
+
+    import shlex
+
+    rewritten = " ".join(shlex.quote(t) for t in ("gaia", *sub_args))
+    inner = detect_mutative_command(rewritten)
+    return MutativeResult(
+        is_mutative=inner.is_mutative,
+        category=inner.category,
+        verb=inner.verb,
+        dangerous_flags=inner.dangerous_flags,
+        cli_family=inner.cli_family,
+        confidence=inner.confidence,
+        reason=(
+            f"gaia CLI dispatcher '{script_path}' re-dispatched as "
+            f"'gaia {' '.join(sub_args)}': {inner.reason}"
+        ),
+    )
+
+
 def _resolve_script_argument(
     base_cmd: str, semantics: "CommandSemantics",
 ) -> "Optional[Tuple[str, str]]":
@@ -2077,6 +2217,17 @@ def _check_script_file(
                 f"verify the payload, requiring approval (conservative default)"
             ),
         )
+
+    # --- Gaia CLI dispatcher re-dispatch ---
+    # bin/gaia's own body calls subprocess.run() for the lazy DB bootstrap, so
+    # Python AST analysis below would flag EVERY `python3 <path>/bin/gaia <cmd>`
+    # as mutative regardless of the subcommand. The real effect is determined by
+    # the SUBCOMMAND, exactly as the launcher form `gaia <cmd>` is. Recognize the
+    # dispatcher and re-dispatch to `gaia <args...>` classification. Returns None
+    # for any non-dispatcher script, so ordinary analysis continues.
+    gaia_result = _check_gaia_cli_dispatcher(script_path, content, semantics, family)
+    if gaia_result is not None:
+        return gaia_result
 
     if lane == "python" and _analyze_python_inline is not None:
         ast_result = _analyze_python_inline(content)

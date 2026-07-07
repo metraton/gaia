@@ -2534,6 +2534,115 @@ class TestCamelCaseIdentifierFalsePositiveFix:
         assert result.is_mutative is True
 
 
+_FAKE_GAIA_DISPATCHER = '''#!/usr/bin/env python3
+"""gaia -- Unified Gaia CLI"""
+import subprocess
+
+
+def _discover_plugins():
+    return []
+
+
+def _ensure_db_bootstrapped(sub):
+    # The real dispatcher runs a subprocess here for the lazy DB bootstrap.
+    # AST analysis flags this as mutative -- the dispatcher re-dispatch must
+    # override that with subcommand-based classification.
+    subprocess.run(["bash", "bootstrap.sh"], check=False)
+'''
+
+
+class TestGaiaCliDispatcherReDispatch:
+    """`python3 <path>/bin/gaia <subcmd>` must classify IDENTICALLY to the
+    installed launcher form `gaia <subcmd>`.
+
+    bin/gaia's body calls subprocess.run() for the lazy DB bootstrap, so the
+    Python AST lane in _check_script_file would flag EVERY invocation as
+    mutative regardless of the subcommand -- turning read-only commands
+    (doctor, release check, dry-runs) into false T3 blocks. The re-dispatch in
+    _check_gaia_cli_dispatcher reconstructs `gaia <args>` and re-classifies it,
+    so the real effect (owned by the subcommand) drives the tier. Critically,
+    the mutative subcommands (dev, install) MUST stay T3.
+    """
+
+    def _dispatcher(self, tmp_path, name="gaia", body=_FAKE_GAIA_DISPATCHER):
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        f = bindir / name
+        f.write_text(body)
+        return f
+
+    # ---- read-only subcommands stop falsely classifying T3 ----
+
+    def test_doctor_is_read_only(self, tmp_path):
+        gaia = self._dispatcher(tmp_path)
+        result = detect_mutative_command(f"python3 {gaia} doctor")
+        # `doctor` carries no mutative verb -> safe by elimination (not T3).
+        # Category is UNKNOWN (by-elimination), identical to the launcher form.
+        assert result.is_mutative is False
+        assert result.category != "MUTATIVE"
+
+    def test_release_check_is_read_only(self, tmp_path):
+        gaia = self._dispatcher(tmp_path)
+        result = detect_mutative_command(f"python3 {gaia} release check")
+        assert result.is_mutative is False
+
+    def test_release_publish_dry_run_is_not_mutative(self, tmp_path):
+        gaia = self._dispatcher(tmp_path)
+        result = detect_mutative_command(f"python3 {gaia} release publish --dry-run")
+        assert result.is_mutative is False
+
+    def test_no_subcommand_is_read_only(self, tmp_path):
+        gaia = self._dispatcher(tmp_path)
+        result = detect_mutative_command(f"python3 {gaia}")
+        assert result.is_mutative is False
+
+    # ---- CRITICAL negative cases: mutative gating MUST NOT weaken ----
+
+    def test_dev_stays_t3(self, tmp_path):
+        gaia = self._dispatcher(tmp_path)
+        result = detect_mutative_command(f"python3 {gaia} dev --workspace /home/x")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_install_stays_t3(self, tmp_path):
+        gaia = self._dispatcher(tmp_path)
+        result = detect_mutative_command(f"python3 {gaia} install")
+        assert result.is_mutative is True
+
+    # ---- parity with the launcher form ----
+
+    @pytest.mark.parametrize(
+        "sub",
+        ["doctor", "release check", "release publish --dry-run",
+         "dev --workspace /home/x", "install"],
+    )
+    def test_python3_form_matches_launcher_form(self, tmp_path, sub):
+        gaia = self._dispatcher(tmp_path)
+        via_path = detect_mutative_command(f"python3 {gaia} {sub}")
+        via_launcher = detect_mutative_command(f"gaia {sub}")
+        assert via_path.is_mutative == via_launcher.is_mutative
+        assert via_path.category == via_launcher.category
+
+    # ---- the guard is narrow: NOT a generic subprocess.run bypass ----
+
+    def test_unrelated_bin_gaia_without_signature_stays_mutative(self, tmp_path):
+        """A user script that happens to be named bin/gaia but is NOT the Gaia
+        dispatcher (no signature) still gets AST-classified: subprocess.run keeps
+        it mutative. The re-dispatch must not open a generic bypass."""
+        body = "import subprocess\nsubprocess.run(['kubectl', 'apply', '-f', 'x'])\n"
+        gaia = self._dispatcher(tmp_path, body=body)
+        result = detect_mutative_command(f"python3 {gaia} doctor")
+        assert result.is_mutative is True
+
+    def test_dispatcher_named_file_outside_bin_stays_mutative(self, tmp_path):
+        """The dispatcher signature alone is not enough -- it must live in a
+        bin/ directory. A signature-bearing file elsewhere is still AST-scanned."""
+        f = tmp_path / "gaia"
+        f.write_text(_FAKE_GAIA_DISPATCHER)
+        result = detect_mutative_command(f"python3 {f} doctor")
+        assert result.is_mutative is True
+
+
 class TestPythonModulePipReDispatch:
     """Brief 91, AC-7: ``python -m pip install`` must classify IDENTICALLY to
     ``pip install`` (MUTATIVE/T3).  Before the fix, the module name ``pip`` was
@@ -2609,3 +2718,69 @@ class TestPythonModulePipReDispatch:
         script-file lane, not the module re-dispatch."""
         result = detect_mutative_command("python3 -m pytest tests/x.py")
         assert result.is_mutative is False
+
+
+class TestGaiaInstallSubcommandsAreMutative:
+    """`gaia dev` is a state-mutating install (pack + install into node_modules
+    + wire .claude/ + bootstrap DB). It carries no verb in MUTATIVE_VERBS and
+    would otherwise classify READ_ONLY "by elimination" -- the T3-gating gap
+    this suite pins closed via the COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES anchor.
+
+    NOTE: `gaia release sync-local` was REMOVED (its provenance intelligence
+    moved to `gaia doctor`), so it is no longer in the anchor -- see
+    TestGaiaReleaseSyncLocalNoLongerAnchored below.
+    """
+
+    def test_gaia_dev_is_mutative(self):
+        result = detect_mutative_command("gaia dev --workspace /home/jorge/ws/me")
+        assert result.is_mutative is True, (
+            f"gaia dev is a state-mutating install and must be T3. "
+            f"Got {result.category}: {result.reason}"
+        )
+        assert result.category == "MUTATIVE"
+
+    def test_gaia_dev_bare_is_mutative(self):
+        result = detect_mutative_command("gaia dev")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_gaia_dev_via_python_source_entry_is_mutative(self):
+        # The deploy command uses the source-tree entry point directly.
+        result = detect_mutative_command(
+            "gaia dev --mode pack --workspace /home/jorge/ws/me"
+        )
+        assert result.is_mutative is True
+
+    # ---- Control: other `gaia release` verbs are NOT upgraded ----
+
+    def test_gaia_release_check_not_upgraded(self):
+        # `release check` is a local gate, not an install; the upgrade set is
+        # anchored to `dev` only, so this must not become mutative here.
+        result = detect_mutative_command("gaia release check")
+        assert result.is_mutative is False
+
+    def test_gaia_dev_help_stays_read_only(self):
+        # The --help exemption (Step 3.5) runs before the upgrade.
+        result = detect_mutative_command("gaia dev --help")
+        assert result.is_mutative is False
+
+
+class TestGaiaReleaseSyncLocalNoLongerAnchored:
+    """Regression guard: `gaia release sync-local` was removed as a command and
+    its ('gaia','release') entry was dropped from
+    COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES. It must no longer be anchored T3 (the
+    command does not exist; freshness intelligence lives in `gaia doctor`).
+    """
+
+    def test_release_key_absent_from_upgrades(self):
+        from modules.security.mutative_verbs import COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES
+        assert ("gaia", "release") not in COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES
+        assert ("gaia", "dev") in COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES
+
+    def test_release_sync_local_not_classified_via_anchor(self):
+        # The ('gaia','release') anchor is gone, so the command-subcommand
+        # UPGRADE reason must NOT appear. (The string still happens to trip the
+        # generic 'sync' mutative verb -- harmless, since the command no longer
+        # exists -- but that is the verb scanner, not the removed anchor.)
+        result = detect_mutative_command("gaia release sync-local")
+        assert "anchored MUTATIVE (T3) by config" not in result.reason
