@@ -38,7 +38,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 - **Approval gates** for T3 operations via native `ask` dialog
 - **Git commit validation** with Conventional Commits
 - **32 skills** - Injected procedural knowledge modules for agents (protocol, domain, workflow)
-- **Episodic memory** - `gaia memory` CLI with FTS5 search, episode inspection, and session context orientation
+- **Curated + episodic memory** - `gaia memory` CLI: FTS5 search, episode inspection, session context orientation, and curated-note curation (`append`/`add`/`edit`/`reclassify`/`delete`/`link`)
 - **Context evals** - pytest-driven agent evaluation (5 graders, 3 backends, 10 scenarios, baseline + drift detection)
 - **Plugin + npm** - Distributable as Claude Code native plugin or npm package
 - **Enterprise ready** - Managed settings template for organization-wide deployment

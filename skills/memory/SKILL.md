@@ -15,6 +15,15 @@ full flow: read what is already in your context, query when more is
 needed, propose a save when a discovery is closed, and curate when
 the set drifts.
 
+Memory is a **convention, not a harness**. Nothing below is enforced by
+the runtime the way a security tier or a protected path is -- these are
+project-specific agreements that *guide* the orchestrator and
+`gaia-operator`; they oblige no one. Read "do X" as "the project agreed
+to X because the alternative drifts", not "the harness will stop you".
+The store enforces only two mechanical guarantees -- slug↔type matching
+and the `memory_history` audit trail; everything else is discipline you
+choose to keep.
+
 ## Mental model
 
 Two orthogonal axes describe every memory row:
@@ -117,6 +126,24 @@ row is shaped, named, normalized, and persisted. Every write begins by
 searching for what already exists, because the substrate is a set, not
 an append log: a new row that duplicates an old one splits the signal
 across two slugs instead of strengthening one.
+
+### What earns a place in curated memory
+
+Before deciding *how* to save, decide *whether* curated memory is the
+right home at all. The test: **does this fact already have a home?**
+Work-in-flight belongs in a brief or plan; domain state (infra
+inventory, routing, cluster details) belongs in project-context;
+conversational detail belongs in the transcript. Curated memory is the
+home only for cross-cutting facts, closed decisions, closed dead-ends,
+and threads that must survive a session *and have no other structured
+home*. If it fits a brief, a plan, or a project-context table, save it
+there -- a copy in memory is just a second source of truth that drifts.
+
+Two roles split the work: the **orchestrator decides what** earns a
+place (it applies this test and the value judgment), and
+**`gaia-operator` executes the save** (it applies the shaping rules
+below). A subagent does neither -- it proposes via
+`memorialize_suggestions` and the orchestrator disposes.
 
 ### Search before you write
 
@@ -247,18 +274,14 @@ mutually exclusive with `--project`. Neither flag guesses: an unknown
 project name, or a project row that has no `project_identity` yet (legacy
 row, or not yet scanned), is a clear error, not a silent NULL.
 
-Anchoring is **forward-only, by design**. Historical rows written before
-this mechanism existed stay `project_ref IS NULL` -- the one-time automatic
-backfill in `scripts/migrations/v25_to_v26.sql` (guarded on "workspace hosts
-exactly one active project") populated 0 rows in practice, because the
-memory-row-to-project mapping is genuinely ambiguous whenever a workspace
-hosts more than one project (proven ambiguous on real data: nfi_newco /
-bildwiz). That migration is applied and immutable; it is not re-run or
-extended. Going forward, only whoever writes a `project_*` row -- the one
-who actually knows which project it is about -- anchors it, via `--project`
-at write time. `upsert_memory()` treats `project_ref` with the same
-coalesce-or-omit discipline as `topic_key`: omitting it on a later update
-never clobbers a previously-set anchor back to NULL.
+Anchoring is **forward-only, by design**. Rows written before this
+mechanism existed stay `project_ref IS NULL` -- the memory-row-to-project
+mapping is genuinely ambiguous whenever a workspace hosts more than one
+project, so no backfill can guess it. Only whoever writes a `project_*`
+row -- the one who knows which project it is about -- anchors it, via
+`--project` at write time. `upsert_memory()` treats `project_ref` with
+coalesce-or-omit discipline: omitting it on a later update never clobbers
+a previously-set anchor back to NULL.
 
 ## Curate flow
 
@@ -341,10 +364,15 @@ Jaccard threshold. For each pair:
 
 1. Identify rows referencing retired projects, deprecated tooling,
    or resolved decisions whose outcome no longer needs justification.
-2. Prefer `reclassify --class=log` over deletion when the history
-   has audit value; delete only when the row was always noise.
-3. Confirm with the user before removing.
-4. `gaia memory delete <slug> --yes`.
+2. **Prefer `reclassify` over deletion.** `reclassify --class=log` or
+   `reclassify --status=closed|graduated` retires a note while keeping
+   it — memory is meant to be aggregated and reclassified, not deleted.
+   Deletion is discouraged by convention; reach for it only when a row
+   was always pure noise.
+3. If you must delete: confirm with the user first, then
+   `gaia memory delete <slug> --yes` (soft-delete/tombstone by default —
+   recoverable; it stays T3). `--hard` physically destroys the row and
+   its history and is strongly discouraged.
 
 ### Splitting overgrown bodies
 
@@ -356,36 +384,87 @@ When a body exceeds ~100 lines, split into focused subtopics:
 4. Replace the original body with a brief index, or
    `--kind=supersedes` it from a new umbrella note.
 
-### Editing a single field
+### The operation vocabulary: aggregate and reclassify, don't mutate
+
+Memory is **aggregated** and **reclassified**, not mutated. The verbs
+reflect that model -- reach for them in this order:
+
+| Verb | Use it to | Tier | Note |
+|------|-----------|:----:|------|
+| `append` | **ADD** text to an existing body (the primary "sum something" verb) | **T0** — no approval | Additive; concatenates with `\n\n`; prior body kept in `memory_history` |
+| `add` | Create a NEW note (UPSERT by `--name`) | T0 | Distinct from `append` — `add` makes a row, `append` grows one |
+| `reclassify` | Change a note's `class` / `status` (lifecycle) | T0 | Canonical way to retire a note without losing it |
+| `edit` | **CORRECT** existing text (overwrite/supersede-with-history) | **T3** — needs approval | Reserved for fixing what is *wrong*; changes what reads see |
+| `delete` | Remove a note | T3 | **Discouraged by convention** — prefer `reclassify --status` |
+
+**Add to a note -- `append` (the primary additive verb, non-mutative):**
 
 ```bash
-# Preferred for multi-line or markdown-rich bodies:
-gaia memory edit --name=<slug> --field=body --body-file=/tmp/new_body.md
+gaia memory append <slug> --body="One more finding: ..."
 
-# Stdin variant:
-cat new_body.md | gaia memory edit --name=<slug> --field=body --body-file=-
+# Markdown-rich or multi-line text:
+gaia memory append <slug> --body-file=/tmp/more.md
+cat more.md | gaia memory append <slug> --body-file=-
+```
 
-# Inline for short plain-text changes:
+`append` concatenates onto the current body (separator `\n\n`) and never
+overwrites. It is classified **non-mutative (T0)** — appending only grows
+the record, so it needs no approval. This is what you want for a
+carry-forward thread or running log that accumulates.
+
+**Correct a note -- `edit` (supersede-with-history):**
+
+```bash
+# Fix a body that is WRONG (overwrites the live column):
+gaia memory edit --name=<slug> --field=body --body-file=/tmp/corrected.md
+cat corrected.md | gaia memory edit --name=<slug> --field=body --body-file=-
 gaia memory edit --name=<slug> --field=<description|body> --content="..."
 ```
 
-Patches one column. Pass `--append` to append (separator `\n\n`)
-rather than overwrite. Use `edit` for corrections; use `reclassify`
-to change `class`/`status`; use `link` to wire the graph.
+`edit` is the **correction** verb: use it when the existing content is
+wrong and must be replaced. It is classified **T3 (needs approval)**
+because it changes what future reads see. It is non-destructive under the
+hood — the `--append` flag still exists and delegates to the same path as
+`append` — but for adding text, reach for `append` first. Use
+`reclassify` to change `class`/`status`; use `link` to wire the graph.
+
+**Nothing is ever truly lost.** Any UPDATE to `body`, `description`,
+`type`, `status`, `workspace`, or `deleted_at` fires the
+`trg_memory_history` trigger, which archives the before/after into the
+`memory_history` table — this covers `append`, `edit`, and `add`'s UPSERT
+alike. Every version is recoverable from `memory_history` (a DB-layer
+safety net, queryable directly; no `gaia memory` subcommand browses it
+yet).
 
 ## Carry-forward / handoff
 
-To make a note land first in the next session's injected block:
+A carry-forward is a single thread that must reach the next session. Its
+lifecycle is a state machine on the `status` column, not prose in the
+body:
 
-```bash
-gaia memory reclassify <slug> --class=thread --status=carry_forward
-```
+1. **Born** -- `gaia memory reclassify <slug> --class=thread --status=carry_forward`.
+2. **Surfaced** -- the SessionStart injector sorts `carry_forward`
+   threads ahead of everything else into `## Memory — For this session`,
+   so the next orchestrator instance sees it first.
+3. **Closed** -- when the work concludes, `reclassify --status=closed`
+   (no longer relevant) or `--status=graduated`, or promote to
+   `class=anchor` if it became stable knowledge.
 
-The SessionStart injector sorts threads in `carry_forward` ahead of
-everything else, placing them in the `## Memory — For this session`
-section, so the next orchestrator instance sees it immediately. When the work concludes,
-move the same row to `graduated` (or `closed`), or promote it to
-`class=anchor` if it became stable knowledge.
+**One thread = one note.** A carry-forward captures *one* concern with
+*one* `status`. Do not pack independent items into a single body with
+`## PENDIENTE` / `## CERRADO` sections: the `status` column then means
+nothing (the row reads "open" while half its items are done), the
+`description` becomes a manual rollup that drifts from the body, and
+closing one item degenerates into editing prose the state machine never
+sees. When a handoff carries N items, write N notes and group them with
+`--kind=derived_from` under one umbrella note. The graph groups them;
+the body never bundles them.
+
+**Close whole, never piece by piece.** A thread ends by moving its
+`status`, not by hand-editing its body to shift a line into a "done"
+section. If you find yourself editing body text to record partial
+progress, that note was bundling threads that should have been separate
+rows -- split it first, then close each with `reclassify`.
 
 ## Knowledge graph (future)
 
@@ -402,9 +481,11 @@ decisions can be navigated visually outside the CLI.
 |------|--------|
 | One topic per row | The slug names a single concern; split if a row outgrows its scope. |
 | `description` is required for new rows | Listings, the injection block, and search results lean on description, not body. |
+| `description` is an honest summary of one thread | Keep it a one-line summary of the single concern the row holds -- never a manual rollup of multiple items. With one thread per note there is nothing to roll up and nothing to drift. |
+| One thread = one note | A carry-forward or thread holds one concern with one `status`. Multi-item handoffs are N notes linked with `derived_from`, not one bundled body. Close a thread by its `status` (`reclassify --status=closed`), never by editing body prose. |
 | Rich bodies require `--description` | The CLI enforces this: when the body contains code blocks, headers, or 3+ blank lines, `--description` is mandatory. SessionStart falls back to `body[:60]` when description is absent, which destroys code-block semantics. |
 | Confirm before pruning | Report what will be removed and get user confirmation. |
-| Read before overwriting | `add` is UPSERT -- the prior body is gone. Always `show` first when re-using a slug. |
+| Add with `append`, correct with `edit` | To grow a note, use `append` (T0, additive, no approval) -- it is the primary "add something" verb. Reserve `edit` (T3) for CORRECTING content that is wrong: `add` (UPSERT) and `edit` both replace the live row in place, so `show` first to overwrite deliberately. The prior version is never lost -- `trg_memory_history` archives it into `memory_history` -- but the live row then shows only the new text. |
 | Use UPSERT, not delete-then-insert | Preserves `origin_session_id` provenance and avoids FTS5 churn. |
 | The slug prefix IS the type -- they are the same thing | Do not choose a slug and then pick `--type` independently. Pick the slug; derive `--type` from its prefix. A `(slug, type)` pair that disagrees is always an error -- the CLI and store reject it in both directions (curated-slug-with-wrong-type and curated-prefix-with-legacy-type). |
 | Subagents propose, the orchestrator persists | Direct `gaia memory add` from a dispatch is rejected -- use `memorialize_suggestions` instead. |
@@ -422,6 +503,13 @@ decisions can be navigated visually outside the CLI.
   from `class=thread` auto-clears `status`. That is usually what you
   want, but pass `--status` explicitly when the new state matters for
   audit (e.g. `--status=null` on a promotion to anchor).
+- **Bundling several threads into one note** -- a body with
+  `## PENDIENTE` / `## CERRADO` sections gives many concerns one
+  `status`, so neither the state machine nor the injector can tell what
+  is open, and progress degenerates into editing body prose while the
+  `description` rollup drifts from the body. One thread = one note; group
+  multi-item handoffs with `derived_from` and close each with
+  `reclassify`, never by hand-editing text.
 - **Deleting a superseded note instead of linking** -- a
   `supersedes` link keeps the historical reasoning reachable; delete
   only when the row was always noise.

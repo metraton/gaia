@@ -1,20 +1,36 @@
 """
 gaia memory -- Inspect, query, and curate Gaia memory.
 
-Read-only subcommands operate on episodic memory (the activity log under
-``.claude/project-context/episodic-memory/``):
+Read-only subcommands operate on the episodic log (the activity history
+mirrored into ``episodes`` / ``episodes_fts`` in ``~/.gaia/gaia.db``) and
+on curated memory rows:
 
-  search <query> [--limit N] [--json]   FTS5 search with hybrid scoring
+  search <query> [--scope=memory|episodes|both] [--limit N] [--json]
+                                          FTS5 search with hybrid scoring
   stats [--json]                         Episode count, index count, scores, conflicts
-  show <episode_id> [--json]            Full episode with metadata and score
-  conflicts [--threshold F] [--json]    Contradiction scan across memory files
+  show <name> [--json]                  Curated memory row by (project, name)
+  episode-show <episode_id> [--json]    Full episode with metadata and score
+  list [--type=...] [--workspace=<ws>]  Enumerate curated memory rows
+  get-relevant [--workspace=<ws>]       Compact SessionStart injection block
+  conflicts [--threshold F] [--json]    Pairwise contradiction scan (curated)
 
 Mutating subcommands operate on the curated ``memory`` table in
-``~/.gaia/gaia.db`` (the project-level / user-level / feedback notes):
+``~/.gaia/gaia.db`` (project / user / feedback / atom / decision / negative
+notes). Memory is AGGREGATED and RECLASSIFIED, not overwritten -- reach for
+these verbs in this order:
 
-  add --name=<slug> --type=<project|user|feedback> --body="..."
-      [--description=...] [--workspace=<ws>]
-      [--project=<name> | --project-ref=<identity>] [--json]
+  append <name> --body="..." | --body-file=<path>
+                                          PRIMARY additive verb: grows an
+                                          existing row's body (separator
+                                          "\\n\\n"), prior body kept in
+                                          memory_history. Non-mutative (T0,
+                                          no approval) -- appending only adds.
+
+  add --name=<slug> --type=<project|user|feedback|atom|decision|negative>
+      --body="..." [--description=...] [--class=...] [--status=...]
+      [--workspace=<ws>] [--project=<name> | --project-ref=<identity>] [--json]
+                                          Creates/UPSERTs a NEW row (distinct
+                                          from append, which grows one).
                                           DB-only writer; no filesystem side
                                           effects (no .md under
                                           ~/.claude/projects/.../memory/).
@@ -24,6 +40,33 @@ Mutating subcommands operate on the curated ``memory`` table in
                                           its stable project_identity; never
                                           guesses (clear error if the project
                                           does not exist or has no identity).
+
+  reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
+                                          Lifecycle transitions (open ->
+                                          carry_forward -> graduated ->
+                                          closed) without touching the body.
+                                          Non-mutative (T0).
+
+  edit --name=<slug> --field=<description|body>
+       --content="..." | --body-file=<path> [--append] [--json]
+                                          CORRECTION verb: overwrite/supersede
+                                          a field when existing content is
+                                          WRONG. Non-destructive under the
+                                          hood (memory_history keeps the prior
+                                          value) but changes what reads see,
+                                          so it stays T3 (needs approval).
+                                          Prefer append to add text.
+
+  link <src> <dst> --kind=<relates_to|supersedes|derived_from|graduated_to>
+      [--delete] [--workspace=<ws>]      Create/delete a memory_links edge.
+
+  delete <name> [--hard] [--yes] [--json]
+                                          DISCOURAGED BY CONVENTION: prefer
+                                          reclassify (retire without losing
+                                          history) or append (correct
+                                          forward). Soft-delete (tombstone)
+                                          by default, recoverable; --hard is
+                                          irreversible. Stays T3 either way.
 """
 
 from __future__ import annotations
@@ -1307,10 +1350,16 @@ def _cmd_curated_show(args) -> int:
 def _cmd_delete(args) -> int:
     """Soft-delete (tombstone) a curated memory row -- scan-v2 SV3.
 
+    DISCOURAGED BY CONVENTION: memory is meant to be AGGREGATED and
+    RECLASSIFIED, not deleted. Prefer ``reclassify --status=graduated|closed``
+    to retire a note without losing it, or ``append`` to correct-forward.
+
     By default this is a SOFT delete: the row's ``deleted_at`` is stamped so the
     row and its body survive (recoverable, invisible to reads). ``--hard``
     performs the irreversible physical DELETE, reserved for explicit human
-    curation. Both paths keep the FTS5 mirror in sync via triggers.
+    curation and strongly discouraged (it destroys history). Both paths keep
+    the FTS5 mirror in sync via triggers. Stays T3 either way: delete reduces
+    recoverability, the direction that needs consent.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
@@ -1374,7 +1423,17 @@ def _cmd_delete(args) -> int:
 
 
 def _cmd_edit(args) -> int:
-    """Patch a single column of a curated memory row.
+    """CORRECT a single column of a curated memory row (supersede-with-history).
+
+    ``edit`` is the CORRECTION verb: it overwrites a field to fix or reframe
+    content that is already wrong. It is non-destructive under the hood -- the
+    prior value is captured in ``memory_history`` by ``trg_memory_history`` --
+    but the read surface then shows only the corrected value, which is why it
+    is classified T3 (it changes what future reads see). To ADD text WITHOUT
+    replacing the existing body, use ``gaia memory append`` instead: that is
+    the primary additive verb and is non-mutative (T0). The ``--append`` flag
+    here is retained for backward compatibility and delegates to the same
+    writer path as ``append``.
 
     T5: also accepts ``--class`` and ``--status`` flags. When --field/--content
     are omitted but a class/status flag is supplied, the call functions as a
@@ -1483,6 +1542,92 @@ def _cmd_edit(args) -> int:
                 f"Reclassified '{name}': class={reclassify_result['class']}, "
                 f"status={reclassify_result['memory_status']}"
             )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Subcommand handler: append (curated memory body growth -- the primary
+# "add something" verb)
+# ---------------------------------------------------------------------------
+#
+# Vocabulary decision (Option C): memory is AGGREGATED and RECLASSIFIED, not
+# mutated. ``append`` is the primary verb for "add text to an existing note"
+# (a carry-forward thread, a running log): it concatenates the new text onto
+# the existing body (separator ``\n\n``) and NEVER overwrites. The prior body
+# is preserved in ``memory_history`` by the ``trg_memory_history`` AFTER UPDATE
+# trigger (fires ``WHEN OLD.body IS NOT NEW.body``), so no history is lost.
+#
+# SECURITY CLASSIFICATION -- append is NON-mutative (T0), by design:
+#   ``append`` is deliberately ABSENT from ``MUTATIVE_VERBS`` in
+#   hooks/modules/security/mutative_verbs.py, so ``gaia memory append`` is
+#   classified READ_ONLY "by elimination" (the same mechanism that makes
+#   ``gaia memory add`` and ``gaia memory reclassify`` non-T3). Growing a
+#   record only ADDS capability/recoverability; per the security-tiers
+#   direction principle, that never needs consent. No change to the classifier
+#   was required -- the property falls out of the verb taxonomy. Contrast with
+#   ``edit`` / ``delete``, which ARE in MUTATIVE_VERBS and stay T3.
+# ---------------------------------------------------------------------------
+
+def _cmd_append(args) -> int:
+    """Append text to the ``body`` of an existing curated memory row.
+
+    Additive and non-destructive: the new text is concatenated to the current
+    body (separator ``\\n\\n``); the prior body survives in ``memory_history``
+    via the ``trg_memory_history`` trigger. This is the primary verb for
+    "sum something" to a carry-forward note or running thread. It routes
+    through the SAME writer path as ``edit --append`` (update_memory_field with
+    ``append=True``), so history preservation is identical.
+
+    Classified NON-mutative (T0): ``append`` is not in MUTATIVE_VERBS, so it
+    needs no T3 approval -- appending only grows the record.
+    """
+    as_json = getattr(args, "json", False)
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    name = args.name
+    body = getattr(args, "body", None)
+    body_file = getattr(args, "body_file", None)
+
+    if body_file is not None:
+        try:
+            body = _read_body_file(body_file)
+        except FileNotFoundError:
+            return _err(f"--body-file: file not found: {body_file}", as_json)
+        except OSError as exc:
+            return _err(f"--body-file: cannot read '{body_file}': {exc}", as_json)
+
+    if body is None or body == "":
+        return _err(
+            "--body or --body-file is required (the text to append)", as_json,
+        )
+
+    try:
+        from gaia.store.writer import update_memory_field
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    try:
+        result = update_memory_field(
+            workspace, name, "body", body, append=True,
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json)
+    except PermissionError as exc:
+        # MemoryWriteForbidden -- dispatch enforcement layer.
+        return _err(str(exc), as_json)
+
+    if as_json:
+        print(json.dumps({
+            "name": name,
+            "workspace": workspace,
+            "field": "body",
+            "action": result["action"],
+            "updated_at": result["updated_at"],
+        }, indent=2, default=str))
+    else:
+        print(
+            f"Appended to memory '{name}' body "
+            f"(action={result['action']}, workspace={workspace})"
+        )
     return 0
 
 
@@ -1872,11 +2017,17 @@ def register(subparsers):
     # -- delete -------------------------------------------------------------
     delete_p = actions.add_parser(
         "delete",
-        help="Soft-delete (tombstone) a curated memory row; --hard to purge",
+        help="DISCOURAGED: tombstone a curated memory row; --hard to purge",
         description=(
-            "Tombstone the row by default (deleted_at stamped; row + body "
-            "survive, invisible to reads, recoverable). Use --hard for the "
-            "irreversible physical DELETE (explicit human curation only)."
+            "DISCOURAGED BY CONVENTION: memory is meant to be AGGREGATED and "
+            "RECLASSIFIED, not deleted. Prefer `gaia memory reclassify "
+            "--status=graduated|closed` to retire a note while keeping it, or "
+            "`gaia memory append` to correct-forward. If you must remove: this "
+            "tombstones the row by default (deleted_at stamped; row + body "
+            "survive, invisible to reads, recoverable). --hard performs the "
+            "irreversible physical DELETE (explicit human curation only, "
+            "strongly discouraged -- it destroys history). T3: delete reduces "
+            "recoverability, so it requires approval."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -1906,8 +2057,17 @@ def register(subparsers):
     # -- edit ---------------------------------------------------------------
     edit_p = actions.add_parser(
         "edit",
-        help="Patch a curated memory field",
-        description="Overwrite or --append a single column.",
+        help="CORRECT a curated memory field (overwrite/supersede, with history)",
+        description=(
+            "Correction verb: overwrite a single column to fix or reframe what "
+            "is already there. The prior value is preserved in memory_history "
+            "(supersede-with-history, not a destructive mutation), but the read "
+            "surface shows only the new value. To ADD text without replacing "
+            "it, prefer `gaia memory append` -- that is the primary additive "
+            "verb. Use `edit` when the existing content is WRONG and must be "
+            "corrected. (T3: correction changes what reads see, so it needs "
+            "approval; append does not.)"
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
                "  gaia memory edit --name=foo --field=body "
@@ -1958,6 +2118,49 @@ def register(subparsers):
     edit_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON. bool.")
     edit_p.set_defaults(func=_cmd_edit)
+
+    # -- append -------------------------------------------------------------
+    # Primary "add text to an existing note" verb. Additive, history-preserving,
+    # and NON-mutative (T0): 'append' is not in MUTATIVE_VERBS, so it needs no
+    # T3 approval. Routes through the same writer path as `edit --append`.
+    append_p = actions.add_parser(
+        "append",
+        help="Append text to an existing curated memory body (additive, T0)",
+        description=(
+            "Grow the body of an existing curated memory row by concatenating "
+            "new text (separator '\\n\\n'). Additive and non-destructive -- the "
+            "prior body is preserved in memory_history. This is the primary "
+            "verb for 'add something' to a carry-forward note or running "
+            "thread. Non-mutative (needs no approval). To CORRECT or replace "
+            "existing text, use `gaia memory edit` instead."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia memory append thread_handoff --body='Next: verify T0.'\n"
+            "  gaia memory append thread_handoff --body-file=/tmp/note.md\n"
+            "  cat note.md | gaia memory append thread_handoff --body-file=-\n"
+        ),
+    )
+    append_p.add_argument("name", help="Curated memory slug.")
+    _append_body_group = append_p.add_mutually_exclusive_group(required=True)
+    _append_body_group.add_argument(
+        "--body", default=None,
+        help="Text to append to the body (markdown string).",
+    )
+    _append_body_group.add_argument(
+        "--body-file", dest="body_file", default=None, metavar="PATH",
+        help=(
+            "Read the text to append from PATH. Use '-' to read from stdin "
+            "until EOF. Useful for text with angle brackets, shell variables, "
+            "nested quotes, or markdown code blocks."
+        ),
+    )
+    append_p.add_argument("--workspace", default=None, metavar="W",
+                          help="Workspace identity.")
+    append_p.add_argument("--json", action="store_true", default=False,
+                          help="Emit JSON. bool.")
+    append_p.set_defaults(func=_cmd_append)
 
     # -- reclassify ---------------------------------------------------------
     reclass_p = actions.add_parser(

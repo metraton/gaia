@@ -106,7 +106,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | `gaia doctor` | `bin/cli/doctor.py` | System health checks: schema, FTS5 sync, agent_permissions, symlinks, settings.local.json |
 | `gaia history` | `bin/cli/history.py` | Recent agent sessions: list, show, search |
 | `gaia install` | `bin/cli/install.py` | Bootstrap DB + .claude/ structure + symlinks for a fresh install (no npm postinstall -- run manually or via lazy bootstrap on first `gaia` use) |
-| `gaia memory` | `bin/cli/memory.py` | Episodic memory: FTS5 search, show episode, health checks |
+| `gaia memory` | `bin/cli/memory.py` | Curated memory (append/add/edit/reclassify/delete/link) + episodic log: FTS5 search, show episode, health checks |
 | `gaia metrics` | `bin/cli/metrics.py` | Usage analytics: tier classification, agent invocations, anomaly counters |
 | `gaia paths` | `bin/cli/paths.py` | Inspect canonical Gaia storage paths (DB, plugin root, workspace) |
 | `gaia plan` | `bin/cli/plan.py` | Manage plans (one per brief, DB-canonical): save, show, list, status |
@@ -253,7 +253,7 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 | `gaia status` | Installation snapshot: version, mode, DB path, last scan | Quick status check |
 | `gaia metrics` | Usage analytics: tier distribution, agent invocations, anomalies | Performance analysis |
 | `gaia history` | Session history viewer | Debugging past sessions |
-| `gaia memory` | Episodic memory inspect/search | Recall past episodes, memory health |
+| `gaia memory` | Curated memory (append/add/edit/reclassify/delete/link) + episodic inspect/search | Recall past episodes, curate notes, memory health |
 | `gaia approvals` | List/accept/reject pending T3 approvals | Approval workflow |
 | `gaia brief` / `gaia plan` | Brief and plan management against the DB substrate | Planning, brief lifecycle |
 | `gaia context` | Display and refresh project context | Audit context state |
