@@ -9,13 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `gaia dev` now prints an explicit restart notice on success (both modes), since the Claude Code harness pins hook commands at session start and does not hot-reload -- an open session keeps running the OLD hooks until restarted. It also prints a stateless `export GAIA_SOURCE_ROOT=<source>` suggestion (no sidecar, nothing persisted) for when the user wants `gaia doctor`/`release check` freshness from a workspace whose source lives outside a git repo.
 - Approval grants redesign: a grant is single-use and consumed at match (before the command executes), TTL cut from 60 to 5 minutes. Approving is now coupled to execution — approval triggers an automatic verbatim re-dispatch of the approved command instead of a separate resume step. `COMMAND_SET` batches simplified to the hook-minted path only (>= 2 T3 sub-commands blocked in one compound Bash call, content-derived `approval_id`, 5-minute TTL); the plan-first batch declaration flow and the `gaia approvals derive-id` CLI are retired — there is no agent-declared or CLI-derived batch id, only the one the hook mints from the blocked chain.
 
 ### Removed
 
 - Cross-session surfacing of pending approvals: the SessionStart `[ACTIONABLE]` pending-approvals block and the per-turn pending feed are removed. Pending approvals (24h TTL, unchanged) no longer surface outside the turn that produced them.
 - `consume_session_grants` mechanism, superseded by the consumed-at-match single-use grant model.
+
+## [5.1.3] - 2026-07-07
+
+### Changed
+
+- `gaia dev` now prints an explicit restart notice on success (both modes), since the Claude Code harness pins hook commands at session start and does not hot-reload -- an open session keeps running the OLD hooks until restarted. It also prints a stateless `export GAIA_SOURCE_ROOT=<source>` suggestion (no sidecar, nothing persisted) for when the user wants `gaia doctor`/`release check` freshness from a workspace whose source lives outside a git repo.
+- Docs: `gaia-release` skill consolidated -- documents that `gaia dev` is T3 and blocks for approval, runs no tests by design (the fast loop stays cheap), and prints the restart notice on success; documents that `release check`/`release publish` resolve the canonical source via `resolve_source_root` and fail loud when no source checkout is reachable; adds a troubleshooting entry for a T3 grant re-blocking on retry when the signing cwd differs from the retry cwd (use absolute paths).
 
 ## [5.1.2] - 2026-07-07
 
