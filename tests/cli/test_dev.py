@@ -613,6 +613,37 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             # `pkg+<sha8>.tgz`, so assert a tarball survives in pack_dest.
             self.assertTrue(any(pack_dest.glob("*.tgz")))
 
+    def _mock_pack_steps(self, tarball: Path):
+        """Context-manager stack of the pack/install/wire mocks shared below."""
+        return (
+            patch("cli.dev._pack_helpers.pack_tarball", side_effect=lambda *a, **k: {
+                "action": "created", "path": str(tarball), "details": "ok",
+                "tarball": tarball, "name": "@jaguilar87/gaia", "version": "9.9.9",
+            }),
+            patch("cli.dev.install_tarball", side_effect=lambda ws, tb, **k: {
+                "action": "created", "path": str(ws), "details": "ok", "package_manager": "npm",
+            }),
+            patch("cli.dev.wire_workspace_via_installed_gaia", side_effect=lambda ws, **k: {
+                "action": "created", "path": str(ws), "details": "ok",
+            }),
+        )
+
+    def test_pack_mode_emits_restart_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_tarball = Path(tmp) / "pkg.tgz"; fake_tarball.write_bytes(b"x")
+            buf = io.StringIO()
+            p_pack, p_install, p_wire = self._mock_pack_steps(fake_tarball)
+            with p_pack, p_install, p_wire:
+                with redirect_stdout(buf):
+                    rc = cmd_dev(self._make_args(workspace, quiet=False))
+
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("Restart your Claude Code session", out)
+            self.assertIn("hooks", out)
+            self.assertIn("⚠", out)  # the warning glyph
+
 
 class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
@@ -675,6 +706,34 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
 
             self.assertEqual(rc, 1)
             self.assertEqual(install_calls, [])
+
+    def test_link_mode_emits_restart_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            buf = io.StringIO()
+            with patch("cli.dev.link_source_into_workspace",
+                       return_value={"action": "created", "path": "x", "details": "ok"}), \
+                 patch("cli.dev.install_mod.cmd_install", return_value=0):
+                with redirect_stdout(buf):
+                    rc = cmd_dev(self._make_args(workspace, quiet=False))
+
+            self.assertEqual(rc, 0)
+            out = buf.getvalue()
+            self.assertIn("Restart your Claude Code session", out)
+            self.assertIn("⚠", out)
+
+    def test_link_mode_no_warning_when_install_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            buf = io.StringIO()
+            with patch("cli.dev.link_source_into_workspace",
+                       return_value={"action": "created", "path": "x", "details": "ok"}), \
+                 patch("cli.dev.install_mod.cmd_install", return_value=1):
+                with redirect_stdout(buf):
+                    rc = cmd_dev(self._make_args(workspace, quiet=False))
+
+            self.assertEqual(rc, 1)
+            self.assertNotIn("Restart your Claude Code session", buf.getvalue())
 
 
 # ---------------------------------------------------------------------------

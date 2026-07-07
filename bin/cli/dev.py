@@ -74,6 +74,34 @@ from cli.install import _report_step  # type: ignore  # noqa: E402
 _NPM_PACKAGE_NAME = "@jaguilar87/gaia"
 
 
+def _restart_warning() -> str:
+    """The mandatory post-`gaia dev` restart notice.
+
+    The Claude Code harness pins each hook's command at SESSION START and does
+    not hot-reload it, so a session that is already open keeps running the OLD
+    hooks until it is restarted -- a freshly installed fix is inert until then.
+    Emitted verbatim by both pack and link modes so the notice is identical and
+    testable.
+    """
+    return (
+        "  ⚠  Restart your Claude Code session to activate the new hooks.\n"
+        "     The harness pins hook commands at session start (no hot-reload),\n"
+        "     so until you restart, this session keeps running the OLD hooks."
+    )
+
+
+def _source_root_hint(source_root: Path) -> str:
+    """Ergonomic, stateless suggestion for `GAIA_SOURCE_ROOT`.
+
+    `gaia doctor`'s install-provenance freshness check and `gaia release
+    check` need to locate this SOURCE tree when the workspace is not a git
+    repo and the source lives outside it. This is a printed suggestion only
+    -- no sidecar file, no registry, nothing persisted -- the user decides
+    whether to export it.
+    """
+    return f"  export GAIA_SOURCE_ROOT={source_root}"
+
+
 # ---------------------------------------------------------------------------
 # Package-manager detection + tarball install (pack mode)
 # ---------------------------------------------------------------------------
@@ -297,8 +325,12 @@ def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool) -> int:
     if rc == 0 and not quiet:
         print(
             "\n  gaia dev (link): workspace wired to the live source tree.\n"
-            "  Restart Claude Code, then test.\n"
         )
+        print(_restart_warning())
+        print()
+        print("  Tip: for `gaia doctor`/`release check` freshness from this workspace, run:")
+        print(_source_root_hint(_PACKAGE_ROOT))
+        print()
     return rc
 
 
@@ -495,8 +527,13 @@ def _run_pack_mode(
     if not quiet:
         print(
             f"\n  gaia dev: packed {pack_res.get('name')}@{pack_res.get('version')} "
-            f"into {workspace}.\n  Restart Claude Code, then test.\n"
+            f"into {workspace}.\n"
         )
+        print(_restart_warning())
+        print()
+        print("  Tip: for `gaia doctor`/`release check` freshness from this workspace, run:")
+        print(_source_root_hint(_PACKAGE_ROOT))
+        print()
     return 0
 
 
