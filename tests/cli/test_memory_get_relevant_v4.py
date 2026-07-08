@@ -62,16 +62,30 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 def _insert_memory(db_path, name, type_, class_, status_, desc,
-                   updated_at, workspace="testws", body=None):
+                   updated_at, workspace="testws", body=None, project_ref=None):
     body = body or f"body for {name}"
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.execute(
         "INSERT INTO memory (workspace, name, type, description, body, "
-        "                    updated_at, class, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (workspace, name, type_, desc, body, updated_at, class_, status_),
+        "                    updated_at, class, status, project_ref) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (workspace, name, type_, desc, body, updated_at, class_, status_,
+         project_ref),
+    )
+    con.commit()
+    con.close()
+
+
+def _insert_project(db_path, name, path, project_identity,
+                    workspace="testws", status="active"):
+    con = sqlite3.connect(str(db_path))
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute(
+        "INSERT INTO projects (workspace, name, path, project_identity, status) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (workspace, name, path, project_identity, status),
     )
     con.commit()
     con.close()
@@ -330,6 +344,61 @@ class TestEmptySectionsOmitHeader:
         payload = json.loads(out)
         assert payload["block"] == ""
         assert payload["items"] == []
+
+
+class TestProjectAwareInjection:
+    """Read/injection is project-aware: when the cwd resolves to a project,
+    prioritise its anchored rows, include unanchored (project_ref NULL) rows
+    as the workspace past, and exclude rows anchored to OTHER projects. When
+    the cwd resolves to no project, behaviour is unchanged (all workspace rows).
+    """
+
+    def _seed(self, tmp_db, proj_dir):
+        _insert_project(tmp_db, "p1", str(proj_dir.resolve()), "id/p1")
+        # anchor rows across three anchoring states.
+        _insert_memory(tmp_db, "atom_mine", "atom", "anchor", None,
+                       "mine", "2026-05-22T10:00:00Z", project_ref="id/p1")
+        _insert_memory(tmp_db, "atom_legacy", "atom", "anchor", None,
+                       "legacy null", "2026-05-22T09:00:00Z", project_ref=None)
+        _insert_memory(tmp_db, "atom_other", "atom", "anchor", None,
+                       "other project", "2026-05-22T11:00:00Z",
+                       project_ref="id/other")
+
+    def test_active_project_scopes_and_prioritises(self, tmp_db, tmp_path,
+                                                   monkeypatch, capsys):
+        proj_dir = tmp_path / "p1"
+        proj_dir.mkdir()
+        self._seed(tmp_db, proj_dir)
+        monkeypatch.chdir(proj_dir)
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        items = json.loads(out)["items"]
+        names = [i["name"] for i in items]
+
+        # Row anchored to a DIFFERENT project is excluded.
+        assert "atom_other" not in names
+        # Active-project row and legacy NULL row are both present.
+        assert "atom_mine" in names
+        assert "atom_legacy" in names
+        # Active-project row floats above the NULL row despite older updated_at.
+        assert names.index("atom_mine") < names.index("atom_legacy")
+
+    def test_no_active_project_keeps_all_workspace_rows(self, tmp_db, tmp_path,
+                                                        monkeypatch, capsys):
+        proj_dir = tmp_path / "p1"
+        proj_dir.mkdir()
+        self._seed(tmp_db, proj_dir)
+        # cwd is the workspace root, ABOVE the project dir -> no active project.
+        monkeypatch.chdir(tmp_path)
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        names = {i["name"] for i in json.loads(out)["items"]}
+        # Unchanged workspace behaviour: every anchoring state is visible.
+        assert {"atom_mine", "atom_legacy", "atom_other"} <= names
 
 
 class TestHeaderStructure:

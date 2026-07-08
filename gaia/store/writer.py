@@ -1402,6 +1402,126 @@ def resolve_project_ref(
     return identity
 
 
+def project_workspaces(
+    project_name: str,
+    *,
+    db_path: Path | None = None,
+) -> list[str]:
+    """Return the workspaces that contain a project named ``project_name``.
+
+    Used by ``gaia memory add`` to tell two failure modes apart when
+    ``resolve_project_ref(workspace, name)`` cannot resolve: a project that
+    does not exist at ALL vs. one that exists under a DIFFERENT workspace (a
+    ``--project`` / ``--workspace`` mismatch). Considers rows of any
+    ``status`` -- a 'missing' project under another workspace is still a
+    mismatch signal, not a "does not exist".
+
+    Never raises: returns ``[]`` on any DB/lookup failure so the caller's
+    mismatch heuristic degrades to the plain "not found" path.
+
+    Args:
+        project_name: Project basename (matches ``projects.name``).
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        A list of distinct workspace names, possibly empty.
+    """
+    try:
+        con = _connect(db_path)
+        try:
+            rows = con.execute(
+                "SELECT DISTINCT workspace FROM projects WHERE name = ?",
+                (project_name,),
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 -- best-effort discriminator
+        return []
+    return [r["workspace"] for r in rows]
+
+
+def resolve_project_ref_by_cwd(
+    workspace: str,
+    *,
+    cwd: Path | str | None = None,
+    db_path: Path | None = None,
+) -> str | None:
+    """Resolve the *active* project anchor for ``workspace`` from ``cwd``.
+
+    This is the cwd->project resolution used by the READ/injection side only
+    (``gaia memory get-relevant``, to scope and re-rank the SessionStart
+    block). It is deliberately NOT used by the write side: ``gaia memory add``
+    demands explicit scope and refuses to infer a `project_ref` from the cwd,
+    because a wrong guess on write would persist bad data, whereas on read it
+    only re-ranks what is shown (cheap, reversible). Unlike
+    :func:`resolve_project_ref` -- which resolves an *explicit* ``projects.name``
+    and RAISES when it cannot -- this one never raises and never guesses: it
+    returns the ``project_identity`` of the active project, or ``None`` when
+    the cwd does not sit inside exactly one project.
+
+    Resolution rule (matches the design decision): among the workspace's
+    active projects, find those whose recorded ``path`` CONTAINS ``cwd``
+    (``path`` is an ancestor of, or equal to, ``cwd``). The MOST SPECIFIC
+    match wins -- the project with the longest such ``path`` -- so a nested
+    project resolves to itself rather than to an ancestor project. When NO
+    project path contains ``cwd`` (e.g. sitting at the root of a workspace
+    whose N projects all live in subdirectories), the result is ``None``
+    and the caller falls back to workspace-only behaviour. A row whose
+    ``path`` or ``project_identity`` is NULL, or whose ``status`` is not
+    'active', can never be the resolved anchor.
+
+    Fail-safe: any error (unresolvable cwd, DB failure) returns ``None`` --
+    the injection path must never break SessionStart merely because the
+    active project could not be inferred.
+
+    Args:
+        workspace: Workspace name (scopes the ``projects`` lookup).
+        cwd: Directory to resolve from. Defaults to ``Path.cwd()``.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        The resolved ``project_identity`` string, or ``None``.
+    """
+    try:
+        target = Path(cwd) if cwd is not None else Path.cwd()
+        target = target.resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    try:
+        con = _connect(db_path)
+        try:
+            rows = con.execute(
+                "SELECT path, project_identity FROM projects "
+                "WHERE workspace = ? AND status = 'active' "
+                "  AND path IS NOT NULL AND project_identity IS NOT NULL",
+                (workspace,),
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:  # noqa: BLE001 -- fail-safe default path
+        return None
+
+    best_identity: str | None = None
+    best_len = -1
+    for r in rows:
+        raw_path = r["path"]
+        if not raw_path:
+            continue
+        try:
+            proj_path = Path(raw_path).resolve()
+        except (OSError, RuntimeError):
+            continue
+        # `path` CONTAINS `cwd`: proj_path is an ancestor of, or equal to, cwd.
+        if target == proj_path or target.is_relative_to(proj_path):
+            plen = len(str(proj_path))
+            if plen > best_len:
+                best_len = plen
+                best_identity = r["project_identity"]
+
+    return best_identity
+
+
 def upsert_memory(
     workspace: str,
     name: str,
@@ -3110,9 +3230,15 @@ def relocate_contracts(
 ) -> dict:
     """Re-key ``project_context_contracts`` rows from one workspace to another.
 
-    `gaia scan` never touches project_context_contracts, so a contract written
-    under the wrong workspace (e.g. AOS project context mis-keyed to the 'me'
-    workspace) can only be corrected by moving the row. This re-keys the named
+    `gaia scan` itself never writes ``project_context_contracts`` -- it only
+    populates the raw ``projects`` index. The decoupled promotion stage
+    (``tools/scan/promote.py::promote_workspace``, invoked by ``gaia scan``
+    after a successful classify pass) does write into it, but only
+    scan-owned fields on entries keyed by physical identity (path / remote),
+    never the ``workspace`` PK column itself. So a contract mis-keyed to the
+    wrong workspace (e.g. AOS project context mis-keyed to the 'me'
+    workspace) still cannot self-correct via scan or promotion -- it can only
+    be corrected by moving the row. This re-keys the named
     contracts by UPDATEing the ``workspace`` PK column IN PLACE -- payload,
     metadata and updated_at are preserved, and the ``trg_pcc_history`` AFTER
     UPDATE trigger records the move in project_context_contracts_history.

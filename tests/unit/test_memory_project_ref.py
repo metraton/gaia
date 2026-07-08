@@ -193,3 +193,121 @@ def test_resolve_project_ref_scoped_to_workspace(db: Path) -> None:
 
     with pytest.raises(ValueError, match="not found"):
         resolve_project_ref("me", "gaia", db_path=db)
+
+
+# ---------------------------------------------------------------------------
+# resolve_project_ref_by_cwd() -- shared cwd->project default resolution
+# ---------------------------------------------------------------------------
+
+def _seed_project_with_path(
+    db_path: Path, workspace: str, name: str, path: str,
+    project_identity: str | None, status: str = "active",
+) -> None:
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        con.execute(
+            "INSERT INTO projects (workspace, name, path, project_identity, status) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (workspace, name, path, project_identity, status),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_by_cwd_resolves_when_cwd_inside_project(db: Path, tmp_path) -> None:
+    """cwd sitting inside a project's path resolves to that project_identity."""
+    from gaia.store.writer import resolve_project_ref_by_cwd
+
+    proj = tmp_path / "gaia"
+    (proj / "sub").mkdir(parents=True)
+    _seed_project_with_path(db, "me", "gaia", str(proj), "github.com/x/gaia")
+
+    # cwd == project root, and cwd inside a subdir both resolve.
+    assert resolve_project_ref_by_cwd("me", cwd=proj, db_path=db) == "github.com/x/gaia"
+    assert resolve_project_ref_by_cwd("me", cwd=proj / "sub", db_path=db) == "github.com/x/gaia"
+
+
+def test_by_cwd_workspace_root_returns_none(db: Path, tmp_path) -> None:
+    """At a workspace root ABOVE all project subdirs, no project path contains
+    the cwd -> None (fallback to workspace-only behaviour)."""
+    from gaia.store.writer import resolve_project_ref_by_cwd
+
+    ws_root = tmp_path / "me"
+    (ws_root / "proj-a").mkdir(parents=True)
+    (ws_root / "proj-b").mkdir(parents=True)
+    _seed_project_with_path(db, "me", "proj-a", str(ws_root / "proj-a"), "id/a")
+    _seed_project_with_path(db, "me", "proj-b", str(ws_root / "proj-b"), "id/b")
+
+    assert resolve_project_ref_by_cwd("me", cwd=ws_root, db_path=db) is None
+
+
+def test_by_cwd_most_specific_nested_wins(db: Path, tmp_path) -> None:
+    """When two project paths both contain the cwd (nested), the longest
+    (most specific) path wins."""
+    from gaia.store.writer import resolve_project_ref_by_cwd
+
+    outer = tmp_path / "mono"
+    inner = outer / "packages" / "inner"
+    inner.mkdir(parents=True)
+    _seed_project_with_path(db, "me", "mono", str(outer), "id/outer")
+    _seed_project_with_path(db, "me", "inner", str(inner), "id/inner")
+
+    assert resolve_project_ref_by_cwd("me", cwd=inner, db_path=db) == "id/inner"
+
+
+def test_by_cwd_null_identity_not_resolved(db: Path, tmp_path) -> None:
+    """A matching project with no project_identity is never the anchor."""
+    from gaia.store.writer import resolve_project_ref_by_cwd
+
+    proj = tmp_path / "unscanned"
+    proj.mkdir()
+    _seed_project_with_path(db, "me", "unscanned", str(proj), None)
+
+    assert resolve_project_ref_by_cwd("me", cwd=proj, db_path=db) is None
+
+
+def test_by_cwd_missing_status_not_resolved(db: Path, tmp_path) -> None:
+    """A project whose status is 'missing' is never the anchor."""
+    from gaia.store.writer import resolve_project_ref_by_cwd
+
+    proj = tmp_path / "gone"
+    proj.mkdir()
+    _seed_project_with_path(db, "me", "gone", str(proj), "id/gone", status="missing")
+
+    assert resolve_project_ref_by_cwd("me", cwd=proj, db_path=db) is None
+
+
+def test_by_cwd_sibling_prefix_does_not_match(db: Path, tmp_path) -> None:
+    """A shared string prefix is not a path-ancestor: /x/me must not match a
+    cwd under /x/me-other (boundary safety)."""
+    from gaia.store.writer import resolve_project_ref_by_cwd
+
+    proj = tmp_path / "me"
+    proj.mkdir()
+    sibling = tmp_path / "me-other"
+    sibling.mkdir()
+    _seed_project_with_path(db, "me", "me", str(proj), "id/me")
+
+    assert resolve_project_ref_by_cwd("me", cwd=sibling, db_path=db) is None
+
+
+def test_by_cwd_scoped_to_workspace(db: Path, tmp_path) -> None:
+    """Resolution only considers projects in the named workspace."""
+    from gaia.store.writer import resolve_project_ref_by_cwd, _connect
+
+    con = _connect(db)
+    try:
+        con.execute("INSERT INTO workspaces (name) VALUES ('other')")
+        con.commit()
+    finally:
+        con.close()
+
+    proj = tmp_path / "gaia"
+    proj.mkdir()
+    _seed_project_with_path(db, "other", "gaia", str(proj), "id/other-gaia")
+
+    # Same cwd, but the project lives in workspace 'other', so 'me' sees nothing.
+    assert resolve_project_ref_by_cwd("me", cwd=proj, db_path=db) is None
+    assert resolve_project_ref_by_cwd("other", cwd=proj, db_path=db) == "id/other-gaia"

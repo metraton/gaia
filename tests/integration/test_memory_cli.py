@@ -51,6 +51,10 @@ def _read_memory_row(db_path: Path, workspace: str, name: str) -> dict | None:
             (workspace, name),
         ).fetchone()
         return dict(row) if row is not None else None
+    except sqlite3.OperationalError:
+        # DB never materialized (e.g. the write was refused before any
+        # connection opened) -- then there is certainly no row.
+        return None
     finally:
         con.close()
 
@@ -352,6 +356,119 @@ def test_add_update_without_project_flag_preserves_existing_anchor(
     assert row["project_ref"] == "github.com/me/x", (
         "omitting --project on update must not erase an existing anchor"
     )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic anchoring contract (AC-1..AC-5)
+#
+# The function does not guess and does not infer scope from the cwd: at least
+# one explicit scope flag (--project preferred, or --workspace) must be given;
+# --project must resolve or it is a structured error; a project/workspace
+# mismatch is its own structured error; --workspace-only is the explicit
+# degraded lane (project_ref NULL, exit 0).
+# ---------------------------------------------------------------------------
+
+def _err_payload(capsys) -> dict:
+    """Parse the JSON error object printed by a structured-error return."""
+    return json.loads(capsys.readouterr().out)
+
+
+def test_add_ac1_no_scope_errors_structured(tmp_db, tmp_path,
+                                             monkeypatch, capsys):
+    """AC-1: neither --project nor --workspace -> exit!=0, structured
+    'missing_scope' error, and NO row written."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    rc = _cmd_add(_add_args(name="no-scope-mem", workspace=None, json=True))
+    assert rc == 1
+    payload = _err_payload(capsys)
+    assert payload["code"] == "missing_scope"
+    assert _read_memory_row(tmp_db, "me", "no-scope-mem") is None
+
+
+def test_add_ac2_project_resolves_anchors_identity(tmp_db, tmp_path,
+                                                   monkeypatch, capsys):
+    """AC-2: --project=<scanned project> -> exit 0 and project_ref = that
+    project's project_identity."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    _seed_project(tmp_db, "me", "century", project_identity="github.com/me/century")
+
+    rc = _cmd_add(_add_args(name="ac2-mem", project="century", workspace="me"))
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "ac2-mem")
+    assert row is not None
+    assert row["project_ref"] == "github.com/me/century"
+
+
+def test_add_ac3_unresolvable_project_errors_no_row(tmp_db, tmp_path,
+                                                    monkeypatch, capsys):
+    """AC-3: --project=<inexistent> -> exit!=0, structured 'project_unresolved'
+    error, and NO row written (no silent fallback)."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    rc = _cmd_add(_add_args(name="ac3-mem", project="ghost", workspace="me",
+                            json=True))
+    assert rc == 1
+    payload = _err_payload(capsys)
+    assert payload["code"] == "project_unresolved"
+    assert _read_memory_row(tmp_db, "me", "ac3-mem") is None
+
+
+def test_add_ac4_project_workspace_mismatch_errors_no_row(tmp_db, tmp_path,
+                                                          monkeypatch, capsys):
+    """AC-4: --project=<X> --workspace=<Y> that do not correspond -> exit!=0,
+    structured 'project_workspace_mismatch' error, and NO row written."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    # 'century' exists ONLY under workspace 'century-inc'.
+    _seed_project(tmp_db, "century-inc", "century",
+                  project_identity="github.com/me/century")
+
+    rc = _cmd_add(_add_args(name="ac4-mem", project="century", workspace="me",
+                            json=True))
+    assert rc == 1
+    payload = _err_payload(capsys)
+    assert payload["code"] == "project_workspace_mismatch"
+    assert payload["found_in"] == ["century-inc"]
+    assert _read_memory_row(tmp_db, "me", "ac4-mem") is None
+
+
+def test_add_ac5_workspace_only_degraded_lane_null(tmp_db, tmp_path,
+                                                   monkeypatch, capsys):
+    """AC-5: --workspace only (no --project) -> exit 0, project_ref NULL.
+    Legitimate explicit workspace-scoped note."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    rc = _cmd_add(_add_args(name="ac5-mem", workspace="me"))
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "ac5-mem")
+    assert row is not None
+    assert row["project_ref"] is None
+
+
+def test_add_project_no_identity_errors_structured(tmp_db, tmp_path,
+                                                   monkeypatch, capsys):
+    """A --project that exists in the workspace but has no project_identity yet
+    -> structured 'project_no_identity' error, no row (not a silent NULL)."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    _seed_project(tmp_db, "me", "unscanned", project_identity=None)
+
+    rc = _cmd_add(_add_args(name="no-id-mem", project="unscanned",
+                            workspace="me", json=True))
+    assert rc == 1
+    payload = _err_payload(capsys)
+    assert payload["code"] == "project_no_identity"
+    assert _read_memory_row(tmp_db, "me", "no-id-mem") is None
 
 
 # ---------------------------------------------------------------------------

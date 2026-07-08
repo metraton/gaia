@@ -34,12 +34,18 @@ these verbs in this order:
                                           DB-only writer; no filesystem side
                                           effects (no .md under
                                           ~/.claude/projects/.../memory/).
+                                          Requires >=1 explicit scope flag
+                                          (--project preferred, or --workspace);
+                                          refuses to write with both empty.
                                           --project anchors memory.project_ref
                                           (N3, forward-only) by resolving a
                                           project name within --workspace to
                                           its stable project_identity; never
-                                          guesses (clear error if the project
-                                          does not exist or has no identity).
+                                          guesses. Unresolvable/mismatched
+                                          scope is a structured error (JSON:
+                                          {"error","code"}) and writes no row.
+                                          --workspace only => project_ref NULL,
+                                          exit 0 (explicit degraded lane).
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->
@@ -194,6 +200,33 @@ def _err(msg: str, as_json: bool) -> int:
         print(json.dumps({"error": msg}))
     else:
         print(f"Error: {msg}", file=sys.stderr)
+    return 1
+
+
+def _err_structured(msg: str, as_json: bool, *, code: str, **extra) -> int:
+    """Machine-parseable error: ``_err`` plus a stable ``code`` a caller can
+    branch on (and optional structured ``extra`` fields).
+
+    Designed so an LLM (the orchestrator) that runs the command and reads the
+    output can *manage* the failure deterministically rather than guess:
+
+      * ``--json`` emits ``{"error": msg, "code": code, ...extra}`` -- parse
+        ``code`` and route (retry workspace-only, ask the user, ...).
+      * text mode prints ``Error [code]: msg`` to stderr, then each extra
+        field on its own indented line.
+
+    Exit code stays ``1`` -- the CLI's existing non-zero error convention --
+    so callers that only check the exit code still see failure; ``code`` is
+    the added discriminator for callers that read the payload.
+    """
+    if as_json:
+        payload = {"error": msg, "code": code}
+        payload.update(extra)
+        print(json.dumps(payload))
+    else:
+        print(f"Error [{code}]: {msg}", file=sys.stderr)
+        for k, v in extra.items():
+            print(f"  {k}: {v}", file=sys.stderr)
     return 1
 
 
@@ -643,11 +676,15 @@ def _cmd_add(args) -> int:
     body = getattr(args, "body", None)
     body_file = getattr(args, "body_file", None)
     description = getattr(args, "description", None)
-    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    # Raw explicit flags (argparse default=None means "flag not provided").
+    # The scope gate below inspects the RAW flag, not the resolved workspace,
+    # so a defaulted workspace never satisfies the "at least one" requirement.
+    workspace_flag = getattr(args, "workspace", None)
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
     project_flag = getattr(args, "project", None)
     project_ref_flag = getattr(args, "project_ref", None)
+    workspace = _resolve_workspace(workspace_flag)
 
     if not name:
         return _err("--name is required", as_json)
@@ -671,10 +708,30 @@ def _cmd_add(args) -> int:
             as_json,
         )
 
+    # ------------------------------------------------------------------
+    # Deterministic anchoring contract (no guessing, no silent fallback).
+    # ------------------------------------------------------------------
+    # At least ONE explicit scope flag must be given: --project (preferred),
+    # --project-ref, or --workspace. Writing with none of them provided would
+    # silently leave project_ref NULL purely for lack of input -- exactly the
+    # "silent NULL by absence" this contract forbids. Scope inference from
+    # natural language ("the century project") lives in the ORCHESTRATOR, not
+    # in this function; the function only accepts explicit, resolvable scope.
+    if project_flag is None and project_ref_flag is None and workspace_flag is None:
+        return _err_structured(
+            "no scope provided: pass at least one of --project (preferred) or "
+            "--workspace. Refusing to write with project/workspace both empty "
+            "(that would leave project_ref NULL by absence of input, not by "
+            "intent). To anchor to a project use --project=<name>; for a "
+            "workspace-scoped note use --workspace=<ws>.",
+            as_json,
+            code="missing_scope",
+        )
+
     try:
         from gaia.store.writer import (
             upsert_memory, reclassify_memory, resolve_project_ref,
-            VALID_MEMORY_TYPES,
+            project_workspaces, VALID_MEMORY_TYPES,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -685,18 +742,53 @@ def _cmd_add(args) -> int:
             as_json,
         )
 
-    # N3: forward-only project_ref anchor. --project resolves a project name
-    # (within `workspace`) to its stable project_identity; --project-ref
-    # passes an already-known identity directly. Neither guesses: an
-    # unresolvable --project is a clear error, never a silent NULL.
+    # N3: forward-only project_ref anchor.
+    #   * --project resolves a project NAME within `workspace` to its stable
+    #     projects.project_identity. Must resolve or it is a structured error
+    #     -- never a silent NULL, never a guess.
+    #   * --project-ref passes an already-known identity string directly.
+    #   * --workspace only (no project flag) is the explicit degraded lane:
+    #     a legitimate workspace-scoped note with project_ref = NULL, exit 0.
+    #
+    # When both --project and --workspace are given and the project does not
+    # belong to that workspace, that is a MISMATCH -- reported with its own
+    # structured code so the caller can tell it apart from a project that does
+    # not exist at all.
     project_ref = None
     if project_flag is not None:
         try:
             project_ref = resolve_project_ref(workspace, project_flag)
         except ValueError as exc:
-            return _err(str(exc), as_json)
+            msg = str(exc)
+            if "project_identity" in msg:
+                # Project exists in this workspace but has no identity yet.
+                return _err_structured(
+                    msg, as_json, code="project_no_identity",
+                    project=project_flag, workspace=workspace,
+                )
+            # Not found in `workspace`. If --workspace was explicit and the
+            # project exists under a DIFFERENT workspace, this is a mismatch;
+            # otherwise the project simply does not exist anywhere.
+            if workspace_flag is not None:
+                other_ws = [w for w in project_workspaces(project_flag)
+                            if w != workspace]
+                if other_ws:
+                    return _err_structured(
+                        f"project {project_flag!r} does not belong to "
+                        f"workspace {workspace!r}; --project and --workspace "
+                        f"do not correspond. The project exists under "
+                        f"{other_ws!r}.",
+                        as_json, code="project_workspace_mismatch",
+                        project=project_flag, workspace=workspace,
+                        found_in=other_ws,
+                    )
+            return _err_structured(
+                msg, as_json, code="project_unresolved",
+                project=project_flag, workspace=workspace,
+            )
     elif project_ref_flag is not None:
         project_ref = project_ref_flag
+    # else: --workspace-only degraded lane -> project_ref stays None (exit 0).
 
     try:
         res = upsert_memory(
@@ -942,11 +1034,26 @@ def _cmd_get_relevant(args) -> int:
     max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
 
     try:
-        from gaia.store.writer import _connect, get_memory  # noqa: F401
+        from gaia.store.writer import (
+            _connect, get_memory, resolve_project_ref_by_cwd,  # noqa: F401
+        )
     except ImportError:
         if as_json:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
+
+    # Project-aware scoping: infer the active project from the cwd using the
+    # SAME shared resolver the write side uses, so "active project" means the
+    # same thing on both ends. When it resolves, injection prioritises rows
+    # anchored to that project (project_ref = active) while still including
+    # the unanchored workspace past (project_ref IS NULL) -- so no history is
+    # lost and rows anchored to OTHER projects in the same workspace drop out.
+    # When it does not resolve (e.g. at a workspace root), behaviour is
+    # unchanged: workspace-scoped, all rows. Never raises.
+    try:
+        active_project = resolve_project_ref_by_cwd(workspace)
+    except Exception:
+        active_project = None
 
     # Pull class/status-aware rows via raw SQL (list_memory doesn't expose
     # those columns yet, and we need a supersedes-NOT-IN subquery).
@@ -962,7 +1069,8 @@ def _cmd_get_relevant(args) -> int:
             # supersedes edge. A row A with an incoming `supersedes` from B
             # means "B replaces A" -- A drops out of the injection.
             base_select = (
-                "SELECT name, type, description, updated_at, class, status "
+                "SELECT name, type, description, updated_at, class, status, "
+                "       project_ref "
                 "FROM memory "
                 "WHERE workspace = ? "
                 # scan-v2 SV3: a soft-deleted (tombstoned) row must not be
@@ -973,14 +1081,33 @@ def _cmd_get_relevant(args) -> int:
                 "    WHERE workspace = ? AND kind = 'supersedes'"
                 "  ) "
             )
+            base_params: list = [workspace, workspace]
+
+            # When an active project is known, restrict to its rows OR the
+            # unanchored workspace rows, and float active-project rows to the
+            # top of each section via a CASE key in ORDER BY. The CASE binds
+            # one extra param, appended per-section AFTER the WHERE params
+            # because it appears later in the statement string.
+            if active_project is not None:
+                base_select += "  AND (project_ref = ? OR project_ref IS NULL) "
+                base_params.append(active_project)
+                order_prefix = "CASE WHEN project_ref = ? THEN 0 ELSE 1 END, "
+            else:
+                order_prefix = ""
+
+            def _section_params() -> list:
+                params = list(base_params)
+                if order_prefix:
+                    params.append(active_project)
+                return params
 
             # Section 1: carry_forward -- no LIMIT.
             if "carry_forward" in active_sections:
                 cur = con.execute(
                     base_select
                     + "  AND class = 'thread' AND status = 'carry_forward' "
-                    + "ORDER BY COALESCE(updated_at, '') DESC",
-                    (workspace, workspace),
+                    + "ORDER BY " + order_prefix + "COALESCE(updated_at, '') DESC",
+                    _section_params(),
                 )
                 rows_by_section["carry_forward"] = [dict(r) for r in cur.fetchall()]
 
@@ -990,9 +1117,9 @@ def _cmd_get_relevant(args) -> int:
                 cur = con.execute(
                     base_select
                     + "  AND class = 'anchor' "
-                    + "ORDER BY COALESCE(updated_at, '') DESC "
+                    + "ORDER BY " + order_prefix + "COALESCE(updated_at, '') DESC "
                     + f"LIMIT {anchor_quota}",
-                    (workspace, workspace),
+                    _section_params(),
                 )
                 rows_by_section["anchor"] = [dict(r) for r in cur.fetchall()]
 
@@ -1002,9 +1129,9 @@ def _cmd_get_relevant(args) -> int:
                 cur = con.execute(
                     base_select
                     + "  AND class = 'thread' AND status = 'open' "
-                    + "ORDER BY COALESCE(updated_at, '') DESC "
+                    + "ORDER BY " + order_prefix + "COALESCE(updated_at, '') DESC "
                     + f"LIMIT {thread_quota}",
-                    (workspace, workspace),
+                    _section_params(),
                 )
                 rows_by_section["thread_open"] = [dict(r) for r in cur.fetchall()]
         finally:
@@ -1044,6 +1171,7 @@ def _cmd_get_relevant(args) -> int:
                 "memory_status": r.get("status"),
                 "section": section_key,
                 "description": desc,
+                "project_ref": r.get("project_ref"),
             })
         out.append("")  # blank line between sections
         return out

@@ -259,29 +259,72 @@ the `projects` row's `(workspace, name)` does. A `project_*` note about the
 workspace as a whole (not a single project within it) legitimately leaves
 `project_ref` NULL.
 
-**CLI-enforced (N3, forward-only):** `gaia memory add` exposes `--project=<name>`,
-resolved within `--workspace` to that project's `projects.project_identity`
-and persisted as `memory.project_ref`:
+**Required scope (deterministic, no guessing).** `gaia memory add` requires
+**at least one** explicit scope flag -- `--project` (preferred) or
+`--workspace`. It never writes with project and workspace both empty: that
+would leave `project_ref` NULL purely for lack of input. The function does
+**not** infer scope from the cwd and does **not** fall back silently. Scope
+inference from natural language ("the century project") is the
+**orchestrator's** job, not the function's -- the function only accepts
+explicit, resolvable scope.
 
-```bash
-gaia memory add --name=project_x_status --type=project \
-  --project=x --workspace=me --body="..."
-```
+- `--project=<name>` resolves the name within `--workspace` to that project's
+  `projects.project_identity` and persists it as `memory.project_ref`:
 
-If you already hold the stable identity string (e.g. scripting across
-workspaces), pass it directly with `--project-ref=<identity>` instead --
-mutually exclusive with `--project`. Neither flag guesses: an unknown
-project name, or a project row that has no `project_identity` yet (legacy
-row, or not yet scanned), is a clear error, not a silent NULL.
+  ```bash
+  gaia memory add --name=project_x_status --type=project \
+    --project=x --workspace=me --body="..."
+  ```
+
+- `--project-ref=<identity>` anchors directly to a known identity string
+  (scripting across workspaces); mutually exclusive with `--project`.
+- `--workspace=<ws>` alone (no project flag) is the **explicit degraded
+  lane**: a legitimate workspace-scoped note with `project_ref` NULL and
+  exit 0. A `project_*` note about the workspace as a whole lives here.
+
+**Errors are structured and machine-parseable** so the orchestrator can run
+the command, read the failure, and *manage* it deterministically instead of
+guessing. Every failure exits non-zero (1) and, with `--json`, prints
+`{"error": "...", "code": "<code>", ...}` (text mode prints
+`Error [<code>]: ...` to stderr). On any of them the row is **not** written --
+there is no partial or silent-NULL write:
+
+| `code` | Cause | How the orchestrator manages it |
+|--------|-------|---------------------------------|
+| `missing_scope` | Neither `--project` nor `--workspace` given | Re-run with `--workspace` (degraded lane), or resolve a project and re-run with `--project`. |
+| `project_unresolved` | `--project=<name>` does not exist in the workspace | Ask the user which project, or list `projects` and retry. |
+| `project_workspace_mismatch` | `--project` exists, but under a different workspace (see `found_in`) | Re-run with a workspace from `found_in`, or correct the project name. |
+| `project_no_identity` | Project exists but has no `project_identity` yet | `gaia scan` first, then retry. |
+
+When `--project` resolves, the note is anchored: `memory.project_ref` = the
+project's durable identity.
 
 Anchoring is **forward-only, by design**. Rows written before this
 mechanism existed stay `project_ref IS NULL` -- the memory-row-to-project
 mapping is genuinely ambiguous whenever a workspace hosts more than one
-project, so no backfill can guess it. Only whoever writes a `project_*`
-row -- the one who knows which project it is about -- anchors it, via
-`--project` at write time. `upsert_memory()` treats `project_ref` with
-coalesce-or-omit discipline: omitting it on a later update never clobbers
-a previously-set anchor back to NULL.
+project, so no backfill can guess it. A `project_*` row gets anchored only
+by an explicit `--project` / `--project-ref` at write time.
+`upsert_memory()` treats `project_ref` with coalesce-or-omit discipline:
+omitting it on a later update never clobbers a previously-set anchor back to
+NULL (a later `add` that re-supplies only `--workspace` keeps the prior
+anchor).
+
+**Project-aware retrieval:** `gaia memory get-relevant` (the SessionStart
+injection path, `_cmd_get_relevant`) is no longer purely workspace-scoped.
+It resolves the active project from the cwd via the same shared resolver,
+and when that resolves, restricts and reorders results to prioritize rows
+anchored to the active project (`project_ref = active`) while still
+including unanchored workspace-wide notes (`project_ref IS NULL`) --
+rows anchored to a *different* project in the same workspace drop out.
+When the cwd does not resolve to a single project (e.g. at a workspace
+root), retrieval falls back to the previous behavior: workspace-scoped,
+all rows.
+
+This cwd inference is **read-only and deliberate**: on retrieval a wrong
+guess only re-ranks what is shown (cheap, reversible), so inferring scope
+from the cwd is safe. It is **not** mirrored on the write side, where a wrong
+guess would persist a bad `project_ref` -- hence `add` demands explicit
+scope and refuses to infer (see "Required scope" above).
 
 ## Curate flow
 
