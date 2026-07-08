@@ -31,6 +31,26 @@ from pathlib import Path
 from typing import Any
 
 
+def _is_source_checkout(path: Path) -> bool:
+    """True when *path* is a Gaia SOURCE checkout, not a slim install copy.
+
+    Anchored on the exact dev-only artifacts the npm pack excludes: the
+    plugin manifest, the test suite, and a package.json. The slim installed
+    copy lacks the first two, so it correctly fails this predicate.
+
+    Shared by `gaia release check`/`publish` (which must validate the SOURCE
+    tree, never the slim installed copy) and `gaia dev` (which must refuse to
+    run at all from a slim installed copy -- see `dev.py`'s entrypoint guard).
+    Hoisted here rather than imported from `cli.release` so `dev.py` does not
+    take on that module's heavier release-gate surface for one predicate.
+    """
+    return (
+        (path / "build" / "gaia.manifest.json").is_file()
+        and (path / "tests").is_dir()
+        and (path / "package.json").is_file()
+    )
+
+
 def content_hash8(path: Path) -> str:
     """Return the first 8 hex chars of the SHA-256 of *path*'s bytes.
 
@@ -154,4 +174,4 @@ def pack_tarball(
     }
 
 
-__all__ = ["pack_tarball", "content_hash8"]
+__all__ = ["pack_tarball", "content_hash8", "_is_source_checkout"]

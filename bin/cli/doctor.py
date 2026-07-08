@@ -15,7 +15,7 @@ Checks (in order):
   52. component-naming   - skill/agent frontmatter name matches dir/file name
   53. skill-cross-refs   - agent `skills:` refs resolve to skills/<name>/SKILL.md
   55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
-  57. install-provenance - local (file:) vs npm install; local freshness vs source
+  57. install-provenance - local (file:) vs npm install; mode, version, symlink resolution
   60. identity           - orchestrator agent configured
   65. agent-routing      - surface-routing primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
@@ -904,41 +904,6 @@ def check_symlinks_freshness(project_root: Path) -> dict:
     return _result(name, "pass", f"hooks at {target_ver} matches installed {installed_ver}")
 
 
-# Directory names skipped when scanning the source tree for its newest mtime:
-# heavy/generated trees that are irrelevant to whether the SOURCE the install
-# was packed from has changed. Keeps the freshness walk fast and deterministic.
-_PROVENANCE_SKIP_DIRS = frozenset({
-    "node_modules", ".git", "__pycache__", ".pytest_cache", ".tmp",
-    "dist", ".venv", "venv", ".mypy_cache", ".ruff_cache",
-})
-
-
-def _newest_source_mtime(source_root: Path) -> float:
-    """Return the newest mtime among source files, skipping heavy dirs.
-
-    Deterministic and offline (pure filesystem stat), bounded by pruning the
-    generated/vendored trees in ``_PROVENANCE_SKIP_DIRS`` and any dotdir so
-    ``gaia doctor`` stays fast. Returns 0.0 when the tree is unreadable.
-    """
-    newest = 0.0
-    try:
-        for dirpath, dirnames, filenames in os.walk(source_root):
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in _PROVENANCE_SKIP_DIRS and not d.startswith(".")
-            ]
-            for fn in filenames:
-                try:
-                    m = os.stat(os.path.join(dirpath, fn)).st_mtime
-                    if m > newest:
-                        newest = m
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return newest
-
-
 def _gaia_dep_spec(project_root: Path) -> "str | None":
     """The workspace's declared @jaguilar87/gaia dependency spec, or None.
 
@@ -959,24 +924,25 @@ def _gaia_dep_spec(project_root: Path) -> "str | None":
 
 @register_check("Install provenance", order=57)
 def check_install_provenance(project_root: Path) -> dict:
-    """Detect HOW @jaguilar87/gaia was installed and check freshness against
-    the CORRECT baseline.
+    """Detect HOW @jaguilar87/gaia was installed, self-sufficiently from the
+    workspace's own `package.json` -- no dependency on locating the Gaia
+    SOURCE checkout.
 
     Provenance replaces the retired `gaia release sync-local` command: the
-    intelligence of "am I running something stale / where did this install come
-    from?" belongs in a fast diagnostic, not a mass action command.
+    intelligence of "where did this install come from?" belongs in a fast
+    diagnostic, not a mass action command.
 
-      * LOCAL (dependency spec ``file:...``) -> is the installed content fresh
-        vs the dev SOURCE it was packed from? Reuses `resolve_source_root`
-        (from cli.release) to locate source, then compares the newest source
-        mtime against the installed package's extraction time.
+      * LOCAL (dependency spec ``file:...``) -> a dev install; the check
+        verifies the ``file:`` install actually resolves (symlink/extraction
+        is not broken).
       * NPM (registry spec) -> is the installed version behind the latest? That
         comparison needs a network round-trip, so it is NOT done here (see the
         offline note below); the check reports mode + installed version and
         points at `npm outdated`.
 
     Offline-first and deterministic by design: this check makes no network
-    call. See the module docstring's severity contract.
+    call and never reaches outside the workspace it is given. See the module
+    docstring's severity contract.
     """
     name = "Install provenance"
     nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
@@ -993,38 +959,16 @@ def check_install_provenance(project_root: Path) -> dict:
 
     if is_local:
         try:
-            from cli.release import resolve_source_root  # noqa: PLC0415
-            source_root, _src_err = resolve_source_root()
-        except Exception as exc:  # pragma: no cover - defensive
-            source_root, _src_err = None, str(exc)
-
-        if source_root is None:
-            return _result(
-                name, "info",
-                f"local (file:) install {installed_ver or '?'}; source not locatable for a freshness check",
-                "Run doctor from the Gaia source checkout, or set GAIA_SOURCE_ROOT, to compare against source",
-            )
-
-        try:
-            extracted = nm_gaia.resolve(strict=True)
-            installed_mtime = (extracted / "package.json").stat().st_mtime
+            nm_gaia.resolve(strict=True)
         except OSError:
             return _result(
                 name, "warning",
                 "local (file:) install but node_modules/@jaguilar87/gaia does not resolve",
                 f"Run `gaia dev --workspace {project_root}` to reinstall",
             )
-
-        if _newest_source_mtime(source_root) > installed_mtime:
-            return _result(
-                name, "warning",
-                f"local (file:) install {installed_ver or '?'} is STALE: source at {source_root} "
-                f"has changes newer than the installed copy",
-                f"Run `gaia dev --workspace {project_root}` to repack the current source",
-            )
         return _result(
             name, "pass",
-            f"local (file:) install {installed_ver or '?'} is fresh vs source at {source_root}",
+            f"local (file:) install {installed_ver or '?'} resolves correctly",
         )
 
     # NPM (registry) install: offline, so report mode + version and defer the

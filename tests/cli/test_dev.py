@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -385,6 +385,62 @@ class TestLinkSourceIntoWorkspace(unittest.TestCase):
 
             self.assertEqual(res["action"], "skipped")
             self.assertTrue((target / "package.json").exists())
+
+
+# ---------------------------------------------------------------------------
+# cmd_dev fail-loud guard: refuse to run from a non-source-checkout copy
+# ---------------------------------------------------------------------------
+
+class TestCmdDevRefusesNonSourceCheckout(unittest.TestCase):
+    def _make_args(self, workspace) -> argparse.Namespace:
+        ns = argparse.Namespace()
+        ns.workspace = str(workspace)
+        ns.mode = "pack"
+        ns.quiet = True
+        ns.verbose = False
+        ns.keep_tarball = False
+        ns.pack_dest = None
+        return ns
+
+    def test_refuses_when_package_root_is_not_a_source_checkout(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            slim = Path(tmp) / "slim-install"
+            slim.mkdir()
+            (slim / "package.json").write_text("{}")  # no build/gaia.manifest.json, no tests/
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+
+            with patch("cli.dev._PACKAGE_ROOT", slim), \
+                 patch("cli.dev._pack_helpers.pack_tarball") as mock_pack:
+                stderr = io.StringIO()
+                with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                    rc = cmd_dev(self._make_args(workspace))
+
+            self.assertEqual(rc, 1)
+            mock_pack.assert_not_called()
+            self.assertIn("not a Gaia SOURCE checkout", stderr.getvalue())
+            self.assertIn("python3 <checkout>/bin/gaia dev", stderr.getvalue())
+
+    def test_proceeds_when_package_root_is_a_real_source_checkout(self):
+        # The real _PACKAGE_ROOT (this repo's checkout) IS a source checkout,
+        # so the guard must not block the mocked orchestration below it.
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_tarball = workspace / "pkg.tgz"
+            fake_tarball.write_bytes(b"x")
+
+            with patch("cli.dev._pack_helpers.pack_tarball", return_value={
+                "action": "created", "path": str(fake_tarball), "details": "ok",
+                "tarball": fake_tarball, "name": "@jaguilar87/gaia", "version": "9.9.9",
+            }), patch("cli.dev.install_tarball", return_value={
+                "action": "created", "path": str(workspace), "details": "ok", "package_manager": "npm",
+            }), patch("cli.dev.wire_workspace_via_installed_gaia", return_value={
+                "action": "created", "path": str(workspace), "details": "ok",
+            }):
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_dev(self._make_args(workspace))
+
+            self.assertEqual(rc, 0)
 
 
 # ---------------------------------------------------------------------------

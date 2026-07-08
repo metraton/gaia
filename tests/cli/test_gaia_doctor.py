@@ -1541,8 +1541,9 @@ class TestCheckSkillCrossRefs:
 
 # ---------------------------------------------------------------------------
 # Tests: check_install_provenance (order=57) -- the intelligence that replaced
-# `gaia release sync-local`: detect local (file:) vs npm install and check
-# freshness against the correct baseline, offline and deterministic.
+# `gaia release sync-local`: detect local (file:) vs npm install,
+# self-sufficiently from the workspace's own package.json (no dependency on
+# locating the Gaia SOURCE checkout).
 # ---------------------------------------------------------------------------
 
 class TestCheckInstallProvenance:
@@ -1560,13 +1561,6 @@ class TestCheckInstallProvenance:
             json.dumps({"name": "my-app", "dependencies": {"@jaguilar87/gaia": spec}})
         )
 
-    def _source_checkout(self, root: Path) -> Path:
-        (root / "build").mkdir(parents=True)
-        (root / "build" / "gaia.manifest.json").write_text("{}")
-        (root / "tests").mkdir()
-        (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}')
-        return root
-
     def test_no_install_detected_is_info(self, tmp_path):
         r = doctor_mod.check_install_provenance(tmp_path)
         assert r["severity"] == "info"
@@ -1580,52 +1574,27 @@ class TestCheckInstallProvenance:
         assert "npm (registry)" in r["detail"]
         assert "offline" in r["detail"]
 
-    def test_local_install_fresh_is_pass(self, tmp_path, monkeypatch):
-        import os
-        source = self._source_checkout(tmp_path / "src")
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        pkg = self._install(ws, "5.1.1")
-        self._workspace_pkg(ws, "file:../src/x.tgz")
-        # Install is NEWER than every source file -> fresh.
-        old = 1_000.0
-        for p in source.rglob("*"):
-            if p.is_file():
-                os.utime(p, (old, old))
-        os.utime(pkg / "package.json", (2_000.0, 2_000.0))
-        monkeypatch.setenv("GAIA_SOURCE_ROOT", str(source))
-        r = doctor_mod.check_install_provenance(ws)
-        assert r["severity"] == "pass"
-        assert "fresh" in r["detail"]
-
-    def test_local_install_stale_is_warning(self, tmp_path, monkeypatch):
-        import os
-        source = self._source_checkout(tmp_path / "src")
-        ws = tmp_path / "ws"
-        ws.mkdir()
-        pkg = self._install(ws, "5.1.1")
-        self._workspace_pkg(ws, "file:../src/x.tgz")
-        # A source file is NEWER than the install -> stale.
-        os.utime(pkg / "package.json", (1_000.0, 1_000.0))
-        (source / "newer.py").write_text("x = 1\n")
-        os.utime(source / "newer.py", (5_000.0, 5_000.0))
-        monkeypatch.setenv("GAIA_SOURCE_ROOT", str(source))
-        r = doctor_mod.check_install_provenance(ws)
-        assert r["severity"] == "warning"
-        assert "STALE" in r["detail"]
-        assert "gaia dev" in r["fix"]
-
-    def test_local_install_source_not_locatable_is_info(self, tmp_path, monkeypatch):
+    def test_local_install_resolving_is_pass(self, tmp_path):
+        # A local (file:) install where node_modules/@jaguilar87/gaia resolves
+        # (a real dir, or a symlink pointing at one) is self-sufficient --
+        # no source checkout is needed to report "pass".
         ws = tmp_path / "ws"
         ws.mkdir()
         self._install(ws, "5.1.1")
         self._workspace_pkg(ws, "file:../src/x.tgz")
-        monkeypatch.delenv("GAIA_SOURCE_ROOT", raising=False)
-        # Force resolve_source_root to find no source: point release._PACKAGE_ROOT
-        # at a non-source dir and stub git discovery to None.
-        import cli.release as release_mod
-        monkeypatch.setattr(release_mod, "_PACKAGE_ROOT", tmp_path / "not-source")
-        monkeypatch.setattr(release_mod, "_git_toplevel", lambda start: None)
         r = doctor_mod.check_install_provenance(ws)
-        assert r["severity"] == "info"
-        assert "not locatable" in r["detail"]
+        assert r["severity"] == "pass"
+        assert "resolves correctly" in r["detail"]
+
+    def test_local_install_broken_symlink_is_warning(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        nm_gaia = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm_gaia.parent.mkdir(parents=True)
+        # A dangling symlink: does not resolve.
+        nm_gaia.symlink_to(tmp_path / "does-not-exist")
+        self._workspace_pkg(ws, "file:../src/x.tgz")
+        r = doctor_mod.check_install_provenance(ws)
+        assert r["severity"] == "warning"
+        assert "does not resolve" in r["detail"]
+        assert "gaia dev" in r["fix"]

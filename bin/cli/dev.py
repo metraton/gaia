@@ -69,6 +69,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
 
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 from cli import install as install_mod  # type: ignore  # noqa: E402
+from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
 from cli.install import _report_step  # type: ignore  # noqa: E402
 
 _NPM_PACKAGE_NAME = "@jaguilar87/gaia"
@@ -88,18 +89,6 @@ def _restart_warning() -> str:
         "     The harness pins hook commands at session start (no hot-reload),\n"
         "     so until you restart, this session keeps running the OLD hooks."
     )
-
-
-def _source_root_hint(source_root: Path) -> str:
-    """Ergonomic, stateless suggestion for `GAIA_SOURCE_ROOT`.
-
-    `gaia doctor`'s install-provenance freshness check and `gaia release
-    check` need to locate this SOURCE tree when the workspace is not a git
-    repo and the source lives outside it. This is a printed suggestion only
-    -- no sidecar file, no registry, nothing persisted -- the user decides
-    whether to export it.
-    """
-    return f"  export GAIA_SOURCE_ROOT={source_root}"
 
 
 # ---------------------------------------------------------------------------
@@ -328,9 +317,6 @@ def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool) -> int:
         )
         print(_restart_warning())
         print()
-        print("  Tip: for `gaia doctor`/`release check` freshness from this workspace, run:")
-        print(_source_root_hint(_PACKAGE_ROOT))
-        print()
     return rc
 
 
@@ -531,9 +517,6 @@ def _run_pack_mode(
         )
         print(_restart_warning())
         print()
-        print("  Tip: for `gaia doctor`/`release check` freshness from this workspace, run:")
-        print(_source_root_hint(_PACKAGE_ROOT))
-        print()
     return 0
 
 
@@ -616,8 +599,31 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     return p
 
 
+def _refuse_non_source_checkout_message() -> str:
+    """Fail-loud message when `gaia dev` is invoked from a non-source copy.
+
+    `gaia dev` packs and reinstalls the tree it is physically loaded from
+    (`_PACKAGE_ROOT`, see `wire_workspace_via_installed_gaia`'s docstring for
+    why that matters). Running it from an installed copy (npm registry
+    install, or a workspace's `.claude/`-wired symlink) would pack THAT slim
+    copy instead of real source -- silently shipping nothing useful. There is
+    no env-var escape hatch: the caller must invoke the actual checkout.
+    """
+    return (
+        f"gaia dev: {_PACKAGE_ROOT} is not a Gaia SOURCE checkout "
+        "(missing build/gaia.manifest.json or tests/).\n"
+        "`gaia dev` packs and reinstalls the CURRENT source tree, so it must be "
+        "run from the source checkout itself, not an installed copy.\n"
+        "Run it as: python3 <checkout>/bin/gaia dev [--workspace <path>]"
+    )
+
+
 def cmd_dev(args: argparse.Namespace) -> int:
     """Execute the dev subcommand."""
+    if not _is_source_checkout(_PACKAGE_ROOT):
+        print(_refuse_non_source_checkout_message(), file=sys.stderr)
+        return 1
+
     quiet = bool(getattr(args, "quiet", False))
     verbose = bool(getattr(args, "verbose", False))
     mode = getattr(args, "mode", "pack")

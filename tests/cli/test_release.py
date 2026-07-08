@@ -663,31 +663,13 @@ class TestResolveSourceRoot(unittest.TestCase):
         (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}')
         return root
 
-    def test_env_override_wins_when_valid(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            src = self._make_source(tmp)
-            with patch.dict(os.environ, {"GAIA_SOURCE_ROOT": str(src)}):
-                root, err = resolve_source_root()
-        self.assertIsNone(err)
-        self.assertEqual(root, src.resolve())
-
-    def test_env_override_invalid_returns_error_not_fallthrough(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            # env points at a non-source dir -> explicit error, no silent fallback.
-            with patch.dict(os.environ, {"GAIA_SOURCE_ROOT": tmp}):
-                root, err = resolve_source_root()
-        self.assertIsNone(root)
-        self.assertIn("not a Gaia source checkout", err)
-
     def test_uses_executing_copy_when_it_is_a_source_checkout(self):
         # The `python3 <checkout>/bin/gaia release check` path: _PACKAGE_ROOT is
         # itself the source tree.
         with tempfile.TemporaryDirectory() as tmp:
             src = self._make_source(tmp)
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("GAIA_SOURCE_ROOT", None)
-                with patch("cli.release._PACKAGE_ROOT", src):
-                    root, err = resolve_source_root()
+            with patch("cli.release._PACKAGE_ROOT", src):
+                root, err = resolve_source_root()
         self.assertIsNone(err)
         self.assertEqual(root, src)
 
@@ -697,25 +679,21 @@ class TestResolveSourceRoot(unittest.TestCase):
             slim = Path(tmp) / "node_modules" / "gaia"
             slim.mkdir(parents=True)
             (slim / "package.json").write_text("{}")  # slim, not a source checkout
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("GAIA_SOURCE_ROOT", None)
-                with patch("cli.release._PACKAGE_ROOT", slim):
-                    with patch("cli.release._git_toplevel", return_value=src):
-                        root, err = resolve_source_root()
+            with patch("cli.release._PACKAGE_ROOT", slim):
+                with patch("cli.release._git_toplevel", return_value=src):
+                    root, err = resolve_source_root()
         self.assertIsNone(err)
         self.assertEqual(root, src)
 
     def test_fails_loudly_when_no_source_reachable(self):
-        # Slim executing copy, no env override, git finds nothing -> error, and
-        # crucially it does NOT return the slim copy.
+        # Slim executing copy, git finds nothing -> error, and crucially it
+        # does NOT return the slim copy. No env-var escape hatch exists.
         with tempfile.TemporaryDirectory() as tmp:
             slim = Path(tmp)
             (slim / "package.json").write_text("{}")
-            with patch.dict(os.environ, {}, clear=False):
-                os.environ.pop("GAIA_SOURCE_ROOT", None)
-                with patch("cli.release._PACKAGE_ROOT", slim):
-                    with patch("cli.release._git_toplevel", return_value=None):
-                        root, err = resolve_source_root()
+            with patch("cli.release._PACKAGE_ROOT", slim):
+                with patch("cli.release._git_toplevel", return_value=None):
+                    root, err = resolve_source_root()
         self.assertIsNone(root)
         self.assertIn("no Gaia source checkout found", err)
 

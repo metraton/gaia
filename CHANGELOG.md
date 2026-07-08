@@ -10,11 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Approval grants redesign: a grant is single-use and consumed at match (before the command executes), TTL cut from 60 to 5 minutes. Approving is now coupled to execution — approval triggers an automatic verbatim re-dispatch of the approved command instead of a separate resume step. `COMMAND_SET` batches simplified to the hook-minted path only (>= 2 T3 sub-commands blocked in one compound Bash call, content-derived `approval_id`, 5-minute TTL); the plan-first batch declaration flow and the `gaia approvals derive-id` CLI are retired — there is no agent-declared or CLI-derived batch id, only the one the hook mints from the blocked chain.
+- `GAIA_SOURCE_ROOT` removed: no Gaia product command is env-var-dependent anymore. `resolve_source_root` (`gaia release check`/`publish`) now resolves the SOURCE checkout only via the executing copy or its git worktree root -- tier 2/3 of the old three-tier lookup; the env-override tier is gone, with no escape hatch. `gaia dev` now fails loud at its entrypoint when the copy it is physically loaded from is not a real source checkout (no `build/gaia.manifest.json` + `tests/`), instead of suggesting `export GAIA_SOURCE_ROOT=...`; it points the caller at `python3 <checkout>/bin/gaia dev` instead. `gaia doctor`'s install-provenance check no longer compares installed-vs-source mtimes (which needed `GAIA_SOURCE_ROOT` to locate source outside a git repo) -- it now only verifies a local (`file:`) install's `node_modules/@jaguilar87/gaia` resolves, self-sufficiently from the workspace's own `package.json`. Losing the "install is STALE vs source" nudge is an accepted trade-off for a fully self-sufficient product surface.
 
 ### Removed
 
 - Cross-session surfacing of pending approvals: the SessionStart `[ACTIONABLE]` pending-approvals block and the per-turn pending feed are removed. Pending approvals (24h TTL, unchanged) no longer surface outside the turn that produced them.
 - `consume_session_grants` mechanism, superseded by the consumed-at-match single-use grant model.
+- `GAIA_SOURCE_ROOT` environment variable, and `doctor`'s freshness check (`_newest_source_mtime`) that depended on it.
 
 ## [5.1.3] - 2026-07-07
 

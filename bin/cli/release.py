@@ -71,7 +71,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -93,6 +92,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from cli import _pack_helpers  # type: ignore  # noqa: E402
+from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
 
 # How much of a gate's combined stdout+stderr each gate function keeps (from
 # the END -- see the gate_* functions below). A gate's own summary/RESULT
@@ -153,21 +153,6 @@ def _run(cmd: list[str], *, cwd: Path, timeout: int) -> tuple[int | None, str, s
 # the launcher invoked. When source cannot be located we FAIL LOUDLY rather
 # than silently validate the slim copy.
 
-def _is_source_checkout(path: Path) -> bool:
-    """True when *path* is a Gaia SOURCE checkout, not a slim install copy.
-
-    Anchored on the exact dev-only artifacts the npm pack excludes and the
-    release gates require: the plugin manifest, the test suite, and a
-    package.json. The slim installed copy lacks the first two, so it correctly
-    fails this predicate.
-    """
-    return (
-        (path / "build" / "gaia.manifest.json").is_file()
-        and (path / "tests").is_dir()
-        and (path / "package.json").is_file()
-    )
-
-
 def _git_toplevel(start: Path) -> Path | None:
     """Return the git worktree root containing *start*, or None."""
     rc, out, _ = _run(
@@ -184,28 +169,16 @@ def resolve_source_root() -> tuple[Path | None, str | None]:
     """Resolve the canonical Gaia SOURCE checkout for release operations.
 
     Order (first hit wins):
-      1. GAIA_SOURCE_ROOT env override -- explicit escape hatch for CI / a
-         checkout in a non-standard location. Validated before use.
-      2. The executing copy itself, when it IS a source checkout -- this is the
+      1. The executing copy itself, when it IS a source checkout -- this is the
          `python3 <checkout>/bin/gaia release check` path (the common developer
          invocation), where __file__ already lands inside the source tree.
-      3. The git worktree root of the executing copy, when that root is a source
+      2. The git worktree root of the executing copy, when that root is a source
          checkout.
 
     Returns (root, None) on success, or (None, error) when no source checkout is
     reachable -- the caller surfaces the error and refuses to validate the slim
     installed copy.
     """
-    env = os.environ.get("GAIA_SOURCE_ROOT")
-    if env:
-        cand = Path(env).expanduser().resolve()
-        if _is_source_checkout(cand):
-            return cand, None
-        return None, (
-            f"GAIA_SOURCE_ROOT={cand} is not a Gaia source checkout "
-            f"(missing build/gaia.manifest.json or tests/)."
-        )
-
     if _is_source_checkout(_PACKAGE_ROOT):
         return _PACKAGE_ROOT, None
 
@@ -218,7 +191,7 @@ def resolve_source_root() -> tuple[Path | None, str | None]:
         "will be PUBLISHED, which lives only in the source tree (the installed "
         "package is a slim copy without build/gaia.manifest.json or tests/). "
         "Run from the source checkout, e.g. "
-        "`python3 <checkout>/bin/gaia release check`, or set GAIA_SOURCE_ROOT."
+        "`python3 <checkout>/bin/gaia release check`."
     )
 
 

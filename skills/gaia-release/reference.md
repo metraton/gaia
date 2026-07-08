@@ -75,7 +75,7 @@ Under `--target local` the settings-preservation check is **skipped** (no pre-in
 
 Zero network. Proves both install surfaces and reproduces CI before any tag exists.
 
-`gaia release check` (and `gaia release publish`) validate what will be **PUBLISHED**, which lives only in the SOURCE checkout (the pre-publish validator needs devDependencies, the pack/dry-run gates need `build/gaia.manifest.json`, `npm test` needs `tests/` -- all excluded from the slim installed copy). They resolve the canonical source via `resolve_source_root` and **fail loud** if no source checkout is reachable rather than silently validating the slim installed copy. Run them **from the source checkout** (`python3 <checkout>/bin/gaia release check`) or set `GAIA_SOURCE_ROOT` -- do not expect the bare launcher invoked from a consumer workspace to locate the source for you.
+`gaia release check` (and `gaia release publish`) validate what will be **PUBLISHED**, which lives only in the SOURCE checkout (the pre-publish validator needs devDependencies, the pack/dry-run gates need `build/gaia.manifest.json`, `npm test` needs `tests/` -- all excluded from the slim installed copy). They resolve the canonical source via `resolve_source_root` and **fail loud** if no source checkout is reachable rather than silently validating the slim installed copy. Run them **from the source checkout** (`python3 <checkout>/bin/gaia release check`) -- there is no env-var escape hatch; do not expect the bare launcher invoked from a consumer workspace to locate the source for you.
 
 **Primary path -- one command, all four gates, always run:**
 ```
