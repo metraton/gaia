@@ -8,7 +8,8 @@ modes, and the build → verify loop. For the vocabulary and enums, see
 
 The portable engine is vendored under `assets/` (see `assets/README.md`):
 `index.html`, `engine/engine.js`, `engine/build-data.mjs`, `package.json`,
-`tools/verify.mjs`, and a domain-free seed `data/`. Scaffold from there.
+`tools/validate-layout.cjs`, `tools/verify.mjs`, and a domain-free seed `data/`.
+Scaffold from there.
 
 ## The layout model in one paragraph
 
@@ -16,11 +17,56 @@ There are exactly **two primitives**. A **section** is a node with a `children`
 array; it renders as a CSS-Grid `columns` wide, and its children auto-flow
 left→right and wrap down. A **component** is a leaf (no `children`); it renders
 by its `type` — `box` (default), `separator`, or `rail`. Any child, section or
-component, may set `span: N` to occupy N of the parent's columns. The page/root
-is itself a section (`page.columns` = its grid width, `page.sections` = its
-children). Nesting is just a section whose children include other sections — a
-grid of grids, as deep as the idea needs. There is no envelope primitive, no
+component, may set `span: N` to merge across N of the parent's columns. The
+page/root is itself a section (`page.columns` = its grid width, `page.sections`
+= its children). Nesting is just a section whose children include other sections
+— a grid of grids, as deep as the idea needs. There is no envelope primitive, no
 subsection, no mosaic, no `wraps`, no `layout.row`, no layout modes.
+
+**It is a spreadsheet of uniform cells.** Every leaf component is one fixed cell
+(`--cell-w × --cell-h = 232 × 130px`, design tokens in `index.html`); a section
+is always an integer number of those cells wide. Cells never resize; they merge
+(`span`) horizontally and the column count cascades **3→2→1** as width tightens
+(2-column "two-table" intermediate; 1-column single-stack endpoint), so nothing
+scrolls sideways at the stacked tiers. The whole block is centered on the canvas.
+This is what makes positioning a **known operation** — change `columns`/`span`,
+`npm run build`, `npm run validate`, and the guardrail proves the grid adds up.
+
+### Width math
+
+Leaf grid, gap `--s-2 = 8px`, zone padding `--s-3 = 16px` per side:
+
+```
+cell / merge of M cells   = M×232 + (M−1)×8
+leaf section, C columns   = C×232 + (C−1)×8 + 32   (grid + zone padding)
+```
+
+A `columns:3` section is `3×232 + 2×8 + 32 = 760px`; a `span:2` merge is
+`2×232 + 8 = 472px` wide and still one `--cell-h` row tall.
+
+### Band vs inline — how a section sits in its parent row
+
+- **Inline** (`span: 1`) — sized to its own content (fit-content), sits side by
+  side with its neighbours on the same row.
+- **Band** (`span == parent columns`) — takes its own full row; consecutive
+  bands stack top-to-bottom. A band spans the **block width** while the uniform
+  cells inside it stay `--cell-w` and left-align — a one-cell band is a
+  full-width bar with a single cell at its left (banda ancha, componente
+  uniforme), never a ballooned cell.
+
+### Positioning recipes (idea → columns/span/order)
+
+- **A base band at the bottom:** give the section `span: <parent columns>` (a
+  band) and place it **last** in order. It renders as a full-width row beneath
+  everything else.
+- **Two sections side by side on a row:** give each `span: 1` and place them
+  consecutively; they pack left-to-right until the row is full.
+- **A wide container over a narrow sidecar:** nest them in a parent section
+  whose `columns` = (wide cols + 1); give the wide child its own `columns: N`
+  and the sidecar `columns: 1`, so they sit side by side at their natural
+  integer-cell widths (this is how a 3-col group sits beside a 1-col stack).
+- **Full-width divider / lane label inside a band:** a `separator` or `rail`
+  with `span == the section's columns` spans the whole band on its own row.
 
 ## Repository layout
 
@@ -34,7 +80,10 @@ subsection, no mosaic, no `wraps`, no `layout.row`, no layout modes.
 │   ├── document.yaml     manifest: title/subtitle/version + which pages, in order
 │   ├── pages/            one YAML per page
 │   └── data.generated.js build output (committed; `window.__DOC__ = {...}`)
-└── tools/verify.mjs      headless render QA (collision assertions + screenshots)
+└── tools/
+    ├── validate-layout.cjs  the LAYOUT GUARDRAIL — headless render + hard layout
+    │                        invariants (D/R/T/U/C/O/F/S/B/H), PASS/FAIL, exit≠0
+    └── verify.mjs           lightweight render QA (collision assertions + shots)
 ```
 
 The engine layer (`engine/` + `index.html`) is generic and knows nothing about
@@ -158,26 +207,40 @@ up because IT declares the filter key; its enclosing section lights with it.
 
 Behaviors that bite if you author against intuition instead of the engine:
 
-- **`columns` is authoritative for width; width never collapses it.** A section
-  is rendered wide enough to sustain its `columns` (≈ columns × `--box-min`);
-  when the diagram is wider than the viewport the canvas **scrolls
-  horizontally** rather than dropping columns. "Go vertical" is the author's
-  explicit `columns: 1`, not something the width forces.
-- **Tracks size to content, not to fill (`minmax(--box-min, max-content)`).** A
-  narrow one-column section does NOT balloon to a dense neighbour's width. This
-  is why the root grid lives in a `width:max-content` plane that centers when it
-  fits and scrolls when it does not.
-- **`span` is the same at every level, and is clamped to the parent's
-  `columns`.** `span == columns` is a full-width band. A `span` larger than the
-  parent's columns is clamped down — it never overflows the grid.
+- **Cells are fixed and uniform; sections adapt to the cells, not the reverse.**
+  Every leaf cell is exactly `--cell-w × --cell-h` (232 × 130) at every depth. A
+  section is an integer number of cells wide; a cell never stretches to fill
+  leftover width. If a section is narrower than the container, the leftover is
+  accepted right-hand margin — uniformity ranks above "fill the width".
+- **A cell never grows vertically.** The title clamps to 2 lines and the whole
+  description to 3 lines (`.box .desc` line-clamp), so every box is `--cell-h`
+  tall regardless of how many description lines the data carries. The full text
+  always lives in the click-through detail panel. Put long copy in `detail`.
+- **`span` merges; in a leaf grid it spans the full row.** `.sec-grid:not(.sec-compound) > .msp { grid-column: 1 / -1 }` — a merged leaf child (span > 1)
+  occupies the whole row so it never overflows when columns cascade down.
+  `span == columns` is the canonical band. For a multi-cell group that is
+  genuinely narrower than full-width and sits beside a neighbour, nest sections
+  with different `columns` in a compound grid (the "wide container over narrow
+  sidecar" recipe), don't rely on a partial leaf span.
+- **Two grid shapes, tagged by the engine.** A grid whose children are all
+  components is a **leaf grid** (fixed `--cell-w` tracks, `--cell-h` rows). A
+  grid that holds at least one nested section is a **compound grid** (a
+  flex-wrap row of sections at their natural integer-cell widths). The engine
+  adds `sec-c{N}` (authored column count) and `sec-compound` so the CSS steps
+  each grid by its real width need.
 - **Order is `order`, else list order.** DOM order (after the stable sort by
-  `order`) IS the single-column collapse order at the phone breakpoint. To move
-  a cell, change its `order` — there is no column/row coordinate to set.
-- **The responsive rule is coarse and applied per-grid.** Below `--bp-tablet`
-  (768px) every grid caps to `min(columns, 2)`; below `--bp-phone` (480px) every
-  grid caps to 1. A `columns: 1` section (`.sec-c1`) is exempt from the tablet
-  cap. A multi-span child degrades 3→2→1 in lockstep so nothing overflows. There
-  is no per-section custom breakpoint.
+  `order`) IS the single-column collapse order at the narrowest tier, and the
+  packing order on every row. To move a cell, change its `order` — there is no
+  column/row coordinate to set.
+- **The collapse cascade is 3→2→1, per-grid, no horizontal scroll.** A 3-col
+  leaf grid steps to 2 at ≤1000px and to 1 at ≤640px; a 2-col grid steps to 1 at
+  ≤640px; a `columns:1` grid stays 1. Below ~1440px compound rows fold from
+  side-by-side into a centered vertical stack. At the 1-column endpoint the whole
+  page is a single vertical stack. Cells stay `--cell-w` through every step.
+- **A band spans the block at EVERY tier.** A band (`span == columns`) fills the
+  block width from the widest tier down to the single-column endpoint — it never
+  shrinks to its one cell on the first collapse. The uniform cells inside stay
+  `--cell-w` and left-align.
 - **Nesting is free and has no depth limit.** A section can hold sections which
   hold sections. Each level runs the same `buildGrid`; each nested section draws
   its own frame (per its `variant`). Use `variant: plain` for a frameless
@@ -240,10 +303,11 @@ live* and write there — never assume a path.
    set `span` only to widen it, `filters` to tie it to a flow.
 3. Build → verify.
 
-## The build → verify loop
+## The build → validate loop
 
-A diagram is not done until the data is right; a visual look is a spot-check,
-not a gate. Editing the data is the fast path.
+A diagram is not done until the data is right AND the layout guardrail passes.
+Editing the data is the fast path; the model is decided in the YAML, not the
+pixels.
 
 1. **Edit** the YAML under `data/`.
 2. **Build** — regenerate the render data:
@@ -252,17 +316,39 @@ not a gate. Editing the data is the fast path.
    ```
    This is a local file write (reads the manifest, skips `visible: false`, sorts
    by `order`, merges each page). Re-run after every YAML change.
-3. **Spot-check by looking (optional).** Load `Skill('visual-verify')` and
-   render `index.html` as a `file://` URL, capturing across a spread of widths
-   (desktop down to ~380px) and both themes. Because the engine scrolls
-   horizontally instead of collapsing columns, a wide layout can overflow — a
-   quick pixel read catches it. The project's `npm run verify` (Playwright:
-   asserts the root grid renders and its top-level cells do not collide, then
-   screenshots widths × themes) is a useful T1 gate. Both write PNGs to a
-   **system temp dir**, never inside the project (`tools/verify.mjs` uses
-   `os.tmpdir()`, override with `DIAGRAM_SHOTS_DIR`).
-4. **Loop on any real defect** — overflow, clipping, a wrong wrap, contrast
-   failing in one theme. Fix the YAML and rebuild.
+3. **Validate — the mandatory gate (T1).**
+   ```
+   npm run validate   # node tools/validate-layout.cjs (re-runs the build itself)
+   ```
+   It renders every page in headless Chromium at five widths (min 600 / medium
+   900 / large 1200 / huge 1920 / ultra 2560), each **5× with a real reload**,
+   and ASSERTS every layout invariant against the *real* rendered geometry
+   (`getBoundingClientRect`), printing a per-(page,width) PASS/FAIL table and
+   exiting non-zero on any failure. Full-page PNGs go to a **system temp dir**
+   (`os.tmpdir()`, override with `DIAGRAM_SHOTS_DIR`), never into the project.
+   **Never declare a change done until this is green.** The invariants:
+
+   | id | invariant |
+   |----|-----------|
+   | **D** | determinism — 5 reloads produce byte-identical geometry (catches an F5 column/wrap flip) |
+   | **R** | scrollbar-robust — shaving a scrollbar's width off the wide tiers doesn't flip the column/wrap structure |
+   | **T** | full-page capture not truncated — the `-full.png` shows the whole deck |
+   | **U** | uniform leaf cells — every non-span box is exactly `--cell-w × --cell-h` |
+   | **C** | description clamp — no box clips (desc clamped to 3 lines) |
+   | **O** | no h-overflow at the stacked tiers (min/medium/large) |
+   | **F** | collapse cascade 3→2→1 — 1-column single stack at min, 2-column intermediate at medium |
+   | **S** | inline sections fit their content; band sections span the block at every tier |
+   | **B** | centered block at the wide tiers (leftPad ≈ rightPad) |
+   | **H** | section headers/subtitles stay inside their section |
+
+   Each new layout requirement should become a new invariant here — the trap is
+   trusting a metric that measures the wrong thing; assert the real geometry.
+4. **Spot-check by looking (optional).** Load `Skill('visual-verify')` and read
+   the `-full.png` shots (or render `index.html` under `file://`) across widths
+   and both themes. A pixel read catches contrast or a wrong wrap the invariants
+   don't name. `npm run verify` is the lighter collision-only QA.
+5. **Loop on any FAIL** — read the failing invariant's detail (it names the zone
+   and the measured value), fix the YAML/CSS, rebuild, re-validate.
 
 ## Feasibility, transparency, capability
 
@@ -280,11 +366,13 @@ choose form → synthesize → discuss → build**, not the reverse.
 |------|-------|-------|
 | **View** the diagram | A browser | `data/data.generated.js` is committed, so it renders with zero tooling, even under `file://`. |
 | **Rebuild** after editing `data/` | Node + `npm install` + `npm run build` | Regenerates `data/data.generated.js` from the YAML. |
-| **Auto-verify** the render | Playwright (+ a Chromium) | `npm run verify` renders every page and screenshots widths × themes to a system temp dir. Optional — its absence never blocks; a browser still lets you look. |
+| **Validate** the layout (the gate) | Playwright (+ a Chromium) | `npm run validate` renders every page at five widths, asserts the layout invariants against the real geometry, and exits non-zero on any failure. This is the mandatory gate before declaring done. |
+| **Verify** (lighter QA) | Playwright (+ a Chromium) | `npm run verify` is a lighter collision-only check + screenshots. |
 
 Degradation is graceful: with only a browser you can always view the
-already-generated diagram; rebuilding after edits adds Node, auto-verification
-adds Playwright.
+already-generated diagram; rebuilding after edits adds Node; validation adds
+Playwright. When Playwright is present, the layout gate is not optional — a
+layout change is not done until `npm run validate` is green.
 
 ### Explain before you execute
 

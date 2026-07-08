@@ -3,24 +3,31 @@
 # layout, columns, filters, sections. See the diagram-builder dialect
 # reference (../GLOSSARY.md, ../reference.md) for every field.
 #
-# LAYOUT MODEL — ONE recursive `section` primitive:
-#   • a node WITH `children` is a SECTION; WITHOUT it, a COMPONENT (leaf).
-#   • every section has `columns: N` (default 2); its children auto-flow
-#     left→right and wrap DOWN.
-#   • every child (section OR component) may declare `span: M` (default 1;
-#     M == columns == a full-width band). Same rule at every level.
-#   • the page root is itself a section: `columns` below is the root column
-#     count and `sections` is the root's children.
+# LAYOUT MODEL — a spreadsheet-style grid of UNIFORM CELLS:
+#   • every leaf component is one fixed cell (--cell-w × --cell-h); cells never
+#     resize — only the column count does.
+#   • a node WITH `children` is a SECTION (a grid); WITHOUT it, a COMPONENT (leaf).
+#   • `columns: N` = how many columns THIS section's grid has (default 2).
+#   • `span: M` = an Excel-style MERGE: a child occupies M columns of its parent
+#     (default 1; clamped to the parent's columns). `span == columns` makes the
+#     child a full-width BAND that takes its own row — place a band LAST to pin
+#     it as a base layer at the bottom.
+#   • children flow in `order` (then list order), packing side by side until a
+#     band forces a new full row.
+#   • the page root is itself a section: `columns` below is the root column count
+#     and `sections` is the root's children.
 #   • a component (leaf) chooses its `type`: box (default) | separator | rail.
 #
-# This seed is a tiny, domain-free demo that shows every primitive once:
-# a section with boxes, a labeled separator, a NESTED section (a section
-# whose children are sections), and a rail used as a swimlane label.
+# This seed is a tiny, domain-free demo of the model: two INLINE sections side
+# by side on row 1 (span 1 each), then a full-width base BAND (span == columns)
+# below — plus nesting, a separator, and a rail. Edit it, then run
+# `npm run build` and `npm run validate`.
 
 id: overview
 layout: grid
-# Root: a 2-column canvas. Each top-level cell below spans both columns, so
-# they stack as full-width bands down the page.
+# Root: a 2-column canvas. `intro` and `system` are span 1 (inline) so they sit
+# side by side on row 1; `delivery` is span 2 (== columns) so it is a full-width
+# band on its own row beneath them.
 columns: 2
 
 filters:
@@ -35,13 +42,13 @@ filters:
 
 sections:
 
-  # ── 1 · a plain section with two boxes (span 2 = a full-width band) ──
+  # ── ROW 1, LEFT · an inline leaf section (span 1), 2 uniform cells ──
   - id: intro
     title: "Getting started"
-    subtitle: "edit data/pages/overview.yaml, then run npm run build"
+    subtitle: "edit data/pages/overview.yaml, then npm run build"
     variant: normal
     order: 1
-    span: 2
+    span: 1
     columns: 2
     children:
       - id: edit
@@ -64,25 +71,15 @@ sections:
         detail: "The build step reads the manifest + page files and writes data/data.generated.js. Open index.html in any browser; it renders under file:// with zero runtime dependencies."
         variant: normal
 
-  # ── 2 · a labeled separator (a leaf component, type: separator) ──
-  # A structural divider: a thin dotted rule with an inline label, spanning the
-  # full width. It carries no data and is not clickable.
-  - id: sep-example
-    type: separator
-    order: 2
-    span: 2
-    style: dotted
-    text: "An example system"
-
-  # ── 3 · NESTING: a section whose children are themselves sections ──
+  # ── ROW 1, RIGHT · an inline NESTED section (span 1): a grid of grids ──
   # `envelope` = a borderless dashed container that groups nested sections.
   - id: system
     title: "Example system"
     subtitle: "a section can nest other sections — a grid of grids"
     variant: envelope
-    order: 3
-    span: 2
-    columns: 2
+    order: 2
+    span: 1
+    columns: 1
     children:
       - id: frontend
         title: "Frontend"
@@ -118,28 +115,39 @@ sections:
             detail: "The <code>store</code> variant gives a data store its own secondary fill."
             variant: store
 
-  # ── 4 · a rail used as a swimlane label, beside a row of steps ──
-  # `rail` (a leaf component, type: rail) is a title-only banner — good for
-  # labeling a lane. Here it leads a 4-column row: rail + three steps.
+  # ── ROW 2 · a full-width BASE BAND (span 2 == root columns), placed last ──
+  # A columns:3 leaf grid: a labeled separator spans the whole band (its own
+  # row), then a rail swimlane label leads a row of uniform step cells.
   - id: delivery
     title: "Delivery"
+    subtitle: "span == columns makes this a full-width band on its own row"
     variant: normal
-    order: 4
+    order: 3
     span: 2
-    columns: 4
+    columns: 3
     children:
+      - id: sep-pipeline
+        type: separator
+        order: 1
+        span: 3
+        style: dotted
+        text: "CI/CD pipeline"
       - id: lane
         type: rail
+        order: 2
         title: "CI/CD"
       - id: b1
+        order: 3
         status: UNCHANGED
         title: "Build"
         description: ["compile & package"]
       - id: b2
+        order: 4
         status: UNCHANGED
         title: "Test"
         description: ["run the suite"]
       - id: b3
+        order: 5
         status: NEW
         title: "Ship"
         description: ["deploy to prod"]

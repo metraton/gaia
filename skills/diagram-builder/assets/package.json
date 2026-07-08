@@ -6,6 +6,7 @@
   "description": "Data-driven, self-contained diagram deck. A generic render engine (engine/) turns a small YAML dialect (data/) into an interactive, themeable page — no framework, no server. Scaffolded by the diagram-builder Gaia skill.",
   "scripts": {
     "build": "node engine/build-data.mjs",
+    "validate": "node tools/validate-layout.cjs",
     "verify": "node tools/verify.mjs"
   },
   "devDependencies": {

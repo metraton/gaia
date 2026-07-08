@@ -22,12 +22,18 @@
 //   • A component (leaf) dispatches on its `type`: box (default) | separator |
 //     rail. Absent/"box" renders the standard box.
 // There is NO envelope / subsection / wraps / layout.row and NO JS layout or
-// measurement pass. Responsive behaviour is pure CSS (stage container queries
-// in index.html): desktop honours the authored columns (overflow scrolls
-// horizontally, never collapses), tablet caps every grid to min(columns,2),
-// phone caps to 1 (everything stacks in DOM / authored order). `span` renders
-// as min(span, effectiveColumns) at each breakpoint, so a band stays full-width
-// and a 3-span degrades 3→2→1 without overflow.
+// measurement pass. The layout is a UNIFORM-CELL spreadsheet grid: every leaf
+// cell is a fixed --cell-w × --cell-h; a section is an integer number of those
+// cells wide. Responsive behaviour is pure CSS (stage container queries in
+// index.html): a leaf grid's column count cascades 3→2→1 as width tightens
+// (2-column "two-table" is the intermediate step; 1 column is the endpoint,
+// where the whole page is a single vertical stack). A `span` merges cells
+// (Excel-style); `span == columns` is a full-width band that takes its own row.
+// Cells never resize — only the track count changes — so nothing scrolls
+// sideways at the stacked tiers. The engine tags each grid `sec-c{N}` (authored
+// column count) and `sec-compound` (holds nested sections) so the CSS can step
+// each grid by its real width need; it emits `--cols` + `--span` and never a
+// literal grid-column (the container queries own the collapse).
 //
 // Stable ids + order are preserved end-to-end so a future edit mode can
 // overlay a localStorage {id: order} map without touching this engine or
@@ -97,9 +103,17 @@
     const box = el('div', componentClasses(comp), { 'data-k': comp.id });
     if (comp.status) { const k = el('div', 'k'); k.textContent = comp.status; box.appendChild(k); }
     const t = el('div', 't'); t.textContent = comp.title || ''; box.appendChild(t);
-    const desc = comp.description;
-    const lines = Array.isArray(desc) ? desc : (desc != null ? [desc] : []);
-    for (const line of lines) { const m = el('div', 'm'); m.textContent = line; box.appendChild(m); }
+    const rawDesc = comp.description;
+    const lines = Array.isArray(rawDesc) ? rawDesc : (rawDesc != null ? [rawDesc] : []);
+    // Description lines live in ONE `.desc` container so CSS can clamp the whole
+    // description to a fixed number of visual lines (see .box .desc line-clamp),
+    // keeping every box at the same fixed --cell-h regardless of line count. The
+    // full text is always available in the click-through detail panel.
+    if (lines.length) {
+      const descBox = el('div', 'desc');
+      for (const line of lines) { const m = el('div', 'm'); m.textContent = line; descBox.appendChild(m); }
+      box.appendChild(descBox);
+    }
 
     // filter membership → data attribute for the inverted index
     if (Array.isArray(comp.filters) && comp.filters.length) {
@@ -156,19 +170,28 @@
     return h;
   }
 
-  // Build the .sec-grid for a set of children with N columns. `columns` is
-  // AUTHORITATIVE: it is the number of CSS-Grid tracks at desktop and is never
-  // reduced by child count here — the CSS container queries in index.html do the
-  // only responsive stepping (tablet → min(cols,2), phone → 1). A child that is
-  // a SECTION (has `children`) recurses through buildSection; a leaf goes to
-  // buildBox. A child may declare `span` to occupy M columns; span is clamped to
-  // the section's own columns (a band = span == columns). The actual
-  // grid-column value is applied by CSS (`.sec-grid > .msp`) from the `--span`
-  // custom property, so the container queries can cap it per breakpoint (an
-  // inline grid-column would out-specify them and break the collapse).
+  // Build the .sec-grid for a set of children with N columns. `columns` is the
+  // authored track count; the CSS container queries in index.html do the only
+  // responsive stepping (3→2→1 as width tightens). A child that is a SECTION
+  // (has `children`) recurses through buildSection; a leaf goes to buildBox. A
+  // child may declare `span` to occupy M columns; span is clamped to the
+  // section's own columns (a band = span == columns). The grid-column value is
+  // applied by CSS (from `.msp`) so the container queries can cap it per tier.
   function buildGrid(children, columns, reg) {
     const cols = Math.max(1, Number.isInteger(columns) && columns > 0 ? columns : DEFAULT_SECTION_COLUMNS);
-    const grid = el('div', 'sec-grid' + (cols <= 1 ? ' sec-c1' : ''));
+    // `sec-c{N}` (authored column count) lets CSS step each grid's own collapse
+    // threshold by how many tracks it actually has to fit, instead of one
+    // blanket breakpoint for every grid. `sec-compound` marks a grid that holds
+    // at least one NESTED section (a child with its own `children`) rather than
+    // only leaf components — a compound grid's cell has to fit a WHOLE nested
+    // grid, not just one box, so it is a flex-wrap row of sections while a leaf
+    // grid is fixed --cell-w tracks. This is structural (derived from the data),
+    // not hardcoded to any id, so it stays true if the content changes.
+    const isCompound = (children || []).some(c => Array.isArray(c.children));
+    const classes = ['sec-grid', `sec-c${cols}`];
+    if (cols <= 1) classes.push('sec-c1');
+    if (isCompound) classes.push('sec-compound');
+    const grid = el('div', classes.join(' '));
     grid.style.setProperty('--cols', String(cols));
     for (const child of orderedChildren(children)) {
       // A child WITH `children` is a section (recurse). A leaf dispatches on its

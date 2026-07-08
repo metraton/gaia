@@ -5,16 +5,25 @@ target repo (whole, or into a subfolder like `diagram/`) and you have a working,
 themeable, data-driven diagram that opens under `file://`. Everything domain-
 specific lives in `data/`; the engine layer knows only the dialect.
 
-## The layout model
+## The layout model — a spreadsheet-style grid of uniform cells
 
 Two primitives, nothing else. A **section** is a node with a `children` array;
 it renders as a CSS-Grid `columns` wide, and its children auto-flow left→right
 and wrap down. A **component** is a leaf; it renders by its `type` — `box`
-(default) · `separator` · `rail`. Any child may set `span: N` to occupy N of the
-parent's columns. The page/root is itself a section. Nesting is a section whose
-children are sections — a grid of grids. There is no envelope primitive, no
-subsection, no mosaic, no `wraps` — the engine is one recursive `buildSection` /
-`buildGrid` pair, with no JS layout or measurement pass.
+(default) · `separator` · `rail`. Any child may set `span: N` to merge across N
+of the parent's columns. The page/root is itself a section. Nesting is a section
+whose children are sections — a grid of grids. There is no envelope primitive,
+no subsection, no mosaic, no `wraps` — the engine is one recursive
+`buildSection` / `buildGrid` pair, with no JS layout or measurement pass.
+
+Every leaf is one **fixed uniform cell** (`--cell-w × --cell-h = 232 × 130px`);
+a section is always an integer number of those cells wide. Cells never resize;
+they merge (`span`) and the column count **cascades 3→2→1** as width tightens
+(2-column intermediate, 1-column single-stack endpoint), so nothing scrolls
+sideways at the stacked tiers. `span == columns` makes a full-width **band** that
+takes its own row and spans the block; the whole block is centered on the canvas.
+Positioning is a known operation: `merge of M cells = M×232 + (M−1)×8`;
+`C-column section = C×232 + (C−1)×8 + 32`.
 
 ## Layout
 
@@ -25,14 +34,17 @@ assets/
 │   ├── engine.js         render engine — dialect only, no domain knowledge (@version 2.0.0)
 │   └── build-data.mjs    build step: data/*.yaml → data/data.generated.js
 ├── tools/
-│   └── verify.mjs        generic headless render QA (renders every page, asserts
-│                         the root grid renders with no top-level cell collisions,
-│                         screenshots widths × themes to a system temp dir)
-├── package.json          build / verify scripts + js-yaml + playwright devDeps
+│   ├── validate-layout.cjs  the LAYOUT GUARDRAIL — renders every page at five
+│   │                        widths (5 reloads each) and asserts the layout
+│   │                        invariants against the real geometry; PASS/FAIL,
+│   │                        exit≠0 on failure; shots to a system temp dir
+│   └── verify.mjs        lighter render QA (root grid renders, no top-level cell
+│                         collisions, screenshots widths × themes)
+├── package.json          build / validate / verify scripts + js-yaml + playwright devDeps
 └── data/                 ── the only part you edit ──
     ├── document.yaml     manifest: title/subtitle/version + which pages, in order
-    ├── pages/overview.yaml   one starter page: a section with boxes, a labeled
-    │                         separator, a NESTED section, and a rail
+    ├── pages/overview.yaml   one starter page: two inline sections side by side,
+    │                         a base band, a nested section, a separator, and a rail
     └── data.generated.js committed build output (window.__DOC__) — renders with zero tooling
 ```
 

@@ -10,6 +10,13 @@ with `columns`, `span`, and `children`) and a **component** (a leaf with a
 `type`). Nothing else. There is no envelope primitive, no subsection, no mosaic,
 no `wraps`, no `layout.row`, no layout "modes" — those are gone.
 
+The grid is a **spreadsheet of uniform cells**: every leaf component is one
+fixed cell (`--cell-w × --cell-h`), and a section is always an integer number of
+those cells wide. You position things by changing two values — `columns` and
+`span` — exactly like merging cells in a spreadsheet. It is a known operation,
+not trial-and-error, and every change is checked by `npm run validate` (see
+`reference.md`).
+
 ## Structural terms
 
 | Term | Where | Meaning |
@@ -38,11 +45,13 @@ frame of its own.
 
 | Term | Where | Meaning |
 |------|-------|---------|
-| `columns` | page · section | Grid width, **default 2**. The number of CSS-Grid tracks the children flow across. AUTHORITATIVE at desktop — never reduced by child count; only the responsive rule below caps it. |
-| `span` | any child (section or component) | Occupy N of the parent's columns — **same semantics at every nesting level**. Default 1. `span == columns` is a full-width band. Clamped to the parent's column count. Horizontal only. |
-| `order` | section · component | Explicit position of a child within its parent's grid AND the single-column collapse order at the phone breakpoint. Falls back to list order (stable). |
-| track sizing | (engine behavior) | Tracks are `minmax(--box-min, max-content)`: each column sizes to its own content with a `--box-min` (~280px) floor. A section is exactly as wide as its columns need and never stretches to fill — the diagram's width is the SUM of what its sections need, and the canvas scrolls horizontally when that exceeds the viewport. |
-| the responsive rule | (engine behavior) | Three tiers, driven by the STAGE container query: **desktop** honors the authored `columns` (overflow scrolls, never collapses); **tablet ≤768px** caps every grid to `min(columns, 2)`; **phone ≤480px** caps every grid to 1 (everything stacks in DOM/`order`). A `span` renders as `min(span, effective columns)` at each tier, so a 3-span degrades 3→2→1 and a band stays full-width. A `columns: 1` section is exempt from the tablet cap. |
+| `cell` | (engine behavior) | The base unit: every leaf component is exactly `--cell-w × --cell-h` (232 × 130 px, design tokens in `index.html`). Cells **never grow** — a title + up to 3 clamped description lines always fits, the rest lives in the click panel. A cell grows only **horizontally, by merge** (`span`). Uniform cells are what make the layout deterministic and math-checkable. |
+| `columns` | page · section | How many columns **this section's** grid has, **default 2**. A leaf grid renders exactly this many fixed `--cell-w` tracks. This column count is what **cascades 3→2→1** as width tightens (below). |
+| `span` | any child (section or component) | An Excel-style **merge**: occupy N columns of the parent — **same semantics at every level**. Default 1, clamped to the parent's `columns`. `span == columns` makes the child a full-width **band** that takes its own row. In a leaf grid a merged child spans the full row (`grid-column: 1 / -1`) so it never overflows on collapse; a genuinely-narrower multi-cell arrangement is done by nesting sections with different `columns` (a compound grid). |
+| `band` vs `inline` | section as a child of a compound grid | An **inline** section (`span: 1`) is sized to its own content and sits side by side with its neighbours on the same row. A **band** (`span == parent columns`) takes its own full row; consecutive bands stack top-to-bottom. A band spans the **block width** while its uniform cells inside stay `--cell-w` and left-align (banda ancha, componente uniforme). |
+| `order` | section · component | Explicit position of a child within its parent's grid AND the single-column collapse order at the narrowest tier. Falls back to list order (stable). Children flow in `order`, packing side by side until a band forces a new full row. |
+| the collapse cascade | (engine behavior) | Driven by the STAGE container query (works under split-screen / narrow panes, not the viewport): a leaf grid's `columns` step **down 3→2→1** as width tightens. **3** at full width, a **2-column "two-table"** intermediate at medium widths (≤1000px for a 3-col grid), a **1-column endpoint** at the narrowest tier (≤640px), where every leaf grid drops to a single cell and the whole page becomes one vertical stack. Below ~1440px compound rows fold from side-by-side into a centered vertical stack. A `columns: 1` section stays 1 at every tier. Cells stay `--cell-w` through every step — collapse changes how many columns show, never the cell size — so nothing scrolls sideways at the stacked tiers. |
+| width math | (geometry) | Leaf grid, gap `--s-2 = 8px`, zone padding `--s-3 = 16px` per side: a merge/band of M cells = `M×232 + (M−1)×8`; a C-column leaf section = `C×232 + (C−1)×8 + 32`. E.g. a `columns:3` section is `3×232 + 2×8 + 32 = 760px`. |
 
 ## Content terms
 

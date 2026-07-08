@@ -28,10 +28,10 @@ window.__DOC__ = {
         {
           "id": "intro",
           "title": "Getting started",
-          "subtitle": "edit data/pages/overview.yaml, then run npm run build",
+          "subtitle": "edit data/pages/overview.yaml, then npm run build",
           "variant": "normal",
           "order": 1,
-          "span": 2,
+          "span": 1,
           "columns": 2,
           "children": [
             {
@@ -64,21 +64,13 @@ window.__DOC__ = {
           ]
         },
         {
-          "id": "sep-example",
-          "type": "separator",
-          "order": 2,
-          "span": 2,
-          "style": "dotted",
-          "text": "An example system"
-        },
-        {
           "id": "system",
           "title": "Example system",
           "subtitle": "a section can nest other sections — a grid of grids",
           "variant": "envelope",
-          "order": 3,
-          "span": 2,
-          "columns": 2,
+          "order": 2,
+          "span": 1,
+          "columns": 1,
           "children": [
             {
               "id": "frontend",
@@ -137,18 +129,29 @@ window.__DOC__ = {
         {
           "id": "delivery",
           "title": "Delivery",
+          "subtitle": "span == columns makes this a full-width band on its own row",
           "variant": "normal",
-          "order": 4,
+          "order": 3,
           "span": 2,
-          "columns": 4,
+          "columns": 3,
           "children": [
+            {
+              "id": "sep-pipeline",
+              "type": "separator",
+              "order": 1,
+              "span": 3,
+              "style": "dotted",
+              "text": "CI/CD pipeline"
+            },
             {
               "id": "lane",
               "type": "rail",
+              "order": 2,
               "title": "CI/CD"
             },
             {
               "id": "b1",
+              "order": 3,
               "status": "UNCHANGED",
               "title": "Build",
               "description": [
@@ -157,6 +160,7 @@ window.__DOC__ = {
             },
             {
               "id": "b2",
+              "order": 4,
               "status": "UNCHANGED",
               "title": "Test",
               "description": [
@@ -165,6 +169,7 @@ window.__DOC__ = {
             },
             {
               "id": "b3",
+              "order": 5,
               "status": "NEW",
               "title": "Ship",
               "description": [
