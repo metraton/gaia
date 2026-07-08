@@ -50,9 +50,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from tools.scan.role_detector import detect_role
 from tools.scan.store_populator import (
+    _detect_primary_language,
     _git_remote_origin,
     _list_repos,
+    _platform_from_remote,
     resolve_project_identity,
 )
 
@@ -322,6 +325,10 @@ class ScanReport:
     diff: dict = field(default_factory=dict)
     mode: str = "dry-run"
     error: Optional[str] = None
+    # Carrier for stage 3 (contract promotion). classify.scan() NEVER writes
+    # this -- discovery stays a pure indexer. The CLI (bin/cli/scan.py) fills it
+    # after scan by invoking the decoupled promotion stage (tools/scan/promote).
+    promotion: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -340,6 +347,7 @@ class ScanReport:
             "diff": self.diff,
             "mode": self.mode,
             "error": self.error,
+            "promotion": self.promotion,
         }
 
 
@@ -444,6 +452,23 @@ def _upsert(
             # a repo whose origin was removed reports that honestly rather
             # than leaving a stale value silently in place.
             "remote_url": remote_url,
+            # Scan-owned scalars, populated deterministically for PARITY with
+            # store_populator.populate_project (the sibling scan path). Both
+            # are scan-owned (writer._PROJECTS_AGENT_OWNED == {"description"}),
+            # so `gaia scan` must fill them or promotion carries NULLs into the
+            # project_identity contract even when the data is on disk.
+            #   * primary_language: the DOMINANT language, resolved from the
+            #     repo's manifest files by a fixed priority order -- distinct
+            #     from (and complementary to) the multi-language `language`
+            #     facets in project_facets, which enumerate ALL languages.
+            #   * platform: derived from the git remote host (None when the
+            #     repo has no origin remote -- honest NULL, not a bug).
+            #   * role: deterministic disk-based classification; without it
+            #     promote._apply_scan_owned never seeds the contract entry's
+            #     `type` (promote.py seeds type from role when absent).
+            "primary_language": _detect_primary_language(repo_path),
+            "platform": _platform_from_remote(remote_url),
+            "role": detect_role(repo_path),
         },
         agent=agent,
         db_path=db_path,

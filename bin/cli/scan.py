@@ -149,6 +149,30 @@ def _render_human(report, *, dry_run: bool) -> None:
     if report.diff:
         print(f"{prefix}diff               : {report.diff}")
 
+    # Stage 3: contract promotion summary (validate gate -> merge scan-owned).
+    promo = report.promotion or {}
+    if promo:
+        if promo.get("error"):
+            print(f"{prefix}promotion          : ERROR {promo['error']}")
+        else:
+            verb = "promoted" if promo.get("applied") else "would-promote"
+            print(
+                f"{prefix}promotion          : {verb} "
+                f"contract=project_identity shape={promo.get('shape')} "
+                f"added={promo.get('added_entries', 0)} "
+                f"refreshed={promo.get('refreshed_entries', 0)}"
+            )
+            for rej in promo.get("rejected", []):
+                print(
+                    f"  ! promotion-rejected project={rej.get('name')} "
+                    f"reasons={rej.get('reasons')}"
+                )
+            for dfr in promo.get("deferred", []):
+                print(
+                    f"  ~ promotion-deferred project={dfr.get('project')}: "
+                    f"{dfr.get('reason')}"
+                )
+
     if not dry_run:
         print(f"{prefix}marked_missing     : {report.marked_missing}")
 
@@ -227,6 +251,23 @@ def cmd_scan(args: argparse.Namespace) -> int:
     except Exception as exc:
         logging.exception("gaia scan failed")
         return _emit_error(args, str(exc))
+
+    # Stage 3 (decoupled): promote scan-owned facts from the `projects` index
+    # into the `project_identity` project-context contract, merging without
+    # clobbering agent-owned enrichment. classify_scan above stays a pure
+    # indexer -- promotion is a separate, independently-invocable stage
+    # (tools/scan/promote.promote_workspace). Non-fatal: a promotion failure is
+    # recorded in the report and never fails the scan (the raw index is already
+    # persisted). Skipped when the scan itself errored or matched no workspace.
+    if not report.error and report.resolved_workspace:
+        try:
+            from tools.scan.promote import promote_workspace
+            report.promotion = promote_workspace(
+                report.resolved_workspace, apply=not dry_run
+            )
+        except Exception as exc:  # pragma: no cover -- non-fatal isolation
+            logging.exception("gaia scan: promotion stage failed")
+            report.promotion = {"error": f"{type(exc).__name__}: {exc}"}
 
     if getattr(args, "json", False):
         print(json.dumps(report.to_dict(), indent=2))

@@ -452,6 +452,59 @@ class TestScanReport:
             f"got {count}"
         )
 
+    def test_scan_populates_primary_language_and_platform(self, tmp_db, tmp_path):
+        """The LIVE scan (classify._upsert) must populate the scan-owned scalars
+        `primary_language` (dominant language from disk manifests) and
+        `platform` (from the git remote host), for parity with
+        store_populator.populate_project. Regression: these were left NULL, so
+        promotion carried no `language`/`platform` into the project_identity
+        contract even when the data was on disk.
+        """
+        import sqlite3
+        import shutil
+
+        # R4 collapse (repo directly under the workspace) -> project == repo
+        # basename, so the row is addressable by name "svc".
+        repo = _mk_repo(tmp_path, "aaxis", "svc")
+        # Multi-language repo: package.json + requirements.txt. The dominant
+        # scalar is deterministic (package.json -> javascript wins by priority),
+        # independent of the multi-language facets.
+        (repo / "package.json").write_text('{"name": "svc"}')
+        (repo / "requirements.txt").write_text("fastapi\n")
+        # Real git repo with an origin remote so platform derives to 'github'.
+        shutil.rmtree(repo / ".git")
+        subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin",
+             "git@github.com:aaxis/svc.git"],
+            cwd=str(repo), check=True,
+        )
+
+        rep = classify_mod.scan(tmp_path / "aaxis", "aaxis",
+                                db_path=tmp_db, apply=True)
+        assert rep.error is None
+
+        con = sqlite3.connect(str(tmp_db))
+        try:
+            row = con.execute(
+                "SELECT primary_language, platform, role FROM projects "
+                "WHERE workspace = ? AND name = ?",
+                ("aaxis", "svc"),
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None, "svc project row must exist"
+        assert row[0] == "javascript", (
+            f"dominant language must be populated, got {row[0]!r}"
+        )
+        assert row[1] == "github", (
+            f"platform must derive from the github remote, got {row[1]!r}"
+        )
+        # role must be populated too, so promotion can seed the contract `type`.
+        assert row[2] == "application", (
+            f"role must be populated (deterministic), got {row[2]!r}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # match_workspace_index -- the segment matcher (R3)

@@ -364,9 +364,14 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     projects that have **active project context** -- a ``project_identity`` row
     in ``project_context_contracts``. That filter is the point: it includes
     AOS (which lives only in the ``me`` workspace's hand-authored contract,
-    with absolute ``local_path``) and naturally excludes the dozens of cloned
-    reference repos under ``me`` that were scanned into the raw ``projects``
-    table but never given a project context. No path-prefix filtering is used.
+    with absolute ``local_path``) and, since the scan-promotion stage
+    (``tools/scan/promote.py::promote_workspace``), also includes any scanned
+    repo under ``me`` that passed the promotion gate (resolvable
+    ``project_identity``, absolute path, ``status='active'``) and was merged
+    into the contract as a scan-owned entry -- a cloned reference repo is only
+    excluded here if it was never scanned, failed the gate, or its workspace's
+    existing contract is a flat (non-map) shape with more than one promotable
+    project deferred for human review. No path-prefix filtering is used.
 
     Each entry is ``- <name>: <path>`` -- the path being the value the
     orchestrator wants (where the project lives on disk). Workspace is not a
