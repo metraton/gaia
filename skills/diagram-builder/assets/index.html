@@ -775,7 +775,22 @@
   </div>
 </div>
 
-<script src="data/data.generated.js"></script>
-<script src="engine/engine.js"></script>
+<!-- Cache-busting placeholder: index.html + engine/engine.js + data/data.generated.js
+     are a coupled contract that changes together on every meaningful deck
+     change, so a browser must never reuse a stale cached engine/data pair
+     against fresh HTML after a release. This seed ships with NO server, so
+     {{DIAGRAM_DECK_VERSION}} is substituted by nobody by default — a static
+     file server / file:// resolves the path and ignores the query string, so
+     "view immediately, zero tooling" (assets/README.md) keeps working with no
+     visible change when the placeholder is left as-is. Whatever the TARGET
+     repo's deploy layer is (a server templating this HTML, a CI build step, a
+     static-site generator) should substitute this token with the real deck
+     version (data/document.yaml's `version`, or the release tag) before
+     serving, and should also send `Cache-Control: no-cache, must-revalidate`
+     on these three coupled paths as a second layer (ETag revalidation covers
+     the case the placeholder is left unsubstituted). Full guidance + a worked
+     FastAPI example: assets/README.md → "Deploy: cache-busting & no-cache". -->
+<script src="data/data.generated.js?v={{DIAGRAM_DECK_VERSION}}"></script>
+<script src="engine/engine.js?v={{DIAGRAM_DECK_VERSION}}"></script>
 </body>
 </html>

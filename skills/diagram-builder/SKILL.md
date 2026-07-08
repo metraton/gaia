@@ -231,6 +231,18 @@ so a viewer glancing at the header can tell which cut they are looking at. If a
 pipeline injects the version at build/deploy time, let the pipeline own it. It
 renders after the subtitle; omit the field and nothing shows.
 
+**Deploy: don't let a release serve a stale asset pair.** `index.html`,
+`engine/engine.js`, and `data/data.generated.js` are a coupled contract that
+changes together on every release; a browser that caches one independently of
+the others can pair stale JS/data with fresh HTML. `assets/index.html` already
+carries a `?v={{DIAGRAM_DECK_VERSION}}` cache-busting placeholder on both
+coupled `<script>` tags — when scaffolding into a target repo, wire that
+placeholder up in whatever serves the deck (substitute it with the real
+version at deploy time) and add `Cache-Control: no-cache, must-revalidate` on
+the coupled paths as a second layer. This is a deploy-layer concern the seed
+cannot own (it ships with no server) — see `assets/README.md` → "Deploy:
+cache-busting & no-cache" for the full guidance and a worked example.
+
 ## Where the rest lives
 
 - `GLOSSARY.md` — the canonical dialect terms + the `status` and `variant`

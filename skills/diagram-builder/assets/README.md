@@ -78,6 +78,47 @@ A `span` renders as `min(span, effective columns)` at each tier, so a band stays
 full-width and a 3-span degrades 3→2→1 without overflow. There is no JS layout
 pass and no per-section breakpoint.
 
+## Deploy: cache-busting & no-cache
+
+`index.html`, `engine/engine.js`, and `data/data.generated.js` are a **coupled
+contract**: they change together on every meaningful deck change (a new page,
+a reworked layout, a rebuilt `data.generated.js`). A browser that caches any
+one of the three independently can pair a stale `engine.js`/`data.generated.js`
+with a fresh `index.html` after a release — the classic stale-assets bug.
+This seed ships **with no server** (it is copied whole into a target repo and
+opens under `file://` with zero tooling), so it cannot bundle a fix that lives
+in a server layer the target may not have. Two things are already in place for
+whatever the target repo's deploy layer turns out to be:
+
+- **A cache-busting placeholder is already on the two coupled `<script>` tags**
+  in `index.html`: `data/data.generated.js?v={{DIAGRAM_DECK_VERSION}}` and
+  `engine/engine.js?v={{DIAGRAM_DECK_VERSION}}`. Left unsubstituted, the query
+  string is harmless — a static file server or `file://` resolves the path and
+  ignores it, so "view immediately" still works with no visible change.
+- **Wire up the placeholder when you deploy behind anything that serves these
+  files** (a server that templates the HTML, a CI build step, a static-site
+  generator): substitute `{{DIAGRAM_DECK_VERSION}}` with the real deck version
+  (`data/document.yaml`'s `version`, or the repo's release tag) so every
+  release produces distinct asset URLs and the browser is forced to fetch the
+  new pair instead of reusing the old one.
+- **Add a no-cache safety net as a second layer**, in whatever serves the
+  three coupled paths (`/`, `/index.html`, `/engine/engine.js`,
+  `/data/data.generated.js`): send `Cache-Control: no-cache, must-revalidate`
+  on those responses (relying on ETag for revalidation, which most static
+  file servers already set). This covers the case the placeholder is left
+  unsubstituted or a proxy ignores the query string — the browser may keep a
+  cached copy but must always revalidate with the server before using it, so
+  it can never serve a stale copy silently. A worked example (a FastAPI app
+  serving this exact seed) sets this via one `@app.middleware("http")` that
+  checks `request.url.path` against the four coupled paths and sets the
+  header on the response — the same pattern applies to any framework or
+  static-file layer (nginx `add_header`, an S3/CloudFront cache policy, etc).
+- **If the target has no server at all** (pure static hosting, `file://`,
+  opened straight from the repo), there is nothing to wire up — the
+  placeholder degrades to a no-op query string and the deck still renders
+  correctly; you are simply not protected from the stale-pair bug until a
+  serving layer exists.
+
 ## Genericized from the reference artifact
 
 Vendored from a frozen reference architecture-diagram artifact (HUD included)
