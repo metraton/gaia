@@ -58,9 +58,9 @@ skills/
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
-├── diagram-builder/       # Domain: turn an idea into a portable, data-driven diagram deck (facilitation method + dialect + 5 modes)
-│   ├── GLOSSARY.md        # canonical dialect terms + status/variant enums
-│   ├── reference.md       # facilitation method (idea→ASCII→YAML), field schema, engine gotchas, modes, build/verify loop
+├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (thinking method + section/component dialect + authoring modes)
+│   ├── GLOSSARY.md        # canonical dialect terms (section + component types) + status/variant enums
+│   ├── reference.md       # field schema, engine behaviors, authoring modes, build/verify loop
 │   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/verify.mjs, seed data/ (see assets/README.md)
 ├── execution/             # Post-approval execution discipline
 ├── fast-queries/          # Quick diagnostic scripts for cloud/system state

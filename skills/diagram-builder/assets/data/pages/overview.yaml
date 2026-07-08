@@ -1,10 +1,26 @@
 # Starter page. id lives here (+ cross-referenced in ../document.yaml);
 # name/order/visible live in the manifest. This file is pure page content:
-# layout, columns, filters, sections. See the dialect reference for each field.
+# layout, columns, filters, sections. See the diagram-builder dialect
+# reference (../GLOSSARY.md, ../reference.md) for every field.
+#
+# LAYOUT MODEL — ONE recursive `section` primitive:
+#   • a node WITH `children` is a SECTION; WITHOUT it, a COMPONENT (leaf).
+#   • every section has `columns: N` (default 2); its children auto-flow
+#     left→right and wrap DOWN.
+#   • every child (section OR component) may declare `span: M` (default 1;
+#     M == columns == a full-width band). Same rule at every level.
+#   • the page root is itself a section: `columns` below is the root column
+#     count and `sections` is the root's children.
+#   • a component (leaf) chooses its `type`: box (default) | separator | rail.
+#
+# This seed is a tiny, domain-free demo that shows every primitive once:
+# a section with boxes, a labeled separator, a NESTED section (a section
+# whose children are sections), and a rail used as a swimlane label.
 
 id: overview
 layout: grid
-# Top-level mosaic: a 2-column canvas. One section spans both columns.
+# Root: a 2-column canvas. Each top-level cell below spans both columns, so
+# they stack as full-width bands down the page.
 columns: 2
 
 filters:
@@ -15,16 +31,19 @@ filters:
     steps:
       - "Chips are flows: click one to spotlight every component that declares it and dim the rest."
       - "A component joins a flow by listing the filter key in its own <code>filters</code>."
+      - "Here the flow traces edit → web app → API → ship."
 
 sections:
+
+  # ── 1 · a plain section with two boxes (span 2 = a full-width band) ──
   - id: intro
     title: "Getting started"
     subtitle: "edit data/pages/overview.yaml, then run npm run build"
     variant: normal
     order: 1
-    layout: { row: 1, span: 2 }
+    span: 2
     columns: 2
-    components:
+    children:
       - id: edit
         order: 1
         status: NEW
@@ -44,4 +63,86 @@ sections:
           - "open index.html — no server needed"
         detail: "The build step reads the manifest + page files and writes data/data.generated.js. Open index.html in any browser; it renders under file:// with zero runtime dependencies."
         variant: normal
+
+  # ── 2 · a labeled separator (a leaf component, type: separator) ──
+  # A structural divider: a thin dotted rule with an inline label, spanning the
+  # full width. It carries no data and is not clickable.
+  - id: sep-example
+    type: separator
+    order: 2
+    span: 2
+    style: dotted
+    text: "An example system"
+
+  # ── 3 · NESTING: a section whose children are themselves sections ──
+  # `envelope` = a borderless dashed container that groups nested sections.
+  - id: system
+    title: "Example system"
+    subtitle: "a section can nest other sections — a grid of grids"
+    variant: envelope
+    order: 3
+    span: 2
+    columns: 2
+    children:
+      - id: frontend
+        title: "Frontend"
+        variant: safe
+        columns: 1
+        children:
+          - id: webapp
+            status: INTERNAL
+            title: "Web app"
+            description:
+              - "the user-facing surface"
+            detail: "A nested section is drawn as its own framed zone inside the parent. Its <code>variant</code> (here <code>safe</code>) tints the whole group."
+            variant: ok
+            filters: [flow]
+      - id: backend
+        title: "Backend"
+        variant: normal
+        columns: 1
+        children:
+          - id: api
+            status: INTERNAL
+            title: "API"
+            description:
+              - "handles requests from the web app"
+            detail: "Components auto-flow into the section's columns and wrap down. This backend section is <code>columns: 1</code>, so its two boxes stack."
+            variant: normal
+            filters: [flow]
+          - id: db
+            status: INTERNAL
+            title: "Database"
+            description:
+              - "persistent store"
+            detail: "The <code>store</code> variant gives a data store its own secondary fill."
+            variant: store
+
+  # ── 4 · a rail used as a swimlane label, beside a row of steps ──
+  # `rail` (a leaf component, type: rail) is a title-only banner — good for
+  # labeling a lane. Here it leads a 4-column row: rail + three steps.
+  - id: delivery
+    title: "Delivery"
+    variant: normal
+    order: 4
+    span: 2
+    columns: 4
+    children:
+      - id: lane
+        type: rail
+        title: "CI/CD"
+      - id: b1
+        status: UNCHANGED
+        title: "Build"
+        description: ["compile & package"]
+      - id: b2
+        status: UNCHANGED
+        title: "Test"
+        description: ["run the suite"]
+      - id: b3
+        status: NEW
+        title: "Ship"
+        description: ["deploy to prod"]
+        detail: "The last step in the example flow — click the <b>Example flow</b> chip above to trace it end to end."
+        variant: strong
         filters: [flow]

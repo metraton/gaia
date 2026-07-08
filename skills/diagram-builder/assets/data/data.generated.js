@@ -19,7 +19,8 @@ window.__DOC__ = {
           "label": "Example flow",
           "steps": [
             "Chips are flows: click one to spotlight every component that declares it and dim the rest.",
-            "A component joins a flow by listing the filter key in its own <code>filters</code>."
+            "A component joins a flow by listing the filter key in its own <code>filters</code>.",
+            "Here the flow traces edit → web app → API → ship."
           ]
         }
       ],
@@ -30,12 +31,9 @@ window.__DOC__ = {
           "subtitle": "edit data/pages/overview.yaml, then run npm run build",
           "variant": "normal",
           "order": 1,
-          "layout": {
-            "row": 1,
-            "span": 2
-          },
+          "span": 2,
           "columns": 2,
-          "components": [
+          "children": [
             {
               "id": "edit",
               "order": 1,
@@ -61,7 +59,119 @@ window.__DOC__ = {
                 "open index.html — no server needed"
               ],
               "detail": "The build step reads the manifest + page files and writes data/data.generated.js. Open index.html in any browser; it renders under file:// with zero runtime dependencies.",
+              "variant": "normal"
+            }
+          ]
+        },
+        {
+          "id": "sep-example",
+          "type": "separator",
+          "order": 2,
+          "span": 2,
+          "style": "dotted",
+          "text": "An example system"
+        },
+        {
+          "id": "system",
+          "title": "Example system",
+          "subtitle": "a section can nest other sections — a grid of grids",
+          "variant": "envelope",
+          "order": 3,
+          "span": 2,
+          "columns": 2,
+          "children": [
+            {
+              "id": "frontend",
+              "title": "Frontend",
+              "variant": "safe",
+              "columns": 1,
+              "children": [
+                {
+                  "id": "webapp",
+                  "status": "INTERNAL",
+                  "title": "Web app",
+                  "description": [
+                    "the user-facing surface"
+                  ],
+                  "detail": "A nested section is drawn as its own framed zone inside the parent. Its <code>variant</code> (here <code>safe</code>) tints the whole group.",
+                  "variant": "ok",
+                  "filters": [
+                    "flow"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "backend",
+              "title": "Backend",
               "variant": "normal",
+              "columns": 1,
+              "children": [
+                {
+                  "id": "api",
+                  "status": "INTERNAL",
+                  "title": "API",
+                  "description": [
+                    "handles requests from the web app"
+                  ],
+                  "detail": "Components auto-flow into the section's columns and wrap down. This backend section is <code>columns: 1</code>, so its two boxes stack.",
+                  "variant": "normal",
+                  "filters": [
+                    "flow"
+                  ]
+                },
+                {
+                  "id": "db",
+                  "status": "INTERNAL",
+                  "title": "Database",
+                  "description": [
+                    "persistent store"
+                  ],
+                  "detail": "The <code>store</code> variant gives a data store its own secondary fill.",
+                  "variant": "store"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "delivery",
+          "title": "Delivery",
+          "variant": "normal",
+          "order": 4,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "lane",
+              "type": "rail",
+              "title": "CI/CD"
+            },
+            {
+              "id": "b1",
+              "status": "UNCHANGED",
+              "title": "Build",
+              "description": [
+                "compile & package"
+              ]
+            },
+            {
+              "id": "b2",
+              "status": "UNCHANGED",
+              "title": "Test",
+              "description": [
+                "run the suite"
+              ]
+            },
+            {
+              "id": "b3",
+              "status": "NEW",
+              "title": "Ship",
+              "description": [
+                "deploy to prod"
+              ],
+              "detail": "The last step in the example flow — click the <b>Example flow</b> chip above to trace it end to end.",
+              "variant": "strong",
               "filters": [
                 "flow"
               ]

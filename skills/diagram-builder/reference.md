@@ -1,325 +1,208 @@
 # Diagram Builder — reference
 
-Deep mechanics for authoring a diagram deck: the field-by-field schema, the
-engine behaviors that surprise you, the five authoring modes, and the
-build → verify loop. For the shared vocabulary and enums, see `GLOSSARY.md`; for
-the decomposition model and the two-consumer framing, see `SKILL.md`.
+Deep mechanics for authoring a diagram deck on the recursive-section model: the
+field-by-field schema, the engine behaviors that surprise you, the authoring
+modes, and the build → verify loop. For the vocabulary and enums, see
+`GLOSSARY.md`; for the thinking method and the two-consumer framing, see
+`SKILL.md`.
 
 The portable engine is vendored under `assets/` (see `assets/README.md`):
 `index.html`, `engine/engine.js`, `engine/build-data.mjs`, `package.json`,
-`tools/verify.mjs`, and a domain-free seed `data/`. Scaffold from there. The
-reference framework this skill was modeled on
-(`/home/jorge/ws/century-inc/branchkinect-architecture-overview`) remains a
-fuller worked example — its `engine/DIALECT.md` §0–§1 is the original canonical
-contract, kept in sync with this skill's `GLOSSARY.md`.
+`tools/verify.mjs`, and a domain-free seed `data/`. Scaffold from there.
 
-## The facilitation method: idea → diagram
+## The layout model in one paragraph
 
-The hard part of diagramming is not the YAML syntax — it is deciding the shape.
-The failure mode is jumping from a vague idea straight to authoring, then
-fighting the render. This method keeps the expensive step (build + render) last
-and does all the convergence on the cheap, in text.
-
-### Why ASCII first
-
-An ASCII sketch drawn with the dialect's own concepts — a page as a grid of
-columns, sections as bordered boxes placed by row/span, components as lines
-inside — is a 1:1 preview of the YAML. It costs nothing (no build, no render, no
-T3), it is instantly editable mid-conversation, and because it uses the same
-vocabulary, translating an agreed sketch to YAML is mechanical. The orchestrator
-can run this whole loop in chat before any agent is dispatched.
-
-### The loop
-
-1. **Capture the idea.** Take the user's description, or read the markdown/notes
-   they point at. Extract the entities and the groups they fall into.
-2. **First sketch.** Draw the whole thing in ASCII: choose a column count, place
-   the big groups as sections (bordered boxes) across rows, drop the components
-   inside as lines. Annotate each box with its dialect intent —
-   `(variant, row, span, columns)`.
-3. **Ask the sharpening questions, redraw on each answer:**
-   - Where does it start / what is the entry point? → the first section, often a
-     `danger` zone with an `ENTRY` component.
-   - What are the natural groups? → sections, and whether one *contains* others
-     (an `envelope`).
-   - What connects to / flows through what? → a `filter` chip tracing the path.
-   - What is risky, new, or hardened? → `status` + `variant` per component.
-   - How wide is it — how many columns, what sits beside what? → `columns` and
-     each section's `span`/`row`.
-4. **Confirm.** When the user says "that's it", the ASCII is the spec.
-5. **Translate & build.** Convert the agreed sketch to YAML (the five modes),
-   run the build, and verify by looking (the build → verify loop below).
-6. **Fine-tune only.** From here, changes should be cheap parameter tweaks —
-   `columns`, `span`, `order`, wording — not structural rework, because the
-   structure was already agreed as ASCII.
-
-### Worked example
-
-**Idea (prose):** "Show our request path. A user hits the load balancer, which
-goes to the API; the API reads the database and calls an external payments
-provider. The payments call is the risky bit."
-
-**Round 1 — a first cut (one row, everything inline):**
-
-```
-cols: [ 1 ][ 1 ][ 1 ]
-┌─ Request path (row 1, span 3, columns 3) ───────────────────┐
-│ [LB] ENTRY   [API] INTERNAL   [DB] INTERNAL   [Pay] EXTERNAL │
-└─────────────────────────────────────────────────────────────┘
-```
-
-*Question:* "Is the database internal and payments outside your perimeter?
-Should we group the internal parts and set payments apart?"
-*Answer:* "Yes — DB and API are ours; payments is external and risky."
-
-**Round 2 — group internal vs external, mark the risk:**
-
-```
-cols: [      1      ][      1      ]
-┌─ Our system (row 1, span 1, columns 1) ─┐  ┌─ External (danger, row 1, span 1) ─┐
-│ [LB]  ENTRY                              │  │ [Pay] EXTERNAL   variant: crit     │
-│ [API] INTERNAL                          │  │  raw card data · no vault          │
-│ [DB]  INTERNAL   variant: store         │  └────────────────────────────────────┘
-└──────────────────────────────────────────┘
-```
-
-*Question:* "Want a chip that lights the whole request path end to end?"
-*Answer:* "Yes, call it 'Checkout'."
-
-**Round 3 — add the flow filter, confirm.** Every box on the path gets
-`filters: [checkout]`; the chip spotlights the path. User: "That's it." The
-sketch is now the spec.
-
-**Final YAML (Modes 3–5):**
-
-```yaml
-id: request-path
-layout: grid
-columns: 2
-filters:
-  - key: all
-    label: "All"
-  - key: checkout
-    label: "Checkout path"
-    steps:
-      - "User → load balancer → API; the API reads the DB and calls payments."
-sections:
-  - id: oursystem
-    title: "Our system"
-    variant: normal
-    order: 1
-    layout: { row: 1, span: 1 }
-    columns: 1
-    components:
-      - { id: lb,  order: 1, status: ENTRY,    title: "Load balancer", variant: normal, filters: [checkout] }
-      - { id: api, order: 2, status: INTERNAL, title: "API",           variant: normal, filters: [checkout] }
-      - { id: db,  order: 3, status: INTERNAL, title: "Database",      variant: store,  filters: [checkout] }
-  - id: external
-    title: "External"
-    variant: danger
-    order: 2
-    layout: { row: 1, span: 1 }
-    columns: 1
-    components:
-      - id: pay
-        order: 1
-        status: EXTERNAL
-        title: "Payments provider"
-        description: ["raw card data", "no vault"]
-        variant: crit
-        variant_extra: [ext]
-        filters: [checkout]
-```
-
-The sketch and the YAML carry the same structure — that is the whole point: the
-conversation, not the authoring, is where the diagram is actually decided.
+There are exactly **two primitives**. A **section** is a node with a `children`
+array; it renders as a CSS-Grid `columns` wide, and its children auto-flow
+left→right and wrap down. A **component** is a leaf (no `children`); it renders
+by its `type` — `box` (default), `separator`, or `rail`. Any child, section or
+component, may set `span: N` to occupy N of the parent's columns. The page/root
+is itself a section (`page.columns` = its grid width, `page.sections` = its
+children). Nesting is just a section whose children include other sections — a
+grid of grids, as deep as the idea needs. There is no envelope primitive, no
+subsection, no mosaic, no `wraps`, no `layout.row`, no layout modes.
 
 ## Repository layout
 
 ```
 <repo>/
-├── index.html            entry + template (design-system CSS inline)
+├── index.html            entry + template (design-system CSS inline, help HUD)
 ├── engine/
-│   ├── engine.js         render engine — knows only the dialect
-│   ├── build-data.mjs     build step: YAML → data/data.generated.js
-│   └── DIALECT.md         the dialect contract + glossary
+│   ├── engine.js         render engine — knows only the dialect (@version 2.0.0)
+│   └── build-data.mjs    build step: YAML → data/data.generated.js
 ├── data/
-│   ├── document.yaml     manifest: title/subtitle + which pages, in what order
+│   ├── document.yaml     manifest: title/subtitle/version + which pages, in order
 │   ├── pages/            one YAML per page
 │   └── data.generated.js build output (committed; `window.__DOC__ = {...}`)
-└── tools/verify.mjs      headless render QA (geometry assertions + screenshots)
+└── tools/verify.mjs      headless render QA (collision assertions + screenshots)
 ```
 
 The engine layer (`engine/` + `index.html`) is generic and knows nothing about
-the diagram's domain; every domain string lives in `data/`. That seam is what
-makes the engine reusable across diagrams. `js-yaml` (build) and `playwright`
-(QA) are devDependencies — the shipped artifact has zero runtime dependencies.
+the diagram's domain; every domain string lives in `data/`. `js-yaml` (build)
+and `playwright` (QA) are devDependencies — the shipped artifact has zero
+runtime dependencies.
 
 ## The manifest (`data/document.yaml`)
 
 ```yaml
 title: "Deck title"          # required
 subtitle: "…"                # optional
-version: "0.1.0"              # optional — free-form (semver recommended)
+version: "0.1.0"             # optional — free-form (semver recommended)
 pages:
-  - id: current-state        # required — must match page.id in the file
-    name: "Current state"    # required — visible label (rename without breaking refs)
+  - id: overview             # required — must match page.id in the file
+    name: "Overview"         # required — visible label (rename without breaking refs)
     order: 1                 # required — decknav position
     visible: true            # required — false omits from build without deleting
-    file: pages/current-state.yaml   # required — path relative to data/
+    file: pages/overview.yaml   # required — path relative to data/
 ```
 
 The manifest is the single source of **which** pages exist, in what order, and
 whether they show. `name` / `order` / `visible` live **only** here — the page
-file must not repeat them. `page.id` lives in both (as a cross-reference the
-build validates). The build discards `visible: false` pages, sorts the rest by
+file must not repeat them. `page.id` lives in both (a cross-reference the build
+validates). The build discards `visible: false` pages, sorts the rest by
 `order`, then merges each file.
 
-`version` is a plain passthrough: `build-data.mjs` copies it onto
-`window.__DOC__.version` with no default and no validation, and `engine.js`
-renders it in the header — after the subtitle, in the same mono/muted style,
-one size down — only when the field is present (`if (barVer && doc.version)`).
-Omit it and the header shows nothing where it would go; the `.ver` node stays
-empty and `:empty` collapses it in index.html, so an older deck with no
+`version` is a plain passthrough: `build-data.mjs` copies `manifest.version`
+onto `window.__DOC__.version` with no default, and `engine.js` renders it in the
+header (`if (barVer && doc.version)`) after the subtitle. Omit it and the `.ver`
+node stays empty; `:empty` collapses it in index.html, so a deck with no
 `version` degrades with zero visible change. See the versioning rule in
-`SKILL.md` for when to bump it.
+`SKILL.md`.
 
 ## The page file (`data/pages/<id>.yaml`)
 
 ```yaml
-id: current-state       # required — matches the manifest entry
-layout: grid            # engine selector: grid (recommended) | svg (legacy)
-columns: 5              # top-level MOSAIC column count — presence activates mosaic mode
-filters: [ … ]          # optional — overrides/extends the document's
-sections: [ … ]         # required, ≥ 1
+id: overview            # required — matches the manifest entry
+layout: grid            # engine selector — only `grid` is supported
+columns: 2              # ROOT grid width (default 2) — the page is a section
+filters: [ … ]          # optional — the flow chips for this page
+sections: [ … ]         # required, ≥ 1 — the root section's children
 ```
 
-### section
+### section (any node with `children`)
 
 ```yaml
-- id: gcpenv            # required, stable slug
-  title: "GCP environment"
+- id: system            # required, stable slug
+  title: "Example system"
   subtitle: "…"         # optional
-  variant: envelope     # normal | danger | safe | envelope
-  order: 2              # collapse order (single-column stack)
-  layout: { row: 1, span: 3 }   # placement in the mosaic (or in a banded envelope)
-  columns: 2            # content grid width (default 2); on an envelope → BANDED mode
-  wraps: [gke, databox] # envelope only — ids of the sections it contains
-  subsections: [ … ]    # OR
-  components: [ … ]      # loose components with no subsection
+  variant: envelope     # normal | danger | safe | envelope | plain
+  order: 3              # position among its siblings + collapse order
+  span: 2               # occupy N of the PARENT's columns (default 1)
+  columns: 2            # this section's OWN grid width (default 2)
+  children: [ … ]       # sections and/or components, mixed freely
 ```
 
-### subsection
+A child of `children` is a **section** if it has its own `children`, otherwise a
+**component**. Mix them freely in one list.
+
+### component — box (default `type`)
 
 ```yaml
-- id: dev-gke-standard
-  label: "DEV-GKE-STANDARD"      # required
-  sublabel: "v1.35 · ~9 nodes …" # optional
-  columns: 3                     # grid width (default 2)
-  components: [ … ]
-```
-
-### component
-
-```yaml
-- id: apiserver         # required, STABLE slug (data-k / edit-mode key)
+- id: api               # required, STABLE slug (data-k / edit-mode key)
   order: 1              # explicit position; falls back to list order
-  status: EXPOSED       # kicker badge — see GLOSSARY enum
-  title: "GKE control plane"
+  status: INTERNAL      # kicker badge — see GLOSSARY enum
+  title: "API"
   description:          # string, or a list where each item is a line
-    - "API server · public endpoint"
-    - "no authorized networks"
+    - "handles requests from the web app"
   detail: "Long <b>HTML-allowed</b> text for the click panel."  # falls back to description
-  note: "⚠ …"          # optional warning note, shown separately
-  variant: crit         # normal | crit | warn | ok | strong | ext | store
+  note: "⚠ …"           # optional warning note, shown separately
+  variant: normal       # normal | crit | warn | ok | strong | ext | store
   variant_extra: [ext]  # optional second class, composed (e.g. box ext)
-  span: 2               # occupy N of the subsection's columns (default 1)
-  filters: [expose]     # keys of the filters this component belongs to
+  span: 2               # occupy N of the section's columns (default 1)
+  filters: [flow]       # keys of the filters this component belongs to
 ```
+
+### component — separator (`type: separator`)
+
+```yaml
+- id: sep-1
+  type: separator
+  span: 2               # usually a full-width band
+  orientation: horizontal   # horizontal (default) | vertical
+  style: dotted             # solid (default) | dotted
+  text: "An example system" # optional inline label centered on the line
+```
+
+A thin divider LINE, not a card. Horizontal = a rule across its cell(s);
+vertical = a rule down its cell. With `text`, the label sits centered on the
+line. Not clickable, no detail.
+
+### component — rail (`type: rail`)
+
+```yaml
+- id: lane
+  type: rail
+  title: "CI/CD"
+  orientation: vertical   # horizontal (default) | vertical (rotates the text)
+  span: 1
+```
+
+A title-only swimlane LABEL banner (styled like a box but carrying only a
+title). `orientation: vertical` rotates it for labeling a vertical lane. Not
+clickable.
 
 ### filter
 
 ```yaml
-- key: expose           # slug referenced by component.filters and the chip
-  label: "Internet exposure"
+- key: flow             # slug referenced by component.filters and the chip
+  label: "Example flow"
   steps:                # optional flow text shown when the chip is clicked
-    - "Only three surfaces are reachable from the internet."
+    - "Chips are flows: click one to spotlight the components that declare it."
 ```
 
-Highlight is **component-owns-its-tags**: the engine builds an inverse index
-`filterKey → [ids]` by walking the tree, so you never maintain a central node
-list. A whole zone can light up either because its components declare the filter
-or because the section declares `filters` of its own.
+Highlight is **component-owns-its-tags**: the engine builds an inverse index by
+walking the tree, so you never maintain a central node list. A component lights
+up because IT declares the filter key; its enclosing section lights with it.
 
 ## Engine gotchas
 
-These are the behaviors that bite if you author against intuition instead of the
-engine:
+Behaviors that bite if you author against intuition instead of the engine:
 
-- **Top-level `section.layout.span` defaults to the section's effective columns,
-  not to 1.** A 3-column section placed in the mosaic without an explicit span
-  occupies 3 mosaic columns so its content fits. Set an explicit `span` only to
-  override that.
-- **For a declared mosaic row to materialize, the spans in that row must sum to
-  `page.columns`.** The engine emits only `grid-column: span N` and lets CSS
-  auto-flow wrap row by row in DOM order (= `order`); `row` is authoring intent
-  and an edit-mode anchor, not an emitted grid line. If a row's spans don't sum
-  to the column count, cells wrap where you didn't expect.
-- **The column is derived, never declared.** There is no `layout.col`. A cell's
-  start column is the running sum of the spans before it in its row. To move a
-  cell to the left of a lower band, give it a new `row` and make it first in that
-  row's `order` — do not look for a column field.
-- **Effective columns = `min(columns ?? 2, item count)`.** A section that
-  declares `columns: 3` but holds one component renders one full-width column,
-  not a narrow box in a third of the space.
-- **A content section with direct components honors its `columns` (default 2).**
-  Two loose components sit two-up unless you set `columns: 1`. (The DIALECT §2
-  legacy note that direct-component sections are forced to a single column is
-  superseded by the canonical §0 behavior — the framework's `verify.mjs` asserts
-  the two-up layout.)
-- **Envelope shapes are chosen by `wraps` + `columns`:** flat `wraps` list =
-  one wide `.env-main` + a stack of `.env-side`; list-of-lists = N equal columns;
-  flat list **plus `columns: N`** = BANDED — the children become a mosaic inside
-  the dashed border, each carrying its own `layout: {row, span}`, rendered as
-  measured flex-rows (not CSS grid, because the children are height-variable
-  zones).
-- **Only horizontal span exists.** Vertical span lives on the block axis and is
-  deferred; do not author it.
-- **Sizing is intrinsic — columns win, width never collapses them.** A section is
-  rendered wide enough to sustain its columns; when content is wider than the
-  viewport the diagram grows and the canvas **scrolls horizontally** rather than
-  dropping columns. "Go vertical" is the author's explicit `columns: 1`, not
-  something the width forces.
-- **Responsive collapse is coarse and diagram-wide.** Below `--bp-tablet`
-  (768px) the mosaic stacks to one column and multi-column grids cap at 2; below
-  `--bp-phone` (480px) every grid drops to 1. There is no per-zone collapse.
-- **`page.layout` vs `section.layout` are different objects.** The first selects
-  the render engine (`grid` | `svg`); the second is `{row, span}` placement. An
-  `svg` page is legacy positional and is not data-driven the same way — prefer
-  `grid`.
-- **`data.generated.js` is generated and committed.** It is a plain
-  `window.__DOC__ = {…}` assignment, loaded by a normal `<script src>` so the
+- **`columns` is authoritative for width; width never collapses it.** A section
+  is rendered wide enough to sustain its `columns` (≈ columns × `--box-min`);
+  when the diagram is wider than the viewport the canvas **scrolls
+  horizontally** rather than dropping columns. "Go vertical" is the author's
+  explicit `columns: 1`, not something the width forces.
+- **Tracks size to content, not to fill (`minmax(--box-min, max-content)`).** A
+  narrow one-column section does NOT balloon to a dense neighbour's width. This
+  is why the root grid lives in a `width:max-content` plane that centers when it
+  fits and scrolls when it does not.
+- **`span` is the same at every level, and is clamped to the parent's
+  `columns`.** `span == columns` is a full-width band. A `span` larger than the
+  parent's columns is clamped down — it never overflows the grid.
+- **Order is `order`, else list order.** DOM order (after the stable sort by
+  `order`) IS the single-column collapse order at the phone breakpoint. To move
+  a cell, change its `order` — there is no column/row coordinate to set.
+- **The responsive rule is coarse and applied per-grid.** Below `--bp-tablet`
+  (768px) every grid caps to `min(columns, 2)`; below `--bp-phone` (480px) every
+  grid caps to 1. A `columns: 1` section (`.sec-c1`) is exempt from the tablet
+  cap. A multi-span child degrades 3→2→1 in lockstep so nothing overflows. There
+  is no per-section custom breakpoint.
+- **Nesting is free and has no depth limit.** A section can hold sections which
+  hold sections. Each level runs the same `buildGrid`; each nested section draws
+  its own frame (per its `variant`). Use `variant: plain` for a frameless
+  structural wrapper and `variant: envelope` for a borderless dashed container.
+- **`separator` and `rail` are structural leaves.** They occupy a grid cell and
+  honor `span` like any component, but carry no detail and are not clickable.
+- **`data.generated.js` is generated and committed.** A plain
+  `window.__DOC__ = {…}` assignment loaded by a normal `<script src>`, so the
   deck works under `file://` with zero fetch/CORS. Never hand-edit it; regenerate
   after any YAML change.
-- **Ids are stable kebab-case, reused where they already exist.** They are the
-  `data-zone` / `data-k` the engine emits and the anchor a future edit mode would
-  overlay via `localStorage` — never rewriting the YAML.
+- **Only `layout: grid` renders.** Any other `page.layout` is skipped with a
+  console warning (the deck degrades instead of throwing).
 
-## The five authoring modes
+## The authoring modes
 
 **Before scaffolding, confirm the destination.** For a new repo, adding to an
 existing repo, or a new page, *ask the user where the project (or file) should
-live* and write there — never assume a path. Confirm the destination before
-writing anything.
+live* and write there — never assume a path.
 
 ### Mode 1 — New repo
 
-Scaffold the engine layer, then seed one document.
-
 1. Copy the vendored engine layer from `assets/` (`index.html`, `engine/`,
    `package.json`, `tools/verify.mjs`, and the seed `data/`) into the new repo.
-2. Create `data/document.yaml` with `title`/`subtitle` and one page entry.
-3. Create `data/pages/<id>.yaml` with `id`, `layout: grid`, `columns`, and a
+2. Set `data/document.yaml` `title`/`subtitle` and one page entry.
+3. Write `data/pages/<id>.yaml` with `id`, `layout: grid`, `columns`, and a
    first section.
 4. Run the build → verify loop below.
 
@@ -339,28 +222,28 @@ Scaffold the engine layer, then seed one document.
    and `file`. The `id` **must** match, or the build throws.
 3. Build → verify.
 
-### Mode 4 — New section / zone
+### Mode 4 — New section
 
-1. Add a `section` to the page's `sections`, with a stable `id` and a `variant`.
-2. Place it: give it `layout: {row, span}` and pick `columns`. Remember the
-   row's spans should sum to `page.columns`.
-3. If it is a container, set `variant: envelope` and list `wraps` (add `columns`
-   for banded mode).
+1. Add a section to a parent's `children` (the page's `sections`, or a deeper
+   section's `children`), with a stable `id`, a `variant`, and its own
+   `columns`.
+2. Set `span` to widen it (up to the parent's columns); a full-width band is
+   `span == parent columns`.
+3. To nest, give the section its own `children` that are themselves sections.
 4. Build → verify.
 
 ### Mode 5 — Add / edit components
 
-1. Add `component` entries to a section's `components` or a subsection's
-   `components`.
-2. Give each a stable `id`, a `status`, a `title`, a `description`, and a
-   `variant`; set `span` only to widen it, `filters` to tie it to a flow.
-3. Build → verify — check the effective column count is what you intended
-   (`min(columns, items)`).
+1. Add component entries to a section's `children`. Default `type` is `box`; set
+   `type: separator` or `type: rail` for structural leaves.
+2. Give each box a stable `id`, `status`, `title`, `description`, and `variant`;
+   set `span` only to widen it, `filters` to tie it to a flow.
+3. Build → verify.
 
 ## The build → verify loop
 
-A diagram is not done until it has been rendered and *seen*. The build exiting
-cleanly is not verification.
+A diagram is not done until the data is right; a visual look is a spot-check,
+not a gate. Editing the data is the fast path.
 
 1. **Edit** the YAML under `data/`.
 2. **Build** — regenerate the render data:
@@ -369,86 +252,50 @@ cleanly is not verification.
    ```
    This is a local file write (reads the manifest, skips `visible: false`, sorts
    by `order`, merges each page). Re-run after every YAML change.
-3. **Verify by looking.** Load `Skill('visual-verify')` and render `index.html`
-   as a `file://` URL, capturing across a spread of widths (desktop down to
-   ~380px) and **both** themes, then read every screenshot. Because the engine
-   scrolls horizontally instead of collapsing columns, a layout that reads at
-   1440px can overflow — reading the pixels is the honest check. The project's
-   own `npm run verify` (Playwright geometry assertions + screenshots) is a
-   useful T1 gate for zone collisions and band placement, but it asserts
-   geometry, not legibility; the visual read is what closes the loop. Both the
-   visual-verify capture and `npm run verify` write their PNGs to a **system temp
-   dir, never inside the project** (`tools/verify.mjs` uses `os.tmpdir()`, override
-   with `DIAGRAM_SHOTS_DIR`) — nobody reuses verification shots, so the scaffolded
-   repo carries no images folder.
-4. **Loop on any defect** — overflow, clipping, collisions, a row that wrapped
-   wrong, contrast failing in one theme. Fix the YAML and rebuild.
+3. **Spot-check by looking (optional).** Load `Skill('visual-verify')` and
+   render `index.html` as a `file://` URL, capturing across a spread of widths
+   (desktop down to ~380px) and both themes. Because the engine scrolls
+   horizontally instead of collapsing columns, a wide layout can overflow — a
+   quick pixel read catches it. The project's `npm run verify` (Playwright:
+   asserts the root grid renders and its top-level cells do not collide, then
+   screenshots widths × themes) is a useful T1 gate. Both write PNGs to a
+   **system temp dir**, never inside the project (`tools/verify.mjs` uses
+   `os.tmpdir()`, override with `DIAGRAM_SHOTS_DIR`).
+4. **Loop on any real defect** — overflow, clipping, a wrong wrap, contrast
+   failing in one theme. Fix the YAML and rebuild.
 
 ## Feasibility, transparency, capability
 
-Two disciplines frame every run of this skill, both universal: validate
-feasibility before investing, and be transparent about what you run.
+Two disciplines frame every run, both universal: validate feasibility before
+investing, and be transparent about what you run.
 
 ### Feasibility first (validate step by step, early)
 
 Detect what the environment offers and reason about it **one thing at a time**,
-early and incrementally — *"can I run this script? how far can I get?"* — and say
-it, **before** investing in a full ASCII sketch or a build. This is just good
-method: an orchestrator that already knows its environment satisfies it trivially,
-but the skill still asks first, so you never draw the whole diagram and only then
-discover you cannot execute. The order is **feasibility → define → invite → agree
-→ build**, not the reverse.
-
-1. **Read what's available, reason one at a time:**
-   - **A browser** — *view* the diagram.
-   - **Node + npm** — *rebuild* the diagram from YAML.
-   - **Playwright** — *auto-verify* the render (optional; its absence never blocks
-     — a browser still lets you and the user look).
-2. **Say it plainly:** which commands are possible and what each buys, WHERE the
-   data lives (`data/`), and WHICH script loads it (`engine/build-data.mjs`). E.g.
-   *"You have Node → I can run `npm install` + `npm run build` to regenerate the
-   diagram from your YAML; your data lives in `data/`, loaded by
-   `engine/build-data.mjs`. No Playwright, but you can see the result by opening
-   `index.html`. Shall I go on?"*
-3. **Confirm the destination before writing.** When about to scaffold (new repo /
-   add to a repo / new page), ask *where* the project should live and write there
-   — never assume a path.
-
-### Explain before you execute
-
-Before running ANY script — the build or the verify — say, in one short,
-non-technical sentence: (a) what the command does, and (b) which file the user can
-open to inspect it first. It is a core practice of the skill; do it every time.
-
-- Build: *"I'll run `npm run build` (which runs `engine/build-data.mjs`) to
-  regenerate the diagram data from your YAML — you can read that script at
-  `engine/build-data.mjs` first."*
-- Verify: *"I'll run `npm run verify` (which runs `tools/verify.mjs`) to render
-  the pages headlessly and screenshot them — you can read that script at
-  `tools/verify.mjs` first."*
-
-Keep it short and plain. The point is informed consent by a human who can see
-exactly what will run and where to check it.
-
-### Capability and graceful degradation
-
-State what each capability needs as a fact, so "I just want to look at it" never
-gets blocked on a toolchain:
+early — *"can I run this script? how far can I get?"* — and say it **before**
+investing in a full sketch or build. The order is **feasibility → understand →
+choose form → synthesize → discuss → build**, not the reverse.
 
 | Goal | Needs | Notes |
 |------|-------|-------|
 | **View** the diagram | A browser | `data/data.generated.js` is committed, so it renders with zero tooling, even under `file://`. |
 | **Rebuild** after editing `data/` | Node + `npm install` + `npm run build` | Regenerates `data/data.generated.js` from the YAML. |
-| **Auto-verify** the render | Playwright (+ a Chromium) | `npm run verify` renders every page and screenshots widths × themes **to a system temp dir** (`os.tmpdir()`, override `DIAGRAM_SHOTS_DIR`) — never into the project. |
+| **Auto-verify** the render | Playwright (+ a Chromium) | `npm run verify` renders every page and screenshots widths × themes to a system temp dir. Optional — its absence never blocks; a browser still lets you look. |
 
 Degradation is graceful: with only a browser you can always view the
-already-generated diagram; rebuilding after edits is what adds Node, and
-auto-verification is what adds Playwright.
+already-generated diagram; rebuilding after edits adds Node, auto-verification
+adds Playwright.
+
+### Explain before you execute
+
+Before running ANY script, say in one short, plain sentence what it does and
+which file to open to inspect it first — e.g. *"I'll run `npm run build` (which
+runs `engine/build-data.mjs`) to regenerate the diagram from your YAML — you can
+read that script first."* Informed consent by a human who can see what will run.
 
 ### Why the engine stays minimal and data-driven
 
-The engine and template are **minimal and carry no baked-in data** — every domain
-string lives in `data/`. That is the real point behind the capability list: a
-scaffold that leaks nothing from the diagram it came from, stays generic, and only
-*scales* to new content. Keep it that way — put content in `data/`, never in the
-engine or template.
+The engine and template carry **no baked-in data** — every domain string lives
+in `data/`. That is what keeps a scaffold generic and leak-free: nothing from
+one diagram bleeds into the next; it only scales to new content. Keep it that
+way — content in `data/`, never in the engine or template.
