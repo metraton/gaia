@@ -1,9 +1,12 @@
 """Orchestrator delegate mode enforcement.
 
 When GAIA is installed, delegate mode is always active. The orchestrator
-(main session) is restricted to dispatch-only tools. Direct investigation
-tools (Bash, Read, Edit, etc.) are blocked so the orchestrator must
-delegate to specialist agents.
+(main session) is restricted to dispatch tools plus Read. Mutative and
+bulk-investigation tools (Bash, Edit, Write, Glob, Grep, etc.) are blocked
+so the orchestrator must delegate to specialist agents; Read (read-only,
+T0) is allowed so the orchestrator can triangulate evidence with the user
+-- validate a document or an image against a specialist's contract.
+Delegate-first remains an identity instruction, not a hook lock.
 
 Detection: Claude Code includes ``agent_id`` and ``agent_type`` in the
 PreToolUse payload ONLY when the hook fires inside a subagent. Their absence
@@ -44,6 +47,13 @@ ORCHESTRATOR_ALLOWED_TOOLS = frozenset({
 
     # User interaction (built-in, may not always trigger hooks)
     "askuserquestion",
+
+    # Direct evidence reading (read-only, T0). Lets the orchestrator
+    # triangulate with the user -- validate a document or an image
+    # (e.g. a Playwright screenshot) against a specialist's contract.
+    # Governed by identity instruction (delegate-first); Bash, Edit,
+    # Write, Glob, and Grep remain blocked by absence from this set.
+    "read",
 })
 
 

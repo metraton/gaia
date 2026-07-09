@@ -81,9 +81,10 @@ class TestCheckDelegateMode(unittest.TestCase):
         self.assertTrue(result.blocked)
         self.assertIn("DELEGATION REQUIRED", result.reason)
 
-    def test_blocks_read_for_orchestrator(self):
+    def test_allows_read_for_orchestrator(self):
+        """Read is the one direct evidence tool granted to the orchestrator."""
         result = check_delegate_mode("Read", self._orchestrator_payload("Read"))
-        self.assertTrue(result.blocked)
+        self.assertFalse(result.blocked)
 
     def test_blocks_edit_for_orchestrator(self):
         result = check_delegate_mode("Edit", self._orchestrator_payload("Edit"))
@@ -201,9 +202,12 @@ class TestAllowedToolsCompleteness(unittest.TestCase):
 
     def test_investigation_tools_absent(self):
         """Ensure investigation tools are NOT in the allowed set."""
-        for tool in ("bash", "read", "edit", "write", "glob", "grep",
+        for tool in ("bash", "edit", "write", "glob", "grep",
                      "notebookedit"):
             self.assertNotIn(tool, ORCHESTRATOR_ALLOWED_TOOLS)
+
+    def test_read_present(self):
+        self.assertIn("read", ORCHESTRATOR_ALLOWED_TOOLS)
 
 
 if __name__ == "__main__":
