@@ -74,7 +74,8 @@ Workflow skills (approval, execution, investigation) are read on-demand because 
 ```
 skills/
 ├── README.md                  <- este archivo
-├── reference.md               <- índice de skills con tipo y descripción
+├── gaia-patterns/
+│   └── reference.md           <- índice de componentes (incluye skills) con tipo y descripción
 ├── agent-protocol/
 │   ├── SKILL.md               <- protocol: response contract, state machine
 │   └── examples.md            <- filled agent_contract_handoff examples
@@ -100,7 +101,7 @@ skills/
 - `description:` contains triggering conditions only -- not process summary
 - `SKILL.md` < 150 lines; heavy content goes to `reference.md`
 - After creating a new skill, update this README's "Qué hay aquí" section
-- After creating a new skill, update `skills/reference.md` index table
+- After creating a new skill, update `skills/gaia-patterns/reference.md` component inventory
 
 Validation: `tests/system/test_directory_structure.py` verifies all skill folders have a `SKILL.md`.
 

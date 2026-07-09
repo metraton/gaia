@@ -24,6 +24,25 @@ Type determines structure. Choose before writing anything.
 | **Domain** | Project-specific patterns for a technical area | gaia-patterns |
 | **Protocol** | System operating contract -- state machines, mandatory formats | agent-protocol |
 
+## Step 1.5: Situate the skill in its flow
+
+With the type chosen, place the skill before you structure it: where it lives in a flow, and what it can affect. Treat these as one gate with two coupled facets -- position is what sets blast radius.
+
+- **Position.** Is the skill *standalone* (a self-contained process run from a clean start), or does it run *mid-flow* -- sometimes after many skills have already executed -- with an upstream that hands it state and a downstream that consumes what it emits?
+- **Blast radius.** What does the skill's output touch or trigger? A standalone technique's reach ends at its own result; a mid-flow skill's is amplified, because its output becomes the next step's input.
+
+The consequence is why the gate exists. A mid-flow skill inherits state and assumptions from upstream; write it as though it started clean and it either redoes work already settled or emits what the next step cannot consume -- and because that output is consumed downstream, the break propagates instead of staying local. A wrong position mis-scopes everything the skill's process assumes and produces.
+
+The gate is **conditional on the type from Step 1**, not universal:
+
+- **Protocol** -- load-bearing: position is the substrate, since a protocol cannot sequence its state machine without knowing where in the larger flow it stands, what the prior turn settled, and what the next needs.
+- **Technique / Domain** -- relevant only when the skill runs inside a pipeline; skip it for a self-contained one.
+- **Reference** -- irrelevant: a lookup table has no position in a flow. Forcing this gate on a pure Reference skill is itself the "generic without consequence" anti-pattern.
+
+When position is load-bearing **and** the flow is not determinable from the context you were given, ask the user where the skill sits before writing -- do not guess; when the context fixes it or the type makes it irrelevant, do not ask.
+
+This is *frame before action* applied to the skill you are placing: a unit of work has a past that set it up and a future that consumes it. See `agent-protocol` ("Frame before action") for that principle at the agent-turn level.
+
 ## Step 2: Apply the type structure
 
 **Discipline:** Iron Law -> Mental Model -> Rules -> Traps -> Anti-patterns. Each trap and anti-pattern names a *principle of failure* -- one row per failure mode, not one row per concrete instance. If three rows are subcases of the same principle, one row that names the principle teaches more than three rows that enumerate.
@@ -52,7 +71,7 @@ The dual test: for each row in a Traps or Anti-patterns table, ask -- is this a 
 
 The test: for each rule, ask -- if the agent saw enough examples of this going wrong, would it reach the same conclusion? If yes, you are capturing genuine wisdom. If no, it needs more context.
 
-For detailed guidance on tone by type and connection to the gaia-patterns design philosophy, see `reference.md`.
+For detailed guidance on tone by type, see `reference.md`.
 
 ## Step 4: Write the description field
 

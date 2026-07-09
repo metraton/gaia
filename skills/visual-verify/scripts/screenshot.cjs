@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * screenshot.js -- REFERENCE IMPLEMENTATION of the visual-verify technique.
+ * screenshot.cjs -- REFERENCE IMPLEMENTATION of the visual-verify technique.
  * It captures a URL/file across several viewport widths (and, optionally,
  * color schemes) using a Chromium that is ALREADY present on disk, launched
  * via an explicit executablePath. See ../SKILL.md for the disposition this
@@ -20,16 +20,16 @@
  *      location the user named). The script does not choose for you.
  *
  * Usage:
- *   node screenshot.js <url-or-file-path> <out-dir> [widths] [colorSchemes]
+ *   node screenshot.cjs <url-or-file-path> <out-dir> [widths] [colorSchemes]
  *     widths        default 1440,900,700,500,380 (desktop -> narrow mobile)
  *     colorSchemes  optional, e.g. light,dark -- captures each via
  *                   prefers-color-scheme. Apps with a bespoke theme toggle
  *                   (localStorage/class) may need a project-specific step.
  *
  * Examples:
- *   node screenshot.js file:///abs/path/index.html /abs/out/dir
- *   node screenshot.js file:///abs/path/index.html /abs/out/dir 1440,768,375
- *   node screenshot.js http://localhost:3000 /abs/out/dir 1440,390 light,dark
+ *   node screenshot.cjs file:///abs/path/index.html /abs/out/dir
+ *   node screenshot.cjs file:///abs/path/index.html /abs/out/dir 1440,768,375
+ *   node screenshot.cjs http://localhost:3000 /abs/out/dir 1440,390 light,dark
  */
 
 const fs = require('fs');
@@ -125,7 +125,7 @@ async function main() {
   const [, , target, outDir, widthsArg, schemesArg] = process.argv;
   if (!target || !outDir) {
     console.error(
-      'Usage: node screenshot.js <url-or-file-path> <out-dir> [widths] [colorSchemes]'
+      'Usage: node screenshot.cjs <url-or-file-path> <out-dir> [widths] [colorSchemes]'
     );
     process.exit(1);
   }

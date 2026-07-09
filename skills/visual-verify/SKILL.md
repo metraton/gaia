@@ -16,7 +16,7 @@ its own image-reading tool. An agent that ships visual output without looking
 at it has not verified; it has hoped.
 
 This skill teaches the disposition and hands you a reference implementation
-(`scripts/screenshot.js`) as support, not as a spec. It is generic -- any HTML
+(`scripts/screenshot.cjs`) as support, not as a spec. It is generic -- any HTML
 or URL, any project, inside Gaia or out. For the response contract and the
 `verification` block this feeds, see `agent-protocol`.
 
@@ -62,7 +62,7 @@ fixed recipe.
    reference script does this:
 
    ```
-   node <skill-dir>/scripts/screenshot.js <url-or-file> <out-dir> [widths] [colorSchemes]
+   node <skill-dir>/scripts/screenshot.cjs <url-or-file> <out-dir> [widths] [colorSchemes]
    ```
 
    Defaults to `1440,900,700,500,380`; pass `light,dark` as the fourth argument

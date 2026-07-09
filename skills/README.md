@@ -94,8 +94,7 @@ skills/
 ├── session-reflection/    # End-of-session reflection on conversational arc
 ├── skill-creation/        # How to design and write new skills
 ├── visual-verify/         # Technique: screenshot a UI/HTML with cached Chromium and read the result (user-invocable)
-│   └── scripts/           # screenshot.js -- zero-install Playwright capture
-└── reference.md           # Cross-skill reference index
+│   └── scripts/           # screenshot.cjs -- zero-install Playwright capture
 ```
 
 ## Convenciones
