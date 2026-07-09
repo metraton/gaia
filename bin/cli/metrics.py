@@ -60,6 +60,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -1331,23 +1332,72 @@ _TIER_LABELS = {"T0": "read-only", "T1": "validation", "T2": "dry-run", "T3": "m
 _SEVERITY_LABELS = {"critical": "CRIT", "error": "ERR ", "warning": "WARN", "info": "INFO", "unknown": "?   "}
 
 
+def _display_width(text: str) -> int:
+    """Terminal column width of ``text``, not its character count.
+
+    Dashboard v3 bug: the box renderer used to measure cell width with
+    ``len()``. Full-width glyphs (CJK ideographs, most emoji, and some
+    symbols like the warning sign used in the Security Tier Usage rows)
+    occupy 2 terminal cells but ``len()`` counts them as 1, so any row
+    containing one came out one column "too short" and every ``ljust()``
+    pad based on it under-padded by that amount -- desyncing the right
+    border on that row relative to the rest of the box.
+
+    Uses stdlib ``unicodedata.east_asian_width`` (no new dependency):
+    'W' (Wide) and 'F' (Fullwidth) count as 2 cells, zero-width combining
+    marks count as 0, everything else -- including 'A' (Ambiguous, which
+    renders narrow in a non-CJK locale, e.g. the box-drawing characters
+    this module already prints) -- counts as 1. This matches the
+    convention the ``wcwidth`` library uses and is sufficient for the
+    CJK/emoji/wide-symbol case without pulling in a dependency.
+    """
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def _truncate_display(text: str, max_width: int) -> str:
+    """Truncate ``text`` to at most ``max_width`` terminal columns."""
+    width = 0
+    out = []
+    for ch in text:
+        if unicodedata.combining(ch):
+            out.append(ch)
+            continue
+        w = 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        if width + w > max_width:
+            break
+        out.append(ch)
+        width += w
+    return "".join(out)
+
+
+def _ljust_display(text: str, width: int, fillchar: str = " ") -> str:
+    """``str.ljust`` that pads by display width instead of ``len()``."""
+    pad = max(0, width - _display_width(text))
+    return text + fillchar * pad
+
+
 def _box_top(title: str, right_label: str = "") -> str:
     left = f"─ {title} "
     right = f" {right_label} ─" if right_label else "─"
-    fill = max(0, _BOX_W - len(left) - len(right))
+    fill = max(0, _BOX_W - _display_width(left) - _display_width(right))
     return "┌" + left + "─" * fill + right + "┐"
 
 
 def _box_row(text: str = "") -> str:
     content = f" {text}" if text else ""
-    if len(content) > _BOX_W:
-        content = content[: _BOX_W - 1] + "…"
-    return "│" + content.ljust(_BOX_W) + "│"
+    if _display_width(content) > _BOX_W:
+        content = _truncate_display(content, _BOX_W - 1) + "…"
+    return "│" + _ljust_display(content, _BOX_W) + "│"
 
 
 def _box_divider(label: str = "") -> str:
     left = f"── {label} " if label else ""
-    fill = max(0, _BOX_W - len(left))
+    fill = max(0, _BOX_W - _display_width(left))
     return "├" + left + "─" * fill + "┤"
 
 

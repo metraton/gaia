@@ -54,6 +54,11 @@ from cli.metrics import (
     _format_duration_ms,
     _make_bar,
     _resolve_time_window,
+    _display_width,
+    _box_top,
+    _box_row,
+    _box_divider,
+    _box_bottom,
     TimeWindow,
     register,
     cmd_metrics,
@@ -630,6 +635,73 @@ class TestFormatHelpers(unittest.TestCase):
         result = _make_bar(50, 10)
         self.assertEqual(len(result), 10)
         self.assertEqual(result.count("█"), 5)
+
+
+class TestBoxDisplayWidth(unittest.TestCase):
+    """Dashboard v3 fix: box rows/dividers/top must align on terminal
+    display width, not len(). Full-width glyphs (CJK, most emoji, and the
+    T3 warning sign already used in Security Tier Usage rows) occupy 2
+    terminal cells but len() only counts 1 -- the desync this guards.
+    """
+
+    def test_display_width_ascii_matches_len(self):
+        self.assertEqual(_display_width("hello world"), len("hello world"))
+
+    def test_display_width_cjk_is_double(self):
+        # Each CJK ideograph is 2 terminal cells wide, but len() counts 1.
+        self.assertEqual(_display_width("中文"), 4)
+        self.assertEqual(len("中文"), 2)
+
+    def test_display_width_emoji_is_double(self):
+        self.assertEqual(_display_width("\U0001f680"), 2)  # rocket
+
+    def test_display_width_warning_sign(self):
+        # The exact glyph the live Security Tier Usage row uses (line
+        # `warn = " ⚠ " if tier == "T3" else "   "`).
+        self.assertGreaterEqual(_display_width("⚠"), 1)
+
+    def test_box_row_ascii_and_cjk_rows_stay_aligned(self):
+        # Root-cause regression: before the fix, a row containing
+        # full-width glyphs came out narrower on-screen than its ASCII
+        # sibling even though both pass the same _BOX_W to ljust().
+        ascii_row = _box_row("T0     read-only     40    plain ascii row")
+        cjk_row = _box_row("CJK label 日本語のテスト  full-width test 中文测试")
+        emoji_row = _box_row("emoji row \U0001f680\U0001f525 rocket fire")
+        # All three must render to the exact same terminal column count,
+        # and all three end on the closing border character.
+        self.assertEqual(_display_width(ascii_row), _display_width(cjk_row))
+        self.assertEqual(_display_width(ascii_row), _display_width(emoji_row))
+        for row in (ascii_row, cjk_row, emoji_row):
+            self.assertTrue(row.startswith("│"))
+            self.assertTrue(row.endswith("│"))
+
+    def test_box_row_with_warning_sign_stays_aligned(self):
+        # Exact production content from the Security Tier Usage section.
+        row_with_warn = _box_row("T3  ⚠ mutating       12    count 4  33.3%")
+        row_without_warn = _box_row("T0     read-only     40    count 9  66.7%")
+        self.assertEqual(_display_width(row_with_warn), _display_width(row_without_warn))
+
+    def test_box_row_truncates_by_display_width_not_char_count(self):
+        # A row of wide glyphs long enough to need truncation must still
+        # close on the right border at the same column as any other row.
+        long_cjk = "中" * 60
+        row = _box_row(long_cjk)
+        plain_row = _box_row("short row")
+        self.assertEqual(_display_width(row), _display_width(plain_row))
+        self.assertTrue(row.endswith("…│"))
+
+    def test_box_top_and_divider_align_with_wide_title(self):
+        top = _box_top("SECURITY TIER USAGE", right_label="52 ops")
+        cjk_top = _box_top("中文标题", right_label="52 ops")
+        self.assertEqual(_display_width(top), _display_width(cjk_top))
+        divider = _box_divider("legend")
+        cjk_divider = _box_divider("图例")
+        self.assertEqual(_display_width(divider), _display_width(cjk_divider))
+
+    def test_box_bottom_matches_top_width(self):
+        top = _box_top("TITLE")
+        bottom = _box_bottom()
+        self.assertEqual(_display_width(top), _display_width(bottom))
 
 
 class TestRegisterSubcommand(unittest.TestCase):
