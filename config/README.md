@@ -1,46 +1,45 @@
 # Config
 
-Configuration lives here, separate from hooks, because these are data files — not code. Hooks are Python scripts that run at runtime; config files are JSON documents that those scripts read to make decisions. Keeping them apart means you can audit and change system behavior (what git commit patterns are allowed, which surfaces route where) without touching executable code. It also makes the config files version-controllable and reviewable on their own terms.
+Configuration lives here, separate from hooks, because these are data files — not code. Hooks are Python scripts that run at runtime; config files are documents those scripts read to make decisions. Keeping them apart means you can audit and change system behavior without touching executable code.
 
-The routing table is consumed at a well-defined point in the request lifecycle: on every user prompt. It is not loaded eagerly at startup — it is parsed exactly when `surface_router.py` is invoked. (Git commit standards used to live here too, in `git_standards.json`; they are now inlined as module-level constants in `hooks/modules/validation/commit_validator.py` — the single runtime consumer of those rules — so this folder no longer owns them.)
+**Surface routing is no longer a file in this folder.** It moved to the DB-backed `surface_routing` table in `~/.gaia/gaia.db`, whose source of truth is each agent's `routing:` frontmatter block (`agents/*.md`). At install time `tools/scan/seed_surface_routing.py` reads those frontmatters and seeds the table (a mirror of `seed_contract_permissions.py`); at request time `tools/context/surface_router.py` reads the table via `load_surface_routing_config()`. The retired `config/surface-routing.json` used to hold this table.
 
 ## When activated
 
-This folder has no single activation event. Each file is read on-demand by the module that owns it.
+This folder has no single activation event. Each file is read on-demand by the module that owns it. Surface routing itself is now read from the DB:
 
 ```
 User submits a prompt
         |
-hooks/user_prompt_submit.py fires
-        |
 tools/context/surface_router.py calls load_surface_routing_config()
         |
-Reads config/surface-routing.json
+Reads the surface_routing table in ~/.gaia/gaia.db
         |
 Returns surface match + recommended agent injected into orchestrator context
 ```
 
-If `surface-routing.json` is absent, `load_surface_routing_config()` returns a degraded config (`"version": "missing"`) and routing falls back to the `reconnaissance_agent` default.
+If the DB or table is absent/empty (a not-yet-seeded workspace), `load_surface_routing_config()` returns a degraded config (`"version": "missing"`) and routing falls back to the `reconnaissance_agent` default.
 
 ## What's here
 
 ```
 config/
-├── surface-routing.json   # Surface→agent routing table; consumed by tools/context/surface_router.py on every prompt
 └── README.md
 ```
 
+The folder currently holds only this README; it remains for future data files and stays symlinked into `.claude/config`.
+
 ## Conventions
 
-**surface-routing.json schema:** Top-level keys are `version`, `reconnaissance_agent`, and `surfaces`. Each surface entry has `intent` (human description), `primary_agent` (agent id to dispatch), `adjacent_surfaces` (list of related surface names), `contract_sections` (context sections injected for that surface), `required_checks` (agent checklist), and `signals` with `keywords`, `commands`, and `artifacts` sub-lists. `surface_router.py` scores surfaces by matching task text against all signal lists; the highest-scoring surface wins.
+**Routing schema (frontmatter → DB):** Each agent that owns a surface declares a `routing:` block in its `agents/*.md` frontmatter with `surface` (name), `adjacent_surfaces`, `keywords`/`commands`/`artifacts` (signals), `required_checks`, and optional `sub_surfaces` (for a surface that splits by owner, e.g. `planning_specs` → brief owned by the orchestrator via `brief-spec`, plan owned by `gaia-planner`). The surface's `intent` is the agent's `description` field (not duplicated); `contract_sections` is derived from the agent's `project_context_contracts.read` (single source of truth). `surface_router.py` scores surfaces by whole-token matching task text against the signal lists; the highest-scoring surface wins.
 
-**Git commit standards (no longer in this folder):** The Conventional Commits rules — allowed types, subject/body length limits, subject rules — are inlined as module-level constants (`TYPE_ALLOWED`, `SUBJECT_MAX_LENGTH`, `SUBJECT_RULES`, `BODY_MAX_LINE_LENGTH`, `ENFORCEMENT`) in `hooks/modules/validation/commit_validator.py`. Forbidden-footer detection lives, hardcoded, in `bash_validator`. To add a new commit type, edit `TYPE_ALLOWED` in `commit_validator.py`.
+**Git commit standards (not in this folder):** The Conventional Commits rules are inlined as module-level constants (`TYPE_ALLOWED`, `SUBJECT_MAX_LENGTH`, `SUBJECT_RULES`, `BODY_MAX_LINE_LENGTH`, `ENFORCEMENT`) in `hooks/modules/validation/commit_validator.py`.
 
-**Adding a new surface:** Add an entry to `surfaces` in `surface-routing.json` with all required sub-keys. Update L1 routing tests and the `gaia_system` signals if the new surface involves Gaia components.
+**Adding a new surface:** Add a `routing:` block to the owning agent's frontmatter, add the agent to `build/gaia.manifest.json`, and re-run `gaia install` to re-seed the `surface_routing` table. Update the surface-router tests.
 
 ## See also
 
-- [`tools/context/surface_router.py`](../tools/context/surface_router.py) — loads and scores `surface-routing.json`; the routing pillar source of truth
-- [`hooks/user_prompt_submit.py`](../hooks/user_prompt_submit.py) — calls `classify_surfaces` from `surface_router` on every prompt
-- [`hooks/modules/validation/commit_validator.py`](../hooks/modules/validation/commit_validator.py) — enforces Conventional Commits on every `git commit`; standards inlined as module-level constants
-- [`skills/git-conventions/`](../skills/git-conventions/) — the agent-facing skill teaching the commit conventions
+- [`tools/context/surface_router.py`](../tools/context/surface_router.py) — reads the DB-backed `surface_routing` table via `load_surface_routing_config()`; the routing pillar runtime consumer
+- [`tools/scan/seed_surface_routing.py`](../tools/scan/seed_surface_routing.py) — install-time generator: agent frontmatters → `surface_routing` table (mirror of `seed_contract_permissions.py`)
+- [`agents/`](../agents/) — the `routing:` frontmatter blocks are the source of truth for surface routing
+- [`hooks/modules/validation/commit_validator.py`](../hooks/modules/validation/commit_validator.py) — enforces Conventional Commits; standards inlined as module-level constants

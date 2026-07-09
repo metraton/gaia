@@ -153,16 +153,19 @@ class TestFrontmatterTools:
     def test_all_agents_have_read_tool(self, all_agent_files):
         """Specialist agents should have Read in their tools.
 
-        The orchestrator intentionally does NOT have Read (v5 architecture:
-        orchestrator delegates all file access to specialist agents).
+        The orchestrator MAY have Read (read-only, to triangulate evidence
+        with the user) but must NOT have mutative/bulk tools -- it still
+        delegates all mutation and directory-scanning work to specialists.
         """
+        orchestrator_forbidden_tools = {"Bash", "Edit", "Write", "Glob", "Grep"}
         for agent_file in all_agent_files:
             fm = parse_frontmatter(agent_file.read_text())
             tools = fm.get("tools", "")
             tool_list = [t.strip() for t in tools.split(",")]
             if fm.get("name") == "gaia-orchestrator":
-                assert "Read" not in tool_list, \
-                    f"gaia-orchestrator.md must NOT have Read (v5: orchestrator delegates)"
+                forbidden_present = orchestrator_forbidden_tools & set(tool_list)
+                assert not forbidden_present, \
+                    f"gaia-orchestrator.md must NOT have mutative/bulk tools: {forbidden_present} (orchestrator delegates mutation)"
             else:
                 assert "Read" in tool_list, \
                     f"{agent_file.name} should have Read in tools"

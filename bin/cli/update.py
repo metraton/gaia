@@ -255,12 +255,25 @@ def _run_verification(claude_dir: Path) -> dict:
         checks.append({"name": "project-context", "ok": False})
         issues.append(f"project-context DB read error: {exc}")
 
-    # 4. Config files
-    config_files = ["surface-routing.json"]
-    for cfg in config_files:
-        path = claude_dir / "config" / cfg
-        ok = path.exists()
-        checks.append({"name": cfg, "ok": ok})
+    # 4. Surface routing (DB-backed). Routing moved from
+    # config/surface-routing.json to the surface_routing table, seeded from
+    # each agent's `routing:` frontmatter block at install time. Verify the
+    # table carries at least the core surfaces rather than a config file.
+    try:
+        from gaia.store.writer import _connect as _store_connect
+        con = _store_connect()
+        try:
+            row = con.execute("SELECT COUNT(*) FROM surface_routing").fetchone()
+            surface_count = row[0] if row else 0
+        finally:
+            con.close()
+        ok = surface_count >= 6
+        checks.append({"name": "surface-routing", "ok": ok, "detail": f"{surface_count} surfaces"})
+        if not ok:
+            issues.append("surface_routing has fewer than 6 surfaces in DB (run `gaia install`)")
+    except Exception as exc:
+        checks.append({"name": "surface-routing", "ok": False})
+        issues.append(f"surface_routing DB read error: {exc}")
 
     # 5. Agent definitions
     agent_files = [

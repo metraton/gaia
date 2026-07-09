@@ -194,19 +194,40 @@ class TestRoutingSimBackendContract:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture()
+def _seeded_routing_db(tmp_path, monkeypatch):
+    """Seed a temp gaia.db from real agent frontmatters, point GAIA_DATA_DIR at it.
+
+    RoutingSimBackend builds a real RoutingSimulator which loads routing from
+    the DB-backed surface_routing table (config/surface-routing.json retired).
+    """
+    from tests.fixtures.db_helpers import (
+        bootstrap_gaia_schema,
+        seed_surface_routing_from_agents,
+    )
+
+    db = tmp_path / "gaia.db"
+    bootstrap_gaia_schema(db)
+    seed_surface_routing_from_agents(db)
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    return db
+
+
+@pytest.mark.usefixtures("_seeded_routing_db")
 class TestRoutingSimBackendIntegration:
-    """Exercise the real ``RoutingSimulator`` with gaia ``config/``.
+    """Exercise the real ``RoutingSimulator`` against a seeded routing DB.
 
     These tests confirm that (a) the lazy-loading path wires up, and
     (b) the S4 routing expectation pinned in
-    ``catalogs/context_consumption.yaml`` is satisfied by the actual
-    ``surface-routing.json`` contents today.
+    ``catalogs/context_consumption.yaml`` is satisfied by the DB-backed
+    routing seeded from agent frontmatters.
     """
 
     def test_default_repo_root_resolves_to_gaia_ops(self) -> None:
         backend = RoutingSimBackend()
-        assert (backend.repo_root / "config" / "surface-routing.json").is_file()
         assert (backend.repo_root / "agents").is_dir()
+        # Routing is DB-backed now; the retired JSON must be gone / absent.
+        assert (backend.repo_root / "tools" / "context" / "surface_router.py").is_file()
 
     def test_s4_kubectl_apply_deflects_from_orchestrator(self) -> None:
         """S4 routing_expect: primary in {gitops-operator, cloud-troubleshooter},
@@ -388,6 +409,7 @@ class TestRoutingGraderErrorHandling:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("_seeded_routing_db")
 class TestRoutingEndToEndS4:
     """Full pipeline: real simulator + real S4 routing_expect contract."""
 

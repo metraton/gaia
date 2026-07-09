@@ -43,16 +43,18 @@ class TestCoreDirectories:
             assert dir_path.exists(), f"Required directory missing: {dir_name}"
             assert dir_path.is_dir(), f"{dir_name} exists but is not a directory"
 
-    def test_config_has_required_files(self, package_root):
-        """Config directory should have contracts and standards"""
-        config_dir = package_root / "config"
-        required_files = [
-            "surface-routing.json",
-        ]
+    def test_config_dir_exists(self, package_root):
+        """Config directory must exist.
 
-        for file_name in required_files:
-            file_path = config_dir / file_name
-            assert file_path.exists(), f"Required config file missing: {file_name}"
+        surface-routing.json was retired: routing is now DB-backed (the
+        surface_routing table, seeded from each agent's `routing:` frontmatter
+        block by tools/scan/seed_surface_routing.py). config/ still exists for
+        its README and any future data files.
+        """
+        config_dir = package_root / "config"
+        if config_dir.is_symlink():
+            config_dir = config_dir.resolve()
+        assert config_dir.is_dir(), "config/ directory missing"
 
 
 class TestAgentsDirectory:
@@ -165,10 +167,18 @@ class TestConfigDirectory:
         config = Path(__file__).resolve().parents[2] / "config"
         return config.resolve() if config.is_symlink() else config
 
-    def test_surface_routing_exists(self, config_dir):
-        """surface-routing.json must exist"""
+    def test_surface_routing_json_retired(self, config_dir):
+        """surface-routing.json must NOT exist -- routing is DB-backed now.
+
+        The routing source of truth moved to each agent's `routing:` frontmatter
+        block, seeded into the surface_routing table by
+        tools/scan/seed_surface_routing.py. A lingering JSON file would be stale
+        drift.
+        """
         surface_routing = config_dir / "surface-routing.json"
-        assert surface_routing.exists(), "surface-routing.json not found"
+        assert not surface_routing.exists(), (
+            "config/surface-routing.json should be retired (routing is DB-backed)"
+        )
 
     def test_config_files_valid_json(self, config_dir):
         """All JSON config files should be valid"""

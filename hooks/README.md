@@ -106,6 +106,6 @@ hooks/
 ## Ver también
 
 - [`build/gaia.manifest.json`](../build/gaia.manifest.json) — hook registration and matchers
-- [`config/surface-routing.json`](../config/surface-routing.json) — read by `user_prompt_submit.py`
+- `surface_routing` table (`~/.gaia/gaia.db`) — DB-backed routing read by `tools/context/surface_router.py`; seeded from agent `routing:` frontmatter by `tools/scan/seed_surface_routing.py` (replaced `config/surface-routing.json`)
 - [`config/context-contracts.json`](../config/context-contracts.json) — seeding source for context contracts; runtime SSOT is `~/.gaia/gaia.db` (`project_context_contracts` table)
 - [`skills/security-tiers/SKILL.md`](../skills/security-tiers/SKILL.md) — tier classification that agents use; hook enforces the same tiers

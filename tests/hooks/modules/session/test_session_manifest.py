@@ -534,10 +534,34 @@ class TestBuildContractsIndexBlock:
         assert len(block) <= 600
         assert "more, see config/surface-routing.json" in block
 
-    def test_real_config_has_all_surfaces(self):
-        """Integration: against the shipped config, all 7 surfaces land."""
+    def test_real_config_has_all_surfaces(self, tmp_path, monkeypatch):
+        """Integration: against a DB seeded from the real agent frontmatters,
+        all 7 surfaces land.
+
+        Routing moved from config/surface-routing.json (retired, git-rm'd) to
+        the surface_routing table, seeded from each agent's `routing:`
+        frontmatter block. Seed a temp DB the same way tests/tools/test_surface_router.py
+        does (bootstrap_gaia_schema + seed_surface_routing_from_agents) and
+        point GAIA_DATA_DIR at it so _load_surface_routing's real DB-backed
+        loader resolves it, exercising the production path end to end.
+        """
+        import sys as _sys
+
+        repo_root = Path(__file__).resolve().parents[4]
+        if str(repo_root) not in _sys.path:
+            _sys.path.insert(0, str(repo_root))
+        from tests.fixtures.db_helpers import (
+            bootstrap_gaia_schema,
+            seed_surface_routing_from_agents,
+        )
+
+        db = tmp_path / "gaia.db"
+        bootstrap_gaia_schema(db)
+        seed_surface_routing_from_agents(db)
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+
         block = session_manifest.build_contracts_index_block()
-        # The shipped surface-routing.json defines these 7 surfaces.
+        # The seeded surface_routing table defines these 7 surfaces.
         for surface in (
             "live_runtime", "gitops_desired_state", "iac", "app_ci_tooling",
             "planning_specs", "gaia_system", "workspace",

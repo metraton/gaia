@@ -15,7 +15,7 @@ Construction patterns for building Gaia components. Every component type follows
 ```
 1. User sends prompt
    |
-2. Orchestrator routes to agent (surface-routing.json)
+2. Orchestrator routes to agent (DB-backed surface_routing table)
    |
 3. Pre-Tool Hook (pre_tool_use.py)
    +-- Inject project context (from ~/.gaia/gaia.db via context_provider.py)
@@ -68,10 +68,10 @@ Agents get instantiated as: identity (.md) + skills (injected from frontmatter) 
 
 ## Routing Patterns
 
-`config/surface-routing.json` maps user intent to agents. Each surface has: `intent`, `primary_agent`, `adjacent_surfaces`, and `signals` (high/medium confidence keyword patterns).
+The DB-backed `surface_routing` table maps user intent to agents. The source of truth is each agent's `routing:` frontmatter block (`agents/*.md`): `surface`, `adjacent_surfaces`, `signals` (`commands`/`artifacts`), `required_checks`, optional `sub_surfaces`. Keywords were retired as a signal source -- the matcher (`tools/context/surface_router.py::_score_surface`) scores `commands` and `artifacts` only; a legacy `keywords` key in a signals block is ignored by scoring. The surface's `intent` is the agent's `description`; `contract_sections` derives from `project_context_contracts.read`. `tools/scan/seed_surface_routing.py` seeds the table at install time (mirror of `seed_contract_permissions.py`); `tools/context/surface_router.py` reads it via `load_surface_routing_config()`.
 
-**To add a surface:** Add entry to `surfaces` with intent + primary_agent + signals. Update L1 routing tests.
-**To add a signal:** Add keyword patterns to the appropriate confidence level in an existing surface.
+**To add a surface:** Add a `routing:` block to the owning agent's frontmatter, register the agent in `build/gaia.manifest.json`, re-run `gaia install`, and update the surface-router tests.
+**To add a signal:** Add command/artifact patterns to the owning agent's `routing:` block.
 
 ## CLI Tool Patterns
 
@@ -99,5 +99,5 @@ When you modify any Gaia component (hook, skill, agent definition, routing confi
 ## Key Principles
 
 - **Skills teach process. Agents teach identity. Runtime enforces contracts.** Never duplicate across these layers.
-- **Delegation first.** The orchestrator routes; it cannot read files, run commands, or edit code.
+- **Delegation first.** The orchestrator routes; it cannot run commands or edit code, and it reads a file directly only to triangulate evidence with the user (a document or an image validated together) -- never as a substitute for a specialist's investigation.
 - **Consolidation loop.** For multi-surface work, the orchestrator may dispatch multiple agent rounds, stopping when gaps are no longer actionable.

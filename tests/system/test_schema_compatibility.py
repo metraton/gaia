@@ -31,11 +31,29 @@ class TestSchemaCompatibility:
         return content
 
     @pytest.fixture
-    def surface_routing_config(self, package_root):
-        """Load surface-routing.json which contains the agent/surface table."""
-        config_path = package_root / "config" / "surface-routing.json"
-        assert config_path.exists(), "surface-routing.json not found"
-        return json.loads(config_path.read_text())
+    def surface_routing_config(self, package_root, tmp_path, monkeypatch):
+        """Load the DB-backed routing config (agent/surface table).
+
+        Routing moved from config/surface-routing.json to the surface_routing
+        table, seeded from each agent's `routing:` frontmatter block. Seed a
+        temp DB from the real agents and load the same in-memory shape.
+        """
+        import sys as _sys
+        if str(package_root) not in _sys.path:
+            _sys.path.insert(0, str(package_root))
+        if str(package_root / "tools" / "context") not in _sys.path:
+            _sys.path.insert(0, str(package_root / "tools" / "context"))
+        from tests.fixtures.db_helpers import (
+            bootstrap_gaia_schema,
+            seed_surface_routing_from_agents,
+        )
+        from surface_router import load_surface_routing_config
+
+        db = tmp_path / "gaia.db"
+        bootstrap_gaia_schema(db)
+        seed_surface_routing_from_agents(db)
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        return load_surface_routing_config()
 
     @pytest.fixture
     def response_skill_content(self, package_root):

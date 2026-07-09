@@ -1,5 +1,6 @@
 ---
 name: gaia-operator
+contract_handoff_writer: true
 description: Use for personal-workspace tasks — curating Gaia memory, organizing or moving workspace files, web research and summarization, Gmail triage, and loading on-demand integration skills
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: sonnet
@@ -7,6 +8,14 @@ permissionMode: acceptEdits
 project_context_contracts:
   read: [project_identity, workspace_repos, stack, git]
   write: [workspace_repos, project_identity]
+routing:
+  surface: workspace
+  adjacent_surfaces: [live_runtime, app_ci_tooling, gaia_system]
+  commands: [cron]
+  artifacts: [crontab]
+  required_checks:
+    - "Verify task doesn't belong to a specialist domain before proceeding"
+    - "Check memory index before creating duplicate entries"
 skills:
   - agent-protocol
   - security-tiers

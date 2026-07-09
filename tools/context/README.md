@@ -44,8 +44,11 @@ from tools.context.context_provider import load_provider_contracts
 contracts = load_provider_contracts("gcp")
 ```
 
+### `load_surface_routing_config(db_path=None)`
+Loads the routing config from the DB-backed `surface_routing` table in `~/.gaia/gaia.db` (seeded from agent `routing:` frontmatter by `tools/scan/seed_surface_routing.py`; the retired `config/surface-routing.json` is no longer read). Returns the same in-memory shape the JSON used to produce, degrading to `version="missing"` when the DB/table is absent or empty.
+
 ### `classify_surfaces(task, current_agent=...)`
-Classifies a task into one or more active Gaia surfaces using generic signals.
+Classifies a task into one or more active Gaia surfaces using whole-token signal matching (word-boundary; "pod" no longer matches inside "podria").
 
 ```python
 from tools.context.surface_router import classify_surfaces

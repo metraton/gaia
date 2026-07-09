@@ -507,50 +507,43 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
 
 
 def _load_surface_routing() -> dict:
-    """Best-effort load of ``config/surface-routing.json``. Never raises.
+    """Best-effort load of the surface routing config. Never raises.
 
-    Resolution order, first hit wins:
-      1. The installed plugin layout: ``find_claude_dir()/config/...``.
-      2. The source-tree / package-checkout layout, relative to this file:
-         ``<pkg_root>/config/surface-routing.json`` (parents[3]).
+    Routing moved from ``config/surface-routing.json`` (retired, git-rm'd) to
+    the ``surface_routing`` table in gaia.db, seeded from each agent's
+    ``routing:`` frontmatter block by ``tools/scan/seed_surface_routing.py``.
+    This delegates to ``tools.context.surface_router.load_surface_routing_config``
+    -- the same DB-backed loader ``surface_router.classify_surfaces`` uses --
+    so this builder and the matcher never drift on where routing data comes
+    from.
 
-    Returns the parsed dict, or ``{}`` when the file is absent, unreadable, or
-    not valid JSON -- callers treat an empty dict as "no routing config" and
-    emit no block.
+    Returns the same in-memory shape the retired JSON produced:
+    ``{version, reconnaissance_agent, surfaces: {name: {primary_agent,
+    contract_sections, ...}}}``. Returns ``{}`` on any import/query failure --
+    callers treat an empty dict (or a degraded ``surfaces: {}``) as "no
+    routing config" and emit no block.
     """
-    candidates: list[Path] = []
     try:
-        from ..core.paths import find_claude_dir
-        candidates.append(find_claude_dir() / "config" / "surface-routing.json")
+        pkg_root = Path(__file__).resolve().parents[3]
+        tools_dir = pkg_root / "tools" / "context"
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+        from surface_router import load_surface_routing_config
+        return load_surface_routing_config()
     except Exception:
-        pass
-    try:
-        candidates.append(
-            Path(__file__).resolve().parents[3] / "config" / "surface-routing.json"
-        )
-    except Exception:
-        pass
-
-    for path in candidates:
-        try:
-            if path.is_file():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    return data
-        except Exception:
-            continue
-    return {}
+        return {}
 
 
 def build_contracts_index_block(max_chars: int = 2000) -> str:
     """Render a compact ``surface -> contract_sections`` index for SessionStart.
 
-    Static: read straight from ``config/surface-routing.json``, no DB query. It
-    tells the orchestrator which project-context sections each specialist
-    surface will receive when dispatched -- section NAMES only, never their
-    contents. This lets the orchestrator reason about what a target surface can
-    see before spending a subagent, without duplicating the (potentially large)
-    section bodies here.
+    DB-backed: reads the ``surface_routing`` table via ``_load_surface_routing``
+    (which delegates to ``load_surface_routing_config``), not the retired
+    ``config/surface-routing.json``. It tells the orchestrator which
+    project-context sections each specialist surface will receive when
+    dispatched -- section NAMES only, never their contents. This lets the
+    orchestrator reason about what a target surface can see before spending a
+    subagent, without duplicating the (potentially large) section bodies here.
 
     Format, one line per surface::
 

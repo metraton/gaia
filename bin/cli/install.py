@@ -86,6 +86,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
 from cli import _install_helpers  # type: ignore  # noqa: E402
 
 _SEED_CONTRACT_PERMS = _PACKAGE_ROOT / "tools" / "scan" / "seed_contract_permissions.py"
+_SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing.py"
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +385,51 @@ def _seed_contract_permissions(db_path: str | None, quiet: bool) -> dict:
     return {"action": "created", "details": summary}
 
 
+def _seed_surface_routing(db_path: str | None, quiet: bool) -> dict:
+    """Invoke seed_surface_routing to populate the surface_routing table.
+
+    Mirror of ``_seed_contract_permissions``: reads each agent's ``routing:``
+    frontmatter block and seeds the DB-backed routing table that
+    surface_router.py reads (replacing config/surface-routing.json). Returns a
+    step-result dict compatible with ``_report_step``. Never raises -- seeding
+    failures are logged and reported as action='error' so the install continues.
+    """
+    if not _SEED_SURFACE_ROUTING.is_file():
+        return {
+            "action": "skipped",
+            "details": f"seeder not found at {_SEED_SURFACE_ROUTING}",
+        }
+
+    env = os.environ.copy()
+    resolved_db = (
+        str(Path(db_path).expanduser().resolve())
+        if db_path
+        else str(Path("~/.gaia/gaia.db").expanduser().resolve())
+    )
+    cmd = [sys.executable, str(_SEED_SURFACE_ROUTING), "--db-path", resolved_db]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"action": "error", "details": f"seeder invocation failed: {exc}"}
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()[:200]
+        if not quiet:
+            sys.stderr.write(f"  [!] surface-routing seeder: {detail}\n")
+        return {"action": "error", "details": detail}
+
+    summary = (result.stdout or "").strip().split("\n")[-1]
+    return {"action": "created", "details": summary}
+
+
 def _summarize_bootstrap_failure(*, rc: int, stdout: str, stderr: str) -> str:
     """Build a short detail string for the install-error marker.
 
@@ -616,6 +662,11 @@ def cmd_install(args: argparse.Namespace) -> int:
         # Non-fatal: a seeding failure should not abort an otherwise clean install.
         seed_res = _seed_contract_permissions(db_path=db_path, quiet=quiet)
         _report_step(name="contract-permissions", result=seed_res, quiet=quiet, verbose=verbose)
+        # Step 1b -- seed surface_routing from agent `routing:` frontmatter
+        # blocks (mirror of 1a). Populates the DB-backed routing table that
+        # replaced config/surface-routing.json. Non-fatal on failure.
+        routing_res = _seed_surface_routing(db_path=db_path, quiet=quiet)
+        _report_step(name="surface-routing", result=routing_res, quiet=quiet, verbose=verbose)
     if rc != 0:
         if postinstall:
             # Persist a marker so `gaia doctor` can surface the real failure.

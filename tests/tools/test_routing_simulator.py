@@ -18,7 +18,10 @@ from pathlib import Path
 import pytest
 
 # Add the tools directory to sys.path so gaia_simulator package is importable
-TOOLS_DIR = Path(__file__).resolve().parents[2] / "tools"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+TOOLS_DIR = _REPO_ROOT / "tools"
 if TOOLS_DIR.is_symlink():
     TOOLS_DIR = TOOLS_DIR.resolve()
 sys.path.insert(0, str(TOOLS_DIR))
@@ -48,14 +51,36 @@ SKILLS_DIR = PLUGIN_ROOT / "skills"
 
 
 @pytest.fixture
-def simulator() -> RoutingSimulator:
-    """Create a RoutingSimulator with real config files."""
+def seeded_routing_db(tmp_path, monkeypatch):
+    """Seed a temp gaia.db from real agent frontmatters, point GAIA_DATA_DIR at it.
+
+    Routing moved from config/surface-routing.json to the DB-backed
+    surface_routing table; RoutingSimulator/SkillsMapper load it via
+    load_surface_routing_config() -> gaia.paths (honors GAIA_DATA_DIR). This
+    fixture must run before the simulator/mapper are constructed so their
+    in-__init__ config load reads the seeded DB.
+    """
+    from tests.fixtures.db_helpers import (
+        bootstrap_gaia_schema,
+        seed_surface_routing_from_agents,
+    )
+
+    db = tmp_path / "gaia.db"
+    bootstrap_gaia_schema(db)
+    seed_surface_routing_from_agents(db)
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    return db
+
+
+@pytest.fixture
+def simulator(seeded_routing_db) -> RoutingSimulator:
+    """Create a RoutingSimulator against a seeded temp routing DB."""
     return RoutingSimulator(config_dir=CONFIG_DIR, agents_dir=AGENTS_DIR)
 
 
 @pytest.fixture
-def mapper() -> SkillsMapper:
-    """Create a SkillsMapper with real config files."""
+def mapper(seeded_routing_db) -> SkillsMapper:
+    """Create a SkillsMapper against a seeded temp routing DB."""
     return SkillsMapper(
         agents_dir=AGENTS_DIR, skills_dir=SKILLS_DIR, config_dir=CONFIG_DIR
     )

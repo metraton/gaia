@@ -46,6 +46,18 @@ CREATE TABLE IF NOT EXISTS agent_contract_permissions (
     cloud_scope   TEXT,
     PRIMARY KEY (agent_name, contract_name, cloud_scope)
 );
+
+CREATE TABLE IF NOT EXISTS surface_routing (
+    surface                TEXT NOT NULL PRIMARY KEY,
+    primary_agent          TEXT NOT NULL,
+    adjacent_surfaces_json TEXT NOT NULL DEFAULT '[]',
+    contract_sections_json TEXT NOT NULL DEFAULT '[]',
+    required_checks_json   TEXT NOT NULL DEFAULT '[]',
+    keywords_json          TEXT NOT NULL DEFAULT '[]',
+    commands_json          TEXT NOT NULL DEFAULT '[]',
+    artifacts_json         TEXT NOT NULL DEFAULT '[]',
+    sub_surfaces_json      TEXT
+);
 """
 
 
@@ -152,6 +164,26 @@ def seed_agent_perms(
         )
     con.commit()
     con.close()
+
+
+def seed_surface_routing_from_agents(db_path: Path, agents_dir: Optional[Path] = None) -> dict:
+    """Seed the surface_routing table from real agent frontmatters.
+
+    Thin wrapper over tools.scan.seed_surface_routing.seed_surface_routing so
+    router/matcher tests can build a DB-backed routing table identical to what
+    `gaia install` produces. Defaults agents_dir to the repo's agents/ dir.
+    """
+    import sys as _sys
+
+    repo_root = Path(__file__).resolve().parents[2]
+    if str(repo_root) not in _sys.path:
+        _sys.path.insert(0, str(repo_root))
+    from tools.scan.seed_surface_routing import (
+        seed_surface_routing as _seed,
+        _DEFAULT_AGENTS_DIR,
+    )
+
+    return _seed(db_path, agents_dir=agents_dir or _DEFAULT_AGENTS_DIR)
 
 
 _APPROVALS_SCHEMA = """
@@ -366,9 +398,10 @@ def bootstrap_m4_schema(db_path: Path) -> None:
     CREATE INDEX IF NOT EXISTS idx_approval_grants_session ON approval_grants(session_id);
     CREATE INDEX IF NOT EXISTS idx_approval_grants_status  ON approval_grants(status);
 
-    -- agent_contract_handoffs table (v9/M4)
+    -- agent_contract_handoffs table (v9/M4; contract_id added v28/T7)
     CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id      TEXT,
         agent_id         TEXT NOT NULL,
         session_id       TEXT,
         workspace        TEXT NOT NULL,
@@ -384,6 +417,7 @@ def bootstrap_m4_schema(db_path: Path) -> None:
     CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_workspace ON agent_contract_handoffs(workspace);
     CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_brief     ON agent_contract_handoffs(brief_id);
     CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_session   ON agent_contract_handoffs(session_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_contract_handoffs_contract_id ON agent_contract_handoffs(contract_id);
 
     -- agent_contract_handoff_approvals table (v9/M4)
     CREATE TABLE IF NOT EXISTS agent_contract_handoff_approvals (

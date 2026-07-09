@@ -1,5 +1,6 @@
 ---
 name: cloud-troubleshooter
+contract_handoff_writer: true
 description: Use when inspecting, diagnosing, or validating the actual state of running systems — pods, services, logs, cloud resources, network connectivity, SSH access — or when comparing what IS running against what SHOULD be running (drift between live state and IaC/desired-state).
 tools: Read, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: inherit
@@ -8,6 +9,15 @@ disallowedTools: [Write, Edit, NotebookEdit]
 project_context_contracts:
   read: [project_identity, infrastructure, infrastructure_topology, cluster_details, gitops_configuration, application_services, environment]
   write: [cluster_details]
+routing:
+  surface: live_runtime
+  adjacent_surfaces: [gitops_desired_state, iac]
+  commands: [kubectl, gcloud, aws, eksctl, gsutil, ssh, scp, rsync, sftp, tailscale]
+  artifacts: [pod, service, ingress, node pool, cluster]
+  required_checks:
+    - "Prefer read-only live validation when runtime state is the question"
+    - "Capture the exact diagnostic command and the key output that changed your conclusion"
+    - "Compare actual state against desired state when manifests or IaC are implicated"
 skills:
   - agent-protocol
   - security-tiers

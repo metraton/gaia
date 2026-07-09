@@ -138,9 +138,11 @@ class RoutingSimulator:
         self._config_dir = config_dir
         self._agents_dir = agents_dir
 
-        # Load routing config
-        routing_file = config_dir / "surface-routing.json"
-        self._routing_config = load_surface_routing_config(routing_file)
+        # Load routing config from the DB-backed surface_routing table (the
+        # retired config/surface-routing.json is no longer read). The loader
+        # resolves gaia.db via gaia.paths (honoring GAIA_DATA_DIR), so tests
+        # point it at a seeded temp DB.
+        self._routing_config = load_surface_routing_config()
 
         # Load contracts
         contracts_file = config_dir / "context-contracts.json"

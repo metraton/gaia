@@ -21,6 +21,15 @@ if str(_TOOLS_DIR) not in sys.path:
 
 from gaia_simulator.routing_simulator import _parse_frontmatter
 
+_CONTEXT_DIR = _TOOLS_DIR / "context"
+if str(_CONTEXT_DIR) not in sys.path:
+    sys.path.insert(0, str(_CONTEXT_DIR))
+
+try:
+    from context.surface_router import load_surface_routing_config
+except ImportError:  # pragma: no cover - direct-invocation fallback
+    from surface_router import load_surface_routing_config  # type: ignore
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -80,14 +89,11 @@ class SkillsMapper:
                 name = fm.get("name", md_file.stem)
                 self._agent_frontmatter[name] = fm
 
-        # Load surface routing config
-        routing_file = config_dir / "surface-routing.json"
-        if routing_file.is_file():
-            self._routing_config = json.loads(
-                routing_file.read_text(encoding="utf-8")
-            )
-        else:
-            self._routing_config = {"surfaces": {}}
+        # Load surface routing config from the DB-backed surface_routing table
+        # (the retired config/surface-routing.json is no longer read). Resolves
+        # gaia.db via gaia.paths (honoring GAIA_DATA_DIR) so tests point it at a
+        # seeded temp DB.
+        self._routing_config = load_surface_routing_config()
 
         # Load contracts
         contracts_file = config_dir / "context-contracts.json"

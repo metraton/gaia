@@ -1,5 +1,6 @@
 ---
 name: developer
+contract_handoff_writer: true
 description: Use when writing, modifying, debugging, or reviewing application code, CI/CD pipelines, or developer tooling — or when investigating an application-layer bug or behavior.
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: inherit
@@ -8,6 +9,15 @@ permissionMode: acceptEdits
 project_context_contracts:
   read: [project_identity, stack, application_services, environment, architecture_overview, git]
   write: [application_services]
+routing:
+  surface: app_ci_tooling
+  adjacent_surfaces: [iac, gitops_desired_state]
+  commands: [npm, pnpm, yarn, node, pytest, jest, eslint, prettier, turbo, docker]
+  artifacts: [package.json, Dockerfile, workflow, pipeline, tests, src/]
+  required_checks:
+    - "Search for existing application, CI, and developer workflow patterns before changing build or runtime behavior"
+    - "Surface deployment, runtime, or infrastructure implications instead of treating the task as app-only by default"
+    - "Include exact build, test, or verification commands whenever they informed the conclusion"
 skills:
   - agent-protocol
   - security-tiers

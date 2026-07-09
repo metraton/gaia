@@ -90,7 +90,7 @@ Match by the FILES the agent will modify, not by the topic of conversation.
 
 | If the agent needs to modify... | Route to |
 |---------------------------------|----------|
-| `hooks/`, `modules/`, `adapters/`, `skills/`, `agents/`, `config/surface-routing.json` | gaia-system |
+| `hooks/`, `modules/`, `adapters/`, `skills/`, `agents/` (including an agent's `routing:` frontmatter block, seeded into the `surface_routing` DB table) | gaia-system |
 | `src/`, `lib/`, `tests/`, `package.json`, `Dockerfile`, `.github/workflows/` | developer |
 | Kubernetes manifests, `HelmRelease`, `Kustomization`, Flux configs | gitops-operator |
 | `.tf`, `.hcl`, `terragrunt.hcl`, Terraform modules | platform-architect |

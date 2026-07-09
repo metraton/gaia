@@ -24,6 +24,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOKS_DIR = REPO_ROOT / "hooks"
 TOOLS_DIR = REPO_ROOT / "tools" / "context"
+sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(TOOLS_DIR))
 
@@ -129,26 +130,46 @@ class TestContextProviderDegradedMode:
 class TestSurfaceRouterDegradedMode:
     """surface_router should return safe defaults when config is missing."""
 
-    def test_load_config_returns_default_on_missing(self, tmp_path):
-        """load_surface_routing_config returns default when file is missing."""
+    def test_load_config_returns_default_on_missing(self, tmp_path, monkeypatch):
+        """load_surface_routing_config returns default when gaia.db does not exist.
+
+        Routing moved from config/surface-routing.json (file-backed) to the
+        surface_routing table in gaia.db (DB-backed, seeded from each agent's
+        `routing:` frontmatter by tools/scan/seed_surface_routing.py). The
+        JSON-era `config_file=` kwarg no longer exists on the loader -- the
+        degraded-mode equivalent is a workspace whose gaia.db has not even
+        been created yet, resolved via GAIA_DATA_DIR like the rest of the
+        routing test suite (tests/tools/test_surface_router.py).
+        """
         from surface_router import load_surface_routing_config
 
-        result = load_surface_routing_config(
-            config_file=tmp_path / "nonexistent-routing.json"
-        )
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "no-db-here"))
+
+        result = load_surface_routing_config()
         assert result["version"] == "missing"
         assert result["reconnaissance_agent"] == "developer"
         assert result["surfaces"] == {}
 
-    def test_load_config_returns_default_on_invalid_json(self, tmp_path):
-        """load_surface_routing_config returns default on malformed JSON."""
+    def test_load_config_returns_default_on_invalid_json(self, tmp_path, monkeypatch):
+        """load_surface_routing_config returns default when the table is unseeded.
+
+        The JSON-era "malformed content" case has no DB-backed equivalent
+        (there is no JSON to corrupt); the analogous failure mode is a gaia.db
+        that exists and has the schema applied but whose surface_routing table
+        has never been seeded (e.g. `gaia install` has not run
+        seed_surface_routing yet) -- present DB, unusable routing data.
+        """
         from surface_router import load_surface_routing_config
+        from tests.fixtures.db_helpers import bootstrap_gaia_schema
 
-        bad_file = tmp_path / "bad-routing.json"
-        bad_file.write_text("{invalid json}")
+        db_dir = tmp_path / "unseeded"
+        db_dir.mkdir()
+        bootstrap_gaia_schema(db_dir / "gaia.db")
+        monkeypatch.setenv("GAIA_DATA_DIR", str(db_dir))
 
-        result = load_surface_routing_config(config_file=bad_file)
-        assert result["version"] == "invalid"
+        result = load_surface_routing_config()
+        assert result["version"] == "missing"
+        assert result["reconnaissance_agent"] == "developer"
         assert result["surfaces"] == {}
 
     def test_classify_surfaces_returns_reconnaissance_on_empty_config(self):

@@ -1,5 +1,6 @@
 ---
 name: gaia-planner
+contract_handoff_writer: true
 description: Use when planning a feature or decomposing work from a brief into an executable plan -- turning objectives and acceptance criteria into ordered, testable tasks ready for dispatch.
 tools: Read, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: inherit
@@ -8,6 +9,21 @@ disallowedTools: [Write, Edit, NotebookEdit]
 project_context_contracts:
   read: [project_identity, stack, architecture_overview, operational_guidelines, application_services, releases, infrastructure_topology, gitops_configuration]
   write: []
+routing:
+  surface: planning_specs
+  adjacent_surfaces: [app_ci_tooling, gaia_system]
+  commands: []
+  artifacts: [brief.md, spec.md, plan.md]
+  required_checks:
+    - "Keep planning artifacts aligned with governance and project context"
+    - "Tag adjacent surfaces explicitly when the plan crosses infra, runtime, or app boundaries"
+    - "Do not silently choose an implementation path when multiple valid options remain"
+  sub_surfaces:
+    - name: brief
+      owner: gaia-orchestrator
+      owner_skill: brief-spec
+    - name: plan
+      owner: gaia-planner
 skills:
   - agent-protocol
   - security-tiers

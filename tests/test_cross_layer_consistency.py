@@ -352,11 +352,31 @@ class TestTaskValidatorConsistency:
         missing = set(NATIVE_AGENTS) - set(META_AGENTS)
         assert not missing, f"NATIVE_AGENTS not in META_AGENTS: {missing}"
 
-    def test_native_agents_not_in_surface_routing(self):
+    def test_native_agents_not_in_surface_routing(self, tmp_path, monkeypatch):
         """Native agents are utility types, not domain specialists. They must NOT
-        appear as primary_agent in any surface routing entry."""
-        routing_file = CONFIG_DIR / "surface-routing.json"
-        routing = json.loads(routing_file.read_text())
+        appear as primary_agent in any surface routing entry.
+
+        Routing is DB-backed now (surface_routing table, seeded from agent
+        `routing:` frontmatter blocks); the retired config/surface-routing.json
+        is no longer read.
+        """
+        import sys as _sys
+        if str(GAIA_OPS_ROOT) not in _sys.path:
+            _sys.path.insert(0, str(GAIA_OPS_ROOT))
+        if str(GAIA_OPS_ROOT / "tools" / "context") not in _sys.path:
+            _sys.path.insert(0, str(GAIA_OPS_ROOT / "tools" / "context"))
+        from tests.fixtures.db_helpers import (
+            bootstrap_gaia_schema,
+            seed_surface_routing_from_agents,
+        )
+        from surface_router import load_surface_routing_config
+
+        db = tmp_path / "gaia.db"
+        bootstrap_gaia_schema(db)
+        seed_surface_routing_from_agents(db)
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        routing = load_surface_routing_config()
+
         surface_agents = {
             cfg.get("primary_agent")
             for cfg in routing.get("surfaces", {}).values()

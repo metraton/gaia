@@ -37,7 +37,7 @@ The hard `disallowedTools: [Write, Edit, NotebookEdit]` denylist is reserved for
 Almost always "no" for specialists — and the runtime forces it. A Gaia specialist runs *as a subagent* under the orchestrator, and a subagent cannot spawn subagents: `Agent`/`Task` are inert in a subagent's frontmatter even if listed (per Anthropic's subagents doc). D2=yes applies only to an agent run as the main thread via `--agent` — in practice the orchestrator. A specialist surfaces work it cannot do through its CANNOT DO → DELEGATE table; the orchestrator routes. That table is required regardless of D2.
 
 **D3: Does the agent enter the orchestrator's automatic routing?**
-Almost always "yes." A "yes" means the description field is written as triggering conditions (not a role summary) and surface signals are proposed for `surface-routing.json`. Those signals are proposals — gaia-system applies them.
+Almost always "yes." A "yes" means the description field is written as triggering conditions (not a role summary) and a `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks) is proposed for the agent. Those signals are proposals — gaia-system applies them to the agent's own frontmatter, from which `tools/scan/seed_surface_routing.py` seeds the `surface_routing` DB table at install time; `tools/context/surface_router.py` reads that table (not a JSON file) at runtime.
 
 ## Step 2: Apply the component inventory
 
@@ -53,7 +53,7 @@ Almost always "yes." A "yes" means the description field is written as triggerin
 
 **Optional by dimension:**
 - **Delegation table** (D2=yes): only meaningful for the main-thread orchestrator — a subagent specialist cannot dispatch, so this does not apply to specialists.
-- **Surface signals** (D3=yes): proposed keyword patterns for `surface-routing.json`, written as a proposal block for gaia-system to apply.
+- **Surface signals** (D3=yes): a proposed `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks) for gaia-system to apply to the agent's own file — the source of truth `tools/scan/seed_surface_routing.py` seeds into the `surface_routing` DB table at install time.
 - **Domain reference inline**: lookup tables or decision logic that apply only to this agent and do not warrant a skill.
 
 ## Step 3: Write for judgment, not compliance
@@ -88,7 +88,7 @@ Do not hardcode a tool-to-skill mapping — the catalog changes and a fixed mapp
 
 ## Step 6: Propose surface signals (if D3=yes)
 
-For agents in automatic routing, propose high- and medium-confidence keyword clusters for `surface-routing.json`, written as a block gaia-system can apply directly. Do not apply them yourself, and check existing signals so the new agent's description does not overlap a sibling's.
+For agents in automatic routing, propose a `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks — `keywords` is retired, the matcher scores from `commands`/`artifacts` only) written for gaia-system to apply directly to the agent's own file. Do not apply it yourself, and check existing agents' `routing:` blocks so the new agent's surface and signals do not overlap a sibling's.
 
 ## Anti-patterns
 

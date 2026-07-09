@@ -1,5 +1,6 @@
 ---
 name: gitops-operator
+contract_handoff_writer: true
 description: Use when creating, modifying, or reviewing the desired state of a Kubernetes cluster declared in Git — Flux HelmReleases, Argo Applications, Kustomizations, Helm values, manifests, ConfigMaps, Ingress — or when reasoning about reconciliation and drift between Git and the running cluster.
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: inherit
@@ -8,6 +9,15 @@ permissionMode: acceptEdits
 project_context_contracts:
   read: [project_identity, stack, gitops_configuration, cluster_details, environment, architecture_overview, git]
   write: [gitops_configuration]
+routing:
+  surface: gitops_desired_state
+  adjacent_surfaces: [live_runtime, iac, app_ci_tooling]
+  commands: [helm, flux, kustomize, kubectl diff, kubectl apply --dry-run]
+  artifacts: [yaml, manifest, helmrelease, kustomization, deployment, service, ingress]
+  required_checks:
+    - "Search existing manifests and neighboring GitOps resources before proposing changes"
+    - "Check desired state against runtime symptoms when the task smells like drift"
+    - "Surface any deployment/runtime contract that another surface must validate"
 skills:
   - agent-protocol
   - security-tiers

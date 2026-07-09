@@ -1,5 +1,6 @@
 ---
 name: platform-architect
+contract_handoff_writer: true
 description: Use when provisioning, modifying, validating, or reviewing infrastructure-as-code — Terraform, Terragrunt, Pulumi, CloudFormation, OpenTofu, or CDK — including plan/apply workflows, state, and cloud resource declarations (IAM, VPC, buckets, service accounts).
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: inherit
@@ -8,6 +9,15 @@ permissionMode: acceptEdits
 project_context_contracts:
   read: [project_identity, stack, infrastructure, infrastructure_topology, environment, architecture_overview, git]
   write: [infrastructure, infrastructure_topology]
+routing:
+  surface: iac
+  adjacent_surfaces: [gitops_desired_state, app_ci_tooling, live_runtime]
+  commands: [terraform, terragrunt, tflint, pulumi, tofu, cdk, cdktf, aws cloudformation]
+  artifacts: [.tf, .hcl, module, terragrunt.hcl, provider, backend, Pulumi.yaml, template.yaml, cdk.json]
+  required_checks:
+    - "Compare against 2-3 sibling modules or stacks before introducing new structure"
+    - "Call out blast radius when the change touches shared modules, IAM, or stateful resources"
+    - "State clearly which live/runtime or GitOps surfaces must cross-check the result"
 skills:
   - agent-protocol
   - security-tiers

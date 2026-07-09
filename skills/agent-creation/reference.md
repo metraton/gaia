@@ -135,8 +135,8 @@ Almost all specialists do. The exception would be a utility agent that is only d
 
 **D3=yes implications:**
 - Description field written as triggering conditions (see Step 5 in SKILL.md)
-- Surface signals proposed for `surface-routing.json`
-- Description must not overlap with signals of existing agents (check `config/surface-routing.json` before finalizing)
+- Surface signals proposed as the agent's own `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks)
+- Description must not overlap with signals of existing agents (check the `routing:` block of comparable agents under `agents/*.md`, or query the seeded `surface_routing` DB table, before finalizing)
 
 ---
 
@@ -226,7 +226,7 @@ This skill guides thinking about each file, but gaia-system (the invoking agent)
 | File | What changes | Who writes it |
 |------|--------------|---------------|
 | `.claude/agents/<name>.md` | New agent definition | gaia-system |
-| `config/surface-routing.json` | New surface entry with signals | gaia-system |
+| new agent's `routing:` frontmatter block | New surface entry with signals; seeded into the `surface_routing` DB table by `tools/scan/seed_surface_routing.py` at install time | gaia-system |
 | `.claude/skills/README.md` | Agent assignment matrix (if agent gets new skills) | gaia-system |
 | `agents/README.md` | New agent in the roster | gaia-system |
 

@@ -112,7 +112,7 @@ Fires after every agent tool completes:
 
 ## Surface Routing: surface_router.py
 
-Classifies user tasks into surfaces using signal matching against `config/surface-routing.json`.
+Classifies user tasks into surfaces using whole-token signal matching against the DB-backed `surface_routing` table in `~/.gaia/gaia.db`. The source of truth is each agent's `routing:` frontmatter block; `tools/scan/seed_surface_routing.py` seeds the table at install time (mirror of `seed_contract_permissions.py`). The retired `config/surface-routing.json` previously held this table.
 
 | Surface | Primary Agent | Typical Signals |
 |---------|--------------|-----------------|
@@ -319,7 +319,7 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | File | Purpose |
 |------|---------|
 | `agents/gaia-orchestrator.md` | Orchestrator identity and routing (activated via settings.json agent config) |
-| `config/surface-routing.json` | Surface routing config (agent table, signals, dispatch) |
+| `surface_routing` table (gaia.db) | Surface routing (agent table, signals, dispatch); seeded from agent `routing:` frontmatter by `tools/scan/seed_surface_routing.py` |
 | `skills/agent-response/SKILL.md` | Contract status handling protocol (on-demand) |
 | `hooks/pre_tool_use.py` | PreToolUse hook entry point |
 | `hooks/subagent_stop.py` | SubagentStop hook entry point |
@@ -331,10 +331,9 @@ To support a CLI other than Claude Code (e.g., a hypothetical Cursor or Windsurf
 | `hooks/modules/agents/response_contract.py` | Agent response contract validator |
 | `hooks/modules/context/context_writer.py` | Progressive context enrichment |
 | `tools/context/context_provider.py` | Context payload assembly |
-| `tools/context/surface_router.py` | Surface classification and investigation briefs |
+| `tools/context/surface_router.py` | Surface classification and investigation briefs (reads DB-backed `surface_routing`) |
+| `tools/scan/seed_surface_routing.py` | Install-time seeder: agent `routing:` frontmatter -> `surface_routing` table |
 | `tools/memory/episodic.py` | Episodic memory storage |
-| `config/context-contracts.json` | Agent read/write section permissions |
-| `config/surface-routing.json` | Surface signals and routing config |
 | `agents/*.md` | Agent identity definitions |
 | `skills/*/SKILL.md` | Injected procedural knowledge |
 | `bin/gaia` + `bin/cli/*.py` | Unified `gaia` CLI; subcommands auto-discovered from `bin/cli/` |

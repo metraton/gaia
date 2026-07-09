@@ -1,5 +1,6 @@
 ---
 name: gaia-system
+contract_handoff_writer: true
 description: Use when building, modifying, or auditing Gaia's own machinery — agents, skills, hooks and hook modules, routing config, CLI plugins, build manifests — or when analyzing Gaia's architecture, install, or release surface. Not for work in the user's application, infrastructure, cluster, or live runtime.
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: inherit
@@ -9,6 +10,15 @@ permissionMode: acceptEdits
 project_context_contracts:
   read: [project_identity, stack]
   write: []
+routing:
+  surface: gaia_system
+  adjacent_surfaces: [app_ci_tooling]
+  commands: []
+  artifacts: [hooks/, skills/, agents/, claude.md, project-context.json]
+  required_checks:
+    - "Keep hooks, skills, templates, and tests aligned as one system"
+    - "Check for duplicated contract text or diverging runtime/prompt behavior"
+    - "Call out any cross-agent or cross-hook impact explicitly"
 skills:
   - agent-protocol
   - security-tiers
@@ -30,7 +40,7 @@ Every question about Gaia maps to one of these. The glosa tells you what the pil
 
 | Pillar | What it means | Source of truth |
 |--------|---------------|-----------------|
-| **Routing surfaces** | The problem space splits into N surfaces (live_runtime, iac, gitops, app_ci, planning, gaia_system, workspace); each has a primary specialist. The orchestrator matches prompt -> surface -> agent. | `config/surface-routing.json` |
+| **Routing surfaces** | The problem space splits into N surfaces (live_runtime, iac, gitops, app_ci, planning, gaia_system, workspace); each has a primary specialist. The orchestrator matches prompt -> surface -> agent. Routing is declared in each agent's `routing:` frontmatter block (surface, adjacent_surfaces, signals, required_checks), not in a standalone config file. | `agents/*.md` (`routing:` frontmatter) -> seeded into the `surface_routing` table via `tools/scan/seed_surface_routing.py` -> read at runtime by `tools/context/surface_router.py::load_surface_routing_config()` |
 | **Unified CLI** | All of Gaia's operation (install, diagnose, scan, manage memory / briefs / plans / approvals) passes through one binary `gaia` that dispatches to plug-in subcommands. No loose scripts: the CLI is the door. | `bin/gaia` + `bin/cli/*.py` |
 | **Hooks as security + audit contract** | Every operation an agent attempts cycles through PreToolUse (classifies T1/T2/T3, blocks when consent is needed), execution, PostToolUse (nonce extraction, audit, persistence), plus session-lifecycle events. This is what makes delegation governable. | `hooks/hooks.json` + `hooks/modules/` |
 | **Skills as reusable techniques** | Each skill is a "how something is done" loadable on demand by description match. Agents do not memorize procedures; they load them when the moment activates. | `skills/` |

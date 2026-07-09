@@ -55,7 +55,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | platform-architect | `agents/platform-architect.md` | Terraform/Terragrunt IaC | `acceptEdits` |
 | gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition | `acceptEdits` |
 
-### Skills (21 directories + 1 top-level reference)
+### Skills (21 directories)
 
 | Skill | Type | Injection |
 |-------|------|-----------|
@@ -78,7 +78,6 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `orchestrator-present-approval/` | Discipline | Injected (orchestrator) |
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |
-| `skills/reference.md` | Reference | On-demand (shared security-tiers ref) |
 
 ### Tools (7 subsystems)
 
@@ -121,7 +120,7 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | File | Purpose |
 |------|---------|
 | `config/context-contracts.json` | Seeding source for per-agent context contracts (applied to gaia.db on install; runtime SSOT is DB) |
-| `config/surface-routing.json` | Surface routing table (intent to agent mapping) |
+| `surface_routing` table (gaia.db) | Surface routing table (intent to agent mapping); source of truth is agent `routing:` frontmatter, seeded by `tools/scan/seed_surface_routing.py` |
 | `config/cloud/aws.json` | AWS service patterns and commands |
 | `config/cloud/gcp.json` | GCP service patterns and commands |
 
@@ -330,7 +329,7 @@ npm publish                           # publish to npm
 python3 tools/gaia_simulator/cli.py "deploy the terraform changes"
 ```
 
-Tests the surface-routing pipeline: prompt -> intent extraction -> agent selection. Validates that `config/surface-routing.json` routes correctly without invoking any agent.
+Tests the surface-routing pipeline: prompt -> intent extraction -> agent selection. Validates that the DB-backed `surface_routing` table (seeded from agent `routing:` frontmatter) routes correctly without invoking any agent.
 
 Components: `cli.py` (entry), `routing_simulator.py` (engine), `extractor.py` (intent), `skills_mapper.py` (skill resolution), `runner.py` (batch), `reporter.py` (output).
 
@@ -400,4 +399,4 @@ Do not cache the result in project-context. A stale live-state field silently mi
 
 - `config/cloud/gcp.json` and `config/cloud/aws.json`: `section_schemas` for live-state fields removed in B6. Scanner-populated fields go through the store API from B2+.
 - `gaia/store/schema.sql`: DDL defines no columns for live-state narratives (`ci_cd_findings`, `cluster_discrepancy`). The schema cannot store what it does not define.
-- `tests/unit/test_surface_routing_live_state.py`: guards that no `signals.keywords` in `surface-routing.json` references a retired live-state field name.
+- `tests/unit/test_surface_routing_live_state.py`: guards that no `signals.keywords` in the DB-backed routing (seeded from agent `routing:` frontmatter) references a retired live-state field name.
