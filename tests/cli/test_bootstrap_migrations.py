@@ -112,9 +112,159 @@ def _build_below_floor_db(db_path: Path, version: int) -> None:
         con.close()
 
 
+def _build_v26_pre_contract_id_db(db_path: Path) -> None:
+    """Materialise an EXISTING pre-`contract_id` DB stamped at v26.
+
+    Strategy: apply the full current schema.sql, then roll the
+    agent_contract_handoffs table back to its pre-v28 shape by dropping the
+    v28 `contract_id` column and its UNIQUE index, and stamp the ledger at v26.
+
+    This reproduces the EXACT real-world failure state the fresh-DB suite never
+    exercises: agent_contract_handoffs EXISTS (from v26) but has no
+    `contract_id` column, so bootstrap Section 2 -- which applies schema.sql
+    unconditionally BEFORE the migration ledger (Section 3c) -- hits
+    `CREATE UNIQUE INDEX ... ON agent_contract_handoffs(contract_id)`
+    (schema.sql ~line 985) against a table lacking that column and aborts with
+    "no such column: contract_id".
+    """
+    schema_sql = _SCHEMA_SQL.read_text()
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.executescript(schema_sql)
+        # Roll agent_contract_handoffs back to its pre-v28 (v26) shape.
+        con.execute("DROP INDEX IF EXISTS idx_agent_contract_handoffs_contract_id")
+        con.execute("ALTER TABLE agent_contract_handoffs DROP COLUMN contract_id")
+        # schema.sql seeds no schema_version rows; stamp this as an existing v26 DB.
+        con.execute("DELETE FROM schema_version")
+        con.execute(
+            "INSERT INTO schema_version (version, applied_at, description) "
+            "VALUES (26, '2026-01-01T00:00:00Z', 'synthetic existing v26 DB')"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+class TestUpgradeExistingDbToV28(unittest.TestCase):
+    """Regression: an EXISTING pre-`contract_id` (v26) DB must upgrade cleanly
+    to v28 through bootstrap.
+
+    Guards the install path the fresh-DB suite never exercised. bootstrap
+    applies schema.sql (Section 2) BEFORE the migration ledger (Section 3c), so
+    an index in schema.sql on a migration-added column (v28's
+    agent_contract_handoffs.contract_id) aborted on an existing table lacking
+    that column. The Section 1.5 pre-schema ADD COLUMN reconciliation adds the
+    column before schema.sql's index build.
+    """
+
+    def setUp(self):
+        if not _BOOTSTRAP_SH.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not _SCHEMA_SQL.is_file():
+            self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
+        if sqlite3.sqlite_version_info < (3, 35, 0):
+            self.skipTest(
+                "ALTER TABLE DROP COLUMN (used to build the fixture) requires "
+                f"SQLite >= 3.35; have {sqlite3.sqlite_version}"
+            )
+
+    def _assert_v28_consistent(self, db: Path) -> None:
+        con = sqlite3.connect(str(db))
+        try:
+            self.assertEqual(
+                con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
+                28,
+                "ledger did not reach v28 after upgrade",
+            )
+            self.assertEqual(
+                con.execute(
+                    "SELECT COUNT(*) FROM pragma_table_info('agent_contract_handoffs') "
+                    "WHERE name='contract_id'"
+                ).fetchone()[0],
+                1,
+                "contract_id column missing after upgrade",
+            )
+            idx = con.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' "
+                "AND name='idx_agent_contract_handoffs_contract_id'"
+            ).fetchone()
+            self.assertIsNotNone(idx, "contract_id index missing after upgrade")
+            self.assertIn(
+                "UNIQUE", idx[0].upper(),
+                "contract_id index is not UNIQUE after upgrade",
+            )
+        finally:
+            con.close()
+
+    def test_existing_v26_db_upgrades_to_v28(self):
+        """Existing v26 DB lacking contract_id upgrades to v28 with no error and
+        a consistent contract_id column + UNIQUE index."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            db = workspace / "tmp_gaia.db"
+            _build_v26_pre_contract_id_db(db)
+
+            # Precondition: fixture is the real failure state.
+            con = sqlite3.connect(str(db))
+            try:
+                self.assertEqual(
+                    con.execute(
+                        "SELECT COUNT(*) FROM pragma_table_info('agent_contract_handoffs') "
+                        "WHERE name='contract_id'"
+                    ).fetchone()[0],
+                    0,
+                    "fixture already has contract_id -- not a pre-v28 state",
+                )
+                self.assertEqual(
+                    con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
+                    26,
+                )
+            finally:
+                con.close()
+
+            res = _run_bootstrap(workspace)
+            self.assertEqual(
+                res.returncode, 0,
+                f"upgrade bootstrap failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}",
+            )
+            self._assert_v28_consistent(db)
+
+    def test_upgrade_is_idempotent(self):
+        """A second bootstrap on the upgraded DB is a clean no-op: no error, no
+        duplicate ledger rows, still consistent at v28."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            db = workspace / "tmp_gaia.db"
+            _build_v26_pre_contract_id_db(db)
+
+            res1 = _run_bootstrap(workspace)
+            self.assertEqual(res1.returncode, 0, res1.stderr)
+            con = sqlite3.connect(str(db))
+            try:
+                rows1 = sorted(r[0] for r in con.execute("SELECT version FROM schema_version"))
+            finally:
+                con.close()
+
+            res2 = _run_bootstrap(workspace)
+            self.assertEqual(res2.returncode, 0, res2.stderr)
+            self._assert_v28_consistent(db)
+
+            con = sqlite3.connect(str(db))
+            try:
+                rows2 = sorted(r[0] for r in con.execute("SELECT version FROM schema_version"))
+            finally:
+                con.close()
+
+            self.assertEqual(
+                rows1, rows2,
+                "second bootstrap changed the schema_version ledger (not idempotent)",
+            )
+            self.assertIn("up-to-date", res2.stdout)
 
 class TestBootstrapFloorModel(unittest.TestCase):
     """End-to-end coverage of Section 3b/3c under the floor model."""

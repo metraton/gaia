@@ -51,6 +51,76 @@ echo "[bootstrap] Initializing Gaia DB at $GAIA_DB"
 echo "[bootstrap] Using schema:  $SCHEMA_FILE"
 echo "[bootstrap] Using workspace: $WORKSPACE"
 
+# === Section 1.5: Pre-schema ADD COLUMN reconciliation (existing DBs) ===
+#
+# schema.sql (Section 2 below) is applied UNCONDITIONALLY and in full. It
+# carries the EXPECTED (current) schema shape, which INCLUDES indexes on
+# columns that were introduced by forward migrations -- e.g. v27_to_v28 adds
+# `agent_contract_handoffs.contract_id` plus a UNIQUE index on it, and
+# schema.sql (~line 985) carries
+# `CREATE UNIQUE INDEX ... ON agent_contract_handoffs(contract_id)`.
+#
+# On a FRESH DB this is fine: the `CREATE TABLE agent_contract_handoffs
+# (... contract_id ...)` in schema.sql creates the column first, so the index
+# build in the same pass succeeds. On an EXISTING DB whose table predates the
+# column, `CREATE TABLE IF NOT EXISTS` is a no-op (the table already exists
+# WITHOUT the column) and the following `CREATE INDEX ... (contract_id)` aborts
+# with "no such column: contract_id". SQLite offers no way to make a
+# `CREATE INDEX` conditional on a column, and schema.sql MUST run before the
+# migration ledger (Section 3c) can read/advance versions -- so on an existing
+# DB the column has to exist BEFORE schema.sql runs.
+#
+# This section closes that gap generically and idempotently: for every
+# `ALTER TABLE <t> ADD COLUMN <c> ...` statement declared in the forward
+# migration files, if table <t> ALREADY exists in the live DB and column <c>
+# is absent, add it NOW -- before schema.sql. The migration file stays the
+# single source of the ADD COLUMN (one-file-per-bump); we only change WHEN a
+# pre-existing table receives the column so schema.sql's index build cannot
+# trip.
+#
+#   - Fresh DB: no tables exist yet, so every candidate table fails the
+#     "table exists" guard and nothing is added -- schema.sql builds the column
+#     itself (Section 2) and the migration replay (Section 3c) is a guarded
+#     no-op. FRESH-DB materialisation is unchanged.
+#   - Existing DB missing the column: the column is added here, schema.sql's
+#     index build then succeeds, and Section 3c advances the ledger.
+#   - Re-run / already-migrated DB (incl. one left partial by a prior FAILED
+#     install): the column is already present, the guard skips it, and the
+#     section is a no-op. Recovery on retry is automatic.
+#
+# Pure bash + sqlite3, no python3 -- consistent with this script's principles.
+# NOTE: the matcher assumes one `ALTER TABLE ... ADD COLUMN ...` per line, the
+# same assumption _filter_add_column_idempotent (Section 3c) already relies on.
+
+_reconcile_pre_schema_add_columns() {
+    local mig_file line lower table col tbl_exists col_exists
+    for mig_file in "${SCRIPT_DIR}/migrations"/v*_to_v*.sql; do
+        [ -f "$mig_file" ] || continue
+        while IFS= read -r line || [ -n "$line" ]; do
+            lower="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+            if [[ "$lower" =~ alter[[:space:]]+table[[:space:]]+([a-z0-9_]+)[[:space:]]+add[[:space:]]+column[[:space:]]+([a-z0-9_]+) ]]; then
+                table="${BASH_REMATCH[1]}"
+                col="${BASH_REMATCH[2]}"
+                # Table must already exist (existing DB). On a fresh DB this is
+                # 0 and we skip -- schema.sql will create the table + column.
+                tbl_exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='${table}';")"
+                if [ "$tbl_exists" -eq 0 ]; then
+                    continue
+                fi
+                # Column must be absent. If present (re-run / already migrated),
+                # skip -- idempotent no-op.
+                col_exists="$(sqlite3 "$GAIA_DB" "SELECT COUNT(*) FROM pragma_table_info('${table}') WHERE name='${col}';")"
+                if [ "$col_exists" -eq 0 ]; then
+                    echo "[bootstrap] pre-schema reconcile: adding ${table}.${col} (existing DB predates it)"
+                    sqlite3 "$GAIA_DB" "$line"
+                fi
+            fi
+        done < "$mig_file"
+    done
+}
+
+_reconcile_pre_schema_add_columns
+
 # === Section 2: Aplicar schema (DDL) ===
 
 # Aplicamos schema.sql siempre. Todas las CREATE TABLE / CREATE INDEX /
