@@ -88,6 +88,47 @@ _RESULTS_DIR = _EVALS_DIR / "results"
 
 
 # ---------------------------------------------------------------------------
+# Routing DB seeding (S4 / RoutingSimBackend)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _seeded_routing_db(tmp_path, monkeypatch):
+    """Seed a temp gaia.db with the DB-backed ``surface_routing`` table.
+
+    S4 dispatches through the real :class:`tests.evals.runner.RoutingSimBackend`,
+    which builds a real ``RoutingSimulator``. Routing is DB-backed since the
+    routing migration retired ``config/surface-routing.json`` in favor of
+    ``tools/scan/seed_surface_routing.py`` seeding a ``surface_routing`` table
+    from agent frontmatter (see ``tools/context/surface_router.py::load_surface_routing_config``).
+
+    Without this fixture, ``tests/conftest.py``'s autouse
+    ``_isolate_gaia_data_dir`` fixture points ``GAIA_DATA_DIR`` at a fresh,
+    unseeded tmp dir for every test, so ``load_surface_routing_config``
+    degrades to the empty/degraded config and S4 falls back to the
+    reconnaissance agent (``developer``) instead of routing to
+    ``gitops-operator`` / ``cloud-troubleshooter``.
+
+    Mirrors ``tests/evals/test_backend_routing.py::_seeded_routing_db``
+    exactly (same helpers, same shape) -- that fixture already proves this
+    seeding produces the correct S4 routing outcome. Autouse at module scope
+    so every parametrized case here gets a seeded routing DB regardless of
+    which case id happens to exercise ``RoutingSimBackend``; every other
+    case dispatches through ``FakeBackend`` and never touches this DB, so
+    seeding it is a no-op for them.
+    """
+    from tests.fixtures.db_helpers import (
+        bootstrap_gaia_schema,
+        seed_surface_routing_from_agents,
+    )
+
+    db = tmp_path / "gaia.db"
+    bootstrap_gaia_schema(db)
+    seed_surface_routing_from_agents(db)
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
 # Smoke fixtures per case
 # ---------------------------------------------------------------------------
 #

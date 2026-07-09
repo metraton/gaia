@@ -869,6 +869,36 @@ CREATE TABLE IF NOT EXISTS agent_contract_permissions (
 CREATE INDEX IF NOT EXISTS idx_agent_contract_perms_agent ON agent_contract_permissions(agent_name);
 
 -- ---------------------------------------------------------------------------
+-- surface_routing: intent-to-agent routing table.
+-- Source of truth is each agent's `routing:` frontmatter block; seeded at
+-- install time by tools/scan/seed_surface_routing.py (mirror of
+-- seed_contract_permissions.py). The matcher tools/context/surface_router.py
+-- reads this table instead of the retired config/surface-routing.json.
+-- One row per surface. The *_json columns hold JSON-encoded arrays.
+-- contract_sections mirrors the surface's primary agent's
+-- project_context_contracts.read (single source of truth); sub_surfaces is
+-- NULL except where a surface splits by sub-surface owner (e.g. planning_specs
+-- -> brief owned by the orchestrator via the brief-spec skill, plan owned by
+-- gaia-planner).
+-- keywords_json is DEPRECATED: the matcher scores surfaces from commands_json
+-- and artifacts_json only. No agent frontmatter declares `keywords` anymore.
+-- The column is kept (not dropped) for backward compatibility with any
+-- un-migrated install; its DEFAULT '[]' means a routing block that omits
+-- `keywords` seeds cleanly with no crash.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS surface_routing (
+    surface                TEXT NOT NULL PRIMARY KEY,
+    primary_agent          TEXT NOT NULL,
+    adjacent_surfaces_json TEXT NOT NULL DEFAULT '[]',
+    contract_sections_json TEXT NOT NULL DEFAULT '[]',
+    required_checks_json   TEXT NOT NULL DEFAULT '[]',
+    keywords_json          TEXT NOT NULL DEFAULT '[]',  -- deprecated; unused by the matcher
+    commands_json          TEXT NOT NULL DEFAULT '[]',
+    artifacts_json         TEXT NOT NULL DEFAULT '[]',
+    sub_surfaces_json      TEXT
+);
+
+-- ---------------------------------------------------------------------------
 -- harness_events: append-only mirror of events.jsonl
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS harness_events (
@@ -920,6 +950,16 @@ CREATE INDEX IF NOT EXISTS idx_approval_grants_status  ON approval_grants(status
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract_id      TEXT,                        -- v28/T7: CLI-minted contract/draft id
+                     -- (gaia.contract.drafts.mint_draft_id, "{agent_id}.{token}").
+                     -- THE idempotency key: gaia.store.writer.finalize_agent_contract_handoff
+                     -- INSERTs ... ON CONFLICT(contract_id) DO NOTHING, so the first writer
+                     -- to commit for a given contract_id establishes the row and every
+                     -- subsequent write for the SAME contract_id (a retried finalize, or
+                     -- -- T9 -- a racing hook backstop) is a genuine no-op. NULLABLE: legacy
+                     -- rows written before T7 (and any writer that does not carry a contract
+                     -- id) have no value here and are exempt from the uniqueness constraint
+                     -- (SQLite's UNIQUE index permits any number of NULLs).
     agent_id         TEXT NOT NULL,               -- e.g. "a1b2c3d4e5"
     session_id       TEXT,                        -- CLAUDE_SESSION_ID at SubagentStop time
     workspace        TEXT NOT NULL,               -- FK -> workspaces.name
@@ -939,6 +979,10 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_workspace ON agent_contract_handoffs(workspace);
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_brief     ON agent_contract_handoffs(brief_id);
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_session   ON agent_contract_handoffs(session_id);
+-- v28/T7: UNIQUE (not just an index) is what makes ON CONFLICT(contract_id) a
+-- real constraint-backed idempotent UPSERT rather than an application-level
+-- convention -- see the contract_id column comment above.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_contract_handoffs_contract_id ON agent_contract_handoffs(contract_id);
 
 -- ---------------------------------------------------------------------------
 -- agent_contract_handoff_approvals: approval decisions linked to handoffs (v9/M4)

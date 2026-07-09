@@ -78,15 +78,40 @@ class TestAgentProtocolSkill:
         assert "plan_status" in content, \
             "agent-protocol must document plan_status"
 
-    def test_has_pending_steps(self, content):
-        """Must document pending_steps field."""
-        assert "pending_steps" in content, \
-            "agent-protocol must document pending_steps"
+    def test_has_pending_steps(self, content, skills_dir):
+        """pending_steps field schema is documented in the owning skill.
 
-    def test_has_evidence_report_section(self, content):
-        """Must document evidence_report object with all required fields."""
-        assert '"evidence_report"' in content or "evidence_report" in content, \
-            "agent-protocol must document evidence_report object"
+        The field-level schema (required status, presence-only trigger)
+        migrated out of agent-protocol (produce-side judgment only) into
+        agent-contract-handoff, which now OWNS the agent_status sub-field
+        table. Assert the token where it actually lives -- mirrors the same
+        migration already applied to consolidation_report / approval_request
+        below. agent-protocol itself still references the unchanged
+        `agent_status` shape generically, without re-deriving the field list.
+        """
+        handoff = (skills_dir / "agent-contract-handoff" / "SKILL.md").read_text()
+        assert "pending_steps" in handoff, \
+            "agent-contract-handoff must document pending_steps"
+        assert "agent_status" in content, \
+            "agent-protocol must still reference the agent_status container"
+
+    def test_has_evidence_report_section(self, content, skills_dir):
+        """evidence_report object + all required fields are documented in the owning skill.
+
+        The full field schema migrated out of agent-protocol (produce-side
+        judgment only) into agent-contract-handoff, which now OWNS the
+        evidence_report sub-field table. Assert the tokens where they
+        actually live -- mirrors the same migration already applied to
+        consolidation_report / approval_request below. agent-protocol itself
+        still references the unchanged `evidence_report` shape generically
+        (e.g. in its CLI usage example), without re-deriving the full field
+        list.
+        """
+        assert "evidence_report" in content, \
+            "agent-protocol must still reference the evidence_report object"
+        handoff = (skills_dir / "agent-contract-handoff" / "SKILL.md").read_text()
+        assert "evidence_report" in handoff, \
+            "agent-contract-handoff must document evidence_report object"
         for field in [
             "patterns_checked",
             "files_checked",
@@ -96,8 +121,8 @@ class TestAgentProtocolSkill:
             "cross_layer_impacts",
             "open_gaps",
         ]:
-            assert field in content, \
-                f"agent-protocol should document evidence field '{field}'"
+            assert field in handoff, \
+                f"agent-contract-handoff should document evidence field '{field}'"
 
     def test_has_consolidation_report_section(self, skills_dir):
         """consolidation_report object + fields are documented in the owning skill.

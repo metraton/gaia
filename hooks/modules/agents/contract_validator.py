@@ -2,9 +2,29 @@
 Contract validation for agent output: structural checks, evidence parsing,
 command extraction, PLAN_STATUS parsing, and exit code derivation.
 
-The single supported fenced-block format is ``agent_contract_handoff`` with
-field name ``plan_status``. Legacy HTML-comment blocks
-(``<!-- AGENT_STATUS -->``, etc.) are **not** parsed.
+The canonical fenced-block format is ``agent_contract_handoff`` with field
+name ``plan_status``. Legacy HTML-comment blocks (``<!-- AGENT_STATUS -->``,
+etc.) are **not** parsed. As a tolerant fallback, a ```json``` fence is also
+accepted when its body already has the shape of a handoff envelope (an
+``agent_status.plan_status`` key) -- this covers the recurring case of an
+agent mislabeling the fence out of the generic-JSON habit. The fallback is
+content-based, not a relaxation of field validation: once a dict is
+extracted, its SHAPE is delegated to the portable core
+(``gaia.contract.validator.validate_form``) -- the SAME core the CLI and the
+hook gate validate against. This module owns only fence extraction (the one
+migration-only piece the core deliberately does not do, since it takes an
+already-parsed dict, never raw text); it does not re-implement shape
+validation. ``validate()`` / ``validate_response_contract()`` add only the
+task-context-dependent checks the form layer cannot own (consolidation_report,
+approval/loop-state blocking) on top of that shared core.
+
+Both fence regexes require the closing ``` `` `` to start its own line
+(preceded by a real newline) and be followed only by whitespace/end-of-string.
+This tolerates triple-backtick sequences quoted *inside* the JSON body (e.g.
+a code block cited verbatim in ``verbatim_outputs``) without truncating the
+capture at the first such sequence -- a valid JSON string cannot contain a
+literal embedded newline, so an inline quoted fence is never mistaken for the
+block's real closing fence.
 
 Provides:
     - parse_contract(): Extract structured dict from an agent_contract_handoff
@@ -27,6 +47,19 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
+
+# SSOT for SHAPE validation (M6/AC-13): the fence parsing below (parse_contract)
+# remains this module's job -- extracting a dict out of legacy fenced text is a
+# migration-only concern the portable core deliberately does not own (it takes
+# an already-parsed dict, never raw text). Once extracted, the dict's SHAPE is
+# validated by the SAME core the CLI and the hook gate use, not by a second,
+# locally re-implemented shape check. See gaia/contract/validator.py.
+from gaia.contract.validator import (
+    CANONICAL_REPAIR_MESSAGE,
+    VALID_PLAN_STATUSES as _FORM_VALID_PLAN_STATUSES,
+    FormErrorCode,
+    validate_form,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +104,41 @@ class ValidationResult:
 # Single supported fenced tag for agent handoff envelope.
 _TAG_HANDOFF = "agent_contract_handoff"
 
-_RE_HANDOFF = re.compile(r'```agent_contract_handoff\s*\n(.*?)```', re.DOTALL)
+#
+# The closing fence must start its own line (preceded by ``\n``) and be
+# followed only by whitespace or end-of-string. A naive non-greedy
+# ``(.*?)```` `` matches the FIRST literal ``` `` `` anywhere in the body --
+# which truncates the capture (and breaks ``json.loads``) whenever the
+# contract legitimately quotes triple-backtick fenced content inline (e.g.
+# a code block cited in ``verbatim_outputs``). A valid JSON string cannot
+# contain a real embedded newline (it must be escaped as ``\n`` -- two
+# literal characters), so a quoted fence inside a JSON string value is never
+# preceded by an actual line break; requiring the closing ``` `` `` to start
+# a real line is therefore sufficient to skip over it and find the fence
+# that actually closes the block.
+_RE_HANDOFF = re.compile(r'```agent_contract_handoff\s*\n(.*?)\n```(?=\s|\Z)', re.DOTALL)
+
+# Tolerant fallback (see module docstring): a ```json``` fence is accepted
+# ONLY when its body already has the shape of a handoff envelope. This does
+# not widen what counts as a valid contract -- it widens which fence label
+# is accepted for a body that already is one. Same own-line closing-fence
+# requirement as _RE_HANDOFF, for the same reason.
+_RE_JSON_FALLBACK = re.compile(r'```json\s*\n(.*?)\n```(?=\s|\Z)', re.DOTALL)
+
+
+def _looks_like_handoff_envelope(parsed: Any) -> bool:
+    """Return True when a parsed JSON value has the shape of a handoff envelope.
+
+    Content-based check, deliberately narrow: a dict with an
+    ``agent_status.plan_status`` key. This is what distinguishes an
+    ``agent_contract_handoff`` payload from an arbitrary ```json``` block the
+    agent may have emitted for an unrelated reason (e.g. quoting a command's
+    JSON output in ``verbatim_outputs``).
+    """
+    if not isinstance(parsed, dict):
+        return False
+    agent_status = parsed.get("agent_status")
+    return isinstance(agent_status, dict) and bool(agent_status.get("plan_status"))
 
 
 def parse_contract(agent_output: str) -> Optional[dict]:
@@ -85,6 +152,15 @@ def parse_contract(agent_output: str) -> Optional[dict]:
     (``"agent_contract_handoff"``) so downstream callers can identify the
     source uniformly.
 
+    When no correctly-tagged fence is found, falls back to scanning ```json```
+    fences for one whose body already has the shape of a handoff envelope
+    (see ``_looks_like_handoff_envelope``); the LAST such block wins, matching
+    the protocol convention that the contract is the final block of the turn.
+    This fallback only accepts payloads that are already structurally a
+    handoff -- it never accepts a fence whose body lacks ``agent_status``,
+    and it never relaxes the required-field validation performed downstream
+    by ``validate()`` / ``validate_response_contract()``.
+
     Args:
         agent_output: Complete output from agent execution.
 
@@ -93,15 +169,29 @@ def parse_contract(agent_output: str) -> Optional[dict]:
         found, None otherwise.
     """
     m = _RE_HANDOFF.search(agent_output)
-    if m is None:
-        return None
-    try:
-        parsed = json.loads(m.group(1))
+    if m is not None:
+        try:
+            parsed = json.loads(m.group(1))
+        except json.JSONDecodeError:
+            return None
         if isinstance(parsed, dict):
             parsed["_contract_tag"] = _TAG_HANDOFF
-        return parsed
-    except json.JSONDecodeError:
+            return parsed
         return None
+
+    fallback: Optional[dict] = None
+    for candidate in _RE_JSON_FALLBACK.finditer(agent_output):
+        try:
+            parsed = json.loads(candidate.group(1))
+        except json.JSONDecodeError:
+            continue
+        if _looks_like_handoff_envelope(parsed):
+            fallback = parsed
+    if fallback is not None:
+        fallback["_contract_tag"] = _TAG_HANDOFF
+        return fallback
+
+    return None
 
 
 def _resolve_status(agent_status: dict) -> str:
@@ -118,21 +208,77 @@ def _resolve_status(agent_status: dict) -> str:
 # JSON contract validation helpers
 # ============================================================================
 
-def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> ValidationResult:
+# Translation table: gaia.contract.validator.FormError.field (dotted, the
+# core's vocabulary) -> this module's pre-existing legacy uppercase token
+# vocabulary (what callers of validate()/ValidationResult.missing already
+# depend on -- see tests/hooks/test_response_contract.py and
+# tests/hooks/modules/agents/test_contract_validator.py). This module does
+# NOT re-decide shape validity; it only relabels the SSOT's verdict so its
+# existing callers keep working unchanged.
+_FORM_MISSING_FIELD_TOKENS = {
+    "agent_contract_handoff": ("AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"),
+    "agent_status": ("AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"),
+    "agent_status.plan_status": ("PLAN_STATUS",),
+    "agent_status.agent_id": ("AGENT_ID",),
+    "agent_status.pending_steps": ("PENDING_STEPS",),
+    "agent_status.next_action": ("NEXT_ACTION",),
+    "evidence_report": ("EVIDENCE_REPORT",),
+}
+
+# evidence_report.verification / evidence_report.verification.result both
+# surface as FormErrorCode.VERIFICATION_RESULT; the legacy token differs by
+# WHICH of the two fired (missing block vs. present-but-not-"pass").
+_FORM_VERIFICATION_TOKENS = {
+    "evidence_report.verification": "VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE",
+    "evidence_report.verification.result": "VERIFICATION_RESULT_MUST_BE_PASS",
+}
+
+
+def _legacy_tokens_for_form_error(error) -> List[str]:
+    """Translate one gaia.contract.validator.FormError into legacy tokens.
+
+    The SSOT (validate_form) is the single decision-maker for shape validity;
+    this is a pure relabeling so pre-existing callers of validate() keep
+    reading the uppercase token vocabulary they already assert on.
+    """
+    if error.code is FormErrorCode.AGENT_ID_FORMAT:
+        return ["AGENT_ID"]
+    if error.code is FormErrorCode.PLAN_STATUS:
+        return ["PLAN_STATUS"]
+    if error.code is FormErrorCode.VERIFICATION_RESULT:
+        return [_FORM_VERIFICATION_TOKENS.get(error.field, "VERIFICATION_RESULT_MUST_BE_PASS")]
+    if error.code is FormErrorCode.MISSING_FIELD:
+        if error.field in _FORM_MISSING_FIELD_TOKENS:
+            return list(_FORM_MISSING_FIELD_TOKENS[error.field])
+        if error.field.startswith("evidence_report."):
+            # evidence_report.<key> -> <KEY> (matches _EVIDENCE_REQUIRED_FIELDS)
+            return [error.field.split(".", 1)[1].upper()]
+        return [error.field.upper() or error.code.value]
+    return [error.code.value]  # pragma: no cover -- exhaustive over FormErrorCode
+
+
+def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) -> ValidationResult:
     """Validate agent output using the parsed agent_contract_handoff dict.
 
-    Checks that the contract dict contains the required keys:
-    - agent_status with plan_status and agent_id
-    - evidence_report with required fields (when status requires it)
-    - consolidation_report (when multi-surface task requires it)
-    - blocking promotions (T2.2):
-        * verification.result must be "pass" when status is COMPLETE
-        * approval_request.verification must be present when approval_request present
-      approval_request.rollback is advisory only (non-blocking, logged) --
-      the hook relays rollback_hint=None by design (AC-5).
+    SHAPE (M1/AC-1 four named codes: AGENT_ID_FORMAT, PLAN_STATUS,
+    VERIFICATION_RESULT, MISSING_FIELD) is delegated entirely to the portable
+    core, ``gaia.contract.validator.validate_form`` -- the SAME core the CLI
+    (M2) and the hook gate (M4) validate against (AC-13: fence fallback shares
+    one core, it does not re-implement shape validation). ``contract`` may be
+    ``None`` (no parseable fenced block at all): validate_form(None) reports
+    that uniformly as a MISSING_FIELD, so the "no contract" and "malformed
+    contract" cases funnel through one call.
+
+    What stays HERE, additively, because it is task-context-dependent or
+    otherwise out of the form layer's scope by design (see
+    gaia/contract/validator.py's "NO TASK CONTEXT" design note):
+    - consolidation_report (needs task_info to know if it's required)
+    - approval_request.verification blocking check
+    - loop_state blocking check (T2.3)
 
     Args:
-        contract: Parsed dict from parse_contract().
+        contract: Parsed dict from parse_contract(), or None when no fenced
+            block was found at all.
         task_info: Task metadata including injected_context for multi-surface detection.
 
     Returns:
@@ -140,41 +286,26 @@ def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> Validat
     """
     all_missing: List[str] = []
 
-    # 1. Check agent_status (single-mode: plan_status is canonical)
-    agent_status = contract.get("agent_status")
-    if not agent_status or not isinstance(agent_status, dict):
-        all_missing.extend(["AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"])
-    else:
-        if not agent_status.get("plan_status"):
-            all_missing.append("PLAN_STATUS")
-        if not agent_status.get("agent_id"):
-            all_missing.append("AGENT_ID")
+    # 1 & 2. agent_status + evidence_report SHAPE -- delegated to the SSOT core.
+    form_result = validate_form(contract)
+    for error in form_result.errors:
+        for token in _legacy_tokens_for_form_error(error):
+            if token not in all_missing:
+                all_missing.append(token)
 
-    # Determine effective status for downstream checks
+    # Determine effective status for the additive, non-shape checks below.
+    # (validate_form already rejected an out-of-enum status via PLAN_STATUS;
+    # a valid-shape status is safe to resolve the same way the core does.)
     effective_status = ""
-    if agent_status and isinstance(agent_status, dict):
+    agent_status = contract.get("agent_status") if isinstance(contract, dict) else None
+    if isinstance(agent_status, dict):
         effective_status = _resolve_status(agent_status)
+        if effective_status not in _FORM_VALID_PLAN_STATUSES:
+            effective_status = ""
 
-    statuses_requiring_evidence = {
-        "IN_PROGRESS", "APPROVAL_REQUEST",
-        "COMPLETE", "BLOCKED", "NEEDS_INPUT",
-    }
-
-    if effective_status in statuses_requiring_evidence:
-        # 2. Check evidence_report
-        evidence = contract.get("evidence_report")
-        if not evidence or not isinstance(evidence, dict):
-            all_missing.append("EVIDENCE_REPORT")
-        else:
-            for field in _EVIDENCE_REQUIRED_FIELDS:
-                # Accept both lower-case keys (JSON style) and upper-case (legacy)
-                # Use key-presence check (not truthiness) so empty lists [] are accepted
-                key_lower = field.lower()
-                if key_lower not in evidence and field not in evidence:
-                    all_missing.append(field)
-
-    # 3. Check consolidation_report (only when required)
-    if requires_consolidation_report(task_info):
+    # 3. Check consolidation_report (only when required) -- task-context
+    # dependent, not a form-layer concern.
+    if isinstance(contract, dict) and requires_consolidation_report(task_info):
         consolidation = contract.get("consolidation_report")
         if not consolidation or not isinstance(consolidation, dict):
             all_missing.append("CONSOLIDATION_REPORT")
@@ -184,25 +315,13 @@ def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> Validat
                 if not consolidation.get(key_lower) and not consolidation.get(field):
                     all_missing.append(field)
 
-    # 4. Blocking promotions (T2.2)
-    # 4a. verification.result must be "pass" when status is COMPLETE
-    if effective_status == "COMPLETE":
-        evidence_block = contract.get("evidence_report") or {}
-        verification = evidence_block.get("verification")
-        if not isinstance(verification, dict):
-            all_missing.append("VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE")
-        else:
-            result_val = str(verification.get("result", "")).lower().strip()
-            if result_val != "pass":
-                all_missing.append("VERIFICATION_RESULT_MUST_BE_PASS")
-
     # 4b. approval_request.verification must be present (blocking).
     # approval_request.rollback is advisory only (non-blocking): the hook
     # hardcodes rollback_hint=None by design (bash_validator.py
     # _build_sealed_payload), so a well-formed APPROVAL_REQUEST always
     # relays rollback=null -- treating that as a blocking violation
     # produced ~600 of 678 recorded false-positive anomalies (AC-5).
-    approval_req = contract.get("approval_request")
+    approval_req = contract.get("approval_request") if isinstance(contract, dict) else None
     if approval_req and isinstance(approval_req, dict):
         if not approval_req.get("rollback"):
             logger.warning(
@@ -213,43 +332,21 @@ def _validate_from_handoff(contract: dict, task_info: Dict[str, Any]) -> Validat
             all_missing.append("APPROVAL_REQUEST_VERIFICATION_REQUIRED")
 
     # 5. Loop-state blocking check (T2.3)
-    loop_anomaly = _check_loop_state_blocking(contract, effective_status)
+    loop_anomaly = _check_loop_state_blocking(contract, effective_status) if isinstance(contract, dict) else None
     if loop_anomaly:
         all_missing.append(loop_anomaly)
 
     if all_missing:
         fields_str = ", ".join(all_missing)
+        # The rich repair guidance is the SAME core's canonical message (AC-13):
+        # the fence fallback does not carry its own, second copy of the repair
+        # template. error_summary() adds the specific defect list the core
+        # found (empty when the only failures are the additive checks above).
+        form_detail = form_result.error_summary()
+        detail_line = f"\nDefects: {form_detail}\n" if form_detail else "\n"
         error_message = (
-            f"Contract incomplete. Missing: {fields_str}.\n"
-            f"\n"
-            f"Repair: reissue your response ending with an agent_contract_handoff block "
-            f"whose body is valid JSON (parsed with json.loads -- not YAML):\n"
-            f"\n"
-            f"```agent_contract_handoff\n"
-            f'{{\n'
-            f'  "agent_status": {{\n'
-            f'    "plan_status": "<STATUS>",\n'
-            f'    "agent_id": "<your-id>",\n'
-            f'    "pending_steps": [],\n'
-            f'    "next_action": "<done or next step>"\n'
-            f"  }},\n"
-            f'  "evidence_report": {{\n'
-            f'    "patterns_checked": [],\n'
-            f'    "files_checked": [],\n'
-            f'    "commands_run": [],\n'
-            f'    "key_outputs": [],\n'
-            f'    "verbatim_outputs": [],\n'
-            f'    "cross_layer_impacts": [],\n'
-            f'    "open_gaps": []\n'
-            f"  }},\n"
-            f'  "consolidation_report": null\n'
-            f"}}\n"
-            f"```\n"
-            f"\n"
-            f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
-            f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps\n"
-            f"Blocking: COMPLETE requires verification.result=pass; approval_request requires verification field "
-            f"(rollback is advisory only, not blocking)"
+            f"Contract incomplete. Missing: {fields_str}.{detail_line}\n"
+            f"{CANONICAL_REPAIR_MESSAGE}"
         )
         return ValidationResult(
             is_valid=False,
@@ -269,13 +366,24 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
 
     Accepts the single canonical ``agent_contract_handoff`` fenced-block format.
 
+    This is the MIGRATION-ONLY fallback path for the legacy fenced block
+    (AC-13): ``parse_contract`` extracts a plain dict from the raw fenced
+    text -- fence extraction is the one piece of work the portable core
+    intentionally does not do -- and the resulting dict is handed to
+    ``_validate_from_handoff``, which validates SHAPE through the SAME core
+    (``gaia.contract.validator.validate_form``) the CLI (M2) and the hook
+    gate (M4) use. There is no second, locally re-implemented shape
+    validator here.
+
     Checks:
-    1. AGENT_STATUS block with plan_status and agent_id
-    2. EVIDENCE_REPORT with required fields (when status requires it)
-    3. CONSOLIDATION_REPORT (when multi-surface task requires it)
-    4. Blocking promotions: verification.result=pass for COMPLETE,
-       approval_request.rollback and approval_request.verification when present
-    5. Loop-state blocking: iteration < max_iterations with metric below threshold
+    1. AGENT_STATUS block with plan_status and agent_id (SSOT core)
+    2. EVIDENCE_REPORT with required fields, when status requires it (SSOT core)
+    3. CONSOLIDATION_REPORT (when multi-surface task requires it) -- additive,
+       task-context dependent, not a form-layer concern
+    4. Blocking promotions: verification.result=pass for COMPLETE (SSOT core);
+       approval_request.verification when present -- additive
+    5. Loop-state blocking: iteration < max_iterations with metric below
+       threshold -- additive
 
     Args:
         agent_output: Complete output from agent execution.
@@ -285,50 +393,7 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
         ValidationResult with is_valid, missing fields list, and error_message.
     """
     contract = parse_contract(agent_output)
-    if contract is not None:
-        return _validate_from_handoff(contract, task_info)
-
-    # No recognized contract block found -- report everything as missing.
-    all_missing = ["AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"]
-    fields_str = ", ".join(all_missing)
-    error_message = (
-        f"Contract incomplete. Missing: {fields_str}. "
-        f"No parseable agent_contract_handoff fenced block found "
-        f"(the block body must be VALID JSON parsed with json.loads -- "
-        f"YAML, comments, trailing commas, or unquoted keys will fail to parse "
-        f"and the block is treated as missing).\n"
-        f"\n"
-        f"Repair: your response MUST end with a contract block whose body is valid JSON:\n"
-        f"\n"
-        f"```agent_contract_handoff\n"
-        f'{{\n'
-        f'  "agent_status": {{\n'
-        f'    "plan_status": "<STATUS>",\n'
-        f'    "agent_id": "<your-id>",\n'
-        f'    "pending_steps": [],\n'
-        f'    "next_action": "<done or next step>"\n'
-        f"  }},\n"
-        f'  "evidence_report": {{\n'
-        f'    "patterns_checked": [],\n'
-        f'    "files_checked": [],\n'
-        f'    "commands_run": [],\n'
-        f'    "key_outputs": [],\n'
-        f'    "verbatim_outputs": [],\n'
-        f'    "cross_layer_impacts": [],\n'
-        f'    "open_gaps": []\n'
-        f"  }},\n"
-        f'  "consolidation_report": null\n'
-        f"}}\n"
-        f"```\n"
-        f"\n"
-        f"Required fields: agent_status (plan_status, agent_id, pending_steps, next_action), evidence_report\n"
-        f"Evidence required fields: patterns_checked, files_checked, commands_run, key_outputs, verbatim_outputs, cross_layer_impacts, open_gaps"
-    )
-    return ValidationResult(
-        is_valid=False,
-        missing=all_missing,
-        error_message=error_message,
-    )
+    return _validate_from_handoff(contract, task_info)
 
 
 # ============================================================================

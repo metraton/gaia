@@ -134,8 +134,14 @@ def subagent_stop_hook(task_info, agent_output):
 
         commands_executed = extract_commands_from_evidence(agent_output)
 
-        # M4 (T4.2): persist handoff row to DB.  Wrapped in try/except so
-        # a DB write failure never blocks the SubagentStop hook from returning.
+        # T9: CONDITIONAL BACKSTOP finalize of the agent_contract_handoffs row.
+        # The agent's own `gaia contract finalize` is the PRIMARY writer; this
+        # only finalizes a row when none exists yet for the contract id
+        # (marking it degraded/auto_captured), and no-ops otherwise. Exactly-
+        # once under a race is guaranteed by the idempotent UPSERT keyed on the
+        # contract id inside persist_handoff -> finalize_agent_contract_handoff.
+        # Internally suppresses errors so a DB write failure never blocks the
+        # SubagentStop hook from returning.
         _persist_handoff(
             parsed_contract=parsed_contract,
             agent_output=agent_output,

@@ -61,7 +61,8 @@
     "bin/cli/",
     "bin/cli/dev.py",
     "bin/cli/_pack_helpers.py",
-    "bin/cli/release.py"
+    "bin/cli/release.py",
+    "bin/cli/contract.py"
   ],
   "include": [
     "gaia/",

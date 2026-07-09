@@ -18,6 +18,7 @@ T2.3 Clause parsers (positive + negative cases):
 - parse_memory_suggestions
 """
 
+import json
 import pytest
 import sys
 from pathlib import Path
@@ -248,6 +249,211 @@ class TestBlockingPromotions:
         output = _make_complete_output(with_approval_request=False)
         result = validate(output, self._task_info)
         assert result.is_valid, f"Expected valid. Missing: {result.missing}"
+
+
+# ============================================================================
+# Tolerant ```json``` fence fallback (recurring response_contract_violation
+# bug: agents habitually mislabel the handoff fence as ```json instead of
+# ```agent_contract_handoff). parse_contract() must accept a ```json``` block
+# whose body already has the shape of a handoff envelope, without relaxing
+# required-field validation.
+# ============================================================================
+
+class TestJsonFenceFallback:
+    _task_info = {}
+
+    def test_json_fence_with_valid_envelope_is_parsed(self):
+        """A ```json``` fence carrying a well-formed handoff body parses like the canonical tag."""
+        output = _make_complete_output(tag="json")
+        contract = parse_contract(output)
+        assert contract is not None
+        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+        # Uniform tag regardless of the actual fence label used.
+        assert contract["_contract_tag"] == "agent_contract_handoff"
+
+    def test_json_fence_with_valid_envelope_passes_validate(self):
+        """validate() accepts the ```json``` fallback exactly like the canonical tag --
+        required-field enforcement is unchanged, only the fence label is tolerated."""
+        output = _make_complete_output(tag="json")
+        result = validate(output, self._task_info)
+        assert result.is_valid, f"Expected valid. Missing: {result.missing}"
+
+    def test_json_fence_missing_required_field_still_invalid(self):
+        """The fallback does not relax validation: an incomplete envelope in a
+        ```json``` fence is still rejected on the same missing fields as the
+        canonical tag would be."""
+        output = """\
+```json
+{
+  "agent_status": {
+    "plan_status": "COMPLETE",
+    "agent_id": "a1b2c3d4e5",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": ["x"],
+    "files_checked": ["f"],
+    "commands_run": [],
+    "key_outputs": ["k"]
+  },
+  "consolidation_report": null
+}
+```
+"""
+        result = validate(output, self._task_info)
+        assert not result.is_valid
+        assert "VERBATIM_OUTPUTS" in result.missing
+        assert "CROSS_LAYER_IMPACTS" in result.missing
+        assert "OPEN_GAPS" in result.missing
+
+    def test_json_fence_without_agent_status_shape_is_not_a_contract(self):
+        """A ```json``` block that is NOT a handoff envelope (no agent_status)
+        must not be mistaken for one -- e.g. an agent quoting an unrelated
+        JSON command output."""
+        output = """\
+Some analysis with an unrelated JSON snippet:
+
+```json
+{"bindings": [], "etag": "abc123"}
+```
+
+No contract emitted.
+"""
+        assert parse_contract(output) is None
+
+    def test_canonical_tag_still_takes_priority_over_json_fence(self):
+        """When both fences are present, the canonical ```agent_contract_handoff```
+        block is used -- the fallback only activates when no canonical tag is found."""
+        output = (
+            "Unrelated JSON for reference:\n\n"
+            "```json\n"
+            '{"agent_status": {"plan_status": "BLOCKED"}}\n'
+            "```\n\n"
+            + _make_complete_output(tag="agent_contract_handoff")
+        )
+        contract = parse_contract(output)
+        assert contract is not None
+        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+
+    def test_last_matching_json_fence_wins(self):
+        """When multiple ```json``` fences look like envelopes, the LAST one is
+        used -- matching the protocol convention that the contract is the
+        final block of the turn."""
+        first = _make_complete_output(tag="json", status_field="plan_status")
+        second_body = first.replace('"COMPLETE"', '"BLOCKED"', 1)
+        output = first + "\n" + second_body
+        contract = parse_contract(output)
+        assert contract is not None
+        assert contract["agent_status"]["plan_status"] == "BLOCKED"
+
+
+# ============================================================================
+# Sub-case #2 of the fence-truncation bug: the non-greedy body capture used to
+# stop at the FIRST literal ``` `` `` anywhere inside the block -- including a
+# triple-backtick fence legitimately quoted INSIDE the JSON body (e.g. a code
+# snippet cited verbatim in ``verbatim_outputs``). That truncated the capture
+# before the real closing fence, so ``json.loads`` failed on the cut-off text
+# and the whole contract was treated as missing. The fix requires the closing
+# fence to start its own line and be followed only by whitespace/EOF -- a
+# quoted fence embedded in a JSON string is never preceded by a real newline
+# (JSON strings escape newlines as ``\n``, two literal characters), so it is
+# skipped over in favor of the fence that actually closes the block.
+# ============================================================================
+
+def _contract_with_verbatim_code_fence() -> dict:
+    return {
+        "agent_status": {
+            "plan_status": "COMPLETE",
+            "agent_id": "a1b2c3d4e5",
+            "pending_steps": [],
+            "next_action": "done",
+        },
+        "evidence_report": {
+            "patterns_checked": ["x"],
+            "files_checked": ["f"],
+            "commands_run": [],
+            "key_outputs": ["k"],
+            # Real newlines here become escaped "\n" (two chars) once
+            # json.dumps() serializes this dict -- never a literal line
+            # break -- which is exactly the case the fix must tolerate.
+            "verbatim_outputs": ["```python\ndef foo():\n    return 1\n```"],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
+            "verification": {
+                "method": "self-review",
+                "checks": ["reviewed quoted snippet"],
+                "result": "pass",
+                "details": "ok",
+            },
+        },
+        "consolidation_report": None,
+    }
+
+
+class TestTripleBacktickBodyNotTruncated:
+    _task_info = {}
+
+    def test_canonical_tag_with_verbatim_code_fence_parses(self):
+        """A quoted code fence inside verbatim_outputs must not truncate the
+        canonical agent_contract_handoff capture."""
+        body = json.dumps(_contract_with_verbatim_code_fence())
+        output = f"```agent_contract_handoff\n{body}\n```"
+        contract = parse_contract(output)
+        assert contract is not None
+        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+        assert "```python" in contract["evidence_report"]["verbatim_outputs"][0]
+
+    def test_canonical_tag_with_verbatim_code_fence_passes_validate(self):
+        body = json.dumps(_contract_with_verbatim_code_fence())
+        output = f"```agent_contract_handoff\n{body}\n```"
+        result = validate(output, self._task_info)
+        assert result.is_valid, f"Expected valid. Missing: {result.missing}"
+
+    def test_json_fallback_fence_with_verbatim_code_fence_parses(self):
+        """The tolerant ```json``` fallback (fence bug #1) must keep working
+        together with the triple-backtick-tolerant body capture (fence bug #2)."""
+        body = json.dumps(_contract_with_verbatim_code_fence())
+        output = f"```json\n{body}\n```"
+        contract = parse_contract(output)
+        assert contract is not None
+        assert contract["_contract_tag"] == "agent_contract_handoff"
+        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+
+    def test_multiple_quoted_fences_in_body_do_not_truncate(self):
+        """A body quoting two separate fenced snippets is captured whole, not
+        just up to the first one."""
+        contract = _contract_with_verbatim_code_fence()
+        contract["evidence_report"]["verbatim_outputs"] = [
+            "```diff\n-old\n+new\n```",
+            "```bash\necho hi\n```",
+        ]
+        output = f"```agent_contract_handoff\n{json.dumps(contract)}\n```"
+        parsed = parse_contract(output)
+        assert parsed is not None
+        assert len(parsed["evidence_report"]["verbatim_outputs"]) == 2
+        assert parsed["evidence_report"]["verbatim_outputs"][1] == "```bash\necho hi\n```"
+
+    def test_incomplete_body_without_closing_fence_still_rejected(self):
+        """A genuinely truncated response (no closing fence at all) must still
+        fail to parse -- tolerating inline fences must not mean accepting an
+        unterminated block."""
+        contract = {
+            "agent_status": {"plan_status": "COMPLETE", "agent_id": "a1b2c3d4e5"},
+            "evidence_report": {"patterns_checked": []},
+        }
+        output = f"```agent_contract_handoff\n{json.dumps(contract)}\n"  # no closing fence
+        assert parse_contract(output) is None
+
+    def test_incomplete_json_with_closing_fence_still_rejected(self):
+        """A properly fenced block whose JSON body is malformed/cut off must
+        still be rejected -- the fix does not relax json.loads validity."""
+        output = (
+            '```agent_contract_handoff\n'
+            '{"agent_status": {"plan_status": "COMPLETE"\n'
+            '```'
+        )
+        assert parse_contract(output) is None
 
 
 # ============================================================================

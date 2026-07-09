@@ -1,10 +1,15 @@
 # Agent Protocol -- Status-Specific Examples
 
-Read on-demand when constructing an `agent_contract_handoff` block.
+Read on-demand when constructing an `agent_contract_handoff` envelope.
 See `SKILL.md` for the schema definition and field rules.
 
-The fenced block tag is `agent_contract_handoff` (single canonical format).
-Each example below opens the block with that tag.
+The envelope shape below is unchanged by the by-value CLI model (`SKILL.md`
+"Building the contract"): building it with `gaia contract init`/`set`/`add`/
+`fill --json`/`finalize` produces this exact JSON, one field at a time, and
+`gaia contract view` prints it in this same shape. The fenced block tag is
+`agent_contract_handoff` (single canonical format) for the fallback path;
+each example below opens the block with that tag as the reference for what
+either path -- CLI draft or fence -- must validate to.
 
 ## 1. COMPLETE (verified result, happy path)
 

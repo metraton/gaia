@@ -17,8 +17,9 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from .base import HookAdapter
 from .types import (
@@ -93,6 +94,263 @@ def inject_updated_input(
         return host_output
     host_output.setdefault(_HOOK_SPECIFIC_OUTPUT, {})["updatedInput"] = updated_input
     return host_output
+
+
+# ---------------------------------------------------------------------------
+# stop_reason isolation (brief contract-as-managed-data-agent-contract-handoff
+# -agnostico-por-cli, decision #5 / M5 / AC-11).
+#
+# Claude Code's model-level ``stop_reason`` ("max_tokens", "end_turn", ...) is
+# a host-specific signal. Interpreting what it MEANS for a broken or
+# incomplete agent_contract_handoff envelope -- "max_tokens" implies the turn
+# was cut off by the token budget (not the agent's choice, a salvage
+# candidate for T11's truncation rescue); "end_turn" (or anything else)
+# implies the agent had room to finish and stopped anyway (a genuine
+# violation) -- is host-specific judgment. It lives HERE, in the adapter,
+# ONLY. The portable core (gaia.contract.validator, gaia.contract.crosscheck,
+# M1) never imports this function, never sees stop_reason, and validates an
+# envelope's shape/cross-check IDENTICALLY whether stop_reason is present,
+# absent, or any value at all -- see tests/contract/test_stop_reason_adapter.py.
+# ---------------------------------------------------------------------------
+STOP_REASON_TRUNCATION = "truncation"
+STOP_REASON_VIOLATION = "violation"
+STOP_REASON_UNKNOWN = "unknown"
+
+_STOP_REASON_MAX_TOKENS = "max_tokens"
+_STOP_REASON_END_TURN = "end_turn"
+
+
+def classify_stop_reason(stop_reason: Optional[str]) -> str:
+    """Map a Claude Code ``stop_reason`` to its adapter-owned semantic class.
+
+    ``"max_tokens"`` -> ``STOP_REASON_TRUNCATION``: the turn was cut off by
+        the token budget, not chosen by the agent. A broken/incomplete
+        contract under this reason is a salvage candidate (T11), not a hard
+        violation.
+    ``"end_turn"`` -> ``STOP_REASON_VIOLATION``: the agent had room to finish
+        and stopped anyway. A broken/incomplete contract under this reason is
+        a genuine violation.
+    Anything else (``None``, empty, or an unrecognized reason such as
+        ``"tool_use"``) -> ``STOP_REASON_UNKNOWN``: the conservative default.
+        A caller that gates on this classification should treat "unknown"
+        the same as a violation (fail closed) rather than assume a
+        salvage-worthy truncation it cannot confirm.
+
+    This function is the SOLE owner of the max_tokens/end_turn mapping
+    (decision #5). ``gaia.contract.validator`` and ``gaia.contract.crosscheck``
+    never import it and never branch on stop_reason themselves.
+    """
+    if stop_reason == _STOP_REASON_MAX_TOKENS:
+        return STOP_REASON_TRUNCATION
+    if stop_reason == _STOP_REASON_END_TURN:
+        return STOP_REASON_VIOLATION
+    return STOP_REASON_UNKNOWN
+
+
+# ---------------------------------------------------------------------------
+# M4 full-verdict contract gate (brief contract-as-managed-data-agent-contract
+# -handoff-agnostico-por-cli, T16 / AC-9).
+#
+# The live SubagentStop gate historically enforced only 3 structural cases
+# (Option B: missing block / missing agent_status / bad plan_status) and let
+# EVERYTHING else exit 0 + a bare anomaly, never delivering the rich repair
+# message. T16 replaces that with a FULL-VERDICT gate driven by the SINGLE
+# portable core (gaia.contract.crosscheck.validate == form + cross-check), so
+# the gate, the CLI validate-on-write, the finalize writer, and the fence
+# fallback all agree on ONE verdict.
+#
+# It is guarded by a RAMP FLAG that DEFAULTS OFF:
+#   - unset / non-truthy -> byte-identical legacy 3-case behavior (safe no-op
+#     propagation; the rollback target T17 flips back to this).
+#   - truthy -> a previously-exit-0 invalid envelope now exits 2 with the rich
+#     repair message on stderr, signaling EXACTLY ONE anomaly per invalidity
+#     (one FormError / CrossCheckError -> one anomaly), never the historical
+#     double (contract_validation_failure + response_contract_violation).
+#
+# stop_reason (T10/T11) decides salvage-vs-violation: a max_tokens truncation
+# is NOT hard-rejected here (the T11 fast-path / T9 backstop already capture a
+# degraded row; rejecting would treat a salvaged truncation as a violation and
+# double-signal it). The core itself never sees stop_reason (decision #5).
+# ---------------------------------------------------------------------------
+GATE_RAMP_ENV_VAR = "GAIA_CONTRACT_FULL_VERDICT_GATE"
+_GATE_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+GATE_MODE_THREE_CASE = "three_case"
+GATE_MODE_FULL_VERDICT = "full_verdict"
+
+
+def full_verdict_gate_enabled() -> bool:
+    """Whether the M4 full-verdict gate is active (ramp flag, DEFAULT OFF).
+
+    Reads ``GAIA_CONTRACT_FULL_VERDICT_GATE``. Unset / empty / any non-truthy
+    value -> False -> the legacy 3-case Option B gate (rollback target, T17).
+    One of {"1","true","yes","on"} (case-insensitive) -> True -> full-verdict.
+    """
+    return os.environ.get(GATE_RAMP_ENV_VAR, "").strip().lower() in _GATE_TRUE_VALUES
+
+
+@dataclass(frozen=True)
+class ContractGateVerdict:
+    """Outcome of the SubagentStop contract gate for one turn.
+
+    Attributes:
+        rejected: True -> the hook returns exit_code=2 for this turn.
+        rejection_reason: the message routed to stderr (by
+            ``subagent_stop._handle_subagent_stop`` via
+            ``contract_rejection_reason``). In full-verdict mode this is the
+            rich, canonical repair message; in 3-case mode it is the legacy
+            Option B reason. Empty when not rejected.
+        anomalies: one anomaly dict per DISTINCT invalidity (full-verdict mode
+            only), each typed off the NAMED FormErrorCode / CrossCheckErrorCode
+            enum (T1). Empty in 3-case mode -- that mode's anomalies stay on the
+            legacy validate_contract / validate_response_contract path,
+            unchanged.
+        mode: GATE_MODE_THREE_CASE or GATE_MODE_FULL_VERDICT.
+        salvaged_truncation: True when the envelope was invalid but the turn was
+            a max_tokens truncation; the gate then does NOT hard-reject (the T11
+            fast-path / T9 backstop already capture a degraded row).
+    """
+
+    rejected: bool
+    rejection_reason: str
+    anomalies: Tuple[Dict[str, Any], ...]
+    mode: str
+    salvaged_truncation: bool = False
+
+
+def _gate_anomaly(agent_type: str, code: str, field: str, detail: str) -> Dict[str, Any]:
+    """Build one anomaly per invalidity, typed off the NAMED core error code (T1).
+
+    The anomaly carries the enum code (AGENT_ID_FORMAT, PLAN_STATUS,
+    VERIFICATION_RESULT, MISSING_FIELD, APPROVAL_ID_NOT_PENDING) rather than the
+    retired free-text token strings, so downstream consumers key on the stable
+    enum, not on prose.
+    """
+    loc = f" [{field}]" if field else ""
+    return {
+        "type": "contract_gate_violation",
+        "code": code,
+        "field": field,
+        "severity": "critical",
+        "message": f"Contract invalid for {agent_type} {code}{loc}: {detail}".rstrip(),
+    }
+
+
+def _three_case_verdict(parsed_contract: Any, agent_type: str) -> ContractGateVerdict:
+    """The legacy Option B gate: reject ONLY the 3 critical structural cases.
+
+    Byte-identical to the pre-T16 inline gate so the ramp-OFF path preserves
+    today's behavior exactly (AC-10). Produces NO anomalies -- in this mode the
+    anomalies remain on the legacy validate_contract / validate_response_contract
+    path, unchanged.
+    """
+    from modules.agents.contract_validator import _resolve_status
+    from modules.agents.response_contract import VALID_PLAN_STATUSES
+
+    if parsed_contract is None:
+        reason = (
+            "[CONTRACT REJECTED] No parseable agent_contract_handoff block found in agent response.\n"
+            "The agent must end its response with a ```agent_contract_handoff``` fenced block "
+            "whose body is VALID JSON (it is parsed with json.loads). A block written in YAML, "
+            "with comments, trailing commas, or unquoted keys will fail to parse and is treated "
+            "as missing.\n"
+            "Reissue the response with a complete agent_contract_handoff block whose body is valid JSON."
+        )
+        return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
+
+    agent_status = parsed_contract.get("agent_status")
+    if not agent_status or not isinstance(agent_status, dict):
+        reason = (
+            "[CONTRACT REJECTED] agent_status block missing from agent_contract_handoff.\n"
+            "The agent_contract_handoff block must include an agent_status object with "
+            "plan_status, agent_id, pending_steps, and next_action."
+        )
+        return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
+
+    normalized = _resolve_status(agent_status)
+    raw_plan_status = agent_status.get("plan_status", "")
+    if not normalized or normalized not in VALID_PLAN_STATUSES:
+        valid_list = ", ".join(sorted(VALID_PLAN_STATUSES))
+        reason = (
+            f"[CONTRACT REJECTED] plan_status is missing or invalid: "
+            f"'{raw_plan_status}'.\n"
+            f"Valid statuses: {valid_list}.\n"
+            f"Set plan_status to one of these values in agent_status."
+        )
+        return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
+
+    return ContractGateVerdict(False, "", (), GATE_MODE_THREE_CASE)
+
+
+def evaluate_contract_gate(
+    parsed_contract: Any,
+    *,
+    agent_type: str = "unknown",
+    stop_reason_classification: str = STOP_REASON_UNKNOWN,
+    ramp_enabled: Optional[bool] = None,
+    db_path: Optional[str] = None,
+) -> ContractGateVerdict:
+    """Evaluate the SubagentStop contract gate for one turn (T16 / AC-9).
+
+    Args:
+        parsed_contract: the parsed agent_contract_handoff envelope dict, or
+            None when no parseable block was found.
+        agent_type: the emitting agent (for anomaly messages).
+        stop_reason_classification: the ALREADY-resolved T10 classification
+            (STOP_REASON_TRUNCATION / _VIOLATION / _UNKNOWN). Read, not
+            recomputed -- decides salvage-vs-violation.
+        ramp_enabled: None -> read the ramp flag from the environment. When
+            False, returns the legacy 3-case verdict. When True, returns the
+            full-verdict verdict from the single portable core.
+        db_path: optional gaia.db path for the layer-2 cross-check.
+
+    Returns:
+        ContractGateVerdict.
+    """
+    if ramp_enabled is None:
+        ramp_enabled = full_verdict_gate_enabled()
+
+    if not ramp_enabled:
+        return _three_case_verdict(parsed_contract, agent_type)
+
+    # Full-verdict: the SINGLE core (form + cross-check) is the SSOT verdict.
+    from gaia.contract.crosscheck import validate as _core_validate
+
+    _db = Path(db_path) if db_path else None
+    result = _core_validate(parsed_contract, db_path=_db)
+    if result.ok:
+        return ContractGateVerdict(False, "", (), GATE_MODE_FULL_VERDICT)
+
+    # Salvage-vs-violation (T10/T11): a max_tokens truncation is NOT a hard
+    # violation -- the turn was cut off by the token budget and the T11
+    # fast-path / T9 backstop already capture a degraded row. Rejecting here
+    # would treat a salvaged truncation as a violation and double-signal it.
+    if stop_reason_classification == STOP_REASON_TRUNCATION:
+        return ContractGateVerdict(
+            False, "", (), GATE_MODE_FULL_VERDICT, salvaged_truncation=True
+        )
+
+    # One anomaly per invalidity, typed off the NAMED enum (T1). result.errors
+    # is form errors first (the core already enforces "one code per invalidity")
+    # then cross-check errors.
+    anomalies = tuple(
+        _gate_anomaly(
+            agent_type,
+            err.code.value,
+            getattr(err, "field", ""),
+            getattr(err, "detail", ""),
+        )
+        for err in result.errors
+    )
+
+    # The RICH repair message is delivered to stderr via contract_rejection_reason.
+    # The form layer's message is ALWAYS the canonical rich block; append the
+    # cross-check guidance when layer 2 was the (only) failure.
+    repair = result.form.repair_message
+    if result.crosscheck.repair_message:
+        repair = f"{repair}\n\n{result.crosscheck.repair_message}"
+    reason = f"[CONTRACT REJECTED] {result.error_summary()}\n\n{repair}"
+    return ContractGateVerdict(True, reason, anomalies, GATE_MODE_FULL_VERDICT)
 
 
 def _append_workspace_memory(context: str) -> str:
@@ -601,8 +859,8 @@ class ClaudeCodeAdapter(HookAdapter):
         try:
             # ── Delegate mode gate ─────────────────────────────────
             # Must run before any other logic.  The orchestrator (main
-            # session) is restricted to dispatch-only tools.  Subagents are
-            # unaffected.
+            # session) is restricted to dispatch tools plus Read.  Subagents
+            # are unaffected.
             from modules.orchestrator.delegate_mode import check_delegate_mode
 
             dm_result = check_delegate_mode(tool_name, hook_data)
@@ -639,7 +897,9 @@ class ClaudeCodeAdapter(HookAdapter):
                     session_id=event.session_id,
                 )
             elif tool_name.lower() == "sendmessage":
-                return self._adapt_send_message(tool_name, tool_input)
+                return self._adapt_send_message(
+                    tool_name, tool_input, session_id=event.session_id,
+                )
             elif tool_name.lower() in ("write", "edit"):
                 is_subagent = bool(hook_data and hook_data.get("agent_id"))
                 session_id = (hook_data or {}).get("session_id", "")
@@ -830,13 +1090,25 @@ class ClaudeCodeAdapter(HookAdapter):
         return HookResponse(output={}, exit_code=0)
 
     def _adapt_send_message(
-        self, tool_name: str, parameters: dict,
+        self, tool_name: str, parameters: dict, session_id: str = "",
     ) -> HookResponse:
         """Handle SendMessage tool validation for agent resumption.
 
         Validates agent ID format and message content. Does NOT inject
         project context (it's a resume). Nonce relay is no longer processed
         here -- approval grants are activated by the UserPromptSubmit hook.
+
+        Contract-as-managed-data (T6, decision #3): this is the ONE place
+        the adapter learns, with certainty, which agent_id a CC session is
+        resuming (SendMessage's own ``to`` parameter). ``agent_id`` is the
+        SAME identifier space ``gaia.contract.drafts`` keys a draft by (see
+        the ``^a[0-9a-f]{5,}$`` format shared with AC-1's form validator),
+        so recording session_id -> agent_id here is enough for
+        ``adapt_subagent_start``'s resume path to recover the resumed
+        agent's own in-progress draft -- SubagentStart's payload carries
+        only session_id + agent_type, never the resumed agent_id. Core/CLI
+        stay agnostic (decision #1): only this CC-specific bridge, not
+        gaia.contract.*, reads SendMessage's ``to`` field or a session_id.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
 
@@ -869,6 +1141,13 @@ class ClaudeCodeAdapter(HookAdapter):
             return HookResponse(output=msg, exit_code=2)
 
         logger.info("SENDMESSAGE: Resuming agent %s", agent_id)
+
+        # Record the session -> agent_id resume mapping (T6). Best-effort:
+        # a failure here must never block a legitimate resume.
+        try:
+            self._cache_resume_mapping(session_id or "unknown", agent_id)
+        except Exception:
+            logger.debug("Resume mapping cache write failed (non-fatal)", exc_info=True)
 
         state = create_pre_hook_state(
             tool_name=tool_name,
@@ -1417,6 +1696,57 @@ class ClaudeCodeAdapter(HookAdapter):
                 if isinstance(parsed_contract, dict) else ""
             )
 
+            # ----------------------------------------------------------
+            # stop_reason isolation (decision #5 / M5 / AC-11) -- resolved
+            # ONCE here, EARLY (before anomalies are signaled), so the T16
+            # full-verdict gate can consult it for salvage-vs-violation and so
+            # the T11 fast-path / T9 backstop below READ this value instead of
+            # recomputing it. The interpretation of stop_reason (max_tokens ->
+            # truncation salvage candidate, end_turn -> genuine violation) is
+            # host-specific judgment that lives HERE, in the adapter, never in
+            # gaia.contract.validator / gaia.contract.crosscheck. Prefer the raw
+            # hook payload's stop_reason; fall back to the transcript-derived one.
+            # ----------------------------------------------------------
+            _raw_stop_reason = hook_data.get("stop_reason")
+            if not _raw_stop_reason and transcript_analysis and transcript_analysis.stop_reasons:
+                _raw_stop_reason = transcript_analysis.stop_reasons[-1]
+            _stop_reason_classification = classify_stop_reason(_raw_stop_reason)
+
+            # ----------------------------------------------------------
+            # T16/M4: evaluate the SubagentStop contract gate ONCE, via the ramp
+            # flag (DEFAULT OFF). Ramp OFF -> the legacy 3-case Option B verdict.
+            # Ramp ON -> the full-verdict verdict from the SINGLE portable core
+            # (gaia.contract.crosscheck.validate). The verdict's anomalies and
+            # rejection flow into the anomaly-signal block and the exit-code
+            # assembly below.
+            #
+            # Robustness: the gate is evaluated defensively. A raise inside the
+            # gate (e.g. an import failure in a lazily-imported dependency) must
+            # never take down the SubagentStop hygiene that follows it --
+            # cleanup_approval / nonce preservation below is session-critical
+            # and has no relation to contract-gate correctness. On failure we
+            # fall back to a non-rejecting verdict (same shape/mode the ramp
+            # flag selected) and log loudly so the underlying gate defect is
+            # not silently lost.
+            # ----------------------------------------------------------
+            _full_verdict = full_verdict_gate_enabled()
+            _gate_mode = GATE_MODE_FULL_VERDICT if _full_verdict else GATE_MODE_THREE_CASE
+            try:
+                _gate = evaluate_contract_gate(
+                    parsed_contract,
+                    agent_type=agent_type,
+                    stop_reason_classification=_stop_reason_classification,
+                    ramp_enabled=_full_verdict,
+                    db_path=task_info.get("db_path"),
+                )
+            except Exception:
+                logger.exception(
+                    "Contract gate raised for %s (mode=%s) -- falling back to a "
+                    "non-rejecting verdict so SubagentStop cleanup still runs.",
+                    agent_type, _gate_mode,
+                )
+                _gate = ContractGateVerdict(False, "", (), _gate_mode)
+
             # Preserve pending files that the agent's final contract still
             # references via APPROVAL_REQUEST. Cleanup must not destroy
             # approvals the user is being asked to act on.
@@ -1559,20 +1889,38 @@ class ClaudeCodeAdapter(HookAdapter):
                 rejected_sections=(context_update_result or {}).get("rejected", []),
                 transcript_analysis=transcript_analysis,
             )
-            # BUG D fix: merge validate_contract() anomalies collected earlier
-            if _validation_anomalies:
-                anomalies.extend(_validation_anomalies)
-            if not response_contract.valid:
-                missing = ", ".join(response_contract.missing) or "none"
-                invalid = ", ".join(response_contract.invalid) or "none"
-                anomalies.append({
-                    "type": "response_contract_violation",
-                    "severity": "critical",
-                    "message": (
-                        f"Agent response contract invalid for {task_info.get('agent', 'unknown')}: "
-                        f"missing=[{missing}] invalid=[{invalid}]"
-                    ),
-                })
+            # ----------------------------------------------------------
+            # Shape-invalidity anomalies (T16 / AC-9 "exactly one anomaly per
+            # invalidity, not two").
+            #
+            # Ramp ON (full-verdict): the SINGLE core is the shape-enforcement
+            # SSOT. Signal EXACTLY ONE anomaly per invalidity from the core (via
+            # the gate) and SUPPRESS the legacy double -- validate_contract's
+            # contract_validation_failure AND response_contract's
+            # response_contract_violation, which independently re-report the
+            # same invalidity (the double-anomaly bug). A salvaged truncation
+            # yields no shape anomaly (the degraded row already captured it).
+            #
+            # Ramp OFF (3-case): byte-identical legacy behavior -- both legacy
+            # shape anomalies are appended as before.
+            # ----------------------------------------------------------
+            if _full_verdict:
+                anomalies.extend(_gate.anomalies)
+            else:
+                # BUG D fix: merge validate_contract() anomalies collected earlier
+                if _validation_anomalies:
+                    anomalies.extend(_validation_anomalies)
+                if not response_contract.valid:
+                    missing = ", ".join(response_contract.missing) or "none"
+                    invalid = ", ".join(response_contract.invalid) or "none"
+                    anomalies.append({
+                        "type": "response_contract_violation",
+                        "severity": "critical",
+                        "message": (
+                            f"Agent response contract invalid for {task_info.get('agent', 'unknown')}: "
+                            f"missing=[{missing}] invalid=[{invalid}]"
+                        ),
+                    })
 
             # ----------------------------------------------------------
             # Compliance score (T011)
@@ -1623,6 +1971,28 @@ class ClaudeCodeAdapter(HookAdapter):
                 anomalies=anomalies if anomalies else None,
                 commands_executed=commands_executed,
             )
+
+            # ----------------------------------------------------------
+            # T11 truncation salvage (M5 / AC-12): fast-path rescue.
+            #
+            # A max_tokens truncation (STOP_REASON_TRUNCATION -- the turn was
+            # cut off by the token budget, NOT the agent's choice) that left a
+            # partial draft on disk is EARLY auto-finalized to a degraded=true
+            # row. It runs BEFORE the T9 backstop (persist_handoff, below) and
+            # keys on the SAME contract_id, so the salvage row (marked
+            # salvaged="truncation") wins and the writer's
+            # ON CONFLICT(contract_id) DO NOTHING leaves the backstop passive --
+            # the two converge to ONE row. OPTIMIZATION, never a gate: it never
+            # raises and never alters contract_rejected/exit_code; the T9
+            # backstop remains the correctness floor if salvage found nothing.
+            # ----------------------------------------------------------
+            _salvage = None
+            if _stop_reason_classification == STOP_REASON_TRUNCATION:
+                _salvage = self._salvage_truncated_draft(
+                    parsed_contract=parsed_contract,
+                    task_info=task_info,
+                    session_id=session_id,
+                )
 
             # ----------------------------------------------------------
             # BUG C fix: Persist handoff row to DB (M4 / T4.2).
@@ -1695,11 +2065,22 @@ class ClaudeCodeAdapter(HookAdapter):
             try:
                 from modules.agents.state_tracker import track_transition
                 _agent_id = resolve_agent_id(task_info)
+                # AC-19: distinguish a legitimate mid-conversation RESUME from a
+                # within-turn retry. An EXACT per-session resume mapping (written
+                # at PreToolUse:SendMessage) means the orchestrator is continuing
+                # this session's agent across messages, so IN_PROGRESS must not
+                # trip the retry cap. Use the exact file only (never the fuzzy
+                # cross-session fallback in _read_resume_mapping) so a fresh,
+                # non-resumed dispatch keeps the anti-parking cap intact.
+                _is_resume = (
+                    self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
+                ).is_file()
                 if _plan_status and _agent_id:
                     transition_result = track_transition(
                         _agent_id,
                         _plan_status,
                         has_review_phase=False,  # Conservative: no T3 detection yet
+                        is_resume=_is_resume,
                     )
                     if not transition_result.valid:
                         anomalies.append({
@@ -1760,47 +2141,21 @@ class ClaudeCodeAdapter(HookAdapter):
                 logger.debug("Skill injection verification failed (non-fatal): %s", exc)
 
             # ----------------------------------------------------------
-            # Option B: Selective enforcement for critical structural failures.
-            # Only 3 cases set contract_rejected=True:
-            #   1. agent_contract_handoff block completely missing
-            #   2. plan_status missing or not one of the valid statuses
-            #   3. agent_status block missing entirely
+            # T16/M4: contract gate verdict (computed ONCE, early, via the ramp
+            # flag -- see _gate above). Ramp OFF -> the legacy 3-case Option B
+            # verdict (byte-identical). Ramp ON -> the full-verdict verdict from
+            # the SINGLE portable core: a previously-exit-0 invalid envelope now
+            # rejects with the RICH repair message, which
+            # subagent_stop._handle_subagent_stop delivers to stderr via
+            # contract_rejection_reason. A salvaged truncation is never a hard
+            # rejection (the degraded row already captured it).
             # ----------------------------------------------------------
-            contract_rejected = False
-            contract_rejection_reason = ""
+            contract_rejected = _gate.rejected
+            contract_rejection_reason = _gate.rejection_reason
 
-            if parsed_contract is None:
-                contract_rejected = True
-                contract_rejection_reason = (
-                    "[CONTRACT REJECTED] No parseable agent_contract_handoff block found in agent response.\n"
-                    "The agent must end its response with a ```agent_contract_handoff``` fenced block "
-                    "whose body is VALID JSON (it is parsed with json.loads). A block written in YAML, "
-                    "with comments, trailing commas, or unquoted keys will fail to parse and is treated "
-                    "as missing.\n"
-                    "Reissue the response with a complete agent_contract_handoff block whose body is valid JSON."
-                )
-            elif not parsed_contract.get("agent_status") or not isinstance(
-                parsed_contract.get("agent_status"), dict
-            ):
-                contract_rejected = True
-                contract_rejection_reason = (
-                    "[CONTRACT REJECTED] agent_status block missing from agent_contract_handoff.\n"
-                    "The agent_contract_handoff block must include an agent_status object with "
-                    "plan_status, agent_id, pending_steps, and next_action."
-                )
-            else:
-                from modules.agents.response_contract import VALID_PLAN_STATUSES
-                normalized = _resolved_plan_status
-                raw_plan_status = parsed_contract["agent_status"].get("plan_status", "")
-                if not normalized or normalized not in VALID_PLAN_STATUSES:
-                    contract_rejected = True
-                    valid_list = ", ".join(sorted(VALID_PLAN_STATUSES))
-                    contract_rejection_reason = (
-                        f"[CONTRACT REJECTED] plan_status is missing or invalid: "
-                        f"'{raw_plan_status}'.\n"
-                        f"Valid statuses: {valid_list}.\n"
-                        f"Set plan_status to one of these values in agent_status."
-                    )
+            # stop_reason resolution (T10) and truncation salvage (T11) were
+            # computed earlier, BEFORE the T9 backstop, so the salvage row wins
+            # and the backstop stays passive. The values flow into result below.
 
             result = {
                 "success": True,
@@ -1813,7 +2168,17 @@ class ClaudeCodeAdapter(HookAdapter):
                 "response_contract": response_contract.to_dict(),
                 "contract_validated": contract_result.is_valid,
                 "contract_attempts": contract_attempts,
+                "stop_reason": _raw_stop_reason,
+                "stop_reason_classification": _stop_reason_classification,
             }
+
+            if _salvage:
+                result["truncation_salvaged"] = True
+                result["salvage_contract_id"] = _salvage.get("contract_id")
+                # Resume hint rendered by view.py's single renderer (T14) --
+                # never re-inlined here -- so a resume continues the SAME
+                # salvaged draft via --draft-id instead of re-emitting the block.
+                result["salvage_resume_hint"] = _salvage.get("resume_hint")
 
             if contract_rejected:
                 result["contract_rejected"] = True
@@ -1836,6 +2201,130 @@ class ClaudeCodeAdapter(HookAdapter):
             return HookResponse(output=result, exit_code=2)
 
         return HookResponse(output=result, exit_code=0)
+
+    # ------------------------------------------------------------------ #
+    # T11: truncation salvage (M5 / AC-12)
+    # ------------------------------------------------------------------ #
+
+    def _salvage_truncated_draft(
+        self,
+        *,
+        parsed_contract,
+        task_info: dict,
+        session_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Fast-path rescue of a TRUNCATED turn's partial contract draft.
+
+        Called ONLY when the adapter classified the stop_reason as
+        ``STOP_REASON_TRUNCATION`` (max_tokens): the turn was cut off by the
+        token budget mid-work, not by the agent's choice, so its on-disk draft
+        is a salvage candidate. This early auto-finalizes that draft to a
+        ``degraded=true`` row via the idempotent core writer, keyed on the SAME
+        ``contract_id`` (the draft_id resolved from the agent's minted
+        agent_id) that the T9 hook backstop keys on -- so salvage and backstop
+        converge to ONE row through ``ON CONFLICT(contract_id) DO NOTHING``.
+
+        Consistency with T9 semantics: the row is marked ``degraded=true`` (it
+        is NOT an agent-verified COMPLETE) with a ``salvaged="truncation"``
+        marker recording WHY it degraded; only flags are added, never
+        fabricated evidence. task_status mirrors T9: the draft's own
+        plan_status when it is a valid terminal value, else the honest
+        ``IN_PROGRESS``.
+
+        OPTIMIZATION, never a gate: every failure is swallowed and returns
+        None; this never raises and never alters contract_rejected/exit_code.
+        The T9 backstop (``persist_handoff`` later in the same lifecycle)
+        remains the correctness floor. Returns
+        ``{"contract_id", "resume_hint", "created"}`` when a draft was
+        salvaged, else None.
+        """
+        try:
+            from gaia.contract.drafts import load_draft, resolve_draft_id
+            from gaia.contract.view import render_resume_hint
+            from gaia.state import VALID_PLAN_STATUSES
+            from gaia.store import writer as _writer
+        except Exception as exc:
+            logger.debug("T11 salvage: core import failed (non-fatal): %s", exc)
+            return None
+
+        # Resolve the minted agent_id drafts are addressed by -- prefer the
+        # authoritative agent_status.agent_id from the envelope (the exact value
+        # the CLI minted the draft with), else task_info. Mirrors
+        # handoff_persister._resolve_minted_agent_id so salvage and the T9
+        # backstop resolve the SAME draft (hence the SAME contract_id).
+        minted_agent_id = None
+        if isinstance(parsed_contract, dict):
+            agent_status = parsed_contract.get("agent_status")
+            if isinstance(agent_status, dict) and agent_status.get("agent_id"):
+                minted_agent_id = str(agent_status["agent_id"])
+        if not minted_agent_id:
+            minted_agent_id = task_info.get("agent_id")
+        if not minted_agent_id:
+            return None
+
+        try:
+            draft_id = resolve_draft_id(explicit=None, agent_id=str(minted_agent_id))
+            if not draft_id:
+                # No partial draft to salvage -- the T9 backstop still captures
+                # a minimal degraded row for a no-draft truncated turn.
+                return None
+            envelope = load_draft(draft_id)
+            if not isinstance(envelope, dict):
+                return None
+
+            db_path_str = task_info.get("db_path")
+            db_path = Path(db_path_str) if db_path_str else None
+            workspace = (
+                task_info.get("workspace")
+                or os.environ.get("GAIA_WORKSPACE")
+                or "global"
+            )
+            agent_id_col = minted_agent_id or task_info.get("agent") or "unknown"
+
+            salvaged = dict(envelope)
+            agent_status = salvaged.get("agent_status")
+            plan_status = (
+                agent_status.get("plan_status")
+                if isinstance(agent_status, dict)
+                else None
+            )
+            task_status = (
+                plan_status if plan_status in VALID_PLAN_STATUSES else "IN_PROGRESS"
+            )
+            salvaged["degraded"] = True
+            salvaged["auto_captured"] = True
+            salvaged["salvaged"] = "truncation"
+
+            outcome = _writer.finalize_agent_contract_handoff(
+                contract_id=draft_id,
+                agent_id=str(agent_id_col),
+                workspace=workspace,
+                task_status=task_status,
+                raw_handoff_json=json.dumps(salvaged),
+                session_id=session_id,
+                brief_id=None,
+                db_path=db_path,
+            )
+
+            # Reuse view.py's single renderer (T14) for the resume hint -- do
+            # NOT re-inline hint text here.
+            try:
+                resume_hint = render_resume_hint(draft_id, envelope)
+            except Exception:
+                resume_hint = None
+
+            logger.info(
+                "T11 salvage: truncated draft %s finalized degraded (created=%s)",
+                draft_id, outcome.get("created"),
+            )
+            return {
+                "contract_id": draft_id,
+                "resume_hint": resume_hint,
+                "created": bool(outcome.get("created")),
+            }
+        except Exception as exc:
+            logger.warning("T11 salvage: rescue failed (non-fatal): %s", exc)
+            return None
 
     # ------------------------------------------------------------------ #
     # P2: adapt_stop
@@ -1989,18 +2478,146 @@ class ClaudeCodeAdapter(HookAdapter):
                 f.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------ #
+    # Contract resume bridge: PreToolUse:SendMessage -> SubagentStart (T6)
+    #
+    # Brief: contract-as-managed-data-agent-contract-handoff-agnostico-por-cli
+    # (M2, decision #3 / #8). ``gaia.contract.drafts`` (T5) keys a draft
+    # purely by agent_id and never reads a harness session id -- that is
+    # what keeps the CLI/core agnostic. But SubagentStart's own payload
+    # (see the ClaudeCodeAdapter docstring's field table) carries only
+    # session_id + agent_type on a resume, NEVER the resumed agent_id. This
+    # section is the one CC-specific bridge that recovers "which agent_id is
+    # this session resuming" so ``adapt_subagent_start`` can hand the
+    # resumed agent its own draft back (AC-18) without it re-emitting
+    # anything. It mirrors ``_cache_context_for_subagent`` /
+    # ``_read_cached_context`` one directory over, with two differences
+    # driven by the resume semantics: one file PER SESSION (overwritten on
+    # every SendMessage, not timestamped) since a session may resume the
+    # SAME agent across many messages (AC-19), and reads are
+    # non-consuming (a mapping is a durable fact about a session's current
+    # target agent, not a one-shot handoff payload).
+    # ------------------------------------------------------------------ #
+
+    RESUME_MAP_CACHE_DIR = Path("/tmp/gaia-contract-resume-map")
+    RESUME_MAP_TTL_SECONDS = 24 * 60 * 60  # generous: spans a long resumed session
+
+    def _cache_resume_mapping(self, session_id: str, agent_id: str) -> Path:
+        """Record that ``session_id`` just resumed (SendMessage) ``agent_id``.
+
+        Returns the path to the cache file (mainly for tests).
+        """
+        self.RESUME_MAP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache_file = self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
+        payload = {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "created_at": time.time(),
+        }
+        cache_file.write_text(json.dumps(payload))
+        logger.debug("Resume mapping cached: session=%s -> agent=%s", session_id, agent_id)
+        return cache_file
+
+    def _read_resume_mapping(self, session_id: str) -> Optional[str]:
+        """Return the agent_id last resumed for ``session_id``, or None.
+
+        Non-consuming (unlike the one-shot context cache): the same mapping
+        must still be readable after N resumes of the same session
+        (AC-19's "IN_PROGRESS across resumes"). Falls back to the most
+        recently written mapping across ALL sessions when no exact match
+        exists, mirroring ``_read_cached_context``'s own fallback for the
+        orchestrator-session vs subagent-session id mismatch.
+        """
+        if not self.RESUME_MAP_CACHE_DIR.exists():
+            return None
+        self._cleanup_stale_resume_mappings()
+
+        candidate = self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
+        if not candidate.is_file():
+            all_files = sorted(
+                self.RESUME_MAP_CACHE_DIR.glob("*.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            candidate = all_files[0] if all_files else None
+        if candidate is None:
+            return None
+
+        try:
+            data = json.loads(candidate.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return data.get("agent_id") or None
+
+    def _cleanup_stale_resume_mappings(self) -> None:
+        """Remove resume-mapping files older than TTL."""
+        now = time.time()
+        for f in self.RESUME_MAP_CACHE_DIR.glob("*.json"):
+            try:
+                data = json.loads(f.read_text())
+                if now - data.get("created_at", 0) > self.RESUME_MAP_TTL_SECONDS:
+                    f.unlink(missing_ok=True)
+            except (json.JSONDecodeError, OSError):
+                f.unlink(missing_ok=True)
+
+    def _build_resume_draft_context(self, session_id: str) -> Optional[str]:
+        """Build a minimal, cache-safe additionalContext block surfacing a
+        resumed agent's own in-progress contract draft (AC-18/AC-20; AC-16).
+
+        Harness-agnostic by construction: this only touches
+        ``gaia.contract.drafts`` (T5's harness-free storage/addressing) and
+        ``gaia.contract.view`` (T14's single renderer) plus the CC-specific
+        resume-mapping cache above -- it never reads ``CLAUDE_SESSION_ID`` and
+        never mutates the draft; this is a read-only hint so the resumed agent
+        continues writing the SAME draft via ``--draft-id`` instead of
+        re-emitting the full ``agent_contract_handoff`` block from memory.
+
+        Cache-safety (AC-16): the hint text is produced by
+        ``gaia.contract.view.render_resume_hint`` -- ONE renderer shared with
+        the token-savings measurement so the injected view and its measurement
+        never diverge. That renderer orders the byte-stable invariant prefix
+        (instructions + draft_id + CLI template) FIRST and the one volatile
+        status line LAST, so the full variable contract is never re-injected
+        atop the prompt and the cache-reusable prefix stays byte-stable across
+        a fixed draft's resumes.
+        """
+        agent_id = self._read_resume_mapping(session_id)
+        if not agent_id:
+            return None
+        try:
+            from gaia.contract.drafts import resolve_draft_id, load_draft
+            from gaia.contract.view import render_resume_hint
+        except Exception:
+            return None
+        draft_id = resolve_draft_id(explicit=None, agent_id=agent_id)
+        if not draft_id:
+            return None
+        envelope = load_draft(draft_id)
+        if not envelope:
+            return None
+        return render_resume_hint(draft_id, envelope)
+
+    # ------------------------------------------------------------------ #
     # P2: adapt_subagent_start
     # ------------------------------------------------------------------ #
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
         """Parse SubagentStart event and forward cached context to the subagent.
 
-        Two paths:
+        Three contributions, all optional, joined when present:
         1. Cache hit (normal start via Task/Agent tool): PreToolUse:Agent
-           caches context, this method reads and forwards it.
+           caches context, this method reads and forwards it verbatim (no
+           draft-resume contribution applies here -- a freshly dispatched
+           agent has no prior draft under its brand-new agent_id).
         2. Cache miss (resume via SendMessage): No PreToolUse:Agent fires,
            so no cache exists. If agent_type is present in the payload and
-           is a known project agent, rebuild context on-demand.
+           is a known project agent, rebuild project context on-demand.
+        3. Cache miss + resume-mapping hit (T6, AC-18/AC-20): the CC session
+           resuming this agent was recorded by
+           ``_adapt_send_message``/``_cache_resume_mapping``; if that
+           session_id (or, failing that, the most recent resume) maps to an
+           agent_id with a live ``gaia.contract.drafts`` draft, surface a
+           minimal summary of it so the resumed agent continues its own
+           draft instead of re-emitting the contract block.
         """
         session_id = raw.get("session_id", "")
 
@@ -2021,6 +2638,7 @@ class ClaudeCodeAdapter(HookAdapter):
         # written. If agent_type is present in the payload, rebuild context
         # on-demand so the resumed agent has its project context and tools.
         agent_type = raw.get("agent_type", "")
+        resume_parts: List[str] = []
         if agent_type:
             try:
                 from modules.context.context_injector import build_project_context
@@ -2049,16 +2667,34 @@ class ClaudeCodeAdapter(HookAdapter):
                             "agent=%s (session=%s)",
                             agent_type, session_id,
                         )
-                        return ContextResult(
-                            context_injected=True,
-                            additional_context=additional,
-                            sections_provided=[],
-                        )
+                        resume_parts.append(additional)
             except Exception as exc:
                 logger.warning(
                     "SubagentStart: resume context rebuild failed for "
                     "agent=%s: %s", agent_type, exc,
                 )
+
+        try:
+            draft_context = self._build_resume_draft_context(session_id)
+        except Exception as exc:
+            draft_context = None
+            logger.warning(
+                "SubagentStart: draft-resume lookup failed for session=%s: %s",
+                session_id, exc,
+            )
+        if draft_context:
+            logger.info(
+                "SubagentStart: resumed draft surfaced for session=%s (agent=%s)",
+                session_id, agent_type or "unknown",
+            )
+            resume_parts.append(draft_context)
+
+        if resume_parts:
+            return ContextResult(
+                context_injected=True,
+                additional_context="\n\n".join(resume_parts),
+                sections_provided=[],
+            )
 
         logger.info(
             "SubagentStart: no cached context found for session=%s "

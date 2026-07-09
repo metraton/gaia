@@ -145,6 +145,7 @@ def track_transition(
     new_state: str,
     *,
     has_review_phase: bool = False,
+    is_resume: bool = False,
 ) -> TransitionResult:
     """Record a new state for an agent and validate the transition.
 
@@ -154,6 +155,12 @@ def track_transition(
         has_review_phase: Hint that this task involves T3 / plan-first flow.
             When True, IN_PROGRESS -> COMPLETE without an intervening REVIEW
             is flagged as a warning.
+        is_resume: True when this IN_PROGRESS is a legitimate mid-conversation
+            RESUME (the same session resuming the same agent to continue work),
+            NOT a within-turn verify-fail RETRY. A resume does NOT accumulate
+            toward ``_MAX_IN_PROGRESS_RETRIES``: an agent may stay IN_PROGRESS
+            across N resumes (AC-19). Default False preserves the anti-parking
+            retry cap exactly for the ordinary retry path.
 
     Returns:
         TransitionResult with validation outcome.
@@ -213,7 +220,15 @@ def track_transition(
     warning = ""
 
     # Track IN_PROGRESS retry count
-    if new_state == "IN_PROGRESS" and previous_state == "IN_PROGRESS":
+    if new_state == "IN_PROGRESS" and previous_state == "IN_PROGRESS" and is_resume:
+        # AC-19: a legitimate mid-conversation RESUME is not a within-turn
+        # verify-fail retry. The same session resuming the same agent may stay
+        # IN_PROGRESS across N messages, so a resume must NOT accumulate toward
+        # the retry cap -- it is held at the fresh-turn baseline of 1. The
+        # anti-parking cap still governs the ordinary retry path (is_resume
+        # False), leaving TestRetryLimits unchanged.
+        in_progress_count = 1
+    elif new_state == "IN_PROGRESS" and previous_state == "IN_PROGRESS":
         in_progress_count += 1
         if in_progress_count > _MAX_IN_PROGRESS_RETRIES:
             return TransitionResult(

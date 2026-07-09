@@ -31,6 +31,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -102,6 +103,121 @@ def _db_path() -> Path:
     return db_path()
 
 
+# Busy-timeout (ms) applied to EVERY connection: when a connection cannot
+# immediately acquire the lock it needs (another writer holds RESERVED, or a
+# BEGIN IMMEDIATE is waiting on the write lock), SQLite retries internally for
+# up to this long before returning SQLITE_BUSY. This is the first line of
+# defense against "database is locked" under genuine concurrency -- it turns
+# an instant failure into a bounded wait for the common contention case. The
+# retry wrapper (`_retry_on_locked`) covers the residual case where even this
+# window is exhausted.
+_BUSY_TIMEOUT_MS = 5000
+
+# Materialization sentinel: `schema_version` is the LAST object created by
+# schema.sql, so its presence proves the ENTIRE schema has been applied and
+# committed (executescript runs the statements in file order). Checking a
+# late-created sentinel -- rather than a table created early like `workspaces`
+# -- is what makes the fresh-DB check safe under concurrency: a connection
+# never proceeds on a half-built schema where an early table exists but the
+# `agent_contract_handoffs` table or its `contract_id` UNIQUE index does not.
+_SCHEMA_SENTINEL = "schema_version"
+
+# Retry policy for the residual "database is locked" case (BEGIN IMMEDIATE +
+# busy_timeout handle the common contention; this covers the rest).
+_MAX_WRITE_RETRIES = 8
+_WRITE_RETRY_BASE_SLEEP = 0.05
+
+
+def _has_object(con: sqlite3.Connection, name: str) -> bool:
+    """Return True iff ``name`` exists in sqlite_master (any object type)."""
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master WHERE name = ? LIMIT 1",
+        (name,),
+    ).fetchone()
+    return row is not None
+
+
+def _has_application_tables(con: sqlite3.Connection) -> bool:
+    """Return True iff the DB already carries any non-internal user table.
+
+    Used to recognize a DB that was initialized OUTSIDE this materializer -- a
+    test fixture built from a minimal inline schema, or any externally-managed
+    DB -- so schema.sql is not force-reapplied on top of it. Excludes SQLite's
+    own internal objects (``sqlite_%``, e.g. ``sqlite_sequence``, autoindexes).
+    """
+    row = con.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+    ).fetchone()
+    return row is not None
+
+
+def _ensure_schema_materialized(con: sqlite3.Connection, db_path: Path) -> None:
+    """Materialize the schema exactly once, safe under concurrent first-write.
+
+    Replaces the historical ``fresh = not db_path.exists()`` TOCTOU: that check
+    raced ``sqlite3.connect()`` (which itself creates the empty file), so a
+    second process could observe the file present but schema-less and fail with
+    ``no such table: workspaces``. Here the decision is driven by the ACTUAL
+    presence of the schema (a committed sentinel object), never by file
+    existence, and the materialization itself is serialized across processes by
+    an ``O_EXCL`` lock file so only one process runs ``executescript`` while any
+    others WAIT for it to finish and release the lock -- then re-check and skip.
+    The schema is fully idempotent (every ``CREATE ... IF NOT EXISTS``), so the
+    take-over-a-stale-lock fallback is harmless.
+    """
+    # Fast path: schema fully present and committed.
+    if _has_object(con, _SCHEMA_SENTINEL):
+        return
+
+    lock_path = Path(str(db_path) + ".init-lock")
+    deadline = time.monotonic() + 30.0
+    fd: int | None = None
+    while fd is None:
+        try:
+            # Whoever wins O_EXCL owns materialization; everyone else waits.
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except FileExistsError:
+            # Another process is materializing. Do NOT read the schema yet --
+            # it may be half-built. Wait for the lock to be released, then take
+            # it and re-check under the lock (the winner will have committed the
+            # full schema, sentinel included, before releasing).
+            if time.monotonic() > deadline:
+                # Assume an orphaned lock (a crashed materializer); take over.
+                fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+                break
+            time.sleep(0.02)
+    try:
+        if not _has_object(con, _SCHEMA_SENTINEL):
+            # A DB that already carries application tables but lacks the sentinel
+            # was initialized OUTSIDE this materializer (a test fixture built from
+            # a minimal inline schema, or any externally-managed DB). Applying
+            # schema.sql on top is destructive: each CREATE TABLE IF NOT EXISTS is
+            # a no-op against the pre-existing table, but the trailing CREATE INDEX
+            # /TRIGGER then references a column the inline table never declared
+            # (e.g. idx_briefs_topic_key ON briefs(topic_key)) -> OperationalError.
+            # So materialize ONLY a genuinely-empty DB; never clobber a populated
+            # one. This check is deliberately made HERE, under the O_EXCL lock, not
+            # in the unlocked fast path above: for a real concurrent first-write the
+            # winner commits the sentinel (the schema's LAST object) before releasing
+            # the lock, so any waiter re-checking here always sees the sentinel and
+            # returns at the line above -- it never reaches this emptiness test on a
+            # half-built schema. The test therefore only distinguishes a truly fresh
+            # DB (materialize) from an externally-initialized one (skip), preserving
+            # T18's fresh-DB TOCTOU fix and its O_EXCL serialization of empty
+            # concurrent first-writes.
+            if _has_application_tables(con):
+                return
+            con.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+            con.commit()
+    finally:
+        os.close(fd)
+        try:
+            os.unlink(str(lock_path))
+        except OSError:
+            pass
+
+
 def _connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open a connection, ensuring the schema is materialized.
 
@@ -110,16 +226,18 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
             resolves via ``gaia.paths.db_path()``.
 
     Returns:
-        Open sqlite3.Connection with foreign_keys=ON.
+        Open sqlite3.Connection with foreign_keys=ON and a busy_timeout set.
     """
     if db_path is None:
         db_path = _db_path()
 
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    fresh = not db_path.exists()
     con = sqlite3.connect(str(db_path))
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
+    # Wait (bounded) for a contended lock instead of failing instantly -- the
+    # first defense against "database is locked" under concurrent writers.
+    con.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
 
     # Register gaia_sha256: scalar function used by the ai_approval_events_hash
     # trigger to compute this_hash = SHA-256(prev_hash || fingerprint).
@@ -132,10 +250,41 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
     con.create_function("gaia_sha256", 1, _gaia_sha256, deterministic=True)
 
-    if fresh:
-        con.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
-        con.commit()
+    # Materialize the schema based on ACTUAL presence (not file existence),
+    # serialized so a concurrent first-write can never observe a missing table.
+    _ensure_schema_materialized(con, db_path)
     return con
+
+
+def _is_locked_error(exc: BaseException) -> bool:
+    """True iff ``exc`` is a SQLite 'database is locked'/'busy' OperationalError."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
+
+
+def _retry_on_locked(work):
+    """Run ``work()`` with bounded backoff retry on 'database is locked'.
+
+    ``work`` must be self-contained (open its own connection, run its
+    transaction, close). Each retry gets a fresh attempt from scratch, so it is
+    safe only for operations that are idempotent under re-execution -- which the
+    contract/handoff writers are (``ON CONFLICT(contract_id) DO NOTHING`` plus a
+    rolled-back-on-failure transaction leave no partial state to re-apply). Any
+    OperationalError that is NOT a lock/busy error propagates immediately.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(_MAX_WRITE_RETRIES):
+        try:
+            return work()
+        except sqlite3.OperationalError as exc:
+            if not _is_locked_error(exc):
+                raise
+            last_exc = exc
+            time.sleep(_WRITE_RETRY_BASE_SLEEP * (attempt + 1))
+    assert last_exc is not None  # loop ran at least once
+    raise last_exc
 
 
 def _now_iso() -> str:
@@ -4723,44 +4872,49 @@ def cleanup_expired_db_grants(
 #
 # Brief: agent-contract-handoff M4 (handoff persistence).
 #
-# Guard pattern mirrors _assert_dispatch_can_write_memory:
-#   Handoff rows are written by the SubagentStop hook, which runs as the
-#   orchestrator or operator context.  Subagent dispatches (specialist
-#   agents) must NOT write their own handoff rows -- that would allow
-#   self-reporting without hook oversight.
+# Guard model (T8 -- brief contract-as-managed-data): INVERTED from curator-only
+# to finalize-by-any-seeded-agent. Formerly, handoff rows were written by the
+# SubagentStop hook (curator context) and every subagent dispatch was FORBIDDEN.
+# Under contract-as-managed-data the terminal row is finalized BY the agent
+# itself via `gaia contract finalize`, so any agent in the fleet seed (every
+# agent declared under agents/ with `contract_handoff_writer: true`) is
+# authorized. Only an identity ABSENT from the seed (a rogue/unseeded dispatch)
+# is rejected. The fleet seed and its loader live in gaia.state.permissions
+# (`handoff_writer_fleet` / `is_handoff_writer`).
 # ---------------------------------------------------------------------------
 
 class HandoffWriteForbidden(PermissionError):
-    """Raised when a non-curator subagent attempts to write a handoff row."""
-
-
-_HANDOFF_WRITER_AGENTS = frozenset({
-    "orchestrator",
-    "operator",
-    "gaia-orchestrator",
-    "gaia-operator",
-    # The SubagentStop hook runs outside any dispatch context (GAIA_DISPATCH_AGENT
-    # is unset in the hook process), so the unset case is also allowed below.
-})
+    """Raised when an unseeded dispatch identity attempts to write a handoff row."""
 
 
 def _assert_dispatch_can_write_handoff() -> None:
-    """Block handoff writes from non-curator subagent dispatches.
+    """Allow handoff finalize from any SEEDED fleet agent; block unseeded identities.
 
-    Contract (mirrors _assert_dispatch_can_write_memory):
-    * GAIA_DISPATCH_AGENT unset / empty -> hook context or CLI, allowed.
-    * Set to a curator identity -> allowed.
-    * Set to anything else -> raises HandoffWriteForbidden.
+    Contract (INVERTED from the prior curator-only gate):
+    * GAIA_DISPATCH_AGENT unset / empty -> CLI / human / hook context, allowed
+      (the harness-agnostic CLI path and the SubagentStop hook both run without
+      a dispatch identity set).
+    * Set to a seeded fleet identity (any agent under agents/ carrying
+      `contract_handoff_writer: true`, plus curator aliases) -> allowed. This is
+      the inversion: a subagent finalizing its own handoff is now permitted.
+    * Set to an identity NOT in the fleet seed -> raises HandoffWriteForbidden
+      (a rogue / unseeded dispatch -- the write AC-7 keeps blocked).
     """
+    from gaia.state.permissions import handoff_writer_fleet, is_handoff_writer
+
     raw = os.environ.get("GAIA_DISPATCH_AGENT")
     if not raw:
         return
-    if raw in _HANDOFF_WRITER_AGENTS:
+    agent = raw.strip()
+    if not agent:
+        return
+    if is_handoff_writer(agent):
         return
     raise HandoffWriteForbidden(
-        f"agent_contract_handoffs writes are forbidden from subagent dispatches "
-        f"(current GAIA_DISPATCH_AGENT={raw!r}). Handoff rows are written by "
-        f"the SubagentStop hook only."
+        f"agent_contract_handoffs writes are forbidden from '{agent}': it is not "
+        f"a seeded fleet agent (GAIA_DISPATCH_AGENT={raw!r}). Only agents declared "
+        f"under agents/ with `contract_handoff_writer: true` may finalize a "
+        f"handoff row. Seeded fleet: {sorted(handoff_writer_fleet())}."
     )
 
 
@@ -4797,34 +4951,268 @@ def insert_agent_contract_handoff(
     """
     _assert_dispatch_can_write_handoff()
 
+    def _work() -> int:
+        con = _connect(db_path)
+        try:
+            # BEGIN IMMEDIATE: write-lock-first, so this SELECT-then-INSERT body
+            # (_ensure_workspace_row's SELECT, then the INSERT) cannot deadlock
+            # against a concurrent writer upgrading a SHARED lock to RESERVED.
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_workspace_row(con, workspace)
+                cur = con.execute(
+                    """
+                    INSERT INTO agent_contract_handoffs
+                        (agent_id, session_id, workspace, brief_id,
+                         task_status, raw_handoff_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        agent_id,
+                        session_id,
+                        workspace,
+                        brief_id,
+                        task_status,
+                        raw_handoff_json,
+                        _now_iso(),
+                    ),
+                )
+                handoff_id = cur.lastrowid
+                con.commit()
+                return handoff_id
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+# ---------------------------------------------------------------------------
+# Public API: finalize_agent_contract_handoff (v28 / T7 -- sole idempotent
+# writer of the terminal agent_contract_handoffs row)
+# ---------------------------------------------------------------------------
+#
+# Brief: contract-as-managed-data-agent-contract-handoff-agnostico-por-cli,
+# task T7 (M3: "finalize is the sole idempotent writer").
+#
+# THIS is the primitive T8 (write-guard + fleet-seed permissions) and T9
+# (SubagentStop hook conditional backstop) build on -- both are expected to
+# call this same function rather than reinvent the UPSERT, so document the
+# contract precisely instead of letting them reverse-engineer it:
+#
+#   Idempotency key: `contract_id` -- the CLI-minted draft/contract id from
+#   `gaia.contract.drafts.mint_draft_id` (shape `"{agent_id}.{token}"`; NEVER
+#   derived from CLAUDE_SESSION_ID or any harness value -- decisions #1/#3).
+#   `agent_contract_handoffs.contract_id` carries a UNIQUE index (schema v28,
+#   scripts/migrations/v27_to_v28.sql). This function issues:
+#
+#       INSERT INTO agent_contract_handoffs (...) VALUES (...)
+#       ON CONFLICT(contract_id) DO NOTHING
+#
+#   -- the first writer to COMMIT for a given contract_id wins and owns the
+#   row; every subsequent write attempt for the SAME contract_id (a retried
+#   `gaia contract finalize`, or -- T9 -- a racing SubagentStop hook backstop)
+#   is a genuine no-op: no duplicate row, no exception, no data mutation of
+#   the existing row. This is what makes finalize+hook-backstop converge to
+#   EXACTLY ONE row under a race (never-lost because SOME writer always
+#   succeeds first; exactly-once because the UNIQUE constraint rejects every
+#   writer after that). Whichever writer loses the race is expected to accept
+#   the winner's row as-is; this function does not overwrite on conflict
+#   (contrast with a `DO UPDATE` UPSERT) -- a terminal handoff row is
+#   write-once by construction, never edited in place.
+#
+#   `contract_id` may be omitted (None/empty) by a caller that has no draft
+#   concept (legacy/back-compat path) -- SQLite's UNIQUE index permits any
+#   number of NULL values, so such rows never collide with each other or with
+#   a real contract_id and simply are not deduplicated (there is nothing to
+#   deduplicate against). Only a NON-EMPTY contract_id participates in the
+#   idempotent-UPSERT guarantee.
+#
+# Public signature (stable for T8/T9):
+#
+#   finalize_agent_contract_handoff(
+#       contract_id: str,
+#       agent_id: str,
+#       workspace: str,
+#       task_status: str,
+#       raw_handoff_json: str,
+#       *,
+#       session_id: str | None = None,
+#       brief_id: int | None = None,
+#       db_path: Path | None = None,
+#   ) -> dict
+#
+#   Returns {"status": "applied", "created": bool, "handoff_id": int | None,
+#   "contract_id": str}. `created` is True only for the call that actually
+#   inserted the row; every later call for the same contract_id returns
+#   `created=False` with the SAME `handoff_id` -- this is how a caller (the
+#   CLI, T9's backstop) tells "I just wrote this" apart from "this was
+#   already finalized" without a second round trip.
+#
+#   Same permission gate as insert_agent_contract_handoff
+#   (`_assert_dispatch_can_write_handoff`) -- T8 owns evolving that gate to
+#   the fleet-seed model; T7 deliberately reuses it unchanged.
+# ---------------------------------------------------------------------------
+
+def finalize_agent_contract_handoff(
+    contract_id: str,
+    agent_id: str,
+    workspace: str,
+    task_status: str,
+    raw_handoff_json: str,
+    *,
+    session_id: str | None = None,
+    brief_id: int | None = None,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Idempotently write the terminal agent_contract_handoffs row.
+
+    See the module comment immediately above for the full idempotency-key
+    contract. In short: INSERT ... ON CONFLICT(contract_id) DO NOTHING, so a
+    second call for the same ``contract_id`` never creates a second row --
+    it is a genuine no-op that returns the already-existing row's id.
+
+    Args:
+        contract_id:      The CLI-minted draft/contract id (the idempotency
+                          key). Required (raises ValueError if empty).
+        agent_id:         Agent identity string (e.g. "a1b2c3d4e5").
+        workspace:        Workspace name (FK -> workspaces.name).
+        task_status:      Resolved plan_status from the contract envelope.
+        raw_handoff_json: Full contract envelope serialized as JSON string.
+        session_id:       CLAUDE_SESSION_ID at write time (optional; the
+                          harness-agnostic CLI path leaves this None -- only
+                          the hook adapter, which IS Claude-Code-specific,
+                          ever supplies it).
+        brief_id:         briefs.id FK (optional -- EXTENSION_POINT).
+        db_path:          Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied", "created": True, "handoff_id": <new id>,
+         "contract_id": contract_id} on the FIRST write for this contract_id.
+        {"status": "applied", "created": False, "handoff_id": <existing id>,
+         "contract_id": contract_id} on every SUBSEQUENT call (the no-op).
+
+    Raises:
+        ValueError: contract_id is empty/None.
+        HandoffWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator
+            (see _assert_dispatch_can_write_handoff; T8 owns the fleet-seed
+            inversion of this gate).
+    """
+    if not contract_id:
+        raise ValueError(
+            "finalize_agent_contract_handoff requires a non-empty contract_id "
+            "-- it is the idempotency key the UNIQUE constraint UPSERTs on."
+        )
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            # BEGIN IMMEDIATE (write-lock-first): acquire the RESERVED write lock
+            # up front so two concurrent finalize cycles SERIALIZE at the lock
+            # instead of both taking a SHARED read lock and then racing to
+            # upgrade to RESERVED -- the classic SQLite two-writers deadlock that
+            # a plain deferred BEGIN produces when the body is SELECT-then-INSERT
+            # (here: _ensure_workspace_row's SELECT, then the INSERT below). With
+            # IMMEDIATE, the second cycle waits (busy_timeout) for the first to
+            # commit rather than deadlocking. The idempotency contract is
+            # unchanged: contract_id UNIQUE + ON CONFLICT DO NOTHING still makes
+            # the second writer for the SAME contract_id a genuine no-op.
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_workspace_row(con, workspace)
+                cur = con.execute(
+                    """
+                    INSERT INTO agent_contract_handoffs
+                        (contract_id, agent_id, session_id, workspace, brief_id,
+                         task_status, raw_handoff_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(contract_id) DO NOTHING
+                    """,
+                    (
+                        contract_id,
+                        agent_id,
+                        session_id,
+                        workspace,
+                        brief_id,
+                        task_status,
+                        raw_handoff_json,
+                        _now_iso(),
+                    ),
+                )
+                if cur.rowcount and cur.rowcount > 0:
+                    # This call is the winner -- cur.lastrowid is authoritative
+                    # here (unlike on the DO NOTHING branch, where lastrowid would
+                    # be stale/unrelated -- see the no-op branch below).
+                    handoff_id = cur.lastrowid
+                    con.commit()
+                    return {
+                        "status": "applied",
+                        "created": True,
+                        "handoff_id": handoff_id,
+                        "contract_id": contract_id,
+                    }
+                # Conflict -- a row for this contract_id was already committed
+                # (a prior finalize call, or -- T9 -- a racing hook backstop that
+                # got there first). Do NOT trust cur.lastrowid here: sqlite3
+                # leaves it at whatever the connection's last SUCCESSFUL insert
+                # was, which is unrelated to this DO-NOTHING no-op. Look the row
+                # up explicitly instead.
+                existing = con.execute(
+                    "SELECT id FROM agent_contract_handoffs WHERE contract_id = ?",
+                    (contract_id,),
+                ).fetchone()
+                con.commit()
+                return {
+                    "status": "applied",
+                    "created": False,
+                    "handoff_id": existing["id"] if existing is not None else None,
+                    "contract_id": contract_id,
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def agent_contract_handoff_exists(
+    contract_id: str,
+    *,
+    db_path: "Path | None" = None,
+) -> bool:
+    """Return True iff a terminal row already exists for ``contract_id``.
+
+    Read-only helper exposing the exact existence check T9's conditional
+    hook backstop is designed around ("finalizes the draft only if no row
+    exists yet for that contract id"). Kept here (rather than inlined in the
+    hook) so T9 shares the SAME notion of "does a row already exist" that
+    :func:`finalize_agent_contract_handoff` itself relies on (the
+    `contract_id` UNIQUE index) -- no separate query to keep in sync.
+
+    Args:
+        contract_id: The draft/contract id to check. A falsy value always
+            returns False (there is nothing to look up).
+        db_path:     Optional explicit DB path (used by tests).
+
+    Returns:
+        True iff a row with this contract_id exists; False otherwise
+        (including when contract_id is empty/None).
+    """
+    if not contract_id:
+        return False
     con = _connect(db_path)
     try:
-        con.execute("BEGIN")
-        try:
-            _ensure_workspace_row(con, workspace)
-            cur = con.execute(
-                """
-                INSERT INTO agent_contract_handoffs
-                    (agent_id, session_id, workspace, brief_id,
-                     task_status, raw_handoff_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    agent_id,
-                    session_id,
-                    workspace,
-                    brief_id,
-                    task_status,
-                    raw_handoff_json,
-                    _now_iso(),
-                ),
-            )
-            handoff_id = cur.lastrowid
-            con.commit()
-            return handoff_id
-        except Exception:
-            con.rollback()
-            raise
+        row = con.execute(
+            "SELECT 1 FROM agent_contract_handoffs WHERE contract_id = ? LIMIT 1",
+            (contract_id,),
+        ).fetchone()
+        return row is not None
     finally:
         con.close()
 
@@ -4862,26 +5250,33 @@ def insert_handoff_approval(
             f"{sorted(_VALID_DECISIONS)}"
         )
 
-    con = _connect(db_path)
-    try:
-        con.execute("BEGIN")
+    def _work() -> int:
+        con = _connect(db_path)
         try:
-            cur = con.execute(
-                """
-                INSERT INTO agent_contract_handoff_approvals
-                    (handoff_id, approval_id, decision, decided_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (handoff_id, approval_id, decision, decided_at),
-            )
-            approval_row_id = cur.lastrowid
-            con.commit()
-            return approval_row_id
-        except Exception:
-            con.rollback()
-            raise
-    finally:
-        con.close()
+            # BEGIN IMMEDIATE: this write shares the contract/handoff path and
+            # may run concurrently with a racing backstop finalize; take the
+            # write lock up front so it waits (busy_timeout) rather than
+            # contending for a lock upgrade.
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                cur = con.execute(
+                    """
+                    INSERT INTO agent_contract_handoff_approvals
+                        (handoff_id, approval_id, decision, decided_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (handoff_id, approval_id, decision, decided_at),
+                )
+                approval_row_id = cur.lastrowid
+                con.commit()
+                return approval_row_id
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
 
 
 def list_agent_contract_handoffs(
@@ -4891,6 +5286,7 @@ def list_agent_contract_handoffs(
     session_id: str | None = None,
     brief_id: int | None = None,
     task_status: str | None = None,
+    contract_id: str | None = None,
     limit: int = 100,
     db_path: "Path | None" = None,
 ) -> list[dict]:
@@ -4902,6 +5298,8 @@ def list_agent_contract_handoffs(
         session_id:  Filter by CLAUDE session ID.
         brief_id:    Filter by briefs.id FK.
         task_status: Filter by resolved plan_status.
+        contract_id: Filter by the T7 idempotency key (the CLI-minted
+            draft/contract id) -- see finalize_agent_contract_handoff.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
@@ -4927,6 +5325,9 @@ def list_agent_contract_handoffs(
         if task_status is not None:
             clauses.append("task_status = ?")
             params.append(task_status)
+        if contract_id is not None:
+            clauses.append("contract_id = ?")
+            params.append(contract_id)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
