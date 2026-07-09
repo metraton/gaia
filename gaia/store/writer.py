@@ -1378,6 +1378,120 @@ def write_harness_event(
 
 
 # ---------------------------------------------------------------------------
+# Public API: task_notifications (headless scheduled-task reports)
+# ---------------------------------------------------------------------------
+#
+# These mirror the write_harness_event contract: episodic, NOT curated memory,
+# so no agent_permissions gate. The difference is a MUTABLE `unread` flag that
+# `ack` clears -- this table is a lightweight unread inbox, not an append-only
+# audit mirror. Reads live in gaia.store.reader (list/get/count). The `gaia
+# notifications add|ack` CLI is classified T0 (local bookkeeping, reversible)
+# via COMMAND_SUBCOMMAND_TIER_EXCEPTIONS in mutative_verbs.py.
+
+def add_task_notification(
+    *,
+    task_name: str,
+    headline: str,
+    body: str | None = None,
+    session_id: str | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Insert one unread task-notification row and return its id.
+
+    Called by a headless scheduled task (or the `gaia notifications add` CLI)
+    when it finishes, to leave the user a generic PII-free report plus any
+    accumulated approval_ids. The row starts ``unread=1``; `ack` clears it.
+
+    Args:
+        task_name: Name of the scheduled task that produced the report.
+        headline: Short one-line summary (the title).
+        body: Full detail message (generic; no PII / proper nouns).
+        session_id: Resumable Claude session id (``claude --resume``).
+        workspace: Workspace name, or None for a global notification.
+        db_path: Optional explicit DB path (used by tests).
+
+    Returns:
+        Integer primary key of the inserted row.
+    """
+    if not task_name or not headline:
+        raise ValueError("task_name and headline are required")
+    con = _connect(db_path)
+    try:
+        cur = con.execute(
+            """
+            INSERT INTO task_notifications
+                (workspace, task_name, headline, body, session_id, created_at, unread)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
+            """,
+            (workspace, task_name, headline, body, session_id, _now_iso()),
+        )
+        con.commit()
+        return cur.lastrowid
+    finally:
+        con.close()
+
+
+def ack_task_notification(
+    notification_id: int,
+    *,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Mark one notification as seen (unread=0). Idempotent.
+
+    Returns ``{"status": "ok", "id": N, "action": "acked"|"noop"}``. ``noop``
+    when the row was already read; ``{"status": "not_found"}`` when no such id.
+    """
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT unread FROM task_notifications WHERE id = ?",
+            (notification_id,),
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "id": notification_id}
+        if int(row["unread"]) == 0:
+            return {"status": "ok", "id": notification_id, "action": "noop"}
+        con.execute(
+            "UPDATE task_notifications SET unread = 0, acked_at = ? WHERE id = ?",
+            (_now_iso(), notification_id),
+        )
+        con.commit()
+        return {"status": "ok", "id": notification_id, "action": "acked"}
+    finally:
+        con.close()
+
+
+def ack_all_task_notifications(
+    *,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Mark every unread notification seen; return the count cleared.
+
+    When ``workspace`` is given, only that workspace's rows are cleared;
+    otherwise ALL unread rows across workspaces are cleared.
+    """
+    con = _connect(db_path)
+    try:
+        if workspace is None:
+            cur = con.execute(
+                "UPDATE task_notifications SET unread = 0, acked_at = ? WHERE unread = 1",
+                (_now_iso(),),
+            )
+        else:
+            cur = con.execute(
+                "UPDATE task_notifications SET unread = 0, acked_at = ? "
+                "WHERE unread = 1 AND workspace = ?",
+                (_now_iso(), workspace),
+            )
+        con.commit()
+        return cur.rowcount
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API: upsert_memory
 # ---------------------------------------------------------------------------
 

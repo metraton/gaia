@@ -96,6 +96,42 @@ def _build_routing_recommendation(prompt_text: str) -> str:
         return ""
 
 
+def _build_notifications_counter() -> str:
+    """Return a one-line unread-notifications counter, or "" when there are none.
+
+    Deterministic and cheap (one COUNT query), mirroring the Surface Routing
+    Recommendation's zero-cost-when-empty contract: if there are no unread
+    headless-task notifications this injects NOTHING (zero tokens). When there
+    are, it injects a single line so the orchestrator can mention it; the full
+    list lands at SessionStart and detail is on-demand via `gaia notifications`.
+
+    Scoped to the current workspace (matching how `gaia notifications add`
+    stores the ``workspace`` column), falling back to all workspaces when the
+    workspace cannot be resolved. Never raises -- advisory only.
+    """
+    try:
+        pkg_root = str(Path(__file__).resolve().parent.parent)
+        if pkg_root not in sys.path:
+            sys.path.insert(0, pkg_root)
+        from gaia.store.reader import count_unread_notifications
+        try:
+            from gaia.project import current as _project_current
+            ws = _project_current() or None
+        except Exception:
+            ws = None
+        n = count_unread_notifications(ws)
+        if not n:
+            return ""
+        noun = "task notification" if n == 1 else "task notifications"
+        return (
+            f"\U0001F514 {n} {noun} sin ver "
+            f"(`gaia notifications list --unread` para verlas)"
+        )
+    except Exception as e:
+        logger.warning("notifications counter failed (advisory, skipping): %s", e)
+        return ""
+
+
 def _detect_install_method() -> str:
     """Detect how Gaia was installed: "npm" or "plugin".
 
@@ -256,6 +292,12 @@ if __name__ == "__main__":
                 context_parts.append(routing_block)
         else:
             logger.info("Could not extract user prompt from stdin, skipping routing")
+
+        # Unread headless-task notifications counter. Cheap (one COUNT) and
+        # zero-token when there are none, like the routing recommendation.
+        notif_counter = _build_notifications_counter()
+        if notif_counter:
+            context_parts.append(notif_counter)
 
         additional_context = "\n\n".join(context_parts)
         logger.info("Context injected (%d chars)", len(additional_context))

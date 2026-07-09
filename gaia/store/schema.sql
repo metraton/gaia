@@ -917,6 +917,34 @@ CREATE INDEX IF NOT EXISTS idx_harness_events_workspace_ts ON harness_events(wor
 CREATE INDEX IF NOT EXISTS idx_harness_events_type ON harness_events(type);
 
 -- ---------------------------------------------------------------------------
+-- task_notifications: reports a headless scheduled task leaves for the user.
+-- ---------------------------------------------------------------------------
+-- A headless scheduled task (see the scheduled-task skill) runs unattended and
+-- cannot ask the user anything mid-run. When it finishes it writes ONE row here
+-- with a generic, PII-free summary of what it did plus any approval_ids it had
+-- to accumulate. The row carries the resumable Claude session_id so the user
+-- can `claude --resume <session_id>` on demand to grant the pending T3s.
+--
+-- Distinct from harness_events (append-only audit mirror, no mutable state):
+-- these rows carry a MUTABLE `unread` flag that `gaia notifications ack` clears,
+-- because the whole point is a lightweight unread inbox surfaced at SessionStart
+-- and as a per-prompt counter. Not curated memory, so -- like harness_events --
+-- it is written without an agent_permissions gate.
+CREATE TABLE IF NOT EXISTS task_notifications (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace  TEXT,                      -- workspace name; NULL for global
+    task_name  TEXT NOT NULL,             -- name of the scheduled task that reported
+    headline   TEXT NOT NULL,             -- short one-line summary (the title)
+    body       TEXT,                      -- full detail message (generic, no PII)
+    session_id TEXT,                      -- resumable Claude session id (claude --resume)
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    unread     INTEGER NOT NULL DEFAULT 1, -- 1 = not yet acknowledged (BOOLEAN)
+    acked_at   TEXT                       -- ISO8601 when marked seen; NULL while unread
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_notifications_unread ON task_notifications(unread, created_at DESC);
+
+-- ---------------------------------------------------------------------------
 -- approval_grants: DB-backed store for command_set approval grants (v7 / M3)
 -- Replaces the filesystem JSON store (.claude/cache/approvals/).
 -- Per D5/D10: no TTL column (enforced at query time via created_at + 10 min);

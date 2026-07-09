@@ -88,7 +88,9 @@ skills/
 │   ├── reference.md
 │   └── examples.md
 ├── agent-approval-protocol/ # Unified approval protocol combining request + present flows
-├── schedule-task/         # Dispatch parameter extraction and prompt templates
+├── scheduled-task/        # Headless recurring task: crontab + claude -p, reports via notifications
+│   ├── reference.md
+│   └── scripts/           # run-scheduled-task.sh wrapper + crontab.template
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
 ├── session-reflection/    # End-of-session reflection on conversational arc
@@ -126,7 +128,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `git-conventions` — Conventional Commits format
 - `pending-approvals` — present and resolve pending approval requests
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
-- `schedule-task` — dispatch parameter templates
+- `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match, `user-invocable: false`
 - `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
 - `jira-ticket-writing` — formula for Jira Stories and Subtasks; user-invocable, `user-invocable: true`
 - `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, `user-invocable: true`

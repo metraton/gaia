@@ -312,6 +312,14 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # deletion) stays T3 via the per-group deny-verbs guard in
     # COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS below.
     ("gaia", "task"): CATEGORY_READ_ONLY,
+    # `gaia notifications <verb>` (add/list/show/ack): the headless scheduled-task
+    # inbox in gaia.db — episodic, reversible, purely local bookkeeping (ack only
+    # flips an `unread` flag; add appends a report row). A headless task MUST be
+    # able to `notifications add` its final report without stalling on a T3 gate
+    # (it cannot ask the user anything), so the whole group is T0 like brief/ac/
+    # plan/task. There is no destructive verb here (no delete/purge), so the
+    # global deny-verb guard leaves every notifications verb exempt.
+    ("gaia", "notifications"): CATEGORY_READ_ONLY,
 }
 
 # Verbs that stay gated even under an excepted group above.  The exception

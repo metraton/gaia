@@ -619,6 +619,61 @@ def build_contracts_index_block(max_chars: int = 2000) -> str:
     return block
 
 
+def build_task_notifications_block(
+    workspace: Optional[str] = None,
+    limit: int = 10,
+) -> str:
+    """Render a compact list of UNREAD headless-task notifications, one per line.
+
+    A headless scheduled task (see the scheduled-task skill) leaves a report row
+    via `gaia notifications add` when it finishes; it cannot ask the user
+    anything, so this SessionStart block is how those reports surface. Each line
+    carries task_name + headline + time + the resumable session_id, so the user
+    can `claude --resume <session_id>` to grant any pending T3s. Read via
+    `gaia notifications show <id>` for the full body; clear with
+    `gaia notifications ack`.
+
+    Scoped to the current workspace when one can be inferred, else all
+    workspaces. Emits "" when there are no unread rows (zero-noise, like the
+    per-prompt counter). Fail-safe: any error returns "".
+    """
+    try:
+        _pkg_root = str(Path(__file__).resolve().parents[3])
+        if _pkg_root not in sys.path:
+            sys.path.insert(0, _pkg_root)
+    except Exception:
+        pass
+
+    try:
+        from gaia.store.reader import list_unread_notifications
+    except Exception as exc:
+        logger.debug("task_notifications import failed (non-fatal): %s", exc)
+        return ""
+
+    try:
+        ws = workspace or _read_workspace_identity()
+        rows = list_unread_notifications(workspace=ws, limit=limit)
+        if not rows:
+            return ""
+
+        lines = ["## Task Notifications (unread)"]
+        for r in rows:
+            sid = r.get("session_id") or "-"
+            when = r.get("created_at") or "?"
+            lines.append(
+                f"- [{r['id']}] {r['task_name']} — {r['headline']} "
+                f"({when}) · resume: {sid}"
+            )
+        lines.append(
+            "Read one: `gaia notifications show <id>` · "
+            "resume: `claude --resume <session_id>` · clear: `gaia notifications ack <id>`"
+        )
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("build_task_notifications_block failed (non-fatal): %s", exc)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Assembler
 # ---------------------------------------------------------------------------
@@ -639,6 +694,12 @@ def build_session_context() -> str:
             # path the orchestrator already holds, without spending a subagent.
             build_projects_context_block(),
             build_agentic_loop_block(),
+            # Unread headless-task notifications: a compact list of reports left
+            # by scheduled tasks (task_name + headline + time + resumable
+            # session_id). Emitted after the loop state so the user sees what
+            # ran unattended and can `claude --resume` to grant pending T3s.
+            # Zero-noise: emits nothing when there are no unread rows.
+            build_task_notifications_block(),
             # Pending approvals are no longer surfaced here. Cross-session
             # surfacing of pendings (the [ACTIONABLE] block) was removed: the
             # DB remains the pending store, TTL hygiene keeps it clean, and the

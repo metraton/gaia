@@ -47,6 +47,101 @@ def _connect(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 # ---------------------------------------------------------------------------
+# task_notifications reads (headless scheduled-task reports)
+# ---------------------------------------------------------------------------
+#
+# Read-side complement to the writer's add/ack API. Used by the `gaia
+# notifications list|show` CLI and by the hooks (SessionStart list + per-prompt
+# unread counter). All read-only (T0). ``workspace=None`` means "all workspaces"
+# for the count/list helpers; the CLI scopes to the active workspace by default.
+
+def count_unread_notifications(
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Return the number of unread task-notifications, optionally scoped.
+
+    Fail-soft: returns 0 on any query/connection error so the per-prompt hook
+    counter never breaks the pipeline.
+    """
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return 0
+    try:
+        if workspace is None:
+            row = con.execute(
+                "SELECT COUNT(*) FROM task_notifications WHERE unread = 1"
+            ).fetchone()
+        else:
+            row = con.execute(
+                "SELECT COUNT(*) FROM task_notifications WHERE unread = 1 AND workspace = ?",
+                (workspace,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+    finally:
+        con.close()
+
+
+def list_unread_notifications(
+    workspace: str | None = None,
+    limit: int = 50,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return unread task-notifications, newest first, as plain dicts.
+
+    Each dict carries: id, workspace, task_name, headline, body, session_id,
+    created_at, unread, acked_at. Fail-soft: returns [] on any error.
+    """
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        if workspace is None:
+            rows = con.execute(
+                "SELECT * FROM task_notifications WHERE unread = 1 "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM task_notifications WHERE unread = 1 AND workspace = ? "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (workspace, limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def get_notification(
+    notification_id: int,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return one task-notification by id as a plain dict, or None.
+
+    Read-only; does NOT change the unread flag (that is `ack`'s job).
+    """
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return None
+    try:
+        row = con.execute(
+            "SELECT * FROM task_notifications WHERE id = ?",
+            (notification_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Duration / date parsing for --since / --until
 # ---------------------------------------------------------------------------
 

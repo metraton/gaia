@@ -1,0 +1,30 @@
+# crontab.template -- staggered schedule entries for Gaia headless tasks.
+#
+# Install with:  crontab -e   (then paste + adapt the lines below)
+# Inspect with:  crontab -l
+#
+# Each line runs ONE wrapper (scripts/run-scheduled-task.sh, one copy per task).
+# STAGGER the minutes so two tasks never start in the same minute -- a headless
+# `claude -p` run can hold resources, and staggering keeps notifications ordered
+# and logs readable.
+#
+# Fields:  minute hour day-of-month month day-of-week  command
+#
+# cron has almost no environment. Do NOT rely on your shell profile: the wrapper
+# exports what it needs. Give an ABSOLUTE path to the wrapper and redirect its
+# output to a per-task log so a failure is diagnosable.
+
+# --- example: nightly test digest at 03:07 -------------------------------
+7 3 * * *  TASK_NAME=nightly-tests PROJECT_DIR=/home/jorge/ws/me \
+  /home/jorge/ws/me/scheduled-tasks/nightly-tests.sh \
+  >> /home/jorge/.gaia/scheduled-tasks/nightly-tests.log 2>&1
+
+# --- example: every 6 hours, offset to :23 so it never collides ----------
+23 */6 * * *  TASK_NAME=repo-scan PROJECT_DIR=/home/jorge/ws/me \
+  /home/jorge/ws/me/scheduled-tasks/repo-scan.sh \
+  >> /home/jorge/.gaia/scheduled-tasks/repo-scan.log 2>&1
+
+# --- example: weekday mornings at 08:15 ----------------------------------
+15 8 * * 1-5  TASK_NAME=morning-brief PROJECT_DIR=/home/jorge/ws/me \
+  /home/jorge/ws/me/scheduled-tasks/morning-brief.sh \
+  >> /home/jorge/.gaia/scheduled-tasks/morning-brief.log 2>&1
