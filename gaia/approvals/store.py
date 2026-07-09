@@ -190,6 +190,16 @@ def insert_requested(
          with the hash-chain linked correctly (prev_hash from chain tip).
       5. Commits and returns the approval_id.
 
+    Concurrency: when this opens its own connection (``con=None`` -- the T3
+    hook-block path), the pending INSERT and the REQUESTED chain event run as a
+    single atomic unit inside a ``BEGIN IMMEDIATE`` transaction and the whole
+    unit is retried on a transient "database is locked", mirroring the sibling
+    writer ``gaia.store.writer.insert_agent_contract_handoff``. A retry re-runs
+    the entire unit after a full rollback, so a contended write retries instead
+    of failing the record and never leaves a half-written pending/event pair.
+    When a ``con`` is supplied the caller owns the transaction, so this path is
+    left un-armored (the caller controls commit/rollback and retry).
+
     Args:
         sealed_payload: Dict with the T3 operation details (operation,
             exact_content, scope, risk_level, rollback_hint, rationale, commands).
@@ -214,12 +224,23 @@ def insert_requested(
         is returned unchanged (fingerprint idempotency -- see below).
     """
     # Compute the fingerprint FIRST so we can check for an existing pending with
-    # the same byte-binding before minting anything.
+    # the same byte-binding before minting anything. This is pure (no DB) so it
+    # is safe to run once outside the retry loop.
     fp = fingerprint_payload(sealed_payload)
     canon_json = canonical_payload(sealed_payload)
 
-    _con, owned = _get_con(con)
-    try:
+    def _unit(_con: sqlite3.Connection) -> str:
+        """The whole pending-insert + REQUESTED-event unit against one connection.
+
+        This is a SINGLE atomic unit: the idempotency SELECT, the parent
+        ``approvals`` INSERT, and the ``approval_events`` REQUESTED write all run
+        together. Whichever path (owned or caller-supplied ``con``) invokes it,
+        the pending row and its hash-chain REQUESTED event are written or not
+        written together -- never split. Under the owned path it runs inside a
+        BEGIN IMMEDIATE ... commit/rollback envelope (see below), so a
+        retry-on-locked re-runs this ENTIRE unit from scratch after a full
+        rollback rather than resuming a half-written pending/event pair.
+        """
         # Fingerprint idempotency (Brief 71 byte-binding, session-agnostic):
         # if a pending approval with this exact fingerprint already exists, reuse
         # it instead of minting a new P-. The fingerprint is SHA-256 of the
@@ -231,6 +252,12 @@ def insert_requested(
         # REQUESTED event for the reused id: the append-only hash chain (D15)
         # records each approval's REQUESTED exactly once, and a duplicate
         # REQUESTED would break the one-REQUESTED-per-approval invariant.
+        #
+        # Re-checking this INSIDE the unit is also what makes _retry_on_locked
+        # safe: if a prior attempt lost the lock race it rolled back (committing
+        # nothing), so the retry's SELECT still finds no pending row and mints
+        # cleanly; and it never runs after a successful commit (success returns
+        # without retrying), so a committed row is never duplicated.
         existing = _con.execute(
             "SELECT id FROM approvals "
             "WHERE status = 'pending' AND fingerprint = ? "
@@ -247,37 +274,69 @@ def insert_requested(
 
         # Use the caller-supplied id (plan-first COMMAND_SET: content-derived,
         # reproducible by the orchestrator) when given, else mint a uuid4 id
-        # (singular T3 hook-block path).
-        if approval_id is None:
-            approval_id = _generate_approval_id()
+        # (singular T3 hook-block path). Minted INSIDE the unit so a retry that
+        # re-runs after rollback re-checks idempotency before minting.
+        aid = approval_id if approval_id is not None else _generate_approval_id()
 
         # Insert the parent approval row.
         _con.execute(
             "INSERT INTO approvals "
             "(id, agent_id, session_id, status, fingerprint, payload_json) "
             "VALUES (?, ?, ?, 'pending', ?, ?)",
-            (approval_id, agent_id, session_id, fp, canon_json),
+            (aid, agent_id, session_id, fp, canon_json),
         )
 
         # Emit REQUESTED event via chain.insert_event() -- the ONLY
-        # authorized path to write to approval_events (D16).
+        # authorized path to write to approval_events (D16). Holding the write
+        # lock (BEGIN IMMEDIATE) around this SELECT-then-INSERT also serializes
+        # concurrent chain writers, so prev_hash cannot be read stale by a racing
+        # writer -- the hash chain stays linear under contention.
         insert_event(
             _con,
-            approval_id,
+            aid,
             "REQUESTED",
             agent_id=agent_id,
             session_id=session_id,
             payload_json=canon_json,
             fingerprint=fp,
         )
+        return aid
 
-        if owned:
-            _con.commit()
-    finally:
-        if owned:
+    # Caller-supplied connection: the caller owns the transaction lifecycle
+    # (no BEGIN IMMEDIATE, no commit, no close, no retry). Issuing our own
+    # BEGIN IMMEDIATE here would collide with the caller's open transaction, and
+    # a retry would re-run inside a transaction we do not control -- so the
+    # caller-owned path is left exactly as-is.
+    if con is not None:
+        return _unit(con)
+
+    # Owned path (con is None) -- this is the concurrent-multi-subagent failure
+    # mode from the diagnostic. Mirror gaia.store.writer.insert_agent_contract_
+    # handoff: open a fresh connection, acquire the write lock UP FRONT with
+    # BEGIN IMMEDIATE (so the SELECT-then-INSERT body cannot deadlock against a
+    # writer upgrading SHARED->RESERVED mid-unit), commit on success, roll back
+    # on any failure, and wrap the whole self-contained unit in _retry_on_locked
+    # so a transient "database is locked" retries with bounded backoff instead of
+    # failing the record. The busy_timeout on the connection handles the common
+    # contention; this covers the residual >busy_timeout stall that surfaced the
+    # "failed to persist the pending approval record" bug.
+    from gaia.store.writer import _retry_on_locked
+
+    def _work() -> str:
+        _con = _open_db()
+        try:
+            _con.execute("BEGIN IMMEDIATE")
+            try:
+                aid = _unit(_con)
+                _con.commit()
+                return aid
+            except Exception:
+                _con.rollback()
+                raise
+        finally:
             _con.close()
 
-    return approval_id
+    return _retry_on_locked(_work)
 
 
 def record_event(

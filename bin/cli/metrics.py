@@ -896,6 +896,36 @@ def _calculate_error_rate(audit_logs: list) -> dict:
     }
 
 
+def _calculate_security_events(event_logs: list) -> dict:
+    """Aggregate always-on synthetic security events over the window.
+
+    ``event_logs`` are the audit records carrying an ``event`` key (error /
+    t3_degraded_allow) -- NOT tool executions. Discriminating them here (and
+    out of tier usage / command breakdown / error rate) keeps the degraded-allow
+    and persist-failure sensors from being miscounted as executed T3 commands.
+
+    Surfaces the two complementary Q3 sensors:
+      * ``t3_degraded_allow`` -- total + ``by_reason`` breakdown so a query like
+        "degraded T3 allows grouped by reason" is answerable.
+      * ``approval_persist_failed`` -- the raw persist-failure error count.
+    """
+    degraded = [e for e in event_logs if e.get("event") == "t3_degraded_allow"]
+    persist_failed = [
+        e
+        for e in event_logs
+        if e.get("event") == "error"
+        and e.get("error_type") == "approval_persist_failed"
+    ]
+    by_reason = {}
+    for e in degraded:
+        r = e.get("reason") or "unknown"
+        by_reason[r] = by_reason.get(r, 0) + 1
+    return {
+        "t3_degraded_allow": {"total": len(degraded), "by_reason": by_reason},
+        "approval_persist_failed": len(persist_failed),
+    }
+
+
 def _split_native_agents(entries: list) -> tuple:
     """Separate harness-native Claude Code agents from Gaia domain specialists.
 
@@ -1249,6 +1279,9 @@ class MetricsSnapshot:
     context_snapshots: Optional[dict]
     context_updates: Optional[dict]
     agent_filter: Optional[str] = None
+    # Q3: always-on security-event counts (t3_degraded_allow +
+    # approval_persist_failed) discriminated out of the execution aggregates.
+    security_events: Optional[dict] = None
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -1269,6 +1302,12 @@ class MetricsSnapshot:
         window: Optional[TimeWindow] = None,
     ) -> "MetricsSnapshot":
         win = window or _DEFAULT_WINDOW
+        # Q3: split synthetic security-event records (carrying an ``event`` key:
+        # error / t3_degraded_allow) out of the execution-oriented audit logs so
+        # tier usage / command breakdown / top commands / error rate count only
+        # real tool executions. The events feed security_events instead.
+        exec_logs = [l for l in audit_logs if not l.get("event")]
+        event_logs = [l for l in audit_logs if l.get("event")]
         gaia_metrics, native_metrics = _split_native_agents(workflow_metrics)
         # P0 fix: runtime skills previously computed over run_snapshots
         # WITHOUT native-agent filtering, unlike invocations/outcomes/tokens
@@ -1282,12 +1321,12 @@ class MetricsSnapshot:
             workspace=workspace,
             window=win.to_dict(),
             audit_entry_count=len(audit_logs),
-            security_tiers=_calculate_tier_usage(audit_logs),
-            cmd_types=_calculate_command_type_breakdown(audit_logs),
-            top_cmds=_calculate_top_commands(audit_logs),
+            security_tiers=_calculate_tier_usage(exec_logs),
+            cmd_types=_calculate_command_type_breakdown(exec_logs),
+            top_cmds=_calculate_top_commands(exec_logs),
             agent_invocations=_calculate_agent_invocations(gaia_metrics),
             native_agent_activity=_calculate_agent_invocations(native_metrics),
-            error_stats=_calculate_error_rate(audit_logs),
+            error_stats=_calculate_error_rate(exec_logs),
             agent_outcomes=_calculate_agent_outcomes(gaia_metrics),
             token_usage=_calculate_token_usage(gaia_metrics),
             anomaly_summary=_calculate_anomaly_summary(anomaly_entries),
@@ -1295,6 +1334,7 @@ class MetricsSnapshot:
             context_snapshots=_calculate_context_snapshot_summary(run_snapshots),
             context_updates=_calculate_context_update_summary(run_snapshots),
             agent_filter=agent_filter,
+            security_events=_calculate_security_events(event_logs),
         )
 
     @classmethod
@@ -1319,6 +1359,7 @@ class MetricsSnapshot:
             runtime_skills={"explicit_count": 0, "run_default_count": 0, "agent_count": 0, "latest_profiles": [], "top_skills": []},
             context_snapshots=None,
             context_updates=None,
+            security_events=_calculate_security_events([]),
         )
 
 

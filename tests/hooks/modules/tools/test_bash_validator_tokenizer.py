@@ -144,3 +144,42 @@ class TestSafeCommandsRemainSafe:
             f"Regression -- safe command flagged: {command!r} -> "
             f"verb={result.verb!r} reason={result.reason!r}"
         )
+
+
+class TestCompoundCdRelativeScriptResolution:
+    """End-to-end pipeline guard: the compound validator folds a leading ``cd``
+    cwd across the SEPARATE components it splits a chain into, so a relative
+    script that lands in its own component still resolves against the ``cd``
+    target.  This is the layer the reproduced false-T3 bug actually hit --
+    ``detect_mutative_command`` sees one component at a time, so the fold must
+    happen in ``_validate_compound_command``.
+    """
+
+    def _validator(self):
+        from modules.tools.bash_validator import BashValidator
+        return BashValidator()
+
+    def test_clean_chain_classifies_t0(self, tmp_path):
+        repo = tmp_path / "repo"
+        (repo / "engine").mkdir(parents=True)
+        (repo / "tools").mkdir(parents=True)
+        (repo / "engine" / "build-data.mjs").write_text("console.log('ok');\n")
+        (repo / "tools" / "verify-model.cjs").write_text("console.log('ok');\n")
+        chain = (
+            f"cd {repo} && node engine/build-data.mjs "
+            f"&& node tools/verify-model.cjs"
+        )
+        result = self._validator().validate(
+            chain, is_subagent=True, session_id="t", agent_type="developer",
+        )
+        assert result.allowed is True
+        assert result.tier.value == "T0"
+
+    def test_missing_relative_script_behind_cd_still_blocks(self, tmp_path):
+        repo = tmp_path / "repo"
+        (repo / "engine").mkdir(parents=True)
+        chain = f"cd {repo} && node engine/ghost.mjs"
+        result = self._validator().validate(
+            chain, is_subagent=True, session_id="t", agent_type="developer",
+        )
+        assert result.allowed is False

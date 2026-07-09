@@ -86,6 +86,99 @@ class AuditLogger:
 
         logger.debug(f"Logged execution: {tool_name} - {command[:50]} - {duration:.2f}s")
 
+    def log_error(
+        self,
+        component: str,
+        error_type: str,
+        detail: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a component error to the always-on daily audit log.
+
+        Unlike the ``logging`` module (which hook code routes through a
+        ``NullHandler`` by default -- see modules.core.logging_setup), this writes
+        to the same ``audit-YYYY-MM-DD.jsonl`` the tool-execution audit uses, so
+        a rare-but-critical failure (e.g. a persistence failure that falls back
+        to a hollow "ask") is diagnosable AFTER the fact regardless of whether
+        GAIA_DEBUG was set. ``gaia metrics`` already loads these files via the
+        ``audit-*.jsonl`` glob, so error records surface in the same window.
+
+        Args:
+            component: Subsystem that raised the error (e.g. "gaia.approvals").
+            error_type: Short machine tag (e.g. "approval_persist_failed").
+            detail: The underlying exception text or human-readable detail.
+            context: Optional extra fields (sanitized) for triage.
+        """
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": self.session_id,
+            "event": "error",
+            "component": component,
+            "error_type": error_type,
+            "detail": detail[:2000],
+        }
+        if context:
+            record["context"] = self._sanitize_params(context)
+        daily_log_file = self.log_dir / f"audit-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
+        self._write_record(daily_log_file, record)
+
+    def log_event(
+        self,
+        event: str,
+        component: str,
+        *,
+        tier: Optional[str] = None,
+        reason: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        origin: Optional[str] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a synthetic (non-execution) event to the always-on audit log.
+
+        Companion to ``log_error``: both write to the same
+        ``audit-YYYY-MM-DD.jsonl`` the tool-execution audit uses (NOT gated by
+        GAIA_DEBUG), so a policy-level signal is diagnosable after the fact and
+        loadable by ``gaia metrics`` via the ``audit-*.jsonl`` glob. Where
+        ``log_error`` emits ``event="error"`` records, this emits an arbitrary
+        ``event`` tag (e.g. ``t3_degraded_allow``) alongside a component and the
+        optional tier / reason / fingerprint / origin fields the metrics layer
+        discriminates on.
+
+        A ``fingerprint`` is expected to be a HASH (e.g. the approval store's
+        SHA-256 sealed-payload fingerprint) -- never a raw command -- so no
+        secret ever lands in the log. Any ``context`` dict is run through the
+        same ``_sanitize_params`` redaction the execution audit uses.
+
+        Args:
+            event: Machine event tag (e.g. "t3_degraded_allow").
+            component: Subsystem that raised the event (e.g. "gaia.bash_validator").
+            tier: Optional security tier string (e.g. "T3").
+            reason: Optional underlying-cause tag (e.g. "approval_persist_failed").
+            fingerprint: Optional redacted command fingerprint (a hash, not the
+                raw command).
+            origin: Optional origin marker ("subagent" / "orchestrator") when
+                determinable.
+            context: Optional extra fields (sanitized) for triage.
+        """
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "session_id": self.session_id,
+            "event": event,
+            "component": component,
+        }
+        if tier is not None:
+            record["tier"] = tier
+        if reason is not None:
+            record["reason"] = reason
+        if fingerprint is not None:
+            record["fingerprint"] = fingerprint
+        if origin is not None:
+            record["origin"] = origin
+        if context:
+            record["context"] = self._sanitize_params(context)
+        daily_log_file = self.log_dir / f"audit-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
+        self._write_record(daily_log_file, record)
+
     def _sanitize_params(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """Remove sensitive data from parameters."""
         sanitized = {}
@@ -133,4 +226,36 @@ def log_execution(
     """Log tool execution (convenience function)."""
     get_audit_logger().log_execution(
         tool_name, parameters, result, duration, exit_code, tier
+    )
+
+
+def log_error(
+    component: str,
+    error_type: str,
+    detail: str,
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record a component error to the always-on audit log (convenience function)."""
+    get_audit_logger().log_error(component, error_type, detail, context)
+
+
+def log_event(
+    event: str,
+    component: str,
+    *,
+    tier: Optional[str] = None,
+    reason: Optional[str] = None,
+    fingerprint: Optional[str] = None,
+    origin: Optional[str] = None,
+    context: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record a synthetic audit event to the always-on log (convenience function)."""
+    get_audit_logger().log_event(
+        event,
+        component,
+        tier=tier,
+        reason=reason,
+        fingerprint=fingerprint,
+        origin=origin,
+        context=context,
     )

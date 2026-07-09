@@ -37,6 +37,7 @@ from ..security.blocked_commands import is_blocked_command
 from ..security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
+    cwd_after_component,
 )
 from ..security.flag_classifiers import (
     classify_by_flags,
@@ -55,9 +56,9 @@ from ..security.approval_grants import (
     # migrated. Do not re-introduce these calls in _validate_atomic_command.
 )
 from ..security.approval_messages import (
-    build_pending_approval_unavailable_message,
     build_t3_approval_instructions,
     build_t3_blocked_denial_message,
+    build_t3_degraded_allow_message,
 )
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
@@ -622,6 +623,7 @@ class BashValidator:
         is_subagent: bool = False,
         session_id: str = "",
         agent_type: str = "",
+        cwd: Optional[str] = None,
     ) -> BashValidationResult:
         """Validate a single command (no operators).
 
@@ -651,8 +653,11 @@ class BashValidator:
         if indirect_result is not None:
             return indirect_result
 
-        # Mutative verb detection
-        result = detect_mutative_command(command)
+        # Mutative verb detection.  ``cwd`` carries the effective directory
+        # folded from a preceding ``cd`` component of the chain (see
+        # _validate_compound_command), so a relative script path resolves
+        # against the workspace the chain navigated to, not the hook's own cwd.
+        result = detect_mutative_command(command, cwd=cwd)
         if result.is_mutative:
             # Check for a DB-backed command_set grant first (M3 path).
             # Byte-for-byte match per D10: no normalization.
@@ -914,7 +919,7 @@ class BashValidator:
         )
 
     def _is_ungranted_t3_component(
-        self, component: str, session_id: str
+        self, component: str, session_id: str, cwd: Optional[str] = None
     ) -> bool:
         """Classify a chain component as ungranted-T3 WITHOUT minting or consuming.
 
@@ -936,8 +941,10 @@ class BashValidator:
         if not component:
             return False
 
-        # Is this T3 (mutative verb or flag-dependent mutation)?
-        detect = detect_mutative_command(component)
+        # Is this T3 (mutative verb or flag-dependent mutation)?  Honor the
+        # folded cwd so a clean relative script behind a `cd` is not mis-counted
+        # as ungranted-T3 (which would wrongly pull it into a COMMAND_SET batch).
+        detect = detect_mutative_command(component, cwd=cwd)
         is_t3 = detect.is_mutative
         if not is_t3:
             flag_result = classify_by_flags(component)
@@ -996,11 +1003,22 @@ class BashValidator:
         logger.info(f"Compound command detected with {len(components)} components")
 
         # NON-MINTING pre-pass: which components are ungranted T3? (AC-8)
+        # Fold cwd per index so the T3 probe honors a leading `cd` exactly as
+        # the real classification pass below does -- otherwise a clean relative
+        # script behind a `cd` would be mis-probed as T3 and pulled into the
+        # batch.  cwd_by_idx[i] is the cwd in effect BEFORE component i runs.
+        cwd_by_idx: List[Optional[str]] = []
+        _pre_cwd: Optional[str] = None
+        for comp in components:
+            cwd_by_idx.append(_pre_cwd)
+            _pre_cwd = cwd_after_component(comp, _pre_cwd)
         if is_subagent:
             ungranted_t3_idx = [
                 idx
                 for idx, comp in enumerate(components)
-                if self._is_ungranted_t3_component(comp, session_id)
+                if self._is_ungranted_t3_component(
+                    comp, session_id, cwd=cwd_by_idx[idx]
+                )
             ]
             if len(ungranted_t3_idx) >= 2:
                 chain_set = [
@@ -1008,7 +1026,9 @@ class BashValidator:
                     for idx in ungranted_t3_idx
                 ]
                 first_cmd = chain_set[0]["command"]
-                first_detect = detect_mutative_command(first_cmd)
+                first_detect = detect_mutative_command(
+                    first_cmd, cwd=cwd_by_idx[ungranted_t3_idx[0]]
+                )
                 verb = first_detect.verb or "command"
                 category = first_detect.category or "MUTATIVE"
                 native_ask_reason = (
@@ -1034,11 +1054,22 @@ class BashValidator:
                 )
 
         component_results: List[BashValidationResult] = []
+        # Fold the effective cwd across components: a `cd X` component sets the
+        # cwd for the components that FOLLOW it, so a relative script path in a
+        # later `node rel.mjs` component resolves against X, not the hook's cwd.
+        # `cd` and the script land in SEPARATE components (the chain is split on
+        # `&&`), so the fold must happen here -- detect_mutative_command only
+        # sees one component at a time.  running_cwd=None keeps the hook-cwd
+        # default for a chain with no leading cd.
+        running_cwd: Optional[str] = None
         for i, component in enumerate(components, 1):
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type,
+                agent_type=agent_type, cwd=running_cwd,
             )
+            # Advance the cwd AFTER classifying this component, so a `cd` only
+            # affects subsequent components (POSIX chain semantics).
+            running_cwd = cwd_after_component(component, running_cwd)
 
             if not result.allowed:
                 return BashValidationResult(
@@ -1621,17 +1652,96 @@ def decide_t3_outcome(
             )
         except Exception as _store_err:
             logger.warning(
-                "DB insert_requested failed for subagent; "
-                "falling back to ask: %s -- %s",
+                "DB insert_requested failed after retries for subagent; "
+                "degrading to non-blocking allow: %s -- %s",
                 command[:80], _store_err,
             )
-            reason = build_pending_approval_unavailable_message()
-            hook_ask = build_hook_permission_response("ask", reason)
+            # ---- Q1 sensor: persist-failure (always-on) ----------------------
+            # Diagnosability: the logger above routes through a NullHandler when
+            # GAIA_DEBUG is unset (the default), so its warning is a no-op and the
+            # exact exception would be unrecoverable. Persist the underlying error
+            # to the always-on audit sink (audit-*.jsonl, not gated by GAIA_DEBUG)
+            # so the NEXT occurrence of a persistence failure is diagnosable after
+            # the fact. Best-effort: never let the diagnostic sink mask the
+            # degraded-allow behavior. Tagged "approval_persist_failed" -- the
+            # canonical vocabulary `gaia metrics` groups on (persist-failure
+            # sensor, complementary to the t3_degraded_allow sensor below).
+            try:
+                from ..audit.logger import log_error
+                log_error(
+                    component="gaia.approvals",
+                    error_type="approval_persist_failed",
+                    detail=f"{type(_store_err).__name__}: {_store_err}",
+                    context={
+                        "command": command[:200],
+                        "agent_id": agent_type or "",
+                        "session_id": session_id or "",
+                    },
+                )
+            except Exception:
+                pass
+
+            # ---- Deny-list re-assertion (defense-in-depth) -------------------
+            # The Q3 degraded-allow must NEVER cover a deny-listed destructive
+            # command. Two prior barriers already guarantee this: the harness
+            # native deny-list (settings _DENY_RULES) blocks such commands
+            # BEFORE the hook runs, and validate() Phase 3a/3b (is_blocked_command)
+            # blocks them BEFORE reaching decide_t3_outcome. We re-assert it here
+            # so THIS branch is structurally incapable of allowing a blocked
+            # command even if the upstream flow ever changed -- a blocked command
+            # falls to a permanent hard deny (exit 2), never a degraded allow.
+            _blocked = is_blocked_command(command)
+            if _blocked.is_blocked:
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=f"Command blocked by security policy: {_blocked.category}",
+                    suggestions=[_blocked.suggestion] if _blocked.suggestion else [],
+                )
+
+            # ---- Q3 sensor: degraded-allow (always-on) -----------------------
+            # Reuse the approval store's SAME fingerprint (SHA-256 of the
+            # canonical sealed_payload) so the audit event redacts the command to
+            # a hash -- no secret is logged. Best-effort: a fingerprint failure
+            # must not block the allow.
+            try:
+                from gaia.approvals.chain import fingerprint_payload
+                _fp = fingerprint_payload(sealed_payload)
+            except Exception:
+                _fp = None
+            try:
+                from ..audit.logger import log_event
+                log_event(
+                    event="t3_degraded_allow",
+                    component="gaia.bash_validator",
+                    tier="T3",
+                    reason="approval_persist_failed",
+                    fingerprint=_fp,
+                    # This branch only runs inside `has_orchestrator_above`, i.e.
+                    # a subagent running under the orchestrator.
+                    origin="subagent",
+                    context={"verb": verb, "category": category},
+                )
+            except Exception:
+                pass
+
+            # ---- Q3 policy: non-blocking allow -------------------------------
+            # After the Q1 retry loop is exhausted, ALLOW the residual (non
+            # deny-listed) T3 to proceed instead of returning "ask". A native
+            # ask dialog hangs unattended/headless (scheduled-task) runs where
+            # no human can click; the degraded-allow keeps them alive. Delivered
+            # via allowed=False + an "allow" block_response so the adapter emits
+            # an explicit permissionDecision "allow" verbatim (the allowed=True
+            # path returns empty output and would defer to the harness permission
+            # system, which could still prompt). This mirrors how the former
+            # "ask" fallback delivered its decision through block_response.
+            reason = build_t3_degraded_allow_message()
+            hook_allow = build_hook_permission_response("allow", reason)
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
-                reason="Pending approval persistence failed",
-                block_response=hook_ask,
+                reason="T3 degraded-allow: approval persistence failed",
+                block_response=hook_allow,
             )
         reason = build_t3_blocked_denial_message(
             approval_id=approval_id,

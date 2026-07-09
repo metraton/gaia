@@ -11,6 +11,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 from modules.security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
+    cwd_after_component,
     MutativeResult,
     COMMAND_ALIASES,
     SIMULATION_FLAGS,
@@ -2356,6 +2357,114 @@ class TestScriptFileEvasion:
         ordinary scanning and is not flagged as an unreadable script."""
         result = detect_mutative_command("python3 -m pytest tests/x.py")
         assert result.is_mutative is False
+
+
+class TestRelativeScriptCwdResolution:
+    """A RELATIVE script path behind a ``cd`` must resolve against the ``cd``
+    TARGET, not the hook's own cwd.
+
+    Before the fix, ``cd /repo && node build.mjs`` resolved ``build.mjs``
+    against the hook's cwd (the Gaia install dir), the file was not found,
+    ``_read_script_content`` returned ``None``, and the conservative T3 verb
+    ``script-file-unreadable`` fired before the source lexer ever opened the
+    real file -- a false T3 on a clean, readable script.  The fix honors the
+    ``cd`` target (and the explicit ``cwd`` param) while preserving the
+    genuinely-unreadable conservative fallback.
+    """
+
+    def test_cd_prefix_resolves_relative_script_against_cd_target(self, tmp_path):
+        """``cd <repo> && node build.mjs`` classifies the clean script T0 by
+        resolving it under <repo>, even though the process cwd is elsewhere."""
+        repo = tmp_path / "repo"
+        (repo / "engine").mkdir(parents=True)
+        (repo / "engine" / "build.mjs").write_text(
+            "const data = [1, 2, 3];\nconsole.log(data.length);\n"
+        )
+        result = detect_mutative_command(f"cd {repo} && node engine/build.mjs")
+        assert result.is_mutative is False
+        assert result.verb == "script-file"
+
+    def test_cd_prefix_multi_clause_chain_stays_t0(self, tmp_path):
+        """The realistic multi-``&&`` chain (the reproduced bug shape): the
+        first non-``cd`` clause is classified honoring the cd."""
+        repo = tmp_path / "repo"
+        (repo / "engine").mkdir(parents=True)
+        (repo / "tools").mkdir(parents=True)
+        (repo / "engine" / "build-data.mjs").write_text("console.log('ok');\n")
+        (repo / "tools" / "verify-model.cjs").write_text("console.log('ok');\n")
+        chain = (
+            f"cd {repo} && node engine/build-data.mjs "
+            f"&& node tools/verify-model.cjs"
+        )
+        result = detect_mutative_command(chain)
+        assert result.is_mutative is False
+        assert result.verb == "script-file"
+
+    def test_cd_prefix_missing_relative_script_still_conservative_t3(self, tmp_path):
+        """After honoring the cd, a still-missing script keeps the conservative
+        T3 fallback -- security is not weakened for a real unreadable payload."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        result = detect_mutative_command(f"cd {repo} && node engine/ghost.mjs")
+        assert result.is_mutative is True
+        assert result.verb == "script-file-unreadable"
+
+    def test_cd_prefix_mutative_relative_script_still_t3(self, tmp_path):
+        """A genuinely mutative script behind a cd is still caught (the cd only
+        corrects WHERE the file is read, not WHETHER its content is scanned)."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "deploy.mjs").write_text(
+            "const cp = require('child_process');\n"
+            "cp.execSync('kubectl apply -f x.yaml');\n"
+        )
+        result = detect_mutative_command(f"cd {repo} && node deploy.mjs")
+        assert result.is_mutative is True
+
+    def test_cwd_param_resolves_relative_script(self, tmp_path):
+        """The explicit ``cwd`` param (how the compound validator threads the
+        folded cwd per-component) resolves a relative script the same way."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "build.mjs").write_text("console.log('clean');\n")
+        clean = detect_mutative_command("node build.mjs", cwd=str(repo))
+        assert clean.is_mutative is False
+        assert clean.verb == "script-file"
+        missing = detect_mutative_command("node ghost.mjs", cwd=str(repo))
+        assert missing.is_mutative is True
+        assert missing.verb == "script-file-unreadable"
+
+    def test_cd_prefix_resolves_npm_package_json(self, tmp_path):
+        """``cd <repo> && npm run <s>`` resolves <repo>/package.json, not the
+        hook cwd's -- so the body is classified instead of falling to the
+        conservative ``npm-run-unresolved`` T3."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(
+            '{"scripts": {"inspect": "ls -la"}}'
+        )
+        result = detect_mutative_command(f"cd {repo} && npm run inspect")
+        assert result.verb != "npm-run-unresolved"
+        assert result.is_mutative is False
+
+    def test_relative_script_without_cd_stays_conservative(self, tmp_path):
+        """Regression guard: with NO cd and NO cwd, a relative script that is
+        not readable from the process cwd keeps the conservative T3 default --
+        the fix does not silently downgrade the un-anchored case."""
+        result = detect_mutative_command("node definitely/not/here-xyz.mjs")
+        assert result.is_mutative is True
+        assert result.verb == "script-file-unreadable"
+
+    def test_cwd_after_component_folding(self, tmp_path):
+        """``cwd_after_component`` returns the cwd in effect AFTER a component:
+        a ``cd`` sets it (absolute replaces, relative joins), anything else
+        leaves it unchanged."""
+        repo = str(tmp_path / "repo")
+        assert cwd_after_component(f"cd {repo}", None) == repo
+        assert cwd_after_component("node build.mjs", repo) == repo
+        assert cwd_after_component("cd sub", repo) == repo + "/sub"
+        # A non-cd command with no prior cd leaves cwd at the default (None).
+        assert cwd_after_component("node build.mjs", None) is None
 
 
 class TestScriptFileEvasionNoFalsePositiveRegression:

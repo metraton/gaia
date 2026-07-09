@@ -1330,7 +1330,7 @@ def _is_subcommand_identifier(token: str) -> bool:
 
 @functools.lru_cache(maxsize=128)
 def detect_mutative_command(
-    command: str, from_source_code: bool = False,
+    command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
 ) -> MutativeResult:
     """Analyze a shell command and return a structured mutative assessment.
 
@@ -1353,6 +1353,12 @@ def detect_mutative_command(
             splitting it produced spurious mutative matches.  Whole-token and
             hyphen matching are unaffected.  Defaults to False so shell command
             lines and shell scripts keep the full camelCase behavior.
+        cwd: Base directory against which a RELATIVE script-file / package.json
+            path is resolved.  ``None`` (the default) falls back to the process
+            cwd -- the previous, hook-cwd-only behavior.  A leading ``cd <dir>``
+            in the command chain overrides this (see the ``cd``-peel below), so
+            Gaia governs a script in the workspace it is actually run from, not
+            only the Gaia install dir.
 
     Returns:
         MutativeResult with full classification details.
@@ -1364,6 +1370,19 @@ def detect_mutative_command(
             category=CATEGORY_UNKNOWN,
             reason="Empty command",
             confidence="high",
+        )
+
+    # --- Honor leading `cd <dir>` navigation in a chain ---
+    # ``cd /repo && node build.mjs`` runs the script relative to /repo, not the
+    # hook's cwd.  Peel the leading ``cd`` clause(s), fold the effective cwd,
+    # and re-classify the remainder from there.  Only the first non-``cd`` clause
+    # is classified here (this function classifies ONE command; the compound
+    # validator handles the remaining clauses of a chain) -- the peel only
+    # corrects the cwd the script path resolves against.
+    peeled_cwd, remainder, peeled = _peel_leading_cd(command, cwd)
+    if peeled and remainder:
+        return detect_mutative_command(
+            remainder, from_source_code=from_source_code, cwd=peeled_cwd,
         )
 
     semantics = analyze_command(command)
@@ -1527,7 +1546,9 @@ def detect_mutative_command(
     # Placed before the single-token early return so a bare ``./deploy.sh`` (one
     # token) is still inspected.  Returns None when the command is not a
     # recognized script-file shape, so detection continues normally.
-    script_result = _check_script_file(command, base_cmd, family, semantics)
+    script_result = _check_script_file(
+        command, base_cmd, family, semantics, cwd=cwd,
+    )
     if script_result is not None:
         return script_result
 
@@ -1538,7 +1559,7 @@ def detect_mutative_command(
     # to its real package.json body and classify THAT (mirroring the script-file
     # lane); `npm ci` is unconditionally mutative; unresolvable -> conservative
     # T3.  Returns None for other npm forms so ordinary detection continues.
-    npm_result = _check_npm_script_runner(base_cmd, family, semantics)
+    npm_result = _check_npm_script_runner(base_cmd, family, semantics, cwd=cwd)
     if npm_result is not None:
         return npm_result
 
@@ -2255,6 +2276,90 @@ def _check_gaia_cli_dispatcher(
     )
 
 
+# Operators that establish a SEQUENTIAL cwd hand-off from a leading `cd`.
+# ``&&`` and ``;`` (and a newline) run the next clause in the cwd the ``cd``
+# just set.  ``||`` is deliberately excluded -- its right side runs only when
+# the ``cd`` FAILED, so the target dir is not in effect.  ``|`` / ``&`` are not
+# sequential cwd hand-offs either.
+_LEADING_CD_SPLIT_RE = _re.compile(r"&&|;|\n")
+
+
+def _parse_cd_target(segment: str) -> "Optional[str]":
+    """Return the single directory argument of a bare ``cd <dir>`` clause.
+
+    Returns ``None`` when *segment* is not a plain ``cd`` to exactly one
+    positional directory (``cd`` with no arg, ``cd -``, or ``cd`` with flags /
+    multiple args are not peeled).  The returned token preserves ORIGINAL case
+    -- ``analyze_command`` lowercases ``non_flag_tokens``, so the raw
+    ``semantics.tokens`` slice is used instead, which matters on case-sensitive
+    filesystems.
+    """
+    sem = analyze_command(segment)
+    if sem.base_cmd != "cd":
+        return None
+    args = [t for t in sem.tokens[1:] if not t.startswith("-")]
+    flags = [t for t in sem.tokens[1:] if t.startswith("-")]
+    if flags or len(args) != 1:
+        return None
+    return args[0]
+
+
+def _peel_leading_cd(
+    command: str, base_cwd: "Optional[str]",
+) -> "Tuple[Optional[str], str, bool]":
+    """Peel leading ``cd <dir>`` navigation from a chain and fold the cwd.
+
+    Gaia governs arbitrary workspaces, so a relative script token behind a
+    ``cd`` (``cd /repo && node build.mjs``) must resolve against the ``cd``
+    TARGET, not the hook's own cwd.  This walks the leading ``cd`` clauses of a
+    ``&&`` / ``;`` chain, resolving each target against the running cwd
+    (relative targets join the accumulated cwd; absolute / ``~`` targets replace
+    it), and returns ``(effective_cwd, remaining_command, peeled)``:
+
+    * ``effective_cwd`` -- the cwd in effect after the peeled ``cd`` clauses
+      (``base_cwd`` unchanged when nothing was peeled).
+    * ``remaining_command`` -- the chain from the first NON-``cd`` clause on.
+    * ``peeled`` -- whether any ``cd`` clause was consumed.
+
+    A malformed / bogus target simply yields an unreadable path downstream,
+    which the conservative T3 fallback still catches -- security is not weakened.
+    """
+    import os
+
+    cwd = base_cwd
+    remaining = command.strip() if command else ""
+    peeled = False
+    while remaining:
+        parts = _LEADING_CD_SPLIT_RE.split(remaining, maxsplit=1)
+        first = parts[0].strip()
+        rest = parts[1].strip() if len(parts) == 2 else ""
+        target = _parse_cd_target(first)
+        if target is None:
+            break
+        base = cwd if cwd is not None else os.getcwd()
+        target = os.path.expanduser(target)
+        if os.path.isabs(target):
+            cwd = os.path.normpath(target)
+        else:
+            cwd = os.path.normpath(os.path.join(base, target))
+        peeled = True
+        remaining = rest
+    return cwd, remaining, peeled
+
+
+def cwd_after_component(command: str, base_cwd: "Optional[str]") -> "Optional[str]":
+    """Return the cwd in effect AFTER running *command*, given *base_cwd* before.
+
+    A leading/standalone ``cd`` clause (``cd X``, ``cd X && ...``) persists the
+    target as the cwd for the NEXT chain component; any other command leaves it
+    unchanged.  Used by the compound-command validator to fold cwd across the
+    independently-classified components of a ``cd X && node rel.mjs`` chain,
+    where the ``cd`` and the script land in SEPARATE components.
+    """
+    cwd, _remaining, peeled = _peel_leading_cd(command, base_cwd)
+    return cwd if peeled else base_cwd
+
+
 def _resolve_script_argument(
     base_cmd: str, semantics: "CommandSemantics",
 ) -> "Optional[Tuple[str, str]]":
@@ -2310,19 +2415,33 @@ def _resolve_script_argument(
     return None
 
 
-def _read_script_content(path: str) -> "Optional[str]":
+def _read_script_content(
+    path: str, cwd: "Optional[str]" = None,
+) -> "Optional[str]":
     """Read a bounded prefix of a script file for content classification.
+
+    A relative *path* resolves against *cwd* when given (the ``cd`` target of
+    the surrounding chain), else against the process cwd -- the previous,
+    hook-cwd-only behavior.  This is what lets ``cd /repo && node build.mjs``
+    find ``build.mjs`` under ``/repo`` instead of the Gaia install dir.  An
+    absolute path is unaffected.
 
     Returns ``None`` when the path cannot be resolved to a readable regular
     file -- the caller treats that as the conservative (mutative) case, because
-    an interpreter pointed at an un-inspectable payload could do anything.
+    an interpreter pointed at an un-inspectable payload could do anything.  The
+    genuinely-unreadable case is preserved: an honored-but-still-missing path
+    still returns ``None`` here.
     """
     import os
 
+    resolved = path
+    if not os.path.isabs(path):
+        base = cwd if cwd is not None else os.getcwd()
+        resolved = os.path.join(base, path)
     try:
-        if not os.path.isfile(path):
+        if not os.path.isfile(resolved):
             return None
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(resolved, "r", encoding="utf-8", errors="replace") as fh:
             return fh.read(_MAX_SCRIPT_READ_BYTES)
     except (OSError, ValueError):
         return None
@@ -2330,6 +2449,7 @@ def _read_script_content(path: str) -> "Optional[str]":
 
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]" = None,
 ) -> "Optional[MutativeResult]":
     """Classify ``<interpreter> <file>`` / ``./script`` by the file's content.
 
@@ -2375,7 +2495,7 @@ def _check_script_file(
                     ),
                 )
 
-    content = _read_script_content(script_path)
+    content = _read_script_content(script_path, cwd=cwd)
     if content is None:
         # Conservative default: an interpreter invoked on a missing or
         # unreadable file is treated as mutative.  We cannot prove the payload
@@ -2649,20 +2769,24 @@ def _classify_script_content_by_regex(
 _SHELL_SEGMENT_SPLIT_RE = _re.compile(r"&&|\|\||[;\n|&]")
 
 
-def _resolve_npm_script_body(script_name: str) -> "Optional[str]":
-    """Read ``scripts.<script_name>`` from ./package.json.
+def _resolve_npm_script_body(
+    script_name: str, cwd: "Optional[str]" = None,
+) -> "Optional[str]":
+    """Read ``scripts.<script_name>`` from the package.json under *cwd*.
 
     Returns the command-body string, or ``None`` when package.json is missing,
     unparseable, has no ``scripts`` map, or lacks a non-empty entry for the
     script -- the caller treats ``None`` as the conservative (T3) case, matching
-    the unreadable-script-file default.  Resolution is relative to the current
-    working directory, the same convention the script-file lane uses for a
-    relative path token.
+    the unreadable-script-file default.  Resolution honors *cwd* (the ``cd``
+    target of the surrounding chain) when given, else the process cwd -- the
+    same convention the script-file lane uses for a relative path token, so
+    ``cd /repo && npm run build`` reads ``/repo/package.json``.
     """
     import os
     import json
 
-    path = os.path.join(os.getcwd(), "package.json")
+    base = cwd if cwd is not None else os.getcwd()
+    path = os.path.join(base, "package.json")
     try:
         if not os.path.isfile(path):
             return None
@@ -2684,6 +2808,7 @@ def _resolve_npm_script_body(script_name: str) -> "Optional[str]":
 
 def _check_npm_script_runner(
     base_cmd: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]" = None,
 ) -> "Optional[MutativeResult]":
     """Classify ``npm run <script>`` / ``npm ci`` by real effect, not by name.
 
@@ -2729,7 +2854,7 @@ def _check_npm_script_runner(
         return None
 
     script_name = non_flag[1]
-    body = _resolve_npm_script_body(script_name)
+    body = _resolve_npm_script_body(script_name, cwd=cwd)
     if body is None:
         # Conservative default: the script body cannot be resolved, so we
         # cannot prove it is safe -- mirror the unreadable-script-file case.
