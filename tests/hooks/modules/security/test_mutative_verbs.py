@@ -2534,6 +2534,216 @@ class TestCamelCaseIdentifierFalsePositiveFix:
         assert result.is_mutative is True
 
 
+class TestJsSourceCommentStringAware:
+    """Comment / string-literal awareness for the JS-family script lane.
+
+    Bug (confirmed live in branchkinect-architecture-overview):
+    ``_classify_script_content_by_regex`` scanned ``.mjs``/``.cjs``/``.js``
+    source line-by-line and only skipped ``#`` comments, so a mutative verb
+    or a backtick-quoted command that lived inside a ``//`` comment or a JS
+    template literal collided lexically and forced a spurious T3:
+
+      * ``node engine/build-data.mjs`` -> MUTATIVE verb='edit', because
+        ``const out = `// GENERATED FILE — do not edit by hand.``` carries the
+        word "edit" inside a template literal.
+      * ``node tools/verify.mjs`` -> MUTATIVE verb='install', because a ``//``
+        comment ``... devDependencies (`npm install`) ...`` had "npm install"
+        inside backticks that the exec-sink backtick regex captured -- but a JS
+        backtick is a TEMPLATE LITERAL, not shell execution.
+
+    Fix: the JS family is lexed (``source_lexer``) before scanning; comments and
+    string/template CONTENTS are removed for the verb scan, and backticks are
+    NOT treated as shell for JS.  A REAL mutation (an exec sink whose argument
+    is a string literal) is preserved and still classifies T3 -- pinned by the
+    ``*_still_mutative`` cases below so the fix cannot open a false negative.
+    """
+
+    # ---- Reproduced false positives: now NON-mutative (T0) ----
+
+    def test_js_word_edit_inside_template_literal_is_safe(self, tmp_path):
+        """The build-data.mjs repro: 'edit' inside a template literal must not
+        classify the read-only generator script as mutative."""
+        script = tmp_path / "build-data.mjs"
+        script.write_text(
+            "const doc = { pages: [] };\n"
+            "const out = `// GENERATED FILE — do not edit by hand.\n"
+            "window.__DOC__ = ${JSON.stringify(doc)};\n"
+            "`;\n"
+            "console.log(out);\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_js_npm_install_in_backtick_comment_is_safe(self, tmp_path):
+        """The verify.mjs repro: 'npm install' in backticks inside a `//`
+        comment is not a shell invocation and must not force T3."""
+        script = tmp_path / "verify.mjs"
+        script.write_text(
+            "// Playwright + its bundled Chromium come from\n"
+            "// devDependencies (`npm install`), with a cached-Chromium fallback.\n"
+            "import { chromium } from 'playwright';\n"
+            "const page = await chromium.launch();\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_js_mutative_verb_in_line_comment_is_safe(self, tmp_path):
+        """A mutative verb mentioned in a `//` line comment must not match."""
+        script = tmp_path / "note.mjs"
+        script.write_text(
+            "// TODO: deploy and delete the old bucket later\n"
+            "const n = 1 + 2;\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    def test_js_mutative_verb_in_block_comment_is_safe(self, tmp_path):
+        """A mutative verb inside a /* ... */ block comment (multi-line) must
+        not match."""
+        script = tmp_path / "banner.cjs"
+        script.write_text(
+            "/*\n"
+            " * This module does NOT deploy, install, or destroy anything.\n"
+            " * It only renders a report.\n"
+            " */\n"
+            "const total = compute();\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    def test_js_mutative_verb_in_string_literal_is_safe(self, tmp_path):
+        """A mutative verb that is only a string VALUE (a label) must not
+        classify the file mutative."""
+        script = tmp_path / "labels.js"
+        script.write_text(
+            'const label = "delete the cache";\n'
+            'const action = "install dependencies";\n'
+            'renderButton(label);\n'
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    def test_js_variable_named_like_verb_is_safe(self, tmp_path):
+        """A variable whose name equals a bare mutative verb (`label`, `set`,
+        `push`, `close`) is a language identifier, not a CLI subcommand, and
+        must not force T3 -- the whole-token verb scan is not applied to the
+        JS lane."""
+        script = tmp_path / "vars.mjs"
+        script.write_text(
+            "const label = getLabel();\n"
+            "let set = new Set();\n"
+            "const close = () => {};\n"
+            "results.push(row);\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    # ---- No false negatives: real mutations STILL T3 ----
+
+    def test_js_execsync_kubectl_delete_still_mutative(self, tmp_path):
+        """A genuine exec-sink mutation stays T3 after the lexer change."""
+        script = tmp_path / "deploy.mjs"
+        script.write_text(
+            'import { execSync } from "node:child_process";\n'
+            'execSync("kubectl delete deployment foo");\n'
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_js_execsync_blocked_inner_still_mutative(self, tmp_path):
+        """A blocked command inside the sink string stays T3."""
+        script = tmp_path / "wipe.cjs"
+        script.write_text('execSync("rm -rf /");\n')
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+
+    def test_js_mutation_inside_template_interpolation_still_mutative(self, tmp_path):
+        """A mutation hidden in a ${...} template interpolation is preserved in
+        the exec view and stays T3 -- the string-blanking of the verb view must
+        NOT reach the exec-sink detector."""
+        script = tmp_path / "interp.mjs"
+        script.write_text(
+            'const msg = `result: ${require("child_process")'
+            '.execSync("kubectl delete ns prod")}`;\n'
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+
+    def test_js_url_comment_marker_in_string_does_not_hide_sink(self, tmp_path):
+        """A `//` inside a STRING (a URL) must not be treated as a comment and
+        blank a real exec-sink call later on the same line."""
+        script = tmp_path / "mix.mjs"
+        script.write_text(
+            'const u = "http://example.com"; '
+            'require("child_process").execSync("git push origin main");\n'
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is True
+        assert result.verb == "push"
+
+    def test_js_execsync_ls_stays_safe(self, tmp_path):
+        """Benign inner command is not escalated (false-positive mitigation
+        preserved)."""
+        script = tmp_path / "read.mjs"
+        script.write_text(
+            'const out = require("child_process").execSync("ls -la");\n'
+            "console.log(out.toString());\n"
+        )
+        result = detect_mutative_command(f"node {script}")
+        assert result.is_mutative is False
+
+    def test_ruby_backtick_still_shell_exec(self, tmp_path):
+        """Regression guard: the JS backtick change must NOT affect ruby, where
+        a backtick IS shell execution -- ruby keeps the existing regex lane."""
+        script = tmp_path / "bt.rb"
+        script.write_text("out = `kubectl apply -f x.yaml`\n")
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is True
+
+
+class TestSourceLexer:
+    """Unit tests for the per-language source lexer (source_lexer.py)."""
+
+    def test_js_line_comment_blanked_in_both_views(self):
+        from modules.security.source_lexer import strip_source, JS_SPEC
+        out = strip_source("a = 1; // delete everything\nb = 2;\n", JS_SPEC)
+        assert "delete" not in out.verb_view
+        assert "delete" not in out.exec_view
+        # Code outside the comment is preserved.
+        assert "a = 1;" in out.verb_view
+        assert "b = 2;" in out.verb_view
+
+    def test_js_string_content_blanked_in_verb_view_kept_in_exec_view(self):
+        from modules.security.source_lexer import strip_source, JS_SPEC
+        out = strip_source('run("kubectl delete x");\n', JS_SPEC)
+        assert "delete" not in out.verb_view      # scrubbed for verb scan
+        assert "kubectl delete x" in out.exec_view  # preserved for exec-sink
+        assert 'run(' in out.verb_view            # sink call structure kept
+
+    def test_js_comment_marker_inside_string_is_not_a_comment(self):
+        from modules.security.source_lexer import strip_source, JS_SPEC
+        out = strip_source('u = "http://x"; run("y");\n', JS_SPEC)
+        # The `//` is inside the string, so `run("y")` after it survives.
+        assert 'run(' in out.exec_view
+
+    def test_views_preserve_line_count(self):
+        from modules.security.source_lexer import strip_source, JS_SPEC
+        src = "/* multi\nline\ncomment */\ncode = 1;\n"
+        out = strip_source(src, JS_SPEC)
+        assert len(out.verb_view.splitlines()) == len(src.splitlines())
+        assert len(out.exec_view.splitlines()) == len(src.splitlines())
+
+    def test_spec_resolution_by_interpreter_and_extension(self):
+        from modules.security.source_lexer import spec_for_script, JS_SPEC
+        assert spec_for_script("node", "whatever") is JS_SPEC
+        assert spec_for_script("someinterp", "/x/y.mjs") is JS_SPEC
+        assert spec_for_script("someinterp", "/x/y.cjs") is JS_SPEC
+        assert spec_for_script("ruby", "/x/y.rb") is None
+
+
 _FAKE_GAIA_DISPATCHER = '''#!/usr/bin/env python3
 """gaia -- Unified Gaia CLI"""
 import subprocess

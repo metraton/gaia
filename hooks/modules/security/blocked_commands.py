@@ -75,6 +75,79 @@ def _read_only_base_cmds() -> "frozenset[str]":
         return frozenset()
 
 
+def _rm_confined_to_scratch(command: str) -> bool:
+    """Return True if an ``rm`` command is textually confined to Gaia scratch.
+
+    When True, is_blocked_command skips ONLY the ``rm_critical`` category so the
+    command reaches the tier engine (mutative_verbs), which strictly decides
+    T0 (all paths inside scratch, no glob) vs T3 (glob, symlink escape, ...).
+    Every other blocked category and every other command is unaffected: the
+    catastrophic floor stays byte-for-byte intact.
+
+    LENIENT relative to mutative_verbs._rm_targets_only_scratch: a trailing
+    glob is tolerated here (e.g. ``~/.gaia/scratch/*``) because the floor only
+    needs to confirm the operation cannot escape scratch -- the strict tier
+    check then denies T0 to any glob and routes it to T3.  Fail-closed: any
+    doubt returns False, keeping the floor fully in force.
+
+    Confinement holds only when there is at least one positional path and
+    EVERY positional path, after removing any glob suffix and expanding ``~``,
+    canonicalises (realpath) to the scratch root or a path strictly under it,
+    with no ``..`` component anywhere in the token.
+    """
+    import os
+    try:
+        from .mutative_verbs import _gaia_scratch_root, _RM_GLOB_CHARS
+    except ImportError:
+        return False
+
+    semantics = analyze_command(command)
+    if semantics.base_cmd != "rm":
+        return False
+
+    scratch_root = _gaia_scratch_root()
+    if not scratch_root:
+        return False
+
+    tokens = semantics.tokens
+    seen_end_of_opts = False
+    path_tokens = []
+    i = 1  # skip base_cmd at index 0
+    while i < len(tokens):
+        token = tokens[i]
+        i += 1
+        if token == "--":
+            seen_end_of_opts = True
+            continue
+        if not seen_end_of_opts and token.startswith("-"):
+            continue
+        path_tokens.append(token)
+
+    if not path_tokens:
+        return False
+
+    for token in path_tokens:
+        if ".." in token:
+            return False
+        # Truncate at the first glob metacharacter; the floor only needs the
+        # directory prefix's confinement -- the strict tier check owns the
+        # glob's T0 denial.
+        cut = len(token)
+        for idx, ch in enumerate(token):
+            if ch in _RM_GLOB_CHARS:
+                cut = idx
+                break
+        prefix = token[:cut]
+        expanded = os.path.expanduser(prefix)
+        if expanded.startswith("~"):
+            return False
+        real = os.path.realpath(expanded)
+        if not (real == scratch_root or real.startswith(scratch_root + os.sep)):
+            return False
+
+    return True
+
+
 @dataclass
 class BlockedCommandResult:
     """Result of blocked command check."""
@@ -614,7 +687,18 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
             suggestion=suggestion,
         )
 
+    # rm confined strictly to Gaia scratch defers past the catastrophic
+    # `rm_critical` floor to the tier engine (which decides T0 vs T3). This
+    # skips ONLY that category; every other blocked category still applies,
+    # and every non-scratch rm keeps the floor byte-for-byte intact.
+    scratch_confined_rm = None  # resolved lazily on first rm_critical check
+
     for category, patterns in BLOCKED_PATTERNS.items():
+        if category == "rm_critical":
+            if scratch_confined_rm is None:
+                scratch_confined_rm = _rm_confined_to_scratch(command)
+            if scratch_confined_rm:
+                continue
         for pattern in patterns:
             if pattern.search(command):
                 # Find suggestion for this command

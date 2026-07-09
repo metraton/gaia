@@ -63,6 +63,19 @@ except ImportError:  # pragma: no cover -- defensive
         "AST-based Python inline analysis disabled (falling back to regex)"
     )
 
+try:
+    from .source_lexer import (
+        spec_for_script as _spec_for_script,
+        strip_source as _strip_source,
+    )
+except ImportError:  # pragma: no cover -- defensive
+    _spec_for_script = None
+    _strip_source = None
+    logging.getLogger(__name__).warning(
+        "source_lexer not importable; comment/string-aware scanning of "
+        "JS source files disabled (falling back to naive line scan)"
+    )
+
 logger = logging.getLogger(__name__)
 
 
@@ -638,7 +651,9 @@ _EXEC_SINK_BACKTICK_RE = _re.compile(r"`([^`\n]{2,})`")
 _EXEC_SINK_PERCENT_X_RE = _re.compile(r"%x[\{\(\[]([^\}\)\]\n]{2,})[\}\)\]]")
 
 
-def _scan_exec_sink_string_args(code: str, family: str) -> "Optional[MutativeResult]":
+def _scan_exec_sink_string_args(
+    code: str, family: str, shell_backticks: bool = True,
+) -> "Optional[MutativeResult]":
     """Extract shell commands handed to exec sinks and re-classify them.
 
     Shared by ``_check_inline_code`` (inline ``-c``/``-e`` payloads) and
@@ -652,14 +667,22 @@ def _scan_exec_sink_string_args(code: str, family: str) -> "Optional[MutativeRes
     is returned ONLY when the inner command is itself blocked or mutative -- a
     benign inner command (``execSync("ls")``) yields ``None`` (false-positive
     mitigation).
+
+    ``shell_backticks`` records whether a backtick delimits SHELL EXECUTION
+    (ruby/perl/php, and shell inline payloads -- the default) or a STRING /
+    TEMPLATE LITERAL (JavaScript).  When False, the backtick and ``%x{}``
+    bodies are NOT treated as commands -- a JS template literal such as
+    ```// ... npm install ...``` is not a shell invocation and must
+    not be re-classified, which was a false-positive source.
     """
     candidates: List[str] = []
     for m in _EXEC_SINK_STRING_ARG_RE.finditer(code):
         candidates.append(m.group("cmd"))
-    for m in _EXEC_SINK_BACKTICK_RE.finditer(code):
-        candidates.append(m.group(1))
-    for m in _EXEC_SINK_PERCENT_X_RE.finditer(code):
-        candidates.append(m.group(1))
+    if shell_backticks:
+        for m in _EXEC_SINK_BACKTICK_RE.finditer(code):
+            candidates.append(m.group(1))
+        for m in _EXEC_SINK_PERCENT_X_RE.finditer(code):
+            candidates.append(m.group(1))
 
     for raw_inner in candidates:
         inner = raw_inner.strip()
@@ -872,6 +895,114 @@ def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
                 return True
 
     return False
+
+
+# ============================================================================
+# rm -- scratch-directory tier override (T0 inside Gaia scratch, T3 otherwise)
+# ============================================================================
+# `rm` (including `rm -rf`) is normally a MUTATIVE command alias requiring T3
+# approval, and the truly catastrophic forms (`rm -rf /`, `/*`, `~`) are
+# permanently blocked by the `rm_critical` floor in blocked_commands.py, which
+# runs BEFORE this detector (bash_validator.py phase 3a).
+#
+# Narrowly-scoped exception (Option A): `rm` is downgraded to T0 (no approval)
+# ONLY when EVERY target path resolves strictly inside the Gaia scratch
+# directory (`~/.gaia/scratch`, or the equivalent under a GAIA_DATA_DIR
+# override).  Scratch is ephemeral agent working space by design, mirroring the
+# way mkdir already treats /tmp and /run as scratch; deleting inside it carries
+# no system-state risk.  The floor cooperates via a matching, lenient
+# scratch-confinement check in blocked_commands.py so scratch operations reach
+# this detector instead of being swallowed by the catastrophic `~` patterns.
+#
+# The check is STRICT and fail-closed (see _rm_targets_only_scratch): globs,
+# `..` traversal, symlinks escaping scratch, or any single out-of-scratch path
+# all keep the command at T3.  `-rf` recursion is allowed only when confined
+# to scratch.
+
+_RM_GLOB_CHARS: FrozenSet[str] = frozenset("*?[]{}")
+
+
+def _gaia_scratch_root() -> "str | None":
+    """Return the canonical (realpath) Gaia scratch directory, or None.
+
+    Reads the location from gaia.paths.resolver.scratch_dir() so a
+    GAIA_DATA_DIR override is honoured, then canonicalises it with
+    os.path.realpath so the comparison in _rm_targets_only_scratch is done
+    against a symlink-resolved absolute root.
+
+    Fail-closed: any failure to import the resolver or resolve the path
+    returns None, which makes the rm scratch-exception decline (stay T3).
+    """
+    import os
+    try:
+        from gaia.paths.resolver import scratch_dir
+        return os.path.realpath(str(scratch_dir()))
+    except Exception:
+        return None
+
+
+def _rm_targets_only_scratch(tokens: tuple) -> bool:
+    """Return True only if every rm target resolves strictly inside scratch.
+
+    STRICT and fail-closed. Returns True only when ALL of the following hold:
+      (a) at least one positional (non-flag) path argument is present;
+      (b) NO token contains an unexpanded glob metacharacter (``*?[]{}``) or
+          a parent-traversal component (``..``);
+      (c) each path, after os.path.expanduser + os.path.realpath, is the
+          scratch root itself or lives under ``scratch_root + os.sep``.
+
+    Any ambiguity -- no positional path, an unresolvable scratch root, a glob,
+    a ``..``, an unexpandable ``~user``, or a single path outside scratch --
+    returns False so the command keeps its T3 classification.  realpath (not
+    normpath) is used deliberately so a symlink inside scratch that points
+    outside is detected and does NOT qualify for the T0 exception.
+
+    Args:
+        tokens: Full token tuple from tokenize_command (index 0 is the base
+            command and is skipped).
+
+    Returns:
+        True  -> all path arguments resolve strictly inside scratch (T0).
+        False -> anything else (T3).
+    """
+    import os
+    scratch_root = _gaia_scratch_root()
+    if not scratch_root:
+        return False
+
+    seen_end_of_opts = False
+    path_tokens = []
+    i = 1  # skip base_cmd at index 0
+    while i < len(tokens):
+        token = tokens[i]
+        i += 1
+        if token == "--":
+            seen_end_of_opts = True
+            continue
+        if not seen_end_of_opts and token.startswith("-"):
+            # rm has no value-consuming short flags relevant here.
+            continue
+        path_tokens.append(token)
+
+    if not path_tokens:
+        return False  # (a) -- no clear path target
+
+    for token in path_tokens:
+        # (b) reject unexpanded globs and parent traversal outright.
+        if any(ch in _RM_GLOB_CHARS for ch in token):
+            return False
+        if ".." in token:
+            return False
+        expanded = os.path.expanduser(token)
+        # A residual ~ (unexpandable, e.g. ~unknownuser) is not confined.
+        if expanded.startswith("~"):
+            return False
+        # (c) canonicalise and require strict containment in scratch.
+        real = os.path.realpath(expanded)
+        if not (real == scratch_root or real.startswith(scratch_root + os.sep)):
+            return False
+
+    return True
 
 
 # ============================================================================
@@ -1254,6 +1385,27 @@ def detect_mutative_command(
                     ),
                 )
             # No path arguments or sensitive path detected -> fall through to T3.
+
+        # rm scratch-directory override: classify as T0 when EVERY target path
+        # resolves strictly inside the Gaia scratch directory (~/.gaia/scratch).
+        # `-rf` recursion is permitted only within scratch.  Globs, `..`, and
+        # symlinks escaping scratch keep T3 (see _rm_targets_only_scratch).
+        # The catastrophic floor (rm -rf /, /*, ~) still runs first in
+        # blocked_commands.py, which defers to this detector only for
+        # scratch-confined rm commands.
+        if base_cmd == "rm" and _rm_targets_only_scratch(tuple(tokens)):
+            return MutativeResult(
+                is_mutative=False,
+                category=CATEGORY_READ_ONLY,
+                verb=base_cmd,
+                cli_family="system",
+                confidence="high",
+                reason=(
+                    "rm targeting only the Gaia scratch directory "
+                    "(~/.gaia/scratch); all paths resolve strictly inside "
+                    "scratch via realpath"
+                ),
+            )
 
         return MutativeResult(
             is_mutative=True,
@@ -2257,11 +2409,111 @@ def _check_script_file(
             )
         # parse_failed -> fall through to the shell/regex lane below.
 
-    # "code" lane (non-shell source: node/ruby/perl/php) suppresses camelCase
+    # JavaScript family (node / .js / .mjs / .cjs): lex the source so comments
+    # (``//``, ``/* */``) and string / template-literal CONTENTS are removed
+    # before any verb scan -- a verb that lives only inside a comment or a
+    # string can no longer collide (the false-positive class this closes).
+    # A REAL mutation reaches the shell through an exec sink whose argument is
+    # a string literal (``execSync("kubectl delete ...")``); that string is
+    # preserved in the exec view and still re-classified, so detection is not
+    # weakened.  Other languages keep the existing regex lane below.
+    if lane == "code" and _spec_for_script is not None:
+        spec = _spec_for_script(base_cmd, script_path)
+        if spec is not None:
+            return _classify_source_with_lexer(content, script_path, family, spec)
+
+    # "code" lane (non-shell source: ruby/perl/php) suppresses camelCase
     # subcommand splitting so language identifiers are not read as CLI verbs;
     # "shell" lane keeps the full command semantics.
     return _classify_script_content_by_regex(
         content, script_path, family, from_source_code=(lane == "code"),
+    )
+
+
+def _classify_source_with_lexer(
+    content: str, script_path: str, family: str, spec,
+) -> MutativeResult:
+    """Classify lexed non-shell source (currently the JS family) by real effect.
+
+    Chain of detectors, each run on the projection of the source that makes it
+    sound (see ``source_lexer``):
+
+    1. ``is_blocked_command`` on the ``verb_view`` (comments and string CONTENTS
+       blanked) as a defense-in-depth safety net: a permanently-blocked
+       destructive pattern is denied even in the (invalid-JS) event it appears
+       as bare code.  It cannot false-positive here -- the shell syntax it
+       matches only survives blanking if it is executable code, which JS is not.
+    2. ``_scan_exec_sink_string_args`` on the ``exec_view`` (string contents
+       KEPT), with ``shell_backticks=spec.backticks_are_exec`` so a JS template
+       literal is not mistaken for a shell command -- this extracts the command
+       handed to a subprocess sink as a string literal and escalates ONLY when
+       that inner command is itself mutative/blocked.  This is the REAL mutation
+       vector for a source language: shell effects go through an exec sink whose
+       argument is a string, which the exec view preserves.
+
+    Deliberately NOT run: the whole-token mutative-VERB scan
+    (``detect_mutative_command``) that the shell/regex lane uses.  In a non-shell
+    source language a bare word at "subcommand position" is a language
+    identifier, not a CLI subcommand -- ``const label = ...``, ``const set =
+    ...``, ``let close = ...`` are variable declarations, not the collaboration
+    verbs ``label``/``set``/``close``.  The scan caught NO real JS mutation
+    (those go through exec sinks, handled by step 2) and produced only these
+    identifier collisions, so removing it strictly reduces false positives
+    without opening a hole.  This extends to whole tokens the same "source
+    identifier is not a verb" discipline the ``from_source_code`` camelCase
+    guard already applied to camelCase tokens.
+
+    The two views share newline positions, so their line lists stay aligned.
+    """
+    stripped = _strip_source(content, spec)
+    verb_lines = stripped.verb_view.splitlines()
+    exec_lines = stripped.exec_view.splitlines()
+
+    for verb_line, exec_line in zip(verb_lines, exec_lines):
+        code_line = verb_line.strip()
+        if code_line and _is_blocked_command is not None:
+            blocked = _is_blocked_command(code_line)
+            if blocked.is_blocked:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb="script-blocked-cmd",
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Script '{script_path}' contains blocked command: "
+                        f"{blocked.category}"
+                    ),
+                )
+
+        # Exec-sink extraction on the string-preserving view.  For JS,
+        # backticks are template literals (not shell), so they are not scanned.
+        sink_line = exec_line.strip()
+        if sink_line:
+            sink_result = _scan_exec_sink_string_args(
+                sink_line, family, shell_backticks=spec.backticks_are_exec,
+            )
+            if sink_result is not None and sink_result.is_mutative:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=sink_result.category,
+                    verb=sink_result.verb,
+                    dangerous_flags=sink_result.dangerous_flags,
+                    cli_family=family,
+                    confidence=sink_result.confidence,
+                    reason=(
+                        f"Script '{script_path}' exec-sink invokes mutative "
+                        f"command: {sink_result.reason}"
+                    ),
+                )
+
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_READ_ONLY,
+        verb="script-file",
+        cli_family=family,
+        confidence="medium",
+        reason=f"Script '{script_path}' has no mutative or blocked line",
     )
 
 

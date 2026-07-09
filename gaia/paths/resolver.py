@@ -19,6 +19,7 @@ Public API::
         logs_dir,
         events_dir,
         cache_dir,
+        scratch_dir,
     )
 """
 
@@ -110,3 +111,23 @@ def cache_dir() -> Path:
         ``data_dir() / "cache"``
     """
     return data_dir() / "cache"
+
+
+def scratch_dir() -> Path:
+    """Return the path to the Gaia scratch directory.
+
+    Ephemeral working space for Gaia agents. This is the ONLY location where
+    ``rm`` (including ``rm -rf``) is classified T0 (no approval required):
+    the security layer grants that exception only when every target path
+    resolves strictly inside this directory (see
+    ``hooks/modules/security/mutative_verbs.py`` -- ``_rm_targets_only_scratch``).
+    Anything outside remains T3, and the catastrophic floor is untouched.
+
+    Lives under ``data_dir()`` so a ``GAIA_DATA_DIR`` override relocates the
+    scratch directory too, keeping the T0 exception aligned with the active
+    data root.
+
+    Returns:
+        ``data_dir() / "scratch"``
+    """
+    return data_dir() / "scratch"

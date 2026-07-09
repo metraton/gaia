@@ -9,6 +9,7 @@ from gaia.paths import (
     ensure_layout,
     events_dir,
     logs_dir,
+    scratch_dir,
     workspaces_dir,
 )
 
@@ -26,13 +27,14 @@ def test_ensure_layout_creates_all_directories(monkeypatch, tmp_path):
     assert logs_dir().is_dir()
     assert events_dir().is_dir()
     assert cache_dir().is_dir()
+    assert scratch_dir().is_dir()
 
 
 def test_ensure_layout_mode_is_0700(monkeypatch, tmp_path):
     """Every created directory must have mode 0700."""
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-test"))
     ensure_layout()
-    for d in (data_dir(), workspaces_dir(), logs_dir(), events_dir(), cache_dir()):
+    for d in (data_dir(), workspaces_dir(), logs_dir(), events_dir(), cache_dir(), scratch_dir()):
         assert _mode(d) == 0o700, f"{d} has mode {oct(_mode(d))}, expected 0o700"
 
 

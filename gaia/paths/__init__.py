@@ -15,6 +15,7 @@ Public API::
         logs_dir,
         events_dir,
         cache_dir,
+        scratch_dir,
         ensure_layout,
         workspace_id,  # alias for gaia.project.current()
         create_snapshot,             # gaia.paths.snapshot -- shared backup helper
@@ -33,6 +34,7 @@ from gaia.paths.resolver import (
     db_path,
     events_dir,
     logs_dir,
+    scratch_dir,
     snapshot_dir,
     state_dir,
     workspaces_dir,
@@ -52,6 +54,7 @@ __all__ = [
     "logs_dir",
     "events_dir",
     "cache_dir",
+    "scratch_dir",
     "ensure_layout",
     "workspace_id",
     "create_snapshot",

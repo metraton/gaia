@@ -10,6 +10,7 @@ from gaia.paths import (
     db_path,
     events_dir,
     logs_dir,
+    scratch_dir,
     snapshot_dir,
     state_dir,
     workspaces_dir,
@@ -98,6 +99,16 @@ def test_cache_dir_under_data_dir(monkeypatch, tmp_path):
     assert cache_dir() == tmp_path.resolve() / "cache"
 
 
+def test_scratch_dir_under_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    assert scratch_dir() == tmp_path.resolve() / "scratch"
+
+
+def test_scratch_dir_default_is_home_gaia_scratch(monkeypatch):
+    monkeypatch.delenv("GAIA_DATA_DIR", raising=False)
+    assert scratch_dir() == Path.home() / ".gaia" / "scratch"
+
+
 # ---------------------------------------------------------------------------
 # Public API surface
 # ---------------------------------------------------------------------------
@@ -115,6 +126,7 @@ def test_paths_module_exports():
         "logs_dir",
         "events_dir",
         "cache_dir",
+        "scratch_dir",
         "ensure_layout",
         "workspace_id",
     }
