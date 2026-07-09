@@ -2,8 +2,9 @@
 
 The source of truth for every term the diagram deck uses. The engine
 (`assets/engine/engine.js`) reads exactly these terms; every domain string lives
-in the data. Both the orchestrator (to propose a decomposition) and the agent
-(to author it) speak this vocabulary.
+in the data. This is the shared vocabulary for both phases — discussing and
+decomposing a diagram idea with the user, and authoring the YAML — and the
+rendered app documents the same terms in its help HUD.
 
 The whole layout model is **two primitives**: a recursive **section** (a grid
 with `columns`, `span`, and `children`) and a **component** (a leaf with a
@@ -48,7 +49,7 @@ frame of its own.
 | `cell` | (engine behavior) | The base unit: every leaf component is exactly `--cell-w × --cell-h` (232 × 130 px, design tokens in `index.html`). Cells **never grow** — a title + up to 3 clamped description lines always fits, the rest lives in the click panel. A cell grows only **horizontally, by merge** (`span`). Uniform cells are what make the layout deterministic and math-checkable. |
 | `columns` | page · section | How many columns **this section's** grid has, **default 2**. A leaf grid renders exactly this many fixed `--cell-w` tracks. This column count is what **cascades 3→2→1** as width tightens (below). |
 | `span` | any child (section or component) | An Excel-style **merge**: occupy N columns of the parent — **same semantics at every level**. Default 1, clamped to the parent's `columns`. `span == columns` makes the child a full-width **band** that takes its own row. In a leaf grid a merged child spans the full row (`grid-column: 1 / -1`) so it never overflows on collapse; a genuinely-narrower multi-cell arrangement is done by nesting sections with different `columns` (a compound grid). |
-| `band` vs `inline` | section as a child of a compound grid | An **inline** section (`span: 1`) is sized to its own content and sits side by side with its neighbours on the same row. A **band** (`span == parent columns`) takes its own full row; consecutive bands stack top-to-bottom. A band spans the **block width** while its uniform cells inside stay `--cell-w` and left-align (banda ancha, componente uniforme). |
+| `band` vs `inline` | section as a child of a compound grid | An **inline** section (`span: 1`) is sized to its own content and sits side by side with its neighbours on the same row. A **band** (`span == parent columns`) takes its own full row; consecutive bands stack top-to-bottom. A band spans the **block width** while its uniform cells inside stay `--cell-w` and left-align (a wide band with uniform cells). |
 | `order` | section · component | Explicit position of a child within its parent's grid AND the single-column collapse order at the narrowest tier. Falls back to list order (stable). Children flow in `order`, packing side by side until a band forces a new full row. |
 | the collapse cascade | (engine behavior) | Driven by the STAGE container query (works under split-screen / narrow panes, not the viewport): a leaf grid's `columns` step **down 3→2→1** as width tightens. **3** at full width, a **2-column "two-table"** intermediate at medium widths (≤1000px for a 3-col grid), a **1-column endpoint** at the narrowest tier (≤640px), where every leaf grid drops to a single cell and the whole page becomes one vertical stack. Below ~1440px compound rows fold from side-by-side into a centered vertical stack. A `columns: 1` section stays 1 at every tier. Cells stay `--cell-w` through every step — collapse changes how many columns show, never the cell size — so nothing scrolls sideways at the stacked tiers. |
 | width math | (geometry) | Leaf grid, gap `--s-2 = 8px`, zone padding `--s-3 = 16px` per side: a merge/band of M cells = `M×232 + (M−1)×8`; a C-column leaf section = `C×232 + (C−1)×8 + 32`. E.g. a `columns:3` section is `3×232 + 2×8 + 32 = 760px`. |
@@ -66,11 +67,13 @@ frame of its own.
 | `status` | `component.status` | The kicker badge word (see enum below). |
 | `kicker` | presentation | The small uppercase eyebrow that renders a component's `status`. `status` is the data; `kicker` is the rendered role. |
 | `steps` | `filter.steps` | The flow explanation shown when a filter chip is clicked. |
-| `version` | `document.version` | Optional free-form string on the manifest (semver recommended). Rendered in the header after the subtitle; the node is `:empty`-collapsed when absent, so an older deck degrades with zero visible change. See the versioning rule in `SKILL.md`. |
+| `version` | `document.version` | Optional free-form string on the manifest (semver recommended). Rendered in the header after the subtitle; the node is `:empty`-collapsed when absent, so an older deck degrades with zero visible change. |
 
 ## The `status` enum (the kicker badge)
 
-Open vocabulary — free strings are accepted — but these are the agreed values:
+`status` is **open vocabulary** — any free string is accepted, and each deck
+picks the words its idea needs. The set below is **one example set** — the
+kicker words a security-review deck might use — not a canonical default:
 
 `ENTRY` · `EXPOSED` · `INTERNAL` · `EXTERNAL` · `WEAK` · `NEW` · `HARDENED` ·
 `UNCHANGED` · `RISK`

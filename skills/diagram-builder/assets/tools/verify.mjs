@@ -5,8 +5,8 @@
 //   - the root grid has >= 1 child (something rendered);
 //   - no two direct children of the root section grid overlap.
 // It screenshots every page across a spread of widths and both themes, so the
-// PNGs can be read by eye (see the visual-verify skill). There are NO
-// diagram-specific zone-name assertions here — a fresh deck has its own ids.
+// PNGs can be read by eye (this is the engine's verify-UI capability). There are
+// NO diagram-specific zone-name assertions here — a fresh deck has its own ids.
 //
 // Screenshots are written to a SYSTEM TEMP DIR, never into the project — nobody
 // reuses verification shots, so the scaffolded repo stays clean (no images

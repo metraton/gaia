@@ -3,10 +3,10 @@
 Deep mechanics for authoring a diagram deck on the recursive-section model: the
 field-by-field schema, the engine behaviors that surprise you, the authoring
 modes, and the build → verify loop. For the vocabulary and enums, see
-`GLOSSARY.md`; for the thinking method and the two-consumer framing, see
-`SKILL.md`.
+`GLOSSARY.md`; for the thinking method and the understanding-vs-authoring
+framing, see `SKILL.md`.
 
-The portable engine is vendored under `assets/` (see `assets/README.md`):
+The portable engine is bundled under `assets/` (see `assets/README.md`):
 `index.html`, `engine/engine.js`, `engine/build-data.mjs`, `package.json`,
 `tools/validate-layout.cjs`, `tools/verify.mjs`, and a domain-free seed `data/`.
 Scaffold from there.
@@ -51,8 +51,8 @@ A `columns:3` section is `3×232 + 2×8 + 32 = 760px`; a `span:2` merge is
 - **Band** (`span == parent columns`) — takes its own full row; consecutive
   bands stack top-to-bottom. A band spans the **block width** while the uniform
   cells inside it stay `--cell-w` and left-align — a one-cell band is a
-  full-width bar with a single cell at its left (banda ancha, componente
-  uniforme), never a ballooned cell.
+  full-width bar with a single cell at its left (a wide band with uniform
+  cells), never a ballooned cell.
 
 ### Positioning recipes (idea → columns/span/order)
 
@@ -115,8 +115,7 @@ validates). The build discards `visible: false` pages, sorts the rest by
 onto `window.__DOC__.version` with no default, and `engine.js` renders it in the
 header (`if (barVer && doc.version)`) after the subtitle. Omit it and the `.ver`
 node stays empty; `:empty` collapses it in index.html, so a deck with no
-`version` degrades with zero visible change. See the versioning rule in
-`SKILL.md`.
+`version` degrades with zero visible change.
 
 ## The page file (`data/pages/<id>.yaml`)
 
@@ -262,7 +261,7 @@ live* and write there — never assume a path.
 
 ### Mode 1 — New repo
 
-1. Copy the vendored engine layer from `assets/` (`index.html`, `engine/`,
+1. Copy the portable engine layer from `assets/` (`index.html`, `engine/`,
    `package.json`, `tools/verify.mjs`, and the seed `data/`) into the new repo.
 2. Set `data/document.yaml` `title`/`subtitle` and one page entry.
 3. Write `data/pages/<id>.yaml` with `id`, `layout: grid`, `columns`, and a
@@ -316,7 +315,7 @@ pixels.
    ```
    This is a local file write (reads the manifest, skips `visible: false`, sorts
    by `order`, merges each page). Re-run after every YAML change.
-3. **Validate — the mandatory gate (T1).**
+3. **Validate — mandatory (the engine's own verify).**
    ```
    npm run validate   # node tools/validate-layout.cjs (re-runs the build itself)
    ```
@@ -343,10 +342,11 @@ pixels.
 
    Each new layout requirement should become a new invariant here — the trap is
    trusting a metric that measures the wrong thing; assert the real geometry.
-4. **Spot-check by looking (optional).** Load `Skill('visual-verify')` and read
-   the `-full.png` shots (or render `index.html` under `file://`) across widths
-   and both themes. A pixel read catches contrast or a wrong wrap the invariants
-   don't name. `npm run verify` is the lighter collision-only QA.
+4. **Spot-check by looking (optional).** Use the engine's **verify-UI**
+   capability — `npm run verify` renders the deck and writes the `-full.png`
+   shots across widths and both themes (or render `index.html` under `file://`).
+   A pixel read catches contrast or a wrong wrap the invariants don't name; this
+   is the lighter collision-only QA that complements the layout verify.
 5. **Loop on any FAIL** — read the failing invariant's detail (it names the zone
    and the measured value), fix the YAML/CSS, rebuild, re-validate.
 
@@ -366,12 +366,16 @@ choose form → synthesize → discuss → build**, not the reverse.
 |------|-------|-------|
 | **View** the diagram | A browser | `data/data.generated.js` is committed, so it renders with zero tooling, even under `file://`. |
 | **Rebuild** after editing `data/` | Node + `npm install` + `npm run build` | Regenerates `data/data.generated.js` from the YAML. |
-| **Validate** the layout (the gate) | Playwright (+ a Chromium) | `npm run validate` renders every page at five widths, asserts the layout invariants against the real geometry, and exits non-zero on any failure. This is the mandatory gate before declaring done. |
-| **Verify** (lighter QA) | Playwright (+ a Chromium) | `npm run verify` is a lighter collision-only check + screenshots. |
+| **Validate** the layout (verify) | Playwright (+ a Chromium) | `npm run validate` renders every page at five widths, asserts the layout invariants against the real geometry, and exits non-zero on any failure. This is the mandatory check before declaring done. |
+| **Verify-UI** (lighter visual QA) | Playwright (+ a Chromium) | `npm run verify` is a lighter collision-only check + screenshots to review by eye. |
+
+The engine's verify launches the headless browser it needs — and can install
+the browser/Playwright when it is missing — so running it is also how you
+confirm the OS and dependencies the render requires are present.
 
 Degradation is graceful: with only a browser you can always view the
 already-generated diagram; rebuilding after edits adds Node; validation adds
-Playwright. When Playwright is present, the layout gate is not optional — a
+Playwright. When Playwright is present, the layout verify is not optional — a
 layout change is not done until `npm run validate` is green.
 
 ### Explain before you execute
@@ -379,7 +383,7 @@ layout change is not done until `npm run validate` is green.
 Before running ANY script, say in one short, plain sentence what it does and
 which file to open to inspect it first — e.g. *"I'll run `npm run build` (which
 runs `engine/build-data.mjs`) to regenerate the diagram from your YAML — you can
-read that script first."* Informed consent by a human who can see what will run.
+read that script first."* The user can see what will run before it runs.
 
 ### Why the engine stays minimal and data-driven
 

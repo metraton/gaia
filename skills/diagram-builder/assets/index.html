@@ -231,8 +231,8 @@
        • a span BAND (.msp) spans EVERY column (grid-column 1/-1, its own
          full-width row) and justify-self:stretch fills the block width — the
          fixed --cell-w cells inside stay --cell-w and left-align, so a one-cell
-         band is a full-width bar with a single cell at its left (banda ancha,
-         componente uniforme);
+         band is a full-width bar with a single cell at its left (a wide band
+         with uniform cells);
        • the track group sizes to the WIDEST row and justify-content:center
          centers the whole BLOCK on the canvas (symmetric margins), while the
          bands and row-1 sections share the SAME left edge (the block's left).
@@ -306,7 +306,7 @@
      sections, never beside them. The band ZONE spans the row, but the uniform
      --cell-w cells inside it do NOT stretch: the leaf grid keeps fixed --cell-w
      tracks left-aligned, so a one-cell band is a full-width bar with a single
-     cell at its left (banda ancha, componente uniforme) — not a ballooned cell.
+     cell at its left (a wide band with uniform cells) — not a ballooned cell.
      NOTE: this only overrides the COMPOUND case — a span band inside a LEAF grid
      still merges cells via grid-column:1/-1 above. */
   .sec-grid.sec-compound > .msp { flex:0 0 100%; }
@@ -363,7 +363,7 @@
        shrink-wrapped container (= the widest row = the block), so a band is a
        full-width bar at medium/min just as it is at max — never collapsed to its
        single cell. The fixed --cell-w cells inside still stay --cell-w and
-       left-align (banda ancha, componente uniforme). */
+       left-align (a wide band with uniform cells). */
     .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
       align-self:stretch; }
   }

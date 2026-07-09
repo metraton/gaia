@@ -1,7 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 // engine.js — data-driven render engine for a diagram deck.
-// @version 2.0.0  (vendored by the diagram-builder Gaia skill; keep in sync
-//                  with skills/diagram-builder/GLOSSARY.md + reference.md)
+// @version 2.0.0  (part of the diagram-builder skill; keep in sync
+//                  with the skill's GLOSSARY.md + reference.md)
 //
 // Reads window.__DOC__ (produced by build-data.mjs from the YAML manifest +
 // page files) and builds the DOM. No framework, no build step beyond the
