@@ -320,6 +320,21 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # plan/task. There is no destructive verb here (no delete/purge), so the
     # global deny-verb guard leaves every notifications verb exempt.
     ("gaia", "notifications"): CATEGORY_READ_ONLY,
+    # `gaia contract <verb>` (init/set/add/fill/finalize/view/validate): the
+    # by-value agent_contract_handoff draft store under
+    # `data_dir()/contract_drafts/` — a subagent's own turn-scoped draft, edited
+    # field-by-field across the turn and finalized once (see the
+    # `agent-protocol` skill's "Building the contract" section). Without this
+    # exemption `set`/`add` trip the generic MUTATIVE_VERBS scan (`set` and,
+    # were "add" not already removed for the git-add false-positive, `add` too)
+    # on EVERY field write, making the by-value flow impractical — a subagent
+    # would hit an approval gate on every `gaia contract set`. Mirrors brief/ac/
+    # plan/task/notifications exactly: reversible, local-only, no external side
+    # effects, no un-delete needed because there is no destructive verb in this
+    # group (no `gaia contract delete` — a draft is superseded by `finalize`,
+    # never destroyed), so the global deny-verb guard leaves every contract
+    # verb exempt.
+    ("gaia", "contract"): CATEGORY_READ_ONLY,
 }
 
 # Verbs that stay gated even under an excepted group above.  The exception

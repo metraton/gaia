@@ -2139,6 +2139,102 @@ class TestGaiaPlanningBookkeepingException:
             f"reason={result.reason}"
         )
 
+    # ---- gaia contract: by-value agent_contract_handoff draft exemption ----
+    # `gaia contract <verb>` writes ONLY to the subagent's own turn-scoped draft
+    # under `data_dir()/contract_drafts/` (see agent-protocol's "Building the
+    # contract" section) -- local-only, reversible, no external side effects,
+    # exactly like brief/ac/plan/task/notifications above. Before this
+    # exemption, `set` (a real MUTATIVE_VERBS token) tripped T3 on every single
+    # field write, making the by-value flow impractical.
+
+    def test_gaia_contract_set_not_mutative(self):
+        result = detect_mutative_command(
+            "gaia contract set agent_status.plan_status IN_PROGRESS"
+        )
+        assert result.is_mutative is False, (
+            f"gaia contract set must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_contract_add_not_mutative(self):
+        result = detect_mutative_command(
+            "gaia contract add evidence_report.files_checked path/to/file.py"
+        )
+        assert result.is_mutative is False, (
+            f"gaia contract add must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_contract_init_not_mutative(self):
+        result = detect_mutative_command("gaia contract init --agent-id my-agent")
+        assert result.is_mutative is False, (
+            f"gaia contract init must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_contract_fill_not_mutative(self):
+        result = detect_mutative_command(
+            "gaia contract fill --json '{\"evidence_report\": {}}'"
+        )
+        assert result.is_mutative is False, (
+            f"gaia contract fill must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_contract_finalize_not_mutative(self):
+        result = detect_mutative_command("gaia contract finalize")
+        assert result.is_mutative is False, (
+            f"gaia contract finalize must be local-only bookkeeping. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_contract_view_not_mutative(self):
+        result = detect_mutative_command("gaia contract view")
+        assert result.is_mutative is False
+
+    def test_gaia_contract_validate_not_mutative(self):
+        result = detect_mutative_command("gaia contract validate")
+        assert result.is_mutative is False
+
+    def test_gaia_contract_help_not_mutative(self):
+        result = detect_mutative_command("gaia contract --help")
+        assert result.is_mutative is False
+
+    def test_gaia_contract_set_with_force_re_gates(self):
+        """A dangerous flag under the excepted `contract` group re-gates to T3,
+        mirroring test_gaia_brief_with_force_flag_re_gates."""
+        result = detect_mutative_command(
+            "gaia contract set agent_status.plan_status IN_PROGRESS --force"
+        )
+        assert result.is_mutative is True, (
+            f"--force under an excepted group must re-gate to T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_raw_sqlite_write_still_mutative(self):
+        """Guard: a genuinely T3 op (raw sqlite write) must not be swept up by
+        the narrow `('gaia', 'contract')` anchor -- it is anchored to the gaia
+        CLI base command only, never to sqlite3 or any other CLI."""
+        result = detect_mutative_command(
+            'sqlite3 ~/.gaia/gaia.db "INSERT INTO agent_contract_handoffs VALUES (1)"'
+        )
+        assert result.is_mutative is True, (
+            f"raw sqlite3 write must stay T3. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
+    def test_git_push_still_mutative_guard(self):
+        """Guard: `git push` (genuinely T3, remote-mutating) is untouched by the
+        `('gaia', 'contract')` anchor -- mirrors test_git_push_still_mutative."""
+        result = detect_mutative_command("git push origin main")
+        assert result.is_mutative is True
+        assert result.verb == "push"
+
 
 class TestScriptFileEvasion:
     """Closes the file-argument T3 evasion (Step 1d / _check_script_file).
