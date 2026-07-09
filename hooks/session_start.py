@@ -125,6 +125,27 @@ if __name__ == "__main__":
         from modules.core.state import resolve_session_id
         _sid = resolve_session_id(event_data)
 
+        # Pin the build this session is actually running. The RUNNING
+        # session_start hook IS the code Claude Code loaded for this session,
+        # so ``__file__``'s resolved parent is the authoritative running-hooks
+        # tree -- more precise than re-resolving the ``.claude/hooks`` symlink
+        # (which could already point elsewhere if a repack raced this hook).
+        # We snapshot its content digest so `gaia doctor` can later tell the
+        # user whether the wired hooks still match what is running (ACTIVE) or
+        # a `gaia dev` landed a newer build that needs a restart (STALE).
+        # Fully best-effort: any failure leaves the marker absent (doctor
+        # reports UNKNOWN), it never blocks session start.
+        _pinned_build = None
+        try:
+            from gaia.hooks_build import hooks_content_hash
+            _running_hooks_dir = Path(__file__).resolve().parent
+            _pinned_build = {
+                "hooks_path": str(_running_hooks_dir),
+                "hooks_hash": hooks_content_hash(_running_hooks_dir),
+            }
+        except Exception as _pin_exc:
+            logger.debug("pinned_build computation failed (non-fatal): %s", _pin_exc)
+
         # Register this session in the user-scoped session registry.
         # Heartbeat-only liveness: PID isn't tracked because the hook
         # process is ephemeral. Failures are non-fatal — a missing
@@ -132,7 +153,11 @@ if __name__ == "__main__":
         try:
             if _sid and _sid != "default":
                 _is_headless = _detect_headless()
-                register_session(session_id=_sid, is_headless=_is_headless)
+                register_session(
+                    session_id=_sid,
+                    is_headless=_is_headless,
+                    pinned_build=_pinned_build,
+                )
         except SessionRegistryError as _reg_exc:
             logger.warning("session_registry register failed (non-fatal): %s", _reg_exc)
 

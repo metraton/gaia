@@ -98,6 +98,30 @@ class TestRegisterSession:
         with pytest.raises(SessionRegistryError):
             register_session("")
 
+    def test_register_persists_wellformed_pinned_build(self, isolated_registry):
+        register_session(
+            "sid-pin",
+            pinned_build={"hooks_path": "/pkg/hooks", "hooks_hash": "abcd1234"},
+        )
+        entry = json.loads(isolated_registry.read_text())["sessions"]["sid-pin"]
+        assert entry["pinned_build"] == {
+            "hooks_path": "/pkg/hooks",
+            "hooks_hash": "abcd1234",
+        }
+
+    def test_register_without_pinned_build_omits_field(self, isolated_registry):
+        # Legacy / hasher-unavailable path: no marker key at all, so doctor
+        # reads it as UNKNOWN rather than a false match.
+        register_session("sid-nopin")
+        entry = json.loads(isolated_registry.read_text())["sessions"]["sid-nopin"]
+        assert "pinned_build" not in entry
+
+    def test_register_drops_pinned_build_without_hash(self, isolated_registry):
+        # A malformed marker (no hooks_hash) must not shadow the UNKNOWN state.
+        register_session("sid-bad", pinned_build={"hooks_path": "/pkg/hooks"})
+        entry = json.loads(isolated_registry.read_text())["sessions"]["sid-bad"]
+        assert "pinned_build" not in entry
+
     def test_register_creates_parent_directory(self, tmp_path, monkeypatch):
         nested = tmp_path / "nested" / "dir" / "registry.json"
         monkeypatch.setattr(session_registry, "_get_registry_path", lambda: nested)

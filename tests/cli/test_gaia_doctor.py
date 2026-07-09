@@ -49,6 +49,16 @@ def _isolate_home_globals(tmp_path, monkeypatch):
     # GAIA_DB env var is the higher-priority override read by
     # check_schema_version -- clear it so tests start from a clean slate.
     monkeypatch.delenv("GAIA_DB", raising=False)
+
+    # check_hooks_active_fresh (order 150) reads the user-scoped session
+    # registry and the host session-id env vars. On a developer machine both
+    # are live, which would make the check non-deterministic. Redirect the
+    # registry to a tmp path and clear the session-id env vars so the check
+    # degrades to the isolated UNKNOWN/info state unless a test opts in.
+    fake_registry = tmp_path / "isolated-session_registry.json"
+    monkeypatch.setattr(doctor_mod, "_SESSION_REGISTRY_PATH", fake_registry)
+    for _var in doctor_mod._SESSION_ID_ENV_VARS:
+        monkeypatch.delenv(_var, raising=False)
     yield
 
 @pytest.fixture()
@@ -270,39 +280,92 @@ class TestCheckHookFiles:
 
 
 class TestCheckAgentResolution:
-    """Test check_agent_resolution -- surface-routing agents resolve to files."""
+    """Test check_agent_resolution -- surface_routing (DB table) agents resolve to files.
 
-    def _write_routing(self, project_root: Path, surfaces: dict, recon: str | None = None):
-        cfg_dir = project_root / ".claude" / "config"
-        cfg_dir.mkdir(parents=True, exist_ok=True)
-        payload = {"version": "1.0", "surfaces": surfaces}
-        if recon:
-            payload["reconnaissance_agent"] = recon
-        (cfg_dir / "surface-routing.json").write_text(json.dumps(payload))
+    Routing moved off config/surface-routing.json (retired, git-rm'd in
+    commit 9fac935) onto the ``surface_routing`` table in gaia.db, seeded
+    from agent ``routing:`` frontmatter by tools/scan/seed_surface_routing.py.
+    check_agent_resolution now reads that table via the same loader
+    (tools.context.surface_router.load_surface_routing_config) the
+    UserPromptSubmit hook uses -- these tests seed a minimal ``surface_routing``
+    table directly (schema mirrors gaia/store/schema.sql) rather than writing
+    the retired JSON file.
+    """
 
-    def test_all_agents_resolve_passes(self, healthy_project):
-        """When every routed primary_agent maps to an existing .md -> pass."""
+    def _write_routing_db(self, tmp_path: Path, surfaces: dict) -> Path:
+        """Create a minimal gaia.db with a seeded ``surface_routing`` table."""
+        import sqlite3
+
+        db_path = tmp_path / "routing-gaia.db"
+        con = sqlite3.connect(str(db_path))
+        try:
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS surface_routing (
+                    surface                TEXT NOT NULL PRIMARY KEY,
+                    primary_agent          TEXT NOT NULL,
+                    adjacent_surfaces_json TEXT NOT NULL DEFAULT '[]',
+                    contract_sections_json TEXT NOT NULL DEFAULT '[]',
+                    required_checks_json   TEXT NOT NULL DEFAULT '[]',
+                    keywords_json          TEXT NOT NULL DEFAULT '[]',
+                    commands_json          TEXT NOT NULL DEFAULT '[]',
+                    artifacts_json         TEXT NOT NULL DEFAULT '[]',
+                    sub_surfaces_json      TEXT
+                )
+                """
+            )
+            for surface, primary_agent in surfaces.items():
+                con.execute(
+                    "INSERT INTO surface_routing (surface, primary_agent) VALUES (?, ?)",
+                    (surface, primary_agent),
+                )
+            con.commit()
+        finally:
+            con.close()
+        return db_path
+
+    def test_all_agents_resolve_passes(self, healthy_project, tmp_path, monkeypatch):
+        """When every routed primary_agent (+ the reconnaissance agent) maps
+        to an existing .md -> pass."""
         agents = healthy_project / ".claude" / "agents"
         (agents / "gaia-system.md").write_text("---\n---")
-        (agents / "developer.md").write_text("---\n---")
-        self._write_routing(healthy_project, {
-            "gaia_system": {"primary_agent": "gaia-system"},
-            "app_ci_tooling": {"primary_agent": "developer"},
-        }, recon="developer")
+        (agents / "developer.md").write_text("---\n---")  # reconnaissance_agent constant
+        db_path = self._write_routing_db(tmp_path, {
+            "gaia_system": "gaia-system",
+            "app_ci_tooling": "developer",
+        })
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db_path)
         r = doctor_mod.check_agent_resolution(healthy_project)
         assert r["severity"] == "pass"
 
-    def test_missing_agent_errors(self, healthy_project):
+    def test_missing_agent_errors(self, healthy_project, tmp_path, monkeypatch):
         """A primary_agent with no matching .md -> error naming the agent."""
-        self._write_routing(healthy_project, {
-            "iac": {"primary_agent": "platform-architect"},  # no .md created
+        db_path = self._write_routing_db(tmp_path, {
+            "iac": "platform-architect",  # no .md created
         })
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db_path)
+        # reconnaissance_agent ("developer") isn't seeded as a .md either in
+        # this fixture, but the assertion only needs to see the named agent.
+        (healthy_project / ".claude" / "agents" / "developer.md").write_text("---\n---")
         r = doctor_mod.check_agent_resolution(healthy_project)
         assert r["severity"] == "error"
         assert "platform-architect" in r["detail"]
 
-    def test_no_routing_config_is_info(self, healthy_project):
-        """Absent surface-routing.json is advisory, not an error."""
+    def test_no_routing_table_is_info(self, healthy_project):
+        """No gaia.db (table not yet seeded) is advisory, not an error.
+
+        _isolate_home_globals already redirects _DEFAULT_DB_PATH to a
+        nonexistent tmp path, so this exercises the not-seeded path with no
+        further setup.
+        """
+        r = doctor_mod.check_agent_resolution(healthy_project)
+        assert r["severity"] == "info"
+        assert r["ok"] is True
+
+    def test_empty_routing_table_is_info(self, healthy_project, tmp_path, monkeypatch):
+        """A gaia.db that exists but has no surface_routing rows is also advisory."""
+        db_path = self._write_routing_db(tmp_path, {})
+        monkeypatch.setattr(doctor_mod, "_DEFAULT_DB_PATH", db_path)
         r = doctor_mod.check_agent_resolution(healthy_project)
         assert r["severity"] == "info"
         assert r["ok"] is True
@@ -741,18 +804,20 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 25 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
+        # 26 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
         # last-install-error, workspace-initialized, schema-version) +
         # 1 schema-DDL-consistency added by the migration framework rewrite +
         # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1) +
-        # 1 agent-routing (surface-routing primary agents resolve to files) +
+        # 1 agent-routing (surface_routing DB table primary agents resolve to files) +
         # 1 symlinks-freshness (.claude/hooks resolves to the installed pkg
         #   version -- install-local staleness fix) +
         # 2 deterministic structural checks migrated from gaia-audit
         #   (component-naming order 52, skill-cross-refs order 53) +
         # 1 install-provenance (order 57 -- local vs npm install + local
-        #   freshness vs source; replaces `gaia release sync-local`).
-        assert len(data["checks"]) == 25
+        #   freshness vs source; replaces `gaia release sync-local`) +
+        # 1 hooks-active-fresh (order 150 -- running session's hooks == the
+        #   currently wired build; live-freshness vs on-disk freshness).
+        assert len(data["checks"]) == 26
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1598,3 +1663,161 @@ class TestCheckInstallProvenance:
         assert r["severity"] == "warning"
         assert "does not resolve" in r["detail"]
         assert "gaia dev" in r["fix"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: content-hash freshness -- the dev-pack reality semver cannot see.
+# `gaia dev` content-addresses the tarball but never bumps the internal
+# package.json version, so two different builds report the SAME semver. These
+# tests prove check_symlinks_freshness (order 55) now distinguishes them by
+# content, and that check_hooks_active_fresh (order 150) classifies the running
+# session's build against the wired build.
+# ---------------------------------------------------------------------------
+
+def _mk_hooks_tree(root: Path, body: str) -> Path:
+    """Create a minimal hooks tree at *root* with a marker .py of *body*.
+
+    Two trees with the SAME body hash identically; different bodies hash
+    differently -- exactly the content signal the freshness checks compare.
+    """
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "pre_tool_use.py").write_text(body)
+    (root / "hooks.json").write_text('{"hooks": {}}')
+    return root
+
+
+def _mk_local_gaia_workspace(
+    ws: Path, *, wired_body: str, installed_body: str, version: str = "5.1.3"
+) -> None:
+    """Build a workspace whose .claude/hooks resolves to a separate package
+    extraction, with an independently-controllable installed node_modules
+    package -- so wired-vs-installed content can be made to match or diverge
+    at the SAME semver.
+    """
+    # The extraction the .claude/hooks symlink points at (the "wired" build).
+    wired_pkg = ws / "store" / "wired-build"
+    wired_pkg.mkdir(parents=True)
+    (wired_pkg / "package.json").write_text(
+        json.dumps({"name": "@jaguilar87/gaia", "version": version})
+    )
+    _mk_hooks_tree(wired_pkg / "hooks", wired_body)
+
+    # The installed node_modules package.
+    nm_gaia = ws / "node_modules" / "@jaguilar87" / "gaia"
+    nm_gaia.mkdir(parents=True)
+    (nm_gaia / "package.json").write_text(
+        json.dumps({"name": "@jaguilar87/gaia", "version": version})
+    )
+    _mk_hooks_tree(nm_gaia / "hooks", installed_body)
+
+    # .claude/hooks -> the wired extraction's hooks dir.
+    claude = ws / ".claude"
+    claude.mkdir()
+    (claude / "hooks").symlink_to(wired_pkg / "hooks")
+
+
+class TestCheckSymlinksFreshnessContentHash:
+    """Order-55: same-semver / different-content must NOT report fresh."""
+
+    def test_same_version_different_content_is_warning(self, tmp_path):
+        ws = tmp_path / "ws"
+        _mk_local_gaia_workspace(
+            ws, wired_body="# OLD build\n", installed_body="# NEW build\n"
+        )
+        r = doctor_mod.check_symlinks_freshness(ws)
+        assert r["severity"] == "warning"
+        assert "DIFFERENT build" in r["detail"]
+        # Same semver on both sides -- the whole point of the content signal.
+        assert "v5.1.3" in r["detail"]
+        assert "gaia dev" in r["fix"]
+
+    def test_same_version_same_content_is_pass(self, tmp_path):
+        ws = tmp_path / "ws"
+        _mk_local_gaia_workspace(
+            ws, wired_body="# same build\n", installed_body="# same build\n"
+        )
+        r = doctor_mod.check_symlinks_freshness(ws)
+        assert r["severity"] == "pass"
+        assert "matches installed" in r["detail"]
+        # The pass detail carries the content build id, proving the content
+        # path (not the legacy semver-only path) produced this result.
+        assert "build " in r["detail"]
+
+
+class TestCheckHooksActiveFresh:
+    """Order-150: is the RUNNING session's hooks the currently wired build?"""
+
+    def _write_registry(self, session_id: str, pinned_hash) -> None:
+        entry = {"started_at": "2026-01-01T00:00:00Z", "is_headless": False,
+                 "last_heartbeat": 9999999999.0}
+        if pinned_hash is not None:
+            entry["pinned_build"] = {"hooks_path": "/x", "hooks_hash": pinned_hash}
+        doctor_mod._SESSION_REGISTRY_PATH.write_text(
+            json.dumps({"sessions": {session_id: entry}})
+        )
+
+    def _wired_hash(self, ws: Path):
+        hasher = doctor_mod._load_hooks_content_hash()
+        assert hasher is not None, "gaia.hooks_build must be importable in tests"
+        return hasher((ws / ".claude" / "hooks").resolve())
+
+    def test_active_when_marker_matches_wired(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        _mk_local_gaia_workspace(
+            ws, wired_body="# build A\n", installed_body="# build A\n"
+        )
+        wired = self._wired_hash(ws)
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-active")
+        self._write_registry("sess-active", wired)
+        r = doctor_mod.check_hooks_active_fresh(ws)
+        assert r["severity"] == "pass"
+        assert "ACTIVE" in r["detail"]
+
+    def test_stale_when_marker_differs_from_wired(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        # wired == installed (not misconfigured); only the pinned marker is old.
+        _mk_local_gaia_workspace(
+            ws, wired_body="# build B\n", installed_body="# build B\n"
+        )
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-stale")
+        self._write_registry("sess-stale", "deadbeef")  # an old, different build
+        r = doctor_mod.check_hooks_active_fresh(ws)
+        assert r["severity"] == "warning"
+        assert "STALE" in r["detail"]
+        assert "restart Claude Code" in r["fix"]
+
+    def test_misconfigured_when_wired_differs_from_installed(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        _mk_local_gaia_workspace(
+            ws, wired_body="# wired\n", installed_body="# installed DIFFERENT\n"
+        )
+        # A session + matching marker exist, but the wiring fault takes
+        # precedence over the freshness comparison.
+        wired = self._wired_hash(ws)
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-misc")
+        self._write_registry("sess-misc", wired)
+        r = doctor_mod.check_hooks_active_fresh(ws)
+        assert r["severity"] == "warning"
+        assert "does not match the installed package" in r["detail"]
+
+    def test_unknown_when_no_session_id(self, tmp_path):
+        ws = tmp_path / "ws"
+        _mk_local_gaia_workspace(
+            ws, wired_body="# b\n", installed_body="# b\n"
+        )
+        # autouse fixture cleared the session-id env vars -> UNKNOWN, not pass.
+        r = doctor_mod.check_hooks_active_fresh(ws)
+        assert r["severity"] == "info"
+        assert "session id unavailable" in r["detail"]
+
+    def test_unknown_when_marker_absent(self, tmp_path, monkeypatch):
+        ws = tmp_path / "ws"
+        _mk_local_gaia_workspace(
+            ws, wired_body="# b\n", installed_body="# b\n"
+        )
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "sess-legacy")
+        # Legacy entry: present but no pinned_build field.
+        self._write_registry("sess-legacy", None)
+        r = doctor_mod.check_hooks_active_fresh(ws)
+        assert r["severity"] == "info"
+        assert "no pinned build marker" in r["detail"]

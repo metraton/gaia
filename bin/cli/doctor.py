@@ -17,7 +17,7 @@ Checks (in order):
   55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
   57. install-provenance - local (file:) vs npm install; mode, version, symlink resolution
   60. identity           - orchestrator agent configured
-  65. agent-routing      - surface-routing primary agents resolve to files
+  65. agent-routing      - surface_routing table (DB) primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
   80. hook-files         - all hook scripts present
   90. project-context    - project-context.json valid
@@ -26,6 +26,7 @@ Checks (in order):
  120. memory_fts5_db     - episodes_fts present in gaia.db
  130. memory_fts5_count  - FTS5 index complete
  140. memory_scoring     - scoring module importable
+ 150. hooks-active-fresh - running session's hooks == currently wired build
 
 Severity: pass / info / warning / error
 Exit codes: 0=healthy, 1=warnings, 2=errors
@@ -215,6 +216,53 @@ EXPECTED_SCHEMA_VERSION = 29
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
 _DEFAULT_DB_PATH = Path("~/.gaia/gaia.db").expanduser()
+# The user-scoped session registry the SessionStart hook writes (a JSON file,
+# NOT a DB table). Module-level so tests can redirect it to a tmp path -- same
+# isolation pattern as _INSTALL_ERROR_MARKER / _DEFAULT_DB_PATH above.
+_SESSION_REGISTRY_PATH = Path("~/.claude/session_registry.json").expanduser()
+
+# Env vars the host CLI (Claude Code) may export into a `gaia` CLI subprocess
+# to advertise the current session id. Empirically (probed 2026-07), a plain
+# `gaia doctor` subprocess sees CLAUDE_CODE_SESSION_ID -- and its value is the
+# exact key under which the SessionStart hook registers the session. The
+# adapter-owned CLAUDE_SESSION_ID (hooks/adapters/host_session.py) is kept as a
+# secondary for forward-compat but was NOT observed in the CLI subprocess env.
+# Order = precedence.
+_SESSION_ID_ENV_VARS = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID")
+
+
+def _current_session_id() -> "str | None":
+    """Return the host session id from the environment, or None.
+
+    Reads the env vars in _SESSION_ID_ENV_VARS in precedence order. Returns
+    None when none is set (or all are empty) so the caller can DEGRADE to an
+    advisory result rather than emit a false pass.
+    """
+    for var in _SESSION_ID_ENV_VARS:
+        val = os.environ.get(var)
+        if val:
+            return val
+    return None
+
+
+def _load_hooks_content_hash():
+    """Import gaia.hooks_build.hooks_content_hash, inserting the package root.
+
+    Kept lazy (not a top-level import) because doctor.py runs as a bin/cli
+    script whose sys.path does not include the package root until we add it --
+    the same insertion the memory_* checks perform before importing
+    gaia.store.writer. Returns the callable, or None if the module is missing
+    (a broken/partial install), so callers degrade instead of crashing.
+    """
+    try:
+        import sys as _sys  # noqa: PLC0415
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+        from gaia.hooks_build import hooks_content_hash  # noqa: PLC0415
+        return hooks_content_hash
+    except Exception:
+        return None
 
 # Canonical set of hook events Gaia wires. This is the same set asserted by
 # tests/hooks/adapters/test_plugin_manifests.py::test_hooks_json_has_all_required_events
@@ -860,13 +908,24 @@ def _semver_tuple(v) -> tuple:
 
 @register_check("Symlinks freshness", order=55)
 def check_symlinks_freshness(project_root: Path) -> dict:
-    """Warn when .claude/hooks resolves to an OLDER package than installed.
+    """Warn when .claude/hooks resolves to a STALE package extraction.
 
     The .claude/hooks symlink can survive a reinstall while still pointing at
     a stale package extraction (e.g. an old pnpm virtual-store entry), so
     hooks keep running old code even though node_modules/@jaguilar87/gaia was
-    updated. Compares the version at the symlink's resolved package root
-    against the top-level installed package's version.
+    updated.
+
+    Two independent staleness signals, because semver alone is blind to the
+    dev-pack reality: ``gaia dev`` content-addresses the tarball
+    (``...+<sha8>.tgz``) but NEVER bumps the tarball's internal package.json
+    version (see bin/cli/dev.py::content_address_tarball), so two genuinely
+    different dev builds both report the SAME semver. A pure
+    ``_semver_tuple`` comparison therefore reports a stale dev-pack extraction
+    as "fresh". This check now ALSO compares the CONTENT hash of the resolved
+    vs installed hooks trees (gaia.hooks_build.hooks_content_hash), catching
+    the same-version / different-content drift that semver misses. The semver
+    comparison is retained as the first, coarser signal (an actually-older
+    package is the clearer diagnosis to surface).
     """
     name = "Symlinks freshness"
     hooks_link = project_root / ".claude" / "hooks"
@@ -895,12 +954,36 @@ def check_symlinks_freshness(project_root: Path) -> dict:
     if target_ver is None:
         return _result(name, "info", f"hooks -> {resolved} (version unknown); installed {installed_ver}")
 
+    # Signal 1 (coarse): an actually-older semver at the resolved package.
     if _semver_tuple(target_ver) < _semver_tuple(installed_ver):
         return _result(
             name, "warning",
             f".claude/hooks resolves to gaia {target_ver} but {installed_ver} is installed",
             "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the current package",
         )
+
+    # Signal 2 (content): same (or newer) semver, but does the resolved hooks
+    # tree's CONTENT match the installed package's hooks tree? This is the
+    # dev-pack case semver cannot see. Best-effort: if the hasher is
+    # unavailable or a tree cannot be digested (empty string), fall back to the
+    # semver-equal pass rather than fabricating a warning.
+    hooks_content_hash = _load_hooks_content_hash()
+    if hooks_content_hash is not None:
+        resolved_hash = hooks_content_hash(resolved)
+        installed_hash = hooks_content_hash(nm_gaia / "hooks")
+        if resolved_hash and installed_hash and resolved_hash != installed_hash:
+            return _result(
+                name, "warning",
+                f".claude/hooks resolves to a DIFFERENT build (content {resolved_hash}) "
+                f"than installed (content {installed_hash}); both report v{target_ver}",
+                "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the current build",
+            )
+        if resolved_hash and installed_hash:
+            return _result(
+                name, "pass",
+                f"hooks at v{target_ver} (build {resolved_hash}) matches installed",
+            )
+
     return _result(name, "pass", f"hooks at {target_ver} matches installed {installed_ver}")
 
 
@@ -1216,27 +1299,60 @@ def check_identity(project_root: Path) -> dict:
 def check_agent_resolution(project_root: Path) -> dict:
     """Check every agent the router can dispatch resolves to a real file.
 
-    Reads config/surface-routing.json (via the .claude/config symlink) and
-    verifies that each surface's ``primary_agent`` and the top-level
+    Routing config moved off ``config/surface-routing.json`` -- retired and
+    git-rm'd in commit 9fac935 ("feat(routing): migrate surface routing to
+    DB-backed table") -- onto the ``surface_routing`` table in gaia.db,
+    seeded from each agent's ``routing:`` frontmatter block by
+    ``tools/scan/seed_surface_routing.py`` at install time. This check reads
+    that table through the SAME loader
+    (``tools.context.surface_router.load_surface_routing_config``) that the
+    UserPromptSubmit hook (via ``hooks/modules/session/session_manifest.py``)
+    uses to compute the live "Surface Routing Recommendation" injected on
+    every user turn, so a workspace where routing demonstrably works reports
+    PASS here too instead of a misleading "file not found".
+
+    Verifies that each surface's ``primary_agent`` and the top-level
     ``reconnaissance_agent`` map to an ``agents/<name>.md`` that exists. A
     routing entry that points at a missing agent silently breaks dispatch for
     that surface, so an unresolved agent is an error.
 
-    Advisory when the routing config is absent (a workspace that has not yet
-    been scanned): info, not error.
+    Advisory when the DB or the ``surface_routing`` table is absent/empty (a
+    workspace that has not yet run `gaia install`, which is what seeds the
+    table): info, not error -- mirrors the loader's own degraded-config
+    fallback (``version == "missing"``).
     """
-    routing_path = project_root / ".claude" / "config" / "surface-routing.json"
-    if not routing_path.is_file():
+    try:
+        import sys as _sys  # noqa: PLC0415
+        tools_dir = str(_package_root() / "tools" / "context")
+        if tools_dir not in _sys.path:
+            _sys.path.insert(0, tools_dir)
+        from surface_router import load_surface_routing_config  # noqa: PLC0415
+    except ImportError:
         return _result(
-            "Agent routing", "info", "surface-routing.json not found",
-            "Run `gaia scan` or `gaia update`",
+            "Agent routing", "warning",
+            "tools/context/surface_router.py not importable -- cannot verify routing",
+            "Check gaia installation",
         )
 
-    data = _read_json(routing_path)
-    if not isinstance(data, dict):
+    # Same GAIA_DB / _DEFAULT_DB_PATH resolution as check_schema_version, and
+    # always passed explicitly so the loader never falls back to querying the
+    # real ~/.gaia/gaia.db via gaia.paths when a test (or a sandboxed run)
+    # has redirected _DEFAULT_DB_PATH to an isolated path.
+    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
+    db_path = Path(db_path_str).expanduser()
+
+    try:
+        data = load_surface_routing_config(db_path=db_path)
+    except Exception as exc:
         return _result(
-            "Agent routing", "error", "surface-routing.json invalid",
-            "Run `gaia scan` or reinstall",
+            "Agent routing", "warning", f"could not query surface_routing table: {exc}",
+            "Run `gaia install` to reseed",
+        )
+
+    if not isinstance(data, dict) or data.get("version") == "missing":
+        return _result(
+            "Agent routing", "info", "surface_routing table not seeded",
+            "Run `gaia install` (seeds via tools/scan/seed_surface_routing.py)",
         )
 
     agents_dir = project_root / ".claude" / "agents"
@@ -1252,8 +1368,8 @@ def check_agent_resolution(project_root: Path) -> dict:
 
     if not referenced:
         return _result(
-            "Agent routing", "warning", "no agents referenced in surface-routing.json",
-            "Run `gaia scan` or reinstall",
+            "Agent routing", "warning", "no agents referenced in surface_routing table",
+            "Run `gaia install` to reseed",
         )
 
     unresolved = sorted(
@@ -1265,7 +1381,7 @@ def check_agent_resolution(project_root: Path) -> dict:
         return _result(
             "Agent routing", "error",
             f"{len(unresolved)} routed agent(s) not found: {', '.join(unresolved)}",
-            "Run `gaia scan` or reinstall to recreate agent files",
+            "Run `gaia install` to recreate agent files",
         )
 
     return _result("Agent routing", "pass", f"{len(referenced)} routed agents resolve")
@@ -1697,6 +1813,109 @@ def check_memory_dirs(project_root: Path) -> dict:
         "warning",
         "episodes table missing from gaia.db",
         "Run: bash scripts/bootstrap_database.sh",
+    )
+
+
+@register_check("Hooks active & fresh", order=150)
+def check_hooks_active_fresh(project_root: Path) -> dict:
+    """Tell the user whether THIS running session's hooks are the current build.
+
+    The gap this closes: `gaia dev` re-points ``.claude/hooks`` at a freshly
+    packed build, but Claude Code loaded its hooks ONCE at session start and
+    keeps running that in-memory copy until the session restarts. So "the
+    files on disk are fresh" (order 55) does not answer "are the hooks I am
+    running fresh?". This check answers the second question by comparing the
+    build THIS session pinned at start (SessionStart hook -> session_registry
+    ``pinned_build``) against the build ``.claude/hooks`` resolves to NOW.
+
+    Classification (see the four documented states):
+      * ACTIVE  (pass)    -- pinned build == currently wired build. The running
+                             hooks ARE the current code.
+      * STALE   (warning) -- pinned build != wired build. A newer build was
+                             installed since this session started; restart
+                             Claude Code to load it.
+      * MISCONFIGURED (warning) -- wired ``.claude/hooks`` != the installed
+                             node_modules package. Independent of the session
+                             marker; surfaced first because it is a wiring
+                             fault, not a staleness one.
+      * UNKNOWN (info)    -- no session id in the env, or no pinned_build marker
+                             for this session (legacy entry / pre-restart). NOT
+                             a false pass: it self-heals on the next SessionStart
+                             fire for this session id, and that includes a plain
+                             `claude --resume`/`--continue` (SessionStart's
+                             matcher is `startup|resume`, so resuming re-reads
+                             settings and re-runs the hook, which re-pins the
+                             marker regardless of `source`) -- not only a
+                             brand-new session.
+    """
+    name = "Hooks active & fresh"
+    hooks_link = project_root / ".claude" / "hooks"
+
+    if not hooks_link.exists():
+        return _result(name, "info", ".claude/hooks not present")
+    try:
+        wired = hooks_link.resolve(strict=True)
+    except OSError:
+        return _result(
+            name, "warning", ".claude/hooks does not resolve",
+            "Run `gaia install` to repair symlinks",
+        )
+
+    hooks_content_hash = _load_hooks_content_hash()
+    if hooks_content_hash is None:
+        return _result(name, "info", "gaia.hooks_build unavailable -- cannot compute hooks hash")
+
+    wired_hash = hooks_content_hash(wired)
+    if not wired_hash:
+        return _result(name, "info", f"could not digest wired hooks at {wired}")
+
+    # MISCONFIGURED: wired hooks are not the installed package's hooks. Only
+    # meaningful when a node_modules install is present (plugin-mode has none).
+    nm_hooks = project_root / "node_modules" / "@jaguilar87" / "gaia" / "hooks"
+    if nm_hooks.is_dir():
+        installed_hash = hooks_content_hash(nm_hooks)
+        if installed_hash and installed_hash != wired_hash:
+            return _result(
+                name, "warning",
+                f".claude/hooks (build {wired_hash}) does not match the installed "
+                f"package (build {installed_hash})",
+                "Run `gaia dev --workspace <ws>` (or `gaia install`) to re-point hooks at the installed build",
+            )
+
+    # Live-session freshness needs the session id + its pinned marker.
+    session_id = _current_session_id()
+    if not session_id:
+        return _result(
+            name, "info",
+            f"session id unavailable ({'/'.join(_SESSION_ID_ENV_VARS)} unset) -- "
+            f"cannot verify live freshness; wired build {wired_hash}",
+        )
+
+    registry = _read_json(_SESSION_REGISTRY_PATH) if _SESSION_REGISTRY_PATH.is_file() else None
+    entry = None
+    if isinstance(registry, dict):
+        entry = (registry.get("sessions") or {}).get(session_id)
+    marker = entry.get("pinned_build") if isinstance(entry, dict) else None
+    marker_hash = marker.get("hooks_hash") if isinstance(marker, dict) else None
+
+    if not marker_hash:
+        return _result(
+            name, "info",
+            f"no pinned build marker for session {session_id[:8]} (wired build "
+            f"{wired_hash}); exit and run `claude --resume` (or start a fresh "
+            f"session) to record it -- resuming re-reads settings and re-runs "
+            f"SessionStart, so it will refresh this marker",
+        )
+
+    if marker_hash == wired_hash:
+        return _result(
+            name, "pass",
+            f"ACTIVE -- running hooks build {wired_hash} is the currently wired build",
+        )
+    return _result(
+        name, "warning",
+        f"STALE -- running hooks build {marker_hash} but {wired_hash} is now wired",
+        "Hooks changed since session start; restart Claude Code to load the current code",
     )
 
 

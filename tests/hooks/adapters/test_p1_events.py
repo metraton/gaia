@@ -240,13 +240,19 @@ class TestHooksJsonP1Entries:
             return json.load(f)
 
     def test_session_start_entry(self, hooks_config):
-        """hooks.json has a SessionStart entry."""
+        """hooks.json has a SessionStart entry wired for startup AND resume.
+
+        The matcher must be "startup|resume": a "startup"-only matcher never
+        fires on `claude --resume`/`--continue` (Claude Code dispatches those
+        with source "resume", a distinct matcher), which left the pinned_build
+        marker stale on the common exit -> --resume workflow.
+        """
         hooks = hooks_config.get("hooks", {})
         assert "SessionStart" in hooks, "SessionStart not found in hooks.json"
 
         session_start = hooks["SessionStart"]
         assert len(session_start) >= 1
-        assert session_start[0]["matcher"] == "startup"
+        assert session_start[0]["matcher"] == "startup|resume"
         assert "session_start.py" in session_start[0]["hooks"][0]["command"]
 
     def test_user_prompt_submit_in_hooks_json(self, hooks_config):

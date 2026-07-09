@@ -22,7 +22,11 @@ Storage format:
             "<session_id>": {
                 "started_at": "<ISO-8601 string>",
                 "is_headless": <bool>,
-                "last_heartbeat": <float epoch seconds>
+                "last_heartbeat": <float epoch seconds>,
+                "pinned_build": {              # optional; added by session_start
+                    "hooks_path": "<realpath of the running .claude/hooks>",
+                    "hooks_hash": "<8-hex content digest of that hooks tree>"
+                }
             }
         }
     }
@@ -31,6 +35,18 @@ Storage format:
     read: they have no ``last_heartbeat``, so the freshness check treats them
     as dead immediately. That is the correct outcome — a registry written by
     the old code is by definition stale.
+
+    ``pinned_build`` is likewise OPTIONAL on read: entries written before this
+    field existed simply lack it. Consumers (``gaia doctor``'s "Hooks active &
+    fresh" check) MUST treat an absent ``pinned_build`` as UNKNOWN, never as a
+    match/pass — the marker is rewritten both by a fresh session (source
+    "startup") AND by a ``--continue``/``--resume`` of an existing session id
+    (source "resume"): SessionStart's matcher is ``startup|resume``, so Claude
+    Code re-reads settings and re-fires this hook on resume too, and this
+    hook does not branch on ``source`` -- it always re-registers and
+    re-pins. Only a session that never re-fires SessionStart at all (e.g. one
+    still running from before this wiring change) can be left with a stale
+    or absent marker.
 
 Concurrency:
     All writes are atomic via os.rename() after writing to a per-call .tmp
@@ -162,6 +178,7 @@ def register_session(
     session_id: str,
     started_at: Optional[str] = None,
     is_headless: bool = False,
+    pinned_build: Optional[dict] = None,
 ) -> None:
     """Register a session as active in the user-scoped registry.
 
@@ -178,6 +195,17 @@ def register_session(
             (CI, cron, ``claude --headless``). Headless sessions can be
             filtered out via ``get_live_sessions(include_headless=False)``
             so their pending approvals surface to interactive sessions.
+        pinned_build: Optional ``{"hooks_path": str, "hooks_hash": str}``
+            snapshot of the hooks tree THIS session actually loaded at start.
+            ``gaia doctor`` later recomputes the wired hooks' hash and compares
+            it against this marker to tell the user whether the running hooks
+            are the freshly-installed build (ACTIVE) or a restart is needed to
+            load newly-installed code (STALE). Omitted -> the entry carries no
+            marker (doctor reports UNKNOWN). This self-heals on the next
+            SessionStart fire for this session id -- which includes a plain
+            ``--continue``/``--resume``, since the SessionStart matcher is
+            ``startup|resume`` and this hook re-pins on every fire regardless
+            of ``source``.
 
     Raises:
         SessionRegistryError: If session_id is empty or saving fails.
@@ -188,12 +216,21 @@ def register_session(
     if started_at is None:
         started_at = datetime.now(timezone.utc).isoformat()
 
-    data = _load_registry()
-    data["sessions"][session_id] = {
+    entry = {
         "started_at": started_at,
         "is_headless": bool(is_headless),
         "last_heartbeat": time.time(),
     }
+    # Only persist a well-formed marker; a malformed value must not shadow the
+    # UNKNOWN-vs-match distinction doctor relies on.
+    if isinstance(pinned_build, dict) and pinned_build.get("hooks_hash"):
+        entry["pinned_build"] = {
+            "hooks_path": str(pinned_build.get("hooks_path", "")),
+            "hooks_hash": str(pinned_build["hooks_hash"]),
+        }
+
+    data = _load_registry()
+    data["sessions"][session_id] = entry
     _save_registry(data)
     logger.debug(
         "session_registry: registered session=%s headless=%s",

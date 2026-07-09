@@ -192,6 +192,37 @@ class TestHooksJson:
         matchers = {entry["matcher"] for entry in data["hooks"]["SubagentStop"]}
         assert "*" in matchers
 
+    def test_session_start_matcher_includes_resume(self, gaia_manifest):
+        """SessionStart must fire on BOTH a fresh start and a resume.
+
+        A SessionStart hook wired with matcher "startup" ONLY never runs on
+        `claude --resume`/`--continue` -- Claude Code dispatches those with
+        `source: "resume"`, a distinct matcher. Without "resume" in the
+        matcher, the pinned_build marker (`gaia doctor`'s "Hooks active &
+        fresh" check) never refreshes on the user's real exit -> --resume
+        workflow. Checked in both the generated hooks/hooks.json (the file
+        Claude Code actually reads) and the source manifest it is derived
+        from (build/gaia.manifest.json), so drift between the two is caught
+        here rather than only at pack time.
+        """
+        data = json.loads(self.hooks_path.read_text())
+        installed_matchers = {
+            entry["matcher"] for entry in data["hooks"]["SessionStart"]
+        }
+        assert installed_matchers == {"startup|resume"}, (
+            f"hooks/hooks.json SessionStart matcher must be 'startup|resume', "
+            f"got {installed_matchers}"
+        )
+
+        manifest_matchers = {
+            entry["matcher"]
+            for entry in gaia_manifest["hooks"]["matchers"]["SessionStart"]
+        }
+        assert manifest_matchers == {"startup|resume"}, (
+            f"build/gaia.manifest.json SessionStart matcher must be "
+            f"'startup|resume', got {manifest_matchers}"
+        )
+
     def test_all_commands_use_plugin_root(self):
         """All hook commands must use ${CLAUDE_PLUGIN_ROOT} prefix.
 
