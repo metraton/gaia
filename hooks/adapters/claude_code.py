@@ -159,13 +159,26 @@ def classify_stop_reason(stop_reason: Optional[str]) -> str:
 # the gate, the CLI validate-on-write, the finalize writer, and the fence
 # fallback all agree on ONE verdict.
 #
-# It is guarded by a RAMP FLAG that DEFAULTS OFF:
-#   - unset / non-truthy -> byte-identical legacy 3-case behavior (safe no-op
-#     propagation; the rollback target T17 flips back to this).
-#   - truthy -> a previously-exit-0 invalid envelope now exits 2 with the rich
-#     repair message on stderr, signaling EXACTLY ONE anomaly per invalidity
-#     (one FormError / CrossCheckError -> one anomaly), never the historical
-#     double (contract_validation_failure + response_contract_violation).
+# It is guarded by a RAMP FLAG that now DEFAULTS ON (cutover from the original
+# default-OFF staging):
+#   - unset / empty / any non-falsy value -> full-verdict: a previously-exit-0
+#     invalid envelope now exits 2 with the rich repair message on stderr,
+#     signaling EXACTLY ONE anomaly per invalidity (one FormError /
+#     CrossCheckError -> one anomaly), never the historical double
+#     (contract_validation_failure + response_contract_violation).
+#   - explicit falsy ({"0","false","no","off"}) -> byte-identical legacy 3-case
+#     behavior (the one-env-var rollback path, T17).
+#
+# WHY the default flipped: in 3-case mode the ONLY thing that forces a subagent
+# to repair its handoff (exit 2) is one of three structural cases (no block, no
+# agent_status, bad plan_status). A handoff that PARSES but is otherwise
+# incomplete or drifted (missing evidence_report keys, missing next_action,
+# malformed agent_id, missing consolidation_report) produced a CRITICAL
+# response_contract_violation anomaly WITHOUT forcing repair -- the turn ended
+# exit 0 and recovery fell to the orchestrator via SendMessage. Full-verdict
+# closes that gap; a handoff built through the `gaia contract` CLI already
+# passed this SAME core at finalize, so the correct-path agent is never
+# rejected -- only a genuinely broken fence is.
 #
 # stop_reason (T10/T11) decides salvage-vs-violation: a max_tokens truncation
 # is NOT hard-rejected here (the T11 fast-path / T9 backstop already capture a
@@ -173,20 +186,35 @@ def classify_stop_reason(stop_reason: Optional[str]) -> str:
 # double-signal it). The core itself never sees stop_reason (decision #5).
 # ---------------------------------------------------------------------------
 GATE_RAMP_ENV_VAR = "GAIA_CONTRACT_FULL_VERDICT_GATE"
-_GATE_TRUE_VALUES = {"1", "true", "yes", "on"}
+# Explicit falsy tokens that force the legacy 3-case gate (the rollback path).
+# Everything else -- unset, empty, or any other value -- selects full-verdict.
+_GATE_FALSE_VALUES = {"0", "false", "no", "off"}
 
 GATE_MODE_THREE_CASE = "three_case"
 GATE_MODE_FULL_VERDICT = "full_verdict"
 
 
 def full_verdict_gate_enabled() -> bool:
-    """Whether the M4 full-verdict gate is active (ramp flag, DEFAULT OFF).
+    """Whether the M4 full-verdict gate is active (DEFAULT ON).
 
-    Reads ``GAIA_CONTRACT_FULL_VERDICT_GATE``. Unset / empty / any non-truthy
-    value -> False -> the legacy 3-case Option B gate (rollback target, T17).
-    One of {"1","true","yes","on"} (case-insensitive) -> True -> full-verdict.
+    Reads ``GAIA_CONTRACT_FULL_VERDICT_GATE``. Unset / empty / any value that is
+    NOT an explicit falsy token -> True -> the full-verdict gate, driven by the
+    SINGLE portable core (gaia.contract.crosscheck) that also backs the CLI
+    validate-on-write, finalize, and the fence fallback. One of
+    {"0","false","no","off"} (case-insensitive) -> False -> the legacy 3-case
+    Option B gate, still fully supported as the one-env-var rollback path (T17).
+
+    The default was flipped ON to close the SubagentStop enforcement gap: in
+    3-case mode a handoff that PARSES (agent_status + valid plan_status present)
+    but is otherwise incomplete/drifted produced a critical
+    response_contract_violation anomaly WITHOUT forcing repair (exit 0), so
+    recovery fell to the orchestrator via SendMessage. Full-verdict forces the
+    subagent to repair the handoff (exit 2 + rich message) before its turn ends.
     """
-    return os.environ.get(GATE_RAMP_ENV_VAR, "").strip().lower() in _GATE_TRUE_VALUES
+    return (
+        os.environ.get(GATE_RAMP_ENV_VAR, "").strip().lower()
+        not in _GATE_FALSE_VALUES
+    )
 
 
 @dataclass(frozen=True)
@@ -349,7 +377,44 @@ def evaluate_contract_gate(
     repair = result.form.repair_message
     if result.crosscheck.repair_message:
         repair = f"{repair}\n\n{result.crosscheck.repair_message}"
-    reason = f"[CONTRACT REJECTED] {result.error_summary()}\n\n{repair}"
+
+    # Group the specific defects BY NATURE instead of one flat "; "-joined list,
+    # so the agent reads WHAT is wrong at a glance. MISSING_FIELD errors are
+    # fields left out ("Faltan:"); the value-shape codes (AGENT_ID_FORMAT,
+    # PLAN_STATUS, VERIFICATION_RESULT, APPROVAL_ID_NOT_PENDING) are fields
+    # present but wrong ("Inválidos:"). Partition is MISSING vs. everything-else
+    # so a future code is never silently dropped. An empty group is omitted, and
+    # each rendered line still carries the raw code string as a substring
+    # (e.g. "AGENT_ID_FORMAT"), which downstream assertions and log scrapers rely
+    # on. Falls back to the flat summary if partitioning yields nothing.
+    from gaia.contract.validator import FormErrorCode as _FormErrorCode
+
+    _missing_code = _FormErrorCode.MISSING_FIELD.value
+    _missing = [e for e in result.errors if e.code.value == _missing_code]
+    _invalid = [e for e in result.errors if e.code.value != _missing_code]
+    _summary_lines: list[str] = []
+    if _missing:
+        _summary_lines.append("Faltan: " + "; ".join(str(e) for e in _missing))
+    if _invalid:
+        _summary_lines.append("Inválidos: " + "; ".join(str(e) for e in _invalid))
+    grouped_summary = "\n".join(_summary_lines) if _summary_lines else result.error_summary()
+
+    reason = f"[CONTRACT REJECTED]\n{grouped_summary}\n\n{repair}"
+
+    # Honest-failure signpost: a VERIFICATION_RESULT defect means a COMPLETE was
+    # emitted without a genuine pass. Point at the honest path -- retry or block
+    # and record the failure -- rather than nudging toward faking a "pass".
+    if any(
+        e.code.value == _FormErrorCode.VERIFICATION_RESULT.value
+        for e in result.errors
+    ):
+        reason = (
+            f"{reason}\n\n"
+            "Si la verificación falló de verdad, NO emitas COMPLETE — quédate en "
+            "IN_PROGRESS (reintento) o BLOCKED y registra "
+            "evidence_report.verification.result='fail'. COMPLETE afirma éxito."
+        )
+
     return ContractGateVerdict(True, reason, anomalies, GATE_MODE_FULL_VERDICT)
 
 

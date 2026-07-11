@@ -7,11 +7,18 @@ Covers:
   T4.3-b: Envelope with approval_request inserts an approvals row too.
   T4.3-c: DB write failure does NOT crash the hook.
   T4.3-d: trg_pcc_history trigger captures before/after payloads on UPDATE.
+  M4 gate reason (CAMBIO 1/2): the full-verdict gate's rejection reason is
+    grouped BY NATURE (Faltan / Inválidos) and carries the honest-failure
+    signpost on a VERIFICATION_RESULT defect -- delivered verbatim to stderr
+    (exit 2) through the real subagent_stop wire, with CANONICAL_REPAIR_MESSAGE
+    and the raw code strings still embedded.
 """
 
+import io
 import json
 import sqlite3
 import sys
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -277,3 +284,127 @@ def test_trg_pcc_history_fires_on_update(tmp_db):
     assert h["after_payload_json"] == json.dumps({"version": 2})
     assert h["contract_key"] == "test_contract"
     assert h["workspace"] == "test-ws"
+
+
+# ---------------------------------------------------------------------------
+# M4 gate reason (CAMBIO 1/2): grouped reason + honest signpost on the wire
+# ---------------------------------------------------------------------------
+#
+# The REAL full-verdict gate (adapters.claude_code.evaluate_contract_gate,
+# default ramp ON) produces the rejection reason; that reason is then delivered
+# through the REAL subagent_stop wire (_handle_subagent_stop) to stderr with
+# exit 2. Only the adapter's get_adapter is stubbed to hand the real
+# gate-driven HookResponse to the printer -- the gate output under test is not
+# faked. No DB is touched (form-layer rejections skip the layer-2 cross-check),
+# so these run without the tmp_db fixture.
+
+from adapters.claude_code import evaluate_contract_gate  # noqa: E402
+from adapters.types import HookResponse  # noqa: E402
+
+
+def _rejected_envelope_missing_and_invalid() -> dict:
+    """IN_PROGRESS with BOTH a MISSING_FIELD defect (next_action absent) and a
+    value-shape defect (agent_id malformed) -- drives the two-group rendering."""
+    env = _minimal_envelope("IN_PROGRESS")
+    env["agent_status"]["agent_id"] = "BADID"
+    del env["agent_status"]["next_action"]
+    return env
+
+
+def _rejected_envelope_failed_verification() -> dict:
+    """COMPLETE whose verification.result is 'fail' -- drives VERIFICATION_RESULT
+    and the honest-failure signpost."""
+    env = _minimal_envelope("COMPLETE")
+    env["evidence_report"]["verification"]["result"] = "fail"
+    env["evidence_report"]["verification"]["details"] = "the suite did not pass"
+    return env
+
+
+def _reason_via_wire(monkeypatch, envelope: dict) -> str:
+    """Run the REAL gate on ``envelope`` and push the resulting HookResponse
+    through the REAL subagent_stop._handle_subagent_stop printer, returning the
+    text delivered to stderr. Asserts the exit code is 2 (a hard rejection)."""
+    import subagent_stop
+
+    v = evaluate_contract_gate(envelope, ramp_enabled=True)
+    assert v.rejected is True
+
+    response = HookResponse(
+        output={
+            "success": True,
+            "contract_rejected": True,
+            "contract_rejection_reason": v.rejection_reason,
+        },
+        exit_code=2,
+    )
+
+    class _StubAdapter:
+        def adapt_subagent_stop(self, event):
+            return response
+
+    monkeypatch.setattr(subagent_stop, "get_adapter", lambda: _StubAdapter())
+
+    buf = io.StringIO()
+    with redirect_stderr(buf):
+        with pytest.raises(SystemExit) as exc:
+            subagent_stop._handle_subagent_stop(event=None)
+    assert exc.value.code == 2
+    return buf.getvalue()
+
+
+def test_grouped_reason_reaches_stderr_via_wire(monkeypatch):
+    """CAMBIO 1: MISSING_FIELD -> 'Faltan:', value codes -> 'Inválidos:', two
+    labeled lines delivered to stderr instead of one flat list."""
+    stderr_text = _reason_via_wire(
+        monkeypatch, _rejected_envelope_missing_and_invalid()
+    )
+    assert "Faltan:" in stderr_text
+    assert "Inválidos:" in stderr_text
+
+    faltan_line = next(
+        l for l in stderr_text.splitlines() if l.startswith("Faltan:")
+    )
+    invalid_line = next(
+        l for l in stderr_text.splitlines() if l.startswith("Inválidos:")
+    )
+    assert "MISSING_FIELD" in faltan_line
+    assert "next_action" in faltan_line
+    assert "AGENT_ID_FORMAT" in invalid_line
+    assert "agent_id" in invalid_line
+    # Groups do not bleed into each other.
+    assert "MISSING_FIELD" not in invalid_line
+    assert "AGENT_ID_FORMAT" not in faltan_line
+
+
+def test_honest_signpost_reaches_stderr_on_verification_defect(monkeypatch):
+    """CAMBIO 2: a VERIFICATION_RESULT defect appends the honest-failure
+    signpost -- point at retry/block, never a nudge to fake a pass."""
+    stderr_text = _reason_via_wire(
+        monkeypatch, _rejected_envelope_failed_verification()
+    )
+    assert "VERIFICATION_RESULT" in stderr_text
+    assert "NO emitas COMPLETE" in stderr_text
+    assert "IN_PROGRESS" in stderr_text
+    assert "BLOCKED" in stderr_text
+    assert "verification.result='fail'" in stderr_text
+
+
+def test_signpost_absent_without_verification_defect(monkeypatch):
+    """The signpost is CONDITIONAL: a non-verification rejection does not carry
+    it (no false nudge on unrelated defects)."""
+    stderr_text = _reason_via_wire(
+        monkeypatch, _rejected_envelope_missing_and_invalid()
+    )
+    assert "NO emitas COMPLETE" not in stderr_text
+
+
+def test_prior_assertions_stay_green_on_the_wire(monkeypatch):
+    """Byte-stability guard: CANONICAL_REPAIR_MESSAGE and the raw code strings
+    (e.g. AGENT_ID_FORMAT) remain embedded verbatim after grouping/signpost."""
+    from gaia.contract.validator import CANONICAL_REPAIR_MESSAGE
+
+    stderr_text = _reason_via_wire(
+        monkeypatch, _rejected_envelope_missing_and_invalid()
+    )
+    assert CANONICAL_REPAIR_MESSAGE in stderr_text
+    assert "AGENT_ID_FORMAT" in stderr_text

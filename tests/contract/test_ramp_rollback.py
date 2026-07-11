@@ -18,8 +18,8 @@ prove exactly that:
 2. A previously-written on-disk draft survives the full ON->OFF toggle,
    untouched (same bytes, same content), including across a rejecting gate
    evaluation.
-3. The OFF path never weakens T16's default: with the env var unset the gate is
-   the 3-case verdict.
+3. Rollback is one env var: with the env var unset the gate is full-verdict (the
+   new default); an explicit falsy token restores the 3-case verdict.
 """
 
 import json
@@ -97,15 +97,17 @@ class TestRampToggleRestoresThreeCase:
         assert off.rejected is False
         assert off.anomalies == ()
 
-    def test_env_var_off_is_three_case(self, monkeypatch):
+    def test_env_var_unset_is_full_verdict(self, monkeypatch):
+        # Default flipped ON: unset env -> full-verdict (the new default).
         monkeypatch.delenv(GATE_RAMP_ENV_VAR, raising=False)
-        assert full_verdict_gate_enabled() is False
+        assert full_verdict_gate_enabled() is True
         v = evaluate_contract_gate(_malformed_agent_id_envelope(), ramp_enabled=None)
-        assert v.mode == GATE_MODE_THREE_CASE
-        assert v.rejected is False
+        assert v.mode == GATE_MODE_FULL_VERDICT
+        assert v.rejected is True
 
-    @pytest.mark.parametrize("val", ["0", "false", "no", "off", ""])
-    def test_env_var_non_truthy_is_three_case(self, monkeypatch, val):
+    @pytest.mark.parametrize("val", ["0", "false", "no", "off"])
+    def test_env_var_explicit_falsy_is_three_case(self, monkeypatch, val):
+        # The one-env-var rollback path (T17): explicit falsy -> 3-case.
         monkeypatch.setenv(GATE_RAMP_ENV_VAR, val)
         v = evaluate_contract_gate(_malformed_agent_id_envelope(), ramp_enabled=None)
         assert v.mode == GATE_MODE_THREE_CASE

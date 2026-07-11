@@ -9,13 +9,15 @@ stderr; y una sola anomalia por invalidez (no dos)."
 
 These tests pin the T16 contract:
 
-1. RAMP FLAG DEFAULT OFF -- with GAIA_CONTRACT_FULL_VERDICT_GATE unset, the gate
-   is the legacy 3-case Option B verdict (safe no-op propagation).
-2. OFF preserves today's behavior -- an envelope with a malformed agent_id or a
-   missing next_action (but a present agent_status + a valid plan_status)
-   passes the 3-case gate and would exit 0, exactly as before.
-3. ON activates full-verdict -- the SAME envelopes now REJECT (the hook returns
-   exit 2), driven by the SINGLE portable core (gaia.contract.crosscheck).
+1. RAMP FLAG DEFAULT ON -- with GAIA_CONTRACT_FULL_VERDICT_GATE unset, the gate
+   is the full-verdict verdict. An explicit falsy token ({"0","false","no",
+   "off"}) is the one-env-var rollback to the legacy 3-case Option B verdict.
+2. OFF (explicit falsy) preserves the legacy behavior -- an envelope with a
+   malformed agent_id or a missing next_action (but a present agent_status + a
+   valid plan_status) passes the 3-case gate and would exit 0.
+3. ON (the default) activates full-verdict -- the SAME envelopes now REJECT (the
+   hook returns exit 2), driven by the SINGLE portable core
+   (gaia.contract.crosscheck).
 4. EXACTLY ONE anomaly per invalidity -- a single defect -> a single anomaly,
    typed off the NAMED FormErrorCode enum (not the retired token strings), and
    NOT the historical double (contract_validation_failure +
@@ -107,35 +109,77 @@ def _missing_next_action_envelope():
     return env
 
 
+def _missing_and_invalid_envelope():
+    """BOTH a MISSING_FIELD defect (next_action absent) AND a value-shape defect
+    (agent_id malformed). Exercises the two-group Faltan/Inválidos rendering of
+    the rejection reason (CAMBIO 1)."""
+    env = _malformed_agent_id_envelope()
+    del env["agent_status"]["next_action"]
+    return env
+
+
+def _complete_failed_verification_envelope():
+    """A COMPLETE envelope whose verification.result is 'fail' -- the full-verdict
+    gate rejects it (VERIFICATION_RESULT). A COMPLETE that asserts success while
+    verification actually failed; drives the honest-failure signpost (CAMBIO 2)."""
+    env = _valid_envelope()
+    env["agent_status"]["plan_status"] = "COMPLETE"
+    env["evidence_report"]["verification"] = {
+        "method": "test",
+        "result": "fail",
+        "details": "the suite did not pass",
+    }
+    return env
+
+
 # ---------------------------------------------------------------------------
-# 1. Ramp flag: DEFAULT OFF
+# 1. Ramp flag: DEFAULT ON (cutover); explicit falsy is the rollback path
 # ---------------------------------------------------------------------------
 
-class TestRampFlagDefaultOff:
-    def test_unset_env_is_off(self, monkeypatch):
+class TestRampFlagDefaultOn:
+    def test_unset_env_is_on(self, monkeypatch):
         monkeypatch.delenv(GATE_RAMP_ENV_VAR, raising=False)
-        assert full_verdict_gate_enabled() is False
+        assert full_verdict_gate_enabled() is True
 
-    def test_empty_env_is_off(self, monkeypatch):
+    def test_empty_env_is_on(self, monkeypatch):
         monkeypatch.setenv(GATE_RAMP_ENV_VAR, "")
-        assert full_verdict_gate_enabled() is False
+        assert full_verdict_gate_enabled() is True
 
-    @pytest.mark.parametrize("val", ["0", "false", "no", "off", "nope", "  "])
-    def test_non_truthy_is_off(self, monkeypatch, val):
+    @pytest.mark.parametrize("val", ["0", "false", "FALSE", "no", "off", "Off"])
+    def test_explicit_falsy_is_off(self, monkeypatch, val):
+        """The one-env-var rollback path (T17): explicit falsy -> 3-case."""
         monkeypatch.setenv(GATE_RAMP_ENV_VAR, val)
         assert full_verdict_gate_enabled() is False
 
-    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", "On"])
-    def test_truthy_is_on(self, monkeypatch, val):
+    @pytest.mark.parametrize("val", ["1", "true", "TRUE", "yes", "on", "On", "nope", "  "])
+    def test_non_falsy_is_on(self, monkeypatch, val):
+        """Default ON: anything that is not an explicit falsy token -> ON."""
         monkeypatch.setenv(GATE_RAMP_ENV_VAR, val)
         assert full_verdict_gate_enabled() is True
 
     def test_gate_reads_env_when_ramp_enabled_none(self, monkeypatch):
-        """ramp_enabled=None -> the gate reads the env flag itself."""
+        """ramp_enabled=None -> the gate reads the env flag itself (default ON)."""
         monkeypatch.delenv(GATE_RAMP_ENV_VAR, raising=False)
         v = evaluate_contract_gate(_malformed_agent_id_envelope(), ramp_enabled=None)
-        assert v.mode == GATE_MODE_THREE_CASE
-        assert v.rejected is False  # OFF -> 3-case passes
+        assert v.mode == GATE_MODE_FULL_VERDICT
+        assert v.rejected is True  # ON -> full-verdict rejects the malformed id
+
+    def test_drift_partial_handoff_enforced_by_default(self, monkeypatch):
+        """Regression for thread_subagent_no_contract_handoff_drift.
+
+        A handoff that PARSES (agent_status + valid plan_status) but is
+        incomplete/drifted (here: missing next_action) previously exited 0 in
+        the default mode -- only a critical response_contract_violation anomaly
+        was raised, so recovery fell to the orchestrator via SendMessage. With
+        the default flipped ON, the SAME partial handoff now forces repair (the
+        gate rejects with the rich message) with NO env var set.
+        """
+        monkeypatch.delenv(GATE_RAMP_ENV_VAR, raising=False)
+        v = evaluate_contract_gate(_missing_next_action_envelope(), ramp_enabled=None)
+        assert v.mode == GATE_MODE_FULL_VERDICT
+        assert v.rejected is True
+        assert v.rejection_reason  # a non-empty rich repair message is delivered
+        assert len(v.anomalies) == 1  # exactly one anomaly per invalidity
 
 
 # ---------------------------------------------------------------------------
@@ -313,3 +357,85 @@ class TestSalvageVsViolation:
             stop_reason_classification=STOP_REASON_UNKNOWN,
         )
         assert v.rejected is True
+
+
+# ---------------------------------------------------------------------------
+# 7. CAMBIO 1 -- rejection reason grouped BY NATURE (Faltan / Inválidos)
+# ---------------------------------------------------------------------------
+
+class TestGroupedRejectionReason:
+    def test_missing_and_invalid_grouped_into_two_labeled_lines(self):
+        """MISSING_FIELD -> 'Faltan:', value-shape codes -> 'Inválidos:', each on
+        its own labeled line -- not one flat '; '-joined list."""
+        v = evaluate_contract_gate(_missing_and_invalid_envelope(), ramp_enabled=True)
+        assert v.rejected is True
+        reason = v.rejection_reason
+        assert "Faltan:" in reason
+        assert "Inválidos:" in reason
+
+        faltan_line = next(l for l in reason.splitlines() if l.startswith("Faltan:"))
+        invalid_line = next(l for l in reason.splitlines() if l.startswith("Inválidos:"))
+        # The omitted field lands under Faltan; the malformed value under Inválidos.
+        assert FormErrorCode.MISSING_FIELD.value in faltan_line
+        assert "next_action" in faltan_line
+        assert FormErrorCode.AGENT_ID_FORMAT.value in invalid_line
+        assert "agent_id" in invalid_line
+        # The groups do not bleed into each other.
+        assert FormErrorCode.MISSING_FIELD.value not in invalid_line
+        assert FormErrorCode.AGENT_ID_FORMAT.value not in faltan_line
+
+    def test_only_missing_omits_the_invalid_group(self):
+        v = evaluate_contract_gate(_missing_next_action_envelope(), ramp_enabled=True)
+        assert v.rejected is True
+        reason = v.rejection_reason
+        assert "Faltan:" in reason
+        assert "Inválidos:" not in reason  # empty group omitted
+
+    def test_only_invalid_omits_the_missing_group(self):
+        v = evaluate_contract_gate(_malformed_agent_id_envelope(), ramp_enabled=True)
+        assert v.rejected is True
+        reason = v.rejection_reason
+        assert "Inválidos:" in reason
+        assert "Faltan:" not in reason  # empty group omitted
+
+
+# ---------------------------------------------------------------------------
+# 8. CAMBIO 2 -- honest-failure signpost on a VERIFICATION_RESULT defect
+# ---------------------------------------------------------------------------
+
+class TestHonestFailureSignpost:
+    _MARKER = "NO emitas COMPLETE"
+
+    def test_signpost_present_on_verification_defect(self):
+        v = evaluate_contract_gate(
+            _complete_failed_verification_envelope(), ramp_enabled=True
+        )
+        assert v.rejected is True
+        reason = v.rejection_reason
+        # The defect is named and the honest path is pointed at (retry / block),
+        # not a nudge to fake a pass.
+        assert FormErrorCode.VERIFICATION_RESULT.value in reason
+        assert self._MARKER in reason
+        assert "IN_PROGRESS" in reason
+        assert "BLOCKED" in reason
+        assert "verification.result='fail'" in reason
+
+    def test_signpost_absent_without_verification_defect(self):
+        v = evaluate_contract_gate(_malformed_agent_id_envelope(), ramp_enabled=True)
+        assert v.rejected is True
+        assert self._MARKER not in v.rejection_reason
+
+
+# ---------------------------------------------------------------------------
+# 9. Byte-stability guard -- prior assertions stay green after grouping
+# ---------------------------------------------------------------------------
+
+class TestByteStabilityAfterGrouping:
+    def test_canonical_repair_and_code_string_survive_grouping(self):
+        """CAMBIO 1/2 must not disturb the embedded CANONICAL_REPAIR_MESSAGE nor
+        the raw code strings that downstream assertions/log scrapers rely on."""
+        from gaia.contract.validator import CANONICAL_REPAIR_MESSAGE
+
+        v = evaluate_contract_gate(_missing_and_invalid_envelope(), ramp_enabled=True)
+        assert CANONICAL_REPAIR_MESSAGE in v.rejection_reason
+        assert "AGENT_ID_FORMAT" in v.rejection_reason
