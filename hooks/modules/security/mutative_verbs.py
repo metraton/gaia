@@ -676,6 +676,7 @@ _EXEC_SINK_PERCENT_X_RE = _re.compile(r"%x[\{\(\[]([^\}\)\]\n]{2,})[\}\)\]]")
 
 def _scan_exec_sink_string_args(
     code: str, family: str, shell_backticks: bool = True,
+    cwd: "Optional[str]" = None,
 ) -> "Optional[MutativeResult]":
     """Extract shell commands handed to exec sinks and re-classify them.
 
@@ -697,6 +698,14 @@ def _scan_exec_sink_string_args(
     bodies are NOT treated as commands -- a JS template literal such as
     ```// ... npm install ...``` is not a shell invocation and must
     not be re-classified, which was a false-positive source.
+
+    ``cwd`` is forwarded to the inner ``detect_mutative_command`` re-
+    classification: an exec-sink string extracted from a script/npm-run body
+    (``execSync('node engine/build-data.mjs')``) may itself be a RELATIVE
+    script invocation, and that relative path resolves against the directory
+    the OUTER script/body was read from, not the hook's own cwd.  ``None``
+    (the default) keeps the previous, hook-cwd-only behavior for the inline
+    ``-c``/``-e`` caller, which has no surrounding script file to anchor to.
     """
     candidates: List[str] = []
     for m in _EXEC_SINK_STRING_ARG_RE.finditer(code):
@@ -725,7 +734,7 @@ def _scan_exec_sink_string_args(
                         f"{blocked.category}"
                     ),
                 )
-        inner_result = detect_mutative_command(inner)
+        inner_result = detect_mutative_command(inner, cwd=cwd)
         if inner_result.is_mutative:
             return MutativeResult(
                 is_mutative=True,
@@ -2304,6 +2313,24 @@ def _parse_cd_target(segment: str) -> "Optional[str]":
     return args[0]
 
 
+def _resolve_dir_against_cwd(base_cwd: "Optional[str]", target: str) -> str:
+    """Resolve *target* (a ``cd``/``--prefix``/``-C`` directory argument)
+    against *base_cwd*, honoring ``~`` and absolute paths.
+
+    Shared normalization for every cwd-fixing form Gaia recognizes: an
+    absolute (or ``~``-expanded) target REPLACES the running cwd; a relative
+    one is joined onto it.  ``base_cwd=None`` falls back to the process cwd,
+    matching the hook's previous default.
+    """
+    import os
+
+    base = base_cwd if base_cwd is not None else os.getcwd()
+    target = os.path.expanduser(target)
+    if os.path.isabs(target):
+        return os.path.normpath(target)
+    return os.path.normpath(os.path.join(base, target))
+
+
 def _peel_leading_cd(
     command: str, base_cwd: "Optional[str]",
 ) -> "Tuple[Optional[str], str, bool]":
@@ -2324,8 +2351,6 @@ def _peel_leading_cd(
     A malformed / bogus target simply yields an unreadable path downstream,
     which the conservative T3 fallback still catches -- security is not weakened.
     """
-    import os
-
     cwd = base_cwd
     remaining = command.strip() if command else ""
     peeled = False
@@ -2336,12 +2361,7 @@ def _peel_leading_cd(
         target = _parse_cd_target(first)
         if target is None:
             break
-        base = cwd if cwd is not None else os.getcwd()
-        target = os.path.expanduser(target)
-        if os.path.isabs(target):
-            cwd = os.path.normpath(target)
-        else:
-            cwd = os.path.normpath(os.path.join(base, target))
+        cwd = _resolve_dir_against_cwd(cwd, target)
         peeled = True
         remaining = rest
     return cwd, remaining, peeled
@@ -2563,18 +2583,25 @@ def _check_script_file(
     if lane == "code" and _spec_for_script is not None:
         spec = _spec_for_script(base_cmd, script_path)
         if spec is not None:
-            return _classify_source_with_lexer(content, script_path, family, spec)
+            return _classify_source_with_lexer(
+                content, script_path, family, spec, cwd=cwd,
+            )
 
     # "code" lane (non-shell source: ruby/perl/php) suppresses camelCase
     # subcommand splitting so language identifiers are not read as CLI verbs;
-    # "shell" lane keeps the full command semantics.
+    # "shell" lane keeps the full command semantics.  ``cwd`` is threaded
+    # through so a mutative line INSIDE the script body that itself invokes a
+    # relative script/npm-run resolves against the SAME directory the outer
+    # script was read from, not the hook's own cwd (see _classify_script_
+    # content_by_regex's docstring).
     return _classify_script_content_by_regex(
-        content, script_path, family, from_source_code=(lane == "code"),
+        content, script_path, family, from_source_code=(lane == "code"), cwd=cwd,
     )
 
 
 def _classify_source_with_lexer(
     content: str, script_path: str, family: str, spec,
+    cwd: "Optional[str]" = None,
 ) -> MutativeResult:
     """Classify lexed non-shell source (currently the JS family) by real effect.
 
@@ -2592,7 +2619,14 @@ def _classify_source_with_lexer(
        handed to a subprocess sink as a string literal and escalates ONLY when
        that inner command is itself mutative/blocked.  This is the REAL mutation
        vector for a source language: shell effects go through an exec sink whose
-       argument is a string, which the exec view preserves.
+       argument is a string, which the exec view preserves.  ``cwd`` is
+       forwarded to this call so a relative script/npm-run command embedded in
+       an exec-sink string (``execSync('node engine/build.mjs')``) resolves
+       against the directory THIS script was read from, not the hook's own
+       cwd -- otherwise a genuinely-mutative-by-real-effect inner command
+       falls through to the conservative ``script-file-unreadable`` /
+       ``npm-run-unresolved`` default instead of being classified by what it
+       actually does.
 
     Deliberately NOT run: the whole-token mutative-VERB scan
     (``detect_mutative_command``) that the shell/regex lane uses.  In a non-shell
@@ -2635,6 +2669,7 @@ def _classify_source_with_lexer(
         if sink_line:
             sink_result = _scan_exec_sink_string_args(
                 sink_line, family, shell_backticks=spec.backticks_are_exec,
+                cwd=cwd,
             )
             if sink_result is not None and sink_result.is_mutative:
                 return MutativeResult(
@@ -2662,7 +2697,7 @@ def _classify_source_with_lexer(
 
 def _classify_script_content_by_regex(
     content: str, script_path: str, family: str,
-    from_source_code: bool = False,
+    from_source_code: bool = False, cwd: "Optional[str]" = None,
 ) -> MutativeResult:
     """Classify shell / non-Python script content via the existing regex layer.
 
@@ -2680,6 +2715,15 @@ def _classify_script_content_by_regex(
     non-shell source content (``.js``/``.rb``/...) suppresses camelCase
     subcommand splitting -- a source identifier like ``execPath`` must not be
     read as the CLI verb ``exec``.  Shell-script content leaves it False.
+
+    ``cwd`` is also forwarded to the per-line ``detect_mutative_command`` call
+    below.  Without this, a line inside a script/npm-run body that itself
+    invokes a relative script (``node other.mjs``) or another ``npm run``
+    resolved against ``os.getcwd()`` instead of the directory the OUTER script
+    was actually read from -- the same false-``script-file-unreadable`` /
+    ``npm-run-unresolved`` bug the outer cwd threading fixed, just one level
+    deeper. Losing ``cwd`` here silently re-opens that bug for any nested
+    invocation.
 
     This reuses the existing layers rather than introducing a new parser, per
     the design constraint.
@@ -2704,7 +2748,9 @@ def _classify_script_content_by_regex(
                     ),
                 )
 
-        line_result = detect_mutative_command(line, from_source_code=from_source_code)
+        line_result = detect_mutative_command(
+            line, from_source_code=from_source_code, cwd=cwd,
+        )
         if line_result.is_mutative:
             return MutativeResult(
                 is_mutative=True,
@@ -2726,7 +2772,7 @@ def _classify_script_content_by_regex(
         # token).  Extract the command handed to a known exec sink and
         # re-classify it; escalate ONLY when the inner command is itself
         # mutative/blocked, so a benign ``execSync("ls")`` is not escalated.
-        sink_result = _scan_exec_sink_string_args(line, family)
+        sink_result = _scan_exec_sink_string_args(line, family, cwd=cwd)
         if sink_result is not None and sink_result.is_mutative:
             return MutativeResult(
                 is_mutative=True,
@@ -2806,6 +2852,36 @@ def _resolve_npm_script_body(
     return body
 
 
+def _extract_npm_prefix_override(tokens: "Tuple[str, ...]") -> "Optional[str]":
+    """Return the directory value of npm's global ``--prefix``/``-C`` option.
+
+    npm's ``--prefix <dir>`` (or its short alias ``-C <dir>``) tells npm to
+    resolve ``package.json`` from *dir* instead of the invoking cwd -- this is
+    exactly how a wrapped dev loop runs a workspace's scripts from an
+    arbitrary launch directory (``npm run build --prefix /path/to/repo``).
+    Without this, ``--prefix`` is invisible to the classifier: package.json
+    resolution silently falls back to ``os.getcwd()`` (the hook's own cwd,
+    typically the monorepo root), so the script body is read from the WRONG
+    package.json (or none at all) and the invocation falls to the
+    conservative ``npm-run-unresolved`` T3 regardless of the real script.
+
+    Recognizes both the space form (``--prefix /dir``) and the inline
+    ``--prefix=/dir`` form, and either flag position -- before or after the
+    subcommand -- since npm accepts both. Scanning the raw ``tokens`` (not
+    ``non_flag_tokens``) preserves the directory's original case, which
+    matters on case-sensitive filesystems. Returns ``None`` when neither flag
+    is present or the flag has no value.
+    """
+    n = len(tokens)
+    for i, tok in enumerate(tokens):
+        if tok.startswith("--prefix="):
+            value = tok.split("=", 1)[1]
+            return value or None
+        if tok in ("--prefix", "-C") and i + 1 < n:
+            return tokens[i + 1]
+    return None
+
+
 def _check_npm_script_runner(
     base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None,
@@ -2819,6 +2895,12 @@ def _check_npm_script_runner(
       by_regex``), the same standard the script-file lane meets.  An
       unresolvable script (missing/unparseable package.json or absent entry)
       falls back to conservative T3.
+    * A ``--prefix <dir>`` / ``-C <dir>`` global option OVERRIDES *cwd* for
+      this resolution (see ``_extract_npm_prefix_override``), so
+      ``npm run build --prefix /repo`` resolves ``/repo/package.json``
+      instead of falling back to the process cwd.  This mirrors how ``cd
+      /repo && npm run build`` is already honored -- ``--prefix`` is simply
+      npm's OWN cwd-fixing flag, so it is folded the same way.
 
     Returns ``None`` for any other npm invocation so ordinary detection
     continues unchanged (``npm run`` with no script lists scripts -- read-only;
@@ -2831,6 +2913,10 @@ def _check_npm_script_runner(
     if not non_flag:
         return None
     sub = non_flag[0]
+
+    prefix_override = _extract_npm_prefix_override(semantics.tokens)
+    if prefix_override:
+        cwd = _resolve_dir_against_cwd(cwd, prefix_override)
 
     # `npm ci` -- clean install, always mutates node_modules.
     if sub == "ci":
@@ -2877,7 +2963,7 @@ def _check_npm_script_runner(
         seg for seg in _SHELL_SEGMENT_SPLIT_RE.split(body) if seg.strip()
     )
     inner = _classify_script_content_by_regex(
-        segments, f"package.json:scripts.{script_name}", family
+        segments, f"package.json:scripts.{script_name}", family, cwd=cwd,
     )
     return MutativeResult(
         is_mutative=inner.is_mutative,

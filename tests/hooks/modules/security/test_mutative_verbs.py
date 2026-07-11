@@ -2467,6 +2467,101 @@ class TestRelativeScriptCwdResolution:
         assert cwd_after_component("node build.mjs", None) is None
 
 
+class TestNpmPrefixCwdResolution:
+    """``npm run <s> --prefix <dir>`` / ``--prefix=<dir>`` / ``-C <dir>`` must
+    resolve ``<dir>/package.json`` -- npm's own cwd-fixing option -- exactly as
+    ``cd <dir> && npm run <s>`` does.
+
+    Before the fix ``--prefix`` was invisible to the classifier: package.json
+    resolution fell back to ``os.getcwd()`` (the hook's cwd, typically the
+    monorepo root), so every ``npm run <s> --prefix <workspace>`` collapsed to
+    the conservative ``npm-run-unresolved`` T3 regardless of the real script.
+    The bodies here are CONTROLLED fixtures (a known-mutative ``rm -rf`` and a
+    known-safe ``ls``) so these tests pin the RESOLUTION mechanism, independent
+    of any downstream fs-write detector question.
+    """
+
+    def test_prefix_space_form_resolves_mutative_body(self, tmp_path):
+        """``--prefix <dir>`` resolves the body; a mutative body stays T3 by its
+        real effect, NOT by the unresolved fallback."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(
+            '{"scripts": {"clean": "rm -rf dist"}}'
+        )
+        result = detect_mutative_command(f"npm run clean --prefix {repo}")
+        assert result.is_mutative is True
+        assert result.verb != "npm-run-unresolved"
+
+    def test_prefix_inline_form_resolves_safe_body(self, tmp_path):
+        """``--prefix=<dir>`` (inline value) resolves a safe body to non-mutative,
+        not the conservative unresolved T3."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(
+            '{"scripts": {"inspect": "ls -la"}}'
+        )
+        result = detect_mutative_command(f"npm run inspect --prefix={repo}")
+        assert result.is_mutative is False
+        assert result.verb != "npm-run-unresolved"
+
+    def test_dash_C_short_form_resolves_mutative_body(self, tmp_path):
+        """npm's ``-C <dir>`` short alias for ``--prefix`` resolves the body."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(
+            '{"scripts": {"wipe": "rm -rf build"}}'
+        )
+        result = detect_mutative_command(f"npm run wipe -C {repo}")
+        assert result.is_mutative is True
+        assert result.verb != "npm-run-unresolved"
+
+    def test_prefix_before_run_subcommand_still_resolves(self, tmp_path):
+        """npm accepts the global flag BEFORE the subcommand too
+        (``npm --prefix <dir> run <s>``); the extractor scans raw tokens, so
+        either position resolves."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(
+            '{"scripts": {"inspect": "ls -la"}}'
+        )
+        result = detect_mutative_command(f"npm --prefix {repo} run inspect")
+        assert result.is_mutative is False
+        assert result.verb != "npm-run-unresolved"
+
+    def test_prefix_to_dir_without_package_json_is_unresolved_t3(self, tmp_path):
+        """``--prefix <dir>`` pointing at a dir with NO package.json keeps the
+        conservative ``npm-run-unresolved`` T3 -- the fix does not weaken the
+        unresolvable fallback, it only relocates WHERE resolution is attempted."""
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        result = detect_mutative_command(f"npm run build --prefix {empty}")
+        assert result.is_mutative is True
+        assert result.verb == "npm-run-unresolved"
+
+    def test_prefix_overrides_leading_cd(self, tmp_path):
+        """When BOTH a leading ``cd`` and a ``--prefix`` are present, npm's
+        ``--prefix`` wins for package.json resolution (npm resolves relative to
+        --prefix, not the shell cwd)."""
+        cd_dir = tmp_path / "cd_here"
+        cd_dir.mkdir()
+        (cd_dir / "package.json").write_text(
+            '{"scripts": {"go": "rm -rf everything"}}'
+        )
+        prefix_dir = tmp_path / "prefix_here"
+        prefix_dir.mkdir()
+        (prefix_dir / "package.json").write_text(
+            '{"scripts": {"go": "ls -la"}}'
+        )
+        # cd points at the mutative package.json, --prefix at the safe one.
+        # --prefix must win -> non-mutative.
+        result = detect_mutative_command(
+            f"cd {cd_dir} && npm run go --prefix {prefix_dir}"
+        )
+        assert result.is_mutative is False
+        assert result.verb != "npm-run-unresolved"
+
+
 class TestScriptFileEvasionNoFalsePositiveRegression:
     """Pins the explicitly-cited false-positive complaints
     (atom_t3_classification_overbroad) so the file-argument fix never
@@ -2901,12 +2996,216 @@ class TestJsSourceCommentStringAware:
         assert result.is_mutative is False
 
     def test_ruby_backtick_still_shell_exec(self, tmp_path):
-        """Regression guard: the JS backtick change must NOT affect ruby, where
-        a backtick IS shell execution -- ruby keeps the existing regex lane."""
+        """Regression guard: a ruby backtick IS shell execution and must stay
+        T3.  Ruby now routes through the lexer lane (like JS) but with
+        ``backticks_are_exec=True``, so the backtick body is still scanned as a
+        shell command -- unlike the JS lane where a backtick is a template
+        literal."""
         script = tmp_path / "bt.rb"
         script.write_text("out = `kubectl apply -f x.yaml`\n")
         result = detect_mutative_command(f"ruby {script}")
         assert result.is_mutative is True
+
+
+class TestRubyPerlPhpSourceCommentStringAware:
+    """Comment / string-literal awareness for the ruby/perl/php script lane.
+
+    Bug (confirmed live, mirrors the JS fix of 2026-07-08):
+    ``spec_for_script`` returned ``None`` for ``.rb``/``.pl``/``.php``, so these
+    fell through to ``_classify_script_content_by_regex(from_source_code=True)``,
+    which ONLY skips lines that start with ``#``.  It did not strip ``//``,
+    ``/* ... */``, ruby ``=begin``/``=end``, perl POD (``=pod``/``=cut``), or
+    INLINE comments, so a benign script whose COMMENT text contained a mutative
+    verb was a false T3:
+
+      * ``php app.php`` with ``// update the user cache`` -> MUTATIVE verb='update'
+      * ``ruby bench.rb`` with a ``=begin ... delete ... =end`` block -> T3
+
+    Fix: ruby/perl/php now resolve a ``LanguageSpec`` and route through the same
+    lexer lane as JS, but with ``backticks_are_exec=True`` (a ruby/perl/php
+    backtick IS shell execution, unlike a JS template literal).  Comments are
+    stripped before the scan; a REAL mutation through an exec sink
+    (``system(...)``, ``shell_exec(...)``, backticks, ``%x{}``) is preserved and
+    still classifies T3 -- pinned by the ``*_still_mutative`` cases so the fix
+    cannot open a false negative.
+    """
+
+    # ---- Reproduced false positives: now NON-mutative (T0) ----
+
+    def test_php_line_comment_slash_slash_is_safe(self, tmp_path):
+        """The target repro: a `//` comment mentioning a mutative verb must not
+        classify the benign php script mutative."""
+        script = tmp_path / "app.php"
+        script.write_text(
+            "<?php\n"
+            "// update the user cache before returning the record\n"
+            "function getUser($id) { return $repo->find($id); }\n"
+            "echo getUser(1);\n"
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_php_hash_comment_is_safe(self, tmp_path):
+        """PHP's SECOND line-comment marker `#` must also be stripped."""
+        script = tmp_path / "app2.php"
+        script.write_text(
+            "<?php\n"
+            "# delete the temp files described below\n"
+            "$total = compute();\n"
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is False
+
+    def test_php_block_comment_is_safe(self, tmp_path):
+        """A `/* ... */` block comment spanning lines must not match."""
+        script = tmp_path / "banner.php"
+        script.write_text(
+            "<?php\n"
+            "/*\n"
+            " * This file does NOT deploy, install, or destroy anything.\n"
+            " */\n"
+            "$x = render();\n"
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is False
+
+    def test_php_inline_comment_after_code_is_safe(self, tmp_path):
+        """An INLINE `//` comment (after code on the same line) must be stripped,
+        not just full-line comments."""
+        script = tmp_path / "inline.php"
+        script.write_text(
+            "<?php\n"
+            "$n = 1;  // update the counter and delete the stale key\n"
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is False
+
+    def test_ruby_begin_end_block_comment_is_safe(self, tmp_path):
+        """A ruby `=begin ... =end` column-0 block comment must be stripped."""
+        script = tmp_path / "bench.rb"
+        script.write_text(
+            "=begin\n"
+            "delete all the records and push to prod\n"
+            "=end\n"
+            "x = 1  # update the counter\n"
+        )
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is False
+
+    def test_ruby_inline_hash_comment_is_safe(self, tmp_path):
+        """A ruby inline `#` comment must be stripped from the scan."""
+        script = tmp_path / "note.rb"
+        script.write_text("y = 2  # deploy and delete later\n")
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is False
+
+    def test_perl_pod_block_is_safe(self, tmp_path):
+        """A perl POD block (`=pod`/`=head1` ... `=cut`) must be stripped."""
+        script = tmp_path / "doc.pl"
+        script.write_text(
+            "=pod\n"
+            "This POD mentions delete and update and apply repeatedly.\n"
+            "=cut\n"
+            "my $x = 1;  # update the local variable\n"
+        )
+        result = detect_mutative_command(f"perl {script}")
+        assert result.is_mutative is False
+
+    def test_perl_pod_head_directive_is_safe(self, tmp_path):
+        """POD opens on any `=<letter>` directive (not only `=pod`)."""
+        script = tmp_path / "doc2.pl"
+        script.write_text(
+            "=head1 NAME\n"
+            "tool - deletes and applies things (documentation only)\n"
+            "=cut\n"
+            "my $n = 42;\n"
+        )
+        result = detect_mutative_command(f"perl {script}")
+        assert result.is_mutative is False
+
+    # ---- No false negatives: real mutations STILL T3 ----
+
+    def test_php_system_delete_still_mutative(self, tmp_path):
+        """A genuine `system("kubectl delete ...")` stays T3."""
+        script = tmp_path / "mut.php"
+        script.write_text(
+            "<?php\n"
+            'system("kubectl delete deployment foo");\n'
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_php_shell_exec_still_mutative(self, tmp_path):
+        """`shell_exec("kubectl apply ...")` stays T3."""
+        script = tmp_path / "se.php"
+        script.write_text(
+            "<?php\n"
+            '$r = shell_exec("kubectl apply -f x.yaml");\n'
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is True
+
+    def test_php_backtick_is_shell_exec_still_mutative(self, tmp_path):
+        """A php backtick IS shell execution and stays T3."""
+        script = tmp_path / "bt.php"
+        script.write_text(
+            "<?php\n"
+            "$out = `kubectl delete deployment bar`;\n"
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is True
+
+    def test_ruby_backtick_delete_still_mutative(self, tmp_path):
+        """A ruby backtick shell exec stays T3."""
+        script = tmp_path / "bt.rb"
+        script.write_text("`kubectl delete deployment bar`\n")
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is True
+
+    def test_ruby_percent_x_still_mutative(self, tmp_path):
+        """A ruby `%x{...}` shell exec stays T3."""
+        script = tmp_path / "px.rb"
+        script.write_text("out = %x{kubectl delete deployment px}\n")
+        result = detect_mutative_command(f"ruby {script}")
+        assert result.is_mutative is True
+
+    def test_perl_backtick_after_pod_still_mutative(self, tmp_path):
+        """After a POD block closes, a real backtick mutation is still seen --
+        proving `=cut` correctly resumes CODE and the verb reported is the REAL
+        one (`apply`), not the POD text."""
+        script = tmp_path / "doc.pl"
+        script.write_text(
+            "=pod\n"
+            "mentions delete only in documentation\n"
+            "=cut\n"
+            "my $out = `kubectl apply -f deploy.yaml`;\n"
+        )
+        result = detect_mutative_command(f"perl {script}")
+        assert result.is_mutative is True
+        assert result.verb == "apply"
+
+    def test_php_blocked_command_in_system_still_mutative(self, tmp_path):
+        """A blocked command inside an exec sink stays T3."""
+        script = tmp_path / "wipe.php"
+        script.write_text(
+            "<?php\n"
+            'system("rm -rf /");\n'
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is True
+
+    def test_php_system_ls_stays_safe(self, tmp_path):
+        """Benign inner command is not escalated (false-positive mitigation
+        preserved for the ruby/perl/php lane too)."""
+        script = tmp_path / "read.php"
+        script.write_text(
+            "<?php\n"
+            '$out = system("ls -la");\n'
+        )
+        result = detect_mutative_command(f"php {script}")
+        assert result.is_mutative is False
 
 
 class TestSourceLexer:
@@ -2942,11 +3241,78 @@ class TestSourceLexer:
         assert len(out.exec_view.splitlines()) == len(src.splitlines())
 
     def test_spec_resolution_by_interpreter_and_extension(self):
-        from modules.security.source_lexer import spec_for_script, JS_SPEC
+        from modules.security.source_lexer import (
+            spec_for_script, JS_SPEC, PHP_SPEC, RUBY_SPEC, PERL_SPEC,
+        )
         assert spec_for_script("node", "whatever") is JS_SPEC
         assert spec_for_script("someinterp", "/x/y.mjs") is JS_SPEC
         assert spec_for_script("someinterp", "/x/y.cjs") is JS_SPEC
-        assert spec_for_script("ruby", "/x/y.rb") is None
+        # ruby/perl/php now resolve to their own specs (previously None).
+        assert spec_for_script("ruby", "whatever") is RUBY_SPEC
+        assert spec_for_script("perl", "whatever") is PERL_SPEC
+        assert spec_for_script("php", "whatever") is PHP_SPEC
+        assert spec_for_script("someinterp", "/x/y.rb") is RUBY_SPEC
+        assert spec_for_script("someinterp", "/x/y.pl") is PERL_SPEC
+        assert spec_for_script("someinterp", "/x/y.pm") is PERL_SPEC
+        assert spec_for_script("someinterp", "/x/y.php") is PHP_SPEC
+        # An unregistered language still returns None (regex-lane fallback).
+        assert spec_for_script("someinterp", "/x/y.lua") is None
+
+    def test_php_double_slash_and_hash_line_comments_blanked(self):
+        from modules.security.source_lexer import strip_source, PHP_SPEC
+        out = strip_source(
+            "$a = 1; // delete this\n$b = 2; # update that\n", PHP_SPEC
+        )
+        assert "delete" not in out.verb_view
+        assert "delete" not in out.exec_view
+        assert "update" not in out.verb_view
+        assert "$a = 1;" in out.verb_view
+        assert "$b = 2;" in out.verb_view
+
+    def test_ruby_begin_end_block_blanked(self):
+        from modules.security.source_lexer import strip_source, RUBY_SPEC
+        src = "=begin\ndelete everything\n=end\nx = 1\n"
+        out = strip_source(src, RUBY_SPEC)
+        assert "delete" not in out.verb_view
+        assert "delete" not in out.exec_view
+        assert "x = 1" in out.verb_view
+        # Newline positions preserved so line indices stay aligned.
+        assert len(out.verb_view.splitlines()) == len(src.splitlines())
+
+    def test_perl_pod_blanked_until_cut(self):
+        from modules.security.source_lexer import strip_source, PERL_SPEC
+        src = "=pod\ndelete and update\n=cut\nmy $x = 1;\n"
+        out = strip_source(src, PERL_SPEC)
+        assert "delete" not in out.verb_view
+        assert "update" not in out.verb_view
+        assert "my $x = 1;" in out.verb_view
+
+    def test_perl_pod_any_directive_opens_block(self):
+        from modules.security.source_lexer import strip_source, PERL_SPEC
+        src = "=head1 NAME\ndeletes things\n=cut\ncode = 1\n"
+        out = strip_source(src, PERL_SPEC)
+        assert "deletes" not in out.verb_view
+        assert "code = 1" in out.verb_view
+
+    def test_ruby_backtick_body_kept_verbatim_for_exec_scan(self):
+        from modules.security.source_lexer import strip_source, RUBY_SPEC
+        # Backtick is NOT a string quote for ruby -> body stays in BOTH views so
+        # _scan_exec_sink_string_args (shell_backticks=True) can re-classify it.
+        out = strip_source("out = `kubectl delete x`\n", RUBY_SPEC)
+        assert "kubectl delete x" in out.exec_view
+
+    def test_ruby_backtick_is_exec_not_string(self):
+        from modules.security.source_lexer import RUBY_SPEC
+        assert RUBY_SPEC.backticks_are_exec is True
+        assert "`" not in RUBY_SPEC.string_quotes
+
+    def test_php_php_perl_backticks_are_exec(self):
+        from modules.security.source_lexer import (
+            PHP_SPEC, PERL_SPEC, RUBY_SPEC,
+        )
+        for spec in (PHP_SPEC, PERL_SPEC, RUBY_SPEC):
+            assert spec.backticks_are_exec is True
+            assert "`" not in spec.string_quotes
 
 
 _FAKE_GAIA_DISPATCHER = '''#!/usr/bin/env python3

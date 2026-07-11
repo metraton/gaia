@@ -29,13 +29,33 @@ either view and the line indices stay aligned with the original.
 
 Design notes / accepted limitations:
 
-* Only the JavaScript family (``node`` / ``.js`` / ``.mjs`` / ``.cjs``) is
-  registered today, because backticks mean DIFFERENT things per language:
-  in JS a backtick is a TEMPLATE LITERAL (a string), while in ruby/perl/php a
-  backtick is SHELL EXECUTION.  ``LanguageSpec.backticks_are_exec`` records
-  that distinction so the exec-sink scanner can be told whether to treat
-  backticks as a shell sink.  ruby/perl/php keep the existing regex lane
-  (where their backticks are correctly treated as exec); JS routes here.
+* Four language families are registered: the JavaScript family (``node`` /
+  ``.js`` / ``.mjs`` / ``.cjs``) and ruby / perl / php.  Backticks mean
+  DIFFERENT things per language: in JS a backtick is a TEMPLATE LITERAL (a
+  string), while in ruby/perl/php a backtick is SHELL EXECUTION.
+  ``LanguageSpec.backticks_are_exec`` records that distinction so the exec-sink
+  scanner can be told whether to treat backticks as a shell sink.  For JS the
+  backtick is therefore listed in ``string_quotes`` (blanked in ``verb_view``,
+  kept in ``exec_view`` as a template string) and ``backticks_are_exec`` is
+  False; for ruby/perl/php the backtick is NOT a string delimiter -- it is left
+  verbatim in BOTH views as executable text and ``backticks_are_exec`` is True,
+  so ``_scan_exec_sink_string_args`` re-classifies the backtick body as a shell
+  command.  ``%x{...}`` (ruby) is likewise an exec sink, so the lexer leaves it
+  in place for the same scanner rather than blanking it as a comment/string.
+* Comment grammars beyond JS's ``//`` + ``/* */`` are covered by three
+  spec extensions (all defaulting off, so JS is unchanged): ``extra_line_comments``
+  for PHP's second line marker ``#``; ``line_block_comments`` for a
+  column-0-anchored block comment delimited by whole-line markers (ruby's
+  ``=begin`` / ``=end``); and ``pod_style`` for perl POD (a line starting with
+  ``=`` + a letter opens a documentation block that runs until a line starting
+  with ``=cut``).  These blank documentation prose so a mutative verb mentioned
+  only inside a comment can no longer be read as an invocation.
+* Accepted limitations for ruby/perl/php: heredocs (``<<<``/``<<~``) and the
+  ``q{}``/``qq{}`` string forms are NOT lexed as strings, and a paren-less sink
+  call (ruby ``system "cmd"`` without parentheses) is not extracted -- these
+  mirror the pre-existing regex-lane limitations and can only cost a residual
+  false POSITIVE (heredoc body scanned as code) or a pre-existing false
+  NEGATIVE already present before this lane existed, never a NEW false negative.
 * Regex literals in JS (``/foo/``) are not disambiguated from division; an
   unescaped ``//`` inside a regex literal could be mis-read as a line comment.
   This is a well-known hard case in JS lexing.  It cannot open a false
@@ -73,6 +93,18 @@ class LanguageSpec:
             (ruby/perl/php); False when it delimits a string/template (JS).
             The exec-sink scanner reads this to decide whether backtick
             bodies should be re-classified as commands.
+        extra_line_comments: Additional line-comment markers beyond
+            ``line_comment`` (PHP supports both ``//`` and ``#``).  Each is
+            treated exactly like ``line_comment``: it blanks the remainder of
+            the line in both views.  Defaults to empty (JS uses only ``//``).
+        line_block_comments: Column-0-anchored block comments delimited by
+            WHOLE-LINE markers ``(open, close)``.  A line whose start matches
+            ``open`` begins the block; every line through the one whose start
+            matches ``close`` is blanked (delimiter lines included).  Ruby's
+            ``("=begin", "=end")`` is the case; defaults to empty.
+        pod_style: True for perl POD.  A line starting with ``=`` immediately
+            followed by an ASCII letter opens a documentation block that runs
+            (blanked) until a line starting with ``=cut``.  Defaults to False.
     """
 
     name: str
@@ -80,6 +112,9 @@ class LanguageSpec:
     block_comment: Optional[Tuple[str, str]]
     string_quotes: Tuple[str, ...]
     backticks_are_exec: bool
+    extra_line_comments: Tuple[str, ...] = ()
+    line_block_comments: Tuple[Tuple[str, str], ...] = ()
+    pod_style: bool = False
 
 
 @dataclass(frozen=True)
@@ -105,15 +140,59 @@ JS_SPEC = LanguageSpec(
     backticks_are_exec=False,
 )
 
+# PHP: ``//`` AND ``#`` line comments, ``/* */`` block comments, ``'`` ``"``
+# strings.  The backtick is SHELL EXECUTION (``shell_exec`` sugar), NOT a
+# string -- so it is deliberately absent from ``string_quotes`` and left
+# verbatim in both views for the exec-sink scanner (``backticks_are_exec``).
+PHP_SPEC = LanguageSpec(
+    name="php",
+    line_comment="//",
+    block_comment=("/*", "*/"),
+    string_quotes=("'", '"'),
+    backticks_are_exec=True,
+    extra_line_comments=("#",),
+)
+
+# Ruby: ``#`` line comments, ``=begin`` / ``=end`` column-0 block comments,
+# ``'`` ``"`` strings.  Backticks (and ``%x{...}``, handled by the exec-sink
+# scanner, not the lexer) are SHELL EXECUTION, so the backtick is not a string
+# delimiter here.
+RUBY_SPEC = LanguageSpec(
+    name="ruby",
+    line_comment="#",
+    block_comment=None,
+    string_quotes=("'", '"'),
+    backticks_are_exec=True,
+    line_block_comments=(("=begin", "=end"),),
+)
+
+# Perl: ``#`` line comments, POD documentation blocks (``=pod`` / ``=head1`` /
+# ... through ``=cut``), ``'`` ``"`` strings.  Backticks are SHELL EXECUTION.
+PERL_SPEC = LanguageSpec(
+    name="perl",
+    line_comment="#",
+    block_comment=None,
+    string_quotes=("'", '"'),
+    backticks_are_exec=True,
+    pod_style=True,
+)
+
 # Extension / interpreter -> spec.  Registering a new language is adding a
 # spec and its keys here; the lexer and the caller are unchanged (Strategy).
 _SPEC_BY_EXT = {
     ".js": JS_SPEC,
     ".mjs": JS_SPEC,
     ".cjs": JS_SPEC,
+    ".php": PHP_SPEC,
+    ".rb": RUBY_SPEC,
+    ".pl": PERL_SPEC,
+    ".pm": PERL_SPEC,
 }
 _SPEC_BY_INTERPRETER = {
     "node": JS_SPEC,
+    "php": PHP_SPEC,
+    "ruby": RUBY_SPEC,
+    "perl": PERL_SPEC,
 }
 
 
@@ -144,6 +223,7 @@ _CODE = 0
 _LINE_COMMENT = 1
 _BLOCK_COMMENT = 2
 _STRING = 3
+_LINE_BLOCK_COMMENT = 4  # column-0 block comment (=begin/=end) and perl POD
 
 
 def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
@@ -164,14 +244,25 @@ def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
     execv: list = []
     state = _CODE
     quote = ""
+    close_marker = ""  # active close marker while in _LINE_BLOCK_COMMENT
     i = 0
     n = len(content)
 
-    line_open = spec.line_comment
+    # Line-comment markers: the primary plus any extras (PHP's ``#``).  Longest
+    # first so a longer marker is preferred when two share a prefix.
+    line_opens = tuple(
+        sorted(
+            (m for m in (spec.line_comment, *spec.extra_line_comments) if m),
+            key=len,
+            reverse=True,
+        )
+    )
     block = spec.block_comment
     block_open = block[0] if block else None
     block_close = block[1] if block else None
     quotes = spec.string_quotes
+    line_block_comments = spec.line_block_comments
+    pod_style = spec.pod_style
 
     def emit(vch: str, ech: str) -> None:
         verb.append(vch)
@@ -181,10 +272,42 @@ def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
         c = content[i]
 
         if state == _CODE:
-            if line_open and content.startswith(line_open, i):
-                for _ in range(len(line_open)):
+            at_line_start = i == 0 or content[i - 1] == "\n"
+
+            # Column-0 block comments (ruby ``=begin`` .. ``=end``) and perl POD
+            # (``=<letter>`` .. ``=cut``) are anchored to the start of a line.
+            if at_line_start:
+                entered = False
+                for open_marker, cls in line_block_comments:
+                    if content.startswith(open_marker, i):
+                        for _ in range(len(open_marker)):
+                            emit(" ", " ")
+                        i += len(open_marker)
+                        state = _LINE_BLOCK_COMMENT
+                        close_marker = cls
+                        entered = True
+                        break
+                if entered:
+                    continue
+                if (
+                    pod_style
+                    and c == "="
+                    and i + 1 < n
+                    and content[i + 1].isalpha()
+                ):
                     emit(" ", " ")
-                i += len(line_open)
+                    i += 1
+                    state = _LINE_BLOCK_COMMENT
+                    close_marker = "=cut"
+                    continue
+
+            matched_line_open = next(
+                (m for m in line_opens if content.startswith(m, i)), None
+            )
+            if matched_line_open:
+                for _ in range(len(matched_line_open)):
+                    emit(" ", " ")
+                i += len(matched_line_open)
                 state = _LINE_COMMENT
                 continue
             if block_open and content.startswith(block_open, i):
@@ -219,6 +342,22 @@ def strip_source(content: str, spec: LanguageSpec) -> StrippedSource:
                     emit(" ", " ")
                 i += len(block_close)
                 state = _CODE
+                continue
+            emit("\n" if c == "\n" else " ", "\n" if c == "\n" else " ")
+            i += 1
+            continue
+
+        if state == _LINE_BLOCK_COMMENT:
+            # A column-0 close marker (``=end`` / ``=cut``) ends the block.  The
+            # close marker and the remainder of ITS line are blanked (delegated
+            # to _LINE_COMMENT), then code resumes on the next line.
+            at_line_start = i == 0 or content[i - 1] == "\n"
+            if at_line_start and content.startswith(close_marker, i):
+                for _ in range(len(close_marker)):
+                    emit(" ", " ")
+                i += len(close_marker)
+                state = _LINE_COMMENT
+                close_marker = ""
                 continue
             emit("\n" if c == "\n" else " ", "\n" if c == "\n" else " ")
             i += 1
