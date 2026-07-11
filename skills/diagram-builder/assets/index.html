@@ -128,34 +128,41 @@
      top-padding (14px) = 35px. Matched exactly rather than rounded to the
      8pt grid, so the stage's top inset reads as the same gap by eye. */
   :root { --frame-v:28px; --frame-h:40px; --frame-top:35px;
-    /* ── UNIFORM-CELL LAYOUT MODEL ──────────────────────────────────────────
-       The whole diagram is built on ONE global cell: every leaf component is
-       exactly --cell-w wide and --cell-h tall, at every nesting depth. A
-       section is therefore always an INTEGER number of these cells wide
-       (cols × cell-w + gaps + its zone padding), which is what makes the
-       sections "adapt to the components" instead of the reverse — a section
-       is sized by how many uniform cells it holds, never by stretching its
-       cells to fill space. There is NO content-based track sizing (the old
-       minmax(box-min,max-content) let each column balloon to its own text, so
-       cells were never uniform and wide text overflowed the canvas — the root
-       cause of the old symptoms). There is NO masonry: leaf grids are plain
-       fixed-track CSS grids with uniform rows; nested sections tile at their
-       natural integer-cell width.
+    /* ── FILL / STRETCH LAYOUT MODEL ────────────────────────────────────────
+       Every section is a FILLED RECTANGLE: it stretches to the full width it is
+       allocated, and its leaf cells STRETCH EQUALLY to fill that width — so a
+       row of cells always spans the section edge-to-edge with NO trailing gap
+       on the right. Cells in the same row are always of EQUAL width (equal fr
+       tracks). This is the inversion of the old "fixed 232px cell, section
+       shrink-wraps, block centers" model, which left dead space: right-gaps
+       inside bands, lateral voids at wide screens, and short sections stranded
+       beside tall ones.
 
-       A LEAF grid shows exactly the authored column count with FIXED --cell-w
-       tracks: cells never grow to fill width, so every leaf cell is exactly
-       --cell-w in every section at every width — this uniformity is the hard
-       invariant, ranking above "fill the width". Column count steps down
-       (3→2→1) at the container-query tiers below as width tightens, cells
-       staying --cell-w. A COMPOUND grid (nested sections) is a flex-wrap row
-       whose children take their natural integer-cell width (flex:0 0 auto, no
-       grow); a section is as wide as the uniform cells it holds, never wider.
-       The minimum endpoint is one pure single column. --cell-h is a FIXED row
-       height: boxes never grow vertically (title + up to 3 clamped description
-       lines), so every cell is the same height. If a section is narrower than
-       the container the leftover is accepted right-hand margin; uniform cells
-       and clean collapse are the priority, NOT filling the width. */
+       A LEAF grid is a CSS grid of `repeat(N, minmax(0,1fr))` tracks: the N
+       authored columns divide the section width into N EQUAL cells that fill it
+       (minmax(0,…) lets them shrink, so they always fit — no overflow). The
+       column count steps down (…→2→1) at the container-query tiers below purely
+       for READABILITY as width tightens (fr always fits, so the step is about
+       cell legibility, not fitting). --cell-h stays a FIXED row height so every
+       cell is the same height (title + up to 3 clamped description lines);
+       boxes fill their track width AND the fixed row height. A COMPOUND grid
+       (nested sections) is a flex row whose children `flex:1 1 0` GROW EQUALLY
+       to fill the row, so paired sections are equal-width halves; at the
+       stacked tier they go column-direction and `align-items:stretch` to fill
+       the full width. `span` still merges cells (Excel-style); span == columns
+       is a full-width band spanning its own row edge-to-edge. --cell-w is kept
+       only as a documented reference/readability hint — it no longer sizes any
+       track. The whole block fills the canvas (no fit-content centering), so
+       there are no lateral voids even at 2560. */
     --cell-w:232px; --cell-h:130px;
+    /* MINIMO LEGIBLE — the readable floor for a leaf cell. A cell narrower than
+       this can only show ~1 character per line (a short title stops being
+       readable). It is the FLOOR of the leaf-grid track min below, so a grid
+       never shrinks a cell below it: instead the section's compound parent
+       WRAPS/STACKS (collapses columns) before the cell degrades to illegible
+       text. Kept in sync with MIN_LEGIBLE in tools/validate-layout.cjs (the M
+       invariant asserts it on the real render). ~120px fits a short mono title. */
+    --cell-min-w:120px;
     /* grab & pan (configurable; read by engine.js): pointer travel, in px,
        below which a pointerdown→up on the canvas is a CLICK (opens a box's
        detail panel) rather than a PAN. Raise it on a project with jitter-prone
@@ -163,7 +170,7 @@
     --pan-drag-threshold:5px; }
 
   /* Stage is FULL-WIDTH: the canvas spans the screen. The layout is intrinsically
-     responsive (fixed-cell leaf grids that step 3→2→1 + flex-wrap compound grids),
+     responsive (equal-fr leaf grids that step …→2→1 + flex-wrap compound grids),
      so it collapses to fit the available width rather than scrolling — no
      horizontal overflow at the stacked tiers. */
   .stage { flex:1; position:relative; min-height:0; width:100%; margin-inline:auto; }
@@ -202,7 +209,7 @@
   /* ═══════════════ Recursive-section CSS-Grid layout (the one and only engine) ═══════════════ */
   /* The canvas is the scroll container. The root section's grid fills the canvas
      width so the intrinsically-responsive grids react to the real available
-     width and collapse to fit (3→2→1) instead of scrolling — never a JS
+     width and collapse to fit (…→2→1) instead of scrolling — never a JS
      measurement pass. The block centers itself (symmetric margins). */
   .canvas { position:absolute; top:var(--frame-top); right:var(--frame-h); bottom:var(--frame-v); left:var(--frame-h);
     padding:var(--s-3); overflow:auto; scrollbar-gutter:stable; cursor:grab; }
@@ -212,40 +219,42 @@
      declared below) so boxes still read as clickable. */
   .canvas.dragging { cursor:grabbing; }
   .canvas.dragging, .canvas.dragging * { user-select:none; }
-  /* the plane holds the root .sec-grid and fills the canvas width, so the
-     intrinsically-responsive grids below react to the real available width and
-     collapse to fit instead of overflowing. */
-  .sec-plane { width:100%; }
-  /* CENTER the content block on the canvas, anchored to the top. The root grid
-     fills the canvas width (so wrapping still reacts to the real width) but its
-     section rows are centered horizontally via justify-content, giving symmetric
-     left/right margins instead of a fixed left inset. The widest row defines the
-     block's bounding box, so left margin ≈ right margin. */
-  .sec-plane > .sec-grid.sec-compound { justify-content:center; }
+  /* the plane holds the root .sec-grid. FILL-TO-CAP: it fills the canvas up to a
+     1280px ceiling, then centers (margin-inline:auto) — at <= 1280 it fills
+     edge-to-edge; above 1280 it stops growing and the surplus becomes equal side
+     margins (no sideways sprawl, no horizontal scroll). The responsive cascade
+     still keys off the FULL stage width (the container query owns collapse), so
+     columns and side-by-side behave by real screen size while the content block
+     stays capped and centered. */
+  .sec-plane { width:100%; max-width:1280px; margin-inline:auto; }
+  /* The root grid FILLS the canvas width — no centering, no fit-content block,
+     so there are no lateral voids even at 2560. A generic root without bands is
+     a flex row whose sections grow equally (flex:1 1 0) to fill it edge-to-edge;
+     the root-with-bands case below overrides to a filling CSS grid. */
+  .sec-plane > .sec-grid.sec-compound { align-items:stretch; }
   /* ── Root compound that holds span BANDS — the spreadsheet model made literal.
      When the root has at least one span-band child (:has(> .msp), e.g. an inline
-     section on row 1 plus a base band below), lay the root out as the AUTHORED
-     grid (--cols columns) instead of a flex row:
-       • an INLINE section (span:1) sits in its own column on row 1, sized to its
-         content and LEFT-aligned (justify-items:start), so it never stretches;
+     section pair plus full-width bands), lay the root out as the AUTHORED grid
+     (--cols EQUAL fr columns) that FILLS the canvas width:
+       • an INLINE section (span:1) occupies one column and STRETCHES to fill it
+         (justify-items defaults to stretch), so a pair of inline sections are
+         equal-width halves that together span the row edge-to-edge;
        • a span BAND (.msp) spans EVERY column (grid-column 1/-1, its own
-         full-width row) and justify-self:stretch fills the block width — the
-         fixed --cell-w cells inside stay --cell-w and left-align, so a one-cell
-         band is a full-width bar with a single cell at its left (a wide band
-         with uniform cells);
-       • the track group sizes to the WIDEST row and justify-content:center
-         centers the whole BLOCK on the canvas (symmetric margins), while the
-         bands and row-1 sections share the SAME left edge (the block's left).
-     A root with no band never matches this rule and keeps the centered flex row
-     above. A browser without :has() degrades gracefully to that flex row, where
-     .msp is still flex:0 0 100% (full-width, bands stacked) — a base band still
-     lands BELOW, never beside. */
+         full-width row) and fills the canvas width — its inner leaf cells fill
+         the band, so a band is a filled rectangle edge-to-edge;
+       • align-items:stretch makes the two inline sections of a row EQUAL HEIGHT,
+         so each row is a clean filled rectangle (no short section stranded
+         beside a taller one).
+     A root with no band never matches this rule and keeps the filling flex row
+     above. A browser without :has() degrades to that flex row, where .msp is
+     still flex:0 0 100% (full-width, bands stacked) — a band still lands BELOW,
+     never beside. */
   .sec-plane > .sec-grid.sec-compound:has(> .msp) {
     display:grid;
-    grid-template-columns:repeat(var(--cols,2), max-content);
-    justify-content:center; justify-items:start; align-items:start; }
+    grid-template-columns:repeat(var(--cols,2), minmax(0,1fr));
+    align-items:stretch; }
   .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
-    grid-column:1 / -1; justify-self:stretch; }
+    grid-column:1 / -1; }
 
   /* ── the ONE recursive primitive: .sec-grid ──
      Every section (and the page root) renders its children into a .sec-grid.
@@ -256,31 +265,56 @@
 
      TWO grid shapes, tagged by the engine:
        • a LEAF grid (.sec-grid:not(.sec-compound)) holds only components. Its
-         tracks are a FIXED --cell-w and its rows a FIXED --cell-h
-         (grid-auto-rows), and items STRETCH to fill — so every leaf cell is
-         the SAME width and the SAME height, everywhere in the deck. This is
-         the uniform-cell guarantee. A leaf that spans M columns is
-         M×cell-w + gaps wide but still one cell-h row tall (merge preserved).
+         tracks are EQUAL fr columns that FILL the section width and its rows a
+         FIXED --cell-h (grid-auto-rows); items stretch to fill — so a row of
+         cells spans the section edge-to-edge (no right gap), every cell in the
+         grid is the same width, and every cell is the same height. A leaf that
+         spans M columns fills M tracks + gaps but is still one cell-h row tall.
        • a COMPOUND grid (.sec-compound) holds only nested sections. Its
-         children take exactly their own integer-cell width (no stretching, no
-         wasted strip), and items align to the top (a section is as tall as its
-         own content). */
-  /* LEAF grid: exactly the authored column count, each track a FIXED --cell-w.
-     Cells NEVER grow to fill the section width — uniformity is the hard
-     invariant, so every leaf cell is exactly --cell-w wide in EVERY section at
-     EVERY width (a columns:1 section is one --cell-w cell, not a stretched band).
-     A section is therefore always an integer number of uniform cells wide; if
-     that is narrower than the container, the leftover is natural right-hand
-     margin (acceptable) — NOT a reason to stretch the cells. Column count steps
-     down at the container-query tiers below (3→2→1) so it still collapses
-     cleanly; the cells stay --cell-w at each tier. Rows are a FIXED --cell-h. */
+         children GROW EQUALLY (flex:1 1 0) to fill the row as equal-width
+         slices, and align-items:stretch makes them equal height — so the row
+         is a clean filled rectangle. */
+  /* LEAF grid: the authored column count as EQUAL fr tracks that FILL the
+     section width. `repeat(N, minmax(0,1fr))` divides the section into N equal
+     cells edge-to-edge — the cells STRETCH to fill, so the row always spans the
+     full width with no trailing gap on the right, and every cell in the grid is
+     the same width. minmax(0,…) lets the tracks shrink below content so they
+     always fit (no overflow). Column count steps down at the container-query
+     tiers below (…→2→1) for readability as width tightens; the cells re-divide
+     the width at each tier. Rows are a FIXED --cell-h so every cell is the same
+     height; align-items:stretch fills that row height. */
   .sec-grid:not(.sec-compound) {
     display:grid;
-    grid-template-columns:repeat(var(--cols,1), var(--cell-w));
+    /* MINIMO LEGIBLE: each track is at least --cell-min-w (the readable floor).
+       This is a PLAIN pixel min on purpose — it must survive the grid's
+       INTRINSIC (min-content) sizing so a leaf grid's min-content is a real
+       N×--cell-min-w. That is what makes a compound parent WRAP/STACK its
+       sections (flex-wrap + min-width:min-content below) when it cannot give each
+       child that width, instead of squeezing the cells to ~1 character per line.
+       (A `min(--cell-min-w,100%)` guard was tried, but the 100% collapses to 0
+       during intrinsic sizing, so the parent never "sees" the floor and never
+       wraps — RowSpan 2B/2C stayed at ~75px cells. The plain px avoids that.)
+       The old 48px min let deeply-nested grids collapse to illegible ~40px cells
+       (RowSpan 2A/2B); raising it makes columns COLLAPSE before the cell does. No
+       overflow risk: the narrow-stage container-query tiers below override to
+       minmax(0,1fr) (where sections are already full-width), and at wide stage a
+       grid's own min-content forces its parent to give it >= the floor or wrap. */
+    grid-template-columns:repeat(var(--cols,1), minmax(var(--cell-min-w),1fr));
     grid-auto-rows:var(--cell-h);
     gap:var(--s-2); align-items:stretch; }
   /* a full-width band (span == columns) stays full-width at any collapse level */
   .sec-grid:not(.sec-compound) > .msp { grid-column:1 / -1; }
+  /* PARTIAL horizontal merge (.mspan): occupy EXACTLY --span of the leaf grid's
+     tracks (Excel-style partial merge) — NOT the whole row (that is .msp above).
+     On collapse the merge keeps its PROPORTION: the 2-track tier drops it to
+     --span2 (round(M/N·2), clamped [1,2], emitted by the engine) and the
+     1-column endpoint makes it a full band (both below). */
+  .sec-grid:not(.sec-compound) > .mspan { grid-column:span var(--span, 1); }
+  /* VERTICAL merge (.mrsp): occupy --rowspan rows (double/triple --cell-h) — the
+     base for a cell-graph where a cell's height encodes magnitude. Only the row
+     extent grows; the column position is unchanged and unaffected by the
+     horizontal cascade. */
+  .sec-grid:not(.sec-compound) > .mrsp { grid-row:span var(--rowspan, 1); }
 
   /* COMPOUND grid: nested sections in a flex-wrap row. They sit side by side
      while they fit, then wrap to the next line and collapse their own inner
@@ -290,25 +324,28 @@
      ever cut off. */
   .sec-grid.sec-compound {
     display:flex; flex-wrap:wrap; gap:var(--s-2);
-    align-items:flex-start; align-content:flex-start; }
-  /* flex:0 0 auto — nested sections take exactly their natural integer-cell
-     width and DO NOT grow to fill the row. Growing would stretch a section
-     wider than its uniform cells imply, reintroducing the non-uniformity bug;
-     if a row does not fill the width, the leftover is accepted right-hand
-     margin. min-width:0 lets a section shrink/wrap as width tightens (its inner
-     leaf grids collapse 3→2→1 on their own). A band child (span == columns)
-     takes a full row but still holds fixed --cell-w cells inside. */
-  .sec-grid.sec-compound > * { flex:0 0 auto; min-width:0; }
+    /* FILL: children grow equally (flex:1 1 0 below) to fill the row edge-to-
+       edge, so paired nested sections are equal-width halves with no gap on the
+       right. align-items:stretch makes the paired sections EQUAL HEIGHT, so the
+       row is a clean filled rectangle instead of a short section stranded
+       beside a taller one. */
+    align-items:stretch; align-content:flex-start; }
+  /* flex:1 1 0 — nested sections GROW EQUALLY to fill the row: N sections on a
+     row are N equal-width slices that together span the row edge-to-edge, with
+     no gap on the right. (flex-basis 0 makes the widths equal regardless of each
+     section's content; flex-grow 1 divides the row evenly.) min-width:0 lets a
+     section shrink/wrap as width tightens (its inner leaf grids collapse …→2→1
+     on their own). A band child (span == columns) takes a full row (overridden
+     below). Its inner leaf cells still fill the band width. */
+  .sec-grid.sec-compound > * { flex:1 1 0; min-width:min-content; }
   /* A root-level span BAND in a COMPOUND grid takes its OWN full-width row. In
      the default ROW direction (wide tiers) flex-basis:100% forces the band onto
      a line by itself, so consecutive bands STACK vertically instead of floating
      side by side — a base band lands on its own row directly BELOW the inline
-     sections, never beside them. The band ZONE spans the row, but the uniform
-     --cell-w cells inside it do NOT stretch: the leaf grid keeps fixed --cell-w
-     tracks left-aligned, so a one-cell band is a full-width bar with a single
-     cell at its left (a wide band with uniform cells) — not a ballooned cell.
-     NOTE: this only overrides the COMPOUND case — a span band inside a LEAF grid
-     still merges cells via grid-column:1/-1 above. */
+     sections, never beside them. The band ZONE fills the row width, and its
+     inner leaf cells FILL that width (fr tracks) — a filled rectangle edge-to-
+     edge. NOTE: this only overrides the COMPOUND case — a span band inside a
+     LEAF grid still merges cells via grid-column:1/-1 above. */
   .sec-grid.sec-compound > .msp { flex:0 0 100%; }
   /* In a COLUMN-direction compound (a columns:1 stack — see .sec-c1 below — or
      any compound below the stack breakpoint) flex-basis maps to the MAIN
@@ -317,75 +354,99 @@
      and width is governed by align-items. */
   .sec-grid.sec-compound.sec-c1 > .msp { flex:0 0 auto; }
   /* a columns:1 compound is an explicit VERTICAL stack of nested sections.
-     flex-direction:column stacks them; align-items:flex-start keeps each nested
-     section at its own natural (narrow) width instead of stretching it across
-     the column. */
-  .sec-grid.sec-compound.sec-c1 { flex-direction:column; align-items:flex-start; }
+     flex-direction:column stacks them; align-items:stretch makes each nested
+     section FILL the full width of the column (a filled rectangle). In a
+     column-direction WRAP flex the single line otherwise shrink-wraps to its
+     content cross-size under the inherited align-content:flex-start (pinning it
+     left with a right-hand gap) — align-content:stretch makes the line fill the
+     container's full cross-size, so align-items:stretch fills the sections to
+     the actual width. */
+  .sec-grid.sec-compound.sec-c1 { flex-direction:column; align-items:stretch; align-content:stretch; }
 
-  /* responsive column step-down (container-query on the stage): a 3-column leaf
-     grid collapses 3→2→1 as width tightens. The "two-table" 2-column form is the
-     INTERMEDIATE step (medium widths); the ENDPOINT at the narrowest tier is ONE
-     column — every multi-column leaf grid drops to a single cell so the whole
-     diagram becomes one vertical stack (see the ≤640px tier below). A grid
-     authored with a single column (sec-c1) is 1 cell at every tier. Cells stay
-     --cell-w through every step; only the track count changes. */
+  /* responsive column step-down (container-query on the stage): a multi-column
+     leaf grid collapses …→2→1 as width tightens. The "two-table" 2-column form
+     is the INTERMEDIATE step (medium widths); the ENDPOINT at the narrowest tier
+     is ONE column — every multi-column leaf grid drops to a single cell so the
+     whole diagram becomes one vertical stack (see the ≤640px tier below). A grid
+     authored with a single column (sec-c1) is 1 cell at every tier. The cells
+     always FILL the width (equal fr tracks); only the track count changes, so
+     the section is a filled rectangle at every tier. */
   /* Compound STACK tier. Below this width a compound grid stops laying its
      nested sections side by side (a flex ROW) and stacks them vertically (a
      COLUMN), so a wide side-by-side arrangement folds top-to-bottom instead of
      running off the right edge. The breakpoint is 1440px so a wide section
      stacks before it overflows a medium (~1200px) viewport; above 1440px the
-     sections sit side by side. align-items:center keeps the stacked block
-     centered on the canvas. */
+     sections sit side by side. When stacked, every section FILLS the full width
+     (align-items:stretch) — a full-width filled rectangle, no centering. */
   @container stage (max-width: 1440px) {
-    .sec-grid.sec-compound { flex-direction:column; align-items:flex-start; }
-    .sec-plane > .sec-grid.sec-compound { align-items:center; }
-    /* column direction: flex-basis maps to the vertical (MAIN) axis, so the
-       full-width-row band rule above (flex:0 0 100%) must NOT apply here — a
-       100% basis would size the band's HEIGHT, not its width. Reset the MAIN
-       axis to content (flex:0 0 auto); the band's WIDTH is the CROSS axis and is
-       governed by align-self below, NOT by flex-basis. */
+    /* Stacked compound: fold the sections into a column and STRETCH each to the
+       full width, so every stacked section is a full-width filled rectangle.
+       align-content:stretch is REQUIRED alongside align-items:stretch — in a
+       column-direction WRAP flex the single line shrink-wraps to its content
+       cross-size under the inherited align-content:flex-start (pinning it left
+       with a right-hand gap), so align-items alone only stretches WITHIN that
+       shrunk line. align-content:stretch makes the line fill the container's
+       full cross-size (the DEUDAS banks stretched to 781/1044 without it). */
+    .sec-grid.sec-compound { flex-direction:column; align-items:stretch; align-content:stretch; }
+    /* the root stacks the same way and fills the canvas width. */
+    .sec-plane > .sec-grid.sec-compound { align-items:stretch; align-content:stretch; }
+    /* column direction: flex-basis maps to the vertical (MAIN) axis, so both the
+       row grow rule (flex:1 1 0) and the band full-row rule (flex:0 0 100%) must
+       be reset — a non-zero basis would size the child's HEIGHT. Reset every
+       stacked child to content height (flex:0 0 auto); its WIDTH is the CROSS
+       axis, filled by align-items:stretch above. */
+    .sec-grid.sec-compound > * { flex:0 0 auto; }
     .sec-grid.sec-compound > .msp { flex:0 0 auto; }
     /* below the stack breakpoint the root-with-bands leaves the authored GRID
-       and returns to a centered vertical flex stack like every other compound.
-       It SHRINK-WRAPS to its widest row (width:fit-content) and centers on the
-       canvas (margin-inline:auto) — so the block is exactly as wide as its
-       widest section with symmetric margins, mirroring the grid mode above. This
-       shrink-wrap is what lets a band stretch to the BLOCK width (below) instead
-       of the whole canvas. */
+       and becomes a vertical flex stack like every other compound, FILLING the
+       canvas width (align-items:stretch) — every section (bands and inline
+       alike) is a full-width filled rectangle. */
     .sec-plane > .sec-grid.sec-compound:has(> .msp) {
-      display:flex; flex-direction:column; align-items:center;
-      grid-template-columns:none;
-      width:fit-content; margin-inline:auto; }
-    /* a span BAND must stay MERGED — spanning the whole BLOCK width — at EVERY
-       breakpoint, not only the wide grid tiers. In this flex COLUMN the width is
-       the CROSS axis, so the band fills the block via align-self:stretch (NOT
-       flex-basis, which is the vertical axis here). It stretches to the
-       shrink-wrapped container (= the widest row = the block), so a band is a
-       full-width bar at medium/min just as it is at max — never collapsed to its
-       single cell. The fixed --cell-w cells inside still stay --cell-w and
-       left-align (a wide band with uniform cells). */
+      display:flex; flex-direction:column; align-items:stretch; align-content:stretch;
+      grid-template-columns:none; }
+    /* a span BAND stays full-width via the same align-items:stretch (redundant
+       but explicit): the band fills the canvas width at medium/min just as at
+       max, and its inner leaf cells fill the band. */
     .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
       align-self:stretch; }
   }
-  /* Leaf 3→2 collapse tier (the INTERMEDIATE "two-table" step): a 3-column leaf
-     grid steps to 2 columns. Kept at 1000px so leaf grids stay 3-wide through the
-     medium range (they fit once their section has stacked). This is NOT the
-     endpoint — the ≤640px tier below drops every leaf grid to 1 column. */
+  /* Leaf →2 collapse tier (the INTERMEDIATE "two-table" step): a 3-, 4- OR
+     5-column leaf grid steps to 2 EQUAL fr columns. Kept at 1000px so leaf grids
+     stay full-wide (all authored columns) through the medium-large range once
+     their section has stacked to full width — a 5-col Camino stays 5 filled
+     cells down to 1000px, only folding to 2 below it. This is NOT the endpoint —
+     the ≤640px tier below drops every leaf grid to 1 column. */
   @container stage (max-width: 1000px) {
-    .sec-grid.sec-c3:not(.sec-compound) { grid-template-columns:repeat(2, var(--cell-w)); }
+    .sec-grid.sec-c3:not(.sec-compound) { grid-template-columns:repeat(2, minmax(0,1fr)); }
+    .sec-grid.sec-c4:not(.sec-compound) { grid-template-columns:repeat(2, minmax(0,1fr)); }
+    .sec-grid.sec-c5:not(.sec-compound) { grid-template-columns:repeat(2, minmax(0,1fr)); }
+    /* PARTIAL span keeps its PROPORTION at the 2-track "two-table" tier: --span2 =
+       round(M/N·2) clamped [1,2], so a span:2-of-4 becomes a single cell here
+       instead of staying 2-wide (which, in a 2-track grid, would already be a full
+       band). span2 <= 2 also guarantees no implicit extra track is created. */
+    .sec-grid.sec-c3:not(.sec-compound) > .mspan,
+    .sec-grid.sec-c4:not(.sec-compound) > .mspan,
+    .sec-grid.sec-c5:not(.sec-compound) > .mspan { grid-column:span var(--span2, 1); }
   }
-  /* Narrowest tier — the 3→2→1 ENDPOINT: every leaf grid collapses to ONE
-     --cell-w track, so the whole diagram is a single vertical column (sections
-     stacked top-to-bottom, bands spanning that 1-cell block width). Two rules:
-     the general one takes sec-c2 (and any other multi-col) to 1; the sec-c3 one
-     is needed to OVERRIDE the max-width:1000 rule above (same specificity, later
-     in source order, so it wins for 3-col grids). A columns:1 grid is already 1
-     track. Also shrink the canvas chrome (outer frame + padding) so a 1-cell
-     section fits a ~600px viewport without horizontal scroll. */
+  /* Narrowest tier — the …→2→1 ENDPOINT: every leaf grid collapses to ONE fr
+     track that fills the width, so the whole diagram is a single vertical column
+     (sections stacked top-to-bottom, each a full-width filled rectangle). Rules:
+     the general one takes sec-c2 (and any other multi-col) to 1; the sec-c3/4/5
+     ones OVERRIDE the max-width:1000 rule above (same specificity, later in
+     source order). A columns:1 grid is already 1 track. Also shrink the canvas
+     chrome (outer frame + padding) so a 1-cell section fits a ~600px viewport
+     without horizontal scroll. */
   @container stage (max-width: 640px) {
     .canvas { left:8px; right:8px; padding:8px; }
-    .sec-grid:not(.sec-compound) { grid-template-columns:var(--cell-w); }
-    .sec-grid.sec-c3:not(.sec-compound) { grid-template-columns:var(--cell-w); }
+    .sec-grid:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
+    .sec-grid.sec-c3:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
+    .sec-grid.sec-c4:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
+    .sec-grid.sec-c5:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
+    /* 1-column ENDPOINT: a partial span becomes a full band (the one tier it
+       spans the whole row) per the collapse policy. Forcing 1/-1 also stops
+       `span var(--span/--span2)` from opening an implicit second track in the
+       single-track grid (which would break the 1-column endpoint). */
+    .sec-grid:not(.sec-compound) > .mspan { grid-column:1 / -1; }
   }
 
   /* ── zones (a section's frame) ── */
@@ -416,13 +477,13 @@
   .zone.envelope .ztitle { color:var(--ink); opacity:0.75; }
 
   /* ── boxes ──
-     A leaf cell is a fixed uniform box: it STRETCHES to fill its grid track
-     (--cell-w) and its fixed row (--cell-h), so every box in the deck is the
-     same size. min-width:0 lets it obey the track width instead of pushing it
-     wider on a long word; overflow-wrap breaks long words so text wraps by
-     word inside the fixed width; overflow:hidden guards the fixed height (the
-     full text is always available in the click-through detail panel, so a box
-     only ever shows the short summary — --cell-h is sized to fit it). */
+     A leaf cell is a uniform box: it STRETCHES to fill its equal-fr grid track
+     and its fixed row (--cell-h), so boxes in one grid are equal width and every
+     box is the same height. min-width:0 lets it obey the track width instead of
+     pushing it wider on a long word; overflow-wrap breaks long words so text
+     wraps by word inside the track width; overflow:hidden guards the fixed
+     height (the full text is always available in the click-through detail panel,
+     so a box only ever shows the short summary — --cell-h is sized to fit it). */
   :root {
     /* shared vertical floor so a short zone doesn't collapse to a sliver. */
     --zone-min-h:180px;
@@ -720,9 +781,9 @@
         declare <b>span</b> to merge across columns — an Excel-style merge —
         occupying more than one cell (a box can span N columns; span == the
         section's own column count makes it a full-width band). As the window
-        gets narrower, columns <b>cascade down — 3 → 2 → 1</b> — until the
-        whole diagram is one stacked column. Cells never resize; only the
-        column count does, so nothing ever needs to scroll sideways.</p>
+        gets narrower, columns <b>collapse — fewer, wider cells</b> — until the
+        whole diagram is one stacked column. Cells are equal and fill their row;
+        columns collapse before a cell shrinks, so nothing ever scrolls sideways.</p>
     </div>
 
     <!-- 7 · ORDER & BANDS -->
@@ -759,10 +820,11 @@
           <rect class="il-box" x="222" y="52" width="30" height="30" rx="5"/>
         </g>
       </svg>
-      <h3>8 · Chips = flows</h3>
-      <p>The chips at the top are <b>flows</b>. Tap one to <b>spotlight</b> every
-        component in that flow and dim the rest; the bottom bar then explains the
-        flow step by step. Tap <b>All</b> to reset. <span class="h-try">Try it above.</span></p>
+      <h3>8 · Chips = relations</h3>
+      <p>The chips at the top are <b>relations</b> — they relate components that
+        share a path or a concept. Tap one to <b>spotlight</b> them and dim the
+        rest; the bottom bar then explains the relation step by step. Tap
+        <b>All</b> to reset. <span class="h-try">Try it above.</span></p>
     </div>
 
   </div>
@@ -771,7 +833,7 @@
     <span><kbd>H</kbd> open / close this guide</span>
     <span><kbd>←</kbd><kbd>→</kbd> change page</span>
     <span><kbd>Esc</kbd> close</span>
-    <span>Click a box for its details · click a chip to highlight a flow</span>
+    <span>Click a box for its details · click a chip to spotlight a relation</span>
   </div>
 </div>
 

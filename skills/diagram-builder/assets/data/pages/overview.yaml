@@ -3,31 +3,35 @@
 # layout, columns, filters, sections. See the diagram-builder dialect
 # reference (../GLOSSARY.md, ../reference.md) for every field.
 #
-# LAYOUT MODEL — a spreadsheet-style grid of UNIFORM CELLS:
-#   • every leaf component is one fixed cell (--cell-w × --cell-h); cells never
-#     resize — only the column count does.
+# LAYOUT MODEL — a filled grid of uniform-height cells:
+#   • every leaf component is one cell: cells are equal `fr` and fill their row;
+#     columns collapse before a cell degrades — no horizontal scroll.
 #   • a node WITH `children` is a SECTION (a grid); WITHOUT it, a COMPONENT (leaf).
 #   • `columns: N` = how many columns THIS section's grid has (default 2).
-#   • `span: M` = an Excel-style MERGE: a child occupies M columns of its parent
-#     (default 1; clamped to the parent's columns). `span == columns` makes the
-#     child a full-width BAND that takes its own row — place a band LAST to pin
-#     it as a base layer at the bottom.
+#   • `span: M` = an Excel-style MERGE: a child occupies M columns of its parent.
+#     `span == columns` is a full-width BAND that takes its own row (place a band
+#     LAST to pin it as a base layer); `1 < span < columns` is a PARTIAL merge
+#     that occupies exactly M of the N tracks (see Section E below).
+#   • `rowspan: K` = a VERTICAL merge: a leaf cell occupies K rows (K× the cell
+#     height) — the base for a bar chart where a cell's HEIGHT is its magnitude
+#     (see Section D below).
 #   • children flow in `order` (then list order), packing side by side until a
 #     band forces a new full row.
 #   • the page root is itself a section: `columns` below is the root column count
 #     and `sections` is the root's children.
 #   • a component (leaf) chooses its `type`: box (default) | separator | rail.
 #
-# This seed is a tiny, domain-free demo of the model: two INLINE sections side
-# by side on row 1 (span 1 each), then a full-width base BAND (span == columns)
-# below — plus nesting, a separator, and a rail. Edit it, then run
-# `npm run build` and `npm run validate`.
+# This seed is a tiny, domain-free demo of every capability of the model:
+# two INLINE sections side by side on row 1 (Section A + Section B, with
+# nesting), then three full-width BANDS beneath them — a separator + rail
+# (Section C), a row-span bar chart (Section D), and a partial 2-of-4 merge
+# (Section E). Edit it, then run `npm run build` and `npm run validate`.
 
 id: overview
 layout: grid
-# Root: a 2-column canvas. `intro` and `system` are span 1 (inline) so they sit
-# side by side on row 1; `delivery` is span 2 (== columns) so it is a full-width
-# band on its own row beneath them.
+# Root: a 2-column canvas. Section A and Section B are span 1 (inline), so they
+# sit side by side on row 1; Sections C/D/E are span 2 (== columns), so each is a
+# full-width band on its own row beneath them.
 columns: 2
 
 filters:
@@ -38,119 +42,176 @@ filters:
     steps:
       - "Chips are flows: click one to spotlight every component that declares it and dim the rest."
       - "A component joins a flow by listing the filter key in its own <code>filters</code>."
-      - "Here the flow traces edit → web app → API → ship."
+      - "Here the flow traces Item 1 → Item 3 → Item 7."
 
 sections:
 
   # ── ROW 1, LEFT · an inline leaf section (span 1), 2 uniform cells ──
-  - id: intro
-    title: "Getting started"
-    subtitle: "edit data/pages/overview.yaml, then npm run build"
+  - id: section-a
+    title: "Section A"
+    subtitle: "an inline section (span 1) — sits side by side with Section B"
     variant: normal
     order: 1
     span: 1
     columns: 2
     children:
-      - id: edit
+      - id: item-1
         order: 1
         status: NEW
-        title: "Edit the YAML"
+        title: "Item 1"
         description:
-          - "data/document.yaml — the manifest"
-          - "data/pages/*.yaml — the content"
-        detail: "Change titles, add sections and components, then rebuild. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md)."
+          - "a leaf component (a box)"
+          - "click it for its full detail"
+        detail: "The atom of the diagram is a box: a status badge, a title, and a short description. The full text always lives in this click-through panel, so the box itself stays a fixed height. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md)."
         variant: strong
         filters: [flow]
-      - id: build
+      - id: item-2
         order: 2
         status: ENTRY
-        title: "Build & view"
+        title: "Item 2"
         description:
-          - "npm run build regenerates data.generated.js"
-          - "open index.html — no server needed"
-        detail: "The build step reads the manifest + page files and writes data/data.generated.js. Open index.html in any browser; it renders under file:// with zero runtime dependencies."
+          - "cells in a row are equal width"
+          - "and fill the section edge to edge"
+        detail: "Every leaf cell stretches to an equal share of its section's width, so a row of cells always spans the section with no gap on the right."
         variant: normal
 
   # ── ROW 1, RIGHT · an inline NESTED section (span 1): a grid of grids ──
   # `envelope` = a borderless dashed container that groups nested sections.
-  - id: system
-    title: "Example system"
+  - id: section-b
+    title: "Section B"
     subtitle: "a section can nest other sections — a grid of grids"
     variant: envelope
     order: 2
     span: 1
     columns: 1
     children:
-      - id: frontend
-        title: "Frontend"
+      - id: group-1
+        title: "Group 1"
         variant: safe
         columns: 1
         children:
-          - id: webapp
+          - id: item-3
             status: INTERNAL
-            title: "Web app"
+            title: "Item 3"
             description:
-              - "the user-facing surface"
+              - "one level of nesting deep"
             detail: "A nested section is drawn as its own framed zone inside the parent. Its <code>variant</code> (here <code>safe</code>) tints the whole group."
             variant: ok
             filters: [flow]
-      - id: backend
-        title: "Backend"
+      - id: group-2
+        title: "Group 2"
         variant: normal
         columns: 1
         children:
-          - id: api
+          - id: item-4
             status: INTERNAL
-            title: "API"
+            title: "Item 4"
             description:
-              - "handles requests from the web app"
-            detail: "Components auto-flow into the section's columns and wrap down. This backend section is <code>columns: 1</code>, so its two boxes stack."
+              - "another nested group"
+            detail: "Sections nest as deep as the idea needs — a recursive grid of grids down to the boxes at the leaves."
             variant: normal
-            filters: [flow]
-          - id: db
+          - id: item-5
             status: INTERNAL
-            title: "Database"
+            title: "Item 5"
             description:
-              - "persistent store"
-            detail: "The <code>store</code> variant gives a data store its own secondary fill."
+              - "stacks below Item 4 (columns: 1)"
+            detail: "This group is <code>columns: 1</code>, so its two boxes stack. The <code>store</code> variant gives a box its own secondary fill."
             variant: store
 
-  # ── ROW 2 · a full-width BASE BAND (span 2 == root columns), placed last ──
+  # ── ROW 2 · a full-width BASE BAND (span 2 == root columns) ──
   # A columns:3 leaf grid: a labeled separator spans the whole band (its own
   # row), then a rail swimlane label leads a row of uniform step cells.
-  - id: delivery
-    title: "Delivery"
+  - id: section-c
+    title: "Section C"
     subtitle: "span == columns makes this a full-width band on its own row"
     variant: normal
     order: 3
     span: 2
     columns: 3
     children:
-      - id: sep-pipeline
+      - id: sep-c
         type: separator
         order: 1
         span: 3
         style: dotted
-        text: "CI/CD pipeline"
-      - id: lane
+        text: "A labeled separator"
+      - id: rail-c
         type: rail
         order: 2
-        title: "CI/CD"
-      - id: b1
+        title: "Rail"
+      - id: item-6
         order: 3
         status: UNCHANGED
-        title: "Build"
-        description: ["compile & package"]
-      - id: b2
+        title: "Item 6"
+        description: ["the rail labels this row"]
+        detail: "A rail is a swimlane-style label banner; a separator is a thin divider line. Both are structural leaf types, not data-carrying boxes."
+      - id: item-7
         order: 4
-        status: UNCHANGED
-        title: "Test"
-        description: ["run the suite"]
-      - id: b3
-        order: 5
         status: NEW
-        title: "Ship"
-        description: ["deploy to prod"]
-        detail: "The last step in the example flow — click the <b>Example flow</b> chip above to trace it end to end."
+        title: "Item 7"
+        description: ["the last step in the example flow"]
+        detail: "Click the <b>Example flow</b> chip above to trace Item 1 → Item 3 → Item 7 end to end."
         variant: strong
         filters: [flow]
+
+  # ── ROW 3 · a full-width BAND — a mini BAR CHART built from row-span cells ──
+  # A columns:3 leaf grid: three cells with rowspan 1, 2, 3 side by side, so the
+  # HEIGHT of each cell encodes its magnitude (a bar chart made of grid cells).
+  - id: section-d
+    title: "Section D"
+    subtitle: "a mini bar chart — rowspan 1, 2, 3: a cell's HEIGHT encodes its magnitude"
+    variant: normal
+    order: 4
+    span: 2
+    columns: 3
+    children:
+      - id: bar-1
+        order: 1
+        rowspan: 1
+        title: "1"
+        description: ["rowspan: 1", "height = 1 cell"]
+        variant: normal
+      - id: bar-2
+        order: 2
+        rowspan: 2
+        title: "2"
+        description: ["rowspan: 2", "height = 2 cells"]
+        variant: ok
+      - id: bar-3
+        order: 3
+        rowspan: 3
+        title: "3"
+        description: ["rowspan: 3", "height = 3 cells"]
+        variant: strong
+
+  # ── ROW 4 · a full-width BAND — a PARTIAL horizontal merge (2 of 4) ──
+  # A columns:4 leaf grid: two single cells + one cell that spans exactly 2 of
+  # the 4 tracks (NOT the whole row — that would be a band).
+  - id: section-e
+    title: "Section E"
+    subtitle: "a partial merge — Item C spans 2 of 4 columns, not the whole row"
+    variant: normal
+    order: 5
+    span: 2
+    columns: 4
+    children:
+      - id: item-a
+        order: 1
+        span: 1
+        status: UNCHANGED
+        title: "Item A"
+        description: ["one cell of four"]
+      - id: item-b
+        order: 2
+        span: 1
+        status: UNCHANGED
+        title: "Item B"
+        description: ["one cell of four"]
+      - id: item-c
+        order: 3
+        span: 2
+        status: NEW
+        title: "Item C — span 2"
+        description: ["occupies exactly 2 of the 4 tracks"]
+        detail: "A partial merge (1 &lt; span &lt; columns) occupies exactly that many tracks and keeps its proportion as the grid collapses; only a span == columns child becomes a full-width band."
+        variant: strong

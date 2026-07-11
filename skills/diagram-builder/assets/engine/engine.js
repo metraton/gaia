@@ -22,15 +22,17 @@
 //   • A component (leaf) dispatches on its `type`: box (default) | separator |
 //     rail. Absent/"box" renders the standard box.
 // There is NO envelope / subsection / wraps / layout.row and NO JS layout or
-// measurement pass. The layout is a UNIFORM-CELL spreadsheet grid: every leaf
-// cell is a fixed --cell-w × --cell-h; a section is an integer number of those
-// cells wide. Responsive behaviour is pure CSS (stage container queries in
-// index.html): a leaf grid's column count cascades 3→2→1 as width tightens
-// (2-column "two-table" is the intermediate step; 1 column is the endpoint,
-// where the whole page is a single vertical stack). A `span` merges cells
-// (Excel-style); `span == columns` is a full-width band that takes its own row.
-// Cells never resize — only the track count changes — so nothing scrolls
-// sideways at the stacked tiers. The engine tags each grid `sec-c{N}` (authored
+// measurement pass. The layout is a FILLED, CAPPED grid of uniform-height
+// cells: a leaf grid divides its section width into `columns` EQUAL `fr` tracks
+// that STRETCH to fill (equal width within a grid, fixed --cell-h height), and
+// the plane fills the canvas up to a centered 1280px cap. Responsive behaviour
+// is pure CSS (stage container queries in index.html): a leaf grid's column
+// count cascades …→2→1 as width tightens (2-column "two-table" is the
+// intermediate step; 1 column is the endpoint, where the whole page is a single
+// vertical stack). A `span` merges cells (Excel-style); `span == columns` is a
+// full-width band that takes its own row. Columns COLLAPSE before a cell
+// degrades below its readable floor — so nothing scrolls sideways at the
+// stacked tiers. The engine tags each grid `sec-c{N}` (authored
 // column count) and `sec-compound` (holds nested sections) so the CSS can step
 // each grid by its real width need; it emits `--cols` + `--span` and never a
 // literal grid-column (the container queries own the collapse).
@@ -164,30 +166,56 @@
 
   function sectionHeader(sec) {
     const h = el('div', 'zone-header');
-    const t = el('div', 'ztitle'); t.textContent = sec.title || sec.label || ''; h.appendChild(t);
-    const sub = sec.subtitle || sec.sublabel;
+    const t = el('div', 'ztitle'); t.textContent = sec.title || ''; h.appendChild(t);
+    const sub = sec.subtitle;
     if (sub) { const s = el('div', 'zsub'); s.textContent = sub; h.appendChild(s); }
     return h;
   }
 
   // Build the .sec-grid for a set of children with N columns. `columns` is the
   // authored track count; the CSS container queries in index.html do the only
-  // responsive stepping (3→2→1 as width tightens). A child that is a SECTION
+  // responsive stepping (…→2→1 as width tightens). A child that is a SECTION
   // (has `children`) recurses through buildSection; a leaf goes to buildBox. A
   // child may declare `span` to occupy M columns; span is clamped to the
-  // section's own columns (a band = span == columns). The grid-column value is
-  // applied by CSS (from `.msp`) so the container queries can cap it per tier.
+  // section's own columns. span == columns is a full-width BAND (.msp,
+  // grid-column:1/-1); a PARTIAL span (1 < span < columns) is .mspan and occupies
+  // exactly M tracks (grid-column: span var(--span)), collapsing proportionally.
+  // A child may also declare `rowspan` to occupy K rows (.mrsp, grid-row: span
+  // var(--rowspan)) — a taller cell. All grid-column/grid-row values are applied
+  // by CSS so the container queries can cap them per tier.
   function buildGrid(children, columns, reg) {
-    const cols = Math.max(1, Number.isInteger(columns) && columns > 0 ? columns : DEFAULT_SECTION_COLUMNS);
+    let cols = Math.max(1, Number.isInteger(columns) && columns > 0 ? columns : DEFAULT_SECTION_COLUMNS);
     // `sec-c{N}` (authored column count) lets CSS step each grid's own collapse
     // threshold by how many tracks it actually has to fit, instead of one
     // blanket breakpoint for every grid. `sec-compound` marks a grid that holds
     // at least one NESTED section (a child with its own `children`) rather than
     // only leaf components — a compound grid's cell has to fit a WHOLE nested
     // grid, not just one box, so it is a flex-wrap row of sections while a leaf
-    // grid is fixed --cell-w tracks. This is structural (derived from the data),
+    // grid is a row of equal `fr` tracks. This is structural (derived from the data),
     // not hardcoded to any id, so it stays true if the content changes.
-    const isCompound = (children || []).some(c => Array.isArray(c.children));
+    const kids = children || [];
+    const isCompound = kids.some(c => Array.isArray(c.children));
+    // GROW-WITH-CONTENT / NO RESERVED EMPTY COLUMN. A LEAF grid renders EQUAL
+    // `fr` tracks, so an authored column count LARGER than the content needs
+    // would reserve empty tracks on the right (a "column vacia"). Clamp a leaf
+    // grid's effective column count to what its children can actually fill: the
+    // number of single-cell children (each fills one track) OR the widest band's
+    // span (a band must keep its declared width), whichever is larger — never
+    // above the authored count, never below 1. So a section authored columns:3
+    // with only 2 single-cell children grows to just 2 tracks (no empty 3rd),
+    // while a columns:2 grid whose content includes a full-width band keeps its 2
+    // tracks. A COMPOUND grid is a flex-wrap row (no fixed tracks) so it never
+    // reserves an empty track and is left at its authored count. Bands and the
+    // sec-c{N} collapse class both derive from this clamped count, so the whole
+    // grid stays self-consistent as it cascades …→2→1.
+    if (!isCompound && kids.length) {
+      let singleCells = 0, maxSpan = 1;
+      for (const c of kids) {
+        const s = Math.max(1, Math.min(c.span || 1, cols));
+        if (s === 1) singleCells++; else if (s > maxSpan) maxSpan = s;
+      }
+      cols = Math.min(cols, Math.max(1, singleCells, maxSpan));
+    }
     const classes = ['sec-grid', `sec-c${cols}`];
     if (cols <= 1) classes.push('sec-c1');
     if (isCompound) classes.push('sec-compound');
@@ -201,8 +229,29 @@
         : child.type === 'separator' ? buildSeparator(child)
         : child.type === 'rail' ? buildRail(child)
         : buildBox(child, reg);
+      // HORIZONTAL MERGE. `span == cols` is a full-width BAND (.msp,
+      // grid-column:1/-1 — unchanged: takes its own row edge-to-edge). A PARTIAL
+      // span (1 < span < cols) is .mspan and occupies EXACTLY that many tracks via
+      // `grid-column: span var(--span)`. --span2 is its PROPORTIONAL effective
+      // span at the 2-track collapse tier (round(M/N·2), clamped [1,2]) so the
+      // merge keeps its proportion as the grid cascades and only becomes a full
+      // band at the 1-column endpoint (the tier CSS lives in index.html).
       const span = Math.max(1, Math.min(child.span || 1, cols));
-      if (span > 1) { node.style.setProperty('--span', String(span)); node.classList.add('msp'); }
+      if (span > 1) {
+        node.style.setProperty('--span', String(span));
+        if (span >= cols) {
+          node.classList.add('msp');                 // full-width band
+        } else {
+          node.classList.add('mspan');               // partial horizontal merge
+          node.style.setProperty('--span2', String(Math.max(1, Math.min(2, Math.round(span / cols * 2)))));
+        }
+      }
+      // VERTICAL MERGE (row-span). A child may occupy K rows (double/triple cell
+      // HEIGHT) via `grid-row: span var(--rowspan)` (.mrsp) — the base for a
+      // cell-graph where a cell's height encodes magnitude. Mirrors the span/.msp
+      // path; column position is untouched, only the row extent grows.
+      const rowspan = Math.max(1, Math.floor(Number(child.rowspan) || 1));
+      if (rowspan > 1) { node.style.setProperty('--rowspan', String(rowspan)); node.classList.add('mrsp'); }
       grid.appendChild(node);
     }
     return grid;
@@ -217,9 +266,9 @@
     const vclass = ZONE_VARIANT[sec.variant] ?? '';
     const zone = el('section', ['zone', vclass].filter(Boolean).join(' '), { 'data-zone': sec.id });
     // Titleless container: draw no header when the section declares no
-    // title/subtitle/label — so a pure structural wrapper (e.g. a `plain`
+    // title/subtitle — so a pure structural wrapper (e.g. a `plain`
     // stack) shows only its children's frames, with no empty header line.
-    if (sec.title || sec.subtitle || sec.label) zone.appendChild(sectionHeader(sec));
+    if (sec.title || sec.subtitle) zone.appendChild(sectionHeader(sec));
     zone.appendChild(buildGrid(sec.children, sec.columns, reg));
     return zone;
   }
@@ -245,10 +294,11 @@
     act.appendChild(actbar);
 
     // stage + canvas. The page/root IS a section: page.columns = root columns,
-    // page.sections = root children. The root grid lives inside a
-    // width:max-content plane so the authored columns stay authoritative — the
-    // plane centers (margin-inline:auto) when narrower than the canvas and the
-    // overflow:auto canvas scrolls horizontally when wider. No JS measurement.
+    // page.sections = root children. The root grid lives inside a .sec-plane
+    // that FILLS the canvas up to a centered 1280px cap (max-width:1280px;
+    // margin-inline:auto) — it fills edge-to-edge at or below the cap and
+    // centers with equal side margins above it; columns collapse before a cell
+    // degrades, so nothing scrolls sideways. No JS measurement.
     const stage = el('div', 'stage'); stage.setAttribute('data-stage', '');
     const canvas = el('div', 'canvas');
     const plane = el('div', 'sec-plane');
@@ -314,7 +364,7 @@
     }
 
     function showFlow(f) {
-      panel.kicker.textContent = 'FLOW';
+      panel.kicker.textContent = 'RELATION';
       panel.title.textContent = f.label;
       const steps = f.steps || [];
       panel.summary.innerHTML = '<ol>' + steps.map(s => '<li>' + s + '</li>').join('') + '</ol>';

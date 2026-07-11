@@ -20,52 +20,52 @@ window.__DOC__ = {
           "steps": [
             "Chips are flows: click one to spotlight every component that declares it and dim the rest.",
             "A component joins a flow by listing the filter key in its own <code>filters</code>.",
-            "Here the flow traces edit → web app → API → ship."
+            "Here the flow traces Item 1 → Item 3 → Item 7."
           ]
         }
       ],
       "sections": [
         {
-          "id": "intro",
-          "title": "Getting started",
-          "subtitle": "edit data/pages/overview.yaml, then npm run build",
+          "id": "section-a",
+          "title": "Section A",
+          "subtitle": "an inline section (span 1) — sits side by side with Section B",
           "variant": "normal",
           "order": 1,
           "span": 1,
           "columns": 2,
           "children": [
             {
-              "id": "edit",
+              "id": "item-1",
               "order": 1,
               "status": "NEW",
-              "title": "Edit the YAML",
+              "title": "Item 1",
               "description": [
-                "data/document.yaml — the manifest",
-                "data/pages/*.yaml — the content"
+                "a leaf component (a box)",
+                "click it for its full detail"
               ],
-              "detail": "Change titles, add sections and components, then rebuild. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md).",
+              "detail": "The atom of the diagram is a box: a status badge, a title, and a short description. The full text always lives in this click-through panel, so the box itself stays a fixed height. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md).",
               "variant": "strong",
               "filters": [
                 "flow"
               ]
             },
             {
-              "id": "build",
+              "id": "item-2",
               "order": 2,
               "status": "ENTRY",
-              "title": "Build & view",
+              "title": "Item 2",
               "description": [
-                "npm run build regenerates data.generated.js",
-                "open index.html — no server needed"
+                "cells in a row are equal width",
+                "and fill the section edge to edge"
               ],
-              "detail": "The build step reads the manifest + page files and writes data/data.generated.js. Open index.html in any browser; it renders under file:// with zero runtime dependencies.",
+              "detail": "Every leaf cell stretches to an equal share of its section's width, so a row of cells always spans the section with no gap on the right.",
               "variant": "normal"
             }
           ]
         },
         {
-          "id": "system",
-          "title": "Example system",
+          "id": "section-b",
+          "title": "Section B",
           "subtitle": "a section can nest other sections — a grid of grids",
           "variant": "envelope",
           "order": 2,
@@ -73,17 +73,17 @@ window.__DOC__ = {
           "columns": 1,
           "children": [
             {
-              "id": "frontend",
-              "title": "Frontend",
+              "id": "group-1",
+              "title": "Group 1",
               "variant": "safe",
               "columns": 1,
               "children": [
                 {
-                  "id": "webapp",
+                  "id": "item-3",
                   "status": "INTERNAL",
-                  "title": "Web app",
+                  "title": "Item 3",
                   "description": [
-                    "the user-facing surface"
+                    "one level of nesting deep"
                   ],
                   "detail": "A nested section is drawn as its own framed zone inside the parent. Its <code>variant</code> (here <code>safe</code>) tints the whole group.",
                   "variant": "ok",
@@ -94,32 +94,29 @@ window.__DOC__ = {
               ]
             },
             {
-              "id": "backend",
-              "title": "Backend",
+              "id": "group-2",
+              "title": "Group 2",
               "variant": "normal",
               "columns": 1,
               "children": [
                 {
-                  "id": "api",
+                  "id": "item-4",
                   "status": "INTERNAL",
-                  "title": "API",
+                  "title": "Item 4",
                   "description": [
-                    "handles requests from the web app"
+                    "another nested group"
                   ],
-                  "detail": "Components auto-flow into the section's columns and wrap down. This backend section is <code>columns: 1</code>, so its two boxes stack.",
-                  "variant": "normal",
-                  "filters": [
-                    "flow"
-                  ]
+                  "detail": "Sections nest as deep as the idea needs — a recursive grid of grids down to the boxes at the leaves.",
+                  "variant": "normal"
                 },
                 {
-                  "id": "db",
+                  "id": "item-5",
                   "status": "INTERNAL",
-                  "title": "Database",
+                  "title": "Item 5",
                   "description": [
-                    "persistent store"
+                    "stacks below Item 4 (columns: 1)"
                   ],
-                  "detail": "The <code>store</code> variant gives a data store its own secondary fill.",
+                  "detail": "This group is <code>columns: 1</code>, so its two boxes stack. The <code>store</code> variant gives a box its own secondary fill.",
                   "variant": "store"
                 }
               ]
@@ -127,8 +124,8 @@ window.__DOC__ = {
           ]
         },
         {
-          "id": "delivery",
-          "title": "Delivery",
+          "id": "section-c",
+          "title": "Section C",
           "subtitle": "span == columns makes this a full-width band on its own row",
           "variant": "normal",
           "order": 3,
@@ -136,50 +133,129 @@ window.__DOC__ = {
           "columns": 3,
           "children": [
             {
-              "id": "sep-pipeline",
+              "id": "sep-c",
               "type": "separator",
               "order": 1,
               "span": 3,
               "style": "dotted",
-              "text": "CI/CD pipeline"
+              "text": "A labeled separator"
             },
             {
-              "id": "lane",
+              "id": "rail-c",
               "type": "rail",
               "order": 2,
-              "title": "CI/CD"
+              "title": "Rail"
             },
             {
-              "id": "b1",
+              "id": "item-6",
               "order": 3,
               "status": "UNCHANGED",
-              "title": "Build",
+              "title": "Item 6",
               "description": [
-                "compile & package"
-              ]
-            },
-            {
-              "id": "b2",
-              "order": 4,
-              "status": "UNCHANGED",
-              "title": "Test",
-              "description": [
-                "run the suite"
-              ]
-            },
-            {
-              "id": "b3",
-              "order": 5,
-              "status": "NEW",
-              "title": "Ship",
-              "description": [
-                "deploy to prod"
+                "the rail labels this row"
               ],
-              "detail": "The last step in the example flow — click the <b>Example flow</b> chip above to trace it end to end.",
+              "detail": "A rail is a swimlane-style label banner; a separator is a thin divider line. Both are structural leaf types, not data-carrying boxes."
+            },
+            {
+              "id": "item-7",
+              "order": 4,
+              "status": "NEW",
+              "title": "Item 7",
+              "description": [
+                "the last step in the example flow"
+              ],
+              "detail": "Click the <b>Example flow</b> chip above to trace Item 1 → Item 3 → Item 7 end to end.",
               "variant": "strong",
               "filters": [
                 "flow"
               ]
+            }
+          ]
+        },
+        {
+          "id": "section-d",
+          "title": "Section D",
+          "subtitle": "a mini bar chart — rowspan 1, 2, 3: a cell's HEIGHT encodes its magnitude",
+          "variant": "normal",
+          "order": 4,
+          "span": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "bar-1",
+              "order": 1,
+              "rowspan": 1,
+              "title": "1",
+              "description": [
+                "rowspan: 1",
+                "height = 1 cell"
+              ],
+              "variant": "normal"
+            },
+            {
+              "id": "bar-2",
+              "order": 2,
+              "rowspan": 2,
+              "title": "2",
+              "description": [
+                "rowspan: 2",
+                "height = 2 cells"
+              ],
+              "variant": "ok"
+            },
+            {
+              "id": "bar-3",
+              "order": 3,
+              "rowspan": 3,
+              "title": "3",
+              "description": [
+                "rowspan: 3",
+                "height = 3 cells"
+              ],
+              "variant": "strong"
+            }
+          ]
+        },
+        {
+          "id": "section-e",
+          "title": "Section E",
+          "subtitle": "a partial merge — Item C spans 2 of 4 columns, not the whole row",
+          "variant": "normal",
+          "order": 5,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "item-a",
+              "order": 1,
+              "span": 1,
+              "status": "UNCHANGED",
+              "title": "Item A",
+              "description": [
+                "one cell of four"
+              ]
+            },
+            {
+              "id": "item-b",
+              "order": 2,
+              "span": 1,
+              "status": "UNCHANGED",
+              "title": "Item B",
+              "description": [
+                "one cell of four"
+              ]
+            },
+            {
+              "id": "item-c",
+              "order": 3,
+              "span": 2,
+              "status": "NEW",
+              "title": "Item C — span 2",
+              "description": [
+                "occupies exactly 2 of the 4 tracks"
+              ],
+              "detail": "A partial merge (1 &lt; span &lt; columns) occupies exactly that many tracks and keeps its proportion as the grid collapses; only a span == columns child becomes a full-width band.",
+              "variant": "strong"
             }
           ]
         }

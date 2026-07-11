@@ -95,6 +95,11 @@ for (const theme of ['light', 'dark']) {
     const ctx = await browser.newContext({ viewport: { width: w, height: h } });
     const page = await ctx.newPage();
     await page.addInitScript(t => localStorage.setItem('theme', t), theme);
+    // Pre-seed 'help-seen' so the first-visit help HUD never auto-opens.
+    // Left unset, engine.js opens it on load and its keydown handler ignores
+    // ArrowLeft/Right while it's open — every page-walk press below would be
+    // silently swallowed, leaving every "page{i}" screenshot showing page 0.
+    await page.addInitScript(() => localStorage.setItem('help-seen', '1'));
     await page.goto(FILE);
     await page.waitForTimeout(300);
 
