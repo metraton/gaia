@@ -30,6 +30,17 @@ see `agent-protocol`. For the deep mechanics -- fingerprint canonicalization,
 the hash chain, grant activation, reading a granted approval from Python -- see
 `reference.md`.
 
+**Build this payload the same way as the rest of the contract: `gaia contract`
+first, fence always.** Per `agent-protocol`, the primary path is `gaia contract
+set approval_request.<field> <value>` (or `fill --json`) as each sealed_payload
+field becomes known, then `finalize`. But the SubagentStop gate parses the
+fenced `agent_contract_handoff` block out of your response text, not the
+finalized DB row -- so the `approval_request` below is REQUIRED output in your
+final fenced block regardless of whether you built it via the CLI or composed
+it directly. An `APPROVAL_REQUEST` that only exists in a finalized draft, with
+no matching fence in the response text, gives the orchestrator nothing to
+parse and the turn is rejected.
+
 ## approval_id format
 
 For a **singular** T3 approval (the hook-block path),

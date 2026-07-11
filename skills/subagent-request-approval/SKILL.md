@@ -16,6 +16,17 @@ an `APPROVAL_REQUEST`: copy the hook's operation fields and `approval_id` into
 your `agent_contract_handoff`, set `plan_status: "APPROVAL_REQUEST"`, and wait for the
 orchestrator to relay the user's decision. The hook authors and fingerprints the sealed_payload; you relay it back in your APPROVAL_REQUEST.
 
+Per `agent-protocol`, build this by-value via the `gaia contract` CLI as the
+primary path -- `gaia contract set agent_status.plan_status APPROVAL_REQUEST`,
+then `gaia contract fill --json '{"approval_request": {...}}'` with the
+hook's fields, then `finalize`. But the CLI build does not replace the fence:
+the SubagentStop gate parses the fenced `agent_contract_handoff` block out of
+your response text, not the finalized DB row, so you still close the turn by
+emitting the fence -- copied verbatim from what you built -- in your final
+message. A finalized `APPROVAL_REQUEST` draft with no matching fence in the
+response text is invisible to both the gate and the orchestrator's
+presentation.
+
 **Attempt first.** Run the T3 command and let the hook block it -- do not pre-ask
 the user for permission. Pre-asking either requests a plan the hook would reject
 anyway or stalls a command that would have passed; either way it wastes a turn

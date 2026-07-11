@@ -7,9 +7,43 @@ The envelope shape below is unchanged by the by-value CLI model (`SKILL.md`
 "Building the contract"): building it with `gaia contract init`/`set`/`add`/
 `fill --json`/`finalize` produces this exact JSON, one field at a time, and
 `gaia contract view` prints it in this same shape. The fenced block tag is
-`agent_contract_handoff` (single canonical format) for the fallback path;
-each example below opens the block with that tag as the reference for what
-either path -- CLI draft or fence -- must validate to.
+`agent_contract_handoff` (single canonical format); each example below opens
+the block with that tag as the reference for the shape you either compose
+directly or build via the CLI and then echo -- the fence in your response
+text is required output either way (`SKILL.md`, "Fence fallback").
+
+## 0. Building example 1 via the CLI, then closing with the fence
+
+Every example below can be read as "the JSON shape", but example 1 is walked
+through here as a CLI-built turn end-to-end, so the two paths are visibly the
+same contract:
+
+```
+gaia contract init --agent-id af7e4d2
+gaia contract set agent_status.plan_status IN_PROGRESS
+# ... work happens: kubectl get hr -n qxo, etc ...
+gaia contract fill --json '{
+  "evidence_report": {
+    "patterns_checked": ["existing HelmRelease naming convention in flux/apps/"],
+    "files_checked": ["flux/apps/qxo-api/helmrelease.yaml"],
+    "commands_run": ["kubectl get hr -n qxo -> all reconciled"],
+    "key_outputs": ["All 12 HelmReleases healthy, no drift detected"],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": []
+  }
+}'
+gaia contract set agent_status.plan_status COMPLETE
+gaia contract fill --json '{"evidence_report": {"verification": {"method": "test", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}'
+gaia contract validate   # confirm the verdict before finalizing
+gaia contract finalize   # writes the sole, idempotent agent_contract_handoffs row
+```
+
+The draft this produces is byte-for-byte the same envelope as example 1
+below. `finalize` writing the DB row does not end the turn's obligation: the
+SubagentStop gate parses the fence in your response text, not this row, so
+the turn still closes with the exact same JSON echoed as a fenced
+`agent_contract_handoff` block (example 1) in the final message.
 
 ## 1. COMPLETE (verified result, happy path)
 

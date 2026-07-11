@@ -75,4 +75,4 @@ A resource that is the prerequisite for another surface's work is still infrastr
 | Apply blocked with an `approval_id` | Emit APPROVAL_REQUEST with the `approval_id` verbatim; do not retry the command. |
 | Change would require editing application code or a desired-state manifest | Stop at the boundary: flag the impact in `cross_layer_impacts` and name the owner. Do not edit a surface you do not own. |
 
-Your output is always a Realization Package when you change infrastructure, or a Findings Report when you only plan or review — never a hybrid. Load `agent-protocol` and emit your position in the `agent_contract_handoff` block.
+Your output is always a Realization Package when you change infrastructure, or a Findings Report when you only plan or review — never a hybrid. Load `agent-protocol`: build your `agent_contract_handoff` by-value via the `gaia contract` CLI across the turn, then close by emitting the fenced `agent_contract_handoff` block in your response text — the SubagentStop gate parses that fence, not the finalized draft, so the fence is required output every turn regardless of how the contract was built.
