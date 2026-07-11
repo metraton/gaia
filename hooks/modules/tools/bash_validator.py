@@ -62,6 +62,9 @@ from ..security.approval_messages import (
 )
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
+from ..security.subagent_memory_write_guard import (
+    check as check_subagent_memory_write,
+)
 from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
@@ -454,6 +457,36 @@ class BashValidator:
                 reason=db_write_reason,
                 suggestions=[
                     "Use the `gaia context` CLI or emit update_contracts.",
+                ],
+            )
+
+        # ================================================================
+        # SUBAGENT MEMORY-WRITE GUARD
+        # Reject direct curated-memory mutations (`gaia memory add|edit|
+        # append|reclassify|delete|link`) attempted from a subagent dispatch
+        # context, EXCEPT for the sanctioned writers (gaia-operator). The
+        # orchestrator (is_subagent False) is never blocked here. Categorical
+        # deny, NOT approvable: the correct subagent path is to PROPOSE via a
+        # `memorialize_suggestions` block, not to escalate. Runs on the full
+        # (footer-normalized) command BEFORE unwrap/decompose so compound
+        # chains and wrappers are inspected intact. See the memory skill's
+        # "Who writes" section for the contract this enforces.
+        # ================================================================
+        mem_write_allowed, mem_write_reason = check_subagent_memory_write(
+            command, is_subagent=is_subagent, agent_type=agent_type,
+        )
+        if not mem_write_allowed:
+            logger.warning(
+                "BLOCKED subagent memory write (agent=%s): %s",
+                agent_type or "?", command[:100],
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=mem_write_reason,
+                suggestions=[
+                    "Emit a `memorialize_suggestions` block in your "
+                    "agent_contract_handoff instead.",
                 ],
             )
 

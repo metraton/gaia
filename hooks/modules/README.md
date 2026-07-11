@@ -41,6 +41,7 @@ modules/
 │   ├── tiers.py          # SecurityTier enum (T0-T3)
 │   ├── blocked_commands.py # Blocked patterns by category
 │   ├── mutative_verbs.py   # CLI-agnostic verb detector, nonce-based deny
+│   ├── subagent_memory_write_guard.py # Blocks `gaia memory` writes from subagents (non-operator)
 │   ├── source_lexer.py     # Per-language comment/string lexer for the JS script lane
 │   ├── approval_grants.py  # Nonce-based approval grant management
 │   ├── approval_constants.py # Approval system constants
