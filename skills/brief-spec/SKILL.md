@@ -9,19 +9,22 @@ metadata:
 # Brief Spec
 
 Conversational brief creation. The orchestrator loads this inline to
-co-create a brief with the user before dispatching to gaia-planner.
+co-create a brief with the user before dispatching to gaia-planner. The
+brief you write here is the contract you will audit the plan against: **you
+own the resulting plan -- its tasks and its acceptance criteria** -- and the
+planner produces it *for you to check*, not to approve on your behalf.
 
 ## DB is the source of truth (read this first)
 
 Briefs live in the Gaia substrate database (`~/.gaia/gaia.db`). They are
 created and mutated through the `gaia brief` CLI -- never by writing files
-into `.claude/project-context/briefs/`. That filesystem layout is **legacy**
-and is being removed in a follow-up cleanup.
+on disk. The DB row IS the brief: there is no `brief.md`, no
+`<status>_<slug>/` directory, no frontmatter on disk. When in doubt, there
+is no file to write -- there is a CLI command to run.
 
-If a previous version of this skill or a stale doc tells you to write
-`brief.md` to a `<status>_<slug>/` directory, ignore it. The migration to
-DB-canonical is in progress (session 2026-05-06, brief `gaia-state-machines`).
-When in doubt: there is no file to write -- there is a CLI command to run.
+If you find code, docs, or skills that still describe a filesystem layout
+under `.claude/project-context/briefs/`, that is legacy: flag it in
+`cross_layer_impacts` -- do not edit it as a side effect of a brief task.
 
 ## Cuando llegas aquí
 
@@ -61,6 +64,7 @@ Tu trabajo:
    gaia brief new --headless \
      --title="<human title>" \
      --status=draft \
+     --surface-type=<ui|api|job|cli> \
      --objective="<1-3 sentences>" \
      --context="<project constraints>" \
      --approach="<high-level strategy, 3-5 sentences>" \
@@ -75,16 +79,22 @@ Tu trabajo:
    `--status=draft` is the canonical entry point. Move it to `open` only when
    the user is ready to plan against it.
 
-3. **Add Acceptance Criteria** -- ACs live in the brief's
-   `acceptance_criteria` field (currently a YAML/markdown block stored in the
-   row body). Until `gaia brief add-ac` ships, capture them in the same
-   round-trip:
-   - If you have all ACs at creation time, include them in the
-     `--approach` or a follow-up `gaia brief edit <slug>` where the editor
-     opens the body for in-place editing.
-   - The body's `## Acceptance Criteria` section uses the format under
-     "Brief Body Structure" below. Frontmatter is the executable source of
-     truth; the human summary mirrors it.
+3. **Add Acceptance Criteria** -- ACs are rows in the `acceptance_criteria`
+   table, added one at a time with `gaia brief ac add`:
+
+   ```bash
+   gaia brief ac add <slug> \
+     --id=AC-1 \
+     --description="<user observation>" \
+     --evidence-type=<command|url|playwright|artifact|metric> \
+     --evidence-shape='<free-form string or JSON>' \
+     --artifact=evidence/AC-1.txt
+   ```
+
+   Remove one with `gaia brief ac remove <slug> --id=AC-1`. The shapes per
+   evidence type are under "Evidence Types" below; the `## Acceptance
+   Criteria` section that `gaia brief show` renders is the human summary of
+   these rows.
 
 4. **Confirm with the user** -- `gaia brief show <slug>` prints the full row.
    Read it back and ask: "Does this capture what you want?"
@@ -92,16 +102,17 @@ Tu trabajo:
 
 ## How to update a brief
 
-Use `gaia brief edit <name>` for the full body in `$EDITOR`. This is the
-current path while finer-grained CLI commands are pending.
+For a single field, use the headless patch -- scriptable, no editor:
 
-When `gaia brief set-field <name> --field=<context|approach|...>
---content="..."` ships (pending, scope of brief `cli-completion`), prefer it
-for single-field updates -- no editor, scriptable, headless-friendly.
+```bash
+gaia brief edit <name> --headless \
+  --field=<objective|context|approach|out_of_scope|description|title|surface_type> \
+  --content="..."
+```
 
-**Do not edit files in `.claude/project-context/briefs/`.** Any directory
-you may see there is legacy and will be deleted; edits there are silently
-ignored by the runtime.
+Use `gaia brief edit <name>` (no `--headless`) to open the full body in
+`$EDITOR` for interactive edits. Prefer the headless form in an agent
+turn -- a subagent cannot drive an interactive `$EDITOR`.
 
 ## How to change status
 
@@ -270,29 +281,39 @@ evidence:
     threshold: "< 200"
 ```
 
-## Filesystem behavior (DEPRECATED)
+## Why the DB, not a directory tree
 
-The directory layout `.claude/project-context/briefs/<status>_<slug>/`
-with a `brief.md` inside it is **legacy**. It will be removed in the
-`legacy-cleanup` brief. Reasons it is being retired:
+The old `.claude/project-context/briefs/<status>_<slug>/` layout is gone
+because a directory tree cannot be the source of truth for a brief:
 
 - Status lived in the directory name -- renaming a directory was the
   status transition. That made transitions unverifiable, racy across
   agents, and impossible to query with anything other than `find`.
-- Two writers (filesystem + DB after the substrate refactor) drift apart
-  silently; only one can be the source of truth.
+- Two writers (filesystem + DB) drift apart silently; only one can be
+  authoritative.
 - Cascade deletes across ACs, milestones, plans, and tasks require FK
   semantics, which a directory tree cannot provide.
 
-If you find code, docs, or skills that still describe the directory
-convention, flag them in `cross_layer_impacts` -- do not edit them as a
-side effect of a brief task.
-
-## After Brief
+## After Brief -- you own the plan the planner returns
 
 `gaia brief show <slug>` prints the full brief. Present it. Ask:
-"Does this capture what you want?" When confirmed, suggest dispatching
-to gaia-planner to create a plan.
+"Does this capture what you want?" When confirmed, dispatch to
+gaia-planner to create a plan.
+
+The brief settles *whether* the work is worth doing -- that was agreed
+here, with the user. The planner does not re-litigate that. What the
+planner owes you back is everything you need to **audit** the plan it
+produces, not just the task list:
+
+- the **feasibility findings** it corroborated against the codebase
+  (what already exists, what the brief assumed that does not),
+- the **assumptions** it had to make and the **risks** it sees,
+- the **rationale for task ordering** and parallelization.
+
+Require those in the dispatch -- a plan you cannot audit is one you
+cannot own. When you review it, escalate to the user only what is
+**genuinely new or blocking** (a feasibility gap, a fork the planner
+could not resolve). Never re-ask what the brief already settled.
 
 ## Anti-Patterns
 
@@ -304,3 +325,10 @@ to gaia-planner to create a plan.
   bypasses the review window where the user confirms ACs.
 - **Hard-deleting a brief that has plan history** -- prefer
   `set-status archived`. Delete is for genuinely abandoned drafts.
+- **Accepting a plan you cannot audit** -- dispatching the planner without
+  requiring its feasibility findings, assumptions, risks, and ordering
+  rationale leaves you owning a plan you cannot check. Require the audit
+  inputs in the dispatch.
+- **Re-asking the user what the brief settled** -- the brief is the agreed
+  contract. Escalate only genuinely new or blocking findings surfaced by
+  the plan; questions the brief already answered are noise.

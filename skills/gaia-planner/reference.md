@@ -132,6 +132,25 @@ shape the orchestrator's dispatch logic reads.
 ### Approach
 {Technical strategy -- 3-5 sentences. Areas referenced loosely, not pinned.}
 
+### Feasibility Findings
+{The audit surface. For each objective/AC: what the desired end-state requires
+vs what the system provides today, and how the plan resolves the gap -- a
+prerequisite task, an existing capability, or (if unresolved) a blocking
+question raised separately. If closing a gap would cost work comparable to or
+larger than the brief itself, say so here: that is a finding, not a silent
+prerequisite chain. This is what the orchestrator reads to judge whether the
+plan is technically coherent.}
+
+### Assumptions
+{Every judgment the brief did not settle and you did not ask about -- the
+resolved side of each non-blocking ambiguity. A wrong assumption surfaced here
+is cheap to correct; a hidden one is not.}
+
+### Risks
+{What could make a task fail or a sequence break -- shared blast radius, an
+untested integration point, an external dependency. Execution risk, not
+worth-of-the-brief risk.}
+
 ### Tasks
 
 #### T1: {Task title -- the outcome}
@@ -148,11 +167,17 @@ shape the orchestrator's dispatch logic reads.
 
 ### Execution Order
 {Dependency graph; group the parallel:yes tasks that share no blast radius}
+
+### Ordering Rationale
+{Why this order -- which dependency or blast-radius overlap forces each edge.
+The orchestrator sequences dispatch from this; state the reason, not just the graph.}
 ```
 
-Fill in: Approach (technical strategy), Tasks (each with agent, status,
-satisfies, parallel, blast-radius, AC, blocked-by, context, outcome), and
-Execution Order (dependency graph that surfaces the parallelizable groups).
+Fill in: Approach (technical strategy), Feasibility Findings, Assumptions, and
+Risks (the audit surface the orchestrator reads), Tasks (each with agent,
+status, satisfies, parallel, blast-radius, AC, blocked-by, context, outcome),
+Execution Order (dependency graph that surfaces the parallelizable groups), and
+Ordering Rationale (why that order).
 
 ### Step 5: Task List Checkpoint
 
@@ -163,6 +188,8 @@ wait for confirmation. The checkpoint must show:
 - Dependencies (blocked-by) and parallelizable label
 - Execution order
 - Overlaps found during the survey (what was already built and therefore not planned)
+- Feasibility findings, assumptions, and risks (the audit surface -- so the
+  audit reaches the user, not only the orchestrator)
 
 Ask: "Here are the tasks I plan to execute. Confirm to proceed, or suggest
 changes." Do not let the orchestrator dispatch until the user confirms.

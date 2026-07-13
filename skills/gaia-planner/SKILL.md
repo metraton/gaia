@@ -13,7 +13,28 @@ decomposes it into tasks defined by outcome and verification, and persists the
 plan back through the `gaia plan` CLI. The orchestrator owns task dispatch and
 execution.
 
-## The altitude principle (read this first)
+## The brief is authoritative intent (read this first)
+
+The brief is the settled output of investigation and conversation between the
+user and the orchestrator. Its premise -- *whether the thing is worth doing* --
+is decided before the planner is dispatched and is not the planner's to reopen.
+The planner never re-litigates the goal, argues its value, or proposes a
+different feature. It takes the desired end-state as given and asks one narrower
+question: **is this technically coherent and feasible against the system as it
+actually is, and in what order must it be built?**
+
+This makes the planner a *feasibility auditor*, not a second author of the
+brief. Feasibility problems are reported as technical findings, never as
+opinions on the brief's worth: "the AC assumes an extension point that does not
+exist" is a finding the orchestrator can act on; "this feature may not be a good
+idea" is out of scope. The planner surfaces the technical truth and lets the
+orchestrator -- the auditor of the plan -- decide. Because the orchestrator
+audits the plan, the planner returns everything that audit needs: the
+feasibility findings, the assumptions it made where the brief was silent, the
+execution risks, and the rationale for the task ordering (see `reference.md`,
+Plan Structure) -- not just the task list.
+
+## The altitude principle
 
 A plan defines each task by its **outcome plus how that outcome is verified** --
 never by implementation nomenclature. Reference areas of the codebase loosely
@@ -76,9 +97,17 @@ re-builds what exists or specifies what cannot be built.
   component that ships today is waste the orchestrator will dispatch in good
   faith. Plan only the delta between the brief and what is built.
 - **Technical feasibility.** Corroborate each intended outcome against the
-  actual implementation. A brief AC that assumes an extension point, a CLI flag,
-  or a table column that does not exist is not plannable as written -- it is a
-  question for the user (see Step 5), not a task.
+  actual implementation. When an AC assumes an extension point, a CLI flag, or a
+  table column that does not exist, that is a **feasibility finding**, not a
+  reason to stop: most gaps become a prerequisite task (build the missing piece
+  first) that you record and order ahead of the dependent work. Record every
+  such finding -- the gap, and how you resolved it or why it is unresolved -- in
+  the plan's Feasibility Findings section so the orchestrator can audit it. If
+  closing a gap would cost work comparable to or larger than the brief itself,
+  say so as a prominent finding rather than burying it in a prerequisite chain.
+  Escalate to a blocking question (Step 5) ONLY when the gap makes the plan
+  structure itself undecidable. Infeasibility is a technical fact you report; it
+  is never a verdict on whether the brief was worth writing.
 
 ### Step 3: Decompose into tasks
 
@@ -127,8 +156,13 @@ planner does not pick; the orchestrator presents the options to the user and
 returns the choice. Assuming past a blocking ambiguity bakes a guess into the
 plan that every downstream task inherits.
 
-Reserve this for ambiguity that blocks the plan. Routine sizing or routing
-calls are yours to make.
+Reserve this for ambiguity that genuinely blocks the plan: a divergence that
+changes the plan's *structure* and that you cannot resolve from the codebase or
+a stated constraint. Do not manufacture questions -- an absent blocker means you
+proceed. If you can build a coherent, ordered plan while recording your
+assumptions and findings, produce it and let it execute; a question the
+orchestrator could not have answered better than your recorded assumption is
+noise, not diligence. Routine sizing and routing calls are yours to make.
 
 ### Step 6: Task list checkpoint
 
@@ -152,6 +186,13 @@ return the plan content as your output.
 - **Assuming past blocking ambiguity** -- when brief and implementation diverge
   and you cannot tell which the user wants, a guess becomes a contract the
   whole plan inherits. Emit NEEDS_INPUT with options.
+- **Re-litigating the brief's premise** -- the brief is settled intent from the
+  user + orchestrator investigation. Questioning whether the goal is worth
+  doing, or proposing a different feature, is outside the planner's job. Audit
+  feasibility, not worth.
+- **Manufacturing questions** -- a question your recorded assumption could have
+  answered is noise. Ask only when a divergence blocks the plan's structure;
+  otherwise record the assumption and proceed.
 - **Dispatching agents** -- the planner produces the plan; the orchestrator
   dispatches. If you have `Agent` in your tools, something is wrong.
 - **Fat or micro tasks** -- a task spanning many outcomes loses the agent; a
