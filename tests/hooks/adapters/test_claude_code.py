@@ -332,6 +332,98 @@ class TestParsePostToolUse:
         assert result.output == ""
         assert result.exit_code == 0
 
+    # ------------------------------------------------------------------ #
+    # Real Claude Code harness shapes. Verified against ~17.9k recorded
+    # Bash tool_responses: SUCCESS is a dict {stdout, stderr(empty),
+    # interrupted, isImage, noOutputExpected, [returnCodeInterpretation]}
+    # with NO 'exit_code' and NO 'output'; FAILURE is a bare STRING (the
+    # error text). The pre-fix code read .get('output')/.get('exit_code'),
+    # so it never saw a failure -- hence the 261-EXECUTED / 0-FAILED split.
+    # ------------------------------------------------------------------ #
+
+    def test_real_harness_success_dict_uses_stdout(self, adapter):
+        """Success dict: read 'stdout' (not 'output'); exit_code resolves to 0."""
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls -la"},
+            "tool_response": {
+                "stdout": "total 42\ndrwxr-xr-x 5 user user 4096 .",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+                "noOutputExpected": False,
+            },
+            "session_id": "s1",
+        }
+        result = adapter.parse_post_tool_use(payload)
+        assert result.exit_code == 0
+        assert "total 42" in result.output
+
+    def test_real_harness_failure_is_bare_string(self, adapter):
+        """Failure form: tool_response is a bare STRING -> exit_code 1 (failed)."""
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "kubectl apply -f bad.yaml"},
+            "tool_response": "Error from server (Invalid): error validating data",
+            "session_id": "s1",
+        }
+        result = adapter.parse_post_tool_use(payload)
+        assert result.exit_code == 1, (
+            "A bare-string tool_response is the harness failure form and must "
+            "yield a non-zero exit_code so success resolves to False"
+        )
+        assert "Error from server" in result.output
+
+    def test_interrupted_dict_is_failure(self, adapter):
+        """Success-shaped dict with interrupted=True -> treated as failure."""
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "sleep 999"},
+            "tool_response": {
+                "stdout": "",
+                "stderr": "",
+                "interrupted": True,
+                "isImage": False,
+                "noOutputExpected": False,
+            },
+            "session_id": "s1",
+        }
+        result = adapter.parse_post_tool_use(payload)
+        assert result.exit_code == 1
+
+    def test_is_error_flag_is_failure(self, adapter):
+        """Defensive: an explicit is_error flag (future/other tools) -> failure."""
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "false"},
+            "tool_response": {"stdout": "", "is_error": True},
+            "session_id": "s1",
+        }
+        result = adapter.parse_post_tool_use(payload)
+        assert result.exit_code == 1
+
+    def test_return_code_interpretation_is_not_failure(self, adapter):
+        """A benign non-zero (grep no-match) stays a dict and must NOT be failure.
+
+        The harness itself does not mark these is_error, so neither do we --
+        this guards against false FAILED events for grep/diff/find.
+        """
+        payload = {
+            "tool_name": "Bash",
+            "tool_input": {"command": "grep foo missing.txt"},
+            "tool_response": {
+                "stdout": "",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+                "returnCodeInterpretation": "No matches found",
+                "noOutputExpected": False,
+            },
+            "session_id": "s1",
+        }
+        result = adapter.parse_post_tool_use(payload)
+        assert result.exit_code == 0
+
 
 # ============================================================================
 # T007: parse_agent_completion tests
@@ -1037,8 +1129,10 @@ class TestEdgeCases:
             "session_id": "s1",
         }
         result = adapter.parse_post_tool_use(payload)
-        # exit_code is whatever was in the JSON; ToolResult stores it as-is
-        assert result.exit_code == "not_a_number"
+        # An unparseable exit_code coerces to 0 (a benign success default) rather
+        # than storing a str in an int field -- matches this test's docstring and
+        # keeps the downstream `success = exit_code == 0` check well-typed.
+        assert result.exit_code == 0
 
     def test_format_validation_response_empty_reason(self, adapter):
         """Empty reason string is still included."""

@@ -114,6 +114,77 @@ def _assert_dispatch_can_advance_state(table: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Content-authorship permissions (M2 -- brief/plan content gating)
+# ---------------------------------------------------------------------------
+#
+# DISTINCT axis from DISPATCH_PERMISSIONS above. That matrix gates state
+# TRANSITIONS on curator-only tables; this one gates who may author the CONTENT
+# of a brief or plan via ``upsert_brief`` / ``upsert_plan``. Under the (now
+# live) planner protocol authorship is split: the ORCHESTRATOR authors brief
+# content (the brief-spec flow), the PLANNER authors plan content. A dispatched
+# agent that is neither may not mutate brief/plan content.
+#
+# Why this cannot reuse DISPATCH_PERMISSIONS: the planner is a NON-curator that
+# MUST be allowed to author PLAN content, yet must remain FORBIDDEN from
+# transitioning plan STATUS (``plans`` is curator_only in DISPATCH_PERMISSIONS).
+# Content authorship and lifecycle transition therefore have different
+# authorized sets and cannot share a single matrix.
+#
+# Why not the ``agent_permissions`` DB table (_is_authorized in store.writer):
+# that table requires an explicit allow_write row per (table, agent) and has no
+# unset/human-CLI escape hatch, so it would BLOCK the human ``gaia brief``
+# terminal flow (upsert_brief takes no ``agent`` argument). The env-var
+# dispatch-guard pattern -- fail-open when GAIA_DISPATCH_AGENT is unset -- is the
+# model the sibling guards (memory/evidence/state) already use, and the only one
+# that keeps the human/orchestrator-main-session flow working.
+
+# Planner identities (bare + gaia- prefixed, mirroring the curator aliases).
+_PLANNER_AGENTS: frozenset[str] = frozenset({"planner", "gaia-planner"})
+
+CONTENT_AUTHOR_PERMISSIONS: dict[str, frozenset[str]] = {
+    "briefs": _CURATOR_AGENTS,
+    "plans": _CURATOR_AGENTS | _PLANNER_AGENTS,
+}
+
+
+class ContentWriteForbidden(PermissionError):
+    """Raised when a dispatched agent lacks authority to author brief/plan content."""
+
+
+def _assert_dispatch_can_write_content(table: str) -> None:
+    """Block brief/plan CONTENT mutations from unauthorized subagent dispatches.
+
+    Reads ``GAIA_DISPATCH_AGENT`` -- same contract as the sibling guards:
+
+    * Unset / empty -> human CLI caller or orchestrator main session. Allowed.
+    * Set to an author authorized for ``table`` -> allowed.
+    * Set to any other identity -> raises ``ContentWriteForbidden``.
+    * Unknown table (not in ``CONTENT_AUTHOR_PERMISSIONS``) -> allowed
+      (fail-open for tables not yet registered).
+
+    Args:
+        table: Target table -- ``'briefs'`` or ``'plans'``.
+    """
+    raw = os.environ.get("GAIA_DISPATCH_AGENT")
+    if not raw:
+        return
+    agent = raw.strip()
+    if not agent:
+        return
+    authors = CONTENT_AUTHOR_PERMISSIONS.get(table)
+    if authors is None:
+        return
+    if agent in authors:
+        return
+    raise ContentWriteForbidden(
+        f"Content authorship of '{table}' is restricted (current "
+        f"GAIA_DISPATCH_AGENT={agent!r}). Brief content is authored by the "
+        f"orchestrator; plan content by the planner. Authorized for '{table}': "
+        f"{sorted(authors)}."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Handoff-writer fleet seed (T8 -- brief contract-as-managed-data)
 # ---------------------------------------------------------------------------
 #
@@ -259,6 +330,9 @@ __all__ = [
     "DISPATCH_PERMISSIONS",
     "StateTransitionForbidden",
     "_assert_dispatch_can_advance_state",
+    "CONTENT_AUTHOR_PERMISSIONS",
+    "ContentWriteForbidden",
+    "_assert_dispatch_can_write_content",
     "handoff_writer_fleet",
     "is_handoff_writer",
 ]

@@ -82,6 +82,30 @@ def _isolate_gaia_data_dir(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dispatch_identity(monkeypatch):
+    """Test-env isolation from the (now-live) dispatch-identity injection.
+
+    The PreToolUse hook rewrites a subagent's Bash command to
+    ``export GAIA_DISPATCH_AGENT=<agent>; <command>`` so the DB-side guards
+    (memory / evidence / brief+plan content / state transitions) fail CLOSED for
+    a dispatched subagent. A consequence: when the test suite itself is run BY a
+    Gaia subagent, the pytest process (and every subprocess it spawns) inherits
+    that dispatch identity, so any test exercising a curator-only write would
+    fail with ``StateTransitionForbidden`` / ``ContentWriteForbidden`` merely
+    because of the ambient identity -- not because the write mechanic is wrong.
+
+    Mirroring ``_isolate_gaia_data_dir``: this autouse fixture clears
+    ``GAIA_DISPATCH_AGENT`` so every test defaults to the human-CLI (fail-open)
+    path, and a test that specifically exercises the guards sets it explicitly
+    (fixture-first ordering means the test's own ``monkeypatch.setenv`` runs
+    after and wins). Subprocess-based fixtures that ``os.environ.copy()`` also
+    inherit the cleared env, so the subprocess is hermetic too.
+    """
+    monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
+    yield
+
+
 def pytest_collection_modifyitems(config, items):
     """Auto-skip llm and e2e tests unless explicitly requested via -m flag."""
     # If user explicitly passed -m, respect that

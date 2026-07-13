@@ -2661,7 +2661,15 @@ def upsert_plan(
     Raises ValueError if the brief does not exist, if the brief status is
     ``closed`` or ``archived`` (D11 fail-fast), or if the status enum is
     invalid.
+
+    Raises ContentWriteForbidden when GAIA_DISPATCH_AGENT names a dispatched
+    agent not authorized to author plan content (plan content is authored by
+    the planner). A human CLI call / orchestrator main session (no dispatch
+    identity) is always allowed.
     """
+    from gaia.state.permissions import _assert_dispatch_can_write_content
+    _assert_dispatch_can_write_content("plans")
+
     if status not in VALID_PLAN_LIFECYCLE_STATUSES:
         raise ValueError(
             f"invalid plan status {status!r}; must be one of "

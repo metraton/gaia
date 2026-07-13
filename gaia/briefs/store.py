@@ -5,11 +5,15 @@ Layered atop gaia.store.writer._connect (B1). Reuses the `~/.gaia/gaia.db`
 substrate; tables `briefs`, `acceptance_criteria`, `milestones`,
 `brief_dependencies`, `plans`, `tasks`, plus `briefs_fts` (FTS5 mirror).
 
-This module does NOT consult ``agent_permissions``: brief authorship is a
-user-driven CLI flow (``gaia brief`` from the user's terminal), not an
-agent-driven mutation. That matches the design in B1 where agent_permissions
-gates *agent-owned* tables (apps, projects) but leaves user-owned interactions
-free.
+This module does NOT consult the ``agent_permissions`` DB table (which gates
+*scanner-owned* tables like apps/projects and has no human-CLI escape hatch).
+Brief content is user-driven (``gaia brief`` from the user's terminal) or
+orchestrator-authored, so ``upsert_brief`` instead consults the env-var
+dispatch-identity content guard (``_assert_dispatch_can_write_content`` in
+``gaia.state.permissions``): a human/orchestrator-main-session call (no
+``GAIA_DISPATCH_AGENT``) is always allowed, while a dispatched subagent that is
+not an authorized author is blocked. This mirrors the memory/evidence/state
+guards -- same fail-open-on-unset contract -- rather than the table-based model.
 
 Public API::
 
@@ -103,7 +107,16 @@ def upsert_brief(
 
     Returns:
         ``{"status": "applied", "brief_id": int, "acs": int, "milestones": int}``.
+
+    Raises:
+        ContentWriteForbidden: when GAIA_DISPATCH_AGENT names a dispatched agent
+            that is not authorized to author brief content (brief content is
+            authored by the orchestrator). A human CLI call / orchestrator main
+            session (no dispatch identity) is always allowed.
     """
+    from gaia.state.permissions import _assert_dispatch_can_write_content
+    _assert_dispatch_can_write_content("briefs")
+
     con = _connect(db_path)
     try:
         con.execute("BEGIN")

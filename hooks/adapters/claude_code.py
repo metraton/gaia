@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,6 +43,53 @@ from .types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Dispatch-identity injection (fail-closed DB guards, M1)
+# ---------------------------------------------------------------------------
+
+# Environment variable the DB-side dispatch guards read to identify the writing
+# agent (gaia.store.writer, gaia.state.permissions, gaia.evidence.store,
+# gaia.briefs.store). Defined here as the single injection-side constant.
+GAIA_DISPATCH_AGENT_ENV = "GAIA_DISPATCH_AGENT"
+
+
+def build_dispatch_identity_command(command: str, agent_type: str) -> str:
+    """Prefix a subagent Bash command so ``GAIA_DISPATCH_AGENT`` reaches the CLI.
+
+    The DB guards fail OPEN when ``GAIA_DISPATCH_AGENT`` is unset (that is the
+    human-CLI / orchestrator-main-session path). To make them fail CLOSED for a
+    dispatched subagent, the agent's identity must reach the ``gaia`` CLI
+    subprocess -- and the only lever a PreToolUse hook has over a subprocess's
+    environment is the command string it executes. So we export the identity at
+    the front of the command line:
+
+        ``export GAIA_DISPATCH_AGENT=<agent>; <original command>``
+
+    An ``export ...;`` statement is used deliberately rather than a bare
+    ``VAR=x <cmd>`` word prefix: a bare prefix binds the variable to ONLY the
+    first stage of a compound command, so ``GAIA_DISPATCH_AGENT=x cd /repo &&
+    gaia ...`` would leave ``gaia`` without the variable. ``export`` makes it
+    visible to every stage and every subprocess of that single Bash invocation
+    (each tool call is a fresh shell, so the scope is exactly this one command).
+
+    ``agent_type`` is the HARNESS-provided dispatch identity, never a value the
+    agent supplies; the caller only invokes this for a real subagent. Returns
+    the command unchanged when ``agent_type`` is empty (no identity to assert --
+    the guards then stay fail-open for that command, the conservative fallback).
+
+    Note (accepted limitation): a deliberately adversarial agent could append an
+    inline ``GAIA_DISPATCH_AGENT=orchestrator`` assignment to a later stage of
+    its own command and shadow the exported value for that stage. This injection
+    closes the ACCIDENTAL over-authority gap (subagents writing as human by
+    default); a forged inline override is a distinct, adversarial threat still
+    covered by the T3 approval layer on the underlying mutation.
+    """
+    agent = (agent_type or "").strip()
+    if not agent:
+        return command
+    return f"export {GAIA_DISPATCH_AGENT_ENV}={shlex.quote(agent)}; {command}"
 
 # Claude Code's PreToolUse responses nest their permission fields under this
 # top-level key. The literal shape is OWNED by this adapter layer: business
@@ -770,8 +818,61 @@ class ClaudeCodeAdapter(HookAdapter):
         session_id = raw.get("session_id", "")
 
         command = tool_input.get("command", "")
-        output = tool_response.get("output", "")
-        exit_code = tool_response.get("exit_code", 0)
+
+        # --- Harness field reality (verified against ~17.9k real Bash results) ---
+        # Claude Code's Bash PostToolUse tool_response does NOT carry 'exit_code'
+        # and does NOT carry 'output'. Its two observed shapes are:
+        #   SUCCESS: a dict {stdout, stderr, interrupted(bool), isImage(bool),
+        #            noOutputExpected(bool), [returnCodeInterpretation, ...]}.
+        #            NOTE the field is 'stdout' (not 'output'); 'stderr' is
+        #            present but empty (stderr is folded into stdout); a benign
+        #            non-zero exit like grep-no-match stays a dict and carries
+        #            'returnCodeInterpretation' -- the harness does NOT treat it
+        #            as an error, so neither do we.
+        #   FAILURE: a bare STRING (the error text). On a non-zero exit the
+        #            harness replaces the dict with a string and sets the
+        #            message-level tool_result is_error=true (a signal the hook
+        #            never receives).
+        # The previous code read tool_response.get('output')/('exit_code'),
+        # neither of which exists: on success exit_code defaulted to 0 (EXECUTED)
+        # and on failure tool_response is a str, so .get() raised and the whole
+        # post-hook aborted -- so a FAILED event was NEVER recorded (261/0 split).
+        #
+        # Derive `success` defensively from whatever signals are actually
+        # present, then synthesize an exit_code (0 clean / 1 failed) so the
+        # downstream `success = exit_code == 0` check and the EXECUTED/FAILED
+        # discriminator in _record_t3_outcome_event stay intact.
+        failed = False
+        output = ""
+        exit_code = 0
+
+        if isinstance(tool_response, str):
+            # Failure form: the harness passed the error text as a bare string.
+            output = tool_response
+            failed = True
+        elif isinstance(tool_response, dict):
+            # Read stdout from the real key, falling back to the legacy 'output'.
+            output = tool_response.get("stdout", tool_response.get("output", "")) or ""
+            # Explicit failure flags. The current Bash harness omits these, but
+            # other tools / future harness versions may set them, so honor them.
+            is_error = tool_response.get("is_error", tool_response.get("isError"))
+            interrupted = tool_response.get("interrupted")
+            raw_exit = tool_response.get("exit_code", tool_response.get("exitCode"))
+            if is_error or interrupted:
+                failed = True
+            if raw_exit is not None:
+                try:
+                    exit_code = int(raw_exit)
+                except (TypeError, ValueError):
+                    exit_code = 0
+                if exit_code != 0:
+                    failed = True
+        # else: unknown shape -> leave success (preserve prior default behavior).
+
+        if failed and exit_code == 0:
+            # No explicit non-zero code available; synthesize one so the
+            # downstream success check resolves to False.
+            exit_code = 1
 
         return ToolResult(
             tool_name=tool_name,
@@ -1047,14 +1148,43 @@ class ClaudeCodeAdapter(HookAdapter):
         )
         save_hook_state(state)
 
-        if result.modified_input:
-            logger.info("MODIFIED: %s -> stripped footer - tier=%s", command[:80], result.tier)
+        # Dispatch-identity injection (fail-closed guards, M1). A subagent's
+        # DB writes (memory / evidence / brief+plan content / state transitions /
+        # handoff finalize) are gated by DB-side guards that read
+        # GAIA_DISPATCH_AGENT. That variable is NEVER set at the process level, so
+        # historically every subagent wrote with human-level (fail-open)
+        # authority. Here we export the HARNESS-provided agent identity at the
+        # front of the command so the `gaia` CLI subprocess (and any Python that
+        # imports gaia.store.writer) inherits the real invoking identity and the
+        # guards enforce the per-agent model. The identity is agent_type from the
+        # hook payload -- host-provided, NOT anything the agent can forge. The
+        # orchestrator (main session, no agent_id -> is_subagent False) and a
+        # genuine human CLI call are never injected, so they keep fail-open
+        # human authority. See build_dispatch_identity_command for why an
+        # `export ...;` prefix (not a bare `VAR=x` word) is used.
+        final_command = effective_command
+        if is_subagent:
+            final_command = build_dispatch_identity_command(
+                effective_command, agent_type
+            )
+
+        if final_command != command:
+            reason = (
+                result.reason
+                if result.modified_input
+                else "dispatch-identity injected (GAIA_DISPATCH_AGENT)"
+            )
+            logger.info(
+                "MODIFIED: %s -> tier=%s (footer_stripped=%s, dispatch_id=%s)",
+                command[:80], result.tier,
+                bool(result.modified_input), final_command != effective_command,
+            )
             output = {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "allow",
-                    "permissionDecisionReason": result.reason,
-                    "updatedInput": result.modified_input,
+                    "permissionDecisionReason": reason,
+                    "updatedInput": {"command": final_command},
                 }
             }
             return HookResponse(output=output, exit_code=0)
@@ -1411,7 +1541,14 @@ class ClaudeCodeAdapter(HookAdapter):
         tool_name = tool_result_data.tool_name
         parameters = hook_data.get("tool_input", {})
         output = tool_result_data.output
-        duration = raw_tool_response.get("duration_ms", 0) / 1000.0
+        # On a Bash failure tool_response is a bare STRING (see parse_post_tool_use),
+        # so guard the dict access -- otherwise .get() would raise and abort the
+        # whole post-hook before the FAILED event is recorded.
+        duration = (
+            raw_tool_response.get("duration_ms", 0) / 1000.0
+            if isinstance(raw_tool_response, dict)
+            else 0.0
+        )
         success = tool_result_data.exit_code == 0
 
         # ------------------------------------------------------------- #
@@ -1439,9 +1576,12 @@ class ClaudeCodeAdapter(HookAdapter):
                 tier=tier,
             )
 
-            # Confirm unconfirmed T3 grants after successful Bash execution.
-            # Grants are consumed later at SubagentStop, not here -- the grant
-            # lives for the full subagent session so retries work naturally.
+            # Confirm the T3 grant after a successful Bash execution. The grant
+            # was already CONSUMED at the match in PreToolUse (bash_validator
+            # flips PENDING->CONSUMED when the command is authorized); it is NOT
+            # swept at SubagentStop (that sweep was removed in the M1 approvals
+            # redesign). Confirming marks the consumed grant so subsequent retries
+            # within the same subagent session are recognized.
             if tool_name == "Bash" and success:
                 command = parameters.get("command", "")
                 session_id = hook_data.get("session_id", "")
@@ -1450,7 +1590,7 @@ class ClaudeCodeAdapter(HookAdapter):
                     if grant is not None and not grant.confirmed:
                         confirm_grant(command, session_id=session_id)
                         logger.info(
-                            "T3 grant confirmed (will be consumed at SubagentStop): %s", command[:80],
+                            "T3 grant confirmed (consumed at match in PreToolUse): %s", command[:80],
                         )
 
             # Close the audit-log cycle for an APPROVED T3 command that just ran.
