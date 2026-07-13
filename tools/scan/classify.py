@@ -52,7 +52,6 @@ from typing import Optional
 
 from tools.scan.role_detector import detect_role
 from tools.scan.store_populator import (
-    _detect_primary_language,
     _git_remote_origin,
     _list_repos,
     _platform_from_remote,
@@ -405,6 +404,7 @@ def _upsert(
     agent: str,
     db_path: Path | None,
     remote_url: str | None = None,
+    primary_language: str | None = None,
 ) -> tuple[bool, str]:
     """Persist one matched repo as a projects row (R5 upsert).
 
@@ -457,16 +457,18 @@ def _upsert(
             # are scan-owned (writer._PROJECTS_AGENT_OWNED == {"description"}),
             # so `gaia scan` must fill them or promotion carries NULLs into the
             # project_identity contract even when the data is on disk.
-            #   * primary_language: the DOMINANT language, resolved from the
-            #     repo's manifest files by a fixed priority order -- distinct
-            #     from (and complementary to) the multi-language `language`
-            #     facets in project_facets, which enumerate ALL languages.
+            #   * primary_language: the DOMINANT language, derived from the
+            #     SAME scanner detection that produces the `language` facets
+            #     (passed in by the caller so both come from ONE scan) -- so the
+            #     scalar column can never drift from the multi-language
+            #     `language` facets in project_facets, which enumerate ALL
+            #     languages. None for an IaC-only repo (no language detected).
             #   * platform: derived from the git remote host (None when the
             #     repo has no origin remote -- honest NULL, not a bug).
             #   * role: deterministic disk-based classification; without it
             #     promote._apply_scan_owned never seeds the contract entry's
             #     `type` (promote.py seeds type from role when absent).
-            "primary_language": _detect_primary_language(repo_path),
+            "primary_language": primary_language,
             "platform": _platform_from_remote(remote_url),
             "role": detect_role(repo_path),
         },
@@ -776,13 +778,27 @@ def scan(
         # orchestrator over the repo and maps its output to
         # {scope, key, value} facets. Always full (no --deep mode) and
         # side-effect-free -- persistence happens only on apply, below.
-        from tools.scan.store_populator import compute_facets
-        facets = compute_facets(Path(c.path))
+        # Run the scanner orchestrator ONCE per repo and derive BOTH the facet
+        # rows and the dominant primary_language from the SAME sections, so the
+        # scalar projects.primary_language column can never drift from the
+        # multi-language `language` facets (the bug this path historically had:
+        # a Gemfile / subdir manifest yielded a language facet but a NULL
+        # primary_language, because primary_language used a separate, incomplete
+        # top-level-only probe instead of the scanner detection).
+        from tools.scan.store_populator import (
+            compute_stack_sections,
+            primary_language_from_sections,
+            stack_output_to_facets,
+        )
+        sections = compute_stack_sections(Path(c.path))
+        facets = stack_output_to_facets(sections)
+        primary_language = primary_language_from_sections(sections)
 
         applied = False
         if apply:
             applied, final_name = _upsert(
                 c, agent=agent, db_path=db_path, remote_url=remote_url,
+                primary_language=primary_language,
             )
             # Persist the scanner-owned facets for this repo. The facets FK
             # references projects(workspace, name), so they MUST be written to

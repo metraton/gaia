@@ -661,6 +661,60 @@ def stack_output_to_facets(sections: Mapping[str, Any]) -> list[dict]:
     return facets
 
 
+def compute_stack_sections(project_path: Path) -> dict:
+    """Run the scanner orchestrator and return its merged ``sections`` dict.
+
+    Read-only: runs the scanner orchestrator (no DB writes) and returns the
+    merged section data (``stack``, ``infrastructure``, ``orchestration``).
+    This is the SINGLE source from which BOTH the stack facets
+    (:func:`stack_output_to_facets`) and the dominant
+    :func:`primary_language_from_sections` are derived, so a caller can run the
+    scanners once and derive both without them ever drifting apart. Never
+    raises -- a scanner failure degrades to an empty ``{}`` rather than
+    aborting the scan.
+    """
+    from tools.scan.config import ScanConfig
+    from tools.scan.core import run_scanners
+
+    try:
+        output = run_scanners(project_path, ScanConfig(project_root=project_path))
+        return output.context.get("sections", {}) or {}
+    except Exception:
+        return {}
+
+
+def primary_language_from_sections(sections: Mapping[str, Any] | None) -> str | None:
+    """Return the DOMINANT language name from scanner ``sections``, or None.
+
+    The scanner's stack section enumerates ALL detected languages
+    (``stack.languages``, each a ``{name, manifest, primary}`` dict) and marks
+    exactly one as ``primary`` -- the first manifest found in the recursive,
+    monorepo-aware walk (see ``scanners/stack.py::_detect_languages``). This
+    honours that ``primary`` flag (robust to the TypeScript-replaces-JavaScript
+    re-ordering, which preserves the flag but moves the entry) and falls back
+    to the first enumerated language when no entry is flagged. Returns None when
+    NO language was detected -- e.g. an IaC-only repo (only ``.tf`` / Helm),
+    which legitimately carries no ``primary_language``.
+
+    This is the derivation the task requires: ``primary_language`` comes from
+    the SAME detection that produces the ``language`` facets, so the scalar
+    column can never drift from the facet rows.
+    """
+    stack = (sections or {}).get("stack") or {}
+    if not isinstance(stack, Mapping):
+        return None
+    langs = stack.get("languages") or []
+    if not isinstance(langs, list) or not langs:
+        return None
+    for lang in langs:
+        if isinstance(lang, Mapping) and lang.get("primary") and lang.get("name"):
+            return str(lang["name"])
+    first = langs[0]
+    if isinstance(first, Mapping) and first.get("name"):
+        return str(first["name"])
+    return None
+
+
 def compute_facets(project_path: Path) -> list[dict]:
     """Run the scanners over ``project_path`` and return its stack fingerprint.
 
@@ -670,15 +724,7 @@ def compute_facets(project_path: Path) -> list[dict]:
     when the caller did not precompute the facets. Never raises -- a scanner
     failure degrades to an empty fingerprint rather than aborting the scan.
     """
-    from tools.scan.config import ScanConfig
-    from tools.scan.core import run_scanners
-
-    try:
-        output = run_scanners(project_path, ScanConfig(project_root=project_path))
-        sections = output.context.get("sections", {}) or {}
-    except Exception:
-        return []
-    return stack_output_to_facets(sections)
+    return stack_output_to_facets(compute_stack_sections(project_path))
 
 
 def populate_facets(
@@ -969,25 +1015,26 @@ def _platform_from_remote(url: str | None) -> str | None:
 
 
 def _detect_primary_language(project_path: Path) -> str | None:
+    """Resolve the DOMINANT language of a repo, or None.
+
+    Delegates to the SAME scanner detection that produces the ``language``
+    facets (recursive / monorepo-aware, with the complete ``LANGUAGE_MANIFESTS``
+    list -- Gemfile->ruby, composer.json->php, TypeScript, C#, ...). This
+    replaces the historical top-level-only manifest probe, which scanned only
+    ``project_path.iterdir()`` and hard-coded an INCOMPLETE list (no Gemfile,
+    no composer.json, no TypeScript/C#): a repo whose sole manifest was a
+    Gemfile, or whose manifest lived in a subdirectory, got a ``language``
+    facet but a NULL ``primary_language`` -- the facet->primary_language drift.
+
+    Deriving from the scanner sections guarantees ``primary_language`` never
+    drifts from the detected ``language`` facet again. None for a repo with no
+    detected language (e.g. IaC-only), which legitimately has no primary
+    language. Callers that already ran the scanners should prefer
+    :func:`primary_language_from_sections` to avoid a second scan.
+    """
     if not project_path.is_dir():
         return None
-    try:
-        names = {c.name for c in project_path.iterdir()}
-    except OSError:
-        return None
-    if "package.json" in names:
-        return "javascript"
-    if "pyproject.toml" in names or "setup.py" in names or "requirements.txt" in names:
-        return "python"
-    if "go.mod" in names:
-        return "go"
-    if "Cargo.toml" in names:
-        return "rust"
-    if "pom.xml" in names or "build.gradle" in names:
-        return "java"
-    if any(n.endswith(".tf") for n in names):
-        return "hcl"
-    return None
+    return primary_language_from_sections(compute_stack_sections(project_path))
 
 
 def _list_repos(root: Path, max_depth: int = 4) -> list[Path]:
