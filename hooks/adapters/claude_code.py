@@ -1111,6 +1111,12 @@ class ClaudeCodeAdapter(HookAdapter):
         is_subagent = bool(hook_data and hook_data.get("agent_id"))
         session_id = (hook_data or {}).get("session_id", "")
         agent_type = (hook_data or {}).get("agent_type", "")
+        # Host stdin carries a top-level snake_case tool_use_id in BOTH
+        # PreToolUse and PostToolUse, and it MATCHES for the same call. Keying
+        # hook state by (session_id, tool_use_id) is what ends the concurrent-
+        # subagent race that clobbered the old single global state file and
+        # lost EXECUTED terminal events.
+        tool_use_id = (hook_data or {}).get("tool_use_id", "")
 
         validator = BashValidator()
         result = validator.validate(
@@ -1134,18 +1140,26 @@ class ClaudeCodeAdapter(HookAdapter):
             )
 
         # Save state for post-hook. When the command was allowed by consuming a
-        # T3 approval grant, carry that approval_id forward so PostToolUse can
-        # append an EXECUTED/FAILED event to the approval_events chain (the grant
-        # is consumed here at PreToolUse and flips to CONSUMED, so PostToolUse
-        # cannot re-discover it via check_approval_grant).
+        # T3 approval grant, carry that approval_id forward so the terminal event
+        # is appended to the approval_events chain for that approval -- EXECUTED
+        # by PostToolUse on a clean exit, or FAILED by the Stop-hook
+        # reconciliation on a non-zero exit (the host does not fire PostToolUse
+        # then). The grant is consumed here at PreToolUse and flips to CONSUMED,
+        # so PostToolUse cannot re-discover it via check_approval_grant.
         effective_command = result.modified_input.get("command", command) if result.modified_input else command
         state = create_pre_hook_state(
             tool_name=tool_name,
             command=effective_command,
             tier=str(result.tier),
+            session_id=session_id,
+            tool_use_id=tool_use_id,
             allowed=True,
             consumed_approval_id=result.consumed_approval_id,
         )
+        # Keyed by (session_id, tool_use_id) when both are present; degrades to
+        # the legacy global file otherwise (create_pre_hook_state/save_hook_state
+        # share the same key resolution, so PostToolUse retrieves the exact
+        # entry this call wrote).
         save_hook_state(state)
 
         # Dispatch-identity injection (fail-closed guards, M1). A subagent's
@@ -1540,6 +1554,11 @@ class ClaudeCodeAdapter(HookAdapter):
         raw_tool_response = hook_data.get("tool_response", {})
         tool_name = tool_result_data.tool_name
         parameters = hook_data.get("tool_input", {})
+        # Retrieve the exact state this tool call wrote at PreToolUse. The host
+        # sends the SAME top-level tool_use_id at PostToolUse, so the keyed
+        # lookup is unambiguous even with concurrent subagents in flight.
+        post_session_id = hook_data.get("session_id", "")
+        tool_use_id = hook_data.get("tool_use_id", "")
         output = tool_result_data.output
         # On a Bash failure tool_response is a bare STRING (see parse_post_tool_use),
         # so guard the dict access -- otherwise .get() would raise and abort the
@@ -1559,7 +1578,9 @@ class ClaudeCodeAdapter(HookAdapter):
             return HookResponse(output={}, exit_code=0)
 
         try:
-            pre_state = get_hook_state()
+            pre_state = get_hook_state(
+                session_id=post_session_id, tool_use_id=tool_use_id
+            )
             tier = pre_state.tier if pre_state else "unknown"
 
             # Prefer wall-clock duration from pre-hook timestamp
@@ -1595,11 +1616,17 @@ class ClaudeCodeAdapter(HookAdapter):
 
             # Close the audit-log cycle for an APPROVED T3 command that just ran.
             # PreToolUse stashed the consumed grant's approval_id in HookState
-            # when it matched (and consumed) the grant; append EXECUTED on a clean
-            # exit, FAILED otherwise. This continues the approval_events hash chain
-            # via the canonical store.record_event() helper -- the only authorized
-            # writer for the chain (it routes through chain.insert_event(), which
-            # links prev_hash -> this_hash before INSERT).
+            # (keyed by session_id+tool_use_id) when it matched (and consumed) the
+            # grant. In practice this branch records EXECUTED: the host does NOT
+            # fire PostToolUse for a non-zero Bash exit, so a FAILED command never
+            # reaches here -- its FAILED event is recorded by the Stop-hook
+            # reconciliation (_reconcile_dangling_t3_on_stop) instead. The
+            # success/failure discriminator is kept for the rare host/tool that
+            # does deliver a failure result to PostToolUse. This continues the
+            # approval_events hash chain via the canonical store.record_event()
+            # helper -- the only authorized writer for the chain (it routes
+            # through chain.insert_event(), which links prev_hash -> this_hash
+            # before INSERT).
             if tool_name == "Bash":
                 consumed_approval_id = (
                     pre_state.metadata.get("consumed_approval_id") if pre_state else None
@@ -1633,7 +1660,9 @@ class ClaudeCodeAdapter(HookAdapter):
                 except Exception:
                     pass  # Events are non-critical
 
-            clear_hook_state()
+            clear_hook_state(
+                session_id=post_session_id, tool_use_id=tool_use_id
+            )
             logger.debug("Post-hook completed for %s", tool_name)
 
         except Exception as e:
@@ -1649,6 +1678,7 @@ class ClaudeCodeAdapter(HookAdapter):
         success: bool,
         exit_code: int,
         session_id: str = "",
+        error_text: str = "",
     ) -> None:
         """Append an EXECUTED or FAILED event for an approved T3 command.
 
@@ -1657,6 +1687,10 @@ class ClaudeCodeAdapter(HookAdapter):
         failed (FAILED). Writes through gaia.approvals.store.record_event(), the
         canonical chain writer -- never a raw INSERT -- so prev_hash -> this_hash
         linkage is preserved and validate_chain() stays intact end to end.
+
+        ``error_text`` carries the real failure detail on a FAILED event (the
+        Stop-hook reconciliation supplies the transcript's toolUseResult string,
+        since PostToolUse never fired to observe it directly).
 
         Best-effort and non-fatal: the approval store lives in gaia.db and may be
         unavailable in some hook contexts; any failure is logged and swallowed so
@@ -1671,6 +1705,8 @@ class ClaudeCodeAdapter(HookAdapter):
                 "exit_code": exit_code,
                 "outcome": "success" if success else "failure",
             }
+            if error_text:
+                payload["error"] = error_text
             _approval_store.record_event(
                 approval_id,
                 event_type,
@@ -1687,6 +1723,136 @@ class ClaudeCodeAdapter(HookAdapter):
                 "Failed to record %s event for approval_id=%s (non-fatal): %s",
                 event_type, approval_id[:16], exc,
             )
+
+    @staticmethod
+    def _extract_exit_code_from_result(result: object) -> int:
+        """Derive an exit code from a host toolUseResult failure detail.
+
+        A failed Bash command surfaces as a bare string such as
+        ``"Error: Exit code 1"`` or ``"Error: Exit code 127\\n/bin/bash: ...
+        command not found"``. Parse the first ``Exit code N`` and fall back to
+        1 (generic failure) when no code is present.
+        """
+        text = result if isinstance(result, str) else json.dumps(result) if result else ""
+        m = re.search(r"[Ee]xit code (\d+)", text)
+        if m:
+            try:
+                return int(m.group(1))
+            except (TypeError, ValueError):
+                return 1
+        return 1
+
+    def _reconcile_dangling_t3_on_stop(
+        self, *, session_id: str, transcript_path: str
+    ) -> None:
+        """Close the audit cycle for T3 commands that FAILED (Stop-hook path).
+
+        Why this exists: the current host does NOT fire PostToolUse for a
+        non-zero Bash exit -- verified live (exit 1 and exit 127 both produce
+        zero PostToolUse). PostToolUse is where an approved T3 command's
+        EXECUTED/FAILED terminal event is written, so a FAILED command would
+        otherwise NEVER record its outcome. The failure detail exists only in
+        the session transcript's top-level ``toolUseResult`` (a bare string).
+
+        At Stop the turn is fully finished: every successful Bash command has
+        already had its PostToolUse (which clears its keyed state entry), so any
+        keyed entry still present is a command whose PostToolUse never fired --
+        i.e. a failure. For each such entry that consumed a T3 approval and has
+        no terminal event yet, we record FAILED (with the real error text pulled
+        from the transcript) via the SAME canonical writer PostToolUse uses, then
+        clear the entry. Entries with no consumed approval are just cleared so
+        the keyed store does not accumulate. Handles multiple dangling entries
+        and entries left over from a prior turn.
+
+        Best-effort and non-fatal: a Stop hook must never fail the turn.
+        """
+        from modules.core.state import iter_dangling_states, clear_hook_state
+
+        if not session_id:
+            return
+
+        try:
+            dangling = list(iter_dangling_states(session_id))
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Dangling-state enumeration failed (non-fatal): %s", exc)
+            return
+
+        for tool_use_id, state in dangling:
+            try:
+                consumed_approval_id = (
+                    state.metadata.get("consumed_approval_id")
+                    if isinstance(state.metadata, dict)
+                    else None
+                )
+                if consumed_approval_id:
+                    if not self._t3_terminal_event_exists(consumed_approval_id):
+                        # Recover the failure detail from the transcript. Fall
+                        # back to a generic message when it cannot be found so
+                        # the FAILED event is still recorded.
+                        detail = self._read_failure_detail(
+                            transcript_path, tool_use_id
+                        )
+                        exit_code = self._extract_exit_code_from_result(detail)
+                        command = state.command or ""
+                        error_text = (
+                            detail if isinstance(detail, str) and detail
+                            else "command failed; no PostToolUse fired (reconciled at Stop)"
+                        )
+                        self._record_t3_outcome_event(
+                            consumed_approval_id,
+                            command=command,
+                            success=False,
+                            exit_code=exit_code,
+                            session_id=session_id,
+                            error_text=error_text,
+                        )
+                        logger.info(
+                            "Reconciled FAILED at Stop for approval_id=%s "
+                            "(tool_use_id=%s, exit=%d)",
+                            consumed_approval_id[:16], tool_use_id[:16], exit_code,
+                        )
+                    else:
+                        # Double-record guard: a terminal event already exists
+                        # (e.g. PostToolUse did fire, or a prior Stop reconciled
+                        # it). Skip recording; just clear the stale entry.
+                        logger.debug(
+                            "Skip reconcile: terminal event exists for %s",
+                            consumed_approval_id[:16],
+                        )
+                # Clear the entry either way so it is not reprocessed.
+                clear_hook_state(session_id=session_id, tool_use_id=tool_use_id)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug(
+                    "Reconcile of dangling entry failed (non-fatal): %s", exc
+                )
+
+    @staticmethod
+    def _read_failure_detail(transcript_path: str, tool_use_id: str) -> object:
+        """Read the toolUseResult failure detail for a tool_use_id (best-effort)."""
+        try:
+            from adapters.host_transcript import find_tool_use_result
+            return find_tool_use_result(transcript_path, tool_use_id)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _t3_terminal_event_exists(approval_id: str) -> bool:
+        """True if an EXECUTED or FAILED event already exists for the approval.
+
+        The double-record guard: reconciliation must not append a FAILED event
+        when the audit cycle for this approval was already closed.
+        """
+        try:
+            from gaia.approvals import store as _approval_store
+            events = _approval_store.replay_for_approval(approval_id)
+            return any(
+                e.get("event_type") in ("EXECUTED", "FAILED") for e in events
+            )
+        except Exception:
+            # If we cannot tell, err toward NOT recording again (avoid a
+            # duplicate FAILED). A missing record is less harmful than a
+            # corrupted chain from a double write.
+            return True
 
     # ------------------------------------------------------------------ #
     # _handle_ask_user_question_result: grant activation from user answer
@@ -2555,6 +2721,18 @@ class ClaudeCodeAdapter(HookAdapter):
             )
         except Exception:
             pass  # Events are non-critical
+
+        # Reconcile T3 commands that FAILED. PostToolUse does NOT fire for a
+        # non-zero Bash exit in the current host, so an approved T3 command that
+        # failed never got its terminal event -- its keyed pre-hook state is left
+        # dangling. Stop is the point where the turn is fully done, so any keyed
+        # state still present belongs to a command that never completed a
+        # PostToolUse, i.e. a failure. The Stop payload carries session_id +
+        # transcript_path, which is exactly what reconciliation needs.
+        self._reconcile_dangling_t3_on_stop(
+            session_id=raw.get("session_id", ""),
+            transcript_path=raw.get("transcript_path", ""),
+        )
 
         return QualityResult(
             quality_sufficient=True,

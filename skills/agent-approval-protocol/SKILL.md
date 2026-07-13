@@ -116,13 +116,22 @@ written by production code today:
 | `SHOWN` | ElicitationResult hook via `activate_db_pending_by_prefix()` | User selects an Approve `[P-xxx]` label |
 | `APPROVED` | ElicitationResult hook (same call as `SHOWN`) | Immediately after `SHOWN` |
 | `REJECTED` / `REVOKED` | `gaia approvals` CLI via `store.reject()` / `store.revoke()` | User rejects or admin cancels |
-| `EXECUTED` / `FAILED` | PostToolUse adapter (`_record_t3_outcome_event`) via `store.record_event()` | An approved T3 command runs under a consumed grant -- `EXECUTED` on clean exit, `FAILED` otherwise |
+| `EXECUTED` | PostToolUse adapter (`_record_t3_outcome_event`) via `store.record_event()` | An approved T3 command exits cleanly -- PostToolUse fires and appends `EXECUTED` |
+| `FAILED` | Stop-hook reconciliation (`_reconcile_dangling_t3_on_stop`) via `store.record_event()` | An approved T3 command exits non-zero -- the host does NOT fire PostToolUse, so the still-dangling grant is reconciled to `FAILED` at Stop, with the failure detail read from the transcript's bare-string `toolUseResult` |
 
-The PostToolUse path closes the audit cycle: PreToolUse stashes the consumed
-grant's `approval_id` in `HookState`, and PostToolUse appends `EXECUTED` or
-`FAILED` for that approval, continuing the hash chain through `record_event()`.
-`store.get_executed_payload()` and `gaia approvals replay` read the `EXECUTED`
-payload to re-present the commands that ran. `NOOP` and `REVERTED` remain valid
+The audit cycle is closed across two hook events. PreToolUse stashes the
+consumed grant's `approval_id` in `HookState`, keyed by `(session_id,
+tool_use_id)`. On a clean exit PostToolUse fires and appends `EXECUTED`. On a
+non-zero exit the host does NOT fire PostToolUse, so no terminal event is
+written there; instead the Stop hook's `_reconcile_dangling_t3_on_stop` sweeps
+the still-dangling keyed state and appends `FAILED` -- reading the real failure
+detail from the session transcript's bare-string `toolUseResult` (falling back
+to a generic message when the transcript entry is absent) -- through the same
+`record_event()` writer, continuing the hash chain. A double-record guard
+(`_t3_terminal_event_exists`) skips the append when a terminal event already
+exists. `store.get_executed_payload()` and `gaia approvals replay` read the
+`EXECUTED` payload to re-present the commands that ran. `NOOP` and `REVERTED`
+remain valid
 in the CHECK but are **inert** -- no production code writes them (the revert
 feature was removed). Do not assume an `EXECUTED` event exists for an approval
 whose command never ran, or that ran through the redirect-sanitized path.

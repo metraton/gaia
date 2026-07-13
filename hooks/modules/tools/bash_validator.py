@@ -100,8 +100,10 @@ class BashValidationResult:
     block_response: Optional[Dict[str, Any]] = None
     # When a T3 command is allowed because it matched (and consumed) an active
     # grant, this carries the approval_id of that grant. The adapter stashes it
-    # in HookState so PostToolUse can append an EXECUTED/FAILED event to the
-    # approval_events chain for this approval. None for non-T3 / no-grant paths.
+    # in HookState so the terminal event is appended to the approval_events
+    # chain for this approval -- EXECUTED by PostToolUse on a clean exit, or
+    # FAILED by the Stop-hook reconciliation on a non-zero exit (the host does
+    # not fire PostToolUse then). None for non-T3 / no-grant paths.
     consumed_approval_id: Optional[str] = None
 
     def __post_init__(self):
@@ -1127,7 +1129,9 @@ class BashValidator:
         )
 
         # Propagate the consumed approval_id from whichever component matched a
-        # grant, so PostToolUse can append EXECUTED/FAILED for that approval.
+        # grant, so the terminal event is recorded for that approval (EXECUTED
+        # by PostToolUse on a clean exit, or FAILED by the Stop-hook
+        # reconciliation on a non-zero exit).
         consumed_approval_id = next(
             (r.consumed_approval_id for r in component_results if r.consumed_approval_id),
             None,

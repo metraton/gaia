@@ -22,7 +22,7 @@ JSON array, or a different nesting), only this module changes; the readers in
 import json
 import logging
 from pathlib import Path
-from typing import Iterator, Tuple
+from typing import Iterator, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -73,3 +73,63 @@ def iter_transcript_entries(transcript_path: str) -> Iterator[TranscriptEntry]:
     except Exception as e:  # pragma: no cover - defensive, never crash a hook
         logger.debug("Failed to read transcript from %s: %s", transcript_path, e)
         return
+
+
+def find_tool_use_result(
+    transcript_path: str, tool_use_id: str
+) -> Optional[object]:
+    """Return the host ``toolUseResult`` for a given ``tool_use_id``, or None.
+
+    The host records a tool's outcome in the transcript as a ``user``-role
+    entry whose ``message.content`` holds a ``tool_result`` block carrying the
+    matching ``tool_use_id``; the outcome payload itself sits at the ENTRY's
+    top level under ``toolUseResult`` (a bare STRING on a failed Bash command,
+    e.g. ``"Error: Exit code 1"`` / ``"Error: Exit code 127\\n...command not
+    found"``; a dict on success). This is the only reliable place to recover a
+    failed command's detail, because the host does NOT fire PostToolUse for a
+    non-zero Bash exit.
+
+    Because ``iter_transcript_entries`` deliberately projects only
+    ``(role, content)`` and drops the top-level ``toolUseResult``, this reader
+    walks the raw JSONL itself. It returns the top-level ``toolUseResult`` when
+    present, falling back to the ``tool_result`` block's own ``content``.
+    Returns None when the path/id is empty, the file is missing, or no matching
+    entry is found. Never raises (a hook must never crash on a bad transcript).
+    """
+    if not transcript_path or not tool_use_id:
+        return None
+    try:
+        path = Path(transcript_path).expanduser()
+        if not path.exists():
+            logger.debug("Transcript file not found: %s", path)
+            return None
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(entry, dict):
+                    continue
+                msg = entry.get("message", entry)
+                content = msg.get("content") if isinstance(msg, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for block in content:
+                    if (
+                        isinstance(block, dict)
+                        and block.get("type") == "tool_result"
+                        and block.get("tool_use_id") == tool_use_id
+                    ):
+                        if "toolUseResult" in entry:
+                            return entry.get("toolUseResult")
+                        return block.get("content")
+    except Exception as e:  # pragma: no cover - defensive, never crash a hook
+        logger.debug(
+            "Failed to find tool_use_result in %s: %s", transcript_path, e
+        )
+        return None
+    return None
