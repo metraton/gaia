@@ -5599,11 +5599,114 @@ def insert_episode(
         except Exception:
             con.rollback()
             raise
+        # Automatic retention (episodic-workflow-to-db growth control): once
+        # the row is safely committed, occasionally prune episodes older than
+        # the retention window. Gated to ~1/N inserts so it costs nothing on
+        # the common turn; wrapped so a prune failure NEVER masks the
+        # successful insert. See _maybe_prune_episodes / prune_episodes.
+        _maybe_prune_episodes(db_path=db_path)
         return _applied({"episode_id": episode_id})
     except Exception as exc:
         return {"status": "error", "reason": str(exc)}
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------------------
+# Episode retention (automatic, DB-side)
+# ---------------------------------------------------------------------------
+#
+# The ``episodes`` table had NO DB-side retention: the only retention that
+# existed (bin/cli/cleanup.py, tools/memory/episodic.py.cleanup_old_episodes)
+# operates on the LEGACY filesystem layout and explicitly does not touch
+# gaia.db. Left unbounded, ``episodes`` grows without limit (13.7k rows /
+# ~13MB observed in workspace 'me'), which also slows every full-table read.
+#
+# Policy: 90 days (user decision). ``prune_episodes`` is the testable unit --
+# a single ``DELETE FROM episodes WHERE timestamp < cutoff``. The schema's
+# ``episodes_ad`` AFTER DELETE trigger keeps ``episodes_fts`` synchronized, so
+# no separate FTS cleanup is needed. Timestamps are stored as
+# ``datetime.now(timezone.utc).isoformat()`` (fixed ``+00:00`` offset), so a
+# lexicographic string comparison against a cutoff built the same way is
+# correct.
+#
+# Trigger point: inside ``insert_episode`` (the sole SubagentStop write path),
+# behind a probabilistic 1/N gate (_maybe_prune_episodes). This keeps the cost
+# off the hot path -- a turn pays for the prune only ~1/N of the time -- while
+# staying fully automatic with no new scheduler, hook, or cron. A closing hook
+# was considered but rejected: SessionEnd fires just as often and would add a
+# second write path to reason about.
+
+EPISODE_RETENTION_DAYS = 90
+
+# How often (1 in N) a successful insert triggers a prune sweep. Overridable
+# via env for tests / tuning. A value <= 1 makes every insert prune (used by
+# the regression test to force deterministic behavior).
+_PRUNE_SAMPLE_RATE_DEFAULT = 50
+
+
+def _prune_sample_rate() -> int:
+    raw = os.environ.get("GAIA_EPISODE_PRUNE_SAMPLE_RATE")
+    if raw is None:
+        return _PRUNE_SAMPLE_RATE_DEFAULT
+    try:
+        val = int(raw)
+    except (TypeError, ValueError):
+        return _PRUNE_SAMPLE_RATE_DEFAULT
+    return val if val >= 1 else 1
+
+
+def prune_episodes(
+    cutoff_days: int = EPISODE_RETENTION_DAYS,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Delete ``episodes`` rows older than ``cutoff_days`` (default 90).
+
+    Runs a single ``DELETE FROM episodes WHERE timestamp < ?``. The schema's
+    ``episodes_ad`` AFTER DELETE trigger keeps ``episodes_fts`` consistent, so
+    the FTS index is maintained automatically -- no manual FTS delete here.
+
+    Returns ``{"status": "applied", "deleted": <n>, "cutoff": <iso>}`` on
+    success, or ``{"status": "error", "reason": str}`` on failure.
+    """
+    from datetime import timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=cutoff_days)).isoformat()
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            cur = con.execute(
+                "DELETE FROM episodes WHERE timestamp < ?",
+                (cutoff,),
+            )
+            deleted = cur.rowcount
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        return {"status": "applied", "deleted": deleted, "cutoff": cutoff}
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+def _maybe_prune_episodes(db_path: Path | None = None) -> None:
+    """Probabilistically run ``prune_episodes`` after a successful insert.
+
+    Best-effort: any failure is swallowed so it can never mask the insert that
+    just succeeded. Fires with probability ``1/_prune_sample_rate()``.
+    """
+    import random
+
+    try:
+        rate = _prune_sample_rate()
+        if rate <= 1 or random.randint(1, rate) == 1:
+            prune_episodes(db_path=db_path)
+    except Exception:
+        pass
 
 
 _EPISODE_ANOMALY_COLUMNS = (

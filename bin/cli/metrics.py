@@ -116,7 +116,34 @@ def _native_agent_names() -> frozenset:
         return _FALLBACK_NATIVE_AGENTS
 
 
-NATIVE_AGENT_NAMES = _native_agent_names()
+# NATIVE_AGENT_NAMES used to be computed eagerly at module-import time
+# (``NATIVE_AGENT_NAMES = _native_agent_names()``). That import transitively
+# pulls in hooks/modules/tools/task_validator -> hooks/modules/security/*,
+# which compiles ~1800 regexes at import time (40-65ms). Since
+# ``bin/gaia``'s ``_discover_plugins()`` execs EVERY bin/cli/*.py module on
+# every CLI invocation (to register argparse subparsers), that cost was paid
+# on every single ``gaia <verb>`` call, not just ``gaia metrics``.
+#
+# Deferred via a lazy, memoized module-level ``__getattr__`` (PEP 562): the
+# heavy import now runs only the first time something actually accesses
+# ``NATIVE_AGENT_NAMES`` (i.e. when ``_split_native_agents`` runs, which only
+# happens inside ``gaia metrics`` itself), while ``from cli.metrics import
+# NATIVE_AGENT_NAMES`` (used by tests and by this module) keeps working
+# unchanged -- the attribute just resolves lazily instead of eagerly.
+_NATIVE_AGENT_NAMES_CACHE: Optional[frozenset] = None
+
+
+def _get_native_agent_names() -> frozenset:
+    global _NATIVE_AGENT_NAMES_CACHE
+    if _NATIVE_AGENT_NAMES_CACHE is None:
+        _NATIVE_AGENT_NAMES_CACHE = _native_agent_names()
+    return _NATIVE_AGENT_NAMES_CACHE
+
+
+def __getattr__(name):  # PEP 562 module-level lazy attribute
+    if name == "NATIVE_AGENT_NAMES":
+        return _get_native_agent_names()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -939,8 +966,9 @@ def _split_native_agents(entries: list) -> tuple:
     ``(gaia_entries, native_entries)``.
     """
     gaia, native = [], []
+    native_names = _get_native_agent_names()
     for r in entries:
-        target = native if (r.get("agent") or "") in NATIVE_AGENT_NAMES else gaia
+        target = native if (r.get("agent") or "") in native_names else gaia
         target.append(r)
     return gaia, native
 

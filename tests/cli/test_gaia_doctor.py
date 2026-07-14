@@ -816,8 +816,10 @@ class TestCmdDoctorJson:
         # 1 install-provenance (order 57 -- local vs npm install + local
         #   freshness vs source; replaces `gaia release sync-local`) +
         # 1 hooks-active-fresh (order 150 -- running session's hooks == the
-        #   currently wired build; live-freshness vs on-disk freshness).
-        assert len(data["checks"]) == 26
+        #   currently wired build; live-freshness vs on-disk freshness) +
+        # 1 episodes-growth (order 48 -- gaia.db size + episodes row count;
+        #   visibility for the 90-day auto-retention added to writer.py).
+        assert len(data["checks"]) == 27
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

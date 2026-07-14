@@ -114,8 +114,88 @@ def _discover_plugins():
     return plugins
 
 
-def main(argv=None):
-    """CLI entry point. Returns exit code."""
+# ---------------------------------------------------------------------------
+# Fast path: import ONE plugin instead of all ~28
+# ---------------------------------------------------------------------------
+#
+# Profiling showed ``_discover_plugins()`` eagerly imports (exec_module) every
+# bin/cli/*.py file on EVERY invocation, even ``gaia contract view`` or
+# ``gaia history``, purely so argparse has every subparser registered. That
+# cost is dominated by whichever plugin happens to carry an expensive
+# module-level import (see bin/cli/metrics.py's now-lazy NATIVE_AGENT_NAMES),
+# but even after that fix, importing 27 unrelated modules per invocation is
+# pure waste for the overwhelmingly common case: ``gaia <subcmd> [args...]``
+# where <subcmd> is a real, exactly-named subcommand.
+#
+# The fast path below imports ONLY the one bin/cli/<name>.py file matching
+# argv[0] and builds a parser with ONLY that subcommand registered. It is
+# used ONLY when argparse does not need the full subparser set to behave
+# correctly, and declines (returns None / falls through) in every case where
+# full parity requires it:
+#   - empty argv                     -> top-level help lists every subcommand
+#   - "-h"/"--help" anywhere in argv -> help text/formatting needs full context
+#   - a leading flag (e.g. --json, --version) before the subcommand
+#   - a first token that isn't a real plugin file (typo -- argparse's
+#     "invalid choice" error must enumerate every valid subcommand)
+#
+# _discover_plugins() itself is UNCHANGED and still runs for every one of
+# those fallback cases (and is what the CLI dispatcher's mutative-verb
+# recognizer -- hooks/modules/security/mutative_verbs.py's
+# _check_gaia_cli_dispatcher / _GAIA_DISPATCHER_SIGNATURE -- keys off of by
+# literal name; it also keys off this module's "Unified Gaia CLI" docstring
+# text above. Both markers are preserved verbatim by this change.
+_FAST_PATH_DISABLE_ENV = "GAIA_CLI_NO_FAST_PATH"
+
+
+def _fast_path_subcommand(argv):
+    """Return the subcommand name ``argv`` unambiguously names, else ``None``.
+
+    A ``None`` return means "fall back to full discovery" -- see the module
+    comment above for the exact list of cases that decline.
+    """
+    if not argv:
+        return None
+    if any(a in ("-h", "--help") for a in argv):
+        return None
+    first = argv[0]
+    if not first or first.startswith("-"):
+        return None
+    if not _CLI_DIR.is_dir():
+        return None
+    if not (_CLI_DIR / f"{first}.py").is_file():
+        return None
+    return first
+
+
+def _load_single_plugin(stem):
+    """Import exactly one bin/cli/<stem>.py plugin module, or None on failure.
+
+    Deliberately silent on failure (unlike ``_discover_plugins``, which
+    prints a warning): a failure here just means the fast path does not
+    apply, and the caller falls back to ``_discover_plugins()``, which
+    re-attempts the same import and prints the warning exactly once --
+    matching pre-fast-path behavior byte-for-byte.
+    """
+    path = _CLI_DIR / f"{stem}.py"
+    if not path.is_file():
+        return None
+    spec = importlib.util.spec_from_file_location(f"cli.{stem}", path)
+    if spec is None:
+        return None
+    try:
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _build_parser(plugin_entries):
+    """Build the top-level ArgumentParser and register the given plugins.
+
+    ``plugin_entries`` is a list of (name, module) pairs -- either the full
+    set from ``_discover_plugins()`` or the single-entry fast path list.
+    """
     parser = argparse.ArgumentParser(
         prog="gaia",
         description="Gaia unified CLI -- manage and inspect your Gaia installation.",
@@ -136,13 +216,16 @@ def main(argv=None):
     )
 
     subparsers = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
-
-    # Discover and register plugins
-    plugins = _discover_plugins()
-    for _name, mod in plugins:
+    for _name, mod in plugin_entries:
         if hasattr(mod, "register"):
             mod.register(subparsers)
 
+    return parser
+
+
+def _run_with_plugins(argv, plugins):
+    """Parse argv against ``plugins`` and dispatch. Shared by both paths."""
+    parser = _build_parser(plugins)
     args = parser.parse_args(argv)
 
     if args.show_version:
@@ -174,6 +257,23 @@ def main(argv=None):
     # Subcommand registered but handler not found -- should not happen
     print(f"gaia: unknown subcommand '{args.subcommand}'", file=sys.stderr)
     return 1
+
+
+def main(argv=None):
+    """CLI entry point. Returns exit code."""
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+
+    if not os.environ.get(_FAST_PATH_DISABLE_ENV):
+        fast_name = _fast_path_subcommand(raw_argv)
+        if fast_name is not None:
+            mod = _load_single_plugin(fast_name)
+            if mod is not None:
+                return _run_with_plugins(raw_argv, [(fast_name, mod)])
+            # Fast-path import failed -- fall through to full discovery,
+            # which re-attempts the same import and reports the warning.
+
+    plugins = _discover_plugins()
+    return _run_with_plugins(raw_argv, plugins)
 
 
 if __name__ == "__main__":

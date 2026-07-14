@@ -215,6 +215,150 @@ class TestReadWorkflowMetrics(unittest.TestCase):
         self.assertEqual(result[0]["agent"], "gaia-operator")
 
 
+class TestLimitAndFilterPushdown(unittest.TestCase):
+    """Regression guard for the LIMIT-pushdown perf fix.
+
+    _read_workflow_metrics now pushes --today/--blocked/--agent and the LIMIT
+    into the SQL WHERE/LIMIT rather than pulling the whole episodes table and
+    slicing in Python. The critical trap: a naive LIMIT applied BEFORE the
+    post-filters would starve `gaia history --agent developer --limit 20` (it
+    would fetch the 20 newest rows of ANY agent, then filter to developer,
+    returning almost nothing). These tests prove the filters and the limit
+    compose correctly.
+    """
+
+    def _patch_connect(self, episodes: list):
+        import gaia.store.writer as _writer_mod
+        import gaia.project as _project_mod
+        from contextlib import contextmanager
+
+        db = _make_in_memory_db(episodes)
+
+        @contextmanager
+        def _combined():
+            with patch.object(_writer_mod, "_connect", lambda *a, **k: db):
+                with patch.object(_project_mod, "current", lambda **k: None):
+                    yield
+
+        return _combined()
+
+    def test_agent_filter_not_starved_by_limit(self):
+        """--agent developer --limit 20: the 20 NEWEST rows are all a different
+        agent, but developer rows (older) must still surface. A pre-filter LIMIT
+        would return zero developer rows; the pushed-down filter returns them."""
+        episodes = []
+        # 50 newest rows: gitops-operator (2026-05-*), lexically newest.
+        for i in range(50):
+            episodes.append({
+                "episode_id": f"gops-{i:02d}",
+                "agent": "gitops-operator",
+                "timestamp": f"2026-05-{(i % 28) + 1:02d}T12:00:00Z",
+            })
+        # 5 older developer rows (2026-04-*).
+        for i in range(5):
+            episodes.append({
+                "episode_id": f"dev-{i:02d}",
+                "agent": "developer",
+                "timestamp": f"2026-04-{i + 1:02d}T09:00:00Z",
+            })
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            with self._patch_connect(episodes):
+                result = _read_workflow_metrics(
+                    root, agent="developer", limit=20
+                )
+        self.assertEqual(len(result), 5)
+        self.assertTrue(all(r["agent"] == "developer" for r in result))
+
+    def test_limit_caps_rows(self):
+        """A LIMIT with no post-filter returns exactly `limit` newest rows."""
+        episodes = [
+            {"episode_id": f"ep-{i:03d}", "agent": "developer",
+             "timestamp": f"2026-04-{i + 1:02d}T10:00:00Z"}
+            for i in range(25)
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            with self._patch_connect(episodes):
+                result = _read_workflow_metrics(root, limit=10)
+        self.assertEqual(len(result), 10)
+        # Newest-first: the highest-dated rows come back.
+        self.assertEqual(result[0]["episode_id"], "ep-024")
+
+    def test_blocked_filter_with_limit(self):
+        """--blocked --limit N returns only BLOCKED/NEEDS_INPUT, capped at N."""
+        episodes = []
+        for i in range(10):
+            episodes.append({
+                "episode_id": f"ok-{i:02d}", "agent": "developer",
+                "timestamp": f"2026-04-{i + 1:02d}T08:00:00Z",
+                "plan_status": "COMPLETE",
+            })
+        for i in range(4):
+            episodes.append({
+                "episode_id": f"blk-{i:02d}", "agent": "developer",
+                "timestamp": f"2026-04-{i + 15:02d}T08:00:00Z",
+                "plan_status": "BLOCKED" if i % 2 == 0 else "NEEDS_INPUT",
+            })
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            with self._patch_connect(episodes):
+                result = _read_workflow_metrics(root, blocked=True, limit=20)
+        self.assertEqual(len(result), 4)
+        self.assertTrue(all(
+            (r["plan_status"] or "").upper() in ("BLOCKED", "NEEDS_INPUT")
+            for r in result
+        ))
+
+    def test_today_filter_with_limit(self):
+        """--today --limit N returns only rows dated today (UTC)."""
+        today_str = datetime.now(timezone.utc).date().isoformat()
+        episodes = [
+            {"episode_id": "old-1", "agent": "developer",
+             "timestamp": "2026-01-01T10:00:00Z"},
+            {"episode_id": "today-1", "agent": "developer",
+             "timestamp": f"{today_str}T10:00:00Z"},
+            {"episode_id": "today-2", "agent": "developer",
+             "timestamp": f"{today_str}T11:00:00Z"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            with self._patch_connect(episodes):
+                result = _read_workflow_metrics(root, today=True, limit=20)
+        ids = {r["episode_id"] for r in result}
+        self.assertEqual(ids, {"today-1", "today-2"})
+
+    def test_combined_agent_blocked_today_with_limit(self):
+        """All three post-filters + limit compose in SQL."""
+        today_str = datetime.now(timezone.utc).date().isoformat()
+        episodes = [
+            # match: developer + blocked + today
+            {"episode_id": "hit", "agent": "developer",
+             "timestamp": f"{today_str}T10:00:00Z", "plan_status": "BLOCKED"},
+            # wrong agent
+            {"episode_id": "miss-agent", "agent": "gitops-operator",
+             "timestamp": f"{today_str}T10:00:00Z", "plan_status": "BLOCKED"},
+            # not blocked
+            {"episode_id": "miss-status", "agent": "developer",
+             "timestamp": f"{today_str}T10:00:00Z", "plan_status": "COMPLETE"},
+            # not today
+            {"episode_id": "miss-day", "agent": "developer",
+             "timestamp": "2026-01-01T10:00:00Z", "plan_status": "BLOCKED"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            with self._patch_connect(episodes):
+                result = _read_workflow_metrics(
+                    root, agent="developer", blocked=True, today=True, limit=20
+                )
+        self.assertEqual([r["episode_id"] for r in result], ["hit"])
+
+
 class TestFormatHelpers(unittest.TestCase):
     def test_truncate_short_string(self):
         self.assertEqual(_truncate("hello", 20), "hello")
@@ -551,7 +695,13 @@ class TestCmdHistory(unittest.TestCase):
                     with redirect_stdout(io.StringIO()):
                         rc = cmd_history(args)
             self.assertEqual(rc, 0)
-            m_wf.assert_called_once_with(root, "other-ws")
+            # The reader now also receives the filter/limit kwargs pushed down
+            # to SQL (LIMIT-pushdown perf fix). Assert the workspace positional
+            # is still forwarded and the kwargs carry this invocation's defaults.
+            m_wf.assert_called_once_with(
+                root, "other-ws",
+                today=False, blocked=False, agent=None, limit=20,
+            )
         finally:
             import shutil
             shutil.rmtree(root)

@@ -211,7 +211,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 29
+EXPECTED_SCHEMA_VERSION = 30
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
@@ -569,6 +569,61 @@ def check_schema_version() -> dict:
             "Upgrade Gaia: `npm install @jaguilar87/gaia@latest`.",
         )
     return _result("Schema version", "pass", f"v{live} matches CLI expectation")
+
+
+@register_check("Episodes growth", order=48)
+def check_episodes_growth() -> dict:
+    """Report gaia.db size and the episodes row count (growth visibility).
+
+    There was previously no visibility into gaia.db growth. The ``episodes``
+    table is the dominant growth driver and is now pruned automatically at 90
+    days (gaia.store.writer.prune_episodes). This check surfaces the current
+    file size and row count so a runaway table is observable at a glance. It is
+    informational only -- it never fails the doctor run.
+
+    Skipped cleanly when the DB does not exist yet or cannot be read.
+    """
+    db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
+    db_path = Path(db_path_str).expanduser()
+
+    if not db_path.is_file():
+        return _result(
+            "Episodes growth",
+            "info",
+            f"no DB at {db_path} (created on first `gaia install`)",
+        )
+
+    try:
+        size_mb = db_path.stat().st_size / (1024 * 1024)
+    except OSError:
+        size_mb = None
+
+    try:
+        con = sqlite3.connect(str(db_path))
+    except sqlite3.Error as exc:
+        return _result("Episodes growth", "info", f"could not open {db_path}: {exc}")
+
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='episodes'"
+        )
+        if cur.fetchone() is None:
+            return _result("Episodes growth", "info", "episodes table not present yet")
+        cur.execute("SELECT COUNT(*) FROM episodes")
+        row = cur.fetchone()
+        count = row[0] if row else 0
+    except sqlite3.Error as exc:
+        return _result("Episodes growth", "info", f"could not read episodes: {exc}")
+    finally:
+        con.close()
+
+    size_str = f"{size_mb:.1f} MB" if size_mb is not None else "unknown size"
+    return _result(
+        "Episodes growth",
+        "info",
+        f"gaia.db {size_str}, episodes rows={count} (retention: 90d, auto-pruned)",
+    )
 
 
 @register_check("Schema v12 tables", order=46)

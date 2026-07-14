@@ -3424,6 +3424,58 @@ class TestGaiaCliDispatcherReDispatch:
         assert result.is_mutative is True
 
 
+class TestRealGaiaDispatcherStillRecognized:
+    """Regression guard for the bin/gaia lazy-loading refactor.
+
+    ``hooks/modules/security/mutative_verbs.py`` recognizes the real
+    ``bin/gaia`` dispatcher by a LITERAL body signature
+    (``_GAIA_DISPATCHER_SIGNATURE = ("Unified Gaia CLI", "_discover_plugins")``).
+    The CLI startup-cost fix added a single-plugin fast path to ``bin/gaia``.
+    If that refactor had renamed/removed ``_discover_plugins`` or dropped the
+    ``Unified Gaia CLI`` docstring line, ``_check_gaia_cli_dispatcher`` would
+    stop recognizing the dispatcher and reintroduce a false-positive T3 on
+    EVERY subcommand run via ``python3 <path>/bin/gaia <subcmd>``. These tests
+    read the ACTUAL repo ``bin/gaia`` (not a synthetic fixture) so they fail
+    loudly if a future edit breaks the signature contract.
+    """
+
+    def _real_bin_gaia(self):
+        # tests/hooks/modules/security/ -> repo root is 5 parents up.
+        repo_root = Path(__file__).parent.parent.parent.parent.parent
+        return repo_root / "bin" / "gaia"
+
+    def test_signature_strings_present_in_real_bin_gaia(self):
+        from modules.security.mutative_verbs import _GAIA_DISPATCHER_SIGNATURE
+        content = self._real_bin_gaia().read_text(encoding="utf-8")
+        for sig in _GAIA_DISPATCHER_SIGNATURE:
+            assert sig in content, f"bin/gaia lost dispatcher signature marker: {sig!r}"
+
+    def test_real_dispatcher_doctor_is_read_only(self):
+        gaia = self._real_bin_gaia()
+        result = detect_mutative_command(f"python3 {gaia} doctor")
+        assert result.is_mutative is False
+        assert result.category != "MUTATIVE"
+
+    def test_real_dispatcher_dev_stays_t3(self):
+        gaia = self._real_bin_gaia()
+        result = detect_mutative_command(f"python3 {gaia} dev --workspace /home/x")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_real_dispatcher_install_stays_t3(self):
+        gaia = self._real_bin_gaia()
+        result = detect_mutative_command(f"python3 {gaia} install")
+        assert result.is_mutative is True
+
+    def test_real_dispatcher_matches_launcher_form(self):
+        gaia = self._real_bin_gaia()
+        for sub in ("doctor", "history -n 5", "contract view", "dev", "install"):
+            via_path = detect_mutative_command(f"python3 {gaia} {sub}")
+            via_launcher = detect_mutative_command(f"gaia {sub}")
+            assert via_path.is_mutative == via_launcher.is_mutative, sub
+            assert via_path.category == via_launcher.category, sub
+
+
 class TestPythonModulePipReDispatch:
     """Brief 91, AC-7: ``python -m pip install`` must classify IDENTICALLY to
     ``pip install`` (MUTATIVE/T3).  Before the fix, the module name ``pip`` was

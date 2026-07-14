@@ -49,7 +49,15 @@ def _find_project_root() -> Path:
 # Data readers
 # ---------------------------------------------------------------------------
 
-def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
+def _read_workflow_metrics(
+    root: Path,
+    workspace_override: str = None,
+    *,
+    today: bool = False,
+    blocked: bool = False,
+    agent: str = None,
+    limit: int = None,
+) -> list:
     """
     Read agent session history from gaia.db episodes table.
 
@@ -60,7 +68,29 @@ def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
     ``workspace_override`` -- explicit ``--workspace`` value from the CLI.
     When set, it wins over ``gaia.project.current()`` resolution.
 
-    Returns a list of episode dicts (rows with an 'agent' field).
+    LIMIT pushdown (perf fix): the ``episodes`` table can hold tens of
+    thousands of rows (13.7k / ~13MB in workspace 'me'), and this reader
+    previously did ``SELECT ... ORDER BY timestamp DESC`` with NO LIMIT,
+    pulling every row into Python before ``cmd_history`` sliced ``[:limit]``.
+    We now push ``LIMIT`` to SQL. The critical subtlety (regression guard):
+    ``cmd_history`` applies ``--today`` / ``--blocked`` / ``--agent`` AFTER
+    the fetch, so a naive ``LIMIT`` placed BEFORE those filters would starve a
+    query like ``gaia history --agent developer --limit 20`` (it would fetch
+    the 20 newest rows of ANY agent, then filter, returning almost nothing).
+    So the filters are pushed into the SQL ``WHERE`` alongside the LIMIT --
+    matching the ORDER-BY-then-LIMIT pattern in
+    hooks/modules/context/compact_context_builder.py. ``cmd_history`` still
+    re-applies the same predicates in Python; on SQL-filtered rows those are
+    idempotent no-ops, preserving byte-for-byte output parity.
+
+    Args:
+        today: when True, restrict to rows whose timestamp falls on today (UTC).
+        blocked: when True, restrict to plan_status in (BLOCKED, NEEDS_INPUT).
+        agent: when set, restrict to rows whose agent name contains this
+            substring (case-insensitive), matching cmd_history's semantics.
+        limit: when set (and > 0), cap the number of rows returned in SQL.
+
+    Returns a list of episode dicts (rows with an 'agent' field), newest first.
     """
     import sys as _sys
     _BIN_DIR = Path(__file__).resolve().parent.parent
@@ -83,28 +113,40 @@ def _read_workflow_metrics(root: Path, workspace_override: str = None) -> list:
         except Exception:
             ws = None
 
+    # Build WHERE clauses + params, mirroring cmd_history's post-fetch filters
+    # so the LIMIT is applied to the ALREADY-filtered set (regression guard).
+    clauses = ["agent IS NOT NULL"]
+    params: list = []
+    if ws:
+        clauses.append("workspace = ?")
+        params.append(ws)
+    if today:
+        today_str = datetime.now(timezone.utc).date().isoformat()
+        clauses.append("timestamp LIKE ?")
+        params.append(f"{today_str}%")
+    if blocked:
+        clauses.append("UPPER(plan_status) IN ('BLOCKED', 'NEEDS_INPUT')")
+    if agent:
+        clauses.append("LOWER(agent) LIKE ?")
+        params.append(f"%{agent.lower()}%")
+
+    where = " AND ".join(clauses)
+    sql = (
+        "SELECT episode_id, workspace, timestamp, session_id, task_id, "
+        "agent, type, title, prompt, enriched_prompt, plan_status, "
+        "outcome, exit_code, duration_seconds, output_tokens_approx, tier "
+        "FROM episodes "
+        f"WHERE {where} "
+        "ORDER BY timestamp DESC"
+    )
+    if isinstance(limit, int) and limit > 0:
+        sql += " LIMIT ?"
+        params.append(limit)
+
     try:
         con = _store_connect()
         try:
-            if ws:
-                rows = con.execute(
-                    "SELECT episode_id, workspace, timestamp, session_id, task_id, "
-                    "agent, type, title, prompt, enriched_prompt, plan_status, "
-                    "outcome, exit_code, duration_seconds, output_tokens_approx, tier "
-                    "FROM episodes "
-                    "WHERE workspace = ? AND agent IS NOT NULL "
-                    "ORDER BY timestamp DESC",
-                    (ws,),
-                ).fetchall()
-            else:
-                rows = con.execute(
-                    "SELECT episode_id, workspace, timestamp, session_id, task_id, "
-                    "agent, type, title, prompt, enriched_prompt, plan_status, "
-                    "outcome, exit_code, duration_seconds, output_tokens_approx, tier "
-                    "FROM episodes "
-                    "WHERE agent IS NOT NULL "
-                    "ORDER BY timestamp DESC"
-                ).fetchall()
+            rows = con.execute(sql, tuple(params)).fetchall()
             return [dict(r) for r in rows]
         finally:
             con.close()
@@ -234,7 +276,22 @@ def cmd_history(args) -> int:
             print("  Run: gaia scan\n")
         return 1
 
-    entries = _read_workflow_metrics(root, workspace_override)
+    # Push the same filters cmd_history applies below into the SQL WHERE, plus
+    # the LIMIT, so we never pull the full episodes table into Python. The
+    # post-fetch Python filters below remain as idempotent no-ops on the
+    # already-filtered rows, guaranteeing output parity.
+    want_today = getattr(args, "today", False)
+    want_blocked = getattr(args, "blocked", False)
+    want_agent = getattr(args, "agent", None)
+    want_limit = getattr(args, "limit", 20)
+    entries = _read_workflow_metrics(
+        root,
+        workspace_override,
+        today=want_today,
+        blocked=want_blocked,
+        agent=want_agent,
+        limit=want_limit,
+    )
 
     if not entries:
         if as_json:
