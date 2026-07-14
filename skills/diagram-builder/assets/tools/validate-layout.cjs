@@ -1,5 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────
 // validate-layout.cjs — the LAYOUT GUARDRAIL for a uniform-cell diagram deck.
+// @version 2.0.0  (part of the diagram-builder skill; keep the engine generation
+//                  in sync with engine/engine.js + engine/build-data.mjs)
 //
 // This is the hard gate that proves the spreadsheet-style grid still "adds up"
 // after any change to data/ or the engine/CSS. It is GENERIC (domain-agnostic):
@@ -91,6 +93,20 @@
 //                            horizontal density is low even if the floors pass.
 //                            Catches a deck that collapses to a narrow centered
 //                            single column wasting the horizontal space.
+//   G  no balloon / overflow — (a) a LEAF component (box/sep/rail) sitting
+//                            DIRECTLY in a compound ROW must be content-sized
+//                            (flex-grow 0) — never grow to an equal slice (a lone
+//                            box or a divider line ballooning); a sep/rail is also
+//                            checked to stay thin in absolute width. (b) a nested
+//                            section stacked in a columns:1 compound must keep its
+//                            CONTENT height (flex-grow 0, scrollHeight<=clientH) —
+//                            never be given a divided share shorter than its
+//                            content that spills onto the next section. This is
+//                            the hard guard for the compound-flex exemptions
+//                            (sep/rail + box exemption and the sec-c1 reset): it
+//                            reads the CAUSE on the live render, so it goes red
+//                            BEFORE a spill grows large enough for X to see an
+//                            actual box overlap.
 //   Y  band fill             — a full-width BAND must FILL its width: its content
 //                            spans the band edge-to-edge so each side gap is the
 //                            zone padding only (small AND equal) — not a big dead
@@ -132,6 +148,10 @@ const MIN_LEGIBLE = 120;  // px — the readable floor for a leaf cell (M). Kept
                           // sync with --cell-min-w in index.html. Below this a
                           // short title can only show ~1 char per line.
 const LEGIBLE_TOL = 6;    // px sub-pixel slack under MIN_LEGIBLE before M fires
+const SPAN_TOL_PCT = 15;  // % a compound section child's rendered width may
+                          // deviate from its AUTHORED-span share (Q). Absorbs the
+                          // min-content floor (~3% on the reference 2:1 split); a
+                          // regression to equal shares is 25%+ off and so fails.
 
 // The equality used by the geometry checks (deep-equal via JSON).
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -225,6 +245,15 @@ const INVARIANTS = [
     when: () => true, superseded: null,
     check: (m) => { const bad = m.topZones.filter(z => z.headerOverflow > 1);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(z => `${z.zone}:+${z.headerOverflow}px`).join(', ') : 'all headers contained' }; } },
+  { id: 'X', name: 'no sibling-section collision', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
+    when: () => true, superseded: null,
+    check: (m) => ({ ok: m.collisions.length === 0,
+      detail: m.collisions.length ? `overlapping sections: ${m.collisions.join(', ')}` : 'no sibling sections overlap' }) },
+  { id: 'G', name: 'no compound-leaf balloon / no stacked-section content overflow', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
+    when: () => true, superseded: null,
+    check: (m) => { const bad = [...m.balloons, ...m.stackOverflow];
+      return { ok: bad.length === 0, detail: bad.length ? `legibility/overflow: ${bad.join(', ')}`
+        : 'compound leaves stay content-sized; stacked sections keep their content height' }; } },
 
   // ── DESIGN — scoped, dura (except V) ─────────────────────────────────────
   { id: 'U', name: 'cells equal width (per grid)', cls: 'design', sev: 'dura', forms: ALL_FORMS,
@@ -265,6 +294,14 @@ const INVARIANTS = [
       const bad = bands.filter(z => z.leftGap > FILL_MARGIN_TOL || z.rightGap > FILL_MARGIN_TOL || Math.abs(z.leftGap - z.rightGap) > SYM_TOL);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(z => `${z.zone}:not-filled(L${z.leftGap}/R${z.rightGap})`).join(', ')
         : bands.map(z => `${z.zone}(L${z.leftGap}/R${z.rightGap})`).join(' ') }; } },
+  { id: 'Q', name: 'compound section widths follow authored span', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+    when: (c) => c.w >= 1200, superseded: null,
+    check: (m) => { const items = m.spanRatios || [];
+      const bad = items.filter(it => it.errPct > SPAN_TOL_PCT);
+      return { ok: bad.length === 0, detail: bad.length
+        ? bad.map(it => `${it.grid}>${it.id}:span${it.span} width ${it.w}px vs expected ${it.expected}px (${it.errPct}% off, tol ${SPAN_TOL_PCT}% — span-weight not applied; a span:1 child likely inherited a parent band's --span)`).join(', ')
+        : items.length ? `span-weighted compound widths proportional to authored span (${items.map(it => `${it.id}:s${it.span}@${it.w}px`).join(', ')})`
+        : 'no span-weighted compound rows to check' }; } },
   { id: 'V', name: 'horizontal composition (verticality)', cls: 'design', sev: 'consejo', forms: GRID_DENSE,
     when: (c) => c.tier === 'ultra', superseded: null,
     check: (m) => { const multiCol = m.leafGrids.filter(g => g.tracks >= 2).length; const singleCol = m.leafGrids.filter(g => g.tracks === 1).length;
@@ -424,7 +461,7 @@ function measure() {
   // the composition data for E/P, and the FILL metrics for U/L (the fill model:
   // cells STRETCH to equal fr widths that span the grid edge-to-edge).
   const leafGrids = [...act.querySelectorAll('.sec-grid:not(.sec-compound)')].map(g => {
-    const m = g.className.match(/sec-c(\d)/);
+    const m = g.className.match(/sec-c(\d+)/);
     const authored = m ? Number(m[1]) : 1;
     const tracks = getComputedStyle(g).gridTemplateColumns.split(' ').filter(Boolean).length;
     const z = g.closest('.zone[data-zone]');
@@ -566,8 +603,119 @@ function measure() {
     return `${id}:[${rowCounts.join('|')}]`;
   }).sort();
 
+  // COLLISION (ratchet): sibling SECTIONS that overlap. The fill/flex model can,
+  // at some tier, stretch a column-direction stack taller than its content and
+  // make one section overflow onto its next sibling — a TEXT COLLISION every
+  // other geometry check misses, because each BOX is individually intact and a
+  // header sits within its OWN zone (H compares a header to its own section, not
+  // to a sibling). Assert that no two SIBLING .zone elements (direct children of
+  // the same grid) overlap. This is the invariant the columns:1 compound stack
+  // collision earned.
+  const OVERLAP_TOL = 4; // px of intersection tolerated (borders/rounding)
+  const collisions = [];
+  act.querySelectorAll('.sec-grid').forEach(g => {
+    const sibs = [...g.children].filter(z => z.classList.contains('zone'))
+      .map(z => ({ id: z.getAttribute('data-zone') || '?', r: z.getBoundingClientRect() }));
+    for (let i = 0; i < sibs.length; i++)
+      for (let j = i + 1; j < sibs.length; j++) {
+        const a = sibs[i].r, b = sibs[j].r;
+        const ox = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+        const oy = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);
+        if (ox > OVERLAP_TOL && oy > OVERLAP_TOL)
+          collisions.push(`${sibs[i].id}×${sibs[j].id}(${Math.round(ox)}×${Math.round(oy)}px)`);
+      }
+  });
+
+  // BALLOON / CONTENT-OVERFLOW guard (ratchet, invariant G). The X collision
+  // check above only turns red when two sibling section BOXES actually overlap —
+  // and benign, short seed content never overlaps, so a regression of the
+  // compound-flex exemptions stays green there. This measures the CAUSE instead
+  // of waiting for a visible overlap, on the live computed render:
+  //   (1) BALLOON — a LEAF component (.box / .sep / .rail) sitting DIRECTLY in a
+  //       ROW-direction compound grid must be content-sized (flex-grow 0). If it
+  //       has grown (flex-grow > 0) it takes an equal flex slice — a separator
+  //       line or a lone box balloons to a full share. This is exactly the
+  //       regression of the sep/rail/box exemption (fix-1 / bug #2). A separator
+  //       is additionally checked to stay thin in absolute width — a divider line
+  //       is never legitimately wide — as the observable EFFECT of the balloon.
+  //   (2) STACK OVERFLOW — a nested section (.zone) stacked in a columns:1
+  //       (column-direction) compound must keep its CONTENT height (flex-grow 0).
+  //       If it grows, a stretched parent divides its height between the stacked
+  //       sections and a content-heavy one is given a box SHORTER than its
+  //       content, which then spills onto the next section. Caught here as either
+  //       flex-grow > 0 OR the section's own content overflowing its box
+  //       (scrollHeight > clientHeight). This is the regression of the sec-c1
+  //       reset (fix-2). Measured per element, so it goes red BEFORE the spill is
+  //       large enough to make two boxes overlap (which is all X can see).
+  const SEP_MAX_W = 96;   // px — a divider line / thin rail is never this wide as a flex item
+  const balloons = [];
+  const stackOverflow = [];
+  act.querySelectorAll('.sec-grid.sec-compound').forEach(g => {
+    const column = getComputedStyle(g).flexDirection.startsWith('column');
+    const gid = (g.closest('.zone[data-zone]') && g.closest('.zone[data-zone]').getAttribute('data-zone')) || '(root)';
+    for (const kid of g.children) {
+      const grow = parseFloat(getComputedStyle(kid).flexGrow) || 0;
+      const label = kid.getAttribute('data-zone') || kid.getAttribute('data-k')
+        || (kid.classList.contains('sep') ? 'sep' : kid.classList.contains('rail') ? 'rail' : kid.classList.contains('box') ? 'box' : '?');
+      const isLeaf = kid.classList.contains('box') || kid.classList.contains('sep') || kid.classList.contains('rail');
+      const isZone = kid.classList.contains('zone');
+      if (!column && isLeaf) {
+        if (grow > 0) balloons.push(`${gid}>${label}:flex-grow=${grow} (leaf grew to an equal slice)`);
+        if ((kid.classList.contains('sep') || kid.classList.contains('rail'))
+            && Math.round(kid.getBoundingClientRect().width) > SEP_MAX_W)
+          balloons.push(`${gid}>${label}:width=${Math.round(kid.getBoundingClientRect().width)}px > ${SEP_MAX_W}px (divider/rail ballooned)`);
+      }
+      if (column && isZone) {
+        if (grow > 0) stackOverflow.push(`${gid}>${label}:flex-grow=${grow} (stacked section given a divided share)`);
+        if (kid.scrollHeight > kid.clientHeight + 2)
+          stackOverflow.push(`${gid}>${label}:content-overflow(scrollH ${kid.scrollHeight} > clientH ${kid.clientHeight})`);
+      }
+    }
+  });
+
+  // SPAN-WEIGHTED COMPOUND WIDTH (ratchet, invariant Q). In a compound grid a
+  // nested section's width FOLLOWS its AUTHORED span via flex-grow=--span (CSS:
+  // `.sec-grid.sec-compound > .zone { flex: var(--span,1) 1 0 }`). Because --span
+  // is an INHERITING custom property, an unspanned child that fails to carry its
+  // OWN --span inherits its parent band's --span and the intended ratio collapses
+  // to equal shares (bug #3: gcpenv's 2:1 GKE-vs-data split rendering 50/50). We
+  // compare each SIDE-BY-SIDE section child's rendered width against its AUTHORED
+  // span read from window.__DOC__ — NOT the computed --span, because the bug
+  // corrupts the rendered --span itself, so width∝rendered-span would stay green
+  // while broken (both children read --span:2 and both are equal width). Scoped to
+  // ROW-direction grids (side by side, not the stacked sec-c1 tier) and non-band
+  // (.msp) children, on a visual row where >=2 such children sit with DIFFERING
+  // authored spans (equal spans => equal widths, nothing weighted to assert).
+  const activeIdx = [...document.querySelectorAll('.act')].indexOf(act);
+  const docPage = (window.__DOC__ && window.__DOC__.pages && window.__DOC__.pages[activeIdx]) || null;
+  const authoredSpan = {};
+  (function walk(nodes) { (nodes || []).forEach(n => {
+    if (n.id != null) authoredSpan[n.id] = Math.max(1, Number(n.span) || 1);
+    if (Array.isArray(n.children)) walk(n.children); }); })(docPage ? docPage.sections : []);
+  const spanRatios = [];
+  act.querySelectorAll('.sec-grid.sec-compound').forEach(g => {
+    if (getComputedStyle(g).flexDirection.startsWith('column')) return; // stacked tier: not span-weighted
+    const gid = (g.closest('.zone[data-zone]') && g.closest('.zone[data-zone]').getAttribute('data-zone')) || '(root)';
+    const kids = [...g.children].filter(k => k.classList.contains('zone') && !k.classList.contains('msp'))
+      .map(k => { const r = k.getBoundingClientRect(); const id = k.getAttribute('data-zone') || '?';
+        return { id, w: r.width, top: Math.round(r.top / 4) * 4, span: authoredSpan[id] || 1 }; });
+    const byRow = {};
+    kids.forEach(z => { (byRow[z.top] = byRow[z.top] || []).push(z); });
+    Object.values(byRow).forEach(row => {
+      if (row.length < 2) return;
+      const spans = row.map(z => z.span);
+      if (Math.max(...spans) === Math.min(...spans)) return; // equal authored spans: no weighting to assert
+      const totalSpan = spans.reduce((a, b) => a + b, 0);
+      const totalW = row.reduce((a, z) => a + z.w, 0);
+      row.forEach(z => { const expected = totalW * z.span / totalSpan;
+        const errPct = expected > 0 ? Math.abs(z.w - expected) / expected * 100 : 0;
+        spanRatios.push({ grid: gid, id: z.id, span: z.span, w: Math.round(z.w),
+          expected: Math.round(expected), errPct: +errPct.toFixed(1) }); });
+    });
+  });
+
   return { singleWidths, heights, clipped, maxRowCount, overflowX,
-    leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, nBoxes: boxes.length,
+    leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, nBoxes: boxes.length,
     canvasScrollHeight: canvas.scrollHeight, canvasClientWidth: cw };
 }
 

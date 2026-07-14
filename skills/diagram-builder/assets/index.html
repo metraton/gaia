@@ -333,11 +333,34 @@
   /* flex:1 1 0 — nested sections GROW EQUALLY to fill the row: N sections on a
      row are N equal-width slices that together span the row edge-to-edge, with
      no gap on the right. (flex-basis 0 makes the widths equal regardless of each
-     section's content; flex-grow 1 divides the row evenly.) min-width:0 lets a
-     section shrink/wrap as width tightens (its inner leaf grids collapse …→2→1
-     on their own). A band child (span == columns) takes a full row (overridden
+     section's content; flex-grow 1 divides the row evenly.) min-width:min-content
+     lets a section shrink/wrap as width tightens (its inner leaf grids collapse
+     …→2→1 on their own). A band child (span == columns) takes a full row (overridden
      below). Its inner leaf cells still fill the band width. */
-  .sec-grid.sec-compound > * { flex:1 1 0; min-width:min-content; }
+  .sec-grid.sec-compound > * { min-width:min-content; }
+  /* NESTED SECTIONS grow to fill the row, WEIGHTED BY their authored span: a
+     section's flex-grow IS its --span (default 1), so a span:2 section is twice
+     the width of a span:1 sibling — section-level width FOLLOWS CONTENT WEIGHT
+     (the author expresses the weight as a span on the heavier section) instead
+     of every section splitting the row into equal slices regardless of how much
+     content it carries. --span is only emitted when span>1, so an unspanned
+     section falls back to grow:1 (the old equal-share behaviour). This is what
+     lets a content-heavy grid (e.g. a wide 3-col GKE envelope) sit WIDER than a
+     light lone-box section beside it rather than 50/50. */
+  .sec-grid.sec-compound > .zone { flex: var(--span, 1) 1 0; }
+  /* LEAF components are NOT content slices: a `box` (a single card), a
+     `separator` (a divider LINE) or a `rail` (a swimlane LABEL) sitting DIRECTLY
+     in a compound row must size to CONTENT (flex:0 0 auto), NEVER grow to an
+     equal flex share. Without this a plain box sibling of a nested section
+     (isCompound is true because ANY child is a section) would get the grow rule
+     and balloon to an equal slice; a box must stay a card. It keeps the uniform
+     --cell-h height and pins to the row top (align-self:start) so it reads as a
+     card, not a stretched panel. Likewise a width:0 vertical separator or a thin
+     rail must not each balloon into a full slice. (At the stacked tier every
+     child is reset to flex:0 0 auto anyway.) */
+  .sec-grid.sec-compound > .box { flex:0 0 auto; align-self:start; height:var(--cell-h); }
+  .sec-grid.sec-compound > .sep,
+  .sec-grid.sec-compound > .rail { flex:0 0 auto; }
   /* A root-level span BAND in a COMPOUND grid takes its OWN full-width row. In
      the default ROW direction (wide tiers) flex-basis:100% forces the band onto
      a line by itself, so consecutive bands STACK vertically instead of floating
@@ -362,6 +385,16 @@
      container's full cross-size, so align-items:stretch fills the sections to
      the actual width. */
   .sec-grid.sec-compound.sec-c1 { flex-direction:column; align-items:stretch; align-content:stretch; }
+  /* A column-direction (sec-c1) compound STACKS its sections top-to-bottom, so
+     its children must keep their CONTENT height (flex:0 0 auto) — NOT the row
+     rule's flex:1 1 0, whose flex-basis:0 sits on the MAIN (VERTICAL) axis here.
+     When such a stack is stretched TALLER than its content by a taller sibling
+     in the same row (the parent's align-items:stretch), flex-grow:1 would divide
+     the parent height between the sections and a section whose content exceeds
+     its share OVERFLOWS onto the next (a sibling-section collision). Content
+     height + the natural top-to-bottom flow prevents the overlap; width is still
+     filled by align-items:stretch above. */
+  .sec-grid.sec-compound.sec-c1 > * { flex:0 0 auto; }
 
   /* responsive column step-down (container-query on the stage): a multi-column
      leaf grid collapses …→2→1 as width tightens. The "two-table" 2-column form
@@ -397,6 +430,19 @@
        axis, filled by align-items:stretch above. */
     .sec-grid.sec-compound > * { flex:0 0 auto; }
     .sec-grid.sec-compound > .msp { flex:0 0 auto; }
+    /* the span-weighted section grow rule (.sec-grid.sec-compound > .zone,
+       specificity 0,3,0) is MORE specific than the `> *` reset (0,2,0), so it
+       would otherwise survive into this stacked tier and keep sections growing —
+       dividing the column height and spilling content. Reset .zone at matching
+       specificity so a stacked section keeps its CONTENT height. */
+    .sec-grid.sec-compound > .zone { flex:0 0 auto; }
+    /* a compound leaf box pins to the row TOP (align-self:start) at the wide
+       row tier so it reads as a card, not a stretched panel. Here in the STACKED
+       (column-direction) tier the cross axis is HORIZONTAL, so start would pin it
+       LEFT at a bare-box inset while its nested-section siblings inset deeper —
+       an asymmetric band (Y). Stretch it to the full width instead (its height
+       stays --cell-h), so the band edges stay symmetric. */
+    .sec-grid.sec-compound > .box { align-self:stretch; }
     /* below the stack breakpoint the root-with-bands leaves the authored GRID
        and becomes a vertical flex stack like every other compound, FILLING the
        canvas width (align-items:stretch) — every section (bands and inline
@@ -417,16 +463,19 @@
      cells down to 1000px, only folding to 2 below it. This is NOT the endpoint —
      the ≤640px tier below drops every leaf grid to 1 column. */
   @container stage (max-width: 1000px) {
-    .sec-grid.sec-c3:not(.sec-compound) { grid-template-columns:repeat(2, minmax(0,1fr)); }
-    .sec-grid.sec-c4:not(.sec-compound) { grid-template-columns:repeat(2, minmax(0,1fr)); }
-    .sec-grid.sec-c5:not(.sec-compound) { grid-template-columns:repeat(2, minmax(0,1fr)); }
+    /* GENERAL step-down (ANY N): every MULTI-column leaf grid — matched by
+       :not(.sec-c1) instead of the old enumerated sec-c3/c4/c5 — drops to the
+       2-col "two-table" intermediate. The enumerated rules covered only 3/4/5
+       columns, so a leaf grid authored with 6+ columns stayed at its authored
+       width here and could OVERFLOW horizontally between ~640 and 1000px
+       (invariant O), with no intermediate collapse step. One selector now steps
+       c2, c3, … cN alike, so the cascade generalises to any column count. */
+    .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:repeat(2, minmax(0,1fr)); }
     /* PARTIAL span keeps its PROPORTION at the 2-track "two-table" tier: --span2 =
        round(M/N·2) clamped [1,2], so a span:2-of-4 becomes a single cell here
        instead of staying 2-wide (which, in a 2-track grid, would already be a full
        band). span2 <= 2 also guarantees no implicit extra track is created. */
-    .sec-grid.sec-c3:not(.sec-compound) > .mspan,
-    .sec-grid.sec-c4:not(.sec-compound) > .mspan,
-    .sec-grid.sec-c5:not(.sec-compound) > .mspan { grid-column:span var(--span2, 1); }
+    .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:span var(--span2, 1); }
   }
   /* Narrowest tier — the …→2→1 ENDPOINT: every leaf grid collapses to ONE fr
      track that fills the width, so the whole diagram is a single vertical column
@@ -439,14 +488,22 @@
   @container stage (max-width: 640px) {
     .canvas { left:8px; right:8px; padding:8px; }
     .sec-grid:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
-    .sec-grid.sec-c3:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
-    .sec-grid.sec-c4:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
-    .sec-grid.sec-c5:not(.sec-compound) { grid-template-columns:minmax(0,1fr); }
+    /* OVERRIDE the general medium-tier step-down: the 1000px rule
+       `.sec-grid:not(.sec-compound):not(.sec-c1)` (specificity 0,3,0) is more
+       specific than the plain `.sec-grid:not(.sec-compound)` (0,2,0) above, so
+       without an equally-specific rule here every multi-column leaf grid would
+       stay pinned at 2 columns at the narrowest tier instead of reaching the
+       1-track ENDPOINT. This matches the medium-tier selector's specificity and
+       sits later in source, so it wins — for ANY N. */
+    .sec-grid:not(.sec-compound):not(.sec-c1) { grid-template-columns:minmax(0,1fr); }
     /* 1-column ENDPOINT: a partial span becomes a full band (the one tier it
        spans the whole row) per the collapse policy. Forcing 1/-1 also stops
        `span var(--span/--span2)` from opening an implicit second track in the
-       single-track grid (which would break the 1-column endpoint). */
+       single-track grid (which would break the 1-column endpoint). The
+       :not(.sec-c1) variant matches the medium-tier mspan rule's specificity
+       (0,4,0) so it wins over it here. */
     .sec-grid:not(.sec-compound) > .mspan { grid-column:1 / -1; }
+    .sec-grid:not(.sec-compound):not(.sec-c1) > .mspan { grid-column:1 / -1; }
   }
 
   /* ── zones (a section's frame) ── */

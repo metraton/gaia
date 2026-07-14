@@ -3,6 +3,9 @@
 // `window.__DOC__ = {...}` assignment, so index.html can load it via a
 // normal <script src> with zero runtime fetch/CORS concerns under file://.
 //
+// @version 2.0.0  (part of the diagram-builder skill; keep the engine generation
+//                  in sync with engine/engine.js + tools/validate-layout.cjs)
+//
 // Run: npm run build  (or: node engine/build-data.mjs)
 // Re-run whenever a YAML file under data/ changes.
 import yaml from 'js-yaml';

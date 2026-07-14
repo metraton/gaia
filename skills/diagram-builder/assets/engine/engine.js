@@ -237,6 +237,18 @@
       // merge keeps its proportion as the grid cascades and only becomes a full
       // band at the 1-column endpoint (the tier CSS lives in index.html).
       const span = Math.max(1, Math.min(child.span || 1, cols));
+      // SPAN-WEIGHTED COMPOUND WIDTHS. In a compound grid a nested section's
+      // flex-grow IS its --span (CSS: `.sec-grid.sec-compound > .zone { flex:
+      // var(--span,1) 1 0 }`), so section width FOLLOWS CONTENT WEIGHT. --span
+      // is an INHERITING custom property, so it must be emitted EXPLICITLY on
+      // EVERY compound child SECTION — including span:1 — otherwise an unspanned
+      // section INHERITS its parent band's --span (e.g. a span:2 envelope band)
+      // and renders at the parent's weight, collapsing the intended ratio (a
+      // 2:1 GKE-vs-data split) back to equal 50/50 shares. A leaf child never
+      // needs this (leaf spans merge grid tracks, below).
+      if (isCompound && Array.isArray(child.children)) {
+        node.style.setProperty('--span', String(span));
+      }
       if (span > 1) {
         node.style.setProperty('--span', String(span));
         if (span >= cols) {

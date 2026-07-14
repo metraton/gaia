@@ -290,14 +290,17 @@ verdict **declares the evidence behind it**.
      determinism · **R** scrollbar-robust · **T** untruncated capture · **C**
      description clamp · **O** no horizontal overflow · **F** collapse
      cascade · **S** inline-fit / band-span · **B** centered block · **H**
-     headers inside their section.
+     headers inside their section · **X** no sibling-section collision · **G**
+     no compound-leaf balloon / no stacked-section content overflow (the
+     compound-row leaf balloon / sec-c1 overflow guard).
    - **DESIGN** (the layout serves the governing definition — form-scoped,
      `dura` where they apply): **U** equal/uniform cells (supersedes the
      retired fixed-width **W**) · **E** no empty column · **P** no orphan
      cell · **L** cells fill the width edge-to-edge · **M** the readable
-     120px floor · **Y** band content fills the band. **V** (horizontal
-     composition) is `consejo` — an advisory that never fails; a timeline is
-     deliberately one long row, so V does not even apply to it.
+     120px floor · **Y** band content fills the band · **Q** compound section
+     widths follow authored span. **V** (horizontal composition) is
+     `consejo` — an advisory that never fails; a timeline is deliberately one
+     long row, so V does not even apply to it.
 5. **Choose the evidence class — and declare it.**
    - **Class A — the guardrail suffices**: the topology is intact and the
      change's intention is fully covered by existing invariants (copy edits, a

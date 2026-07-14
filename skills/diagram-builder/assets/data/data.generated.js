@@ -258,6 +258,301 @@ window.__DOC__ = {
               "variant": "strong"
             }
           ]
+        },
+        {
+          "id": "section-f",
+          "title": "Tall block",
+          "subtitle": "a compound row — rail + vertical separator dividing two sub-sections",
+          "variant": "normal",
+          "order": 6,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "rail-f",
+              "type": "rail",
+              "orientation": "vertical",
+              "order": 1,
+              "title": "Lane"
+            },
+            {
+              "id": "grp-l",
+              "title": "Left group",
+              "variant": "normal",
+              "order": 2,
+              "columns": 1,
+              "children": [
+                {
+                  "id": "l-1",
+                  "status": "STEP",
+                  "title": "Step 1",
+                  "description": [
+                    "tall sub-section"
+                  ]
+                },
+                {
+                  "id": "l-2",
+                  "status": "STEP",
+                  "title": "Step 2",
+                  "description": [
+                    "four stacked cells"
+                  ]
+                },
+                {
+                  "id": "l-3",
+                  "status": "STEP",
+                  "title": "Step 3",
+                  "description": [
+                    "makes this block tall"
+                  ]
+                },
+                {
+                  "id": "l-4",
+                  "status": "STEP",
+                  "title": "Step 4",
+                  "description": [
+                    "the taller sibling"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "sep-f",
+              "type": "separator",
+              "orientation": "vertical",
+              "order": 3
+            },
+            {
+              "id": "grp-r",
+              "title": "Right group",
+              "variant": "normal",
+              "order": 4,
+              "columns": 1,
+              "children": [
+                {
+                  "id": "r-1",
+                  "status": "NOTE",
+                  "title": "Note A",
+                  "description": [
+                    "a shorter sub-section"
+                  ]
+                },
+                {
+                  "id": "r-2",
+                  "status": "NOTE",
+                  "title": "Note B",
+                  "description": [
+                    "beside the separator"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "section-g",
+          "title": "Short stack",
+          "subtitle": "columns:1 stack — shorter, so the row stretches it",
+          "variant": "envelope",
+          "order": 7,
+          "span": 1,
+          "columns": 1,
+          "children": [
+            {
+              "id": "gg-1",
+              "title": "Group A",
+              "variant": "normal",
+              "columns": 1,
+              "children": [
+                {
+                  "id": "gg-1-box-1",
+                  "status": "INTERNAL",
+                  "title": "One item",
+                  "description": [
+                    "a stacked sub-section"
+                  ]
+                },
+                {
+                  "id": "gg-1-box-2",
+                  "status": "INTERNAL",
+                  "title": "Two item",
+                  "description": [
+                    "with a second cell"
+                  ]
+                },
+                {
+                  "id": "gg-1-box-3",
+                  "status": "INTERNAL",
+                  "title": "Three item",
+                  "description": [
+                    "a third stacked cell — makes Group A the content-heavy",
+                    "sub-section, so if the columns:1 reset regressed it would be the",
+                    "one starved by a divided height and overflow onto Group B"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "gg-2",
+              "title": "Group B",
+              "variant": "normal",
+              "columns": 1,
+              "children": [
+                {
+                  "id": "gg-2-box",
+                  "status": "INTERNAL",
+                  "title": "Another item",
+                  "description": [
+                    "stretched taller than its content"
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "section-h",
+          "title": "Section H",
+          "subtitle": "a six-column band — the collapse cascade now generalises to any N (6 → 2 → 1)",
+          "variant": "normal",
+          "order": 8,
+          "span": 2,
+          "columns": 6,
+          "children": [
+            {
+              "id": "h-1",
+              "status": "STEP",
+              "title": "One",
+              "description": [
+                "cell 1 of 6"
+              ]
+            },
+            {
+              "id": "h-2",
+              "status": "STEP",
+              "title": "Two",
+              "description": [
+                "cell 2 of 6"
+              ]
+            },
+            {
+              "id": "h-3",
+              "status": "STEP",
+              "title": "Three",
+              "description": [
+                "cell 3 of 6"
+              ]
+            },
+            {
+              "id": "h-4",
+              "status": "STEP",
+              "title": "Four",
+              "description": [
+                "cell 4 of 6"
+              ]
+            },
+            {
+              "id": "h-5",
+              "status": "STEP",
+              "title": "Five",
+              "description": [
+                "cell 5 of 6"
+              ]
+            },
+            {
+              "id": "h-6",
+              "status": "STEP",
+              "title": "Six",
+              "description": [
+                "cell 6 of 6"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "section-i",
+          "title": "Section I",
+          "subtitle": "a mixed compound — Heavy (span:2) is wider than Light (span:1); the lone Card box stays card-sized",
+          "variant": "normal",
+          "order": 9,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "heavy",
+              "title": "Heavy",
+              "subtitle": "span:2 — grows twice as wide",
+              "variant": "normal",
+              "order": 1,
+              "span": 2,
+              "columns": 2,
+              "children": [
+                {
+                  "id": "heavy-1",
+                  "status": "NEW",
+                  "title": "Alpha",
+                  "description": [
+                    "content-heavy section"
+                  ]
+                },
+                {
+                  "id": "heavy-2",
+                  "status": "NEW",
+                  "title": "Beta",
+                  "description": [
+                    "four boxes in two columns"
+                  ]
+                },
+                {
+                  "id": "heavy-3",
+                  "status": "NEW",
+                  "title": "Gamma",
+                  "description": [
+                    "so it earns the width"
+                  ]
+                },
+                {
+                  "id": "heavy-4",
+                  "status": "NEW",
+                  "title": "Delta",
+                  "description": [
+                    "span:2 → flex-grow 2"
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "card",
+              "type": "box",
+              "order": 2,
+              "status": "NOTE",
+              "title": "Card",
+              "description": [
+                "a lone box beside sections",
+                "sizes to content, never balloons"
+              ],
+              "detail": "This box is a LEAF sibling of the two sections in a compound grid. Because ANY section child makes the grid compound, a naive rule would give this box an equal flex slice and balloon it. Instead it sizes to its content and keeps the uniform cell height — invariant G fails if it ever grows."
+            },
+            {
+              "id": "light",
+              "title": "Light",
+              "subtitle": "span:1 — grows half as wide",
+              "variant": "normal",
+              "order": 3,
+              "span": 1,
+              "columns": 1,
+              "children": [
+                {
+                  "id": "light-1",
+                  "status": "UNCHANGED",
+                  "title": "Solo",
+                  "description": [
+                    "a lighter section"
+                  ]
+                }
+              ]
+            }
+          ]
         }
       ],
       "name": "Overview",

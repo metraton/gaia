@@ -107,7 +107,7 @@ documented readability reference, and the guardrail's retired **W** invariant
 │   └── data.generated.js build output (committed; `window.__DOC__ = {...}`)
 └── tools/
     ├── validate-layout.cjs  the LAYOUT GUARDRAIL — headless render + the
-    │                        FORM-SCOPED invariant table (INTEGRITY D/R/T/C/O/F/S/B/H
+    │                        FORM-SCOPED invariant table (INTEGRITY D/R/T/C/O/F/S/B/H/X
     │                        · DESIGN U/E/P/L/M/Y · advisory V · retired W),
     │                        PASS/FAIL, exit≠0; pure-read (build first)
     └── verify.mjs           lightweight render QA (collision assertions + shots)
@@ -499,12 +499,15 @@ pixels.
    | **S** | integrity | all | dura | inline fit / band spans the block at every tier |
    | **B** | integrity | all | dura | centered block at the wide tiers (leftPad ≈ rightPad) |
    | **H** | integrity | all | dura | section headers/subtitles stay inside their section |
+   | **X** | integrity | all | dura | no sibling-section collision — no two sibling sections overlap (catches a column-stack overflowing onto its neighbour) |
+   | **G** | integrity | all | dura | no compound-leaf balloon / no stacked-section content overflow — a compound-row leaf never ballons past its content size, and a stacked section keeps its content height (the compound-row leaf balloon / sec-c1 overflow guard) |
    | **U** | design | all | dura | cells equal width per grid + uniform `--cell-h` height (row-span cells exempt from the height set) |
    | **L** | design | gridded | dura | cells fill the grid edge-to-edge, no right/left gap (≥1200px; rows a row-span touches exempt) |
    | **E** | design | gridded | dura | no empty grid column — every declared track is filled |
    | **P** | design | grid-dense | dura | no orphan cell — no lone cell beside grouped sibling rows (>1000px; row-span rows exempt) |
    | **M** | design | gridded | dura | cells legible — no 1-column cell below `MIN_LEGIBLE` 120px (collapse columns first) |
    | **Y** | design | all | dura | band content fills the band — no dead margin (≥1200px) |
+   | **Q** | design | all | dura | compound section widths follow authored span — a compound row's sections are proportional to their authored `span` weight, not stretched or shrunk by an inherited parent band (≥1200px) |
    | **V** | design | grid-dense | **consejo** | horizontal composition — the deck earns its canvas (ultra tier; advises, never fails) |
    | **W** | design | — | retired | fixed 232px cell width — `superseded: 'U'`; listed in the report, never evaluated |
 

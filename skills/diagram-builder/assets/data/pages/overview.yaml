@@ -215,3 +215,202 @@ sections:
         description: ["occupies exactly 2 of the 4 tracks"]
         detail: "A partial merge (1 &lt; span &lt; columns) occupies exactly that many tracks and keeps its proportion as the grid collapses; only a span == columns child becomes a full-width band."
         variant: strong
+
+  # ── ROW 5 · two INLINE sub-decks side by side — the guardrail's fix-1/fix-2 cases ──
+  # These two span:1 sections sit side by side on their own root row (like A + B),
+  # so they are NOT full-width bands (the Y band-fill invariant does not apply to
+  # them). Their job is to give the guardrail geometry to assert against:
+  #   • fix-1 — "Tall block" is a COMPOUND row (its children are sub-sections):
+  #     a rail label + a vertical separator sit DIRECTLY in that flex row and must
+  #     stay CONTENT-sized (flex:0 0 auto), not balloon to an equal flex share.
+  #   • fix-2 — "Short stack" is a columns:1 stack of sub-sections that is SHORTER
+  #     than "Tall block"; the row's align-items:stretch stretches it, and the
+  #     .sec-c1 > * reset keeps its children at content height so the taller one
+  #     never OVERFLOWS onto the next (the sibling collision the X invariant guards).
+  - id: section-f
+    title: "Tall block"
+    subtitle: "a compound row — rail + vertical separator dividing two sub-sections"
+    variant: normal
+    order: 6
+    span: 1
+    columns: 2
+    children:
+      - id: rail-f
+        type: rail
+        orientation: vertical
+        order: 1
+        title: "Lane"
+      - id: grp-l
+        title: "Left group"
+        variant: normal
+        order: 2
+        columns: 1
+        children:
+          - id: l-1
+            status: STEP
+            title: "Step 1"
+            description: ["tall sub-section"]
+          - id: l-2
+            status: STEP
+            title: "Step 2"
+            description: ["four stacked cells"]
+          - id: l-3
+            status: STEP
+            title: "Step 3"
+            description: ["makes this block tall"]
+          - id: l-4
+            status: STEP
+            title: "Step 4"
+            description: ["the taller sibling"]
+      - id: sep-f
+        type: separator
+        orientation: vertical
+        order: 3
+      - id: grp-r
+        title: "Right group"
+        variant: normal
+        order: 4
+        columns: 1
+        children:
+          - id: r-1
+            status: NOTE
+            title: "Note A"
+            description: ["a shorter sub-section"]
+          - id: r-2
+            status: NOTE
+            title: "Note B"
+            description: ["beside the separator"]
+  - id: section-g
+    title: "Short stack"
+    subtitle: "columns:1 stack — shorter, so the row stretches it"
+    variant: envelope
+    order: 7
+    span: 1
+    columns: 1
+    children:
+      - id: gg-1
+        title: "Group A"
+        variant: normal
+        columns: 1
+        children:
+          - id: gg-1-box-1
+            status: INTERNAL
+            title: "One item"
+            description: ["a stacked sub-section"]
+          - id: gg-1-box-2
+            status: INTERNAL
+            title: "Two item"
+            description: ["with a second cell"]
+          - id: gg-1-box-3
+            status: INTERNAL
+            title: "Three item"
+            description: ["a third stacked cell — makes Group A the content-heavy",
+              "sub-section, so if the columns:1 reset regressed it would be the",
+              "one starved by a divided height and overflow onto Group B"]
+      - id: gg-2
+        title: "Group B"
+        variant: normal
+        columns: 1
+        children:
+          - id: gg-2-box
+            status: INTERNAL
+            title: "Another item"
+            description: ["stretched taller than its content"]
+
+  # ── ROW 6 · a SIX-COLUMN BAND — the collapse cascade generalises to ANY N ──
+  # A columns:6 leaf grid proves the …→2→1 cascade is no longer enumerated per
+  # column count (the old sec-c3/c4/c5 rules left a 6+-column grid uncollapsed
+  # between ~640 and 1000px, where it could overflow — invariant O). Here it is
+  # 6 cells wide above 1000px, folds to the 2-col "two-table" step at medium, and
+  # to 1 column at the narrow endpoint — all asserted green by F and O.
+  - id: section-h
+    title: "Section H"
+    subtitle: "a six-column band — the collapse cascade now generalises to any N (6 → 2 → 1)"
+    variant: normal
+    order: 8
+    span: 2
+    columns: 6
+    children:
+      - id: h-1
+        status: STEP
+        title: "One"
+        description: ["cell 1 of 6"]
+      - id: h-2
+        status: STEP
+        title: "Two"
+        description: ["cell 2 of 6"]
+      - id: h-3
+        status: STEP
+        title: "Three"
+        description: ["cell 3 of 6"]
+      - id: h-4
+        status: STEP
+        title: "Four"
+        description: ["cell 4 of 6"]
+      - id: h-5
+        status: STEP
+        title: "Five"
+        description: ["cell 5 of 6"]
+      - id: h-6
+        status: STEP
+        title: "Six"
+        description: ["cell 6 of 6"]
+
+  # ── ROW 7 · a MIXED COMPOUND band — span-weighted sections + a lone box ──
+  # A compound grid (its children include sections) whose section widths FOLLOW
+  # CONTENT WEIGHT: "Heavy" carries span:2 so it grows twice as wide as the span:1
+  # "Light", instead of the two splitting the row 50/50 (the branchkinect GCP-vs-
+  # Cloud SQL residual). The lone "Card" box is a LEAF sibling of the sections: it
+  # sizes to CONTENT (a fixed-height card), never ballooning to an equal flex
+  # slice. Both behaviours are hard-guarded by invariant G.
+  - id: section-i
+    title: "Section I"
+    subtitle: "a mixed compound — Heavy (span:2) is wider than Light (span:1); the lone Card box stays card-sized"
+    variant: normal
+    order: 9
+    span: 2
+    columns: 4
+    children:
+      - id: heavy
+        title: "Heavy"
+        subtitle: "span:2 — grows twice as wide"
+        variant: normal
+        order: 1
+        span: 2
+        columns: 2
+        children:
+          - id: heavy-1
+            status: NEW
+            title: "Alpha"
+            description: ["content-heavy section"]
+          - id: heavy-2
+            status: NEW
+            title: "Beta"
+            description: ["four boxes in two columns"]
+          - id: heavy-3
+            status: NEW
+            title: "Gamma"
+            description: ["so it earns the width"]
+          - id: heavy-4
+            status: NEW
+            title: "Delta"
+            description: ["span:2 → flex-grow 2"]
+      - id: card
+        type: box
+        order: 2
+        status: NOTE
+        title: "Card"
+        description: ["a lone box beside sections", "sizes to content, never balloons"]
+        detail: "This box is a LEAF sibling of the two sections in a compound grid. Because ANY section child makes the grid compound, a naive rule would give this box an equal flex slice and balloon it. Instead it sizes to its content and keeps the uniform cell height — invariant G fails if it ever grows."
+      - id: light
+        title: "Light"
+        subtitle: "span:1 — grows half as wide"
+        variant: normal
+        order: 3
+        span: 1
+        columns: 1
+        children:
+          - id: light-1
+            status: UNCHANGED
+            title: "Solo"
+            description: ["a lighter section"]
