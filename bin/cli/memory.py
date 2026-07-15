@@ -1252,63 +1252,95 @@ _SECTION_HEADERS = {
     "thread_open":   "## Memory — Open threads",
 }
 
+# v32 transversal digest (initiative-grouped). The SessionStart injection no
+# longer anchors to cwd: instead it emits a cross-project digest of LIVE
+# PENDING work grouped by the canonical `memory.initiative` key, so the user
+# sees "what is open, everywhere" the moment a session starts -- independent of
+# which directory the session was launched from.
+#
+# "Pending vivo" is DELIBERATELY narrow: class='thread' AND status IN
+# ('carry_forward','open'). Anchors (durable "about you" facts), logs, and
+# resolved/snapshot threads are excluded by design -- the digest is a worklist,
+# not a knowledge dump.
+_DIGEST_HEADER = "## Memory — Pendientes vivos por proyecto"
+# Top-K initiatives shown in the cross-project digest; the rest roll up into a
+# single "+N proyectos más" overflow line.
+_DIGEST_TOP_K = 10
+# Per-item description cap inside the digest. Much tighter than the section
+# renderer's 150: one short line per initiative keeps ~10 initiatives visible
+# without any single project monopolising the block (the "5.8x monopoly" the
+# old cwd-anchored, single-project block produced under the 800 cap).
+_DIGEST_DESC_MAX = 60
+# Budget for the digest. The old 800 cap truncated to a SINGLE project once a
+# project carried several pending threads. With one short line per initiative
+# (~90-110 chars) plus header + pointer, ~10 initiatives need ~1500 chars.
+# session_manifest.build_workspace_memory_block passes --max-chars=1500 as the
+# injection authority; this is the fallback when --max-chars is omitted.
+_DIGEST_DEFAULT_MAX_CHARS = 1500
+# Project-mode ("--initiative=X"): how many pending items of the one requested
+# initiative to show before rolling the rest into an overflow footer.
+_PROJECT_MODE_TOP_N = 5
+# Bucket label for rows whose initiative IS NULL. Never re-derived from a slug
+# -- a NULL initiative is its own explicit bucket, not a guess.
+_OTHERS_BUCKET = "otros"
+
 
 def _cmd_get_relevant(args) -> int:
-    """Emit a compact memory block for SessionStart injection (v4).
+    """Emit a compact Workspace Memory block for SessionStart injection.
 
-    Selection model (T7, schema v4):
-      * Section 1 (For this session): rows with class=thread, status=
-        carry_forward. Injected first, bounded by a recency sub-cap
-        (_RELEVANT_CARRY_FORWARD_CAP); rows beyond the cap surface via the
-        overflow footer.
-      * Section 2 (About you / What I know): rows with class=anchor. Identity
-        anchors (type=user) are PINNED to the top, then updated_at DESC;
-        quota 4. Pinning stops pure-recency ordering from burying the user's
-        own identity anchor.
-      * Section 3 (Open threads): rows with class=thread, status=open,
-        ordered by updated_at ASC (STALEST first -- the oldest open thread is
-        the one that needs attention); quota 4.
-      * Each rendered description is truncated to _RELEVANT_ITEM_DESC_MAX
-        chars + ellipsis; the full body stays recoverable via the pointer.
-      * When a row is anchored to a project, its short tag (e.g. [gaia]) is
-        rendered on the bullet.
-      * class=log rows are NEVER injected (closed-bitácora).
-      * class=NULL rows (legacy, pre-v4): treated as anchor for backward
-        compatibility -- the 36 me-workspace rows keep showing up until
-        T10 reclassifies them. Trade-off: invisible drift vs broken UX.
-      * Rows that are the destination of a `supersedes` edge are excluded
-        across all sections -- a newer memory has replaced them.
+    v32 dispatch (cwd-INDEPENDENT). The cwd no longer filters or prioritises
+    anything -- "active project" anchoring was removed. Which renderer runs is
+    decided purely by the flags:
 
-    Char budget enforcement (T7):
-      max_chars is a HARD cap. Trim order on overflow: thread_open → anchor
-      → carry_forward (last resort). carry_forward is trimmed only after the
-      other two sections are exhausted, so under normal loads it survives
-      whole, but a pathological carry_forward can no longer blow the budget.
-      Whenever ANY item is left out (sub-cap or trim), an overflow footer is
-      appended; its width is reserved from the budget up front so it is never
-      itself the dropped line -- overflow is never silent.
+      * ``--types=...``  -> legacy per-type flow (unchanged, back-compat).
+      * ``--initiative=X`` -> PROJECT MODE: the top ``_PROJECT_MODE_TOP_N``
+        live-pending threads of the ONE requested initiative, with overflow.
+      * ``--sections=...`` -> SECTION renderer: the class/status sections
+        (carry_forward / anchor / thread_open). This is the subagent-dispatch
+        path (``--sections=anchor`` gives a dispatched subagent the durable
+        "About you / What I know" anchors). cwd anchoring is gone here too.
+      * (no flag) -> TRANSVERSAL DIGEST: a cross-project worklist grouped by
+        the canonical ``memory.initiative`` key. This is the orchestrator's
+        SessionStart view -- "what is open, everywhere", independent of the
+        launch directory.
 
-    Legacy --types=... mode: when caller explicitly passes --types, the
-    pre-v4 flow (atom/decision/negative by type with the old quota) is
-    used unchanged. This preserves the existing test surface.
-
-    Output is NEVER raised: a database error returns empty payload.
+    Output is NEVER raised: a database error returns an empty payload.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
-    max_chars = int(getattr(args, "max_chars", None) or _RELEVANT_DEFAULT_MAX_CHARS)
     types_arg = getattr(args, "types", None)
 
     if types_arg:
         # Legacy type-based selection -- keep verbatim for back-compat.
+        max_chars = int(
+            getattr(args, "max_chars", None) or _RELEVANT_DEFAULT_MAX_CHARS
+        )
         return _cmd_get_relevant_by_type(args, workspace, max_chars)
 
-    # Optional section filter. When --sections is passed (comma-separated subset
-    # of carry_forward,anchor,thread_open) only those sections are rendered. This
-    # is how the subagent-dispatch path requests anchors-only ("About you / What
-    # I know") while the orchestrator's SessionStart path omits the flag and keeps
-    # all three sections. Unknown tokens are ignored; an empty/whitespace value
-    # falls back to all sections (safe default).
+    initiative_arg = getattr(args, "initiative", None)
+    sections_arg = getattr(args, "sections", None)
+
+    if initiative_arg:
+        return _render_project_mode(args, workspace, initiative_arg, as_json)
+    if sections_arg:
+        return _render_sections(args, workspace, as_json)
+    return _render_digest(args, workspace, as_json)
+
+
+def _render_sections(args, workspace: str, as_json: bool) -> int:
+    """Class/status section renderer (carry_forward / anchor / thread_open).
+
+    Reached only via an explicit ``--sections`` filter (the subagent-dispatch
+    path). cwd anchoring has been removed: rows are workspace-scoped, never
+    filtered or prioritised by the launch directory.
+
+    Selection model:
+      * carry_forward: class=thread, status=carry_forward, recency sub-cap.
+      * anchor: class=anchor, identity anchors (type=user) pinned, quota 4.
+      * thread_open: class=thread, status=open, STALEST first, quota 4.
+      * class=log NEVER injects; supersedes-destination rows are excluded.
+    """
+    max_chars = int(getattr(args, "max_chars", None) or _RELEVANT_DEFAULT_MAX_CHARS)
     sections_arg = getattr(args, "sections", None)
     _all_sections = ("carry_forward", "anchor", "thread_open")
     if sections_arg:
@@ -1327,26 +1359,11 @@ def _cmd_get_relevant(args) -> int:
     max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
 
     try:
-        from gaia.store.writer import (
-            _connect, get_memory, resolve_project_ref_by_cwd,  # noqa: F401
-        )
+        from gaia.store.writer import _connect, get_memory  # noqa: F401
     except ImportError:
         if as_json:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
-
-    # Project-aware scoping: infer the active project from the cwd using the
-    # SAME shared resolver the write side uses, so "active project" means the
-    # same thing on both ends. When it resolves, injection prioritises rows
-    # anchored to that project (project_ref = active) while still including
-    # the unanchored workspace past (project_ref IS NULL) -- so no history is
-    # lost and rows anchored to OTHER projects in the same workspace drop out.
-    # When it does not resolve (e.g. at a workspace root), behaviour is
-    # unchanged: workspace-scoped, all rows. Never raises.
-    try:
-        active_project = resolve_project_ref_by_cwd(workspace)
-    except Exception:
-        active_project = None
 
     # Pull class/status-aware rows via raw SQL (list_memory doesn't expose
     # those columns yet, and we need a supersedes-NOT-IN subquery).
@@ -1376,23 +1393,14 @@ def _cmd_get_relevant(args) -> int:
             )
             base_params: list = [workspace, workspace]
 
-            # When an active project is known, restrict to its rows OR the
-            # unanchored workspace rows, and float active-project rows to the
-            # top of each section via a CASE key in ORDER BY. The CASE binds
-            # one extra param, appended per-section AFTER the WHERE params
-            # because it appears later in the statement string.
-            if active_project is not None:
-                base_select += "  AND (project_ref = ? OR project_ref IS NULL) "
-                base_params.append(active_project)
-                order_prefix = "CASE WHEN project_ref = ? THEN 0 ELSE 1 END, "
-            else:
-                order_prefix = ""
+            # v32: cwd anchoring removed. Rows are workspace-scoped only; the
+            # launch directory neither filters nor prioritises them. order_prefix
+            # is kept as an empty string so the ORDER BY clauses below stay
+            # unchanged in shape.
+            order_prefix = ""
 
             def _section_params() -> list:
-                params = list(base_params)
-                if order_prefix:
-                    params.append(active_project)
-                return params
+                return list(base_params)
 
             # Section 1: carry_forward -- fetch all by recency, cap applied
             # in Python below so the dropped count feeds the overflow footer.
@@ -1605,6 +1613,234 @@ def _cmd_get_relevant(args) -> int:
             "carry_forward_dropped": cf_dropped,
         }
         print(json.dumps(payload, indent=2, default=str))
+    else:
+        print(block)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# v32: initiative-grouped renderers (transversal digest + project mode)
+# ---------------------------------------------------------------------------
+
+# "Pending vivo" query: LIVE pending threads only. class='thread' AND status IN
+# ('carry_forward','open) -- anchors, logs, and resolved/snapshot threads are
+# excluded BY DESIGN (a worklist, not a knowledge dump). Soft-deleted and
+# supersedes-destination rows are excluded exactly as the section renderer does.
+_PENDING_VIVO_SELECT = (
+    "SELECT name, type, description, updated_at, initiative, status "
+    "FROM memory "
+    "WHERE workspace = ? "
+    "  AND deleted_at IS NULL "
+    "  AND class = 'thread' "
+    "  AND status IN ('carry_forward', 'open') "
+    "  AND name NOT IN ("
+    "    SELECT dst_name FROM memory_links "
+    "    WHERE workspace = ? AND kind = 'supersedes'"
+    "  ) "
+)
+
+
+def _digest_truncate(text: str, limit: int) -> str:
+    """Collapse newlines and cap a description to ``limit`` chars + ellipsis."""
+    text = (text or "").replace("\n", " ").strip()
+    if len(text) > limit:
+        return text[:limit].rstrip() + "…"
+    return text
+
+
+def _bucket_key(initiative) -> str:
+    """Map a raw ``initiative`` value to its digest bucket key.
+
+    A NULL/empty initiative is its OWN explicit bucket ("otros"); it is NEVER
+    re-derived from a slug or path. A present initiative is used verbatim (it
+    was already normalised at write time by ``normalize_initiative``).
+    """
+    if initiative is None or str(initiative).strip() == "":
+        return _OTHERS_BUCKET
+    return str(initiative)
+
+
+def _fetch_pending_vivo(workspace: str, extra_where: str = "",
+                        extra_params=None) -> list:
+    """Return live-pending thread rows for ``workspace``, freshest first.
+
+    Never raises: any DB/import error yields an empty list so the SessionStart
+    contract stays fail-safe.
+    """
+    try:
+        from gaia.store.writer import _connect
+    except ImportError:
+        return []
+    try:
+        con = _connect()
+        try:
+            params = [workspace, workspace]
+            if extra_params:
+                params.extend(extra_params)
+            cur = con.execute(
+                _PENDING_VIVO_SELECT + extra_where
+                + " ORDER BY COALESCE(updated_at, '') DESC",
+                params,
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            con.close()
+    except Exception:
+        return []
+
+
+def _render_digest(args, workspace: str, as_json: bool) -> int:
+    """Transversal cross-project digest of live-pending work (v32 default).
+
+    Groups every live-pending thread by its ``initiative`` key, shows the
+    freshest pending item per initiative (top-1, title + short desc), orders
+    initiatives by the recency of their freshest pending, and shows the top-K
+    initiatives. Initiatives beyond K roll up into a single global overflow
+    line; an initiative with more than one pending shows a per-initiative
+    "+N más en <initiative>" hint. cwd is irrelevant -- the digest is the same
+    from any launch directory.
+    """
+    max_chars = int(getattr(args, "max_chars", None) or _DIGEST_DEFAULT_MAX_CHARS)
+    # Reserve the recoverable-pointer footer width up front.
+    max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
+
+    rows = _fetch_pending_vivo(workspace)
+
+    # Group by initiative bucket. Rows arrive freshest-first, so bucket[0] is
+    # always the freshest pending of that initiative.
+    buckets: dict[str, list] = {}
+    for r in rows:
+        buckets.setdefault(_bucket_key(r.get("initiative")), []).append(r)
+
+    if not buckets:
+        if as_json:
+            print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
+        return 0
+
+    # Order initiatives by recency of their freshest pending (DESC).
+    ordered = sorted(
+        buckets.items(),
+        key=lambda kv: (kv[1][0].get("updated_at") or ""),
+        reverse=True,
+    )
+
+    def _build(shown_buckets: list) -> tuple[str, list, int]:
+        overflow_projects = len(ordered) - len(shown_buckets)
+        lines = [_DIGEST_HEADER, ""]
+        items: list[dict] = []
+        for key, brows in shown_buckets:
+            top = brows[0]
+            name = top.get("name") or ""
+            desc = _digest_truncate(top.get("description") or "", _DIGEST_DESC_MAX)
+            line = f"- {name} [{key}]: {desc}" if desc else f"- {name} [{key}]"
+            lines.append(line)
+            items.append({
+                "name": name,
+                "type": top.get("type"),
+                "initiative": key,
+                "memory_status": top.get("status"),
+                "section": "digest",
+                "description": desc,
+                "pending_count": len(brows),
+            })
+            extra = len(brows) - 1
+            if extra > 0:
+                lines.append(
+                    f"  +{extra} más en {key} — pedime que profundice"
+                )
+        if overflow_projects > 0:
+            lines.append("")
+            lines.append(
+                f"+{overflow_projects} proyectos más — pedime el detalle de alguno"
+            )
+        return "\n".join(lines), items, overflow_projects
+
+    # Start with top-K; if the block overflows the budget, drop the LEAST fresh
+    # shown initiative (they are already recency-ordered) and let it roll into
+    # the global overflow line. This keeps the freshest work visible and stops
+    # any single project from monopolising the block.
+    shown = ordered[:_DIGEST_TOP_K]
+    block, items_flat, overflow_projects = _build(shown)
+    while len(block) > max_chars and len(shown) > 1:
+        shown = shown[:-1]
+        block, items_flat, overflow_projects = _build(shown)
+
+    block = block + "\n\n" + _MEMORY_POINTER
+
+    if as_json:
+        print(json.dumps({
+            "workspace": workspace,
+            "items": items_flat,
+            "block": block,
+            "overflow_projects": overflow_projects,
+        }, indent=2, default=str))
+    else:
+        print(block)
+    return 0
+
+
+def _render_project_mode(args, workspace: str, initiative_arg: str,
+                         as_json: bool) -> int:
+    """Project mode: live-pending work of ONE requested initiative.
+
+    ``--initiative=X`` normalises X the SAME way the write side does
+    (``normalize_initiative``), so the key matches what was stored. The
+    special value "otros" targets the NULL-initiative bucket. Returns the
+    top-N freshest pending items with an overflow footer.
+    """
+    max_chars = int(getattr(args, "max_chars", None) or _DIGEST_DEFAULT_MAX_CHARS)
+    max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
+
+    try:
+        from gaia.store.writer import normalize_initiative
+        key = normalize_initiative(initiative_arg)
+    except Exception:
+        key = (initiative_arg or "").strip().lower() or None
+
+    if key == _OTHERS_BUCKET or key is None:
+        # The NULL-initiative bucket.
+        rows = _fetch_pending_vivo(workspace, "  AND initiative IS NULL ")
+        label = _OTHERS_BUCKET
+    else:
+        rows = _fetch_pending_vivo(workspace, "  AND initiative = ? ", [key])
+        label = key
+
+    if not rows:
+        if as_json:
+            print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
+        return 0
+
+    shown = rows[:_PROJECT_MODE_TOP_N]
+    overflow = len(rows) - len(shown)
+
+    header = f"## Memory — Pendientes de {label}"
+    lines = [header, ""]
+    items: list[dict] = []
+    for r in shown:
+        name = r.get("name") or ""
+        desc = _digest_truncate(r.get("description") or "", _RELEVANT_ITEM_DESC_MAX)
+        lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        items.append({
+            "name": name,
+            "type": r.get("type"),
+            "initiative": label,
+            "memory_status": r.get("status"),
+            "section": "project",
+            "description": desc,
+        })
+    if overflow > 0:
+        lines.append("")
+        lines.append(f"+{overflow} más en {label} — pedime que profundice")
+
+    block = "\n".join(lines) + "\n\n" + _MEMORY_POINTER
+
+    if as_json:
+        print(json.dumps({
+            "workspace": workspace,
+            "items": items,
+            "block": block,
+            "overflow": overflow,
+        }, indent=2, default=str))
     else:
         print(block)
     return 0
@@ -3014,9 +3250,18 @@ def register(subparsers):
     rel_p.add_argument(
         "--sections", default=None, metavar="LIST",
         help="Comma-separated subset of curated sections to render "
-             "(carry_forward,anchor,thread_open). Default: all three. "
-             "The subagent-dispatch path passes --sections=anchor to inject "
-             "only 'About you / What I know'; the orchestrator omits the flag.",
+             "(carry_forward,anchor,thread_open). When set, uses the class/"
+             "status section renderer -- the subagent-dispatch path passes "
+             "--sections=anchor to inject only 'About you / What I know'. "
+             "When omitted (and no --initiative/--types), the transversal "
+             "initiative digest is emitted instead.",
+    )
+    rel_p.add_argument(
+        "--initiative", default=None, metavar="KEY",
+        help="Project mode (v32): show the top live-pending threads of the ONE "
+             "named initiative (normalised like the write side). The value "
+             "'otros' targets the NULL-initiative bucket. When omitted, the "
+             "cross-project transversal digest is emitted.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,

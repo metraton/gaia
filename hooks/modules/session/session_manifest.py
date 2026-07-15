@@ -209,20 +209,33 @@ def build_workspace_memory_block(
 ) -> str:
     """Top relevant curated memory for the workspace, bounded.
 
-    Calls ``gaia memory get-relevant --workspace <X> --max-chars 800`` and
+    Calls ``gaia memory get-relevant --workspace <X> --max-chars 1500`` and
     captures stdout. Returns markdown to inject in SessionStart
     additionalContext, or "" when there are no curated rows for the
     workspace, when the workspace cannot be inferred, or when the
     subprocess fails for any reason.
 
+    v32 (cwd-INDEPENDENT). When ``sections`` is omitted (the orchestrator's
+    SessionStart call) the CLI emits the TRANSVERSAL INITIATIVE DIGEST: a
+    cross-project worklist of live-pending threads grouped by
+    ``memory.initiative``, ordered by recency, top-K initiatives with global +
+    per-initiative overflow. It no longer anchors to the launch directory --
+    the digest is identical whether the session starts at a workspace root or
+    inside one project.
+
+    Budget: ``--max-chars`` is raised 800 -> 1500. The old 800 cap, combined
+    with the retired cwd anchoring, truncated the block to a SINGLE project as
+    soon as that project carried several pending threads (the monopoly the
+    digest is designed to prevent). With one short line per initiative
+    (~90-110 chars) plus header and pointer, ~10 initiatives need ~1500 chars;
+    the CLI still self-trims the least-fresh initiatives into the overflow line
+    if the budget is exceeded, so the cap stays hard.
+
     ``sections`` (optional): a subset of ``carry_forward``/``anchor``/
-    ``thread_open`` to render. When omitted (the orchestrator's SessionStart
-    call), all three sections are emitted -- the orchestrator sees "For this
-    session", "About you / What I know", and "Open threads" unchanged. The
-    subagent-dispatch path passes ``["anchor"]`` so a dispatched subagent
-    receives only the durable "About you / What I know" anchors, not the
-    session-scoped carry_forward or open-thread state. When set, it is
-    forwarded verbatim as ``--sections`` to the CLI.
+    ``thread_open``. When set, the CLI uses the class/status section renderer
+    instead of the digest. The subagent-dispatch path passes ``["anchor"]`` so
+    a dispatched subagent receives only the durable "About you / What I know"
+    anchors. When set, it is forwarded verbatim as ``--sections`` to the CLI.
 
     Fail-safe: any error (subprocess timeout, non-zero exit, missing CLI,
     empty output) returns "". SessionStart must not block on memory.
@@ -250,7 +263,7 @@ def build_workspace_memory_block(
         cmd = cli_args + [
             "memory", "get-relevant",
             "--workspace", ws,
-            "--max-chars", "800",
+            "--max-chars", "1500",
         ]
         if sections:
             cmd += ["--sections", ",".join(sections)]

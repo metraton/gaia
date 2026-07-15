@@ -104,11 +104,17 @@ def _insert_link(db_path, src_name, dst_name, kind, workspace="testws"):
 
 
 def _args(**overrides):
+    # v32: the class/status section renderer is now reached via an explicit
+    # --sections filter (the no-flag default is the transversal initiative
+    # digest, covered by test_memory_initiative_digest.py). These tests target
+    # the section renderer, so the base passes all three sections explicitly.
     base = {
         "workspace": "testws",
         "limit": 8,
         "max_chars": 800,
-        "types": None,   # v4 default path
+        "types": None,
+        "sections": "carry_forward,anchor,thread_open",
+        "initiative": None,
         "json": True,
         "func": memory_mod._cmd_get_relevant,
     }
@@ -496,10 +502,11 @@ class TestEmptySectionsOmitHeader:
 
 
 class TestProjectAwareInjection:
-    """Read/injection is project-aware: when the cwd resolves to a project,
-    prioritise its anchored rows, include unanchored (project_ref NULL) rows
-    as the workspace past, and exclude rows anchored to OTHER projects. When
-    the cwd resolves to no project, behaviour is unchanged (all workspace rows).
+    """v32: cwd anchoring was REMOVED. The section renderer is workspace-scoped
+    only -- the launch directory no longer filters or prioritises rows. These
+    tests assert that removal: every anchoring state is visible regardless of
+    which directory the query runs from, and rows anchored to different
+    projects are all present (none excluded by cwd).
     """
 
     def _seed(self, tmp_db, proj_dir):
@@ -513,8 +520,8 @@ class TestProjectAwareInjection:
                        "other project", "2026-05-22T11:00:00Z",
                        project_ref="id/other")
 
-    def test_active_project_scopes_and_prioritises(self, tmp_db, tmp_path,
-                                                   monkeypatch, capsys):
+    def test_cwd_inside_project_does_not_scope_or_exclude(self, tmp_db, tmp_path,
+                                                          monkeypatch, capsys):
         proj_dir = tmp_path / "p1"
         proj_dir.mkdir()
         self._seed(tmp_db, proj_dir)
@@ -523,30 +530,21 @@ class TestProjectAwareInjection:
         rc = memory_mod._cmd_get_relevant(_args())
         out = capsys.readouterr().out
         assert rc == 0
-        items = json.loads(out)["items"]
-        names = [i["name"] for i in items]
+        names = {i["name"] for i in json.loads(out)["items"]}
+        # No cwd-based exclusion: the OTHER-project row is present too.
+        assert {"atom_mine", "atom_legacy", "atom_other"} <= names
 
-        # Row anchored to a DIFFERENT project is excluded.
-        assert "atom_other" not in names
-        # Active-project row and legacy NULL row are both present.
-        assert "atom_mine" in names
-        assert "atom_legacy" in names
-        # Active-project row floats above the NULL row despite older updated_at.
-        assert names.index("atom_mine") < names.index("atom_legacy")
-
-    def test_no_active_project_keeps_all_workspace_rows(self, tmp_db, tmp_path,
-                                                        monkeypatch, capsys):
+    def test_cwd_at_root_keeps_all_workspace_rows(self, tmp_db, tmp_path,
+                                                  monkeypatch, capsys):
         proj_dir = tmp_path / "p1"
         proj_dir.mkdir()
         self._seed(tmp_db, proj_dir)
-        # cwd is the workspace root, ABOVE the project dir -> no active project.
         monkeypatch.chdir(tmp_path)
 
         rc = memory_mod._cmd_get_relevant(_args())
         out = capsys.readouterr().out
         assert rc == 0
         names = {i["name"] for i in json.loads(out)["items"]}
-        # Unchanged workspace behaviour: every anchoring state is visible.
         assert {"atom_mine", "atom_legacy", "atom_other"} <= names
 
 
@@ -600,15 +598,29 @@ class TestSectionsFilter:
         # items are anchors only
         assert all(i["section"] == "anchor" for i in payload["items"])
 
-    def test_sections_omitted_renders_all_three(self, tmp_db, capsys):
+    def test_sections_explicit_all_three_renders_all_three(self, tmp_db, capsys):
         self._seed_all_three(tmp_db)
-        rc = memory_mod._cmd_get_relevant(_args())  # no sections -> all three
+        rc = memory_mod._cmd_get_relevant(
+            _args(sections="carry_forward,anchor,thread_open")
+        )
         out = capsys.readouterr().out
         assert rc == 0
         block = json.loads(out)["block"]
         assert "## Memory — For this session" in block
         assert "## Memory — About you / What I know" in block
         assert "## Memory — Open threads" in block
+
+    def test_sections_omitted_now_renders_digest_not_sections(self, tmp_db, capsys):
+        """v32: omitting --sections yields the transversal initiative digest,
+        NOT the class/status sections. Only a live-pending thread appears there,
+        so the anchor row is absent and the digest header is used."""
+        self._seed_all_three(tmp_db)
+        rc = memory_mod._cmd_get_relevant(_args(sections=None))
+        out = capsys.readouterr().out
+        assert rc == 0
+        block = json.loads(out)["block"]
+        assert "## Memory — Pendientes vivos por proyecto" in block
+        assert "## Memory — About you / What I know" not in block
 
     def test_sections_empty_string_falls_back_to_all(self, tmp_db, capsys):
         """A blank/whitespace --sections is a safe fallback to all sections."""
