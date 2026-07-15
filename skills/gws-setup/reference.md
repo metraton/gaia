@@ -63,6 +63,8 @@ gws gmail users messages modify --params '{"userId":"me","id":"<message-id>"}' -
 | Encrypted credentials | `~/.config/gws/credentials.enc` | Created by `gws auth login` |
 | Encryption | AES-256-GCM | Key stored in OS keyring |
 
+> **Keyring backend callout.** `gws` resolves the encryption key through an OS keyring and prints `Using keyring backend: <name>` to **stderr** on every invocation — a harmless banner, not an error, and it does not touch stdout (JSON output stays clean). It only becomes a problem in **headless / WSL / SSH** environments where no Secret Service (e.g. GNOME Keyring, `libsecret`) is running: keyring resolution then fails and `gws auth login` cannot store or read credentials. Fix by ensuring a keyring backend is available (start the Secret Service, or install/configure `keyring` with an alternative backend) BEFORE running `gws auth setup`. This matters for scheduled / unattended Gmail runs — see "Headless Mode" in `gmail-triage/SKILL.md`.
+
 ## Error Quick Reference
 
 | Error | Cause | Fix |
@@ -71,3 +73,5 @@ gws gmail users messages modify --params '{"userId":"me","id":"<message-id>"}' -
 | `403: access_denied` | Missing Test User in OAuth consent | Add email to Test Users in GCP console |
 | `401: invalid_client` | Wrong OAuth client type | Recreate as "Desktop app", not "Web application" |
 | `403: app not verified` | Normal for dev apps | Click "Advanced" -> "Go to gws-cli (unsafe)" |
+| Token expires / `gws auth status` fails after ~7 days | OAuth consent app left in **Testing** (7-day refresh-token cap with Gmail scopes) | Publish the app to **In production** (SKILL.md step 10), then re-run `gws auth login` |
+| keyring / `No recommended backend was available` / `Using keyring backend` fails | No Secret Service in headless/WSL/SSH session | Start a keyring backend (GNOME Keyring / `libsecret`) or configure an alternative `keyring` backend before `gws auth setup` |

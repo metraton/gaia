@@ -69,7 +69,15 @@ Known bug: gws issue #119 -- `gws auth login` unusable with personal @gmail.com 
 - `gws gmail users messages list --params '{"userId":"me","maxResults":5}'` -- test Gmail
 - `gws gmail users labels list --params '{"userId":"me"}'` -- test labels
 
-### 10. Restore gcloud
+### 10. Publish OAuth consent app to Production (stabilize tokens)
+
+- URL: `https://console.cloud.google.com/apis/credentials/consent?project=<project-id>` -- the OAuth consent screen, surfaced in the current console under **APIs & Services -> OAuth consent screen -> Audience** (new "Google Auth Platform" layout: **Audience** page).
+- Under **Publishing status**, click **PUBLISH APP** to move the app from **Testing** to **In production**, then confirm.
+- WHY THIS MATTERS (the silent 7-day trap): while the app stays in **Testing**, Google issues refresh tokens that **expire after 7 days** whenever any requested scope goes beyond `name` / `email` / `profile` -- and Gmail scopes always do. The stored credential silently dies after a week, `gws auth status` starts failing, and the whole login must be redone. Publishing to **In production** removes the 7-day cap and stabilizes the token.
+- Verification is NOT required to publish for personal single-user use. With sensitive scopes (`gmail.modify`) an unverified production app simply shows the same "Google hasn't verified this app" warning as Testing did -- proceed via **Advanced -> Go to gws CLI (unsafe)**. Verification is a separate Google review that removes the warning screen and is only needed for a public app serving *other* users' accounts, not your own.
+- Traps that remain even in production (Google token policy): a refresh token also dies after **6 months of non-use**, on a **Google password change** while Gmail scopes are granted, or when the user revokes access. Recover any of these by re-running `gws auth login`.
+
+### 11. Restore gcloud
 
 - `gcloud config set account <original-work-account>`
 - Verify: `gcloud config get account`
@@ -85,6 +93,7 @@ Known bug: issue #181 -- `--account` flag doesn't work correctly yet.
 - Using scope presets for personal @gmail.com -- causes `400: invalid_scope`
 - Skipping Test User in OAuth consent screen -- causes `403: access_denied`
 - Choosing "Web application" as OAuth client type -- causes `401: invalid_client`
+- Leaving the OAuth consent app in **Testing** -- refresh tokens expire after ~7 days with Gmail scopes, forcing weekly re-auth. Publish to **In production** (step 10) to stabilize
 - Forgetting to restore `gcloud config set account` after setup
 - Including `admin.*`, `cloud-identity.*`, or `directory.*` scopes for personal accounts
 
