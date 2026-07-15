@@ -273,6 +273,30 @@ class TestClaudeFooterHardening:
         assert "Approved-by" not in stripped
         assert "fix" in stripped
 
+    # ---- Claude-Session trailer ----
+
+    def test_claude_session_trailer_stripped(self, validator):
+        """The 'Claude-Session: https://claude.ai/code/session_...' trailer must
+        be DETECTED and STRIPPED, including at the very end of the body (the
+        closing-quote look-ahead must be honored)."""
+        cmd = (
+            'git commit -m "fix bug\n\n'
+            "Claude-Session: https://claude.ai/code/session_01EQ9Y5iWs84xD49mVVqTTp3\""
+        )
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Claude-Session" not in stripped
+        assert "claude.ai/code/session" not in stripped
+        assert "fix bug" in stripped
+        # The closing quote that terminates the -m value survives.
+        assert stripped.rstrip().endswith('"')
+
+    def test_claude_session_url_detected(self, validator):
+        """The bare session URL is itself a detection signal even without the
+        'Claude-Session:' key prefix."""
+        cmd = 'git commit -m "fix\n\nsee https://claude.ai/code/session_abc123"'
+        assert validator._detect_claude_footers(cmd) is True
+
     # ---- Repeated -m argument (no preceding newline) ----
 
     def test_repeated_m_opus_footer_stripped(self, validator):
@@ -297,6 +321,17 @@ class TestClaudeFooterHardening:
         assert "🤖" not in stripped
         assert "Generated with" not in stripped
         assert "real" in stripped
+
+    def test_repeated_m_claude_session_stripped(self, validator):
+        cmd = (
+            'git commit -m "real message" '
+            '-m "Claude-Session: https://claude.ai/code/session_xyz"'
+        )
+        assert validator._detect_claude_footers(cmd) is True
+        stripped = validator._strip_claude_footers(cmd)
+        assert "Claude-Session" not in stripped
+        assert "claude.ai/code/session" not in stripped
+        assert "real message" in stripped
 
     # ---- Negative: a genuine "Opus" word is not a footer ----
 

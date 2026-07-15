@@ -135,6 +135,11 @@ FORBIDDEN_FOOTER_PATTERNS = [
     # Robot emoji on its own is a strong AI-attribution signal.
     r"🤖",
     r"Co-Authored-By:\s+Claude\b",
+    # Claude Code session trailer: "Claude-Session: https://claude.ai/code/..."
+    # The trailer key and the session URL are independent signals -- either
+    # alone identifies the footer.
+    r"Claude-Session:",
+    r"claude\.ai/code/session",
     # Anthropic model family attributed via Co-Authored-By / Co-authored-with.
     r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bOpus\b",
     r"Co-[Aa]uthored-(?:[Bb]y|[Ww]ith):[^\n]*\bSonnet\b",
@@ -1230,6 +1235,7 @@ class BashValidator:
           - "Generated with [Claude Code]" and the bare "🤖 Generated with ..."
           - a bare robot emoji 🤖 line
           - "Approved-by:" trailers
+          - "Claude-Session:" trailers (the claude.ai/code session URL)
         Both newline-anchored footer LINES and footers carried in a SECOND
         ``-m "..."`` argument (no preceding newline) are handled.
 
@@ -1267,6 +1273,8 @@ class BashValidator:
             r'\n\s*🤖\s*Generated with[^\n]*?(?=["\')\]]*(?:\n|$))',
             # Bare robot-emoji line (emoji not followed by "Generated with").
             r'\n\s*🤖[^\n]*?(?=["\')\]]*(?:\n|$))',
+            # Claude Code session trailer: "Claude-Session: https://claude.ai/code/..."
+            r'\n\s*Claude-Session:[^\n]*?(?=["\')\]]*(?:\n|$))',
         ]
         for pattern in footer_line_patterns:
             command = re.sub(pattern, '', command, flags=re.IGNORECASE)
@@ -1283,6 +1291,7 @@ class BashValidator:
             r'''\s+-m\s+(["'])\s*Approved-by:[^"']*\1''',
             r'''\s+-m\s+(["'])\s*🤖[^"']*\1''',
             r'''\s+-m\s+(["'])\s*Generated with\s+\[?Claude Code\]?[^"']*\1''',
+            r'''\s+-m\s+(["'])\s*Claude-Session:[^"']*\1''',
         ]
         for pattern in m_footer_patterns:
             command = re.sub(pattern, '', command, flags=re.IGNORECASE)
