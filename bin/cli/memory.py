@@ -732,6 +732,7 @@ def _cmd_add(args) -> int:
         from gaia.store.writer import (
             upsert_memory, reclassify_memory, resolve_project_ref,
             project_workspaces, VALID_MEMORY_TYPES,
+            normalize_initiative, initiative_from_project_ref,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -790,6 +791,22 @@ def _cmd_add(args) -> int:
         project_ref = project_ref_flag
     # else: --workspace-only degraded lane -> project_ref stays None (exit 0).
 
+    # v32: resolve the canonical initiative grouping key.
+    #   * --initiative=<X> (explicit logical initiative) wins, normalized. It
+    #     needs no git project -- this is the surface for initiatives that are
+    #     NOT git repos (branchkinect, buildwiz, axisio, ...), which --project
+    #     deliberately refuses (it never guesses an unknown project name).
+    #   * else, when --project / --project-ref anchored a git project_ref, the
+    #     key is the repo basename of that anchor (gaia, balance).
+    #   * else None (workspace-only note): no initiative, never guessed.
+    initiative_flag = getattr(args, "initiative", None)
+    if initiative_flag is not None:
+        initiative = normalize_initiative(initiative_flag)
+    elif project_ref is not None:
+        initiative = initiative_from_project_ref(project_ref)
+    else:
+        initiative = None
+
     try:
         res = upsert_memory(
             workspace,
@@ -798,6 +815,7 @@ def _cmd_add(args) -> int:
             body=body,
             description=description,
             project_ref=project_ref,
+            initiative=initiative,
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -847,6 +865,8 @@ def _cmd_add(args) -> int:
         }
         if project_ref is not None:
             out["project_ref"] = project_ref
+        if initiative is not None:
+            out["initiative"] = initiative
         if reclassify_result is not None:
             out["class"] = reclassify_result["class"]
             out["memory_status"] = reclassify_result["memory_status"]
@@ -858,6 +878,8 @@ def _cmd_add(args) -> int:
             print(f"  description: {description}")
         if project_ref is not None:
             print(f"  project_ref: {project_ref}")
+        if initiative is not None:
+            print(f"  initiative: {initiative}")
         print(f"  body: {snippet}")
         if reclassify_result is not None:
             print(
@@ -2878,6 +2900,17 @@ def register(subparsers):
             "N3: anchor this memory directly to a known stable "
             "project_identity string, bypassing name resolution. Use "
             "--project instead unless you already hold the identity value."
+        ),
+    )
+    add_p.add_argument(
+        "--initiative", default=None, metavar="KEY",
+        help=(
+            "v32: canonical project/initiative grouping key (memory.initiative). "
+            "Use for a LOGICAL initiative that is NOT a git repo (branchkinect, "
+            "buildwiz, axisio, ...) -- normalized to lowercase_snake. When "
+            "--project / --project-ref anchors a git project, initiative is "
+            "auto-derived from the repo basename (gaia, balance); pass this only "
+            "to set a key with no git anchor or to override the derived one."
         ),
     )
     add_p.add_argument(

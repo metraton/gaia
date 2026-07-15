@@ -391,3 +391,128 @@ def test_by_cwd_scoped_to_workspace(db: Path, tmp_path) -> None:
     # Same cwd, but the project lives in workspace 'other', so 'me' sees nothing.
     assert resolve_project_ref_by_cwd("me", cwd=proj, db_path=db) is None
     assert resolve_project_ref_by_cwd("other", cwd=proj, db_path=db) == "id/other-gaia"
+
+
+# ---------------------------------------------------------------------------
+# v32: initiative -- the canonical project/initiative grouping key
+# ---------------------------------------------------------------------------
+
+def _get_initiative(db_path: Path, workspace: str, name: str):
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT initiative FROM memory WHERE workspace=? AND name=?",
+            (workspace, name),
+        ).fetchone()
+    finally:
+        con.close()
+    return row["initiative"] if row else None
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("gaia", "gaia"),
+        ("Diagram Builder", "diagram_builder"),
+        ("branchkinect", "branchkinect"),
+        ("AXIS-IO", "axis_io"),
+        ("  century  ", "century"),
+        ("", None),
+        ("   ", None),
+        ("---", None),
+        (None, None),
+    ],
+)
+def test_normalize_initiative(raw, expected) -> None:
+    from gaia.store.writer import normalize_initiative
+    assert normalize_initiative(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "ref,expected",
+    [
+        ("/home/jorge/ws/me/gaia/.git", "gaia"),
+        ("/home/jorge/ws/me/balance/.git", "balance"),
+        ("github.com/me/direct", "direct"),
+        ("myrepo.git", "myrepo"),
+        ("/a/b/c/", "c"),
+        (None, None),
+        ("", None),
+    ],
+)
+def test_initiative_from_project_ref(ref, expected) -> None:
+    from gaia.store.writer import initiative_from_project_ref
+    assert initiative_from_project_ref(ref) == expected
+
+
+def test_upsert_memory_explicit_initiative_persists(db: Path) -> None:
+    """An explicit --initiative-style key (no git anchor) is normalized and
+    stored; project_ref stays NULL."""
+    from gaia.store.writer import upsert_memory
+
+    upsert_memory(
+        "me", "project_bk_notes", type="project", body="notes",
+        initiative="BranchKinect", db_path=db,
+    )
+    assert _get_initiative(db, "me", "project_bk_notes") == "branchkinect"
+    assert _get_project_ref(db, "me", "project_bk_notes") is None
+
+
+def test_upsert_memory_derives_initiative_from_project_ref(db: Path) -> None:
+    """When initiative is not passed but project_ref is, initiative is derived
+    from the repo basename of the git anchor."""
+    from gaia.store.writer import upsert_memory
+
+    upsert_memory(
+        "me", "project_g_notes", type="project", body="notes",
+        project_ref="/home/jorge/ws/me/gaia/.git", db_path=db,
+    )
+    assert _get_initiative(db, "me", "project_g_notes") == "gaia"
+    assert _get_project_ref(db, "me", "project_g_notes") == "/home/jorge/ws/me/gaia/.git"
+
+
+def test_upsert_memory_explicit_initiative_wins_over_project_ref(db: Path) -> None:
+    """An explicit initiative overrides the value that would be derived from
+    project_ref."""
+    from gaia.store.writer import upsert_memory
+
+    upsert_memory(
+        "me", "override", type="project", body="notes",
+        project_ref="/home/jorge/ws/me/gaia/.git", initiative="century",
+        db_path=db,
+    )
+    assert _get_initiative(db, "me", "override") == "century"
+
+
+def test_upsert_memory_without_initiative_is_null(db: Path) -> None:
+    from gaia.store.writer import upsert_memory
+
+    upsert_memory("me", "plain_note", type="user", body="notes", db_path=db)
+    assert _get_initiative(db, "me", "plain_note") is None
+
+
+def test_upsert_memory_update_without_initiative_preserves_existing(db: Path) -> None:
+    """coalesce-or-omit: a later upsert that mentions neither initiative nor
+    project_ref must NOT null out a previously-set initiative."""
+    from gaia.store.writer import upsert_memory
+
+    upsert_memory(
+        "me", "sticky_init", type="project", body="v1",
+        initiative="branchkinect", db_path=db,
+    )
+    upsert_memory("me", "sticky_init", type="project", body="v2", db_path=db)
+
+    assert _get_initiative(db, "me", "sticky_init") == "branchkinect"
+
+
+def test_get_memory_exposes_initiative(db: Path) -> None:
+    from gaia.store.writer import upsert_memory, get_memory
+
+    upsert_memory(
+        "me", "readable_init", type="project", body="notes",
+        initiative="axisio", db_path=db,
+    )
+    row = get_memory("me", "readable_init", db_path=db)
+    assert row is not None
+    assert row["initiative"] == "axisio"

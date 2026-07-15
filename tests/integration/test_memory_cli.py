@@ -47,7 +47,8 @@ def _read_memory_row(db_path: Path, workspace: str, name: str) -> dict | None:
     try:
         row = con.execute(
             "SELECT workspace, name, type, description, body, project_ref, "
-            "origin_session_id, updated_at FROM memory WHERE workspace = ? AND name = ?",
+            "initiative, origin_session_id, updated_at "
+            "FROM memory WHERE workspace = ? AND name = ?",
             (workspace, name),
         ).fetchone()
         return dict(row) if row is not None else None
@@ -249,7 +250,7 @@ def _add_args(**overrides) -> argparse.Namespace:
     base = dict(
         name="proj-mem", type="project", body="body text",
         description=None, workspace="me", json=False,
-        project=None, project_ref=None,
+        project=None, project_ref=None, initiative=None,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -469,6 +470,69 @@ def test_add_project_no_identity_errors_structured(tmp_db, tmp_path,
     payload = _err_payload(capsys)
     assert payload["code"] == "project_no_identity"
     assert _read_memory_row(tmp_db, "me", "no-id-mem") is None
+
+
+# ---------------------------------------------------------------------------
+# v32: initiative -- canonical project/initiative grouping key
+# ---------------------------------------------------------------------------
+
+def test_add_project_flag_populates_initiative_from_basename(tmp_db, tmp_path,
+                                                             monkeypatch, capsys):
+    """--project (git) resolves project_ref AND derives initiative from the
+    repo basename of that anchor."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    _seed_project(tmp_db, "me", "gaia",
+                  project_identity="/home/jorge/ws/me/gaia/.git")
+
+    rc = _cmd_add(_add_args(name="git-init-mem", project="gaia"))
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "git-init-mem")
+    assert row["project_ref"] == "/home/jorge/ws/me/gaia/.git"
+    assert row["initiative"] == "gaia"
+
+
+def test_add_initiative_flag_logical_no_git_anchor(tmp_db, tmp_path,
+                                                   monkeypatch, capsys):
+    """--initiative sets a LOGICAL initiative key (normalized) with no git
+    project; project_ref stays NULL."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    rc = _cmd_add(_add_args(name="logical-init-mem", initiative="BranchKinect",
+                            workspace="me"))
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "logical-init-mem")
+    assert row["initiative"] == "branchkinect"
+    assert row["project_ref"] is None
+
+
+def test_add_workspace_only_leaves_initiative_null(tmp_db, tmp_path,
+                                                   monkeypatch, capsys):
+    """--workspace only (no --project / --initiative) -> initiative NULL."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    rc = _cmd_add(_add_args(name="ws-only-init", workspace="me"))
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_memory_row(tmp_db, "me", "ws-only-init")
+    assert row["initiative"] is None
+
+
+def test_add_initiative_emitted_in_json(tmp_db, tmp_path, monkeypatch, capsys):
+    """The resolved initiative key surfaces in the JSON output."""
+    from cli.memory import _cmd_add
+
+    monkeypatch.chdir(tmp_path)
+    rc = _cmd_add(_add_args(name="json-init-mem", initiative="axisio",
+                            workspace="me", json=True))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["initiative"] == "axisio"
 
 
 # ---------------------------------------------------------------------------

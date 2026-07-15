@@ -703,6 +703,7 @@ CREATE TABLE IF NOT EXISTS memory (
     status            TEXT,  -- v4: lifecycle for class=thread (open|carry_forward|graduated|closed)
     project_ref       TEXT,  -- remote-stable project anchor for project-scoped memory (projects.project_identity); NULL until populated. Column added v25 (scan-v2 SV1); populated/used in SV3.
     deleted_at        TEXT,  -- tombstone marker (scan-v2 SV3). NULL = live row; non-NULL ISO8601 = soft-deleted. delete_memory() sets this instead of DELETE so the row + body survive; hard DELETE is reserved for explicit human curation (delete_memory(hard=True)). All read paths filter `deleted_at IS NULL`. Column added v26.
+    initiative        TEXT,  -- canonical project/initiative grouping key (clean, vantage-independent). Distinct from project_ref (the git-common-dir path): initiative is the human-facing key that unifies git projects (basename of project_ref sans .git -> 'gaia', 'balance') AND logical initiatives that are NOT git repos ('branchkinect', 'buildwiz', 'axisio', ...). NULL when no initiative can be resolved without guessing. Populated at write time (upsert_memory / gaia memory add: --project -> basename(project_ref); --initiative -> normalized key). Column added v32; existing rows backfilled by scripts/migrations/v31_to_v32.sql.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );

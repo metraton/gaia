@@ -1986,6 +1986,57 @@ def resolve_project_ref_by_cwd(
     return best_identity
 
 
+# ---------------------------------------------------------------------------
+# initiative -- the canonical project/initiative grouping key (v32).
+#
+# `initiative` (memory.initiative) is the clean, vantage-independent key that
+# unifies BOTH git projects and logical (non-repo) initiatives. It is DISTINCT
+# from `project_ref` (the git-common-dir path): project_ref stays the git
+# anchor; initiative is the human-facing grouping key that downstream reads
+# (memory injection / get-relevant) group by. Populated at write time, never
+# guessed -- resolves to None rather than fabricate a key.
+# ---------------------------------------------------------------------------
+
+_INITIATIVE_NORMALIZE_RE = _re_for_slug.compile(r"[^a-z0-9]+")
+
+
+def normalize_initiative(raw: str | None) -> str | None:
+    """Normalize a raw project/initiative label into the canonical
+    ``memory.initiative`` key: lowercase, every run of non-alphanumeric chars
+    collapsed to a single ``_``, leading/trailing ``_`` stripped. Returns
+    ``None`` for empty / all-separator input (never an empty-string key).
+
+    Examples: ``"Diagram Builder"`` -> ``"diagram_builder"``; ``"gaia"`` ->
+    ``"gaia"``; ``"  "`` -> ``None``.
+    """
+    if raw is None:
+        return None
+    key = _INITIATIVE_NORMALIZE_RE.sub("_", str(raw).strip().lower()).strip("_")
+    return key or None
+
+
+def initiative_from_project_ref(project_ref: str | None) -> str | None:
+    """Derive the canonical initiative key from a git ``project_ref``.
+
+    ``project_ref`` is the git-common-dir path stored on a project-anchored
+    memory row (e.g. ``/home/jorge/ws/me/gaia/.git``). The initiative is the
+    repository basename with the trailing ``.git`` removed and then normalized
+    -- ``/home/jorge/ws/me/gaia/.git`` -> ``"gaia"``. A ref that is not a
+    ``.git`` path (e.g. a bare identity like ``github.com/me/x``) still yields
+    its last path segment normalized (``"x"``). Returns ``None`` for an empty
+    ref.
+    """
+    if not project_ref:
+        return None
+    ref = str(project_ref).strip().rstrip("/")
+    if ref.endswith("/.git"):
+        ref = ref[:-len("/.git")]
+    elif ref.endswith(".git"):
+        ref = ref[:-len(".git")].rstrip("/")
+    base = ref.rsplit("/", 1)[-1]
+    return normalize_initiative(base)
+
+
 def upsert_memory(
     workspace: str,
     name: str,
@@ -1995,6 +2046,7 @@ def upsert_memory(
     description: str | None = None,
     origin_session_id: str | None = None,
     project_ref: str | None = None,
+    initiative: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -2034,8 +2086,22 @@ def upsert_memory(
     sentinel; once anchored, forward-only re-anchoring is the only write path
     (matches the existing ``topic_key`` COALESCE convention -- no precedent in
     this module for an explicit-NULL clear on a coalesced column).
+
+    ``initiative`` -- canonical project/initiative grouping key (v32). Same
+    coalesce-or-omit discipline as ``project_ref``. When ``initiative`` is not
+    passed but ``project_ref`` is, it is auto-derived via
+    :func:`initiative_from_project_ref` so every project-anchored write gets a
+    key for free; pass an explicit ``initiative`` (already-normalized or raw --
+    it is normalized here) to set a logical-initiative key with no git anchor.
     """
     _assert_dispatch_can_write_memory()
+
+    # initiative: explicit value wins (normalized); otherwise derive from the
+    # git anchor. None when neither is available -- never guessed.
+    if initiative is not None:
+        initiative = normalize_initiative(initiative)
+    elif project_ref is not None:
+        initiative = initiative_from_project_ref(project_ref)
 
     if type not in VALID_MEMORY_TYPES:
         raise ValueError(
@@ -2066,19 +2132,21 @@ def upsert_memory(
             con.execute(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
-                                    project_ref, origin_session_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    project_ref, initiative, origin_session_id,
+                                    updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
                     body              = excluded.body,
                     project_ref       = COALESCE(excluded.project_ref, project_ref),
+                    initiative        = COALESCE(excluded.initiative, initiative),
                     origin_session_id = excluded.origin_session_id,
                     updated_at        = excluded.updated_at,
                     deleted_at        = NULL
                 """,
                 (workspace, name, type, description, body,
-                 project_ref, origin_session_id, now),
+                 project_ref, initiative, origin_session_id, now),
             )
             con.commit()
             return {
@@ -2753,17 +2821,21 @@ def _upsert_checkpoint_row(
         (workspace, name),
     ).fetchone()
     action = "updated" if existing is not None else "inserted"
+    # v32: derive the initiative grouping key from the git anchor (same
+    # coalesce-or-omit discipline as project_ref). None when unanchored.
+    initiative = initiative_from_project_ref(project_ref)
     con.execute(
         """
         INSERT INTO memory (workspace, name, type, description, body,
-                            project_ref, origin_session_id, updated_at,
-                            class, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            project_ref, initiative, origin_session_id,
+                            updated_at, class, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace, name) DO UPDATE SET
             type              = excluded.type,
             description       = excluded.description,
             body              = excluded.body,
             project_ref       = COALESCE(excluded.project_ref, project_ref),
+            initiative        = COALESCE(excluded.initiative, initiative),
             origin_session_id = excluded.origin_session_id,
             updated_at        = excluded.updated_at,
             class             = excluded.class,
@@ -2771,7 +2843,7 @@ def _upsert_checkpoint_row(
             deleted_at        = NULL
         """,
         (workspace, name, mem_type, description, body,
-         project_ref, origin_session_id, now, class_, status),
+         project_ref, initiative, origin_session_id, now, class_, status),
     )
     return {
         "name": name,
@@ -3024,7 +3096,7 @@ def get_memory(
     try:
         sql = (
             "SELECT workspace, name, type, description, body, project_ref, "
-            "       origin_session_id, updated_at, deleted_at "
+            "       initiative, origin_session_id, updated_at, deleted_at "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
         if not include_deleted:
