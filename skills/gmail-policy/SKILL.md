@@ -23,15 +23,19 @@ This is a reasoning step, not a checklist. Run it silently before every response
 
 ### Intent Classification Table
 
-| Lo que dice el user | Intent real | Acción correcta |
-|---------------------|-------------|-----------------|
-| "necesito analizar un correo y enviar unos correos importantes" | Contexto -- está contándote el plan, no ejecutando | No hacer nada de envío; esperar el comando específico |
-| "chequea mis correos y ve si hay algo importante" | Review + iniciativa concedida | Leer inbox, triage, **generar drafts** para los que merezcan respuesta, presentar lista al user |
-| "dile que aceptamos y envíaselo" | Comando explícito de envío | Crear y enviar directamente (un solo ciclo T3, no draft→send) |
-| "mándale un correo a X diciéndole Y" | Ambiguo | Preguntar: ¿quiere draft para revisar o envío directo? |
-| "respóndele a Assetplan aceptando" | Ambiguo, tendencia a draft | Default a draft si el contenido involucra datos personales, decisiones comerciales, o formularios |
-| "dile que llego a las 5pm" | Comando simple, contenido reversible | Envío directo está bien sin pasar por draft |
-| "prepara una respuesta para X" | Draft explícito | Crear draft y reportar |
+This table is the single source of truth for how an email-related utterance maps to an action. Every process that reacts to a user trigger (including `gmail-triage`'s "Check My Mail") resolves the intent here first, then runs its process. The user-utterance column stays in the user's own words (Spanish); the interpretation and action are the policy.
+
+| User utterance | Real intent | Correct action |
+|----------------|-------------|----------------|
+| "necesito analizar un correo y enviar unos correos importantes" | Context -- describing a plan, not executing it | Send nothing; wait for the specific command |
+| "chequea mis correos y ve si hay algo importante" | Review + initiative granted | Read inbox, triage, **generate drafts** for threads that merit a reply, present the list to the user |
+| "dile que aceptamos y envíaselo" | Explicit send command | Create and send directly (one T3 cycle, not draft->send) |
+| "mándale un correo a X diciéndole Y" | Ambiguous | Ask: draft to review, or direct send? |
+| "respóndele a Assetplan aceptando" | Ambiguous, leans to draft | Default to draft when the content involves personal data, commercial decisions, or forms |
+| "dile que llego a las 5pm" | Simple command, reversible content | Direct send is fine, no draft needed |
+| "prepara una respuesta para X" | Explicit draft | Create draft and report |
+
+The "review + initiative granted" row is the interpretation `gmail-triage` depends on: a general review trigger ("chequea mi mail", "¿algo nuevo?") means *review with initiative*, not a bare listing. `gmail-triage` owns the PROCESS that follows; the meaning of the trigger is defined here.
 
 ### The Anti-Drift Rule
 
@@ -54,6 +58,23 @@ Pattern:
 The user reviews and approves individual drafts before sending. The generation step does not require one-by-one confirmation -- the presentation step does.
 
 Do not generate drafts proactively outside triage context. If the user opens a conversation about a single email, default to their explicit instruction.
+
+## Autonomous Action Boundary
+
+This is the security rule that decides which email operations may run **without asking** and which must always be proposed. It governs every `gmail-triage` mode, and above all the headless run where no user is present to approve. It lives here, in the policy layer, precisely because a process must not be the only home of the rule it obeys.
+
+**Permitted automatically** (no approval, safe unattended) -- moves that are **mechanical AND reversible**, where nothing is lost and the state can be flipped back:
+- Classifying a new email into `_gaia/action` or `_gaia/waiting` on a clear signal (`addLabelIds`).
+- The reversible state swaps: `action -> waiting` when the user replies, `waiting -> action` when a third party replies. Relabeling (`removeLabelIds` of the old state + `addLabelIds` of the new) is a swap, not a destruction.
+- Staging unprocessed mail into `_gaia/pending`.
+
+**Prohibited automatically** (always a proposal, never executed alone) -- operations that are **destructive OR a matter of criterion**:
+- Moving to `_gaia/trash`, marking spam, unsubscribing, deleting.
+- Deferring to `_gaia/someday` -- a judgment call, not a mechanical classification.
+- Clearing a label to mark a thread done (here `removeLabelIds` *destroys* state).
+- Sending a message, or creating any draft in an unattended/headless run. (Proactive drafts *for review* are allowed in interactive triage under the grant above; that grant is interactive-only and does not reach a headless run.)
+
+In a headless run these prohibited operations are **listed in the report** for an interactive session to approve -- never executed. And the proactive-draft grant above is an **interactive-session grant only**: it does not carry into a headless/unattended run.
 
 ## Sending: When Draft and When Direct
 
@@ -83,6 +104,31 @@ When you find data in another thread, cite the source: "Tu RUT lo saqué de un c
 
 Any `.eml` or temporary file containing PII (RUT, cuenta bancaria, teléfono, DOB, dirección) must be deleted with `rm` after the draft is created. Verify deletion with Glob or `ls`. Report: "Archivo temporal eliminado."
 
+## Protection Lists
+
+Some senders must never be swept to `_gaia/trash` in a bulk operation, even when the user says "manda todo a trash". These are the never-trash protection lists. Before executing any bulk trash, filter the id set against them and exclude matches, then tell the user what you held back.
+
+**Never-trash senders (hold back and flag):**
+
+| Category | Examples of protected senders |
+|----------|------------------------------|
+| Banks / financial | Bci, Santander, BancoEstado, Falabella, Tenpo, Fintual, credit-card issuers |
+| Government / tax | SII, Registro Civil, ChileAtiende, municipalidad, notarías |
+| Health / insurance | Colmena, Cruz Blanca, Isapre, clinics, lab results |
+| Legal / contracts | landlords, property managers, notaries, anything with a contract or deadline |
+| Direct human correspondence | real people in `CATEGORY_PERSONAL`, not automated senders |
+
+**Rule:** a bulk trash sweep operates on promotions, social, forums, and repetitive automated updates. A protected sender is excluded from the sweep even inside a matching category, and surfaced separately: "Mandé 1240 promos a trash. Retuve 3 de Bci y 1 del SII — ¿los revisamos?"
+
+These lists are heuristics, not a hardcoded allowlist — extend them from what you learn about the user's real senders. When in doubt whether a sender is protected, exclude it and ask; a false hold-back costs one question, a false trash costs a lost bank statement.
+
+### Sweep Shield: never select a protected message in the first place
+
+Filtering protected senders *out after listing* is fragile — the safer mechanism is to shape the sweep query so it never selects them. Two heuristics, applied to the query before any id is fetched (the concrete Gmail queries live in `reference.md`, "Sweep Shield"):
+
+- **Domain shield (`-from:<domain>`) for transactional senders.** Append a negative sender clause for each protected/transactional domain (banks, SII, health, notaries) to the sweep query, so their mail is excluded at search time. The shield is the mechanism; the never-trash lists above are the policy it enforces.
+- **Keyword guard for mixed senders.** Some senders emit BOTH promo blasts and real transactional mail from the *same* address — Ticketplus is the canonical case (marketing plus real ticket / purchase confirmations). A blanket `-from:` would either protect the promos too or trash the real ticket. Guard by keyword instead: sweep the sender's promos but hold back any message matching a purchase keyword (`compra`, `pago`, `entrada`, `comprobante`, `boleta`, `orden`, `factura`).
+
 ## Security Tier Classification
 
 | Operation | Tier | Notes |
@@ -94,6 +140,8 @@ Any `.eml` or temporary file containing PII (RUT, cuenta bancaria, teléfono, DO
 | `gws gmail +search` | T0 | Macro search (syntactic sugar over list) |
 | `gws gmail users messages modify --addLabelIds` | T0 | Add any `_gaia/*` label (non-destructive) |
 | `gws gmail users messages modify --removeLabelIds` | T2 | Changes message visibility |
+| `gws gmail users messages batchModify --json '{"addLabelIds":[...]}'` | T0 | Bulk add `_gaia/*` label to up to 1000 ids (non-destructive) |
+| `gws gmail users messages batchModify --json '{"removeLabelIds":[...]}'` | T2 | Bulk visibility change over up to 1000 ids — confirm count + destination first |
 | `gws gmail users messages modify` (action→waiting after send) | T2 | Auto-transition after user reply -- logged, no approval |
 | `gws gmail users drafts create` | T3 | Creates draft on user's behalf |
 | `gws gmail users drafts list` | T0 | Verify draft was created |

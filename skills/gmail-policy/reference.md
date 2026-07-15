@@ -129,6 +129,83 @@ Search pattern: before asking the user for any datum, run a targeted `gws gmail 
 
 If found, cite the source to the user ("Tu dirección la saqué del correo de Samuel Aranda de marzo 2025.").
 
+## Volume Counting
+
+To report how many messages match a query or sit in a category WITHOUT fetching them, read `resultSizeEstimate` from a `list` response with `maxResults` set to 1. The estimate is returned regardless of how many ids you actually page.
+
+```bash
+# Total in a native category (promotions/social/updates/forums/personal)
+gws gmail users messages list --params '{"userId":"me","q":"category:promotions","maxResults":1}'
+# -> response includes "resultSizeEstimate": <count>
+
+# Count by workflow label
+gws gmail users messages list --params '{"userId":"me","labelIds":["Label_25"],"maxResults":1}'
+
+# Count by search query
+gws gmail users messages list --params '{"userId":"me","q":"from:linkedin.com","maxResults":1}'
+```
+
+- `resultSizeEstimate` is an ESTIMATE — Gmail rounds for large mailboxes. Report it as "~1240", not an exact count, when it is large.
+- This is T0 (read-only) and cheap: one API call per category. Use it to drive Mode 6 Category Sweep in `gmail-triage` instead of listing thousands of ids just to count them.
+- `q:"category:promotions"` and `labelIds:["CATEGORY_PROMOTIONS"]` both work; the `q` form composes with other search terms.
+
+## Sweep Shield: Query-Level Protection
+
+A Category Sweep must never *select* a protected or transactional message in the first place. Both mechanisms below shape the sweep QUERY (the `q` field of `messages list`) so protected mail drops out at search time, before any id is fetched or handed to `batchModify`. This is the query-level enforcement of the never-trash Protection Lists in `SKILL.md`.
+
+### Domain shield (`-from:`) — transactional senders
+
+Append a negative sender clause per protected domain. Every message from that domain drops out of the result set:
+
+```bash
+gws gmail users messages list --params '{"userId":"me","q":"category:promotions -from:bancochile.cl -from:sii.cl -from:colmena.cl","maxResults":1}'
+```
+
+Chain one `-from:<domain>` per protected domain. Resolve the domain list from the never-trash Protection Lists (banks, government/tax, health/insurance, legal/notaries) plus whatever you have learned about the user's real senders.
+
+### Keyword guard — mixed senders (Ticketplus case)
+
+Some senders emit BOTH promotional blasts and real transactional mail (a purchase confirmation, a ticket, a payment receipt) from the SAME address — Ticketplus is the canonical case. A blanket `-from:ticketplus.cl` would protect the promos too (defeating the sweep) or, if omitted, trash the real ticket. Guard by keyword instead: sweep the sender's promos but subtract the messages that match a purchase keyword:
+
+```bash
+gws gmail users messages list --params '{"userId":"me","q":"category:promotions -(from:ticketplus.cl (compra OR pago OR entrada OR comprobante OR boleta OR orden OR factura))","maxResults":1}'
+```
+
+- `-( ... )` negates the whole group; a space inside the group is AND, so `from:ticketplus.cl (compra OR pago OR ...)` matches only that sender's purchase mail, and the leading `-` excludes exactly those from the sweep.
+- `OR` must be uppercase in Gmail query syntax; parentheses group.
+- Purchase keywords: `compra`, `pago`, `entrada`, `comprobante`, `boleta`, `orden`, `factura`. Extend per the user's real transactional vocabulary.
+
+Apply the shield to the SAME query used for both counting (`maxResults:1`, read `resultSizeEstimate`) and for paging the ids you feed to `batchModify` — so the count you report and the ids you move are already protected identically.
+
+## Bulk Label Operations
+
+`batchModify` applies one label change to many messages in a single call — the primitive behind Category Sweep and any high-volume triage. Verb spelling and flags confirmed against `gws gmail users messages batchModify --help`:
+
+```bash
+gws gmail users messages batchModify \
+  --params '{"userId":"me"}' \
+  --json '{"ids":["<id1>","<id2>","..."],"addLabelIds":["<LABEL_ID>"],"removeLabelIds":["INBOX"]}'
+```
+
+- `--params` carries only `userId` (query parameter).
+- `--json` carries the request body: `ids` (the messages), plus `addLabelIds` and/or `removeLabelIds`.
+- **Per-call limit: up to 1000 ids.** For a sweep larger than 1000, chunk into batches of 1000 and call once per chunk.
+- Adding a label is T0 (non-destructive); removing a label (e.g. `INBOX`, or moving to `_gaia/trash` while removing `INBOX`) is T2 — confirm count and destination first.
+
+### Resolving label ids — do NOT hardcode `Label_NN`
+
+The numeric `Label_NN` ids for user labels (including `_gaia/*`) are **assigned per-account and are not stable across accounts**. In the reference account `_gaia/trash` happens to be `Label_25`, but the ids are sparse (gaps at Label_20, Label_24) and one label even carries a long numeric id — a fresh account will map the same names to different ids. Always resolve the id at runtime from the label NAME:
+
+```bash
+# Resolve _gaia/trash to its id for THIS account before using it in batchModify
+gws gmail users labels list --params '{"userId":"me"}' --format json
+# -> find the object whose "name" == "_gaia/trash", use its "id"
+```
+
+Never bake `Label_25` (or any `Label_NN`) into a command string. Resolve the name → id via `labels list` at the start of a session, then reuse the resolved id for that session's `batchModify` calls. System labels (`INBOX`, `TRASH`, `SPAM`, `CATEGORY_*`) are the exception — their ids ARE their names and are stable.
+
+> gws prints `Using keyring backend: <name>` to **stderr**, not stdout, on each invocation — it does not pollute the stdout JSON body, so capturing stdout for a JSON parser is safe. See the keyring callout in `gws-setup/reference.md` if that line becomes an error instead of a banner.
+
 ## Draft Verification
 
 After `gws gmail users drafts create`, always verify:
