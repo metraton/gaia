@@ -50,9 +50,19 @@ Resolution / addressing -- ``resolve_draft_id(explicit, agent_id)``:
     * ``explicit`` (an explicit ``--draft-id``) always wins -- this is the
       concurrency-safe primary key each concurrent cycle carries, and the
       seam the hook adapter (T6) uses to re-address a resumed agent's draft.
-    * Otherwise the most-recently-modified draft is returned, optionally
-      scoped to a single agent via ``agent_id`` (the per-agent "resume to my
-      latest draft" convenience). Returns ``None`` when nothing matches.
+    * ``agent_id`` (an explicit ``--agent-id``), when ``explicit`` is absent,
+      scopes resolution to that agent's own drafts and returns its
+      most-recently-modified one -- the per-agent "resume to my latest
+      draft" convenience. Returns ``None`` when that agent has no draft.
+    * When BOTH are omitted, resolution falls back to the most-recently-
+      modified draft SYSTEM-WIDE -- but only when that is unambiguous. If
+      every candidate belongs to the SAME agent (including the common case
+      of exactly one draft total), the latest-mtime fallback is returned, as
+      before. If candidates span 2+ DISTINCT agents, this is the exact
+      cross-agent guess that must never happen silently (a caller with no
+      ``--draft-id``/``--agent-id`` could otherwise land on another agent's
+      draft): ``resolve_draft_id`` raises ``AmbiguousDraftError`` instead of
+      picking one, naming every candidate so the caller can disambiguate.
 
 Public surface (stable for T6 resume-read, T7 finalize store-writer, T13
 concurrency-isolation):
@@ -64,6 +74,9 @@ concurrency-isolation):
     load_draft(draft_id) -> dict | None
     list_draft_ids(agent_id=None) -> list[str]   # most-recent first
     resolve_draft_id(explicit=None, agent_id=None) -> str | None
+        # raises AmbiguousDraftError when both are omitted and drafts from
+        # 2+ distinct agents exist
+    AmbiguousDraftError                          # raised by resolve_draft_id
 """
 
 from __future__ import annotations
@@ -79,6 +92,41 @@ _DRAFT_SUFFIX = ".json"
 # beyond any realistic number of concurrent drafts per agent, so two
 # same-agent cycles minting in the same instant do not collide.
 _TOKEN_HEX_BYTES = 6
+
+
+class AmbiguousDraftError(Exception):
+    """Raised by ``resolve_draft_id`` when neither ``explicit`` nor
+    ``agent_id`` is given AND drafts from 2+ DISTINCT agents currently exist.
+
+    This guards the exact security/UX bug the fallback used to have:
+    ``list_draft_ids(agent_id=None)`` globs EVERY agent's drafts and the
+    most-recently-modified one wins -- so a subcommand invoked with no
+    ``--draft-id``/``--agent-id`` could silently operate on a DIFFERENT
+    agent's draft, with no warning. When every candidate belongs to the SAME
+    agent (including the common single-draft-system-wide case), resolution
+    stays unambiguous and the latest-mtime fallback is preserved unchanged --
+    this only fires on a genuine multi-agent tie, and it refuses to guess.
+    """
+
+    def __init__(self, candidates: List[str]):
+        self.candidates = list(candidates)
+        agents = sorted({_agent_of(c) for c in self.candidates})
+        super().__init__(
+            "Multiple agents have active contract drafts "
+            f"({', '.join(agents)}); refusing to guess which one to "
+            "operate on. Pass --draft-id <id> or --agent-id <agent_id> to "
+            f"disambiguate. Candidate drafts: {', '.join(self.candidates)}"
+        )
+
+
+def _agent_of(draft_id: str) -> str:
+    """Return the agent-id portion of a draft id (``{agent_id}.{token}``).
+
+    ``agent_id`` itself never contains a ``.`` (format ``^a[0-9a-f]{5,}$``),
+    so splitting on the FIRST dot reliably recovers it regardless of the
+    token's own shape.
+    """
+    return draft_id.split(".", 1)[0]
 
 
 def drafts_dir() -> Path:
@@ -175,11 +223,29 @@ def resolve_draft_id(
 ) -> Optional[str]:
     """Resolve which draft a subcommand should operate on.
 
-    ``explicit`` (an explicit ``--draft-id``) always wins. Otherwise the
-    most-recently-modified draft is returned, optionally scoped to
-    ``agent_id``. Returns None when nothing resolvable exists.
+    ``explicit`` (an explicit ``--draft-id``) always wins. Otherwise, when
+    ``agent_id`` is given, resolution is scoped to that agent's own drafts
+    (the per-agent "resume to my latest draft" convenience) and returns its
+    most-recently-modified one, or ``None`` if it has none.
+
+    When BOTH are omitted, resolution falls back to the most-recently-
+    modified draft SYSTEM-WIDE -- but only when unambiguous. If every
+    candidate belongs to the SAME agent (including the common case of
+    exactly one draft total), that fallback is safe and is returned as
+    before. If candidates span 2+ DISTINCT agents, guessing would risk
+    silently operating on another agent's draft, so this raises
+    ``AmbiguousDraftError`` (naming every candidate) instead of picking one.
+
+    Returns ``None`` when nothing resolvable exists at all.
     """
     if explicit:
         return explicit
-    ids = list_draft_ids(agent_id)
-    return ids[0] if ids else None
+    if agent_id:
+        ids = list_draft_ids(agent_id)
+        return ids[0] if ids else None
+    ids = list_draft_ids(None)
+    if not ids:
+        return None
+    if len({_agent_of(i) for i in ids}) > 1:
+        raise AmbiguousDraftError(ids)
+    return ids[0]

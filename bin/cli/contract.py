@@ -44,7 +44,16 @@ Draft identity (T5 -- decisions #1, #3, #8):
     each concurrent cycle carries, and the seam the hook adapter (T6) uses to
     re-address a resumed agent's draft); otherwise a subcommand resolves the
     most-recently-modified draft, optionally scoped to a single agent via
-    ``--agent-id``. All addressing/persistence lives in
+    ``--agent-id``. When BOTH are omitted AND drafts from 2+ DISTINCT agents
+    currently exist, resolution refuses to guess: it raises
+    ``gaia.contract.drafts.AmbiguousDraftError`` rather than silently picking
+    the system-wide most-recently-modified draft (which could belong to a
+    different agent than the one invoking the CLI). The CLI catches this and
+    prints the candidate draft ids, exiting 1 -- the caller must then pass
+    ``--draft-id`` or ``--agent-id``. A single draft system-wide, or several
+    drafts all belonging to the SAME agent, still resolves via the
+    latest-mtime fallback unchanged (no ambiguity, no cross-agent risk). All
+    addressing/persistence lives in
     ``gaia.contract.drafts`` (atomic writes, no shared mutable pointer), which
     T6 (resume-read), T7 (finalize store-writer), and T13 (concurrency) build
     on. Nothing here depends on a harness session.
@@ -275,6 +284,23 @@ def _no_draft_error(as_json: bool, draft_id: Optional[str] = None) -> None:
         )
 
 
+def _print_ambiguous_draft_error(exc, as_json: bool) -> None:
+    """Report an ``AmbiguousDraftError`` -- 2+ distinct agents have active
+    drafts and neither ``--draft-id`` nor ``--agent-id`` was given, so
+    resolution refuses to guess (see gaia.contract.drafts.resolve_draft_id).
+    """
+    candidates = list(getattr(exc, "candidates", []) or [])
+    if as_json:
+        print(json.dumps({
+            "status": "error",
+            "error": "ambiguous_draft",
+            "message": str(exc),
+            "candidates": candidates,
+        }))
+    else:
+        print(f"Error: {exc}", file=sys.stderr)
+
+
 def _write_if_valid(envelope: dict, draft_id: str, as_json: bool) -> int:
     """Validate-on-write core: persist ONLY when the full verdict is ok."""
     result = _validate_envelope(envelope)
@@ -289,17 +315,33 @@ def _write_if_valid(envelope: dict, draft_id: str, as_json: bool) -> int:
     return 0
 
 
-def _load_target_draft(args) -> "tuple[Optional[str], Optional[dict], bool]":
+def _load_target_draft(
+    args, force_json: bool = False
+) -> "tuple[Optional[str], Optional[dict], bool]":
     """Resolve --draft-id and load it. Returns (draft_id, envelope, as_json).
 
     envelope is None (and an error already printed) when nothing is
-    resolvable or the file is missing/corrupt -- callers should return 1.
+    resolvable, resolution is ambiguous across agents, or the file is
+    missing/corrupt -- callers should return 1.
+
+    ``force_json`` lets a caller whose own ``--json`` flag means something
+    else (``fill``'s ``--json`` is the PATCH payload, not an output-format
+    toggle) still get JSON-shaped error reporting for THIS helper's own
+    errors (no draft / ambiguous draft), matching that caller's documented
+    "always speaks JSON" contract instead of silently falling back to
+    plain text because ``args`` has no ``json`` attribute under that name.
     """
-    as_json = bool(getattr(args, "json", False))
-    draft_id = _resolve_draft_id(
-        getattr(args, "draft_id", None),
-        getattr(args, "agent_id", None),
-    )
+    from gaia.contract.drafts import AmbiguousDraftError
+
+    as_json = force_json or bool(getattr(args, "json", False))
+    try:
+        draft_id = _resolve_draft_id(
+            getattr(args, "draft_id", None),
+            getattr(args, "agent_id", None),
+        )
+    except AmbiguousDraftError as exc:
+        _print_ambiguous_draft_error(exc, as_json)
+        return None, None, as_json
     if draft_id is None:
         _no_draft_error(as_json)
         return None, None, as_json
@@ -466,11 +508,12 @@ def cmd_finalize(args) -> int:
 
 def cmd_fill(args) -> int:
     """Batch-merge a JSON patch into the draft (validate-on-write)."""
-    draft_id, envelope, as_json = _load_target_draft(args)
     # fill always speaks JSON on output (its own --json flag is the PATCH
     # payload, not an output-format toggle), so error/success reporting is
-    # JSON-shaped regardless of what _load_target_draft inferred.
-    as_json = True
+    # JSON-shaped regardless -- force_json=True makes THIS helper's own
+    # errors (no draft / ambiguous draft) JSON-shaped too, not only the
+    # write-path errors below.
+    draft_id, envelope, as_json = _load_target_draft(args, force_json=True)
     if envelope is None:
         return 1
     try:
