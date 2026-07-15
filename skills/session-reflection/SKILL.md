@@ -55,6 +55,14 @@ above.
 Before drafting any bullet, scan the session transcript for **agreement
 markers** and **deferral markers**. These are the anchors of the real arc.
 
+**Read the whole arc, from the first turn -- not the recent window.**
+The failure the user named is reflecting from the last few turns because
+they are closest to hand; a point settled at turn 12 and never revisited
+is exactly the one that gets dropped. Scan forward from the session's
+opening to its close -- do not walk backward from the end until it "feels
+like enough". If the transcript is long, that is the reason to be more
+thorough, not less: length is where the early arc hides.
+
 | Marker type | User phrases (Spanish + English) |
 |-------------|----------------------------------|
 | Agreement | "ok", "exacto", "vayamos por eso", "let's go with that", "confirmado", "dale", "sí", "yes" |
@@ -76,6 +84,13 @@ checkpoints explicitly before drafting:
    itself.
 4. **Briefs mentioned but not implemented**: deferred work that surfaces
    under "what stayed open", not under "what we agreed".
+
+As you walk these, keep **two disjoint lists**: **closed** (reached a
+conclusion both sides accepted) and **open** (surfaced and did not
+conclude). Every item belongs to exactly one -- never both. When you
+are unsure which, it is **open**: a pending mislabeled as closed
+vanishes, while a closed item mislabeled as open only costs a harmless
+extra thread later. This asymmetry is the safe default; err toward open.
 
 This is the antidote to "orchestrator forgets at scale". List these
 mentally (or in a scratch buffer) before writing the first bullet.
@@ -129,6 +144,12 @@ If your draft reflection contradicts the actual state (e.g. you wrote
 "we closed brief X" but `gaia brief show X` shows `status: open`), align
 the reflection to reality before presenting.
 
+This check is also the gate for Step 6: only the items this step
+confirms are *genuinely* open become carry-forward threads on save. A
+pending that objective state shows already resolved is not a thread; a
+"closure" the state contradicts is not a closure. Reconcile here so the
+save decomposes the real arc, not the drafted one.
+
 ### Step 5: Length budget
 
 The reflection itself is **<= 200 words**. Honest brevity beats padded
@@ -136,35 +157,79 @@ structure. If a section has nothing real to say, omit it or say so.
 
 The skill *instructions* (this file) can be longer; the *output* cannot.
 
-### Step 6: Persistence is opt-in
+### Step 6: Persistence is opt-in -- and decomposed
 
 After presenting the reflection, you may offer to save what is worth
-keeping. If the user accepts, persist via `gaia memory add` UPSERT against
-an entry like `project_session_<YYYY-MM-DD>_<topic>`. Use
-`--body-file` for any multi-line or markdown-structured body:
+keeping. Never persist without explicit user consent; the reflection
+itself writes nowhere -- it is offered, the user accepts or declines. If
+the user accepts, save **decomposed**, never as one packed anchor.
 
-```bash
-# Write body to a temp file, then persist:
-gaia memory add \
-  --name="project_session_2026-05-06_<topic>" \
-  --type="project" \
-  --description="<one-line summary of the arc>" \
-  --body-file=/tmp/reflection_body.md
+**A pending never travels inside the summary body.** A single
+`gaia memory add` that folds the whole session -- closures *and*
+pendings -- into one anchor is the failure this step exists to prevent:
+an anchor's body is never re-injected at SessionStart (only
+`class=thread status=carry_forward` notes resurface), so a real pending
+buried in that body becomes invisible and has to be rescued by hand.
+The save is a record and its threads -- but write it as **one atomic
+command**, not an `add` per row.
 
-# Or via heredoc to stdin:
-cat <<'EOF' | gaia memory add \
-  --name="project_session_2026-05-06_<topic>" \
-  --type="project" \
-  --description="<one-line summary of the arc>" \
-  --body-file=-
-<reflection body here>
-EOF
+**Use `gaia memory checkpoint`.** It persists the whole reflection in a
+single transaction: the record anchor, one carry-forward thread per
+pending, and a `derived_from` edge from each thread back to the record.
+It is all-or-nothing -- if any row is invalid the checkpoint writes
+*zero* rows, so you never end a session with a half-written save. Build a
+JSON payload and pass it via `--file` (or `--file -` to stream it on
+stdin):
+
+```json
+{
+  "resumen": {
+    "name": "project_session_2026-07-14_<topic>",
+    "type": "project",
+    "description": "<one-line summary of the arc>",
+    "body": "<the durable account of what happened -- NO live pendings>"
+  },
+  "pendientes": [
+    {
+      "name": "project_<pending_topic>",
+      "description": "<the single pending, in one line>",
+      "body": "<the pending's detail>"
+    }
+  ]
+}
 ```
 
-Never persist without explicit user consent. The reflection itself does
-not write anywhere -- it is offered, the user accepts or declines.
+```bash
+gaia memory checkpoint --file /tmp/session_checkpoint.json \
+  --project=<project> --workspace=<ws>
+```
 
-See `memory/SKILL.md` for the full schema and UPSERT semantics.
+`resumen` becomes the record anchor (`class=anchor`); each `pendientes`
+entry becomes a `class=thread status=carry_forward` row that inherits the
+record's `--type` and is linked `derived_from` the record. **One pending
+= one entry** in the `pendientes` list -- never a single thread with a
+`## PENDIENTE` list. This is the same **"One thread = one note"** rule the
+`memory` skill enforces for handoffs: the `status` column is what
+resurfaces a pending at the next SessionStart, so each concern needs its
+own row and its own `status`.
+
+If there were no open pendings, `pendientes` is `[]` -- the record anchor
+alone is a complete, honest save. Do not invent a thread to fill
+structure, and do not relabel a pending as closed to avoid writing one
+(Step 4's two-list rule already forbids this). If the record body itself
+reads like it hides a pending (a `TODO`, a "próximo paso", a `- [ ]`
+line) while `pendientes` is empty, `checkpoint` returns a non-blocking
+**warning** -- heed it and lift the pending into a `pendientes` entry.
+
+`checkpoint` is non-mutative (T0, no approval) and idempotent: the
+fecha-stamped `project_session_<date>_<topic>` slug avoids collisions, so
+re-running the same payload UPSERTs the same rows rather than duplicating
+them.
+
+See `memory/SKILL.md` -- **Write flow** for the slug↔type rules and
+UPSERT semantics, and **Carry-forward / handoff** for the
+`derived_from` grouping and why a thread is closed by its `status`, not
+by editing its body.
 
 ## Anti-Patterns
 
@@ -184,6 +249,12 @@ See `memory/SKILL.md` for the full schema and UPSERT semantics.
 - **Mixing follow-ups with closures** -- a deferred topic is open, not
   agreed. A topic accepted via "vayamos con eso" is agreed, not open.
   The objective criteria in Step 2 exist to keep these separate.
+- **Saving the session as one packed anchor** -- folding closures and
+  pendings into a single anchor body buries the real pendings where
+  SessionStart never re-injects them, so they go invisible. Save
+  decomposed with `gaia memory checkpoint`: one record anchor plus one
+  carry-forward thread per open pending, in one atomic call (Step 6). A
+  pending never rides inside the summary body.
 
 ## Filesystem behavior (DEPRECATED)
 

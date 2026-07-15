@@ -868,6 +868,213 @@ def _cmd_add(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand handler: checkpoint (transactional session-close)
+# ---------------------------------------------------------------------------
+#
+# `checkpoint` persists a whole session-reflection in ONE call and ONE DB
+# transaction: the record anchor + N carry-forward threads + N derived_from
+# links, all-or-nothing. It replaces the fragile `add`(anchor) + N x
+# (`add`(thread) + `link`) sequence that session-reflection Step 6 used to
+# prescribe (each of those was a separate connection/commit, so a mid-sequence
+# failure left a half-written checkpoint). This handler is a THIN wrapper: it
+# reads/parses the payload, applies the shared scope contract, then hands off
+# to `writer.close_session_memory`, which owns the atomic transaction and the
+# per-row validation. The verb is naturally non-mutative in NAME
+# ("checkpoint"), so it never trips the mutative-verb classifier -- no entry in
+# mutative_verbs.py, no approval prompt (T0), matching `add`/`append`/`reclassify`.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_scope_contract(
+    *,
+    workspace: str,
+    workspace_flag: str | None,
+    project_flag: str | None,
+    project_ref_flag: str | None,
+    as_json: bool,
+) -> tuple[str | None, int | None]:
+    """Deterministic project/workspace anchoring contract (no guessing).
+
+    Same contract and structured error codes as ``_cmd_add`` -- at least one
+    explicit scope flag is required, ``--project`` resolves a name to its
+    stable ``project_identity``, ``--workspace``-only is the degraded lane.
+
+    Returns ``(project_ref, err)``:
+      * ``err`` is ``None`` on success -- ``project_ref`` is the resolved
+        identity, or ``None`` for the ``--workspace``-only degraded lane.
+      * ``err`` is an already-emitted integer exit code (1) on failure, with
+        the structured code (``missing_scope`` / ``project_unresolved`` /
+        ``project_workspace_mismatch`` / ``project_no_identity``) already
+        printed via ``_err_structured``.
+    """
+    if project_flag is None and project_ref_flag is None and workspace_flag is None:
+        return None, _err_structured(
+            "no scope provided: pass at least one of --project (preferred) or "
+            "--workspace. Refusing to write with project/workspace both empty "
+            "(that would leave project_ref NULL by absence of input, not by "
+            "intent).",
+            as_json,
+            code="missing_scope",
+        )
+
+    from gaia.store.writer import resolve_project_ref, project_workspaces
+
+    if project_flag is not None:
+        try:
+            return resolve_project_ref(workspace, project_flag), None
+        except ValueError as exc:
+            msg = str(exc)
+            if "project_identity" in msg:
+                return None, _err_structured(
+                    msg, as_json, code="project_no_identity",
+                    project=project_flag, workspace=workspace,
+                )
+            if workspace_flag is not None:
+                other_ws = [w for w in project_workspaces(project_flag)
+                            if w != workspace]
+                if other_ws:
+                    return None, _err_structured(
+                        f"project {project_flag!r} does not belong to "
+                        f"workspace {workspace!r}; --project and --workspace "
+                        f"do not correspond. The project exists under "
+                        f"{other_ws!r}.",
+                        as_json, code="project_workspace_mismatch",
+                        project=project_flag, workspace=workspace,
+                        found_in=other_ws,
+                    )
+            return None, _err_structured(
+                msg, as_json, code="project_unresolved",
+                project=project_flag, workspace=workspace,
+            )
+    if project_ref_flag is not None:
+        return project_ref_flag, None
+    return None, None  # --workspace-only degraded lane
+
+
+def _cmd_checkpoint(args) -> int:
+    """Handle ``gaia memory checkpoint --file <payload.json|->``.
+
+    Persists a session-close reflection (one record anchor + N carry-forward
+    threads + N derived_from links) atomically via
+    ``writer.close_session_memory``.
+    """
+    as_json = getattr(args, "json", False)
+
+    file_arg = getattr(args, "file", None)
+    if not file_arg:
+        return _err("--file is required (path to a JSON payload, or '-' for stdin)", as_json)
+    try:
+        raw = _read_body_file(file_arg)
+    except FileNotFoundError:
+        return _err(f"--file: file not found: {file_arg}", as_json)
+    except OSError as exc:
+        return _err(f"--file: cannot read '{file_arg}': {exc}", as_json)
+
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return _err_structured(
+            f"payload is not valid JSON: {exc}", as_json, code="bad_shape",
+        )
+
+    workspace_flag = getattr(args, "workspace", None)
+    project_flag = getattr(args, "project", None)
+    project_ref_flag = getattr(args, "project_ref", None)
+    workspace = _resolve_workspace(workspace_flag)
+
+    project_ref, scope_err = _resolve_scope_contract(
+        workspace=workspace,
+        workspace_flag=workspace_flag,
+        project_flag=project_flag,
+        project_ref_flag=project_ref_flag,
+        as_json=as_json,
+    )
+    if scope_err is not None:
+        return scope_err
+
+    # Rich-body gate (same discipline as `add`): a record or pending whose body
+    # carries markdown structure must ship a description, or SessionStart falls
+    # back to body[:60] and destroys the structure. Checked here (CLI layer),
+    # exactly where `_cmd_add` checks it -- before the writer is called, so a
+    # rejection writes nothing.
+    if isinstance(payload, dict):
+        _resumen = payload.get("resumen")
+        if isinstance(_resumen, dict):
+            _rb = _resumen.get("body")
+            if isinstance(_rb, str) and _is_rich_body(_rb) and not _resumen.get("description"):
+                return _err(
+                    "resumen body contains markdown structure "
+                    "(code blocks/headers/multi-paragraph); a 'description' is "
+                    "required for rich bodies.",
+                    as_json,
+                )
+        _pend = payload.get("pendientes")
+        if isinstance(_pend, list):
+            for i, _p in enumerate(_pend):
+                if not isinstance(_p, dict):
+                    continue
+                _pb = _p.get("body")
+                if isinstance(_pb, str) and _is_rich_body(_pb) and not _p.get("description"):
+                    return _err(
+                        f"pendientes[{i}] body contains markdown structure; a "
+                        f"'description' is required for rich bodies.",
+                        as_json,
+                    )
+
+    try:
+        from gaia.store.writer import (
+            close_session_memory, MemorySessionPayloadError,
+        )
+    except ImportError as exc:
+        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    try:
+        res = close_session_memory(workspace, payload, project_ref=project_ref)
+    except MemorySessionPayloadError as exc:
+        return _err_structured(str(exc), as_json, code=exc.code)
+    except PermissionError as exc:
+        # writer._assert_dispatch_can_write_memory: non-curator dispatch.
+        return _err(str(exc), as_json)
+    except ValueError as exc:
+        # Per-row semantic failure -- the checkpoint rolled back, no rows written.
+        return _err(str(exc), as_json)
+    except Exception as exc:  # noqa: BLE001
+        return _err(f"failed to write checkpoint: {exc}", as_json)
+
+    warnings = res.get("warnings") or []
+
+    if as_json:
+        out = {
+            "status": res.get("status"),
+            "workspace": workspace,
+            "anchor": res.get("anchor"),
+            "threads": res.get("threads"),
+            "links": res.get("links"),
+            "warnings": warnings,
+            "updated_at": res.get("updated_at"),
+        }
+        if project_ref is not None:
+            out["project_ref"] = project_ref
+        print(json.dumps(out, indent=2))
+    else:
+        anchor = res.get("anchor") or {}
+        threads = res.get("threads") or []
+        print(
+            f"Checkpoint saved to workspace={workspace}: "
+            f"anchor '{anchor.get('name')}' ({anchor.get('action')}), "
+            f"{len(threads)} carry-forward thread(s)"
+        )
+        if project_ref is not None:
+            print(f"  project_ref: {project_ref}")
+        for t in threads:
+            print(f"  thread: {t.get('name')} ({t.get('action')})")
+        for w in warnings:
+            print(f"  WARNING: {w}", file=sys.stderr)
+
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Subcommand handlers: curated memory list / show / delete / edit
 # ---------------------------------------------------------------------------
 
@@ -943,13 +1150,64 @@ _RELEVANT_PER_TYPE_QUOTA = {
 }
 
 # v4 class/status driven selection. carry_forward threads are injected first
-# without quota (user-explicit "carry me into the next session"); anchors and
-# thread/open rows get bounded quotas; class=log never injects.
+# (user-explicit "carry me into the next session") but are now bounded by a
+# recency sub-cap AND participate in char-budget trimming as the LAST resort,
+# so max_chars is a genuinely HARD cap (see the char-budget block below).
+# anchors and thread/open rows get bounded quotas; class=log never injects.
 _RELEVANT_PER_CLASS_QUOTA = {
     "anchor": 4,
-    "thread_open": 2,
+    # Raised from 2 -> 4 now that each item is length-capped (below): stale
+    # open threads are the rows that need attention, so we can afford to show
+    # more of them without blowing the budget (they trim first under pressure).
+    "thread_open": 4,
 }
-_RELEVANT_CARRY_FORWARD_UNLIMITED = True
+
+# Recency sub-cap for the carry_forward section. Before this cap, carry_forward
+# was unbounded and never trimmed, so a workspace with many carried threads blew
+# the char budget by multiples (the "5.8x" audit finding). Rows beyond the cap
+# are surfaced via the always-visible overflow footer (below), never dropped
+# silently.
+_RELEVANT_CARRY_FORWARD_CAP = 8
+
+# Per-item description cap. Real descriptions run 140-700 chars; rendered
+# verbatim they turn one section into the whole block. Truncate the rendered
+# line to this many chars + an ellipsis; the full body stays recoverable via
+# the pointer footer (`gaia memory show <slug>`).
+_RELEVANT_ITEM_DESC_MAX = 150
+
+# Overflow footer: emitted whenever any item was left out of the rendered block
+# (dropped by the carry_forward sub-cap OR by char-budget trimming). Like the
+# recoverable-pointer footer, its worst-case length is RESERVED from the budget
+# before trimming so the footer is NEVER itself the line that gets dropped --
+# overflow is never silent.
+def _overflow_footer(n: int) -> str:
+    return (
+        f"\n... ({n} more item(s) not shown, use "
+        f"`gaia memory search` to query)"
+    )
+
+
+# Reserve the worst-case footer width (allow up to a 4-digit count).
+_OVERFLOW_FOOTER_RESERVE = len(_overflow_footer(9999)) + 1
+
+
+def _project_tag(project_ref) -> str:
+    """Derive a short project tag from a project_ref for per-bullet display.
+
+    project_ref is stored as a filesystem path to the project's git dir
+    (e.g. ``/home/jorge/ws/me/gaia/.git``) or an opaque identity
+    (e.g. ``id/p1``). Reduce it to the trailing component: ``gaia``, ``p1``.
+    Returns "" when there is nothing to tag.
+    """
+    if not project_ref:
+        return ""
+    ref = str(project_ref).strip().rstrip("/")
+    if ref.endswith("/.git"):
+        ref = ref[: -len("/.git")]
+    elif ref.endswith(".git"):
+        ref = ref[: -len(".git")].rstrip("/")
+    tag = ref.rsplit("/", 1)[-1]
+    return tag or ""
 
 # P2a recoverable-pointer footer. Each injected line shows a slug + one-line
 # description; the full body (the actionable detail) is recoverable on demand.
@@ -977,12 +1235,21 @@ def _cmd_get_relevant(args) -> int:
     """Emit a compact memory block for SessionStart injection (v4).
 
     Selection model (T7, schema v4):
-      * Section 1 (For this session): all rows with class=thread, status=
-        carry_forward. Injected first, NO quota -- user-explicit hand-off.
-      * Section 2 (About you / What I know): rows with class=anchor, ordered
-        by updated_at DESC, quota 4.
+      * Section 1 (For this session): rows with class=thread, status=
+        carry_forward. Injected first, bounded by a recency sub-cap
+        (_RELEVANT_CARRY_FORWARD_CAP); rows beyond the cap surface via the
+        overflow footer.
+      * Section 2 (About you / What I know): rows with class=anchor. Identity
+        anchors (type=user) are PINNED to the top, then updated_at DESC;
+        quota 4. Pinning stops pure-recency ordering from burying the user's
+        own identity anchor.
       * Section 3 (Open threads): rows with class=thread, status=open,
-        ordered by updated_at DESC, quota 2.
+        ordered by updated_at ASC (STALEST first -- the oldest open thread is
+        the one that needs attention); quota 4.
+      * Each rendered description is truncated to _RELEVANT_ITEM_DESC_MAX
+        chars + ellipsis; the full body stays recoverable via the pointer.
+      * When a row is anchored to a project, its short tag (e.g. [gaia]) is
+        rendered on the bullet.
       * class=log rows are NEVER injected (closed-bitácora).
       * class=NULL rows (legacy, pre-v4): treated as anchor for backward
         compatibility -- the 36 me-workspace rows keep showing up until
@@ -991,9 +1258,13 @@ def _cmd_get_relevant(args) -> int:
         across all sections -- a newer memory has replaced them.
 
     Char budget enforcement (T7):
-      Trim order on overflow: thread_open → anchor. carry_forward rows
-      are NEVER trimmed (user-explicit). If carry_forward alone exceeds
-      the budget, emit warning and pass through.
+      max_chars is a HARD cap. Trim order on overflow: thread_open → anchor
+      → carry_forward (last resort). carry_forward is trimmed only after the
+      other two sections are exhausted, so under normal loads it survives
+      whole, but a pathological carry_forward can no longer blow the budget.
+      Whenever ANY item is left out (sub-cap or trim), an overflow footer is
+      appended; its width is reserved from the budget up front so it is never
+      itself the dropped line -- overflow is never silent.
 
     Legacy --types=... mode: when caller explicitly passes --types, the
     pre-v4 flow (atom/decision/negative by type with the old quota) is
@@ -1101,7 +1372,8 @@ def _cmd_get_relevant(args) -> int:
                     params.append(active_project)
                 return params
 
-            # Section 1: carry_forward -- no LIMIT.
+            # Section 1: carry_forward -- fetch all by recency, cap applied
+            # in Python below so the dropped count feeds the overflow footer.
             if "carry_forward" in active_sections:
                 cur = con.execute(
                     base_select
@@ -1117,7 +1389,12 @@ def _cmd_get_relevant(args) -> int:
                 cur = con.execute(
                     base_select
                     + "  AND class = 'anchor' "
-                    + "ORDER BY " + order_prefix + "COALESCE(updated_at, '') DESC "
+                    # Pin identity anchors (type=user) to the top so pure
+                    # recency can never bury the user's own anchor, then most
+                    # recent first within each group.
+                    + "ORDER BY " + order_prefix
+                    + "CASE WHEN type = 'user' THEN 0 ELSE 1 END, "
+                    + "COALESCE(updated_at, '') DESC "
                     + f"LIMIT {anchor_quota}",
                     _section_params(),
                 )
@@ -1129,7 +1406,14 @@ def _cmd_get_relevant(args) -> int:
                 cur = con.execute(
                     base_select
                     + "  AND class = 'thread' AND status = 'open' "
-                    + "ORDER BY " + order_prefix + "COALESCE(updated_at, '') DESC "
+                    # Staleness first: oldest open thread ascends to the top --
+                    # the one gone quiet longest is the one needing attention.
+                    # NULL updated_at sorts last (treated as most recent) so a
+                    # freshly-created row without a timestamp is not mistaken
+                    # for the stalest.
+                    + "ORDER BY " + order_prefix
+                    + "CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END, "
+                    + "updated_at ASC "
                     + f"LIMIT {thread_quota}",
                     _section_params(),
                 )
@@ -1142,7 +1426,24 @@ def _cmd_get_relevant(args) -> int:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
+    # carry_forward recency sub-cap: keep the newest N (rows arrive ordered by
+    # updated_at DESC), remember how many were dropped so the overflow footer
+    # can surface them. This is the first of two bounds on carry_forward (the
+    # second is char-budget trimming, below).
+    cf_dropped = 0
+    _cf_rows = rows_by_section.get("carry_forward", [])
+    if len(_cf_rows) > _RELEVANT_CARRY_FORWARD_CAP:
+        cf_dropped = len(_cf_rows) - _RELEVANT_CARRY_FORWARD_CAP
+        rows_by_section["carry_forward"] = _cf_rows[:_RELEVANT_CARRY_FORWARD_CAP]
+
     items_flat: list[dict] = []
+
+    def _truncate_desc(text: str) -> str:
+        """Cap a rendered description to _RELEVANT_ITEM_DESC_MAX + ellipsis."""
+        text = text.replace("\n", " ").strip()
+        if len(text) > _RELEVANT_ITEM_DESC_MAX:
+            return text[:_RELEVANT_ITEM_DESC_MAX].rstrip() + "…"
+        return text
 
     def _build_section(section_key: str) -> list[str]:
         sub = rows_by_section.get(section_key, [])
@@ -1161,8 +1462,13 @@ def _cmd_get_relevant(args) -> int:
                         body = (full.get("body") or "").strip().replace("\n", " ")
                     except Exception:
                         body = ""
-                desc = body[:60] + ("..." if len(body) > 60 else "")
-            line = f"- {name}: {desc}" if desc else f"- {name}"
+                desc = body
+            # Per-item cap: keep every rendered description to one bounded line.
+            desc = _truncate_desc(desc)
+            # Short project tag when the row is anchored to a project.
+            tag = _project_tag(r.get("project_ref"))
+            prefix = f"- {name} [{tag}]" if tag else f"- {name}"
+            line = f"{prefix}: {desc}" if desc else prefix
             out.append(line)
             items_flat.append({
                 "name": name,
@@ -1197,93 +1503,71 @@ def _cmd_get_relevant(args) -> int:
 
     block = "\n".join(lines)
 
-    # Char budget: trim in order thread_open -> anchor. carry_forward is
-    # never trimmed. Track overflow counter and section breakdown.
-    overflow_count = 0
-    overflow_warning = None
-    carry_forward_lines = []
-    if len(block) > max_chars:
-        # Detect the "carry_forward alone exceeds budget" case by measuring
-        # the carry_forward header + its '- ' lines from the current `lines`
-        # list. We do NOT rebuild the section (that would double-count
-        # items_flat).
-        cf_header = _SECTION_HEADERS["carry_forward"]
-        cf_lines: list[str] = []
-        in_cf = False
-        for ln in lines:
-            if ln == cf_header:
-                in_cf = True
-                cf_lines.append(ln)
+    # Char budget: max_chars is a HARD cap. Trim order thread_open -> anchor ->
+    # carry_forward (carry_forward last, so under normal loads it survives
+    # whole). Whenever ANY item is left out -- the carry_forward sub-cap above
+    # OR trimming here -- an overflow footer is appended. Its width is RESERVED
+    # from the trim budget so it is never itself the dropped line: overflow is
+    # never silent, and the cap is genuinely hard.
+    def _trim_one(target_section: str) -> bool:
+        """Remove one '- ' line from the named section. Return True on success."""
+        in_section = False
+        header = _SECTION_HEADERS[target_section]
+        section_start = -1
+        section_end = len(lines)
+        for i, ln in enumerate(lines):
+            if ln == header:
+                section_start = i
+                in_section = True
                 continue
-            if in_cf:
-                if ln.startswith("## Memory"):
-                    break
-                cf_lines.append(ln)
-        while cf_lines and cf_lines[-1] == "":
-            cf_lines.pop()
-        cf_block = "\n".join(cf_lines)
-        if len(cf_block) > max_chars:
-            overflow_warning = (
-                "carry_forward block exceeds max_chars; passing through "
-                "without trimming (user-explicit content)"
-            )
-
-        # Trim from the back: prefer to drop thread_open lines first,
-        # then anchor lines. Never touch carry_forward.
-        def _trim_one(target_section: str) -> bool:
-            """Remove one '- ' line from the named section. Return True on success."""
-            in_section = False
-            header = _SECTION_HEADERS[target_section]
-            section_start = -1
-            section_end = len(lines)
-            for i, ln in enumerate(lines):
-                if ln == header:
-                    section_start = i
-                    in_section = True
-                    continue
-                if in_section and ln.startswith("## Memory"):
-                    section_end = i
-                    break
-            if section_start < 0:
-                return False
-            # Find the LAST "- " line within the section span.
-            for j in range(section_end - 1, section_start, -1):
-                if lines[j].startswith("- "):
-                    lines.pop(j)
-                    # If section is now empty (only header + blank), drop
-                    # header + blank line too.
-                    body_remains = any(
-                        lines[k].startswith("- ")
-                        for k in range(section_start, min(section_end - 1, len(lines)))
-                    )
-                    if not body_remains:
-                        # Remove header and (possible) following blank.
-                        # Defensive bounds checking.
-                        nxt = section_start + 1
-                        if nxt < len(lines) and lines[nxt] == "":
-                            lines.pop(nxt)
-                        lines.pop(section_start)
-                    return True
+            if in_section and ln.startswith("## Memory"):
+                section_end = i
+                break
+        if section_start < 0:
             return False
+        # Find the LAST "- " line within the section span.
+        for j in range(section_end - 1, section_start, -1):
+            if lines[j].startswith("- "):
+                lines.pop(j)
+                # If section is now empty (only header + blank), drop
+                # header + blank line too.
+                body_remains = any(
+                    lines[k].startswith("- ")
+                    for k in range(section_start, min(section_end - 1, len(lines)))
+                )
+                if not body_remains:
+                    # Remove header and (possible) following blank.
+                    # Defensive bounds checking.
+                    nxt = section_start + 1
+                    if nxt < len(lines) and lines[nxt] == "":
+                        lines.pop(nxt)
+                    lines.pop(section_start)
+                return True
+        return False
 
-        # Trim thread_open exhaustively, then anchor.
-        for trim_target in ("thread_open", "anchor"):
-            while len(block) > max_chars and _trim_one(trim_target):
+    # A footer is needed if the sub-cap already dropped carry_forward rows, or
+    # if the rendered block overflows the content budget (forcing a trim).
+    # Reserve the footer's width from the trim budget in either case so
+    # block + footer + pointer never exceeds the caller's max_chars.
+    needs_footer = cf_dropped > 0 or len(block) > max_chars
+    trim_budget = max_chars - (_OVERFLOW_FOOTER_RESERVE if needs_footer else 0)
+    trim_budget = max(1, trim_budget)
+
+    overflow_count = 0
+    if len(block) > trim_budget:
+        for trim_target in ("thread_open", "anchor", "carry_forward"):
+            while len(block) > trim_budget and _trim_one(trim_target):
                 overflow_count += 1
                 while lines and lines[-1] == "":
                     lines.pop()
                 block = "\n".join(lines)
-            if len(block) <= max_chars:
+            if len(block) <= trim_budget:
                 break
 
-        # If carry_forward still exceeds, we leave it as-is (warning above).
-        if overflow_count > 0:
-            footer = (
-                f"\n... ({overflow_count} more items, use "
-                f"'gaia memory search' to query)"
-            )
-            if len(block) + len(footer) <= max_chars:
-                block = block + footer
+    total_dropped = cf_dropped + overflow_count
+    if total_dropped > 0:
+        # Space was reserved above, so this always fits under max_chars.
+        block = block + _overflow_footer(total_dropped)
 
     # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
     # pointer is never the line that gets dropped; its length was reserved from
@@ -1295,10 +1579,9 @@ def _cmd_get_relevant(args) -> int:
             "workspace": workspace,
             "items": items_flat,
             "block": block,
-            "overflow": overflow_count,
+            "overflow": total_dropped,
+            "carry_forward_dropped": cf_dropped,
         }
-        if overflow_warning:
-            payload["overflow_warning"] = overflow_warning
         print(json.dumps(payload, indent=2, default=str))
     else:
         print(block)
@@ -1440,20 +1723,64 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
     return 0
 
 
+def _history_view(h: dict) -> dict:
+    """Summarize one memory_history row for `show --history`.
+
+    Reports WHICH fields changed and the body SIZE delta -- never the full
+    bodies (those can be large; the timeline is a version index, not a dump).
+    """
+    fields: list[str] = []
+    if (h.get("before_body") or "") != (h.get("after_body") or ""):
+        fields.append("body")
+    if (h.get("before_status") or None) != (h.get("after_status") or None):
+        fields.append("status")
+    if (h.get("before_type") or None) != (h.get("after_type") or None):
+        fields.append("type")
+    if (h.get("before_description") or None) != (h.get("after_description") or None):
+        fields.append("description")
+    if (h.get("before_workspace") or None) != (h.get("after_workspace") or None):
+        fields.append("workspace")
+    if (h.get("before_deleted_at") or None) != (h.get("after_deleted_at") or None):
+        fields.append("deleted_at")
+    body_delta = len(h.get("after_body") or "") - len(h.get("before_body") or "")
+    return {
+        "changed_at": h.get("changed_at"),
+        "fields_changed": fields,
+        "body_delta": body_delta,
+        "status_from": h.get("before_status"),
+        "status_to": h.get("after_status"),
+    }
+
+
 def _cmd_curated_show(args) -> int:
     """Print a single curated memory row.
 
     Distinguishes from the legacy ``episode-show`` flow by looking up the
     ``memory`` table directly (PK = ``(project, name)``).
+
+    Primitives (read-only, T0):
+      * default        -- the row, now including ``class`` and ``status``
+                          (previously omitted; the writer's get_memory does not
+                          project them, so we enrich here).
+      * ``--links``    -- in/out ``memory_links`` edges (kind + created_at).
+      * ``--history``  -- ``memory_history`` versions (changed_at, fields
+                          changed, body size delta -- NOT full bodies).
+    ``--links`` / ``--history`` are additive: either or both can be combined
+    with ``--json`` to enrich the emitted payload.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
+    want_links = getattr(args, "links", False)
+    want_history = getattr(args, "history", False)
 
     try:
         from gaia.store.writer import get_memory
+        from gaia.store.reader import (
+            get_memory_class_status, memory_links_for, memory_history_for,
+        )
     except ImportError as exc:
-        return _err(f"gaia.store.writer not importable: {exc}", as_json)
+        return _err(f"gaia.store not importable: {exc}", as_json)
 
     row = get_memory(workspace, name)
     if row is None:
@@ -1462,16 +1789,66 @@ def _cmd_curated_show(args) -> int:
             as_json,
         )
 
+    # Fill the class/status gap: get_memory projects neither column.
+    cs = get_memory_class_status(workspace, name)
+    row["class"] = cs["class"]
+    row["status"] = cs["status"]
+
+    links_payload = None
+    if want_links:
+        edges = memory_links_for(workspace, [name])
+        links_payload = {
+            "out": [e for e in edges if e["src_name"] == name],
+            "in": [e for e in edges if e["dst_name"] == name],
+        }
+
+    history_payload = None
+    if want_history:
+        history_payload = [
+            _history_view(h) for h in memory_history_for(workspace, [name])
+        ]
+
     if as_json:
-        print(json.dumps(row, indent=2, default=str))
+        payload = dict(row)
+        if links_payload is not None:
+            payload["links"] = links_payload
+        if history_payload is not None:
+            payload["history"] = history_payload
+        print(json.dumps(payload, indent=2, default=str))
         return 0
 
     print(f"# {row['name']}  (type={row['type']})")
     if row.get("description"):
         print(f"# {row['description']}")
+    print(f"# class: {row.get('class')}  status: {row.get('status')}")
     print(f"# updated_at: {row.get('updated_at')}")
-    print()
-    print(row["body"])
+
+    if links_payload is not None:
+        print()
+        print("## Links")
+        if not links_payload["out"] and not links_payload["in"]:
+            print("  (no links)")
+        for e in links_payload["out"]:
+            print(f"  out: {name} -[{e['kind']}]-> {e['dst_name']}"
+                  f"  ({e.get('created_at')})")
+        for e in links_payload["in"]:
+            print(f"  in:  {e['src_name']} -[{e['kind']}]-> {name}"
+                  f"  ({e.get('created_at')})")
+
+    if history_payload is not None:
+        print()
+        print("## History")
+        if not history_payload:
+            print("  (no recorded history)")
+        for hv in history_payload:
+            fields = ", ".join(hv["fields_changed"]) or "(no tracked field)"
+            delta = hv["body_delta"]
+            sign = "+" if delta >= 0 else ""
+            print(f"  {hv['changed_at']}  [{fields}]  body {sign}{delta} chars")
+
+    if links_payload is None and history_payload is None:
+        print()
+        print(row["body"])
     return 0
 
 
@@ -2088,6 +2465,15 @@ def register(subparsers):
     show_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
     show_p.add_argument(
+        "--links", action="store_true", default=False,
+        help="List in/out memory_links edges (kind + created_at). bool.",
+    )
+    show_p.add_argument(
+        "--history", action="store_true", default=False,
+        help="List memory_history versions (changed_at, fields changed, "
+             "body size delta -- not full bodies). bool.",
+    )
+    show_p.add_argument(
         "--json", action="store_true", default=False,
         help="Emit JSON. bool.",
     )
@@ -2447,6 +2833,53 @@ def register(subparsers):
                        help="Emit JSON. bool.")
     add_p.set_defaults(func=_cmd_add)
 
+    # -- checkpoint ---------------------------------------------------------
+    checkpoint_p = actions.add_parser(
+        "checkpoint",
+        help="Persist a session-close reflection atomically (record + threads)",
+        description=(
+            "Write one session-close reflection in a single transaction: the "
+            "record anchor, one carry-forward thread per pending, and a "
+            "derived_from edge from each thread back to the record. All-or-"
+            "nothing -- a malformed or invalid payload writes zero rows. "
+            "Replaces the N+1 add/link sequence session-reflection Step 6 used "
+            "to prescribe."
+        ),
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+        epilog="Payload (JSON):\n"
+               "  {\n"
+               "    \"resumen\":   {\"name\",\"type\",\"description\",\"body\"},\n"
+               "    \"pendientes\": [{\"name\",\"description\",\"body\"}, ...]\n"
+               "  }\n"
+               "Examples:\n"
+               "  gaia memory checkpoint --file payload.json --project=gaia\n"
+               "  cat payload.json | gaia memory checkpoint --file - --workspace=me\n",
+    )
+    checkpoint_p.add_argument(
+        "--file", default=None, metavar="PATH",
+        help=(
+            "Path to the JSON payload. Use '-' to read from stdin until EOF. "
+            "The payload carries the record ('resumen') and its pendings "
+            "('pendientes'); pendings inherit the record's --type."
+        ),
+    )
+    _cp_project_group = checkpoint_p.add_mutually_exclusive_group()
+    _cp_project_group.add_argument(
+        "--project", default=None,
+        help="Anchor the checkpoint rows to a project by NAME (resolved within "
+             "--workspace to its stable project_identity). Mutually exclusive "
+             "with --project-ref.",
+    )
+    _cp_project_group.add_argument(
+        "--project-ref", dest="project_ref", default=None,
+        help="Anchor directly to a known project_identity string.",
+    )
+    checkpoint_p.add_argument("--workspace", default=None, metavar="W",
+                              help="Workspace identity.")
+    checkpoint_p.add_argument("--json", action="store_true", default=False,
+                              help="Emit JSON. bool.")
+    checkpoint_p.set_defaults(func=_cmd_checkpoint)
+
     # -- get-relevant -------------------------------------------------------
     rel_p = actions.add_parser(
         "get-relevant",
@@ -2510,3 +2943,10 @@ def register(subparsers):
         help="Emit JSON. bool.",
     )
     conflicts_p.set_defaults(func=_cmd_conflicts)
+
+    # -- story (lineage narration; lives in memory_story.py to keep this
+    #    module legible) ----------------------------------------------------
+    from cli import memory_story as _memory_story
+    _memory_story.add_story_subparser(
+        actions, _argparse.RawDescriptionHelpFormatter
+    )

@@ -176,10 +176,16 @@ class TestUpgradeExistingDbToV28(unittest.TestCase):
     def _assert_v28_consistent(self, db: Path) -> None:
         con = sqlite3.connect(str(db))
         try:
-            self.assertEqual(
+            # Floor check (per scripts/migrations/README.md section 2): the DB
+            # must reach AT LEAST v28 -- bootstrap upgrades all the way to the
+            # CLI's EXPECTED_SCHEMA_VERSION (>= 28 and rising as migrations are
+            # added), so a `== 28` point-check breaks on every later bump. The
+            # v28-SPECIFIC guarantee this test defends (the contract_id column +
+            # its UNIQUE index) is asserted below and is unaffected by the floor.
+            self.assertGreaterEqual(
                 con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
                 28,
-                "ledger did not reach v28 after upgrade",
+                "ledger did not reach at least v28 after upgrade",
             )
             self.assertEqual(
                 con.execute(
@@ -265,6 +271,119 @@ class TestUpgradeExistingDbToV28(unittest.TestCase):
                 "second bootstrap changed the schema_version ledger (not idempotent)",
             )
             self.assertIn("up-to-date", res2.stdout)
+
+
+class TestV30ToV31DropDuplicateIndexes(unittest.TestCase):
+    """v30 -> v31 drops the three byte-identical duplicate indexes that
+    migrate_06 created on the old `project` column and migrate_08 left behind
+    after renaming that column to `workspace`.
+
+    The *_project* variants are NOT in schema.sql (they only exist in DBs that
+    inherited them via the historical migrate_06/08 path), so a fresh install
+    never has them and the DROP IF EXISTS is a no-op there. This test simulates
+    the legacy inheritance by re-creating the duplicates on a bootstrapped DB,
+    then applies v30_to_v31.sql and asserts the duplicates are gone while the
+    canonical *_workspace* variants remain.
+    """
+
+    _MIGRATION = _MIGRATIONS_DIR / "v30_to_v31.sql"
+    _DUPES = {
+        "idx_memory_project",
+        "idx_episodes_project_timestamp",
+        "idx_harness_events_project_ts",
+    }
+    _KEEP = {
+        "idx_memory_workspace",
+        "idx_episodes_workspace_timestamp",
+        "idx_harness_events_workspace_ts",
+    }
+
+    def setUp(self):
+        if not _BOOTSTRAP_SH.is_file():
+            self.skipTest(f"bootstrap script not found at {_BOOTSTRAP_SH}")
+        if not self._MIGRATION.is_file():
+            self.skipTest(f"migration not found at {self._MIGRATION}")
+
+    @staticmethod
+    def _index_names(con: sqlite3.Connection) -> set:
+        return {
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+
+    def test_migration_drops_only_the_project_duplicates(self):
+        mig_sql = self._MIGRATION.read_text()
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            res = _run_bootstrap(workspace)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            db = workspace / "tmp_gaia.db"
+
+            con = sqlite3.connect(str(db))
+            try:
+                # Simulate the legacy inheritance: re-create the *_project*
+                # duplicates (definitionally identical to the *_workspace* ones).
+                con.executescript(
+                    "CREATE INDEX IF NOT EXISTS idx_memory_project "
+                    "  ON memory(workspace);"
+                    "CREATE INDEX IF NOT EXISTS idx_episodes_project_timestamp "
+                    "  ON episodes(workspace, timestamp DESC);"
+                    "CREATE INDEX IF NOT EXISTS idx_harness_events_project_ts "
+                    "  ON harness_events(workspace, ts DESC);"
+                )
+                con.commit()
+
+                before = self._index_names(con)
+                self.assertTrue(
+                    self._DUPES <= before, f"fixture missing dupes: {self._DUPES - before}"
+                )
+                self.assertTrue(
+                    self._KEEP <= before, f"fixture missing keepers: {self._KEEP - before}"
+                )
+
+                con.executescript(mig_sql)
+                con.commit()
+                after = self._index_names(con)
+
+                self.assertFalse(
+                    self._DUPES & after,
+                    f"migration left duplicate indexes: {self._DUPES & after}",
+                )
+                self.assertTrue(
+                    self._KEEP <= after,
+                    f"migration dropped canonical indexes: {self._KEEP - after}",
+                )
+
+                # Idempotent: a second apply on the already-cleaned DB is a no-op.
+                con.executescript(mig_sql)
+                con.commit()
+                self.assertEqual(self._index_names(con), after)
+            finally:
+                con.close()
+
+    def test_fresh_install_has_no_project_duplicates(self):
+        """A fresh install (bootstrap walks floor -> EXPECTED incl. v31) must
+        carry only the *_workspace* variants, never the *_project* duplicates."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            res = _run_bootstrap(workspace)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            con = sqlite3.connect(str(workspace / "tmp_gaia.db"))
+            try:
+                names = self._index_names(con)
+            finally:
+                con.close()
+            self.assertFalse(
+                self._DUPES & names,
+                f"fresh install carries duplicate indexes: {self._DUPES & names}",
+            )
+            self.assertTrue(
+                self._KEEP <= names,
+                f"fresh install missing canonical indexes: {self._KEEP - names}",
+            )
+
 
 class TestBootstrapFloorModel(unittest.TestCase):
     """End-to-end coverage of Section 3b/3c under the floor model."""

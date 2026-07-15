@@ -1017,6 +1017,447 @@ def search_episodes_fts(
         con.close()
 
 
+# ---------------------------------------------------------------------------
+# Curated-memory lineage / history reads (the READ layer for memory history)
+# ---------------------------------------------------------------------------
+#
+# These helpers back `gaia memory show --links|--history` and `gaia memory
+# story <slug>`. They are strictly READ-ONLY and batch-oriented: every access
+# over a set of memory slugs is a single IN-list query per direction, never one
+# query per node (no N+1). The access patterns are index-aligned:
+#   * memory_links src side -> memory_links_src(workspace, src_name)
+#   * memory_links dst side -> idx_memory_links_dst_kind(workspace, dst_name, kind)
+#   * memory_history        -> idx_memory_history_workspace_name(workspace, name)
+#   * memory final state    -> PK (workspace, name)
+#
+# NOTE on approximate birth: the `memory` table has NO created_at column, so a
+# node's "birth" can only be APPROXIMATED as the earliest trace we can observe
+# (its first memory_history row or its first memory_links edge). Timeline birth
+# events are flagged ``approximate=True`` for exactly this reason. We do NOT add
+# columns or migrations here -- the approximation is the honest reading of the
+# current schema.
+
+_MEMORY_LINEAGE_MAX_DEPTH = 5
+
+
+def _ro_connect(db_path: Path | None = None) -> sqlite3.Connection:
+    """A read-only view onto the substrate.
+
+    Reuses the shared ``_connect`` (which lazily bootstraps the schema on a
+    fresh DB), then flips ``PRAGMA query_only = ON`` so every statement issued
+    afterwards is guaranteed side-effect free. Bootstrap runs INSIDE ``_connect``
+    before the pragma, so a brand-new DB still materializes correctly while the
+    caller's queries can only read. This is the read-only mode the repo pattern
+    permits without breaking the lazy-bootstrap contract.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute("PRAGMA query_only = ON")
+    except Exception:
+        # query_only is available on every SQLite we ship against; if a build
+        # lacks it, fall back to the SELECT-only discipline of this module.
+        pass
+    return con
+
+
+def _dedup_preserve(names) -> list[str]:
+    """De-duplicate ``names`` preserving first-seen order, dropping falsy."""
+    return list(dict.fromkeys(n for n in names if n))
+
+
+def get_memory_class_status(
+    workspace: str,
+    name: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Return ``{'class':..., 'status':...}`` for one curated memory row.
+
+    Read-only. This exists to fill the ``gaia memory show --json`` gap: the
+    writer's ``get_memory`` projects neither column, so the CLI enriches its
+    row with this. Returns ``{'class': None, 'status': None}`` when the row is
+    absent (the caller has already resolved existence via ``get_memory``).
+    """
+    con = _ro_connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT class, status FROM memory WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if row is None:
+            return {"class": None, "status": None}
+        return {"class": row["class"], "status": row["status"]}
+    finally:
+        con.close()
+
+
+def memory_links_for(
+    workspace: str,
+    names,
+    *,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Batch-load every ``memory_links`` edge that touches any of ``names``.
+
+    Two index-aligned IN-list queries (outgoing on src, incoming on dst),
+    merged and de-duplicated by ``(src_name, dst_name, kind)``. Never one query
+    per node. Each edge dict: ``{src_name, dst_name, kind, created_at}``.
+    """
+    names = _dedup_preserve(names)
+    if not names:
+        return []
+    con = _ro_connect(db_path)
+    try:
+        ph = ",".join("?" * len(names))
+        out_rows = con.execute(
+            f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
+            f"WHERE workspace = ? AND src_name IN ({ph})",
+            [workspace, *names],
+        ).fetchall()
+        in_rows = con.execute(
+            f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
+            f"WHERE workspace = ? AND dst_name IN ({ph})",
+            [workspace, *names],
+        ).fetchall()
+    finally:
+        con.close()
+    edges: list[dict] = []
+    seen: set = set()
+    for r in list(out_rows) + list(in_rows):
+        key = (r["src_name"], r["dst_name"], r["kind"])
+        if key in seen:
+            continue
+        seen.add(key)
+        edges.append({
+            "src_name": r["src_name"],
+            "dst_name": r["dst_name"],
+            "kind": r["kind"],
+            "created_at": r["created_at"],
+        })
+    return edges
+
+
+def memory_history_for(
+    workspace: str,
+    names,
+    *,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Batch-load ``memory_history`` rows for a set of slugs, oldest first.
+
+    One IN-list query over ``idx_memory_history_workspace_name``. Ordered by
+    ``(changed_at, id)`` so ties within the same second keep insertion order.
+    Bodies ARE returned (callers compute size deltas, then discard) -- the CLI
+    is responsible for not dumping full bodies by default.
+    """
+    names = _dedup_preserve(names)
+    if not names:
+        return []
+    con = _ro_connect(db_path)
+    try:
+        ph = ",".join("?" * len(names))
+        rows = con.execute(
+            f"SELECT id, name, changed_at, "
+            f"       before_body, after_body, "
+            f"       before_status, after_status, "
+            f"       before_type, after_type, "
+            f"       before_description, after_description, "
+            f"       before_workspace, after_workspace, "
+            f"       before_deleted_at, after_deleted_at "
+            f"FROM memory_history "
+            f"WHERE workspace = ? AND name IN ({ph}) "
+            f"ORDER BY changed_at, id",
+            [workspace, *names],
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def _role_for_edge(kind: str, direction: str) -> str:
+    """Map an edge (kind + discovery direction) to the neighbour's tree role.
+
+    ``direction`` is relative to the frontier node that discovered the
+    neighbour: ``out`` means frontier=src / neighbour=dst; ``in`` means
+    frontier=dst / neighbour=src.
+    """
+    table = {
+        ("supersedes", "out"): "superseded",       # neighbour is the older, replaced row
+        ("supersedes", "in"): "successor",         # neighbour replaces the frontier row
+        ("graduated_to", "out"): "graduation_target",
+        ("graduated_to", "in"): "graduated_thread",
+        ("derived_from", "out"): "source",         # neighbour is what we derived from
+        ("derived_from", "in"): "derivative",
+        ("relates_to", "out"): "related",
+        ("relates_to", "in"): "related",
+    }
+    return table.get((kind, direction), "related")
+
+
+def memory_lineage(
+    workspace: str,
+    slug: str,
+    *,
+    max_depth: int = _MEMORY_LINEAGE_MAX_DEPTH,
+    db_path: Path | None = None,
+) -> dict:
+    """BFS the ``memory_links`` graph from ``slug`` in BOTH directions.
+
+    Uses a visited-set (cycle-safe) and stops after ``max_depth`` hops. At each
+    depth level it issues exactly TWO batch queries (outgoing over the frontier
+    IN-list, incoming over the frontier IN-list) -- never one per node -- so a
+    deep lineage costs ``2 * hops`` queries, not ``2 * nodes``.
+
+    Returns::
+
+        {
+            "seed":   slug,
+            "nodes":  [name, ...],            # sorted, includes seed
+            "depth":  {name: hop_count},
+            "role":   {name: role_label},     # seed -> "queried"
+            "edges":  [{src_name, dst_name, kind, created_at}, ...],
+        }
+    """
+    con = _ro_connect(db_path)
+    try:
+        visited = {slug}
+        depth = {slug: 0}
+        role = {slug: "queried"}
+        edges: list[dict] = []
+        edge_seen: set = set()
+        frontier = [slug]
+        hop = 0
+        while frontier and hop < max_depth:
+            ph = ",".join("?" * len(frontier))
+            out_rows = con.execute(
+                f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
+                f"WHERE workspace = ? AND src_name IN ({ph})",
+                [workspace, *frontier],
+            ).fetchall()
+            in_rows = con.execute(
+                f"SELECT src_name, dst_name, kind, created_at FROM memory_links "
+                f"WHERE workspace = ? AND dst_name IN ({ph})",
+                [workspace, *frontier],
+            ).fetchall()
+            next_frontier: list[str] = []
+            for r, direction in (
+                [(x, "out") for x in out_rows] + [(x, "in") for x in in_rows]
+            ):
+                key = (r["src_name"], r["dst_name"], r["kind"])
+                if key not in edge_seen:
+                    edge_seen.add(key)
+                    edges.append({
+                        "src_name": r["src_name"],
+                        "dst_name": r["dst_name"],
+                        "kind": r["kind"],
+                        "created_at": r["created_at"],
+                    })
+                neighbor = r["dst_name"] if direction == "out" else r["src_name"]
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    depth[neighbor] = hop + 1
+                    role[neighbor] = _role_for_edge(r["kind"], direction)
+                    next_frontier.append(neighbor)
+            frontier = next_frontier
+            hop += 1
+    finally:
+        con.close()
+    return {
+        "seed": slug,
+        "nodes": sorted(visited),
+        "depth": depth,
+        "role": role,
+        "edges": edges,
+    }
+
+
+def memory_final_states(
+    workspace: str,
+    names,
+    roles: dict | None = None,
+    *,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Batch-load the CURRENT state of each node (one IN-list query over PK).
+
+    Each dict: ``{name, class, status, type, description, updated_at,
+    deleted_at, present, role}``. ``present`` is False for a node that appears
+    in the lineage graph but whose ``memory`` row no longer exists (e.g. a
+    hard-deleted endpoint of an edge). ``role`` comes from ``roles`` (the
+    lineage role map) when supplied.
+    """
+    names = _dedup_preserve(names)
+    roles = roles or {}
+    if not names:
+        return []
+    con = _ro_connect(db_path)
+    try:
+        ph = ",".join("?" * len(names))
+        rows = con.execute(
+            f"SELECT name, class, status, type, description, updated_at, "
+            f"       deleted_at "
+            f"FROM memory WHERE workspace = ? AND name IN ({ph})",
+            [workspace, *names],
+        ).fetchall()
+    finally:
+        con.close()
+    found = {r["name"]: dict(r) for r in rows}
+    out: list[dict] = []
+    for n in names:
+        r = found.get(n)
+        out.append({
+            "name": n,
+            "class": r["class"] if r else None,
+            "status": r["status"] if r else None,
+            "type": r["type"] if r else None,
+            "description": r["description"] if r else None,
+            "updated_at": r["updated_at"] if r else None,
+            "deleted_at": r["deleted_at"] if r else None,
+            "present": r is not None,
+            "role": roles.get(n),
+        })
+    return out
+
+
+def _fuse_timeline(node_set: set, history: list[dict], edges: list[dict]) -> list[dict]:
+    """Fuse per-node history + link creation into ONE chronological timeline.
+
+    Event kinds: ``birth`` (approximate first trace), ``append`` (body grew as
+    a prefix-preserving concatenation, with ``body_delta``), ``edit`` (body
+    changed otherwise), ``status`` (lifecycle transition), ``description``,
+    ``retype``, ``relocate``, ``tombstone``/``restore``, and ``link`` (edge
+    created). Sorted by ``(changed_at, bucket, seq)`` so births lead, then
+    history events in insertion order, then links -- deterministic even when
+    several rows share the same second-resolution ``changed_at``.
+    """
+    keyed: list[tuple] = []  # (sortkey, event)
+
+    # Approximate birth: earliest trace per node across history + edges.
+    earliest: dict = {}
+    for h in history:
+        n, ts = h["name"], h["changed_at"]
+        if ts and (n not in earliest or ts < earliest[n]):
+            earliest[n] = ts
+    for e in edges:
+        ts = e["created_at"]
+        for n in (e["src_name"], e["dst_name"]):
+            if n in node_set and ts and (n not in earliest or ts < earliest[n]):
+                earliest[n] = ts
+    for n, ts in earliest.items():
+        ev = {
+            "ts": ts, "node": n, "kind": "birth", "approximate": True,
+            "detail": "first trace (approximate birth -- memory has no created_at)",
+        }
+        keyed.append(((ts, 0, 0), ev))
+
+    # History-derived events. bucket=1, seq=history row id for stable ordering.
+    for h in history:
+        n, ts, seq = h["name"], h["changed_at"], h["id"]
+        bb, ab = (h["before_body"] or ""), (h["after_body"] or "")
+        if bb != ab:
+            delta = len(ab) - len(bb)
+            if ab.startswith(bb) and delta > 0:
+                ev = {"ts": ts, "node": n, "kind": "append",
+                      "body_delta": delta, "detail": f"append (+{delta} chars)"}
+            else:
+                sign = "+" if delta >= 0 else ""
+                ev = {"ts": ts, "node": n, "kind": "edit",
+                      "body_delta": delta,
+                      "detail": f"edit body ({sign}{delta} chars)"}
+            keyed.append(((ts, 1, seq), ev))
+        if (h["before_status"] or None) != (h["after_status"] or None):
+            frm = h["before_status"] or "(none)"
+            to = h["after_status"] or "(none)"
+            keyed.append(((ts, 1, seq), {
+                "ts": ts, "node": n, "kind": "status",
+                "from": h["before_status"], "to": h["after_status"],
+                "detail": f"status {frm} -> {to}",
+            }))
+        if (h["before_description"] or None) != (h["after_description"] or None):
+            keyed.append(((ts, 1, seq), {
+                "ts": ts, "node": n, "kind": "description",
+                "detail": "description changed",
+            }))
+        if (h["before_type"] or None) != (h["after_type"] or None):
+            keyed.append(((ts, 1, seq), {
+                "ts": ts, "node": n, "kind": "retype",
+                "detail": f"type {h['before_type']} -> {h['after_type']}",
+            }))
+        if (h["before_workspace"] or None) != (h["after_workspace"] or None):
+            keyed.append(((ts, 1, seq), {
+                "ts": ts, "node": n, "kind": "relocate",
+                "detail": (
+                    f"workspace {h['before_workspace']} -> {h['after_workspace']}"
+                ),
+            }))
+        if (h["before_deleted_at"] or None) != (h["after_deleted_at"] or None):
+            if h["after_deleted_at"]:
+                keyed.append(((ts, 1, seq), {
+                    "ts": ts, "node": n, "kind": "tombstone",
+                    "detail": "tombstoned (soft-delete)",
+                }))
+            else:
+                keyed.append(((ts, 1, seq), {
+                    "ts": ts, "node": n, "kind": "restore",
+                    "detail": "restored from tombstone",
+                }))
+
+    # Link creation events. bucket=2 so a link created in the same second as a
+    # body change reads after it.
+    for e in edges:
+        ts = e["created_at"]
+        keyed.append(((ts, 2, 0), {
+            "ts": ts, "node": e["src_name"], "kind": "link",
+            "detail": f"{e['src_name']} -[{e['kind']}]-> {e['dst_name']}",
+        }))
+
+    # Sort chronologically. A missing ts sinks to the bottom deterministically.
+    keyed.sort(key=lambda pair: (
+        pair[0][0] or "9999-99-99", pair[0][1], pair[0][2] or 0,
+    ))
+    return [ev for _k, ev in keyed]
+
+
+def build_memory_story(
+    workspace: str,
+    slug: str,
+    *,
+    max_depth: int = _MEMORY_LINEAGE_MAX_DEPTH,
+    db_path: Path | None = None,
+) -> dict:
+    """Assemble the full lineage story for ``slug`` as a plain-data dict.
+
+    Resolves the lineage (BFS), batch-loads history and final states for the
+    whole node set, and fuses everything into one chronological timeline.
+    Pure read-only, batch (no N+1). Returns::
+
+        {
+            "seed": slug,
+            "nodes": [{name, depth, role}, ...],
+            "edges": [{src_name, dst_name, kind, created_at}, ...],
+            "timeline": [event, ...],
+            "final_states": [{name, class, status, type, ...}, ...],
+        }
+    """
+    lin = memory_lineage(workspace, slug, max_depth=max_depth, db_path=db_path)
+    names = lin["nodes"]
+    node_set = set(names)
+    history = memory_history_for(workspace, names, db_path=db_path)
+    finals = memory_final_states(workspace, names, lin["role"], db_path=db_path)
+    timeline = _fuse_timeline(node_set, history, lin["edges"])
+    nodes = [
+        {"name": n, "depth": lin["depth"].get(n), "role": lin["role"].get(n)}
+        for n in names
+    ]
+    return {
+        "seed": slug,
+        "nodes": nodes,
+        "edges": lin["edges"],
+        "timeline": timeline,
+        "final_states": finals,
+    }
+
+
 __all__ = [
     "VALID_SURFACES",
     "VALID_GROUP_BY",
@@ -1029,4 +1470,11 @@ __all__ = [
     "_highlight_snippet",
     "_extract_text_needle",
     "_row_text_for_snippet",
+    # Curated-memory lineage / history read layer
+    "get_memory_class_status",
+    "memory_links_for",
+    "memory_history_for",
+    "memory_lineage",
+    "memory_final_states",
+    "build_memory_story",
 ]

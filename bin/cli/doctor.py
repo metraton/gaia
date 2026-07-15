@@ -211,7 +211,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 30
+EXPECTED_SCHEMA_VERSION = 31
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
@@ -573,15 +573,28 @@ def check_schema_version() -> dict:
 
 @register_check("Episodes growth", order=48)
 def check_episodes_growth() -> dict:
-    """Report gaia.db size and the episodes row count (growth visibility).
+    """Report gaia.db growth: FILE size vs the episodes TABLE size (distinct).
 
     There was previously no visibility into gaia.db growth. The ``episodes``
     table is the dominant growth driver and is now pruned automatically at 90
-    days (gaia.store.writer.prune_episodes). This check surfaces the current
-    file size and row count so a runaway table is observable at a glance. It is
-    informational only -- it never fails the doctor run.
+    days (gaia.store.writer.prune_episodes). This check surfaces:
 
-    Skipped cleanly when the DB does not exist yet or cannot be read.
+      * the gaia.db FILE size on disk (the whole database, all tables + indexes
+        + freelist), and
+      * the episodes TABLE size alone (via the ``dbstat`` vtab), plus its row
+        count, and
+      * the freelist -- pages freed by DELETEs but not yet returned to the OS
+        (reclaimable with ``VACUUM``).
+
+    The file size and the table size are DIFFERENT numbers and were previously
+    conflated (the message read "episodes ~<file size>MB", implying the whole
+    file was episodes). Reporting them separately makes it obvious how much of
+    the file is the episodes table vs other tables vs dead freelist space. It
+    is informational only -- it never fails the doctor run.
+
+    Skipped cleanly when the DB does not exist yet or cannot be read; the
+    episodes table size falls back to "unavailable" when the SQLite build has
+    no ``dbstat`` vtab (a compile-time option).
     """
     db_path_str = os.environ.get("GAIA_DB", str(_DEFAULT_DB_PATH))
     db_path = Path(db_path_str).expanduser()
@@ -594,9 +607,9 @@ def check_episodes_growth() -> dict:
         )
 
     try:
-        size_mb = db_path.stat().st_size / (1024 * 1024)
+        file_mb = db_path.stat().st_size / (1024 * 1024)
     except OSError:
-        size_mb = None
+        file_mb = None
 
     try:
         con = sqlite3.connect(str(db_path))
@@ -613,16 +626,50 @@ def check_episodes_growth() -> dict:
         cur.execute("SELECT COUNT(*) FROM episodes")
         row = cur.fetchone()
         count = row[0] if row else 0
+
+        # Freelist: pages freed by DELETEs but not yet released to the OS.
+        # freelist_bytes = freelist_count * page_size; reclaimed by VACUUM.
+        page_size = cur.execute("PRAGMA page_size").fetchone()[0]
+        freelist_pages = cur.execute("PRAGMA freelist_count").fetchone()[0]
+        free_mb = (page_size * freelist_pages) / (1024 * 1024)
+
+        # episodes TABLE size (distinct from the whole-file size). dbstat is a
+        # compile-time-optional vtab; treat its absence as "size unavailable".
+        episodes_mb = None
+        try:
+            r = cur.execute(
+                "SELECT SUM(pgsize) FROM dbstat WHERE name = 'episodes'"
+            ).fetchone()
+            if r and r[0] is not None:
+                episodes_mb = r[0] / (1024 * 1024)
+        except sqlite3.Error:
+            episodes_mb = None
     except sqlite3.Error as exc:
         return _result("Episodes growth", "info", f"could not read episodes: {exc}")
     finally:
         con.close()
 
-    size_str = f"{size_mb:.1f} MB" if size_mb is not None else "unknown size"
+    if file_mb is not None:
+        file_part = f"gaia.db file {file_mb:.1f} MB"
+        if file_mb > 0:
+            file_part += (
+                f" (freelist {free_mb:.1f} MB, "
+                f"{free_mb / file_mb * 100:.0f}% reclaimable via VACUUM)"
+            )
+        else:
+            file_part += f" (freelist {free_mb:.1f} MB, reclaimable via VACUUM)"
+    else:
+        file_part = "gaia.db file unknown size"
+
+    tbl_str = (
+        f"{episodes_mb:.1f} MB" if episodes_mb is not None
+        else "size unavailable (no dbstat)"
+    )
     return _result(
         "Episodes growth",
         "info",
-        f"gaia.db {size_str}, episodes rows={count} (retention: 90d, auto-pruned)",
+        f"{file_part}; episodes table {tbl_str}, rows={count} "
+        f"(retention: 90d, auto-pruned)",
     )
 
 

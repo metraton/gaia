@@ -140,8 +140,11 @@ class TestCarryForwardFirst:
         assert items[0]["name"] == "atom_carry_1"
         assert items[0]["section"] == "carry_forward"
 
-    def test_carry_forward_no_quota(self, tmp_db, capsys):
-        """10 carry_forward rows -> all 10 are injected."""
+    def test_carry_forward_recency_cap(self, tmp_db, capsys):
+        """10 carry_forward rows -> capped to _RELEVANT_CARRY_FORWARD_CAP,
+        newest kept, and the overflow footer surfaces the rest (never silent).
+        """
+        cap = memory_mod._RELEVANT_CARRY_FORWARD_CAP
         for i in range(10):
             _insert_memory(
                 tmp_db, f"atom_carry_{i}", "atom", "thread", "carry_forward",
@@ -154,7 +157,13 @@ class TestCarryForwardFirst:
         assert rc == 0
         payload = json.loads(out)
         cf = [i for i in payload["items"] if i["section"] == "carry_forward"]
-        assert len(cf) == 10, f"expected 10 carry_forward, got {len(cf)}"
+        assert len(cf) == cap, f"expected {cap} carry_forward, got {len(cf)}"
+        # Newest kept (updated_at DESC): atom_carry_9..atom_carry_2.
+        assert cf[0]["name"] == "atom_carry_9"
+        # Dropped rows are surfaced, not silent.
+        assert payload["carry_forward_dropped"] == 10 - cap
+        assert "more item(s) not shown" in payload["block"]
+        assert "gaia memory search" in payload["block"]
 
 
 class TestAnchorQuota:
@@ -193,10 +202,11 @@ class TestAnchorQuota:
 
 
 class TestThreadOpenQuota:
-    """thread/open section quota of 2."""
+    """thread/open section quota (4)."""
 
-    def test_thread_open_quota_2(self, tmp_db, capsys):
-        for i in range(5):
+    def test_thread_open_quota(self, tmp_db, capsys):
+        quota = memory_mod._RELEVANT_PER_CLASS_QUOTA["thread_open"]
+        for i in range(quota + 3):
             _insert_memory(
                 tmp_db, f"atom_open_{i}", "atom", "thread", "open",
                 f"d{i}", f"2026-05-22T{i:02d}:00:00Z",
@@ -207,7 +217,24 @@ class TestThreadOpenQuota:
         assert rc == 0
         payload = json.loads(out)
         opens = [i for i in payload["items"] if i["section"] == "thread_open"]
-        assert len(opens) == 2
+        assert len(opens) == quota
+
+    def test_thread_open_staleness_order_ascending(self, tmp_db, capsys):
+        """Oldest open thread ascends to the top (staleness first)."""
+        _insert_memory(tmp_db, "open_new", "atom", "thread", "open",
+                       "fresh", "2026-05-22T00:00:00Z")
+        _insert_memory(tmp_db, "open_old", "atom", "thread", "open",
+                       "stale", "2026-05-20T00:00:00Z")
+        _insert_memory(tmp_db, "open_mid", "atom", "thread", "open",
+                       "mid", "2026-05-21T00:00:00Z")
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        payload = json.loads(out)
+        opens = [i["name"] for i in payload["items"]
+                 if i["section"] == "thread_open"]
+        assert opens == ["open_old", "open_mid", "open_new"]
 
 
 class TestLogNeverAppears:
@@ -298,27 +325,149 @@ class TestCharBudgetTrimOrder:
             "Block still must roughly fit budget (allow footer fudge)"
         )
 
-    def test_carry_forward_alone_exceeds_budget_warning(self, tmp_db, capsys):
-        # Pack 10 carry_forwards with long descriptions to ensure overflow.
-        for i in range(10):
+    def test_carry_forward_hard_cap_respected(self, tmp_db, capsys):
+        """Many large carry_forwards can no longer blow the budget: max_chars
+        is a HARD cap even when carry_forward alone would overflow, and the
+        overflow footer is always present so nothing is silently dropped.
+        """
+        # Pack 20 carry_forwards with long descriptions to force overflow well
+        # past the sub-cap AND the char budget.
+        for i in range(20):
             _insert_memory(
                 tmp_db, f"atom_cf_{i}", "atom", "thread", "carry_forward",
-                "x" * 80, f"2026-05-22T{i:02d}:00:00Z",
+                "x" * 300, f"2026-05-22T{i:02d}:00:00Z",
             )
 
-        rc = memory_mod._cmd_get_relevant(_args(max_chars=200))
+        rc = memory_mod._cmd_get_relevant(_args(max_chars=800))
         out = capsys.readouterr().out
         assert rc == 0
         payload = json.loads(out)
-        # All 10 should still be present (we do NOT trim carry_forward).
-        cf_count = sum(1 for i in payload["items"]
-                       if i["section"] == "carry_forward")
-        assert cf_count == 10
-        # Block exceeds budget by design.
-        assert len(payload["block"]) > 200
-        assert payload.get("overflow_warning"), (
-            "Expected overflow_warning when carry_forward alone exceeds budget"
+        # HARD cap: the rendered block never exceeds the caller's budget.
+        assert len(payload["block"]) <= 800, (
+            f"block {len(payload['block'])} chars exceeds hard cap 800"
         )
+        # Overflow is surfaced, never silent.
+        assert payload["overflow"] > 0
+        assert "more item(s) not shown" in payload["block"]
+        assert "gaia memory search" in payload["block"]
+
+    def test_budget_respected_with_many_large_carry_forwards(self, tmp_db, capsys):
+        """Regression for the 5.8x audit finding: at the real caller budget
+        (800) a workspace full of large carried threads stays within cap."""
+        for i in range(15):
+            _insert_memory(
+                tmp_db, f"atom_cf_{i}", "atom", "thread", "carry_forward",
+                "y" * 500, f"2026-05-22T{i:02d}:00:00Z",
+            )
+        # A couple of anchors and open threads too.
+        _insert_memory(tmp_db, "anchor_1", "atom", "anchor", None,
+                       "z" * 400, "2026-05-22T23:00:00Z")
+        _insert_memory(tmp_db, "open_1", "atom", "thread", "open",
+                       "w" * 400, "2026-05-19T00:00:00Z")
+
+        rc = memory_mod._cmd_get_relevant(_args(max_chars=800))
+        out = capsys.readouterr().out
+        assert rc == 0
+        payload = json.loads(out)
+        assert len(payload["block"]) <= 800
+
+    def test_no_footer_when_nothing_dropped(self, tmp_db, capsys):
+        """A small workspace under budget emits no overflow footer."""
+        _insert_memory(tmp_db, "atom_cf_1", "atom", "thread", "carry_forward",
+                       "short carry", "2026-05-22T10:00:00Z")
+        _insert_memory(tmp_db, "atom_anchor_1", "atom", "anchor", None,
+                       "short anchor", "2026-05-22T09:00:00Z")
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        payload = json.loads(out)
+        assert payload["overflow"] == 0
+        assert "not shown" not in payload["block"]
+
+
+class TestPerItemTruncation:
+    """Each rendered description is capped to _RELEVANT_ITEM_DESC_MAX chars."""
+
+    def test_long_description_truncated(self, tmp_db, capsys):
+        cap = memory_mod._RELEVANT_ITEM_DESC_MAX
+        _insert_memory(tmp_db, "atom_long", "atom", "anchor", None,
+                       "q" * 500, "2026-05-22T10:00:00Z")
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        payload = json.loads(out)
+        item = next(i for i in payload["items"] if i["name"] == "atom_long")
+        # Rendered description is capped + ellipsis, not the full 500 chars.
+        assert item["description"].endswith("…")
+        assert len(item["description"]) <= cap + 1
+        # The bullet line in the block is correspondingly short.
+        long_line = next(ln for ln in payload["block"].splitlines()
+                         if ln.startswith("- atom_long"))
+        assert len(long_line) <= len("- atom_long: ") + cap + 1
+
+    def test_short_description_not_truncated(self, tmp_db, capsys):
+        _insert_memory(tmp_db, "atom_short", "atom", "anchor", None,
+                       "brief", "2026-05-22T10:00:00Z")
+        rc = memory_mod._cmd_get_relevant(_args())
+        payload = json.loads(capsys.readouterr().out)
+        item = next(i for i in payload["items"] if i["name"] == "atom_short")
+        assert item["description"] == "brief"
+        assert not item["description"].endswith("…")
+
+
+class TestIdentityAnchorPinned:
+    """type=user anchors are pinned to the top so recency cannot bury them."""
+
+    def test_user_anchor_present_despite_old_timestamp(self, tmp_db, capsys):
+        # One old user anchor buried under many newer non-user anchors.
+        _insert_memory(tmp_db, "user_jorge", "user", "anchor", None,
+                       "who I am", "2026-05-01T00:00:00Z")
+        for i in range(6):
+            _insert_memory(
+                tmp_db, f"proj_anchor_{i}", "project", "anchor", None,
+                f"recent {i}", f"2026-05-22T{i:02d}:00:00Z",
+            )
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        payload = json.loads(out)
+        anchors = [i["name"] for i in payload["items"]
+                   if i["section"] == "anchor"]
+        # Despite the oldest timestamp and the quota, the user anchor is kept
+        # AND floats to the top of the anchor section.
+        assert "user_jorge" in anchors
+        assert anchors[0] == "user_jorge"
+
+
+class TestProjectTag:
+    """project_ref renders as a short per-bullet tag when present."""
+
+    def test_project_ref_git_path_renders_basename_tag(self, tmp_db, capsys):
+        _insert_memory(tmp_db, "atom_tagged", "atom", "anchor", None,
+                       "tagged row", "2026-05-22T10:00:00Z",
+                       project_ref="/home/jorge/ws/me/gaia/.git")
+        _insert_memory(tmp_db, "atom_untagged", "atom", "anchor", None,
+                       "no tag", "2026-05-22T09:00:00Z", project_ref=None)
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        out = capsys.readouterr().out
+        assert rc == 0
+        block = json.loads(out)["block"]
+        assert "- atom_tagged [gaia]:" in block
+        # Untagged row has no bracket tag.
+        untagged = next(ln for ln in block.splitlines()
+                        if ln.startswith("- atom_untagged"))
+        assert "[" not in untagged
+
+    def test_project_tag_helper(self):
+        assert memory_mod._project_tag("/home/jorge/ws/me/gaia/.git") == "gaia"
+        assert memory_mod._project_tag("id/p1") == "p1"
+        assert memory_mod._project_tag("gaia") == "gaia"
+        assert memory_mod._project_tag(None) == ""
+        assert memory_mod._project_tag("") == ""
 
 
 class TestEmptySectionsOmitHeader:

@@ -508,6 +508,52 @@ class TestCheckMemoryDirs:
         assert r["severity"] == "warning"
 
 
+class TestCheckEpisodesGrowth:
+    """The growth check must report the FILE size and the episodes TABLE size
+    as DISTINCT numbers (previously conflated as "episodes ~<file>MB"), plus the
+    reclaimable freelist.
+    """
+
+    def _bootstrap(self, tmp_path):
+        import subprocess as _sp
+        import os as _os
+
+        db_path = tmp_path / "gaia.db"
+        bootstrap = REPO_ROOT / "scripts" / "bootstrap_database.sh"
+        env = _os.environ.copy()
+        env["GAIA_DB"] = str(db_path)
+        env["WORKSPACE"] = str(tmp_path)
+        res = _sp.run(
+            ["bash", str(bootstrap)],
+            env=env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        assert res.returncode == 0, res.stderr
+        return db_path
+
+    def test_reports_file_and_table_and_freelist_separately(self, tmp_path, monkeypatch):
+        db_path = self._bootstrap(tmp_path)
+        monkeypatch.setenv("GAIA_DB", str(db_path))
+
+        r = doctor_mod.check_episodes_growth()
+        assert r["name"] == "Episodes growth"
+        assert r["severity"] == "info"  # informational only, never fails the run
+        detail = r["detail"]
+        # File size and TABLE size are reported as separate, labelled numbers.
+        assert "gaia.db file" in detail
+        assert "episodes table" in detail
+        # Freelist (reclaimable dead space) is surfaced.
+        assert "freelist" in detail
+        # Row count and retention note preserved.
+        assert "rows=" in detail
+        assert "90d" in detail
+
+    def test_missing_db_is_info(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DB", str(tmp_path / "absent.db"))
+        r = doctor_mod.check_episodes_growth()
+        assert r["severity"] == "info"
+        assert "no DB at" in r["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Tests: Pass 4 -- check_package_integrity
 # ---------------------------------------------------------------------------

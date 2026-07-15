@@ -79,6 +79,7 @@ skills/
 ├── jira-ticket-writing/   # Formula for human-readable Jira Stories and Subtasks (technique, user-invocable)
 │   └── examples.md
 ├── memory/                # Read, search, write, and curate Gaia memory (atoms/decisions/negative + legacy)
+│   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
 ├── orchestrator-approval/ # DEPRECATED — see orchestrator-present-approval
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests

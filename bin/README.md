@@ -67,7 +67,8 @@ bin/
     ├── evidence.py            # gaia evidence   — per-AC evidence (three-tier storage)
     ├── history.py             # gaia history    — recent agent sessions
     ├── install.py             # gaia install    — bootstrap DB, settings, symlinks (run manually; no postinstall)
-    ├── memory.py              # gaia memory     — curated memory (append/add/edit/reclassify/delete/link) + episodic log (stats, search, show)
+    ├── memory.py              # gaia memory     — curated memory (append/add/edit/reclassify/delete/link) + reads (show [--links|--history], story) + episodic log (stats, search, episode-show)
+    ├── memory_story.py        # backs `gaia memory story` (lineage narration); imported by memory.py, no register() of its own
     ├── metrics.py             # gaia metrics    — usage analytics (DB-canonical episodes/anomalies + audit-log tier/commands)
     ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
     ├── _pack_helpers.py       # shared `npm pack` primitive for dev/release (private, no register())

@@ -1372,9 +1372,15 @@ def write_harness_event(
             ),
         )
         con.commit()
-        return cur.lastrowid
+        row_id = cur.lastrowid
     finally:
         con.close()
+    # Automatic retention (mirrors episodes): occasionally prune events older
+    # than the 90-day window. Runs on its own connection AFTER the insert is
+    # committed and this one is closed, behind a 1/N gate, and swallows any
+    # failure so it can never mask the successful append.
+    _maybe_prune_harness_events(db_path=db_path)
+    return row_id
 
 
 # ---------------------------------------------------------------------------
@@ -2586,6 +2592,293 @@ def reclassify_memory(
         }
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: close_session_memory (transactional session-close checkpoint)
+# ---------------------------------------------------------------------------
+#
+# Brief: session-close-checkpoint-verb.
+#
+# WHY a dedicated writer instead of composing upsert_memory + reclassify_memory
+# + insert_memory_link at the call site: each of those opens its OWN connection
+# and commits its OWN transaction, so an N+1-call sequence has N+1 independent
+# commit points -- a failure on the 3rd call leaves the first two already
+# durable. A session checkpoint is a SINGLE semantic unit (one record anchor +
+# N carry-forward threads + N derived_from links); it must be all-or-nothing.
+# This is the only memory writer that spans multiple rows under ONE
+# BEGIN/COMMIT, mirroring the bulk_upsert pattern earlier in this module.
+#
+# Ordering is obligatory: anchor -> threads -> links. A derived_from edge needs
+# both endpoints to exist, so the anchor and every thread are inserted before
+# any link is written.
+#
+# Validation split (matches the codebase's existing layering):
+#   * SHAPE of the payload (container structure + required name/body keys) is
+#     validated UPFRONT, before any connection is opened -- a malformed payload
+#     never reaches the DB. It raises MemorySessionPayloadError(code="bad_shape").
+#   * SEMANTIC validation of each row (type in VALID_MEMORY_TYPES, slug<->type
+#     via _validate_curated_slug, non-empty body) runs INSIDE the transaction,
+#     immediately before each INSERT. A failure there raises ValueError and the
+#     surrounding except rolls the whole checkpoint back to zero rows -- this is
+#     the guarantee the dedicated function exists to provide.
+# ---------------------------------------------------------------------------
+
+class MemorySessionPayloadError(ValueError):
+    """Raised when a session-checkpoint payload is malformed.
+
+    Carries a stable ``code`` (default ``"bad_shape"``) so the CLI can map it
+    to a structured error the orchestrator branches on, exactly like the
+    ``missing_scope`` / ``project_unresolved`` codes ``_cmd_add`` emits.
+    """
+
+    def __init__(self, message: str, *, code: str = "bad_shape") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+# Markers that betray an unfiled pending sitting inside the RECORD body -- used
+# only for the non-blocking warning heuristic (never a reject). Matched
+# case-insensitively, per line for the checkbox form.
+_PENDING_MARKER_RE = _re_for_slug.compile(
+    r"(?im)(^\s*-\s*\[ \]|\btodo\b|\bpendiente|\bpending\b|pr[oó]ximo\s+paso|next\s+step)"
+)
+
+
+def _require_payload_keys(obj: Mapping, keys: tuple, where: str) -> None:
+    """Raise bad_shape when any of ``keys`` is missing/empty on ``obj``."""
+    for k in keys:
+        v = obj.get(k)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            raise MemorySessionPayloadError(
+                f"{where} must carry a non-empty {k!r}"
+            )
+
+
+def _upsert_checkpoint_row(
+    con,
+    workspace: str,
+    *,
+    name: str,
+    mem_type: str,
+    description: str | None,
+    body: str,
+    class_: str,
+    status: str | None,
+    project_ref: str | None,
+    origin_session_id: str | None,
+    now: str,
+) -> dict:
+    """Upsert one memory row on the CALLER's connection (no BEGIN/COMMIT here).
+
+    Semantic validation runs first, INSIDE the caller's open transaction, so a
+    bad row aborts the whole checkpoint via the caller's rollback. Combines the
+    body/type/slug rules of ``upsert_memory`` with the class/status write of
+    ``reclassify_memory`` in a single INSERT ... ON CONFLICT DO UPDATE.
+    """
+    if not body or not body.strip():
+        raise ValueError(f"memory body cannot be empty (slug {name!r})")
+    if mem_type not in VALID_MEMORY_TYPES:
+        raise ValueError(
+            f"invalid memory type {mem_type!r} for slug {name!r}; must be one "
+            f"of {list(VALID_MEMORY_TYPES)}"
+        )
+    _validate_curated_slug(name, mem_type)
+
+    existing = con.execute(
+        "SELECT name FROM memory WHERE workspace = ? AND name = ?",
+        (workspace, name),
+    ).fetchone()
+    action = "updated" if existing is not None else "inserted"
+    con.execute(
+        """
+        INSERT INTO memory (workspace, name, type, description, body,
+                            project_ref, origin_session_id, updated_at,
+                            class, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace, name) DO UPDATE SET
+            type              = excluded.type,
+            description       = excluded.description,
+            body              = excluded.body,
+            project_ref       = COALESCE(excluded.project_ref, project_ref),
+            origin_session_id = excluded.origin_session_id,
+            updated_at        = excluded.updated_at,
+            class             = excluded.class,
+            status            = excluded.status,
+            deleted_at        = NULL
+        """,
+        (workspace, name, mem_type, description, body,
+         project_ref, origin_session_id, now, class_, status),
+    )
+    return {
+        "name": name,
+        "action": action,
+        "class": class_,
+        "memory_status": status,
+    }
+
+
+def _insert_checkpoint_link(
+    con, workspace: str, src_name: str, dst_name: str, kind: str, now: str
+) -> str:
+    """Insert one memory_links edge on the CALLER's connection. Idempotent.
+
+    Both endpoints are guaranteed to exist -- the caller inserts the anchor and
+    every thread before any link -- so this skips the endpoint-existence probes
+    ``insert_memory_link`` does and only guards against a duplicate edge (making
+    the whole checkpoint safely re-runnable). Returns ``"inserted"`` or
+    ``"noop"``.
+    """
+    existing = con.execute(
+        "SELECT 1 FROM memory_links "
+        "WHERE workspace = ? AND src_name = ? AND dst_name = ? AND kind = ?",
+        (workspace, src_name, dst_name, kind),
+    ).fetchone()
+    if existing is not None:
+        return "noop"
+    con.execute(
+        "INSERT INTO memory_links (workspace, src_name, dst_name, kind, "
+        "                          created_at) VALUES (?, ?, ?, ?, ?)",
+        (workspace, src_name, dst_name, kind, now),
+    )
+    return "inserted"
+
+
+def _checkpoint_warnings(record_body: str, pendientes: list) -> list:
+    """Heuristic (non-blocking): warn when the record body reads like it hides
+    a pending but no carry-forward threads were provided."""
+    warnings: list[str] = []
+    if not pendientes and _PENDING_MARKER_RE.search(record_body or ""):
+        warnings.append(
+            "record body contains pending markers (TODO / pendiente / next "
+            "step / '- [ ]') but no carry-forward threads were provided. A "
+            "pending buried in the record body is NEVER re-injected at "
+            "SessionStart (only class=thread status=carry_forward rows "
+            "resurface); split it into a 'pendientes' entry so it survives."
+        )
+    return warnings
+
+
+def close_session_memory(
+    workspace: str,
+    payload: Mapping[str, Any],
+    *,
+    project_ref: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Persist a whole session-close reflection atomically.
+
+    ``payload`` shape::
+
+        {
+          "resumen":   {"name", "type", "description", "body"},
+          "pendientes": [{"name", "description", "body"}, ...]   # may be empty
+        }
+
+    Semantics, all in ONE transaction (rollback to zero rows on any failure):
+      1. ``resumen`` -> upsert as a ``class=anchor`` record row.
+      2. each ``pendientes[i]`` -> upsert as a ``class=thread
+         status=carry_forward`` row (type inherited from ``resumen`` -- the
+         payload carries no per-pending type, matching the session-reflection
+         convention where record and threads share ``--type``).
+      3. a ``derived_from`` edge from each thread back to the anchor.
+
+    Idempotent: re-running the same payload UPSERTs the same rows and re-uses
+    the same edges (the fecha-stamped slug convention avoids collisions).
+
+    Returns::
+
+        {"status": "applied", "anchor": {...}, "threads": [...],
+         "links": [...], "warnings": [...], "updated_at": ...}
+
+    Raises:
+        MemorySessionPayloadError: malformed payload (``code="bad_shape"``);
+            raised before any connection is opened.
+        ValueError: a row failed semantic validation (invalid type, slug<->type
+            mismatch, empty body) -- the whole checkpoint is rolled back.
+        MemoryWriteForbidden: GAIA_DISPATCH_AGENT names a non-curator.
+    """
+    _assert_dispatch_can_write_memory()
+
+    # -- SHAPE validation (bad_shape), upfront, before touching the DB --------
+    if not isinstance(payload, Mapping):
+        raise MemorySessionPayloadError("payload must be a JSON object")
+    resumen = payload.get("resumen")
+    if not isinstance(resumen, Mapping):
+        raise MemorySessionPayloadError("payload.resumen must be an object")
+    _require_payload_keys(resumen, ("name", "type", "body"), "payload.resumen")
+
+    pendientes = payload.get("pendientes")
+    if pendientes is None:
+        pendientes = []
+    if not isinstance(pendientes, list):
+        raise MemorySessionPayloadError("payload.pendientes must be a list")
+    for i, p in enumerate(pendientes):
+        if not isinstance(p, Mapping):
+            raise MemorySessionPayloadError(
+                f"payload.pendientes[{i}] must be an object with name+body"
+            )
+        _require_payload_keys(p, ("name", "body"), f"payload.pendientes[{i}]")
+
+    record_type = resumen["type"]
+    record_name = resumen["name"]
+    origin_session_id = os.environ.get("GAIA_SESSION_ID") or None
+    now = _now_iso()
+
+    # -- one connection, one BEGIN, one commit/rollback -----------------------
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            _ensure_workspace_row(con, workspace)
+
+            # (1) record anchor
+            anchor = _upsert_checkpoint_row(
+                con, workspace,
+                name=record_name, mem_type=record_type,
+                description=resumen.get("description"), body=resumen["body"],
+                class_="anchor", status=None,
+                project_ref=project_ref, origin_session_id=origin_session_id,
+                now=now,
+            )
+
+            # (2) carry-forward threads, then (3) derived_from edges
+            threads: list[dict] = []
+            links: list[dict] = []
+            for p in pendientes:
+                threads.append(_upsert_checkpoint_row(
+                    con, workspace,
+                    name=p["name"], mem_type=record_type,
+                    description=p.get("description"), body=p["body"],
+                    class_="thread", status="carry_forward",
+                    project_ref=project_ref,
+                    origin_session_id=origin_session_id, now=now,
+                ))
+                link_action = _insert_checkpoint_link(
+                    con, workspace, p["name"], record_name, "derived_from", now,
+                )
+                links.append({
+                    "src_name": p["name"],
+                    "dst_name": record_name,
+                    "kind": "derived_from",
+                    "action": link_action,
+                })
+
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+    finally:
+        con.close()
+
+    return {
+        "status": "applied",
+        "anchor": anchor,
+        "threads": threads,
+        "links": links,
+        "warnings": _checkpoint_warnings(resumen["body"], pendientes),
+        "updated_at": now,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -5466,6 +5759,11 @@ def finalize_agent_contract_handoff(
                     # be stale/unrelated -- see the no-op branch below).
                     handoff_id = cur.lastrowid
                     con.commit()
+                    # Automatic retention (mirrors episodes): occasionally prune
+                    # handoffs older than the 90-day window. Runs on its own
+                    # connection after commit, behind a 1/N gate, and swallows
+                    # any failure so it can never mask this successful finalize.
+                    _maybe_prune_handoffs(db_path=db_path)
                     return {
                         "status": "applied",
                         "created": True,
@@ -5840,8 +6138,16 @@ EPISODE_RETENTION_DAYS = 90
 _PRUNE_SAMPLE_RATE_DEFAULT = 50
 
 
-def _prune_sample_rate() -> int:
-    raw = os.environ.get("GAIA_EPISODE_PRUNE_SAMPLE_RATE")
+def _prune_sample_rate(env_var: str = "GAIA_EPISODE_PRUNE_SAMPLE_RATE") -> int:
+    """Resolve the 1-in-N prune sampling rate from ``env_var``.
+
+    Shared by all DB-side retention gates (episodes, harness_events,
+    agent_contract_handoffs); each passes its own env var so a test can force
+    one table's gate deterministically without affecting the others. A value
+    <= 1 makes every insert prune; a missing/malformed value falls back to
+    ``_PRUNE_SAMPLE_RATE_DEFAULT``.
+    """
+    raw = os.environ.get(env_var)
     if raw is None:
         return _PRUNE_SAMPLE_RATE_DEFAULT
     try:
@@ -5900,6 +6206,172 @@ def _maybe_prune_episodes(db_path: Path | None = None) -> None:
         rate = _prune_sample_rate()
         if rate <= 1 or random.randint(1, rate) == 1:
             prune_episodes(db_path=db_path)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# harness_events retention (automatic, DB-side)
+# ---------------------------------------------------------------------------
+#
+# ``harness_events`` is the append-only audit mirror written on every hook
+# firing (write_harness_event); it had NO retention and grew unbounded (~11k
+# rows already past the window / ~39% of the table observed in workspace 'me').
+# Left unbounded it slows every full-table read and inflates the DB file.
+#
+# Policy: 90 days (user decision -- parity with episodes). ``prune_harness_events``
+# is the testable unit: a single ``DELETE FROM harness_events WHERE ts < cutoff``.
+# The ``ts`` column is written by _now_iso() (fixed ``...Z`` UTC format), so the
+# cutoff MUST be built with the SAME strftime format -- NOT datetime.isoformat()
+# (which episodes uses) -- for the lexicographic string comparison to be correct.
+# harness_events has no FK and no child tables, so the DELETE needs no cascade.
+#
+# Trigger point: inside write_harness_event (the sole write path) behind the
+# shared 1/N probabilistic gate, mirroring episodes -- automatic, no scheduler.
+
+HARNESS_EVENT_RETENTION_DAYS = 90
+_HARNESS_EVENT_PRUNE_ENV = "GAIA_HARNESS_EVENT_PRUNE_SAMPLE_RATE"
+
+
+def _retention_cutoff_iso(cutoff_days: int) -> str:
+    """Cutoff timestamp in the ``_now_iso()`` (``%Y-%m-%dT%H:%M:%SZ``) format.
+
+    harness_events.ts and agent_contract_handoffs.created_at are both written by
+    _now_iso(), so their retention cutoff must use the identical fixed-width UTC
+    format for a lexicographic comparison to be valid. (episodes uses
+    datetime.isoformat() with a ``+00:00`` offset and therefore builds its cutoff
+    differently -- do not unify the two.)
+    """
+    from datetime import timedelta
+
+    return (datetime.now(timezone.utc) - timedelta(days=cutoff_days)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def prune_harness_events(
+    cutoff_days: int = HARNESS_EVENT_RETENTION_DAYS,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Delete ``harness_events`` rows older than ``cutoff_days`` (default 90).
+
+    Returns ``{"status": "applied", "deleted": <n>, "cutoff": <iso>}`` on
+    success, or ``{"status": "error", "reason": str}`` on failure.
+    """
+    cutoff = _retention_cutoff_iso(cutoff_days)
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            cur = con.execute(
+                "DELETE FROM harness_events WHERE ts < ?",
+                (cutoff,),
+            )
+            deleted = cur.rowcount
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        return {"status": "applied", "deleted": deleted, "cutoff": cutoff}
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+def _maybe_prune_harness_events(db_path: Path | None = None) -> None:
+    """Probabilistically prune harness_events after a successful insert.
+
+    Best-effort: any failure is swallowed so it can never mask the insert that
+    just succeeded. Fires with probability ``1/_prune_sample_rate(...)``.
+    """
+    import random
+
+    try:
+        rate = _prune_sample_rate(_HARNESS_EVENT_PRUNE_ENV)
+        if rate <= 1 or random.randint(1, rate) == 1:
+            prune_harness_events(db_path=db_path)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# agent_contract_handoffs retention (automatic, DB-side)
+# ---------------------------------------------------------------------------
+#
+# ``agent_contract_handoffs`` persists one terminal contract row per finalized
+# agent turn; it had NO retention and grew unbounded (~5.4k rows / ~51 days
+# observed in workspace 'me'). Policy: 90 days (user decision -- parity with
+# episodes).
+#
+# FK/cascade: agent_contract_handoff_approvals.handoff_id REFERENCES
+# agent_contract_handoffs(id) ON DELETE CASCADE (schema.sql). _connect() sets
+# ``PRAGMA foreign_keys = ON``, so deleting an expired handoff cascade-deletes
+# its join rows in agent_contract_handoff_approvals -- exactly the desired
+# behavior (the approval_grants rows themselves are NOT touched; only the join
+# rows linking them to the pruned handoff are removed). No orphan rows are left.
+#
+# The ``created_at`` column is written by _now_iso() (``...Z`` UTC format), so
+# the cutoff is built with the same strftime format via _retention_cutoff_iso.
+#
+# Trigger point: inside finalize_agent_contract_handoff -- the SOLE runtime
+# write path (bin/cli/contract.py + hooks/modules/agents/handoff_persister.py);
+# insert_agent_contract_handoff is legacy and has no non-test caller -- on the
+# winner (created) branch after commit, behind the shared 1/N gate.
+
+HANDOFF_RETENTION_DAYS = 90
+_HANDOFF_PRUNE_ENV = "GAIA_HANDOFF_PRUNE_SAMPLE_RATE"
+
+
+def prune_handoffs(
+    cutoff_days: int = HANDOFF_RETENTION_DAYS,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Delete ``agent_contract_handoffs`` rows older than ``cutoff_days`` (90).
+
+    Runs a single ``DELETE FROM agent_contract_handoffs WHERE created_at < ?``.
+    With foreign_keys ON (set by _connect), the ON DELETE CASCADE on
+    agent_contract_handoff_approvals.handoff_id removes the matching join rows
+    automatically -- no separate cleanup needed.
+
+    Returns ``{"status": "applied", "deleted": <n>, "cutoff": <iso>}`` on
+    success, or ``{"status": "error", "reason": str}`` on failure.
+    """
+    cutoff = _retention_cutoff_iso(cutoff_days)
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN")
+        try:
+            cur = con.execute(
+                "DELETE FROM agent_contract_handoffs WHERE created_at < ?",
+                (cutoff,),
+            )
+            deleted = cur.rowcount
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        return {"status": "applied", "deleted": deleted, "cutoff": cutoff}
+    except Exception as exc:
+        return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+def _maybe_prune_handoffs(db_path: Path | None = None) -> None:
+    """Probabilistically prune agent_contract_handoffs after a successful write.
+
+    Best-effort: any failure is swallowed so it can never mask the finalize that
+    just succeeded. Fires with probability ``1/_prune_sample_rate(...)``.
+    """
+    import random
+
+    try:
+        rate = _prune_sample_rate(_HANDOFF_PRUNE_ENV)
+        if rate <= 1 or random.randint(1, rate) == 1:
+            prune_handoffs(db_path=db_path)
     except Exception:
         pass
 
