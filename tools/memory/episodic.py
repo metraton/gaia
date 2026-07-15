@@ -440,27 +440,18 @@ class EpisodicMemory:
     def _resolve_workspace(self) -> str:
         """Resolve the workspace name to insert episodes under.
 
-        Resolution order:
-            1. ``GAIA_DISPATCH_WORKSPACE`` environment variable (set by the
-               SubagentStop hook chain).
-            2. ``GAIA_WORKSPACE`` environment variable (set by ``gaia <cmd>
-               --workspace=<name>``).
-            3. ``gaia.project.current()`` -- canonical workspace identity
-               derived from the git remote of the current directory.
-            4. Literal ``"global"`` when nothing else resolves.
+        Delegates to the canonical :func:`gaia.project.resolve_workspace`
+        cascade (``GAIA_DISPATCH_WORKSPACE`` -> ``GAIA_WORKSPACE`` ->
+        ``gaia.project.current()`` -> ``"global"``) so the resolution order
+        stays in lockstep with every other writer that attributes a row
+        (notably the harness event writer). Any failure falls back to
+        ``"global"`` -- never an empty workspace.
         """
-        for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
-            value = os.environ.get(env_key)
-            if value:
-                return value
         try:
-            from gaia.project import current as _project_current
-            ws = _project_current()
-            if ws:
-                return ws
+            from gaia.project import resolve_workspace
+            return resolve_workspace()
         except Exception:
-            pass
-        return "global"
+            return "global"
 
     def update_outcome(
         self,

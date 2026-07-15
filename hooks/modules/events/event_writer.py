@@ -20,7 +20,6 @@ repo-root fallback already established by handoff_persister.
 
 import json
 import logging
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -58,6 +57,33 @@ def _import_store_writer():
         sys.path.insert(0, str(_repo_root))
         from gaia.store import writer as _writer
     return _writer
+
+
+def _resolve_workspace() -> str:
+    """Resolve the workspace to attribute this event to via the canonical cascade.
+
+    Delegates to ``gaia.project.resolve_workspace`` (``GAIA_DISPATCH_WORKSPACE``
+    -> ``GAIA_WORKSPACE`` -> ``gaia.project.current()`` -> ``"global"``) instead
+    of reading a single env var. ``GAIA_WORKSPACE`` is NOT set in the process
+    Claude Code runs hooks in, so the pre-cascade single-var read fell through to
+    ``None`` and every harness_events row landed with ``workspace=NULL``. The
+    cascade derives the identity from the cwd's repo when no env var is present,
+    and only ever falls back to ``"global"`` -- never ``None``.
+
+    Uses the same repo-root import fallback as :func:`_import_store_writer`. Any
+    failure returns ``"global"`` so event writing stays non-blocking.
+    """
+    try:
+        try:
+            from gaia.project import resolve_workspace as _resolve
+        except ImportError:
+            _repo_root = Path(__file__).resolve().parents[3]
+            sys.path.insert(0, str(_repo_root))
+            from gaia.project import resolve_workspace as _resolve
+        return _resolve()
+    except Exception as exc:
+        logger.debug("workspace resolution failed (non-fatal): %s", exc)
+        return "global"
 
 
 class EventWriter:
@@ -99,7 +125,7 @@ class EventWriter:
         """
         try:
             writer = _import_store_writer()
-            workspace = os.environ.get("GAIA_WORKSPACE") or None
+            workspace = _resolve_workspace()
             writer.write_harness_event(
                 event_type=event_type,
                 source=source,

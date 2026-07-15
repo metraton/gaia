@@ -207,6 +207,53 @@ def current(cwd: Path | str | None = None) -> str:
     return "global"
 
 
+def resolve_workspace(cwd: Path | str | None = None) -> str:
+    """Resolve the workspace identity to attribute a write to -- NEVER empty.
+
+    This is the canonical env-aware cascade wrapped around :func:`current`.
+    It is the single source of truth for "which workspace should this write
+    land under" and is shared by every writer that must attribute a row --
+    the harness event writer, episodic memory, etc. -- so the resolution
+    order does not drift between call sites.
+
+    Resolution order:
+        1. ``GAIA_DISPATCH_WORKSPACE`` environment variable (set by the
+           SubagentStop hook chain when dispatching a subagent).
+        2. ``GAIA_WORKSPACE`` environment variable (set by
+           ``gaia <cmd> --workspace=<name>``).
+        3. :func:`current` -- path-based workspace identity derived from the
+           repository/directory of *cwd*.
+        4. Literal ``"global"`` when nothing else resolves (or *current*
+           raises / returns empty).
+
+    The explicit env vars win over the path-derived identity because a
+    dispatch may run from a cwd that is not the target workspace; the env var
+    carries the intended attribution. Falling back to ``"global"`` (never
+    ``None``) keeps attribution consistent with episodic memory and the
+    handoff persister, which use the same final fallback.
+
+    Args:
+        cwd: Directory to resolve the path-based identity for (step 3).
+            Defaults to :func:`current`'s own default (``Path.cwd()``).
+
+    Returns:
+        Workspace identity string. Never empty, never ``None``, never raises.
+    """
+    import os as _os
+
+    for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
+        value = _os.environ.get(env_key)
+        if value:
+            return value
+    try:
+        ws = current(cwd)
+        if ws:
+            return ws
+    except Exception:
+        pass
+    return "global"
+
+
 # ---------------------------------------------------------------------------
 # Consolidate: merge()
 # ---------------------------------------------------------------------------

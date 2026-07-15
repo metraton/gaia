@@ -15,6 +15,7 @@ Validates:
 """
 
 import json
+import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -191,12 +192,50 @@ class TestEventWriterDB:
         rows = _read_harness_rows(db_path)
         assert rows[0]["severity"] == "warning"
 
-    def test_write_event_workspace_unset_is_null(self, db_path, monkeypatch):
-        """When GAIA_WORKSPACE is unset, workspace is NULL (None-safe)."""
-        monkeypatch.delenv("GAIA_WORKSPACE", raising=False)
+    def test_write_event_gaia_workspace_env_wins(self, db_path, monkeypatch):
+        """(a) With GAIA_WORKSPACE set, the event is attributed to that value."""
+        monkeypatch.setenv("GAIA_WORKSPACE", "some-explicit-workspace")
         EventWriter().write_event(SESSION_END, "hook", "", "ended")
         rows = _read_harness_rows(db_path)
-        assert rows[0]["workspace"] is None
+        assert rows[0]["workspace"] == "some-explicit-workspace"
+
+    def test_write_event_derives_workspace_from_cwd_repo(
+        self, db_path, tmp_path, monkeypatch
+    ):
+        """(b) With no env var but a resolvable git repo in cwd, workspace is
+        derived from gaia.project.current() (the repo-root basename)."""
+        monkeypatch.delenv("GAIA_WORKSPACE", raising=False)
+        monkeypatch.delenv("GAIA_DISPATCH_WORKSPACE", raising=False)
+        repo = tmp_path / "derived-workspace-repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
+        monkeypatch.chdir(repo)
+
+        EventWriter().write_event(SESSION_END, "hook", "", "ended")
+
+        rows = _read_harness_rows(db_path)
+        assert rows[0]["workspace"] == "derived-workspace-repo"
+
+    def test_write_event_workspace_falls_back_to_global_never_null(
+        self, db_path, monkeypatch
+    ):
+        """(c) With nothing resolvable (no env, current() unresolvable), the
+        workspace falls back to "global" -- and NEVER to NULL."""
+        monkeypatch.delenv("GAIA_WORKSPACE", raising=False)
+        monkeypatch.delenv("GAIA_DISPATCH_WORKSPACE", raising=False)
+        # Force the path-based step to fail so the final "global" branch is hit.
+        import gaia.project as project
+
+        def _boom(cwd=None):
+            raise RuntimeError("cannot resolve identity")
+
+        monkeypatch.setattr(project, "current", _boom)
+
+        EventWriter().write_event(SESSION_END, "hook", "", "ended")
+
+        rows = _read_harness_rows(db_path)
+        assert rows[0]["workspace"] == "global"
+        assert rows[0]["workspace"] is not None
 
     def test_write_event_does_not_write_jsonl(self, db_path, tmp_path, monkeypatch):
         """NO-DUAL-WRITE invariant: write_event must NOT create events.jsonl.
