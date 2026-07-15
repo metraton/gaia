@@ -13,7 +13,7 @@ Subcommands (the 6 verbs + the ``fill --json`` batch mode):
     init     --agent-id AGENT_ID [--draft-id ID]  Create a new draft
     set      FIELD VALUE          [--draft-id ID]  Set a scalar field (dotted path)
     add      FIELD VALUE          [--draft-id ID]  Append a value to a list field
-    view                          [--draft-id ID]  Print the current draft envelope
+    view     [--field DOTTED_PATH][--draft-id ID]  Print the draft envelope, or ONLY a dotted-path subtree
     validate                      [--draft-id ID]  Validate the draft WITHOUT mutating it
     finalize                      [--draft-id ID]  Validate the draft as final
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
@@ -219,6 +219,34 @@ def _append_nested(envelope: dict, dotted_path: str, value: Any) -> None:
     existing.append(value)
 
 
+def _get_nested(envelope: dict, dotted_path: str) -> Any:
+    """Return the value at ``dotted_path`` in ``envelope`` (read-only).
+
+    The read counterpart of ``_set_nested`` -- it shares the SAME
+    ``_split_path`` tokenizer that ``set``/``add``/``fill`` use to resolve a
+    dotted path, so the addressing scheme is identical (no second, divergent
+    parser). Unlike the write helpers, it NEVER creates missing intermediate
+    dicts: a segment that is absent, or a non-dict encountered before the last
+    segment, raises ``ValueError`` with a clean message naming the exact
+    failing segment (never a raw ``KeyError``/traceback), which ``cmd_view``
+    turns into a non-zero exit.
+    """
+    parts = _split_path(dotted_path)
+    if not parts:
+        raise ValueError("FIELD must be a non-empty dotted path")
+    cur: Any = envelope
+    walked: list = []
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            where = ".".join(walked) if walked else "(root)"
+            raise ValueError(
+                f"no such field {dotted_path!r}: no key {part!r} under {where}"
+            )
+        walked.append(part)
+        cur = cur[part]
+    return cur
+
+
 def _deep_merge(base: dict, patch: dict) -> dict:
     """Recursively merge ``patch`` into ``base``. Dict values merge key-by-key;
     any other value (including a list) replaces the base value outright."""
@@ -393,10 +421,27 @@ def cmd_add(args) -> int:
 
 
 def cmd_view(args) -> int:
-    """Print the current draft envelope (no mutation)."""
+    """Print the current draft envelope, or ONLY a dotted-path subtree of it
+    (``--field``), without mutating anything.
+
+    With no ``--field`` this prints the FULL envelope exactly as before
+    (``{"draft_id": ..., "envelope": ...}``). With ``--field <dotted-path>``
+    it resolves that subtree via the same ``_split_path`` addressing ``set``
+    uses and prints ONLY that subtree as JSON -- an invalid/absent path is a
+    clean error to stderr with a non-zero exit, never a raw traceback.
+    """
     draft_id, envelope, as_json = _load_target_draft(args)
     if envelope is None:
         return 1
+    field = getattr(args, "field", None)
+    if field is not None:
+        try:
+            subtree = _get_nested(envelope, field)
+        except ValueError as exc:
+            _print_error(str(exc), as_json)
+            return 1
+        print(json.dumps(subtree, indent=2))
+        return 0
     print(json.dumps({"draft_id": draft_id, "envelope": envelope}, indent=2))
     return 0
 
@@ -598,7 +643,18 @@ def _build_subcommands(sub) -> None:
     p_add.add_argument("--json", action="store_true", help="JSON output")
     p_add.set_defaults(func=cmd_add)
 
-    p_view = sub.add_parser("view", help="Print the current draft envelope")
+    p_view = sub.add_parser("view", help="Print the current draft envelope (or one --field subtree)")
+    p_view.add_argument(
+        "--field",
+        dest="field",
+        metavar="DOTTED_PATH",
+        default=None,
+        help=(
+            "Print ONLY this dotted-path subtree of the draft "
+            "(e.g. evidence_report.files_checked) instead of the full "
+            "envelope; same dotted-path scheme as 'set'"
+        ),
+    )
     _add_common_draft_arg(p_view)
     _add_agent_scope_arg(p_view)
     p_view.set_defaults(func=cmd_view)
@@ -642,7 +698,7 @@ def _contract_default(args) -> int:
     print("  init --agent-id AGENT_ID  -- create a new draft (validate-on-write)")
     print("  set FIELD VALUE           -- set a scalar field by dotted path")
     print("  add FIELD VALUE           -- append a value to a list field")
-    print("  view                      -- print the current draft envelope")
+    print("  view [--field PATH]       -- print the draft envelope, or only a dotted-path subtree")
     print("  validate                  -- validate the draft without mutating it")
     print("  finalize                  -- validate as final + write the row (idempotent, exactly-once)")
     print("  fill --json JSON          -- batch-merge a JSON patch into the draft")

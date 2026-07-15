@@ -39,6 +39,7 @@ gaia contract set agent_status.plan_status IN_PROGRESS
 gaia contract add evidence_report.files_checked "path/to/file.py"
 gaia contract fill --json '{"evidence_report": {"key_outputs": ["..."]}}'   # batch merge
 gaia contract view                            # inspect the current draft, no mutation
+gaia contract view --field evidence_report.files_checked   # read ONLY one dotted-path subtree
 gaia contract validate                        # check the verdict without mutating
 gaia contract finalize                        # once, at the end: writes the SOLE, idempotent row
 ```
@@ -53,7 +54,7 @@ The shape you are building is unchanged -- `agent_status` + `evidence_report`, w
 
 "Fallback" names how the fence relates to the CLI build sequence -- the CLI is the primary way to construct the contract turn-by-turn -- not whether emitting the fence itself is optional. It is not: the fence in your response text is the ONE thing the SubagentStop gate parses, so it is mandatory output on every turn regardless of whether the underlying draft was built via `gaia contract set`/`add`/`fill` or composed directly. An agent that still composes the fenced `agent_contract_handoff` JSON block directly (never touching the CLI) is not on a deprecated path in the sense of being unenforced -- the fence is parsed and the resulting dict is validated through the EXACT SAME core (`gaia.contract.validator.validate_form` / `gaia.contract.crosscheck.validate`) that every `gaia contract` write goes through. The requirements are identical: `evidence_report` carries 7 required keys + `verification` on COMPLETE (the honesty rule below), and the block body must be valid JSON (`json.loads` -- not YAML: comments, trailing commas, or unquoted keys make the block unparseable and the runtime treats it as missing). Prefer building incrementally via the CLI -- it validates incrementally and survives a truncated turn -- but the fence itself, correctly emitted in the response text, is required either way, not merely tolerated.
 
-For every field, its required/conditional status, and its trigger, see `agent-contract-handoff`; a rendered example per `plan_status` is in `examples.md`. The canonical repair message (`CANONICAL_REPAIR_MESSAGE`) that both paths return on rejection lives at `gaia/contract/validator.py` -- the single source of truth, never duplicated inline.
+For every field, its required/conditional status, and its trigger, see `agent-contract-handoff`; a rendered example per `plan_status` is in this skill's own `examples.md`. The canonical repair message (`CANONICAL_REPAIR_MESSAGE`) that both paths return on rejection lives at `gaia/contract/validator.py` -- the single source of truth, never duplicated inline.
 
 ## What the emitted fence MUST satisfy (the four rejections to avoid)
 
