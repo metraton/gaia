@@ -64,25 +64,48 @@ Every scheduled-task prompt begins with this preamble, verbatim in spirit:
 >    bloqueará con un `approval_id`. NO reintentes. ACUMULA cada `approval_id`
 >    (con el comando exacto y por qué hace falta) y sigue con TODO lo demás que
 >    sí puedas terminar.
-> 3. **Redacta un mensaje final GENÉRICO** (sin nombres propios ni datos
+> 3. **Captura tu `session_id`** leyendo `$CLAUDE_SESSION_ID` en la sesión
+>    top-level (ver abajo) para poder estamparlo en el reporte.
+> 4. **Redacta un mensaje final GENÉRICO** (sin nombres propios ni datos
 >    sensibles) con el formato de abajo.
-> 4. **Guarda ese mensaje** como último paso con `gaia notifications add` (T0).
+> 5. **Guarda ese mensaje** como último paso con `gaia notifications add` (T0).
+
+### Capturing the session_id (`$CLAUDE_SESSION_ID`)
+
+The report must carry the run's `session_id` so the user can
+`claude --resume <session_id>` to grant the accumulated T3s. The headless
+session reads its OWN id from its shell env var -- it is NOT parsed from
+`--output-format json`, and NOT asked from the user:
+
+```
+echo $CLAUDE_SESSION_ID
+```
+
+**Read it at the TOP-LEVEL session, never inside a dispatched subagent.**
+`$CLAUDE_SESSION_ID` does not propagate to a subagent's shell, so a task that
+delegates its work to a subagent and reads the var there gets an empty value and
+the report lands with `session_id` "-". Capture the id in the main session and
+pass it through. If it is genuinely empty, omit `--session-id` and note in the
+body that the user recovers pending grants with
+`gaia approvals pending --all-sessions` (which does not depend on the id).
 
 ### Final message format (generic, no PII)
 
 ```
 He terminado la tarea <nombre>: <qué hizo en una línea>.
 Aprobaciones pendientes: <lista de approval_id + por qué cada uno>, o "ninguna".
+session_id: <valor de $CLAUDE_SESSION_ID, o "ninguno — usa gaia approvals pending --all-sessions">.
 ```
 
-The task's LAST action is to persist that message:
+The task's LAST action is to persist that message (substitute the value you read
+for `$CLAUDE_SESSION_ID`):
 
 ```
 gaia notifications add \
   --task "<nombre>" \
   --headline "He terminado la tarea <nombre>: <resumen>" \
   --body "<mensaje completo, incluidas las aprobaciones pendientes>" \
-  --session-id "<el session_id de este run>"
+  --session-id "$CLAUDE_SESSION_ID"
 ```
 
 `gaia notifications add` is **T0** by design, so a headless run can always
@@ -102,7 +125,12 @@ on demand rather than being interrupted:
 3. **Detail on demand** -- `gaia notifications show <id>` prints the full body,
    including the pending `approval_id`s and the resume line
    `claude --resume <session_id>`. The user resumes that session to grant the
-   accumulated T3s through the normal consent flow.
+   accumulated T3s. Granting happens through the **orchestrated consent flow**
+   (the AskUserQuestion dialog with the nonce) -- it is NOT approved by typing
+   free text into the resumed session (confirmed empirically). If the report has
+   no `session_id` (it came back "-" because the id was read inside a subagent),
+   the pending grants are still reachable session-agnostically via
+   `gaia approvals pending --all-sessions`.
 4. **Clear** -- `gaia notifications ack <id>` (or `ack --all`) marks reports
    seen so the counter and list go quiet.
 

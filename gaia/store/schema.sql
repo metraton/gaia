@@ -945,6 +945,68 @@ CREATE TABLE IF NOT EXISTS task_notifications (
 CREATE INDEX IF NOT EXISTS idx_task_notifications_unread ON task_notifications(unread, created_at DESC);
 
 -- ---------------------------------------------------------------------------
+-- scheduled_tasks: OS-agnostic DESIRED STATE for recurring headless tasks.
+-- ---------------------------------------------------------------------------
+-- The desired-state registry that lets a scheduled task stop living only in one
+-- machine's crontab and instead live in gaia.db, so any machine sharing the DB
+-- can materialize it. The SCHEDULE is stored NEUTRAL as a JSON `schedule_spec`
+-- (a tagged union: {"kind":"calendar", minute/hour/day_of_month/month/
+-- day_of_week} or {"kind":"interval","every_seconds":N}) -- NOT a raw cron
+-- string -- so a per-platform backend (cron today; launchd/schtasks later) can
+-- translate it to its native form. `schedule_hint` is a human-readable render
+-- (e.g. "07:30 L-V"), derived, never authoritative.
+--
+-- `prompt_body` is the CANONICAL prompt content (portable across machines on a
+-- shared DB); `prompt_path` is the machine-local file a sync materializes it to.
+-- `project_dir` is machine-local (a path that may differ per machine). Writing
+-- desired state (register/enable/disable) is reversible local bookkeeping (T0,
+-- like briefs/plans/task_notifications); only MATERIALIZING it into the machine
+-- scheduler (`gaia schedule sync`) is a consented mutation (T3). The hook only
+-- DETECTS drift at SessionStart; it never writes the scheduler in silence.
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace     TEXT,                      -- workspace name; NULL for global
+    name          TEXT NOT NULL,             -- stable task name (unique per workspace)
+    schedule_spec TEXT NOT NULL,             -- NEUTRAL schedule as JSON (calendar|interval)
+    schedule_hint TEXT,                       -- human render of the schedule (derived)
+    prompt_body   TEXT,                       -- canonical prompt content (portable)
+    prompt_path   TEXT,                       -- machine-local file the prompt materializes to
+    project_dir   TEXT,                       -- cwd for the wrapper (machine-local)
+    wrapper_kind  TEXT DEFAULT 'headless-claude', -- which wrapper template to generate
+    enabled       INTEGER NOT NULL DEFAULT 1, -- 1 = should be installed; 0 = disabled (BOOLEAN)
+    machine_scope TEXT NOT NULL DEFAULT 'all', -- 'all' | 'named' (see scheduled_task_machines)
+    created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    UNIQUE (workspace, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_workspace ON scheduled_tasks(workspace, enabled);
+
+-- Machine scoping (only populated when scheduled_tasks.machine_scope = 'named').
+-- machine_name matches machines.name (= platform.node()); no hard FK to machines
+-- because a task may target a machine the scanner has not indexed yet.
+CREATE TABLE IF NOT EXISTS scheduled_task_machines (
+    task_id      INTEGER NOT NULL,           -- FK -> scheduled_tasks.id
+    machine_name TEXT NOT NULL,              -- target machine hostname (= platform.node())
+    PRIMARY KEY (task_id, machine_name),
+    FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+);
+
+-- Per-machine MATERIALIZATION state. The crontab is local to each machine, so
+-- whether a desired task is actually installed is tracked per (task, machine).
+-- `gaia schedule sync` writes this on a successful install; `status` and the
+-- SessionStart reconciliation block read it.
+CREATE TABLE IF NOT EXISTS scheduled_task_state (
+    task_id        INTEGER NOT NULL,         -- FK -> scheduled_tasks.id
+    machine_name   TEXT NOT NULL,            -- machine this state is for (= platform.node())
+    backend        TEXT,                     -- 'cron' | 'launchd' | 'schtasks'
+    installed      INTEGER NOT NULL DEFAULT 0, -- 1 = materialized in the scheduler (BOOLEAN)
+    last_synced_at TEXT,                      -- ISO8601 of the last successful sync
+    PRIMARY KEY (task_id, machine_name),
+    FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+);
+
+-- ---------------------------------------------------------------------------
 -- approval_grants: DB-backed store for command_set approval grants (v7 / M3)
 -- Replaces the filesystem JSON store (.claude/cache/approvals/).
 -- Per D5/D10: no TTL column (enforced at query time via created_at + 10 min);

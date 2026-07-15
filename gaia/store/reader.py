@@ -142,6 +142,146 @@ def get_notification(
 
 
 # ---------------------------------------------------------------------------
+# scheduled_tasks reads (OS-agnostic desired state)
+# ---------------------------------------------------------------------------
+#
+# Read-side complement to the writer's upsert/enable/delete API. Used by the
+# `gaia schedule list|show|status` CLI, by `gaia schedule sync`, and by the
+# SessionStart reconciliation block. All read-only (T0). Each task dict includes
+# a parsed ``schedule_spec`` (dict) under ``spec`` and, for named-scope tasks,
+# the ``machines`` list.
+
+def _row_to_task(con: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+    task = dict(row)
+    try:
+        task["spec"] = json.loads(task.get("schedule_spec") or "{}")
+    except Exception:
+        task["spec"] = {}
+    if task.get("machine_scope") == "named":
+        ms = con.execute(
+            "SELECT machine_name FROM scheduled_task_machines WHERE task_id = ? "
+            "ORDER BY machine_name",
+            (task["id"],),
+        ).fetchall()
+        task["machines"] = [r["machine_name"] for r in ms]
+    else:
+        task["machines"] = []
+    return task
+
+
+def list_scheduled_tasks(
+    workspace: str | None = None,
+    include_disabled: bool = True,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return desired-state tasks (optionally workspace-scoped), newest first.
+
+    Fail-soft: returns [] on any error so the CLI / hook never breaks.
+    """
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        clauses = []
+        params: list[Any] = []
+        if workspace is not None:
+            clauses.append("workspace IS ?")
+            params.append(workspace)
+        if not include_disabled:
+            clauses.append("enabled = 1")
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = con.execute(
+            f"SELECT * FROM scheduled_tasks{where} ORDER BY created_at DESC, id DESC",
+            tuple(params),
+        ).fetchall()
+        return [_row_to_task(con, r) for r in rows]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def get_scheduled_task(
+    name: str,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return one desired-state task by (workspace, name), or None."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return None
+    try:
+        row = con.execute(
+            "SELECT * FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
+            (name, workspace),
+        ).fetchone()
+        return _row_to_task(con, row) if row else None
+    finally:
+        con.close()
+
+
+def scheduled_tasks_for_machine(
+    machine_name: str,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return ENABLED desired-state tasks that apply to ``machine_name``.
+
+    A task applies when machine_scope='all', or machine_scope='named' and
+    ``machine_name`` is in its scheduled_task_machines. This is what a sync on a
+    given machine, and the SessionStart reconciliation block, iterate over.
+    Fail-soft: returns [] on any error.
+    """
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        clauses = ["enabled = 1"]
+        params: list[Any] = []
+        if workspace is not None:
+            clauses.append("workspace IS ?")
+            params.append(workspace)
+        where = " WHERE " + " AND ".join(clauses)
+        rows = con.execute(
+            f"SELECT * FROM scheduled_tasks{where} ORDER BY name",
+            tuple(params),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            task = _row_to_task(con, r)
+            if task.get("machine_scope") == "all" or machine_name in task.get("machines", []):
+                out.append(task)
+        return out
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def get_scheduled_task_state(
+    task_id: int,
+    machine_name: str,
+    db_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """Return per-machine materialization state for a task, or None."""
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return None
+    try:
+        row = con.execute(
+            "SELECT * FROM scheduled_task_state WHERE task_id = ? AND machine_name = ?",
+            (task_id, machine_name),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Duration / date parsing for --since / --until
 # ---------------------------------------------------------------------------
 

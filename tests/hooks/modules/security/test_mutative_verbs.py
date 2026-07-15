@@ -3617,3 +3617,68 @@ class TestGaiaReleaseSyncLocalNoLongerAnchored:
         # exists -- but that is the verb scanner, not the removed anchor.)
         result = detect_mutative_command("gaia release sync-local")
         assert "anchored MUTATIVE (T3) by config" not in result.reason
+
+
+class TestGaiaScheduleTierGroup:
+    """`gaia schedule` desired-state registry tier split.
+
+    register/add/list/show/status/enable/disable are reversible desired-state
+    bookkeeping (T0) via COMMAND_SUBCOMMAND_TIER_EXCEPTIONS; `sync` (materializes
+    into the OS scheduler -- writes the crontab) and `remove` (irreversible row
+    deletion) stay T3 via COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS.
+    """
+
+    def test_schedule_register_not_mutative(self):
+        result = detect_mutative_command("gaia schedule register --name x --cron '0 7 * * *'")
+        assert result.is_mutative is False, (
+            f"gaia schedule register writes desired state only (T0). "
+            f"Got category={result.category} reason={result.reason}"
+        )
+
+    def test_schedule_add_not_mutative(self):
+        result = detect_mutative_command("gaia schedule add --name x --every 6h")
+        assert result.is_mutative is False
+
+    def test_schedule_enable_not_mutative(self):
+        # `enable` is a generic MUTATIVE_VERB; the group exception makes it T0.
+        result = detect_mutative_command("gaia schedule enable gmail-triage")
+        assert result.is_mutative is False, (
+            f"gaia schedule enable must be exempted to T0. reason={result.reason}"
+        )
+
+    def test_schedule_disable_not_mutative(self):
+        result = detect_mutative_command("gaia schedule disable gmail-triage")
+        assert result.is_mutative is False
+
+    def test_schedule_list_not_mutative(self):
+        result = detect_mutative_command("gaia schedule list")
+        assert result.is_mutative is False
+
+    def test_schedule_status_not_mutative(self):
+        result = detect_mutative_command("gaia schedule status")
+        assert result.is_mutative is False
+
+    def test_schedule_sync_stays_mutative(self):
+        # sync writes the OS scheduler -- must stay T3 despite the group exception.
+        result = detect_mutative_command("gaia schedule sync")
+        assert result.is_mutative is True, (
+            f"gaia schedule sync materializes into the crontab and must be T3. "
+            f"reason={result.reason}"
+        )
+        assert result.verb == "sync"
+
+    def test_schedule_remove_stays_mutative(self):
+        result = detect_mutative_command("gaia schedule remove gmail-triage")
+        assert result.is_mutative is True, (
+            f"gaia schedule remove is irreversible deletion and must be T3. "
+            f"reason={result.reason}"
+        )
+        assert result.verb == "remove"
+
+    def test_schedule_group_anchored_in_config(self):
+        from modules.security.mutative_verbs import (
+            COMMAND_SUBCOMMAND_TIER_EXCEPTIONS,
+            COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS,
+        )
+        assert ("gaia", "schedule") in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
+        assert COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS[("gaia", "schedule")] == frozenset({"sync", "remove"})

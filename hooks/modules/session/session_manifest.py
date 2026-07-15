@@ -674,6 +674,73 @@ def build_task_notifications_block(
         return ""
 
 
+def build_schedule_reconciliation_block(
+    workspace: Optional[str] = None,
+) -> str:
+    """DETECT-ONLY drift between desired scheduled tasks (DB) and this machine.
+
+    The consent boundary made visible: this block is READ-ONLY (T0) and
+    zero-noise. It compares the desired state in gaia.db against the LOCAL
+    scheduler for the current machine and, when they diverge, surfaces a compact
+    "N tasks not installed here -> run `gaia schedule sync`" line. It NEVER writes
+    the scheduler -- installing is `gaia schedule sync` (T3), which the user runs
+    after seeing this. A SessionStart hook cannot obtain T3 consent, so it must
+    only detect and advise, never materialize silently.
+
+    Emits "" when fully reconciled (and the daemon looks healthy), matching the
+    zero-noise contract of the notifications blocks. Fail-safe: returns "" on any
+    error so it can never block session start.
+    """
+    try:
+        _pkg_root = str(Path(__file__).resolve().parents[3])
+        if _pkg_root not in sys.path:
+            sys.path.insert(0, _pkg_root)
+    except Exception:
+        pass
+
+    try:
+        from gaia.schedulers import compute_plan
+    except Exception as exc:
+        logger.debug("schedule reconciliation import failed (non-fatal): %s", exc)
+        return ""
+
+    try:
+        ws = workspace or _read_workspace_identity()
+        plan = compute_plan(workspace=ws)
+        if not plan.available:
+            return ""  # no backend on this platform -> nothing to say
+
+        daemon_down = plan.daemon is not None and plan.daemon.running is False
+        if plan.in_sync and not daemon_down and not plan.invalid:
+            return ""  # zero-noise: everything reconciled
+
+        lines = [f"## Scheduled Tasks (drift on {plan.machine})"]
+        if plan.missing:
+            names = ", ".join(m["name"] for m in plan.missing)
+            lines.append(f"- {len(plan.missing)} not installed here: {names}")
+        if plan.drift:
+            names = ", ".join(d["name"] for d in plan.drift)
+            lines.append(f"- {len(plan.drift)} schedule drifted: {names}")
+        if plan.orphans:
+            lines.append(f"- {len(plan.orphans)} orphan entr(ies): {', '.join(plan.orphans)}")
+        if plan.disabled_present:
+            lines.append(
+                f"- {len(plan.disabled_present)} disabled but still installed: "
+                f"{', '.join(plan.disabled_present)}"
+            )
+        for iv in plan.invalid:
+            lines.append(f"- INVALID {iv['name']}: {iv['error']}")
+        if daemon_down:
+            lines.append(f"- scheduler daemon: {plan.daemon.detail}")
+        lines.append(
+            "Reconcile with `gaia schedule sync` (T3) · inspect: `gaia schedule status`"
+        )
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("build_schedule_reconciliation_block failed (non-fatal): %s", exc)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Assembler
 # ---------------------------------------------------------------------------
@@ -700,6 +767,12 @@ def build_session_context() -> str:
             # ran unattended and can `claude --resume` to grant pending T3s.
             # Zero-noise: emits nothing when there are no unread rows.
             build_task_notifications_block(),
+            # Scheduled-task drift: DETECT-ONLY (T0). When the desired state in
+            # gaia.db diverges from this machine's local scheduler, surface a
+            # compact "N not installed here -> gaia schedule sync" line. Zero-
+            # noise when reconciled. The hook never writes the scheduler -- that
+            # is the T3 `gaia schedule sync` the user runs after seeing this.
+            build_schedule_reconciliation_block(),
             # Pending approvals are no longer surfaced here. Cross-session
             # surfacing of pendings (the [ACTIONABLE] block) was removed: the
             # DB remains the pending store, TTL hygiene keeps it clean, and the

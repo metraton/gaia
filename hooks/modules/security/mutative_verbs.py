@@ -335,6 +335,20 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # never destroyed), so the global deny-verb guard leaves every contract
     # verb exempt.
     ("gaia", "contract"): CATEGORY_READ_ONLY,
+    # `gaia schedule <verb>` -- the scheduled-task DESIRED-STATE registry in
+    # gaia.db (see the `scheduled-task` skill and the scheduled_tasks table).
+    # register/add/list/show/status/enable/disable are reversible local
+    # bookkeeping on the desired state -- they never touch the machine scheduler,
+    # so they are T0 like brief/plan/task/notifications. WITHOUT this exception
+    # `register`, `enable`, and `disable` would trip the generic MUTATIVE_VERBS
+    # scan (all three are in MUTATIVE_VERBS) and gate on every desired-state edit.
+    # The TWO verbs that reach outside the DB stay T3 via the per-group deny set
+    # below: `sync` MATERIALIZES desired state into the OS scheduler (writes the
+    # crontab -- a real machine mutation that must be shown verbatim and
+    # consented) and `remove` is irreversible row deletion (like `gaia task
+    # remove`). Writing desired state is cheap; imprinting it on the machine
+    # requires consent -- that asymmetry is the whole design.
+    ("gaia", "schedule"): CATEGORY_READ_ONLY,
 }
 
 # Verbs that stay gated even under an excepted group above.  The exception
@@ -355,6 +369,16 @@ COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str], FrozenSet[str]] = {
     # `gaia task remove` is an irreversible row deletion (no un-delete in the
     # tasks store), unlike `gaia ac remove` (AC rows can be re-added).
     ("gaia", "task"): frozenset({"remove"}),
+    # `gaia schedule` is exempted to T0 for desired-state bookkeeping (above),
+    # but two verbs must stay gated within that exception:
+    #   - `sync`   MATERIALIZES desired state into the OS scheduler (writes the
+    #              user's crontab via `crontab -`). That is a real machine
+    #              mutation, so it must be shown verbatim and consented (T3).
+    #   - `remove` is irreversible desired-state row deletion (the reversible
+    #              path is `disable`), like `gaia task remove`.
+    # Both are already generic MUTATIVE_VERBS, so without re-gating them here the
+    # group exception would silently downgrade them to T0.
+    ("gaia", "schedule"): frozenset({"sync", "remove"}),
 }
 
 

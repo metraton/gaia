@@ -1492,6 +1492,201 @@ def ack_all_task_notifications(
 
 
 # ---------------------------------------------------------------------------
+# Public API: scheduled_tasks (OS-agnostic desired state for recurring tasks)
+# ---------------------------------------------------------------------------
+#
+# The desired-state registry (see the scheduled_tasks table and the
+# `scheduled-task` skill). Writing desired state (upsert / enable / disable) is
+# reversible local bookkeeping -- NOT a machine mutation -- so, like briefs /
+# plans / task_notifications, it carries no agent_permissions gate and the `gaia
+# schedule register|list|show|status|enable|disable` CLI classifies T0 via
+# COMMAND_SUBCOMMAND_TIER_EXCEPTIONS. Only `gaia schedule sync` (materialize into
+# the OS scheduler) and `gaia schedule remove` (irreversible deletion) are T3.
+# Reads live in gaia.store.reader.
+
+def upsert_scheduled_task(
+    *,
+    name: str,
+    schedule_spec: Mapping[str, Any] | str,
+    schedule_hint: str | None = None,
+    prompt_body: str | None = None,
+    prompt_path: str | None = None,
+    project_dir: str | None = None,
+    wrapper_kind: str = "headless-claude",
+    machine_scope: str = "all",
+    machines: Sequence[str] | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Insert or update one desired-state task row; return its id.
+
+    ``schedule_spec`` is the NEUTRAL schedule -- either a dict (serialized to
+    JSON here) or an already-serialized JSON string. Matching is by
+    (workspace, name): an existing row is UPDATED in place (preserving
+    created_at, refreshing updated_at); otherwise a new row is inserted.
+
+    When ``machine_scope == 'named'`` the ``machines`` list replaces the task's
+    scheduled_task_machines rows. This does NOT touch any OS scheduler -- it only
+    records the desired state; `gaia schedule sync` materializes it (T3).
+    """
+    if not name:
+        raise ValueError("name is required")
+    if isinstance(schedule_spec, str):
+        spec_json = schedule_spec
+        # Validate it parses, so a malformed spec fails at write time, not at
+        # sync time on the machine.
+        try:
+            json.loads(spec_json)
+        except Exception as exc:
+            raise ValueError(f"schedule_spec is not valid JSON: {exc}") from exc
+    else:
+        spec_json = json.dumps(schedule_spec, separators=(",", ":"))
+    if machine_scope not in ("all", "named"):
+        raise ValueError("machine_scope must be 'all' or 'named'")
+
+    con = _connect(db_path)
+    try:
+        now = _now_iso()
+        existing = con.execute(
+            "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
+            (name, workspace),
+        ).fetchone()
+        if existing is not None:
+            task_id = int(existing["id"])
+            con.execute(
+                """
+                UPDATE scheduled_tasks
+                   SET schedule_spec = ?, schedule_hint = ?, prompt_body = ?,
+                       prompt_path = ?, project_dir = ?, wrapper_kind = ?,
+                       machine_scope = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (spec_json, schedule_hint, prompt_body, prompt_path, project_dir,
+                 wrapper_kind, machine_scope, now, task_id),
+            )
+        else:
+            cur = con.execute(
+                """
+                INSERT INTO scheduled_tasks
+                    (workspace, name, schedule_spec, schedule_hint, prompt_body,
+                     prompt_path, project_dir, wrapper_kind, enabled,
+                     machine_scope, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                """,
+                (workspace, name, spec_json, schedule_hint, prompt_body,
+                 prompt_path, project_dir, wrapper_kind, machine_scope, now, now),
+            )
+            task_id = cur.lastrowid
+
+        if machine_scope == "named":
+            con.execute(
+                "DELETE FROM scheduled_task_machines WHERE task_id = ?",
+                (task_id,),
+            )
+            for m in (machines or []):
+                con.execute(
+                    "INSERT OR IGNORE INTO scheduled_task_machines (task_id, machine_name) "
+                    "VALUES (?, ?)",
+                    (task_id, m),
+                )
+        con.commit()
+        return task_id
+    finally:
+        con.close()
+
+
+def set_scheduled_task_enabled(
+    name: str,
+    enabled: bool,
+    *,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Flip a task's enabled flag. Returns {"status": ok|not_found, ...}.
+
+    The reversible counterpart to `remove`: a disabled task stays in the
+    registry (so it can be re-enabled) but is not installed on next sync, and
+    its already-installed entry is removed on next sync.
+    """
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
+            (name, workspace),
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "name": name}
+        con.execute(
+            "UPDATE scheduled_tasks SET enabled = ?, updated_at = ? WHERE id = ?",
+            (1 if enabled else 0, _now_iso(), int(row["id"])),
+        )
+        con.commit()
+        return {"status": "ok", "name": name, "enabled": bool(enabled)}
+    finally:
+        con.close()
+
+
+def delete_scheduled_task(
+    name: str,
+    *,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Delete a desired-state task row (T3). Cascades to machines/state rows.
+
+    Irreversible in the registry -- the reversible path is
+    ``set_scheduled_task_enabled(name, False)``. Does NOT remove the entry from
+    any OS scheduler; a subsequent `gaia schedule sync` reconciles the now-orphan
+    managed entry out of the crontab.
+    """
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
+            (name, workspace),
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "name": name}
+        con.execute("DELETE FROM scheduled_tasks WHERE id = ?", (int(row["id"]),))
+        con.commit()
+        return {"status": "ok", "name": name, "id": int(row["id"])}
+    finally:
+        con.close()
+
+
+def mark_scheduled_task_state(
+    task_id: int,
+    machine_name: str,
+    *,
+    backend: str | None = None,
+    installed: bool = True,
+    db_path: Path | None = None,
+) -> None:
+    """Record per-machine materialization state after a sync install/remove.
+
+    Upserts the (task_id, machine_name) row with the backend used and whether
+    the task is currently installed on this machine, stamping last_synced_at.
+    """
+    con = _connect(db_path)
+    try:
+        con.execute(
+            """
+            INSERT INTO scheduled_task_state
+                (task_id, machine_name, backend, installed, last_synced_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, machine_name) DO UPDATE SET
+                backend = excluded.backend,
+                installed = excluded.installed,
+                last_synced_at = excluded.last_synced_at
+            """,
+            (task_id, machine_name, backend, 1 if installed else 0, _now_iso()),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API: upsert_memory
 # ---------------------------------------------------------------------------
 
