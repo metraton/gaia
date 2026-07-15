@@ -1,9 +1,6 @@
 ---
 name: gaia-audit
 description: Use when the user asks to audit, check, or review a Gaia component (an agent or a skill) against its standard and its live implementation -- "audita este skill", "chequea este agente", "¿está bien esta skill con la implementación?", "¿cómo mejoro este agente?"
-metadata:
-  user-invocable: true
-  type: technique
 ---
 
 # Gaia Audit

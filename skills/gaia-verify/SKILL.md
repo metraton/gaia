@@ -1,9 +1,6 @@
 ---
 name: gaia-verify
 description: Use when the user wants to verify a Gaia installation -- "probemos", "verify", "test installation", "gaia-verify"
-metadata:
-  user-invocable: true
-  type: technique
 ---
 
 # Gaia Verify

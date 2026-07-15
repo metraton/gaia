@@ -1,9 +1,6 @@
 ---
 name: gaia-planner
 description: Use when planning features or decomposing work into tasks from a brief
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Gaia Planner

@@ -1,9 +1,6 @@
 ---
 name: git-conventions
 description: Use when creating a git commit or preparing changes for a pull request
-metadata:
-  user-invocable: false
-  type: reference
 ---
 
 # Git Conventions

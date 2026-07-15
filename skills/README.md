@@ -76,7 +76,7 @@ skills/
 ├── gmail-triage/          # Interactive Gmail inbox triage
 ├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
 ├── investigation/         # Diagnosis methodology and pattern analysis
-├── jira-ticket-writing/   # Formula for human-readable Jira Stories and Subtasks (technique, user-invocable)
+├── jira-ticket-writing/   # Formula for human-readable Jira Stories and Subtasks (invocable directly via the Skill tool)
 │   └── examples.md
 ├── memory/                # Read, search, write, and curate Gaia memory (atoms/decisions/negative + legacy)
 │   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
@@ -96,7 +96,7 @@ skills/
 │   └── reference.md
 ├── session-reflection/    # End-of-session reflection on conversational arc
 ├── skill-creation/        # How to design and write new skills
-├── visual-verify/         # Technique: screenshot a UI/HTML with cached Chromium and read the result (user-invocable)
+├── visual-verify/         # Technique: screenshot a UI/HTML with cached Chromium and read the result (invocable directly via the Skill tool)
 │   └── scripts/           # screenshot.cjs -- zero-install Playwright capture
 ```
 
@@ -122,18 +122,18 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatte
 Workflow skills (on-demand injection, not in any agent frontmatter):
 - `agent-contract-handoff` — reference field dictionary for the contract envelope (input + output); loaded on demand by producers and the orchestrator when field/trigger precision is needed
 - `agent-approval-protocol` — unified approval protocol combining request + present flows
-- `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system, `user-invocable: false`
-- `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt, `user-invocable: false`
+- `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system
+- `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
 - `execution` — post-approval execution discipline
 - `git-conventions` — Conventional Commits format
 - `pending-approvals` — present and resolve pending approval requests
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
-- `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match, `user-invocable: false`
+- `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match
 - `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
-- `jira-ticket-writing` — formula for Jira Stories and Subtasks; user-invocable, `user-invocable: true`
-- `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, `user-invocable: true`
-- `diagram-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); carries the dialect vocabulary so the orchestrator can propose a decomposition and the agent can author it; delegates the visual check to `visual-verify`; loaded on demand by description match, `user-invocable: true`
+- `jira-ticket-writing` — formula for Jira Stories and Subtasks; invocable directly via the Skill tool
+- `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, invocable directly via the Skill tool
+- `diagram-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); carries the dialect vocabulary so the orchestrator can propose a decomposition and the agent can author it; delegates the visual check to `visual-verify`; loaded on demand by description match, invocable directly via the Skill tool
 
 **Skill types:**
 
@@ -151,13 +151,15 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 ---
 name: skill-name
 description: When Claude should load and follow this skill
-metadata:
-  user-invocable: false
-  type: core
 ---
 
 # Skill Content
 ```
+
+Frontmatter carries only `name` + `description`. Whether a skill is reachable
+directly via the Skill tool (as opposed to only via frontmatter injection) is
+not tracked as a frontmatter field -- it is a fact noted in prose where
+relevant (see the skill list above), not a machine-read property.
 
 **Line budget:** Keep injected `SKILL.md` under 100 lines. Move details to `reference.md` (read on-demand). Supporting examples go in `examples.md`.
 

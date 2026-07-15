@@ -1,9 +1,6 @@
 ---
 name: orchestrator-present-approval
 description: Use when processing APPROVAL_REQUEST with approval_id from a subagent -- enforces showing values before asking for user consent
-metadata:
-  user-invocable: false
-  type: discipline
 ---
 
 # Orchestrator Present Approval

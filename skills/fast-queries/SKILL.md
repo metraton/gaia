@@ -1,9 +1,6 @@
 ---
 name: fast-queries
 description: Use when diagnosing an issue, checking system health, or validating infrastructure state before starting a task
-metadata:
-  user-invocable: false
-  type: reference
 ---
 
 # Fast-Query Diagnostics

@@ -1,9 +1,6 @@
 ---
 name: agent-response
 description: Use when an agent returns an agent_contract_handoff response that needs to be interpreted and presented to the user
-metadata:
-  user-invocable: false
-  type: protocol
 ---
 
 # Agent Response Protocol

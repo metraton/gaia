@@ -1,9 +1,6 @@
 ---
 name: investigation
 description: Use when starting an investigation, analyzing existing code or infrastructure, or building findings before proposing changes
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Investigation

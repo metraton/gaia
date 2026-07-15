@@ -1,9 +1,6 @@
 ---
 name: gmail-triage
 description: Use when the user wants to clean up, organize, or triage their Gmail inbox interactively
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Gmail Triage

@@ -1,9 +1,6 @@
 ---
 name: gaia-compact
 description: Use when the user asks to compact the current session -- "compacta", "compact", "oye Gaia compacta", "orquestador compacta", "haz un compact", "compactemos la sesión". Runs /compact with a structured prompt that preserves decisions, components, gaps, file map, and next steps.
-metadata:
-  user-invocable: true
-  type: technique
 ---
 
 # Gaia Compact

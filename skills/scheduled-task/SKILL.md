@@ -1,9 +1,6 @@
 ---
 name: scheduled-task
 description: Use when the user wants something to run routinely / on a schedule rather than once now -- "tarea programada", "rutinariamente", "cada mañana", "cada N horas", "todas las noches", "schedule", "cron". Covers mounting, structuring, and running an unattended headless task that reports back, plus consuming its reports. NOT for a live in-session agentic loop (that is agentic-loop).
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Scheduled Task

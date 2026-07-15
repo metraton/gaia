@@ -1,9 +1,6 @@
 ---
 name: pending-approvals
 description: Use when the user invokes approvals directly -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX", "approve P-", "reject P-"
-metadata:
-  user-invocable: true
-  type: technique
 ---
 
 # Pending Approvals

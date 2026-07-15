@@ -1,9 +1,6 @@
 ---
 name: agentic-loop
 description: Use when the orchestrator injects "Carga la skill agentic-loop" with a goal, eval_command, metric, and threshold
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Agentic Loop

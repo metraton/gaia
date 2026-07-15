@@ -1,9 +1,6 @@
 ---
 name: security-tiers
 description: Use when classifying any operation before executing it, or deciding whether user approval is required
-metadata:
-  user-invocable: false
-  type: reference
 ---
 
 # Security Tiers

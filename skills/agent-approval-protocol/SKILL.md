@@ -1,9 +1,6 @@
 ---
 name: agent-approval-protocol
 description: Use when constructing or interpreting the approval handoff envelope between subagent and orchestrator -- sealed_payload schema, approval_id format, APPROVAL_REQUEST contract shape, and reading a granted approval from the DB
-metadata:
-  user-invocable: false
-  type: reference
 ---
 
 # Agent Approval Protocol

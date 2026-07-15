@@ -1,9 +1,6 @@
 ---
 name: blog-writing
 description: Use when writing, drafting, or publishing a blog article for metraton.github.io
-metadata:
-  user-invocable: true
-  type: technique
 ---
 
 # Blog Writing

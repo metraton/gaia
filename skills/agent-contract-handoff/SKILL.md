@@ -1,9 +1,6 @@
 ---
 name: agent-contract-handoff
 description: Use when you need the exact field schema, required/conditional/optional status, or the trigger for any field of the agent_contract_handoff envelope -- input or output, top-level field, sub-field table, plan_status enum, or the JSON-not-YAML rule
-metadata:
-  user-invocable: false
-  type: reference
 ---
 
 # Agent Contract Handoff

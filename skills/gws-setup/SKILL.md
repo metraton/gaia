@@ -1,9 +1,6 @@
 ---
 name: gws-setup
 description: Use when installing or configuring the Google Workspace CLI (gws) for a Google account
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # GWS Setup

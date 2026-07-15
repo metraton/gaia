@@ -1,9 +1,6 @@
 ---
 name: brief-spec
 description: Use when the user wants to create a brief or spec for a feature before planning
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Brief Spec

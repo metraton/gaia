@@ -1,9 +1,6 @@
 ---
 name: command-execution
 description: Use when executing any bash command, CLI tool, or shell operation
-metadata:
-  user-invocable: false
-  type: discipline
 ---
 
 # Command Execution

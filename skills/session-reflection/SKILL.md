@@ -1,9 +1,6 @@
 ---
 name: session-reflection
 description: Use at the end of a session with substantial conversational work to offer the user a structured reflection before closing -- briefs closed, decisions taken, components modified
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Session Reflection

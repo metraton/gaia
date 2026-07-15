@@ -1,9 +1,6 @@
 ---
 name: subagent-request-approval
 description: Use when a mutative command was blocked by the hook and you need to request user approval, or when presenting a plan for a T3 operation before executing it
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Subagent Request Approval

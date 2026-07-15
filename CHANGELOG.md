@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cross-session surfacing of pending approvals: the SessionStart `[ACTIONABLE]` pending-approvals block and the per-turn pending feed are removed. Pending approvals (24h TTL, unchanged) no longer surface outside the turn that produced them.
 - `consume_session_grants` mechanism, superseded by the consumed-at-match single-use grant model.
 - `GAIA_SOURCE_ROOT` environment variable, and `doctor`'s freshness check (`_newest_source_mtime`) that depended on it.
+- `metadata:` block (`user-invocable`, `type`) from every skill's SKILL.md frontmatter (all 34 skills under `skills/`). The block was inert -- no consumer in build, `doctor`, tests, or `skill-creation` ever read it -- so removing it drops dead schema rather than changing behavior. Frontmatter now carries only `name` + `description`. `skills/README.md` is reconciled: the SKILL.md format example no longer shows the block, and prose that described a skill as directly invocable via the Skill tool now says so in plain language instead of citing the retired `user-invocable` field.
 
 ## [5.1.3] - 2026-07-07
 

@@ -1,9 +1,6 @@
 ---
 name: visual-verify
 description: Use when about to declare done on any output with a visual surface -- an HTML page, a rendered UI, a diagram, a slide, a screenshot-able view -- to confirm by looking at the rendered result instead of asserting it. Also use when asked to screenshot or visually check a page or a local file.
-metadata:
-  user-invocable: true
-  type: technique
 ---
 
 # Visual Verify

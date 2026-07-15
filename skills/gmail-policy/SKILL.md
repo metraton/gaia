@@ -1,9 +1,6 @@
 ---
 name: gmail-policy
 description: Use when managing Gmail messages, labels, or email workflows via gws CLI or Gmail MCP tools
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Gmail Policy

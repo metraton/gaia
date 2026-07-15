@@ -1,9 +1,6 @@
 ---
 name: diagram-builder
 description: Use when the user wants to build or extend a diagram deck of nested sections and components authored in plain YAML — an architecture map, a timeline diagram, a planner board, a process-flow diagram, a slide-style presentation, a side-by-side comparison, or a mind-map. Not for charts, plots, or numeric/data visualization — route those to the dataviz skill. Triggers — "build a diagram", "architecture diagram", "diagram deck", "timeline diagram", "flow diagram", "planner board", "comparison diagram", "add a page/section/component to the diagram".
-metadata:
-  user-invocable: true
-  type: domain
 ---
 
 # Diagram Builder

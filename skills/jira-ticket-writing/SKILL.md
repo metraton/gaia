@@ -1,9 +1,6 @@
 ---
 name: jira-ticket-writing
 description: Use when creating or drafting Jira/Atlassian tickets or issues, or when standardizing ticket output for a project
-metadata:
-  user-invocable: true
-  type: technique
 ---
 
 # Jira Ticket Writing

@@ -1,9 +1,6 @@
 ---
 name: agent-protocol
 description: Use when producing any agent response
-metadata:
-  user-invocable: false
-  type: protocol
 ---
 
 # Agent Protocol

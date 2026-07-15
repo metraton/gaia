@@ -1,9 +1,6 @@
 ---
 name: gaia-release
 description: Use when testing, validating, or publishing Gaia releases -- "install local", "pre-release", "dry-run", "release", RC, stable, plugin dry-run
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Gaia Release

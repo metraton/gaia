@@ -1,9 +1,6 @@
 ---
 name: gaia-patterns
 description: Use when building or modifying Gaia components -- agents, skills, hooks, CLI tools, or routing config
-metadata:
-  user-invocable: false
-  type: domain
 ---
 
 # Gaia Code Patterns

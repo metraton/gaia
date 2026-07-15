@@ -1,9 +1,6 @@
 ---
 name: agent-creation
 description: Use when creating a new specialist agent for Gaia, or reviewing whether an existing agent follows the correct structure, tone, and component inventory
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Agent Creation

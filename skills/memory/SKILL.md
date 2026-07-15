@@ -1,9 +1,6 @@
 ---
 name: memory
 description: Use when reading, searching, saving, or curating Gaia memory — atoms, decisions, negative space, project/user/feedback notes — or when triaging the SessionStart Workspace Memory block
-metadata:
-  user-invocable: false
-  type: technique
 ---
 
 # Memory
