@@ -60,7 +60,7 @@ bin/
     ├── approvals.py           # gaia approvals  — list/show/reject/clean/stats T3 grants
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
-    ├── context.py             # gaia context    — show / scan / get / query / wipe project context from gaia.db
+    ├── context.py             # gaia context    — show / scan / get / query / wipe / prune-workspaces project context from gaia.db
     ├── contract.py            # gaia contract   — build/validate an agent_contract_handoff draft by-value: init/set/add/view/validate/finalize + fill --json
     ├── dev.py                 # gaia dev        — fast local dev loop: pack/link + install + wire, one command
     ├── doctor.py              # gaia doctor     — system health check (the model to learn)

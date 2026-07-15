@@ -4005,6 +4005,110 @@ def wipe_workspace(
         con.close()
 
 
+def prune_empty_workspaces(
+    *,
+    apply: bool = False,
+    db_path: Path | None = None,
+) -> dict:
+    """Identify -- and optionally delete -- PHANTOM workspaces: rows in
+    ``workspaces`` that carry ZERO ``projects`` rows (of any status).
+
+    Phantom workspaces are debris from historical scans run with different
+    ``--workspace`` values (e.g. a scan keyed on a container folder that later
+    became a ``group_name`` under a parent workspace). A workspace whose only
+    content is an empty shell adds noise to every context read.
+
+    Governance (never delete curated content blindly)
+    --------------------------------------------------
+    A zero-project workspace is deleted ONLY when it also holds NO curated
+    collateral: no live ``memory`` (``deleted_at IS NULL``), no
+    ``project_context_contracts`` rows, and no ``briefs`` rows. When ANY of
+    those is present the workspace is HELD -- reported, never deleted -- because
+    the ``workspaces`` FK cascades ON DELETE and would destroy that curated
+    content. Such a workspace needs a human decision (relocate the memory/PCC
+    to its canonical workspace first, via ``gaia context move-memory`` /
+    ``move-contracts``), which is out of scope for an automatic prune.
+
+    This is a READ on ``apply=False`` (the default): it computes and returns the
+    plan without mutating. On ``apply=True`` it deletes the confirmed-empty
+    rows inside one transaction (CASCADE removes any stray non-curated children)
+    and returns what it did.
+
+    Returns a dict::
+
+        {
+          "mode": "apply" | "dry-run",
+          "pruned":  [<workspace>, ...],          # deleted (apply) / would-delete
+          "held":    [{"workspace", "projects", "memory", "pcc", "briefs",
+                       "reason"}, ...],            # zero-project but curated
+          "scanned": <int>,                        # workspaces examined
+        }
+    """
+    con = _connect(db_path)
+    try:
+        ws_names = [
+            r["name"]
+            for r in con.execute("SELECT name FROM workspaces ORDER BY name").fetchall()
+        ]
+
+        prunable: list[str] = []
+        held: list[dict] = []
+        for ws in ws_names:
+            proj = con.execute(
+                "SELECT COUNT(*) FROM projects WHERE workspace = ?", (ws,)
+            ).fetchone()[0]
+            if proj != 0:
+                continue  # not a phantom -- it has projects
+            mem = con.execute(
+                "SELECT COUNT(*) FROM memory WHERE workspace = ? AND deleted_at IS NULL",
+                (ws,),
+            ).fetchone()[0]
+            pcc = con.execute(
+                "SELECT COUNT(*) FROM project_context_contracts WHERE workspace = ?",
+                (ws,),
+            ).fetchone()[0]
+            briefs = con.execute(
+                "SELECT COUNT(*) FROM briefs WHERE workspace = ?", (ws,)
+            ).fetchone()[0]
+
+            if mem or pcc or briefs:
+                held.append({
+                    "workspace": ws,
+                    "projects": 0,
+                    "memory": mem,
+                    "pcc": pcc,
+                    "briefs": briefs,
+                    "reason": (
+                        f"workspace {ws!r} has 0 projects but holds curated "
+                        f"collateral (memory={mem}, pcc={pcc}, briefs={briefs}); "
+                        f"NOT pruned -- relocate its curated content first "
+                        f"(gaia context move-memory / move-contracts) or wipe "
+                        f"it explicitly."
+                    ),
+                })
+            else:
+                prunable.append(ws)
+
+        if apply and prunable:
+            con.execute("BEGIN")
+            try:
+                for ws in prunable:
+                    con.execute("DELETE FROM workspaces WHERE name = ?", (ws,))
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+
+        return {
+            "mode": "apply" if apply else "dry-run",
+            "pruned": prunable,
+            "held": held,
+            "scanned": len(ws_names),
+        }
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Surgical reconciliation helpers (workspace-identity brief, M4/T10)
 # ---------------------------------------------------------------------------

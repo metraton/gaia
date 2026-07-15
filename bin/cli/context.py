@@ -9,6 +9,8 @@ Subcommands:
   gaia context dump [--workspace W]                 (deprecated) alias for `gaia context get`
   gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
   gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
+  gaia context prune-workspaces [--dry-run] [--yes] Delete PHANTOM workspaces (0 projects, 0 curated
+                    [--json]                        collateral); backs up the DB before any delete
 """
 
 from __future__ import annotations
@@ -399,6 +401,101 @@ def _cmd_wipe(args) -> int:
         print(f"Wiped workspace (memory PURGED): {workspace}")
     else:
         print(f"Wiped workspace (memory preserved): {workspace}")
+    return 0
+
+
+def _backup_db(db: Path) -> Path:
+    """Copy the live gaia.db to a timestamped backup next to it and return the
+    backup path. Called before any prune delete so the operation is reversible.
+    """
+    import shutil
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = db.with_name(f"{db.name}.{ts}.prune.bak")
+    shutil.copy2(str(db), str(backup))
+    return backup
+
+
+def _render_prune(plan: dict) -> None:
+    """Human render of a prune plan/result dict."""
+    verb = "pruned" if plan["mode"] == "apply" else "would prune"
+    print(f"scanned workspaces : {plan['scanned']}")
+    print(f"{verb} (phantom, 0 projects, 0 curated collateral): {len(plan['pruned'])}")
+    for ws in plan["pruned"]:
+        print(f"  - {ws}")
+    if plan["held"]:
+        print(f"held (0 projects but HOLD curated collateral -- NOT deleted): "
+              f"{len(plan['held'])}")
+        for h in plan["held"]:
+            print(f"  ! {h['workspace']}: memory={h['memory']} pcc={h['pcc']} "
+                  f"briefs={h['briefs']} -- {h['reason']}")
+
+
+def _cmd_prune_workspaces(args) -> int:
+    """Handle ``gaia context prune-workspaces [--dry-run] [--yes] [--json]``.
+
+    Deletes PHANTOM workspaces (0 projects AND 0 curated collateral -- no live
+    memory, no PCC, no briefs). A zero-project workspace that DOES hold curated
+    collateral is HELD (reported, never deleted). Backs up the DB before any
+    delete. ``--dry-run`` shows the plan without mutating.
+    """
+    dry_run = getattr(args, "dry_run", False)
+    as_json = getattr(args, "json", False)
+
+    try:
+        from gaia.store.writer import prune_empty_workspaces
+        from gaia.paths import db_path as _db_path
+    except Exception as exc:
+        print(f"gaia context prune-workspaces: failed to import store: {exc}",
+              file=sys.stderr)
+        return 1
+
+    # Always compute the plan read-only first (no mutation).
+    plan = prune_empty_workspaces(apply=False)
+
+    if dry_run:
+        if as_json:
+            print(json.dumps(plan, indent=2, default=str))
+        else:
+            _render_prune(plan)
+        return 0
+
+    if not plan["pruned"]:
+        if as_json:
+            print(json.dumps(plan, indent=2, default=str))
+        else:
+            print("Nothing to prune (no phantom workspaces without curated "
+                  "collateral).")
+            _render_prune(plan)
+        return 0
+
+    # Confirmation before a real delete (unless --yes).
+    if not getattr(args, "yes", False):
+        try:
+            ans = input(
+                f"gaia context prune-workspaces: about to DELETE "
+                f"{len(plan['pruned'])} phantom workspace(s): "
+                f"{', '.join(plan['pruned'])}.\n"
+                f"The DB will be backed up first. Type 'yes' to confirm: "
+            )
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() != "yes":
+            print("Aborted (no confirmation).")
+            return 1
+
+    # Back up the DB before mutating -- reversibility guarantee.
+    backup = _backup_db(_db_path())
+
+    result = prune_empty_workspaces(apply=True)
+    result["backup"] = str(backup)
+
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        _render_prune(result)
+        print(f"DB backup written to: {backup}")
     return 0
 
 
@@ -795,6 +892,25 @@ def register(subparsers) -> None:
              "the wipe). Explicit human curation only.",
     )
 
+    # gaia context prune-workspaces [--dry-run] [--yes] [--json]
+    prune_parser = ctx_subparsers.add_parser(
+        "prune-workspaces",
+        help="Delete PHANTOM workspaces (0 projects, 0 curated collateral); "
+             "backs up the DB before any delete",
+    )
+    prune_parser.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Show the prune plan (phantoms + held) without deleting anything",
+    )
+    prune_parser.add_argument(
+        "--yes", action="store_true", default=False,
+        help="Skip interactive confirmation",
+    )
+    prune_parser.add_argument(
+        "--json", action="store_true", default=False,
+        help="Emit the plan/result as JSON",
+    )
+
     # gaia context move-contracts --from W1 --to W2 --contract C ...
     # (T3: the verb token 'move-contracts' hyphen-splits to 'move', which is in
     # MUTATIVE_VERBS -- gated as T3 without touching the security layer.)
@@ -884,6 +1000,8 @@ def cmd_context(args) -> int:
         return _cmd_query(args)
     if context_cmd == "wipe":
         return _cmd_wipe(args)
+    if context_cmd == "prune-workspaces":
+        return _cmd_prune_workspaces(args)
     if context_cmd == "move-contracts":
         return _cmd_move_contracts(args)
     if context_cmd == "move-memory":
