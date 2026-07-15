@@ -55,6 +55,20 @@ The shape you are building is unchanged -- `agent_status` + `evidence_report`, w
 
 For every field, its required/conditional status, and its trigger, see `agent-contract-handoff`; a rendered example per `plan_status` is in `examples.md`. The canonical repair message (`CANONICAL_REPAIR_MESSAGE`) that both paths return on rejection lives at `gaia/contract/validator.py` -- the single source of truth, never duplicated inline.
 
+## What the emitted fence MUST satisfy (the four rejections to avoid)
+
+Emitting a fence is necessary but not sufficient: the gate parses it and then validates the parsed dict through `gaia.contract.validator.validate_form`, which hard-rejects (exit 2) on four named SHAPE codes (`FormErrorCode`, the SSOT). A *present* fence that misses any point below is rejected exactly as if it were absent. Run this checklist against your block -- or your `gaia contract view` -- before closing the turn. This is the shape inline so you do not have to open `agent-contract-handoff` to get it right; the reference still owns the full per-field detail.
+
+1. **`evidence_report` carries ALL 7 keys -> or `MISSING_FIELD`.** Every one must be *present*; an empty list `[]` is valid, but a *missing* key is a rejection. The seven, exactly: `patterns_checked`, `files_checked`, `commands_run`, `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, `open_gaps`. (`verification` is a SEPARATE, 8th field, required only on `COMPLETE` -- see point 4; it is NOT one of the 7.) Emitting six keys and omitting `cross_layer_impacts` or `verbatim_outputs` "because there were none" is the #1 rejection -- emit them as `[]`, do not drop them.
+
+2. **`agent_status` carries ALL 4 sub-fields -> or `MISSING_FIELD`.** `plan_status` (in the enum), `agent_id` (see point 3), `pending_steps` (presence-only; `[]` is valid on a `COMPLETE`), and `next_action` (present and non-empty -- use `"done"` on a terminal `COMPLETE`, never omit it or leave it `""`). Dropping `pending_steps` or `next_action` because the turn is finished is a rejection; a finished turn still emits `pending_steps: []` and `next_action: "done"`.
+
+3. **`agent_id` matches `^a[0-9a-f]{5,}$` -> or `AGENT_ID_FORMAT`.** It is a lowercase `a` followed by 5 or more HEXADECIMAL digits (`0-9`, `a-f`). It is an opaque draft handle you MINT, not your name and not a label: use the id you passed to `gaia contract init --agent-id`, or mint any conforming value (`secrets.token_hex(3)` prefixed with `a`) and reuse it for the whole turn.
+   - Valid: `a7e4d2`, `a1b2c3`, `af0091`, `ab7e4d2c9`.
+   - Invalid (real rejection samples): `gaia-system` (your name is not an id), `aworkspace1` (`w`,`o`,`r`,`k`,`s`,`p` are not hex, and no `-`), `a00000gaiasystem` (`g`,`i`,`y`,`s`,`m` are not hex -- looking id-shaped is not the same as being hex). If any character after the leading `a` is outside `0-9a-f`, it is rejected.
+
+4. **On `COMPLETE`, `evidence_report.verification.result == "pass"` -> or `VERIFICATION_RESULT`.** `verification` must be a dict AND its `result` must be exactly `"pass"`. A `COMPLETE` with `verification` missing, or with `result` set to anything other than `"pass"` (including `"fail"`), is rejected. The rule is not a formality: if the check did not genuinely pass, you are `IN_PROGRESS` or `BLOCKED`, not `COMPLETE` -- see "The verification honesty rule" below. For every non-`COMPLETE` status, `verification` may be `null`.
+
 ## When to emit each `plan_status`
 
 Choose by what is true of your position. The enum and meanings are owned by `agent-contract-handoff`; here is when to reach for each:
