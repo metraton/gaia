@@ -27,17 +27,17 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
     "security-tiers": [
         "T0_READ_ONLY",
         "T3_BLOCKED",
-        "Tier Definitions",
-        "Hook Enforcement",
+        "Classification heuristic",
+        "Enforcement anchors",
     ],
     "investigation": [
-        "Start From Injected Context",
-        "Pattern Hierarchy",
-        "Codebase first",
+        "Context is the map",
+        "Scope decides what matters",
+        "Confirmed beats assumed",
     ],
     "command-execution": [
         "ONE COMMAND. ONE RESULT. ONE EXIT CODE",
-        "NO PIPES. NO CHAINS. NO REDIRECTS",
+        "No indirect-execution wrappers",
         "cloud_pipe_validator",
     ],
     "fast-queries": [

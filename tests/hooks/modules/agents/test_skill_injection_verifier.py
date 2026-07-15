@@ -85,7 +85,7 @@ class TestAllFingerprintsPresent:
         transcript = (
             "Using agent_contract_handoff for protocol. "
             "T0_READ_ONLY classification applied. "
-            "Start From Injected Context was followed. "
+            "Confirmed beats assumed was followed. "
             "ONE COMMAND. ONE RESULT. ONE EXIT CODE enforced."
         )
         result = verify_skill_injection(
@@ -102,7 +102,7 @@ class TestAllFingerprintsPresent:
 
     def test_only_one_fingerprint_needed_per_skill(self):
         """A skill with multiple fingerprints only needs one to match."""
-        transcript = "The Hook Enforcement module was checked."
+        transcript = "The Enforcement anchors section was checked."
         result = verify_skill_injection(
             agent_type="cloud-troubleshooter",
             transcript_text=transcript,

@@ -59,16 +59,59 @@ def find_agents(base_dirs):
                     pass
     return agents
 
-def analyze_injection():
-    """Analiza cómo se inyectan las skills (revisando pre_tool_use.py)."""
+def analyze_injection(agents):
+    """Analiza cómo se precargan las skills.
+
+    Mecanismo real (arquitectura verificada): Gaia NO inyecta skills vía hook.
+    La precarga es 100% nativa del harness de Claude Code, que lee el campo
+    'skills:' del frontmatter de cada agente y presenta el contenido de cada
+    SKILL.md antes de que el agente actúe -- pre_tool_use.py no contiene, ni
+    debe contener, lógica de inyección de skills.
+
+    En vez de depender de una nota de texto fija en pre_tool_use.py (frágil:
+    desaparece en cualquier refactor sin que el mecanismo real cambie), este
+    check confirma dos hechos observables en el estado actual del código:
+      1. pre_tool_use.py sigue sin contener lógica de inyección de skills
+         (ninguna referencia a leer o insertar el contenido de un SKILL.md).
+      2. Existen agentes reales cuyo frontmatter declara 'skills:', que es
+         la evidencia de que el mecanismo nativo del harness está en uso.
+    """
     hook_path = Path("gaia/hooks/pre_tool_use.py")
     if not hook_path.exists():
         return "No se encontró gaia/hooks/pre_tool_use.py"
-    
+
     content = hook_path.read_text(encoding="utf-8", errors="ignore")
-    if "skills are injected natively by Claude Code" in content:
-        return "Las skills se inyectan de forma nativa por Claude Code a través del campo 'skills:' en el frontmatter del agente (según pre_tool_use.py)."
-    return "Mecanismo de inyección en pre_tool_use.py analizado, pero no se encontró la nota estándar sobre inyección nativa."
+    # Señales de que el hook mismo estuviera leyendo/insertando contenido de
+    # un SKILL.md -- si aparecen, el hook estaría inyectando skills y el
+    # mecanismo nativo del harness ya no sería la única vía.
+    suspicious_injection_markers = ("SKILL.md", "skill_content", "inject_skill")
+    hook_has_injection_logic = any(marker in content for marker in suspicious_injection_markers)
+
+    agents_with_skills = sorted(
+        name for name, data in agents.items() if data.get("skills_declared")
+    )
+
+    if hook_has_injection_logic:
+        return (
+            "ADVERTENCIA: pre_tool_use.py contiene referencias que sugieren lógica de "
+            "inyección de skills. Esto contradice el mecanismo esperado (precarga nativa "
+            "del harness vía frontmatter) -- revisar manualmente."
+        )
+
+    if not agents_with_skills:
+        return (
+            "pre_tool_use.py no contiene lógica de inyección de skills (correcto), pero no "
+            "se encontró ningún agente con 'skills:' declaradas en su frontmatter -- no hay "
+            "evidencia observable de que el mecanismo nativo esté en uso."
+        )
+
+    return (
+        "Las skills se precargan de forma NATIVA por el harness de Claude Code a través del "
+        "campo 'skills:' en el frontmatter de cada agente; Gaia no las inyecta vía hook "
+        "(confirmado: pre_tool_use.py no contiene lógica de inyección de skills). Evidencia: "
+        f"{len(agents_with_skills)} agente(s) con 'skills:' declaradas: "
+        f"{', '.join(agents_with_skills)}."
+    )
 
 def generate_report(skills, validation, agents, injection_info):
     """Genera el reporte en formato Markdown."""
@@ -159,20 +202,23 @@ def generate_report(skills, validation, agents, injection_info):
     return "\n".join(report)
 
 def main():
-    skill_dirs = ["gaia/skills", ".claude/skills", "conductor-orchestrator/skills"]
-    agent_dirs = ["gaia/agents", ".claude/agents", "conductor-orchestrator/agents"]
-    
+    # Gaia es un plugin único unificado (sin plugins legacy como
+    # "conductor-orchestrator"); los agentes y skills viven en gaia/agents y
+    # gaia/skills (fuente) y su copia instalada en .claude/agents, .claude/skills.
+    skill_dirs = ["gaia/skills", ".claude/skills"]
+    agent_dirs = ["gaia/agents", ".claude/agents"]
+
     print("Buscando skills...")
     skills = find_skills(skill_dirs)
-    
+
     print("Validando formato...")
     validation = validate_skill_format(skills)
-    
+
     print("Buscando agentes...")
     agents = find_agents(agent_dirs)
-    
+
     print("Analizando inyección...")
-    injection_info = analyze_injection()
+    injection_info = analyze_injection(agents)
     
     print("Generando reporte...")
     report = generate_report(skills, validation, agents, injection_info)
