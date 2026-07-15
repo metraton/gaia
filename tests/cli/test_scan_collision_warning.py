@@ -1,28 +1,23 @@
 """
-M1-T1 (AC-2): distinct repos sharing a basename never overwrite each other.
+AC-2 / AC-5 under the basename-naming rule: distinct repos never overwrite each
+other, and a genuine name collision is surfaced as an explicit warning.
 
-The collision-key defect: the projects UPSERT keyed on ``(workspace, name)``
-meant two DIFFERENT physical repos that resolve to the same
-``(workspace, project)`` -- e.g. several repos nested directly under one
-container directory, all of whose ``project`` is the container basename --
-silently overwrote each other, so a multi-repo container produced ONE row
-instead of N.
+Naming rule (see tools/scan/classify.py): the project NAME is ALWAYS the repo
+basename, and the container folder is recorded separately in ``group_name``.
+Two DIFFERENT physical repos collide only when they share the SAME basename
+under one workspace (e.g. ``team-a/iac`` and ``team-b/iac``). The writer
+(``gaia/store/writer.py::_find_collision_free_name`` + ``preview_project_name``,
+wired through ``tools/scan/classify.py``) disambiguates the second-and-later
+occupant with a numbered suffix so N distinct repos yield N distinct,
+unclobbered rows -- and the collision is surfaced as a ``repo_collision``
+warning (AC-5), not silently merged.
 
-The fix (``gaia/store/writer.py::_find_collision_free_name`` +
-``preview_project_name``, wired through ``tools/scan/classify.py``)
-disambiguates the second-and-later occupant of a ``(workspace, name)`` slot
-when its ``project_identity`` differs from the row already there, so N
-distinct repos yield N distinct, unclobbered rows on both the dry-run preview
-and a real persisting scan.
+Distinct-basename siblings under one grouping folder do NOT collide anymore:
+they simply become N projects keyed by their own basenames, sharing one
+``container`` (group_name).
 
-AC command (plan_id=19, T1):
-    gaia scan --workspace github-repos <container> --dry-run --json
-    -> all repos under a multi-repo container appear as distinct rows,
-       none overwritten.
-
-These tests build the same shape as the real /home/jorge/ws/github-repos
-``desing-repos`` case (three repos under one container) against a temp tree
-and temp DB, so nothing touches the real workspace or ~/.gaia/gaia.db.
+These tests build the shapes against a temp tree and temp DB, so nothing
+touches the real workspace or ~/.gaia/gaia.db.
 """
 
 from __future__ import annotations
@@ -51,16 +46,13 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Dry-run: the AC command surface
+# Distinct basenames under one grouping folder: N rows, no suffix, no warning
 # ---------------------------------------------------------------------------
 
-def test_dry_run_multi_repo_container_yields_distinct_rows(tmp_path, tmp_db):
-    """Three distinct repos under one container all appear as distinct
-    project rows in the dry-run report -- none silently overwritten.
-
-    Mirrors the AC command:
-        gaia scan --workspace github-repos <container> --dry-run --json
-    """
+def test_distinct_basenames_yield_distinct_rows_no_suffix(tmp_path, tmp_db):
+    """Three DISTINCT-basename repos under one grouping folder become three
+    projects keyed by their own basenames -- no numeric-suffix disambiguation,
+    and they share the same container (group_name)."""
     root = tmp_path / "github-repos"
     _mk_repo(root, "desing-repos", "beautiful-html-templates")
     _mk_repo(root, "desing-repos", "drawio-skill")
@@ -68,25 +60,21 @@ def test_dry_run_multi_repo_container_yields_distinct_rows(tmp_path, tmp_db):
 
     report = classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=False)
 
-    # Every repo classified to the same container basename `desing-repos`
-    # (R2: the project is the segment before the repo). Without the collision
-    # fix these would all be project="desing-repos" and collapse to one row.
-    projects = [p["project"] for p in report.projects]
     assert len(report.projects) == 3, report.projects
-
-    # AC: distinct rows -- three DIFFERENT project names, no silent merge.
-    assert len(set(projects)) == 3, (
-        f"basename collision was NOT disambiguated -- distinct repos "
-        f"collapsed to the same project name: {projects}"
-    )
-    # The disambiguation is deterministic: base name + numbered suffixes.
-    assert "desing-repos" in projects
-    assert "desing-repos-2" in projects
-    assert "desing-repos-3" in projects
-
+    names = {p["project"] for p in report.projects}
+    # Names are the repo basenames, with no -2/-3 suffix (no collision).
+    assert names == {
+        "beautiful-html-templates",
+        "drawio-skill",
+        "effective-html",
+    }, names
+    # Every repo shares the same container (the grouping folder).
+    assert {p["container"] for p in report.projects} == {"desing-repos"}
     # Each row still carries its own distinct physical identity.
     identities = {p["project_identity"] for p in report.projects}
     assert len(identities) == 3
+    # Distinct basenames do NOT collide -> no collision warning.
+    assert report.warnings == [], report.warnings
 
 
 def test_dry_run_does_not_touch_db(tmp_path, tmp_db):
@@ -103,13 +91,10 @@ def test_dry_run_does_not_touch_db(tmp_path, tmp_db):
     )
 
 
-# ---------------------------------------------------------------------------
-# Real persisting scan: N distinct repos -> N unclobbered rows
-# ---------------------------------------------------------------------------
-
 def test_apply_multi_repo_container_persists_distinct_rows(tmp_path, tmp_db):
-    """A real (apply=True) scan of a multi-repo container persists N distinct
-    rows -- the same guarantee as the dry-run, proven against the DB."""
+    """A real (apply=True) scan of a grouping folder persists N distinct rows
+    keyed by basename -- the same guarantee as the dry-run, proven against the
+    DB."""
     from gaia.store.writer import _connect
 
     root = tmp_path / "github-repos"
@@ -123,23 +108,28 @@ def test_apply_multi_repo_container_persists_distinct_rows(tmp_path, tmp_db):
     con = _connect(tmp_db)
     try:
         rows = con.execute(
-            "SELECT name, project_identity FROM projects WHERE workspace = ?",
+            "SELECT name, group_name, project_identity FROM projects WHERE workspace = ?",
             ("github-repos",),
         ).fetchall()
     finally:
         con.close()
 
-    # Three distinct persisted rows, three distinct identities.
     assert len(rows) == 3, [dict(r) for r in rows]
     names = {r["name"] for r in rows}
     identities = {r["project_identity"] for r in rows}
-    assert len(names) == 3, names
+    assert names == {
+        "beautiful-html-templates",
+        "drawio-skill",
+        "effective-html",
+    }, names
     assert len(identities) == 3, identities
+    # The container folder is persisted in group_name for every row.
+    assert {r["group_name"] for r in rows} == {"desing-repos"}
 
 
 def test_same_repo_rescanned_does_not_duplicate(tmp_path, tmp_db):
-    """The collision fix must NOT break same-repo identity-collapse: scanning
-    the SAME container twice still yields exactly N rows, not 2N."""
+    """Same-repo identity-collapse: scanning the SAME grouping folder twice
+    still yields exactly N rows, not 2N."""
     from gaia.store.writer import _connect
 
     root = tmp_path / "github-repos"
@@ -159,46 +149,49 @@ def test_same_repo_rescanned_does_not_duplicate(tmp_path, tmp_db):
         con.close()
 
     assert count == 2, (
-        f"rescan of the same container duplicated rows (expected 2, got "
+        f"rescan of the same grouping folder duplicated rows (expected 2, got "
         f"{count}) -- identity-collapse regressed"
     )
 
 
 # ---------------------------------------------------------------------------
-# M2-T6 (AC-5): the collision must be SURFACED as an explicit warning, not just
-# silently disambiguated. The M1 tests above prove no data loss; these prove
-# the event is VISIBLE.
+# AC-5: a GENUINE basename collision (two different repos, same basename under
+# one workspace) must be disambiguated AND surfaced as an explicit warning.
 # ---------------------------------------------------------------------------
 
 def test_dry_run_emits_collision_warning(tmp_path, tmp_db):
-    """A multi-repo container whose repos would collide on the same project
-    slot surfaces an explicit warning per would-be-collided repo (AC-5)."""
+    """Two DIFFERENT repos sharing the basename 'iac' under one workspace
+    collide on the 'iac' slot; the first keeps it, the second is disambiguated
+    with an explicit warning (AC-5)."""
     root = tmp_path / "github-repos"
-    _mk_repo(root, "desing-repos", "beautiful-html-templates")
-    _mk_repo(root, "desing-repos", "drawio-skill")
-    _mk_repo(root, "desing-repos", "effective-html")
+    _mk_repo(root, "team-a", "iac")
+    _mk_repo(root, "team-b", "iac")
 
     report = classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=False)
 
-    # Three repos want the same slot ("desing-repos"); the first keeps it,
-    # the other two are disambiguated -> two explicit collision warnings.
+    # Two repos want the same slot ("iac"); one keeps it, one is disambiguated
+    # -> exactly one explicit collision warning.
     assert report.warnings, "no collision warning emitted -- AC-5 unmet"
-    assert len(report.warnings) == 2, report.warnings
-    for w in report.warnings:
-        assert w["kind"] == "repo_collision"
-        assert w["workspace"] == "github-repos"
-        assert w["requested_project"] == "desing-repos"
-        assert w["assigned_project"] != "desing-repos"
-        assert w["repo"] in {"drawio-skill", "effective-html", "beautiful-html-templates"}
-        assert "collide" in w["message"]
+    assert len(report.warnings) == 1, report.warnings
+    w = report.warnings[0]
+    assert w["kind"] == "repo_collision"
+    assert w["workspace"] == "github-repos"
+    assert w["requested_project"] == "iac"
+    assert w["assigned_project"] != "iac"
+    assert w["repo"] == "iac"
+    assert "collide" in w["message"]
+
+    # Two distinct persisted-name slots, both basename-derived.
+    names = {p["project"] for p in report.projects}
+    assert names == {"iac", "iac-2"}, names
 
 
 def test_warning_present_in_json_surface(tmp_path, tmp_db):
     """The CLI JSON surface (report.to_dict) carries the warnings, so
     ``gaia scan --dry-run --json`` shows the collision, not silence (AC-5)."""
     root = tmp_path / "github-repos"
-    _mk_repo(root, "desing-repos", "drawio-skill")
-    _mk_repo(root, "desing-repos", "effective-html")
+    _mk_repo(root, "team-a", "iac")
+    _mk_repo(root, "team-b", "iac")
 
     report = classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=False)
     payload = report.to_dict()
@@ -212,8 +205,8 @@ def test_apply_run_also_emits_collision_warning(tmp_path, tmp_db):
     """A real persisting scan (apply=True) surfaces the same warning -- the
     signal is not limited to dry-run."""
     root = tmp_path / "github-repos"
-    _mk_repo(root, "desing-repos", "drawio-skill")
-    _mk_repo(root, "desing-repos", "effective-html")
+    _mk_repo(root, "team-a", "iac")
+    _mk_repo(root, "team-b", "iac")
 
     report = classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=True)
 

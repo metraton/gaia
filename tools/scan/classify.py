@@ -5,30 +5,45 @@ This module replaces the historical inference layer (workspace-type detection,
 nearest-installed-ancestor attribution, install-anchor demotion). Classification
 is now DETERMINISTIC and driven by a single required parameter: the workspace
 name ``W``. There is no guessing -- a repo's workspace is the ancestor path
-segment that matches ``W``, and its project is the path segment immediately
-before the repo.
+segment that matches ``W``, and the project NAME is the repo's own basename.
 
 THE RULESET (per repo -- a folder containing ``.git`` -- found by walking down
 from ``root``):
 
-  R1 repo      = basename of the folder holding ``.git``.
-  R2 project   = the path segment immediately before the repo (its parent).
+  R1 repo      = basename of the folder holding ``.git``. This is ALSO the
+                 project NAME (the ``projects.name`` storage slot).
+  R2 container = the path segment immediately before the repo (its parent),
+                 when there is one between the workspace and the repo. Recorded
+                 in the ``group_name`` column -- NOT used as the project name.
+                 ``None`` when the repo sits directly under the workspace.
   R3 workspace = resolved by matching ``W`` against the repo's ancestor
                  segments. If ``W`` matches a segment -> valid. If it matches
                  NO segment -> error-as-text (structured, non-crashing, with a
                  suggestion). ``W`` is resolved per-repo with early-exit on
                  no-match (no git cost is paid for a repo that cannot match).
   R4 collapse  = if NOTHING is between the workspace segment and the repo (the
-                 parent of the repo IS the workspace) -> project = repo name.
+                 parent of the repo IS the workspace) -> container = None.
+                 (The project name is the repo basename either way -- R2 and R4
+                 are collapsed into the single rule "name = repo basename".)
   R5 reconcile = upsert keyed by ``project_identity`` (writer identity-collapse
                  UPSERT); soft-delete scoped to the exact ``(workspace,
-                 project)`` set discovered this run.
+                 name)`` set discovered this run.
   R6 output    = always structured data (see :class:`ScanReport`). Non-crashing.
 
+Naming history: R2 previously used the *container* segment as the project NAME,
+which made every repo under one container (e.g. ``aaxis/bildwiz/<repo>``)
+collide on the single name ``bildwiz`` and forced the writer to disambiguate
+with ``-2``/``-3`` suffixes -- opaque names (``bildwiz-7``) that lost the real
+basename (``newco-pitot``). The name is now ALWAYS the repo basename, and the
+container is preserved separately in ``group_name``. A genuine collision only
+arises when two DIFFERENT physical repos share the SAME basename under one
+workspace; the writer still disambiguates that (rarer) case.
+
 Principle: a workspace is never a project, but a project CAN be a workspace (the
-same folder, its role decided by ``W``). Deeper-than-3 nesting -> project is the
-segment just before the repo, and the extra levels are returned as ambiguity
-DATA -- the scan never guesses which of them "should" have been the project.
+same folder, its role decided by ``W``). Deeper-than-3 nesting -> the container
+is the segment just before the repo (its immediate parent), and the extra
+levels are returned as ambiguity DATA -- the scan never guesses which of them
+"should" have been the container.
 
 Reused primitives (kept from the correct low-level layer):
   * ``_list_repos`` / ``_walk_for_repos`` / ``_REPO_WALK_SKIP`` -- the .git walk.
@@ -137,12 +152,18 @@ class RepoClassification:
       * matched   -> ``project`` set, ``error`` None. ``ambiguity`` may be set
                      when the repo nests deeper than 3 levels below ``W``.
       * no-match  -> ``project`` None, ``error`` set (R3 error-as-text).
+
+    ``project`` is now ALWAYS the repo basename (R1) -- the ``projects.name``
+    storage slot. ``container`` is the grouping folder between the workspace
+    and the repo (R2), persisted in ``group_name``; it is ``None`` when the
+    repo sits directly under the workspace (R4 collapse).
     """
 
     repo: str
     path: str
     workspace: Optional[str] = None
     project: Optional[str] = None
+    container: Optional[str] = None
     project_identity: Optional[str] = None
     error: Optional[dict] = None
     ambiguity: Optional[dict] = None
@@ -178,9 +199,10 @@ def classify_repo(repo: Path, W: str) -> RepoClassification:
       idx  = match_workspace_index(segs, W)      # ancestors only
       if idx is None: -> no-match error (early exit, no git cost)
       between = segs[idx+1:-1]
-      if not between:            project = repo_name        # R4 collapse
-      else:                      project = between[-1]       # R2
-                                 if len(between) > 1:        # deeper-than-3
+      project = repo_name                         # R1: name = repo basename
+      if not between:            container = None            # R4 collapse
+      else:                      container = between[-1]      # R2 immediate parent
+                                 if len(between) > 1:         # deeper-than-3
                                      ambiguity = between[:-1]
       identity = resolve_project_identity(repo)             # reuse
     """
@@ -202,15 +224,18 @@ def classify_repo(repo: Path, W: str) -> RepoClassification:
 
     between = segs[idx + 1:-1]
     ambiguity: Optional[dict] = None
+    # R1 collapse of R2+R4: the project NAME is ALWAYS the repo basename.
+    project = repo_name
     if not between:
-        # R4 collapse: parent of repo IS the workspace -> project = repo name.
-        project = repo_name
+        # R4 collapse: parent of repo IS the workspace -> no container.
+        container = None
     else:
-        project = between[-1]  # R2: segment immediately before the repo
+        # R2: the immediate container is the segment right before the repo.
+        container = between[-1]
         if len(between) > 1:
-            # Deeper-than-3 nesting: return the extra levels as ambiguity DATA
-            # (do not guess). extra_levels are the segments between the
-            # workspace and the project (i.e. between[:-1]).
+            # Deeper-than-3 nesting: return the levels ABOVE the immediate
+            # container as ambiguity DATA (do not guess). extra_levels are the
+            # segments between the workspace and the container (between[:-1]).
             ambiguity = {
                 "repo": repo_name,
                 "extra_levels": list(between[:-1]),
@@ -222,6 +247,7 @@ def classify_repo(repo: Path, W: str) -> RepoClassification:
         path=str(repo),
         workspace=W,
         project=project,
+        container=container,
         project_identity=identity,
         ambiguity=ambiguity,
     )
@@ -428,15 +454,12 @@ def _upsert(
     from gaia.store.writer import upsert_project
 
     repo_path = Path(classification.path)
-    # group_name: the container directory between the workspace segment and the
-    # project. When project == parent-of-repo (no collapse and no deeper
-    # nesting) there is no container -> None. When collapsed (project == repo)
-    # there is likewise no container.
-    group_name = None
-    if classification.ambiguity:
-        # Deeper-than-3: the nearest extra level is the immediate container.
-        extra = classification.ambiguity.get("extra_levels") or []
-        group_name = extra[-1] if extra else None
+    # group_name: the container directory immediately between the workspace
+    # segment and the repo (R2). ``None`` when the repo sits directly under the
+    # workspace (R4 collapse -- no grouping folder). This is the repo's own
+    # parent-folder name, matching store_populator.scan_workspace_to_store's
+    # group_name semantics.
+    group_name = classification.container
 
     res = upsert_project(
         workspace=classification.workspace,
@@ -867,18 +890,20 @@ def scan(
         report.projects.append({
             "repo": c.repo,
             "project": final_name,
-            # M2-T4/T5 vocabulary (workspace -> proyecto -> repo):
-            #   * ``container`` is the PROYECTO level -- the classified project
-            #     that groups one or more repos. For a multi-repo container
-            #     (N>1) every repo shares the same ``container`` (e.g. three
-            #     repos under "desing-repos" all carry container="desing-repos"),
-            #     so grouping the report by ``container`` yields "one project
-            #     with >1 repo" (AC-4). For a singleton (R4 collapse) the
-            #     container equals the repo name, so container == repo (AC-4
-            #     "project==repo"). Distinct from ``project`` (the DB storage
-            #     slot, which M1 collision-disambiguates to keep N distinct
-            #     (workspace, name) rows -- desing-repos, desing-repos-2, ...).
-            "container": c.project,
+            # Vocabulary (workspace -> container -> repo):
+            #   * ``project`` (above) is the DB storage slot ``projects.name``,
+            #     which is now ALWAYS the repo basename (collision-disambiguated
+            #     only when two DIFFERENT repos share a basename under one
+            #     workspace).
+            #   * ``container`` is the grouping folder between the workspace and
+            #     the repo (persisted as ``group_name``). For a multi-repo
+            #     container (N>1) every repo shares the same ``container`` (e.g.
+            #     three repos under "desing-repos" all carry
+            #     container="desing-repos"), so grouping the report by
+            #     ``container`` yields "one container with >1 repo". For a repo
+            #     directly under the workspace (R4 collapse) ``container`` is
+            #     ``None`` -- there is no grouping folder.
+            "container": c.container,
             "workspace": c.workspace,
             "project_identity": c.project_identity,
             # M2-T4 (AC-3): each repo carries its own absolute path, distinct
@@ -895,13 +920,12 @@ def scan(
             "applied": applied,
         })
 
-        # SV2 rename_candidates: scoped to R4-collapse repos (container ==
-        # repo) so the ordinary R2 container layout (project deliberately
-        # differs from the repo's own basename) never appears here. Within
-        # that scope, ``name should equal the folder's basename`` is an
-        # invariant; a mismatch means M1-T1 collision-disambiguation (or a
-        # legacy/pre-move row) is masking the physical folder's real name.
-        if c.project == c.repo and Path(c.path).name != final_name:
+        # SV2 rename_candidates: the project name is now ALWAYS the repo
+        # basename, so ``persisted name == folder basename`` is a global
+        # invariant. A mismatch means M1-T1 collision-disambiguation (two
+        # different repos share a basename under one workspace) -- or a
+        # legacy/pre-move row -- is masking the physical folder's real name.
+        if Path(c.path).name != final_name:
             report.rename_candidates.append({
                 "workspace": c.workspace,
                 "project": final_name,

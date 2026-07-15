@@ -250,16 +250,18 @@ class TestValidationCases:
     per-repo cases and classify.scan(apply=False) for the report shape."""
 
     def test_case1_aaxis_aos_aos_iac(self, tmp_path):
-        """aaxis/aos/aos-iac --workspace aaxis -> (aaxis, aos, aos-iac).
+        """aaxis/aos/aos-iac --workspace aaxis -> name='aos-iac', container='aos'.
 
-        The workspace is the matched ancestor 'aaxis', the project is the
-        segment immediately before the repo ('aos'), and the repo is 'aos-iac'.
+        The workspace is the matched ancestor 'aaxis', the project NAME is now
+        the repo's own basename ('aos-iac'), and the container 'aos' (the folder
+        that groups sibling repos) is recorded separately in group_name.
         """
         repo = _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")
         c = classify_mod.classify_repo(repo, "aaxis")
         assert c.matched
         assert c.workspace == "aaxis"
-        assert c.project == "aos"
+        assert c.project == "aos-iac"  # name = repo basename (R1)
+        assert c.container == "aos"    # container -> group_name (R2)
         assert c.repo == "aos-iac"
         assert c.ambiguity is None
 
@@ -272,7 +274,8 @@ class TestValidationCases:
         c = classify_mod.classify_repo(repo, "github-repos")
         assert c.matched
         assert c.workspace == "github-repos"
-        assert c.project == "engram"  # collapse: project == repo
+        assert c.project == "engram"  # name = repo basename
+        assert c.container is None     # R4 collapse: no grouping folder
         assert c.repo == "engram"
         assert c.ambiguity is None
 
@@ -283,6 +286,7 @@ class TestValidationCases:
         assert c.matched
         assert c.workspace == "me"
         assert c.project == "gaia"
+        assert c.container is None  # R4 collapse: repo directly under workspace
         assert c.repo == "gaia"
         assert c.ambiguity is None
 
@@ -296,7 +300,8 @@ class TestValidationCases:
         c = classify_mod.classify_repo(repo, "aos")
         assert c.matched
         assert c.workspace == "aos"
-        assert c.project == "aos-server"  # collapse
+        assert c.project == "aos-server"  # name = repo basename
+        assert c.container is None         # R4 collapse: parent IS the workspace
         assert c.repo == "aos-server"
 
     def test_case5_no_match_error_as_text(self, tmp_path):
@@ -314,19 +319,20 @@ class TestValidationCases:
         assert "aos" in c.error["suggestion"]
 
     def test_case6_deeper_than_3_ambiguity_as_data(self, tmp_path):
-        """deeper-than-3 nesting -> the project is the segment just before the
-        repo, and the extra levels are returned as ambiguity DATA (never
-        guessed)."""
-        # W / extra1 / extra2 / project / repo  (2 levels between W and project)
+        """deeper-than-3 nesting -> name = repo basename, container = the
+        segment immediately before the repo, and the levels ABOVE that
+        container are returned as ambiguity DATA (never guessed)."""
+        # W / extra1 / extra2 / container / repo  (2 levels above the container)
         repo = _mk_repo(tmp_path, "org", "team", "group", "svc", "svc-api")
         c = classify_mod.classify_repo(repo, "org")
         assert c.matched
         assert c.workspace == "org"
-        assert c.project == "svc"  # segment immediately before the repo
+        assert c.project == "svc-api"  # name = repo basename (R1)
+        assert c.container == "svc"    # immediate container -> group_name
         assert c.repo == "svc-api"
         assert c.ambiguity is not None
         assert c.ambiguity["repo"] == "svc-api"
-        # extra_levels are the segments between the workspace and the project.
+        # extra_levels are the segments between the workspace and the container.
         assert c.ambiguity["extra_levels"] == ["team", "group"]
 
 
@@ -344,19 +350,24 @@ class TestScanReport:
         assert d["resolved_workspace"] == "aaxis"
         assert d["error"] is None
         assert len(d["projects"]) == 1
-        assert d["projects"][0]["project"] == "aos"
+        assert d["projects"][0]["project"] == "aos-iac"  # name = repo basename
+        assert d["projects"][0]["container"] == "aos"    # container -> group_name
         assert d["projects"][0]["applied"] is False
         assert d["marked_missing"] == 0
 
     def test_scan_mixed_match_and_collapse(self, tmp_path):
         """A root with a nested repo and a loose repo both matching 'aaxis':
-        the nested one keeps its parent as project, the loose one collapses."""
-        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")   # project = aos
-        _mk_repo(tmp_path, "aaxis", "loose-repo")       # collapse: project = repo
+        both project names are the repo basename; the nested one records its
+        container in group_name, the loose one has no container."""
+        _mk_repo(tmp_path, "aaxis", "aos", "aos-iac")   # name=aos-iac, container=aos
+        _mk_repo(tmp_path, "aaxis", "loose-repo")       # name=loose-repo, container=None
         report = classify_mod.scan(tmp_path / "aaxis", "aaxis", apply=False)
         by_repo = {p["repo"]: p["project"] for p in report.projects}
-        assert by_repo["aos-iac"] == "aos"
+        assert by_repo["aos-iac"] == "aos-iac"
         assert by_repo["loose-repo"] == "loose-repo"
+        by_container = {p["repo"]: p["container"] for p in report.projects}
+        assert by_container["aos-iac"] == "aos"
+        assert by_container["loose-repo"] is None
         assert report.errors == []
 
     def test_scan_all_no_match_is_error_report(self, tmp_path):
@@ -396,7 +407,8 @@ class TestScanReport:
         finally:
             con.close()
         names = {n for n, _ in rows}
-        assert names == {"aos", "other"}
+        # Names are now the repo basenames (not the container segment).
+        assert names == {"aos-iac", "other-repo"}
         assert all(s == "active" for _, s in rows)
 
         # Second scan: remove the 'other' subtree -> its project soft-deleted.
@@ -416,10 +428,10 @@ class TestScanReport:
             )
         finally:
             con.close()
-        assert status_by_name.get("aos") == "active", "surviving repo stays active"
-        assert status_by_name.get("other") == "missing", (
+        assert status_by_name.get("aos-iac") == "active", "surviving repo stays active"
+        assert status_by_name.get("other-repo") == "missing", (
             "removed repo's project must be soft-deleted (status=missing), "
-            f"got {status_by_name.get('other')!r}"
+            f"got {status_by_name.get('other-repo')!r}"
         )
 
     def test_scan_identity_collapse_same_repo_two_roots(self, tmp_db, tmp_path):
@@ -504,6 +516,75 @@ class TestScanReport:
         assert row[2] == "application", (
             f"role must be populated (deterministic), got {row[2]!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Basename-naming forward-fix: project NAME = repo basename (never a numeric
+# suffix from container-name collisions); the container goes to group_name.
+# ---------------------------------------------------------------------------
+
+class TestBasenameNamingForwardFix:
+    """Guards the forward-fix that made `projects.name` the repo basename and
+    moved the container folder into `projects.group_name`. Asserts the
+    PERSISTED columns, not just the report shape."""
+
+    def _persisted(self, db_path, workspace):
+        import sqlite3
+        con = sqlite3.connect(str(db_path))
+        try:
+            return {
+                r[0]: r[1]
+                for r in con.execute(
+                    "SELECT name, group_name FROM projects WHERE workspace = ?",
+                    (workspace,),
+                ).fetchall()
+            }
+        finally:
+            con.close()
+
+    def test_multi_repo_container_names_by_basename_group_is_container(
+        self, tmp_db, tmp_path
+    ):
+        """A multi-repo layout under one container persists each repo by its
+        OWN basename (no -2/-3 suffix) with group_name = the container."""
+        # aaxis/bildwiz/{bildwiz-iac, newco-pitot, control-tower-livekit}
+        _mk_repo(tmp_path, "aaxis", "bildwiz", "bildwiz-iac")
+        _mk_repo(tmp_path, "aaxis", "bildwiz", "newco-pitot")
+        _mk_repo(tmp_path, "aaxis", "bildwiz", "control-tower-livekit")
+
+        report = classify_mod.scan(
+            tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True
+        )
+        assert report.error is None, report.error
+
+        persisted = self._persisted(tmp_db, "aaxis")
+        # Meaningful, significant names -- no numeric-suffix disambiguation.
+        assert set(persisted) == {
+            "bildwiz-iac",
+            "newco-pitot",
+            "control-tower-livekit",
+        }, persisted
+        assert not any(
+            n.endswith(("-2", "-3", "-4")) for n in persisted
+        ), f"basename naming must not produce numeric suffixes: {persisted}"
+        # The container is preserved in group_name for every repo.
+        assert set(persisted.values()) == {"bildwiz"}, persisted
+
+    def test_single_repo_direct_under_workspace_has_no_group(
+        self, tmp_db, tmp_path
+    ):
+        """The 1-repo-directly-under-workspace case (e.g. workspace 'me' with a
+        repo like 'gaia' as a direct child) still works: name = basename,
+        group_name = None (R4 collapse, unchanged)."""
+        _mk_repo(tmp_path, "me", "gaia")
+
+        report = classify_mod.scan(
+            tmp_path / "me", "me", db_path=tmp_db, apply=True
+        )
+        assert report.error is None, report.error
+
+        persisted = self._persisted(tmp_db, "me")
+        assert persisted == {"gaia": None}, persisted
 
 
 # ---------------------------------------------------------------------------

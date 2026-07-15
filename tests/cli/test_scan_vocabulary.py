@@ -14,11 +14,14 @@ subcommand is built.
 
 Vocabulary produced by ``tools/scan/classify.py::scan`` per matched repo:
   * ``workspace``  -- the workspace name W (top level).
-  * ``container``  -- the PROYECTO level: the classified project grouping one
-                      or more repos (equals ``repo`` on a singleton collapse).
+  * ``container``  -- the grouping folder between the workspace and the repo
+                      (persisted as ``group_name``). ``None`` when the repo
+                      sits directly under the workspace (R4 collapse).
+  * ``project``    -- the DB storage slot ``projects.name`` -- now ALWAYS the
+                      repo basename.
   * ``repo``       -- the repo (basename of the folder holding ``.git``).
   * ``path``       -- the repo's own absolute path, distinct from the
-                      container/project grouping.
+                      container grouping.
 
 These tests build a temp tree + temp DB, so nothing touches the real
 workspace or ~/.gaia/gaia.db.
@@ -51,23 +54,31 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 def test_report_exposes_three_levels_plus_absolute_path(tmp_path, tmp_db):
-    """Every matched repo in the dry-run report carries the three vocabulary
-    levels (workspace, proyecto/container, repo) and its own absolute path."""
+    """Every matched repo in the dry-run report carries the vocabulary
+    (workspace, container, project=repo basename, repo) and its own absolute
+    path. ``container`` is nullable: present as a key always, ``None`` for a
+    repo directly under the workspace (R4 collapse)."""
     root = tmp_path / "github-repos"
     _mk_repo(root, "desing-repos", "drawio-skill")
-    _mk_repo(root, "engram")  # singleton, collapses
+    _mk_repo(root, "engram")  # singleton, collapses -> container None
 
     report = classify_mod.scan(root, "github-repos", db_path=tmp_db, apply=False)
 
     assert report.projects, "no projects classified"
+    by_repo = {p["repo"]: p for p in report.projects}
     for p in report.projects:
-        # The three levels are present and non-empty.
         assert p["workspace"] == "github-repos"
-        assert p["container"], f"missing proyecto level: {p}"
+        # container is present as a key (may be None for a collapsed singleton).
+        assert "container" in p, f"missing container key: {p}"
+        # project name is the repo basename.
+        assert p["project"] == p["repo"], f"project must be the repo basename: {p}"
         assert p["repo"], f"missing repo level: {p}"
         # Each repo carries its own absolute path.
         assert p["path"], f"missing path: {p}"
         assert os.path.isabs(p["path"]), f"path not absolute: {p['path']}"
+    # The grouped repo has a container; the collapsed singleton has None.
+    assert by_repo["drawio-skill"]["container"] == "desing-repos"
+    assert by_repo["engram"]["container"] is None
 
 
 def test_repo_path_is_distinct_from_the_project_grouping(tmp_path, tmp_db):

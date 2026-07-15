@@ -242,11 +242,12 @@ def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
     subprocess.run(["git", "init", "--quiet"], cwd=str(repo), check=True)
     _write_python_helm_tf_repo(repo)
 
-    # First scan: workspace aaxis -> the repo classifies to project "aos"
-    # (its parent dir), so the canonical row lives at (aaxis, aos).
+    # First scan: workspace aaxis -> the repo classifies to project "aos-iac"
+    # (its own basename; the container "aos" goes to group_name), so the
+    # canonical row lives at (aaxis, aos-iac).
     r1 = classify_mod.scan(tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True)
     # Second scan from a deeper root under a different workspace name: the
-    # repo collapses onto the SAME identity row (still (aaxis, aos)).
+    # repo collapses onto the SAME identity row (still (aaxis, aos-iac)).
     r2 = classify_mod.scan(
         tmp_path / "aaxis" / "aos", "aos", db_path=tmp_db, apply=True
     )
@@ -264,8 +265,8 @@ def test_identity_collapse_cross_workspace_facets(tmp_path, tmp_db):
         con.close()
     assert proj_count == 1, f"identity-collapse regressed: {proj_count} project rows"
 
-    # Facets landed on the canonical row (aaxis, aos), keyed correctly.
-    rows = _facet_rows(tmp_db, "aaxis", "aos")
+    # Facets landed on the canonical row (aaxis, aos-iac), keyed correctly.
+    rows = _facet_rows(tmp_db, "aaxis", "aos-iac")
     seen = {(s, k) for (s, k, v) in rows}
     assert ("language", "python") in seen, rows
     assert ("infrastructure", "terraform") in seen, rows
