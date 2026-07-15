@@ -95,3 +95,6 @@ tiers-spike.sqlite
 mutation-tiers-spike.toml
 # Cosmic-ray working directory (mutated copies of source, never committed)
 mutants/
+
+# Skills validation scratch report (regenerated on-demand, not shipped)
+tools/validation/skills_report.md
