@@ -495,7 +495,11 @@ class PrePublishValidator {
     // 2. Version sync with package.json
     const packageJsonPath = path.join(GAIA_OPS_ROOT, 'package.json');
     const packageData = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-    const expectedVersion = this.newVersion || packageData.version;
+    // In --dry-run, bumpVersion() computes this.newVersion but never writes it
+    // to package.json on disk (see Step 3) -- so plugin.json (also unwritten
+    // in dry-run) must be compared against the ON-DISK package.json version,
+    // not the hypothetical bumped one, or every dry-run false-fails here.
+    const expectedVersion = this.dryRun ? packageData.version : (this.newVersion || packageData.version);
 
     if (pluginData.version !== expectedVersion) {
       this.log(`✗ plugin.json version "${pluginData.version}" does not match package.json version "${expectedVersion}"`, 'error');
@@ -526,8 +530,14 @@ class PrePublishValidator {
   runTests() {
     this.log('Step 7: Running validation tests...', 'info');
 
-    // In validate-only mode, validate source files directly
-    const baseDir = this.validateOnly ? GAIA_OPS_ROOT : NODE_MODULES_INSTALL;
+    // In validate-only OR dry-run mode, validate source files directly.
+    // dry-run never actually reinstalls node_modules (Step 3/Step "Reinstalling
+    // node_modules" both no-op under this.dryRun), so NODE_MODULES_INSTALL is
+    // whatever was installed by some PRIOR run -- arbitrarily stale relative to
+    // the source tree under test. Testing against source is what makes the
+    // dry-run representative of what would actually be validated after a real
+    // bump + reinstall.
+    const baseDir = (this.validateOnly || this.dryRun) ? GAIA_OPS_ROOT : NODE_MODULES_INSTALL;
 
     try {
       // Test 1: Validate JSON files
@@ -582,7 +592,11 @@ class PrePublishValidator {
       this.log('Test 4: Validating version sync across manifests...', 'info');
       const packageJsonPath = path.join(baseDir, 'package.json');
       const packageJsonData = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8'));
-      const expectedVersion = this.newVersion || packageJsonData.version;
+      // Same dry-run rule as validatePluginManifest(): bumpVersion() never
+      // writes package.json in --dry-run, so the on-disk manifests here are
+      // still at the CURRENT (unbumped) version -- compare against that, not
+      // against the hypothetical this.newVersion, or this false-fails.
+      const expectedVersion = this.dryRun ? packageJsonData.version : (this.newVersion || packageJsonData.version);
       const versionMismatches = [];
 
       // Check .claude-plugin/plugin.json
