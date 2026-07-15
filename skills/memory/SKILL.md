@@ -32,7 +32,7 @@ Two orthogonal axes describe every memory row:
 
 | Axis | Values | What it captures |
 |------|--------|------------------|
-| `class` | `anchor` / `thread` / `log` | The role the note plays in the session. Anchors are stable knowledge that survives across sessions; threads are work-in-progress that needs handoff; logs are append-only history kept for traceability. |
+| `class` | `anchor` / `thread` / `log` | The role the note plays in the session. `anchor` = stable knowledge available in any session, surfaced in `## Memory — About you / What I know` -- it is background knowledge, not a pending-item mechanism. `thread` = actionable work-in-progress that needs handoff; a `thread` with `status=carry_forward` is the one class/status pair that resurfaces at the top of the *next* session's opening block, `## Memory — For this session`. `log` = append-only history kept for traceability, never re-injected. |
 | `type` | `atom` / `decision` / `negative` / `project` / `user` / `feedback` | The discipline of the body -- how the row is shaped and validated. Internal taxonomy: never surface `atom`/`decision`/`negative` to the user as the way to think about memory. |
 
 `status` only applies when `class=thread`. Its values form the thread
@@ -176,6 +176,33 @@ The search is always-on; the deeper consolidation it can trigger is
 proportional -- a trivial new fact with no overlap writes directly,
 and only an overlap pulls in dedup or supersede work.
 
+### Decide from intention first, then apply the type defaults
+
+Before consulting the defaults table below, ask one question: **does this
+item need to appear at the top of the NEXT session's opening block?** That
+answer -- not the row's type -- is the primary criterion for `class`/`status`:
+
+- **If YES** -- this is a pending for the next session, it must land in
+  `## Memory — For this session` -- the row MUST be `class=thread
+  --status=carry_forward`, regardless of what type/slug prefix it uses.
+  `atom_*`, `decision_*`, `project_*`, `user_*` all support this: the slug
+  prefix still picks the *content shape*, but the class/status override
+  expresses the *intent to carry forward*, not the type default.
+- **If NO** -- it is durable background knowledge, not a pending item -- the
+  type's default `class=anchor` is correct, and the row is expected to
+  surface only in `## Memory — About you / What I know`.
+
+Getting this backwards is the most common curated-memory mistake: a
+`class=anchor` row -- which is the DEFAULT for `project_*`, `user_*`,
+`atom_*`, and `decision_*` in the table below -- never appears in
+`## Memory — For this session`, no matter how urgent its content. It
+surfaces only in `About you / What I know`, a section that is capped at a
+small quota and is trimmed BEFORE `carry_forward` under char-budget
+pressure (see "Trim order and quotas" under Carry-forward / handoff below).
+A "pendiente para la próxima sesión" saved as an anchor does not fail
+loudly -- it is simply never presented as a pending, and can be the first
+thing dropped when the budget is tight.
+
 ### The slug is the single source of truth for type
 
 **The slug prefix and the type are the same thing.** When you pick a
@@ -189,15 +216,15 @@ slug prefix, and the prefix is the type. This table maps the shape of
 the body to its slug -- it is the form a row takes, not a checklist of
 when to write:
 
-| Body shape | Slug prefix → type | Class default |
-|------------|-------------------|---------------|
-| A closed decision with its rationale | `decision_<topic>` → `--type=decision` | `anchor` |
-| A stable reusable fact | `atom_<topic>` → `--type=atom` | `anchor` |
-| A closed path that should not recur | `negative_<topic>` → `--type=negative` | `anchor` |
-| Cross-cutting repo / system knowledge | `project_<topic>` → `--type=project` | `anchor` |
-| User preference or identity | `user_<topic>` → `--type=user` | `anchor` |
-| Post-mortem / correction the system must remember | `feedback_<topic>` → `--type=feedback` | `log` |
-| Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) |
+| Body shape | Slug prefix → type | Class default | Resurfaces in "For this session"? |
+|------------|-------------------|---------------|:---:|
+| A closed decision with its rationale | `decision_<topic>` → `--type=decision` | `anchor` | No -- surfaces in "About you / What I know" |
+| A stable reusable fact | `atom_<topic>` → `--type=atom` | `anchor` | No -- surfaces in "About you / What I know" |
+| A closed path that should not recur | `negative_<topic>` → `--type=negative` | `anchor` | No -- surfaces in "About you / What I know" |
+| Cross-cutting repo / system knowledge | `project_<topic>` → `--type=project` | `anchor` | No -- surfaces in "About you / What I know" |
+| User preference or identity | `user_<topic>` → `--type=user` | `anchor` | No -- surfaces in "About you / What I know" |
+| Post-mortem / correction the system must remember | `feedback_<topic>` → `--type=feedback` | `log` | No -- `log` is never injected |
+| Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) | **Yes** -- the only row that lands in "For this session" |
 
 The CLI enforces `^{type}_[a-z0-9_]+$` with type-specific matching: a
 `decision_*` slug is only valid with `--type=decision`, not with
@@ -314,6 +341,37 @@ body:
    (no longer relevant) or `--status=graduated`, or promote to
    `class=anchor` if it became stable knowledge.
 
+### Trim order and quotas (why an anchor can vanish, but a carry_forward usually survives)
+
+`class=anchor` and `class=thread status=carry_forward` are NOT equally
+durable in the SessionStart injection block -- this asymmetry is exactly
+why "pendientes para la próxima sesión" belong in `carry_forward`, never in
+`anchor`. Both a per-section quota and a char-budget trim order favor
+`carry_forward` over `anchor`:
+
+- **Per-section quota.** `## Memory — About you / What I know` (`anchor`)
+  is capped at a small fixed quota (`_RELEVANT_PER_CLASS_QUOTA["anchor"]`)
+  at query time -- only the top few anchors (identity anchors pinned first,
+  then most-recently-updated) are even selected as candidates. `## Memory —
+  For this session` (`carry_forward`) gets its own, larger recency sub-cap
+  (`_RELEVANT_CARRY_FORWARD_CAP`) and is selected first, ahead of anchors.
+- **Char-budget trim order.** `gaia memory get-relevant` enforces a hard
+  character cap on the whole block. When the rendered block overflows that
+  cap, sections are trimmed one bullet at a time in this fixed order:
+  `thread_open` → `anchor` → `carry_forward`. `carry_forward` is the LAST
+  resort -- it is trimmed only once `thread_open` and `anchor` have both
+  been fully emptied and the block is still over budget. In practice this
+  means: under budget pressure, `anchor` rows are cut before a single
+  `carry_forward` row is touched.
+
+The practical consequence: a pending saved as `class=anchor` is disadvantaged
+twice over -- it competes for a smaller quota, AND it is one of the first
+sections trimmed when the budget is tight -- on top of never appearing in
+`For this session` at all (see "Decide from intention first" above). A
+`carry_forward` thread is not literally exempt from trimming forever -- it
+IS in the trim-order list, as the last target -- but it is the row the
+mechanism protects hardest, exactly the property a "pendiente" needs.
+
 **One thread = one note.** A carry-forward captures *one* concern with
 *one* `status`. Do not pack independent items into a single body with
 `## PENDIENTE` / `## CERRADO` sections: the `status` column then means
@@ -360,6 +418,15 @@ thread = one note" rule applied at the session boundary.
 
 ## Anti-patterns
 
+- **Saving a "pendiente para la próxima sesión" as `class=anchor`** --
+  including via `project_*` or `user_*`, which default to `anchor`. It
+  lands in `## Memory — About you / What I know`, competes for that
+  section's small quota, is trimmed BEFORE `carry_forward` under
+  char-budget pressure (see "Trim order and quotas" under Carry-forward /
+  handoff), and never appears as a pending in `## Memory — For this
+  session` no matter how urgent its content. Pendings are threads: use
+  `class=thread --status=carry_forward`, regardless of the slug's type
+  prefix (see "Decide from intention first" in Write flow).
 - **Surfacing `atom`/`decision`/`negative` to the user as the way to
   think about memory** -- `type` is internal discipline of the body;
   the user reasons in terms of "for this session", "about me", "open
