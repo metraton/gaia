@@ -2214,6 +2214,69 @@ def update_memory_field(
         con.close()
 
 
+def reanchor_memory_project_ref(
+    workspace: str,
+    name: str,
+    project_ref: str | None,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """RE-ANCHOR an existing curated memory row's ``project_ref``.
+
+    This is the correction path that ``upsert_memory`` deliberately does NOT
+    provide: ``upsert_memory`` is COALESCE-preserving (it never clobbers an
+    existing ``project_ref`` when the field is omitted, so callers cannot
+    accidentally null it out), which means there is no way to CHANGE an already
+    set anchor through the normal write path. This function is the explicit
+    re-anchor: it OVERWRITES ``memory.project_ref`` to ``project_ref``
+    unconditionally -- the value the ``gaia memory edit --project`` /
+    ``--project-ref`` CLI path resolves and passes in.
+
+    Passing ``project_ref=None`` explicitly CLEARS the anchor (back to the
+    forward-only-unattributed state); the CLI never does this (it always
+    resolves to a concrete identity), but the writer allows it so a caller can
+    correct a wrongly-anchored row.
+
+    Note: the ``trg_memory_history`` trigger does not track ``project_ref``
+    (it captures body/workspace/type/description/status/deleted_at), so a
+    re-anchor is a metadata correction and is intentionally not mirrored into
+    ``memory_history``.
+
+    Raises:
+        ValueError: the ``(workspace, name)`` row does not exist.
+    """
+    _assert_dispatch_can_write_memory()
+
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT project_ref FROM memory WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"memory '{name}' not found in workspace '{workspace}'"
+            )
+
+        before = row["project_ref"]
+        now = _now_iso()
+        con.execute(
+            "UPDATE memory SET project_ref = ?, updated_at = ? "
+            "WHERE workspace = ? AND name = ?",
+            (project_ref, now, workspace, name),
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "name": name,
+            "before_project_ref": before,
+            "after_project_ref": project_ref,
+            "updated_at": now,
+        }
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Public API: memory_links (v4 graph primitives)
 # ---------------------------------------------------------------------------

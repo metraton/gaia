@@ -1944,6 +1944,15 @@ def _cmd_edit(args) -> int:
     are omitted but a class/status flag is supplied, the call functions as a
     pure reclassify -- useful for "I want to graduate this thread" style edits
     without re-typing the body.
+
+    Also accepts ``--project`` / ``--project-ref`` to RE-ANCHOR an existing
+    row's ``memory.project_ref`` without rewriting the body. This closes the
+    gap where ``gaia memory add --project`` could only anchor at WRITE time:
+    a row written with a NULL or wrong ``project_ref`` (e.g. because the cwd
+    was a multi-project workspace root) can now be corrected in place. The
+    resolution contract matches ``add`` -- ``--project`` resolves a name to a
+    stable identity, ``--project-ref`` passes one directly, and an unknown
+    project is a structured error, never a silent NULL.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
@@ -1954,6 +1963,8 @@ def _cmd_edit(args) -> int:
     append = getattr(args, "append", False)
     class_flag = getattr(args, "class_", None)
     status_flag = getattr(args, "status", None)
+    project_flag = getattr(args, "project", None)
+    project_ref_flag = getattr(args, "project_ref", None)
 
     if not name:
         return _err("--name is required", as_json)
@@ -1992,16 +2003,44 @@ def _cmd_edit(args) -> int:
     status_touches, status_for_writer = _normalize_status_flag(status_flag)
     has_field_patch = field is not None and content not in (None, "")
     has_reclassify = class_flag is not None or status_touches
+    has_reanchor = project_flag is not None or project_ref_flag is not None
 
-    if not has_field_patch and not has_reclassify:
+    if not has_field_patch and not has_reclassify and not has_reanchor:
         return _err(
-            "--field/--content or --class/--status is required", as_json,
+            "--field/--content, --class/--status, or --project/--project-ref "
+            "is required", as_json,
         )
 
     try:
         from gaia.store.writer import update_memory_field, reclassify_memory
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
+
+    # Re-anchor project_ref of an existing row. Resolve the project scope with
+    # the SAME contract `gaia memory add` uses (`_resolve_scope_contract`),
+    # scoped to the already-resolved workspace: --project resolves a name to
+    # its stable identity, --project-ref passes an identity directly, and an
+    # unresolvable project is a structured error (never a silent NULL).
+    reanchor_result = None
+    if has_reanchor:
+        project_ref, scope_err = _resolve_scope_contract(
+            workspace=workspace,
+            workspace_flag=None,
+            project_flag=project_flag,
+            project_ref_flag=project_ref_flag,
+            as_json=as_json,
+        )
+        if scope_err is not None:
+            return scope_err
+        try:
+            from gaia.store.writer import reanchor_memory_project_ref
+            reanchor_result = reanchor_memory_project_ref(
+                workspace, name, project_ref,
+            )
+        except ValueError as exc:
+            return _err(str(exc), as_json)
+        except PermissionError as exc:
+            return _err(str(exc), as_json)
 
     field_result = None
     if has_field_patch:
@@ -2034,6 +2073,7 @@ def _cmd_edit(args) -> int:
             "workspace": workspace,
             "field_update": field_result,
             "reclassify": reclassify_result,
+            "reanchor": reanchor_result,
         }
         print(json.dumps(payload, indent=2, default=str))
     else:
@@ -2046,6 +2086,12 @@ def _cmd_edit(args) -> int:
             print(
                 f"Reclassified '{name}': class={reclassify_result['class']}, "
                 f"status={reclassify_result['memory_status']}"
+            )
+        if reanchor_result is not None:
+            print(
+                f"Re-anchored '{name}': project_ref "
+                f"{reanchor_result['before_project_ref']!r} -> "
+                f"{reanchor_result['after_project_ref']!r}"
             )
     return 0
 
@@ -2629,6 +2675,25 @@ def register(subparsers):
     )
     edit_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
+    _edit_anchor_group = edit_p.add_mutually_exclusive_group()
+    _edit_anchor_group.add_argument(
+        "--project", default=None, metavar="NAME",
+        help=(
+            "RE-ANCHOR: change memory.project_ref of an EXISTING row. Resolves "
+            "a project NAME within --workspace to its stable project_identity "
+            "(same resolution as `gaia memory add --project`). Use this to fix "
+            "a row that was written with project_ref NULL or anchored to the "
+            "wrong project. Mutually exclusive with --project-ref."
+        ),
+    )
+    _edit_anchor_group.add_argument(
+        "--project-ref", dest="project_ref", default=None, metavar="IDENTITY",
+        help=(
+            "RE-ANCHOR: set memory.project_ref of an EXISTING row directly to a "
+            "known project_identity string (no name resolution). Mutually "
+            "exclusive with --project."
+        ),
+    )
     edit_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON. bool.")
     edit_p.set_defaults(func=_cmd_edit)

@@ -150,6 +150,86 @@ def test_get_memory_exposes_project_ref(db: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# reanchor_memory_project_ref() -- the RE-ANCHOR correction path
+# (gaia memory edit --project / --project-ref)
+# ---------------------------------------------------------------------------
+
+def _get_project_ref(db_path: Path, workspace: str, name: str):
+    from gaia.store.writer import _connect
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT project_ref FROM memory WHERE workspace=? AND name=?",
+            (workspace, name),
+        ).fetchone()
+    finally:
+        con.close()
+    return row["project_ref"] if row else None
+
+
+def test_reanchor_from_null_sets_ref(db: Path) -> None:
+    """The core gap: a row written with project_ref NULL gets anchored."""
+    from gaia.store.writer import upsert_memory, reanchor_memory_project_ref
+
+    upsert_memory("me", "orphan", type="project", body="notes", db_path=db)
+    assert _get_project_ref(db, "me", "orphan") is None
+
+    result = reanchor_memory_project_ref(
+        "me", "orphan", "github.com/x/gaia", db_path=db,
+    )
+    assert result["before_project_ref"] is None
+    assert result["after_project_ref"] == "github.com/x/gaia"
+    assert _get_project_ref(db, "me", "orphan") == "github.com/x/gaia"
+
+
+def test_reanchor_overwrites_wrong_ref(db: Path) -> None:
+    """A row anchored to the WRONG project is corrected in place."""
+    from gaia.store.writer import upsert_memory, reanchor_memory_project_ref
+
+    upsert_memory(
+        "me", "misfiled", type="project", body="notes",
+        project_ref="github.com/x/wrong", db_path=db,
+    )
+    result = reanchor_memory_project_ref(
+        "me", "misfiled", "github.com/x/right", db_path=db,
+    )
+    assert result["before_project_ref"] == "github.com/x/wrong"
+    assert result["after_project_ref"] == "github.com/x/right"
+    assert _get_project_ref(db, "me", "misfiled") == "github.com/x/right"
+
+
+def test_reanchor_body_is_untouched(db: Path) -> None:
+    """Re-anchor changes only project_ref -- the body is not rewritten."""
+    from gaia.store.writer import upsert_memory, reanchor_memory_project_ref, get_memory
+
+    upsert_memory("me", "keepbody", type="project", body="the original body", db_path=db)
+    reanchor_memory_project_ref("me", "keepbody", "github.com/x/gaia", db_path=db)
+    row = get_memory("me", "keepbody", db_path=db)
+    assert row["body"] == "the original body"
+    assert row["project_ref"] == "github.com/x/gaia"
+
+
+def test_reanchor_none_clears_ref(db: Path) -> None:
+    """Passing None explicitly clears the anchor (correction of a mis-anchor)."""
+    from gaia.store.writer import upsert_memory, reanchor_memory_project_ref
+
+    upsert_memory(
+        "me", "toclear", type="project", body="notes",
+        project_ref="github.com/x/gaia", db_path=db,
+    )
+    result = reanchor_memory_project_ref("me", "toclear", None, db_path=db)
+    assert result["after_project_ref"] is None
+    assert _get_project_ref(db, "me", "toclear") is None
+
+
+def test_reanchor_missing_row_raises(db: Path) -> None:
+    from gaia.store.writer import reanchor_memory_project_ref
+
+    with pytest.raises(ValueError, match="not found"):
+        reanchor_memory_project_ref("me", "does-not-exist", "id/x", db_path=db)
+
+
+# ---------------------------------------------------------------------------
 # resolve_project_ref()
 # ---------------------------------------------------------------------------
 
