@@ -58,12 +58,24 @@ _VALID_TASK_STATUSES = frozenset(
 )
 
 
-def _resolve_minted_agent_id(parsed_contract, task_info: dict):
+def resolve_minted_agent_id(parsed_contract, task_info: dict):
     """Best available minted agent id (``^a[0-9a-f]{5,}$``) used to key drafts.
 
     Prefers the authoritative ``agent_status.agent_id`` from the parsed
     envelope (the exact value the CLI minted the draft with), falling back to
-    task_info. Returns None when nothing usable is present.
+    ``task_info['agent_id']`` -- which on SubagentStop is the Claude-Code
+    hook's ``agent_id``, the SAME identifier space drafts are keyed by (the
+    ``^a[0-9a-f]{5,}$`` format, see ``_adapt_send_message``). This is why the
+    fallback still locates the right draft when the fence is MISSING (no
+    parsed envelope) -- the exact case the M4 reconstruction path relies on.
+    Returns None when nothing usable is present.
+
+    SHARED helper: the SINGLE resolver reused by the T9 backstop
+    (``persist_handoff`` below), the truncation salvage
+    (``ClaudeCodeAdapter._salvage_truncated_draft``), and the M4 missing-fence
+    reconstruction (``ClaudeCodeAdapter._reconstruct_contract_from_finalized_draft``),
+    so all three resolve the SAME draft (hence the SAME ``contract_id``) rather
+    than each inlining the logic.
     """
     if isinstance(parsed_contract, dict):
         agent_status = parsed_contract.get("agent_status")
@@ -72,6 +84,11 @@ def _resolve_minted_agent_id(parsed_contract, task_info: dict):
             if aid:
                 return str(aid)
     return task_info.get("agent_id") or task_info.get("agent") or None
+
+
+# Backward-compatible private alias (pre-factorization name). Kept so any
+# existing importer/reference continues to resolve to the shared helper.
+_resolve_minted_agent_id = resolve_minted_agent_id
 
 
 def _extract_brief_id(envelope: dict):
@@ -132,7 +149,7 @@ def persist_handoff(
             _sys.path.insert(0, str(_repo_root))
             from gaia.store import writer as _writer
 
-        minted_agent_id = _resolve_minted_agent_id(parsed_contract, task_info)
+        minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
         # agent_id stored in the NOT NULL row column.
         agent_id = minted_agent_id or task_info.get("agent") or "unknown"
 

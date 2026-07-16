@@ -2042,6 +2042,26 @@ class ClaudeCodeAdapter(HookAdapter):
 
             parsed_contract = parse_contract(agent_output)
 
+            # M4 fence footgun (Option A): a turn that finalized its draft via
+            # `gaia contract finalize` (valid terminal row written) but forgot
+            # to echo the fenced agent_contract_handoff in its response text
+            # would be hard-rejected by the full-verdict gate below -- the gate
+            # parses the fence from TEXT, not the DB row. When the fence is
+            # missing but the agent's own draft was already finalized,
+            # reconstruct the envelope from that draft so the gate parses the
+            # completed contract instead of rejecting persisted work. Placed
+            # BEFORE plan_status resolution and the gate so both see the
+            # reconstructed envelope. Non-fatal: returns None -> gate unchanged.
+            if not (
+                isinstance(parsed_contract, dict)
+                and isinstance(parsed_contract.get("agent_status"), dict)
+            ):
+                _reconstructed = self._reconstruct_contract_from_finalized_draft(
+                    task_info=task_info, parsed_contract=parsed_contract,
+                )
+                if _reconstructed is not None:
+                    parsed_contract = _reconstructed
+
             contract_result = validate_contract(agent_output, task_info)
             if not contract_result.is_valid:
                 logger.warning(
@@ -2577,6 +2597,87 @@ class ClaudeCodeAdapter(HookAdapter):
     # T11: truncation salvage (M5 / AC-12)
     # ------------------------------------------------------------------ #
 
+    def _reconstruct_contract_from_finalized_draft(
+        self,
+        *,
+        task_info: dict,
+        parsed_contract,
+    ) -> Optional[Dict[str, Any]]:
+        """M4 missing-fence footgun (Option A): rebuild the envelope from a
+        FINALIZED draft when the agent forgot to echo the fence.
+
+        The SubagentStop gate parses the fenced ``agent_contract_handoff`` out
+        of the agent's response TEXT -- not its finalized DB row. So a turn that
+        did all its work via the ``gaia contract`` CLI and ran ``gaia contract
+        finalize`` (writing a valid terminal row) but never echoed the fence in
+        its last message is hard-rejected by the full-verdict gate, and has to
+        be resumed by hand. This closes that hole: when the fence is missing but
+        the agent's OWN draft was already finalized (a row exists keyed on its
+        draft_id), reconstruct the envelope FROM that draft so the gate parses a
+        valid contract instead of rejecting completed, persisted work.
+
+        Fires ONLY when ``parsed_contract`` lacks a usable ``agent_status`` (no
+        fence). "Finalized" is discriminated by the EXISTENCE of the terminal
+        row for the draft_id -- without it the draft is merely in-progress
+        (truncation-salvage / T9-backstop territory, which correctly produce
+        ``degraded=true`` rows), NOT a finished turn missing only its fence.
+
+        OPTIMIZATION, never a gate: every failure is swallowed and returns None,
+        leaving the gate to reject as before. Returns the reconstructed envelope
+        dict (tagged like ``parse_contract`` output) or None.
+        """
+        # A usable fence is already present -> nothing to reconstruct.
+        if isinstance(parsed_contract, dict) and isinstance(
+            parsed_contract.get("agent_status"), dict
+        ):
+            return None
+        try:
+            from gaia.contract.drafts import load_draft, resolve_draft_id
+            from gaia.store import writer as _writer
+            from modules.agents.handoff_persister import resolve_minted_agent_id
+        except Exception as exc:
+            logger.debug("M4 reconstruction: core import failed (non-fatal): %s", exc)
+            return None
+
+        # Fence absent -> resolve the minted id from task_info (on SubagentStop
+        # that is the Claude-Code hook agent_id, the SAME id space drafts use).
+        minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
+        if not minted_agent_id:
+            return None
+
+        try:
+            draft_id = resolve_draft_id(explicit=None, agent_id=str(minted_agent_id))
+            if not draft_id:
+                return None
+            db_path_str = task_info.get("db_path")
+            db_path = Path(db_path_str) if db_path_str else None
+            # "Finalized" == the agent's own `gaia contract finalize` already
+            # wrote the terminal row for this draft_id. If no row exists, the
+            # draft is not finalized -- do NOT reconstruct (that is the salvage
+            # / backstop path's job, which marks the row degraded).
+            if not _writer.agent_contract_handoff_exists(draft_id, db_path=db_path):
+                return None
+            envelope = load_draft(draft_id)
+            if not isinstance(envelope, dict) or not isinstance(
+                envelope.get("agent_status"), dict
+            ):
+                return None
+            recon = dict(envelope)
+            # Tag it exactly like parse_contract output so every downstream
+            # consumer (plan_status resolution, the gate, update_contracts)
+            # treats it uniformly, plus a provenance marker for the audit trail.
+            recon["_contract_tag"] = "agent_contract_handoff"
+            recon["reconstructed_from_finalized_draft"] = draft_id
+            logger.info(
+                "M4 reconstruction: fence missing but finalized draft %s found; "
+                "envelope reconstructed so the gate parses the completed contract.",
+                draft_id,
+            )
+            return recon
+        except Exception as exc:
+            logger.warning("M4 reconstruction: rebuild failed (non-fatal): %s", exc)
+            return None
+
     def _salvage_truncated_draft(
         self,
         *,
@@ -2618,18 +2719,11 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.debug("T11 salvage: core import failed (non-fatal): %s", exc)
             return None
 
-        # Resolve the minted agent_id drafts are addressed by -- prefer the
-        # authoritative agent_status.agent_id from the envelope (the exact value
-        # the CLI minted the draft with), else task_info. Mirrors
-        # handoff_persister._resolve_minted_agent_id so salvage and the T9
-        # backstop resolve the SAME draft (hence the SAME contract_id).
-        minted_agent_id = None
-        if isinstance(parsed_contract, dict):
-            agent_status = parsed_contract.get("agent_status")
-            if isinstance(agent_status, dict) and agent_status.get("agent_id"):
-                minted_agent_id = str(agent_status["agent_id"])
-        if not minted_agent_id:
-            minted_agent_id = task_info.get("agent_id")
+        # Resolve the minted agent_id drafts are addressed by via the SHARED
+        # resolver, so salvage, the T9 backstop, and the M4 reconstruction path
+        # all resolve the SAME draft (hence the SAME contract_id).
+        from modules.agents.handoff_persister import resolve_minted_agent_id
+        minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
         if not minted_agent_id:
             return None
 
