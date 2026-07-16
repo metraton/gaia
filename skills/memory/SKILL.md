@@ -14,14 +14,28 @@ the set drifts. Deep mechanics — project-scoped anchoring internals,
 the periodic curate operations, and the knowledge-graph roadmap — live
 in `reference.md`, loaded on demand.
 
-Memory is a **convention, not a harness**. Nothing below is enforced by
-the runtime the way a security tier or a protected path is -- these are
-project-specific agreements that *guide* the orchestrator and
-`gaia-operator`; they oblige no one. Read "do X" as "the project agreed
-to X because the alternative drifts", not "the harness will stop you".
-The store enforces only two mechanical guarantees -- slug↔type matching
-and the `memory_history` audit trail; everything else is discipline you
-choose to keep.
+Memory is mostly a **convention, not a harness** -- but WHO may write it
+directly is a real runtime boundary, not just an agreement. A PreToolUse
+guard (`hooks/modules/security/subagent_memory_write_guard.py`, wired into
+`bash_validator.py`) categorically rejects `gaia memory
+add|edit|append|reclassify|delete|link` whenever the caller is a subagent
+dispatch (`is_subagent` -- true whenever the harness supplies an `agent_id`)
+UNLESS that subagent is `gaia-operator`, the one sanctioned writer alongside
+the orchestrator itself (the orchestrator is never a subagent, so
+`is_subagent` is always false for it and it is never blocked here). This is
+categorical and NOT approvable -- there is no `approval_id` that lifts it,
+because the correct path for every other subagent is to PROPOSE via
+`memorialize_suggestions`, never to escalate. Everything else below --
+which `class`/`status` to pick, when a fact earns a place in memory, how a
+body is shaped -- is *not* enforced by the runtime the way that boundary or
+a security tier is: these are project-specific agreements that *guide* the
+orchestrator and `gaia-operator` once they are through the gate; they
+oblige no one. Read "do X" below as "the project agreed to X because the
+alternative drifts", not "the harness will stop you" -- except for the
+who-writes boundary above, which the harness does stop you on. Beyond that
+boundary, the store enforces two further mechanical guarantees -- slug↔type
+matching and the `memory_history` audit trail; everything else is
+discipline you choose to keep.
 
 ## Mental model
 
