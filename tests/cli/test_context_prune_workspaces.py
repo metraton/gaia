@@ -108,6 +108,46 @@ def _brief(dbp, workspace, name):
         con.close()
 
 
+def _audit_collateral(dbp, workspace):
+    """Insert one row into each of the four audit-trail tables that FK to
+    ``workspaces(name)`` -- memory_history, agent_contract_handoffs,
+    project_context_contracts_history, project_history -- WITHOUT going
+    through the triggers that normally populate them. This reproduces the
+    real-world case ``prune_empty_workspaces`` must survive: a workspace with
+    zero projects and zero LIVE curated collateral (so it classifies as
+    prunable), but non-zero residual rows in its own audit trail (e.g. from a
+    memory row that was later hard-deleted, or a past agent run)."""
+    from gaia.store.writer import _connect
+    con = _connect(dbp)
+    try:
+        con.execute(
+            "INSERT INTO memory_history (workspace, name, after_body, changed_at) "
+            "VALUES (?, 'note-1', 'b', '2026-01-01T00:00:00Z')",
+            (workspace,),
+        )
+        con.execute(
+            "INSERT INTO agent_contract_handoffs "
+            "(agent_id, workspace, task_status, raw_handoff_json, created_at) "
+            "VALUES ('a000001', ?, 'COMPLETE', '{}', '2026-01-01T00:00:00Z')",
+            (workspace,),
+        )
+        con.execute(
+            "INSERT INTO project_context_contracts_history "
+            "(contract_key, workspace, after_payload_json, changed_at) "
+            "VALUES ('project_identity', ?, '{}', '2026-01-01T00:00:00Z')",
+            (workspace,),
+        )
+        con.execute(
+            "INSERT INTO project_history "
+            "(workspace, name, after_status, changed_at) "
+            "VALUES (?, 'repo-a', 'missing', '2026-01-01T00:00:00Z')",
+            (workspace,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
 def _workspace_names(dbp):
     from gaia.store.writer import _connect
     con = _connect(dbp)
@@ -151,6 +191,67 @@ def test_apply_deletes_only_confirmed_phantoms(tmp_db):
     assert sorted(result["pruned"]) == ["phantom-a", "phantom-b"]
     # The live workspace survives; the phantoms are gone.
     assert _workspace_names(tmp_db) == {"live"}
+
+
+def test_phantom_with_audit_history_collateral_is_pruned_via_cascade(tmp_db):
+    """Regression for the FK-cascade bug: a workspace with 0 projects and 0
+    LIVE curated collateral (memory/pcc/briefs) classifies as prunable, but
+    residual rows in the four AUDIT-TRAIL tables (memory_history,
+    agent_contract_handoffs, project_context_contracts_history,
+    project_history) used to make the DELETE fail on a FOREIGN KEY constraint
+    (those FKs lacked ON DELETE CASCADE) and roll back the whole prune. With
+    CASCADE in place, the prune must succeed and take the audit rows with it."""
+    _ws(tmp_db, "phantom-with-history")
+    _audit_collateral(tmp_db, "phantom-with-history")
+
+    from gaia.store.writer import _connect
+    con = _connect(tmp_db)
+    try:
+        before = {
+            "memory_history": con.execute(
+                "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
+                ("phantom-with-history",),
+            ).fetchone()[0],
+            "agent_contract_handoffs": con.execute(
+                "SELECT COUNT(*) FROM agent_contract_handoffs WHERE workspace = ?",
+                ("phantom-with-history",),
+            ).fetchone()[0],
+            "project_context_contracts_history": con.execute(
+                "SELECT COUNT(*) FROM project_context_contracts_history WHERE workspace = ?",
+                ("phantom-with-history",),
+            ).fetchone()[0],
+            "project_history": con.execute(
+                "SELECT COUNT(*) FROM project_history WHERE workspace = ?",
+                ("phantom-with-history",),
+            ).fetchone()[0],
+        }
+    finally:
+        con.close()
+    assert all(v == 1 for v in before.values()), before
+
+    # This is the classification the governance logic sees: 0 projects, 0
+    # live memory, 0 pcc, 0 briefs -- so the workspace is prunable, not held.
+    plan = writer_mod.prune_empty_workspaces(apply=False, db_path=tmp_db)
+    assert plan["pruned"] == ["phantom-with-history"]
+    assert plan["held"] == []
+
+    # apply=True must not raise a FOREIGN KEY constraint error and must
+    # actually delete the workspace row (previously it rolled back).
+    result = writer_mod.prune_empty_workspaces(apply=True, db_path=tmp_db)
+    assert result["pruned"] == ["phantom-with-history"]
+    assert "phantom-with-history" not in _workspace_names(tmp_db)
+
+    # CASCADE took the audit-trail rows down with the workspace.
+    con = _connect(tmp_db)
+    try:
+        for table in before:
+            remaining = con.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE workspace = ?",
+                ("phantom-with-history",),
+            ).fetchone()[0]
+            assert remaining == 0, f"{table} still has rows after cascade delete"
+    finally:
+        con.close()
 
 
 def test_phantom_with_live_memory_is_held_not_deleted(tmp_db):

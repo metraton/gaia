@@ -798,7 +798,13 @@ CREATE TABLE IF NOT EXISTS memory_history (
     after_deleted_at   TEXT,
     changed_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     changed_by_agent   TEXT,  -- optional: GAIA_DISPATCH_AGENT at write time (NULL when trigger-populated)
-    FOREIGN KEY (workspace) REFERENCES workspaces(name)
+    -- v33: ON DELETE CASCADE -- prune_empty_workspaces() deletes the parent
+    -- workspaces row under foreign_keys=ON; without CASCADE any residual
+    -- audit-trail row here (e.g. from a memory row later hard-deleted) makes
+    -- the DELETE fail on an FK violation and the whole prune transaction roll
+    -- back. This is audit-trail collateral, not curated content -- it is
+    -- meant to disappear with the workspace it describes.
+    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_history_workspace_name ON memory_history(workspace, name);
@@ -1063,7 +1069,10 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
                      CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT')),
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    FOREIGN KEY (workspace) REFERENCES workspaces(name),
+    -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note
+    -- above; same prune-vs-audit-trail rationale. brief_id is left untouched
+    -- (out of scope for this fix; briefs are curated content, not audit debris).
+    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE,
     FOREIGN KEY (brief_id)  REFERENCES briefs(id)
 );
 
@@ -1104,7 +1113,9 @@ CREATE TABLE IF NOT EXISTS project_context_contracts_history (
     after_payload_json  TEXT NOT NULL,            -- new payload value
     changed_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     changed_by_agent    TEXT,                     -- optional: GAIA_DISPATCH_AGENT at write time
-    FOREIGN KEY (workspace) REFERENCES workspaces(name)
+    -- v33: ON DELETE CASCADE -- see memory_history's v33 note above; same
+    -- prune-vs-audit-trail rationale.
+    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_pcc_history_contract ON project_context_contracts_history(contract_key);
@@ -1269,7 +1280,9 @@ CREATE TABLE IF NOT EXISTS project_history (
     before_status     TEXT,
     after_status      TEXT,
     changed_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    FOREIGN KEY (workspace) REFERENCES workspaces(name)
+    -- v33: ON DELETE CASCADE -- see memory_history's v33 note above; same
+    -- prune-vs-audit-trail rationale.
+    FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_project_history_workspace_name ON project_history(workspace, name);
