@@ -433,6 +433,15 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 # inside the hooks directory and is itself T3-protected.
 COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES: Dict[Tuple[str, str], Optional[FrozenSet[str]]] = {
     ("gaia", "dev"): None,
+    # `gaia context prune-workspaces --yes` HARD-DELETEs workspaces rows (and,
+    # via ON DELETE CASCADE, their children) from gaia.db -- a persistent,
+    # destructive DB mutation. But `context` carries no verb in MUTATIVE_VERBS,
+    # so the whole `gaia context ...` group falls through to Step 4 and
+    # classifies READ_ONLY by elimination, leaving the destructive prune
+    # un-gated. Anchor ONLY the destructive subcommand MUTATIVE (T3); the other
+    # `gaia context` read/inspect subcommands stay READ_ONLY. Scoped to the
+    # subcommand set (not None) so the upgrade never widens past `prune-workspaces`.
+    ("gaia", "context"): frozenset({"prune-workspaces"}),
 }
 
 
@@ -1285,6 +1294,33 @@ def _scan_dangerous_flags(
     return tuple(found)
 
 
+def _scan_always_dangerous_flags(
+    tokens: Union[List[str], tuple],
+) -> Tuple[str, ...]:
+    """Return only the ALWAYS-type dangerous flags present in ``tokens``.
+
+    ALWAYS flags (``--prune``, ``--force``, ``--force-with-lease``,
+    ``--cascade``, ``--now``, ``-rf`` ...) are dangerous regardless of the CLI
+    family -- that is what distinguishes them from CONTEXT flags (``-f``,
+    ``-r``, ``--delete`` ...), which are only dangerous for specific CLIs.
+
+    This exists so the read-only-verb path can escalate on an ALWAYS flag
+    WITHOUT pulling in CONTEXT-flag handling (which is family-gated and must
+    not fire on a read-only verb just because a benign ``-r``/``-f`` appears).
+    A read-only verb carrying an ALWAYS flag -- e.g. ``git fetch --prune``,
+    which deletes stale remote-tracking refs -- is a real mutation that the
+    Step 5 scan would catch, but the read-only early-return returns before
+    Step 5 is ever reached. Escalating here closes that hole.
+    """
+    found: List[str] = []
+    for token in tokens:
+        if not token.startswith("-"):
+            continue
+        if DANGEROUS_FLAGS.get(token) == "ALWAYS":
+            found.append(token)
+    return tuple(found)
+
+
 # ============================================================================
 # CamelCase Splitting
 # ============================================================================
@@ -2045,6 +2081,27 @@ def detect_mutative_command(
 
         if candidate in READ_ONLY_VERBS or full_lower in READ_ONLY_VERBS:
             verb = candidate if candidate in READ_ONLY_VERBS else full_lower
+            # An ALWAYS-dangerous flag escalates even a read-only verb: the
+            # Step 5 flag scan below never runs for a read-only verb because
+            # this early-return fires first, so `git fetch --prune` (fetch is
+            # read-only, --prune deletes stale remote-tracking refs) would
+            # otherwise skip the ALWAYS escalation entirely. Only ALWAYS flags
+            # override here -- CONTEXT flags are family-gated and a benign
+            # `-r`/`-f` on a read-only verb must NOT be treated as mutative.
+            always_flags = _scan_always_dangerous_flags(tokens)
+            if always_flags:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=verb,
+                    dangerous_flags=always_flags,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Read-only verb '{verb}' escalated by ALWAYS-dangerous "
+                        f"flag(s) {always_flags}"
+                    ),
+                )
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_READ_ONLY,

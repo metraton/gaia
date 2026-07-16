@@ -3598,6 +3598,79 @@ class TestGaiaInstallSubcommandsAreMutative:
         assert result.is_mutative is False
 
 
+class TestGaiaContextPruneWorkspacesIsMutative:
+    """`gaia context prune-workspaces --yes` HARD-DELETEs workspaces rows (and
+    their children via ON DELETE CASCADE) from gaia.db. `context` carries no
+    verb in MUTATIVE_VERBS, so the group would classify READ_ONLY "by
+    elimination" -- the T3-gating gap this suite pins closed via the
+    ('gaia','context') anchor scoped to the prune-workspaces subcommand.
+    """
+
+    def test_prune_workspaces_yes_is_mutative(self):
+        result = detect_mutative_command(
+            "gaia context prune-workspaces --yes"
+        )
+        assert result.is_mutative is True, (
+            f"gaia context prune-workspaces --yes deletes workspace rows and "
+            f"must be T3. Got {result.category}: {result.reason}"
+        )
+        assert result.category == "MUTATIVE"
+
+    def test_prune_workspaces_bare_is_mutative(self):
+        # Even without --yes, the subcommand is anchored MUTATIVE; the CLI
+        # handler's own dry-run default is a separate concern from tier gating.
+        result = detect_mutative_command("gaia context prune-workspaces")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_context_anchor_scoped_to_prune_workspaces_only(self):
+        from modules.security.mutative_verbs import (
+            COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES,
+        )
+        allowed = COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES[("gaia", "context")]
+        assert allowed == frozenset({"prune-workspaces"}), (
+            "the ('gaia','context') upgrade must be scoped to the destructive "
+            "subcommand only, never the whole group (None)"
+        )
+
+    def test_other_gaia_context_subcommands_not_upgraded(self):
+        # A read/inspect context subcommand must NOT be dragged into T3 by the
+        # anchor -- it is scoped to prune-workspaces only.
+        result = detect_mutative_command("gaia context show")
+        assert "anchored MUTATIVE (T3) by config" not in result.reason
+
+
+class TestReadOnlyVerbEscalatedByAlwaysFlag:
+    """An ALWAYS-dangerous flag escalates even a read-only verb. The read-only
+    verb early-return fires before the Step 5 flag scan, so `git fetch --prune`
+    (fetch is read-only; --prune deletes stale remote-tracking refs) would
+    otherwise skip the ALWAYS escalation. This suite pins that hole closed.
+    """
+
+    def test_git_fetch_prune_is_escalated(self):
+        result = detect_mutative_command("git fetch --prune")
+        assert result.is_mutative is True, (
+            f"git fetch --prune deletes remote-tracking refs and must escalate "
+            f"on the ALWAYS --prune flag. Got {result.category}: {result.reason}"
+        )
+        assert "--prune" in result.dangerous_flags
+
+    def test_git_fetch_without_prune_stays_read_only(self):
+        # Control: the same read-only verb without an ALWAYS flag is unchanged.
+        result = detect_mutative_command("git fetch origin")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_read_only_verb_with_non_always_flag_not_escalated(self):
+        # Only ALWAYS flags escalate a read-only verb. `git fetch --all` carries
+        # a flag that is not in DANGEROUS_FLAGS at all, so `fetch` reaches the
+        # read-only early-return and must stay READ_ONLY (exercises the negative
+        # case of the new escalation branch, not the git-local-safe path).
+        result = detect_mutative_command("git fetch --all")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+
 class TestGaiaReleaseSyncLocalNoLongerAnchored:
     """Regression guard: `gaia release sync-local` was removed as a command and
     its ('gaia','release') entry was dropped from
