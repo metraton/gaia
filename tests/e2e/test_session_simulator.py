@@ -752,7 +752,17 @@ class TestScenario6EmptyEvidenceAdvisory:
         result = sim.invoke_agent("cloud-troubleshooter", "diagnostica el pod")
         assert result["exit_code"] == 0
 
-        # Build agent output with valid plan_status but ALL evidence fields empty
+        # Build agent output with valid plan_status but ALL evidence *lists*
+        # empty. The scenario isolates ONE property: empty evidence lists are
+        # advisory, not blocking. Under the M4 full-verdict gate
+        # (GAIA_CONTRACT_FULL_VERDICT_GATE, default ON) a COMPLETE is
+        # independently required to carry evidence_report.verification with
+        # result == "pass" (the honesty rule -- validator.FormErrorCode
+        # .VERIFICATION_RESULT). That requirement is ORTHOGONAL to empty
+        # evidence, so the contract carries a valid verification object to keep
+        # it otherwise-valid; if the empty evidence lists were themselves
+        # blocking, the gate would still reject (exit 2) and the assertions
+        # below would fail. This is what proves the advisory semantics.
         bt = chr(96)
         contract_block = json.dumps(
             {
@@ -770,6 +780,11 @@ class TestScenario6EmptyEvidenceAdvisory:
                     "verbatim_outputs": [],
                     "cross_layer_impacts": [],
                     "open_gaps": [],
+                    "verification": {
+                        "method": "self-review",
+                        "result": "pass",
+                        "details": "diagnostic-only turn; no mutation to verify",
+                    },
                 },
                 "consolidation_report": None,
                 "approval_request": None,
