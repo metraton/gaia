@@ -2,7 +2,7 @@
 projects: 3
   project name=bildwiz-api role=application language=javascript
   project name=bildwiz-gitops role=application language=-
-  project name=bildwiz-iac role=iac language=hcl
+  project name=bildwiz-iac role=iac language=-
 tf_modules: 1
   tf_module project=bildwiz-iac name=vpc
 clusters_defined: 1

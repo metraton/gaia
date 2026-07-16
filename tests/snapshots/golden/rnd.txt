@@ -1,7 +1,7 @@
 # workspace: rnd
 projects: 2
   project name=rnd-experiments role=application language=python
-  project name=rnd-infra role=iac language=hcl
+  project name=rnd-infra role=iac language=-
 tf_modules: 1
   tf_module project=rnd-infra name=buckets
 clusters_defined: 0
