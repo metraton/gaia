@@ -247,14 +247,24 @@ class TestApplyRetentionPolicy(unittest.TestCase):
         # analogous to monthlyMetrics in 8a7078e). The generic _truncate_jsonl
         # mechanism is still reusable infra, so it is exercised directly here
         # rather than through _apply_retention_policy/RETENTION_POLICY.
+        #
+        # Timestamps are computed relative to "now" (not hardcoded) so the
+        # test stays clock-independent: max_days=90 below, so the old entry
+        # sits well past the cutoff (120 days back) and the new entry sits
+        # well within it (5 days back), regardless of when the suite runs.
         with tempfile.TemporaryDirectory() as tmp:
+            from datetime import datetime, timedelta, timezone
+
             root = Path(tmp)
             wem_dir = root / ".claude" / "project-context" / "workflow-episodic-memory"
             wem_dir.mkdir(parents=True)
             metrics_file = wem_dir / "metrics.jsonl"
+            now = datetime.now(timezone.utc)
+            old_ts = (now - timedelta(days=120)).isoformat().replace("+00:00", "Z")
+            new_ts = (now - timedelta(days=5)).isoformat().replace("+00:00", "Z")
             # One old entry, one recent
-            old_entry = json.dumps({"timestamp": "2020-01-01T00:00:00Z", "data": "old"})
-            new_entry = json.dumps({"timestamp": "2026-04-15T00:00:00Z", "data": "new"})
+            old_entry = json.dumps({"timestamp": old_ts, "data": "old"})
+            new_entry = json.dumps({"timestamp": new_ts, "data": "new"})
             metrics_file.write_text(f"{old_entry}\n{new_entry}\n")
 
             actions = _truncate_jsonl(
