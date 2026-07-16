@@ -85,6 +85,16 @@ class TestNoPendingSurfacingBuilderRemains:
         monkeypatch.setattr(
             session_manifest, "build_agentic_loop_block", lambda: "LOOP"
         )
+        # Neutralize task-notifications and schedule-reconciliation: both do
+        # live I/O (DB / crontab) and must not leak environment-dependent
+        # content (e.g. an orphaned crontab entry on the host machine) into
+        # this deterministic join test.
+        monkeypatch.setattr(
+            session_manifest, "build_task_notifications_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_schedule_reconciliation_block", lambda: ""
+        )
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda: "MEM"
         )

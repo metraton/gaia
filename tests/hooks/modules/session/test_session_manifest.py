@@ -144,6 +144,17 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
         )
+        # Neutralize the two blocks the assembler runs between the loop and
+        # workspace-memory blocks that are NOT under test here: task
+        # notifications and schedule reconciliation both do live I/O (DB /
+        # crontab) and must not leak environment-dependent content into this
+        # deterministic join test.
+        monkeypatch.setattr(
+            session_manifest, "build_task_notifications_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_schedule_reconciliation_block", lambda: ""
+        )
 
         result = build_session_context()
         assert result == (
@@ -171,6 +182,12 @@ class TestBuildSessionContext:
             session_manifest, "build_agentic_loop_block", lambda: ""
         )
         monkeypatch.setattr(
+            session_manifest, "build_task_notifications_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_schedule_reconciliation_block", lambda: ""
+        )
+        monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
         )
 
@@ -192,6 +209,12 @@ class TestBuildSessionContext:
         )
         monkeypatch.setattr(
             session_manifest, "build_agentic_loop_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_task_notifications_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_schedule_reconciliation_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda: ""
