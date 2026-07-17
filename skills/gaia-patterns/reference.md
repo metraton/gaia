@@ -169,7 +169,7 @@ There is **no npm postinstall hook**. `package.json` carries an explicit `_insta
 4. Merge hooks from `hooks.json` into `settings.local.json`.
 5. Create `.claude/{agents, tools, hooks, config, skills}` symlinks (5) plus a `CHANGELOG.md` file link.
 6. Write `plugin-registry.json` with `installed[].name == "gaia"` (the single unified plugin identity).
-7. Write the `~/.local/bin/gaia` PATH launcher unless `--no-path`.
+7. Write the PATH launcher unless `--no-path`: POSIX still gets the `~/.local/bin/gaia` bash shim; Windows instead gets `gaia.cmd` + `gaia.ps1` (`_install_windows_launchers` / `_render_cmd_launcher` / `_render_ps1_launcher` in `bin/cli/install.py`), each baking in the resolved workspace and exporting `GAIA_WORKSPACE_PATH` before dispatching to `bin/gaia`.
 
 Note: no `project-context.json` is written. Project context lives in `~/.gaia/gaia.db`. Run `gaia scan` separately to populate it -- install never triggers a scan.
 

@@ -40,6 +40,8 @@ from cli.install import (  # noqa: E402
     _create_path_symlink,  # legacy alias retained
     _LAUNCHER_TEMPLATE,
     _render_launcher,
+    _render_cmd_launcher,
+    _render_ps1_launcher,
     _write_install_error_marker,
     _clear_install_error_marker,
 )
@@ -888,6 +890,156 @@ class TestInstallPathLauncher(unittest.TestCase):
             content_b = link.read_text()
             self.assertIn(str(ws_b.resolve()), content_b)
             self.assertNotIn(str(ws_a.resolve()), content_b)
+
+
+class TestInstallPathLauncherWindows(unittest.TestCase):
+    """Windows branch of _install_path_launcher (Step 6.5 platform guard).
+
+    Exercised on Linux by forcing the platform guard via install_mod.sys.platform
+    == "win32". Verifies that the Windows branch (a) writes gaia.cmd + gaia.ps1
+    instead of a bash shim, (b) bakes the resolved workspace path, (c) exports
+    GAIA_WORKSPACE_PATH, and (d) dispatches to the actual bin/gaia (global- and
+    local-install safe -- NOT the workspace-relative node_modules path the POSIX
+    shim uses). Real Windows execution is validated by the windows-compat CI.
+    """
+
+    def _win(self):
+        return patch.object(install_mod.sys, "platform", "win32")
+
+    def test_writes_cmd_and_ps1_not_bash(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            gaia_bin = Path(tmp) / "pkg" / "bin" / "gaia"
+
+            with self._win():
+                res = _install_path_launcher(
+                    link_path=link, workspace=workspace, gaia_bin=gaia_bin
+                )
+
+            self.assertEqual(res["action"], "created")
+            cmd = link.with_suffix(".cmd")
+            ps1 = link.with_suffix(".ps1")
+            self.assertTrue(cmd.is_file())
+            self.assertTrue(ps1.is_file())
+            # No extensionless bash shim was written.
+            self.assertFalse(link.exists())
+
+    def test_cmd_bakes_workspace_env_and_bin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            gaia_bin = Path(tmp) / "pkg" / "bin" / "gaia"
+
+            with self._win():
+                _install_path_launcher(
+                    link_path=link, workspace=workspace, gaia_bin=gaia_bin
+                )
+
+            content = link.with_suffix(".cmd").read_text()
+            # (b) resolved workspace baked in
+            self.assertIn(str(workspace.resolve()), content)
+            # (c) GAIA_WORKSPACE_PATH exported to the resolved workspace
+            self.assertIn(
+                f'set "GAIA_WORKSPACE_PATH={workspace.resolve()}"', content
+            )
+            # (d) dispatches to the actual bin/gaia, not node_modules-relative
+            self.assertIn(str(gaia_bin), content)
+            self.assertNotIn("node_modules/@jaguilar87/gaia", content)
+
+    def test_ps1_bakes_workspace_env_and_bin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            gaia_bin = Path(tmp) / "pkg" / "bin" / "gaia"
+
+            with self._win():
+                _install_path_launcher(
+                    link_path=link, workspace=workspace, gaia_bin=gaia_bin
+                )
+
+            content = link.with_suffix(".ps1").read_text()
+            self.assertIn(str(workspace.resolve()), content)
+            self.assertIn(
+                f'$env:GAIA_WORKSPACE_PATH = "{workspace.resolve()}"', content
+            )
+            self.assertIn(str(gaia_bin), content)
+            self.assertIn("$LASTEXITCODE", content)
+
+    def test_default_gaia_bin_is_package_entrypoint(self):
+        """When gaia_bin is omitted, the launchers dispatch to the installed
+        package's bin/gaia (_gaia_entrypoint), which is valid under `npm i -g`
+        where the workspace-relative node_modules path does not exist."""
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+
+            with self._win():
+                _install_path_launcher(link_path=link, workspace=workspace)
+
+            content = link.with_suffix(".cmd").read_text()
+            self.assertIn(str(install_mod._gaia_entrypoint()), content)
+
+    def test_idempotent_when_content_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            gaia_bin = Path(tmp) / "pkg" / "bin" / "gaia"
+
+            with self._win():
+                _install_path_launcher(
+                    link_path=link, workspace=workspace, gaia_bin=gaia_bin
+                )
+                res2 = _install_path_launcher(
+                    link_path=link, workspace=workspace, gaia_bin=gaia_bin
+                )
+
+            self.assertEqual(res2["action"], "noop")
+
+    def test_drift_skipped_without_overwrite_replaced_with(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            link = Path(tmp) / "bin" / "gaia"
+            ws_a = Path(tmp) / "ws_a"
+            ws_b = Path(tmp) / "ws_b"
+            ws_a.mkdir()
+            ws_b.mkdir()
+            gaia_bin = Path(tmp) / "pkg" / "bin" / "gaia"
+
+            with self._win():
+                _install_path_launcher(
+                    link_path=link, workspace=ws_a, gaia_bin=gaia_bin
+                )
+                # Different workspace -> drifted content; no overwrite -> skipped.
+                res_skip = _install_path_launcher(
+                    link_path=link, workspace=ws_b, gaia_bin=gaia_bin
+                )
+                self.assertEqual(res_skip["action"], "skipped")
+                # overwrite=True -> replaced, now targets ws_b.
+                res_repl = _install_path_launcher(
+                    link_path=link, workspace=ws_b, gaia_bin=gaia_bin,
+                    overwrite=True,
+                )
+
+            self.assertEqual(res_repl["action"], "replaced")
+            content = link.with_suffix(".cmd").read_text()
+            self.assertIn(str(ws_b.resolve()), content)
+            self.assertNotIn(str(ws_a.resolve()), content)
+
+    def test_render_helpers_direct(self):
+        """The render helpers bake both the workspace and the bin path."""
+        ws = Path("/home/user/app")
+        gaia_bin = Path("/opt/gaia/bin/gaia")
+        cmd = _render_cmd_launcher(ws, gaia_bin)
+        ps1 = _render_ps1_launcher(ws, gaia_bin)
+        for content in (cmd, ps1):
+            self.assertIn("/home/user/app", content)
+            self.assertIn("/opt/gaia/bin/gaia", content)
+            self.assertIn("GAIA_WORKSPACE_PATH", content)
 
 
 class TestLauncherShellBehavior(unittest.TestCase):

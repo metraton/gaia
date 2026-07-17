@@ -103,7 +103,16 @@ def _derive_workspace(override: str = None) -> Path:
     Algorithm
     ---------
     1. If *override* is given (from --workspace), validate it has .claude/
-       and return it directly.
+       and return it directly. (Highest priority -- always wins.)
+    1b. Else if the ``GAIA_WORKSPACE_PATH`` env var is set AND points at a dir
+       containing ``.claude/``, return it. This is set by the Windows launcher
+       (see install.py Step 6.5), which bakes the resolved workspace so a
+       global-shim invocation resolves the SAME workspace POSIX derives from
+       ``__file__``. Without this, the npm global ``gaia.cmd`` runs ``bin/gaia``
+       from the npm prefix, ``__file__`` lands there, and the derivation below
+       yields the npm prefix as the "workspace" -- a false CRITICAL. An env var
+       that is unset OR points at a dir without ``.claude/`` falls through to
+       the ``__file__`` derivation (it is a hint, not an override).
     2. Resolve Path(__file__) to its realpath and find the FIRST (leftmost)
        ``node_modules`` path segment; the workspace is everything before it.
     3. Sanity-check that ``@jaguilar87`` and ``gaia`` both appear somewhere
@@ -147,6 +156,16 @@ def _derive_workspace(override: str = None) -> Path:
             )
             sys.exit(2)
         return ws
+
+    # --- GAIA_WORKSPACE_PATH env (baked by the Windows launcher) ---
+    # Consulted BEFORE the __file__ derivation but AFTER --workspace. Only
+    # honored when it resolves to a dir with .claude/; otherwise fall through
+    # (never a cwd walk-up -- that was removed on purpose). See docstring 1b.
+    env_ws = os.environ.get("GAIA_WORKSPACE_PATH")
+    if env_ws:
+        candidate = Path(env_ws).expanduser().resolve()
+        if (candidate / ".claude").is_dir():
+            return candidate
 
     # --- Derive from __file__ realpath ---
     script_path = Path(__file__).resolve()

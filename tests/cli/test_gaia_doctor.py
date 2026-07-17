@@ -1171,6 +1171,69 @@ class TestDeriveWorkspace:
         assert "global or symlinked install detected" in err
         assert "--workspace" in err
 
+    def test_env_workspace_path_used_before_file_derivation(self, tmp_path, monkeypatch):
+        """GAIA_WORKSPACE_PATH (baked by the Windows launcher) with a valid
+        .claude/ is honored BEFORE the __file__ derivation. Proof: __file__ is
+        set to a global-install path that would otherwise sys.exit(2)."""
+        ws = tmp_path / "workspace"
+        (ws / ".claude").mkdir(parents=True)
+        # __file__ would derive nothing (global install -> would exit 2).
+        global_script = tmp_path / "npm-prefix" / "node_modules_absent" / "doctor.py"
+        global_script.parent.mkdir(parents=True)
+        global_script.touch()
+        monkeypatch.setattr(doctor_mod, "__file__", str(global_script))
+        monkeypatch.setenv("GAIA_WORKSPACE_PATH", str(ws))
+
+        result = doctor_mod._derive_workspace()
+        assert result == ws.resolve()
+
+    def test_env_workspace_path_without_claude_falls_through(self, tmp_path, monkeypatch):
+        """An env var pointing at a dir WITHOUT .claude/ is a hint, not an
+        override -- derivation falls through to __file__."""
+        bad_env = tmp_path / "no-claude"
+        bad_env.mkdir()  # no .claude/ here
+
+        # __file__ resolves to a valid standard consumer install.
+        pkg_dir = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        script_path = pkg_dir / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        (tmp_path / "package.json").write_text('{"name": "my-app", "version": "1.0.0"}')
+
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+        monkeypatch.setenv("GAIA_WORKSPACE_PATH", str(bad_env))
+
+        result = doctor_mod._derive_workspace()
+        assert result == tmp_path.resolve()
+        assert result != bad_env.resolve()
+
+    def test_override_wins_over_env_workspace_path(self, tmp_path, monkeypatch):
+        """--workspace keeps the highest priority even when GAIA_WORKSPACE_PATH
+        is set to a different valid workspace."""
+        override_ws = tmp_path / "override"
+        (override_ws / ".claude").mkdir(parents=True)
+        env_ws = tmp_path / "env"
+        (env_ws / ".claude").mkdir(parents=True)
+
+        monkeypatch.setenv("GAIA_WORKSPACE_PATH", str(env_ws))
+
+        result = doctor_mod._derive_workspace(override=str(override_ws))
+        assert result == override_ws.resolve()
+
+    def test_no_env_workspace_path_uses_file_derivation(self, tmp_path, monkeypatch):
+        """With GAIA_WORKSPACE_PATH unset, behavior is unchanged (POSIX path):
+        derivation comes from __file__."""
+        monkeypatch.delenv("GAIA_WORKSPACE_PATH", raising=False)
+        pkg_dir = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        script_path = pkg_dir / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        (tmp_path / "package.json").write_text('{"name": "my-app", "version": "1.0.0"}')
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+
+        result = doctor_mod._derive_workspace()
+        assert result == tmp_path.resolve()
+
     def test_workspace_printed_in_human_output(self, healthy_project, capsys):
         """Human output should include the workspace path being checked."""
         args = SimpleNamespace(json=False, fix=False, workspace=str(healthy_project), subcommand="doctor")

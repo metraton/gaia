@@ -152,6 +152,19 @@ jobs:
   #                                                 post_tool_use / T3 grant /
   #                                                 FTS5 smoke)
   #
+  # rc.2 launcher/workspace-resolution extension (Step -> what it proves):
+  #   "RC-2 launcher-generated"            -> `gaia install` WITHOUT --no-path
+  #        emits gaia.cmd + gaia.ps1 (install.py Step 6.5) AND gaia.ps1 runs in
+  #        the MIDDLE of a pipeline (the rc.1 "Cannot run a document in the
+  #        middle of a pipeline" bug); also evidences the baked `python` token
+  #        (POSIX bakes `python3`) resolves on windows-latest.
+  #   "RC-2 resolution-workspace-via-env"  -> `gaia doctor` invoked THROUGH the
+  #        generated launcher WITHOUT --workspace resolves the correct workspace
+  #        from the baked GAIA_WORKSPACE_PATH and reports 0 RED checks. AC-4/AC-6
+  #        used --no-path + explicit --workspace and so skipped BOTH the launcher
+  #        and the env-derivation path -- which is why the user-only false
+  #        CRITICAL never surfaced in CI. These two steps exercise them.
+  #
   # The heavy assertions (import-every-hook, parse doctor JSON for red checks,
   # drive the hook entry points + verify the DB) live in the committed helper
   # tests/ci/windows_smoke.py so the YAML stays declarative and shell-agnostic.
@@ -216,3 +229,79 @@ jobs:
       # via its AFTER INSERT trigger. The whole job passing + this smoke is AC-8.
       - name: AC-8 -- runtime smoke (post_tool_use + T3 grant + FTS5)
         run: python tests/ci/windows_smoke.py smoke
+
+      # RC-2 (launcher-generated) -- proves what AC-4 structurally cannot: AC-4
+      # passes --no-path, which SKIPS install.py Step 6.5 entirely, so the
+      # Windows launcher was never generated in CI and the rc.1 launcher bug
+      # (extensionless bash shim that PowerShell rejected in a pipeline with
+      # "Cannot run a document in the middle of a pipeline") only ever appeared
+      # on the user's machine. Here we re-install into the SAME workspace AC-6
+      # validated, this time WITHOUT --no-path, so gaia.cmd + gaia.ps1 are
+      # actually written to ~/.local/bin (install._install_windows_launchers).
+      # We assert BOTH files exist, evidence which `python` the launcher bakes
+      # (POSIX bakes `python3`; Windows must resolve `python`), and then drive
+      # gaia.ps1 IN THE MIDDLE OF A PIPELINE inside a child pwsh -- the child so
+      # the launcher's trailing `exit` cannot terminate this step early -- and
+      # require exit 0 with a `gaia <version>` line. `--version` needs no DB and
+      # no workspace, so this isolates the pipeability + python-token surface.
+      - name: RC-2 launcher-generated -- gaia.cmd/gaia.ps1 emitted + ps1 pipeable
+        env:
+          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+        run: |
+          python bin/gaia install --workspace "${{ github.workspace }}/_ws" --db-path "${{ github.workspace }}/_gaia/gaia.db"
+          if ($LASTEXITCODE -ne 0) { Write-Error "gaia install (no --no-path) failed with exit $LASTEXITCODE"; exit 1 }
+          $base = Join-Path $HOME ".local/bin"
+          $cmd  = Join-Path $base "gaia.cmd"
+          $ps1  = Join-Path $base "gaia.ps1"
+          if (-not (Test-Path -LiteralPath $cmd)) { Write-Error "gaia.cmd NOT created at $cmd (Step 6.5 launcher missing)"; exit 1 }
+          if (-not (Test-Path -LiteralPath $ps1)) { Write-Error "gaia.ps1 NOT created at $ps1 (Step 6.5 launcher missing)"; exit 1 }
+          Write-Host "launchers present: $cmd ; $ps1"
+          # Evidence: the launcher template bakes `python "<bin>" %*` / `& python`.
+          # POSIX bakes `python3`; on windows-latest `python` must resolve.
+          $py = Get-Command python -ErrorAction SilentlyContinue
+          if ($null -eq $py) { Write-Error "no 'python' on PATH -- the launcher bakes 'python', not 'python3'"; exit 1 }
+          Write-Host "launcher 'python' token resolves to: $($py.Source)"
+          # Pipeability: run gaia.ps1 in the MIDDLE of a pipeline, in a child pwsh
+          # (its trailing `exit` must not kill this step). Require exit 0.
+          $probe = "& '$ps1' --version | Out-String"
+          $out = (pwsh -NoProfile -Command $probe | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { Write-Error "gaia.ps1 not pipeable (exit $LASTEXITCODE): $out"; exit 1 }
+          if ($out -notmatch '^gaia ') { Write-Error "gaia.ps1 ran in a pipeline but output was unexpected: '$out'"; exit 1 }
+          Write-Host "gaia.ps1 pipeable OK -> $out"
+          exit 0
+
+      # RC-2 (resolution-workspace-via-env) -- `gaia doctor` invoked THROUGH the
+      # generated gaia.ps1, WITHOUT --workspace. The launcher exports the baked
+      # GAIA_WORKSPACE_PATH, which doctor._derive_workspace honors BEFORE its
+      # __file__ derivation (and after --workspace). This reproduces the user's
+      # real invocation path (a global shim with no --workspace), which AC-6
+      # bypassed by passing --workspace explicitly. In CI bin/gaia lives OUTSIDE
+      # any node_modules, so WITHOUT the baked env var _derive_workspace exits 2
+      # ("global or symlinked install detected") and prints NO JSON -- exactly
+      # the false CRITICAL. WITH the launcher's baked env var it must resolve the
+      # installed workspace and report 0 RED checks. Run in a child pwsh (the
+      # launcher's trailing `exit` must not kill this step); absence of parseable
+      # JSON is itself the regression signal.
+      - name: RC-2 resolution-workspace-via-env -- doctor via launcher is HEALTHY
+        env:
+          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+        run: |
+          $ps1 = Join-Path (Join-Path $HOME ".local/bin") "gaia.ps1"
+          if (-not (Test-Path -LiteralPath $ps1)) { Write-Error "gaia.ps1 missing; the launcher-generated step must run first"; exit 1 }
+          # Invoke doctor THROUGH the launcher (no --workspace), in a pipeline.
+          $raw = (pwsh -NoProfile -Command "& '$ps1' doctor --json" | Out-String)
+          try {
+            $doc = $raw | ConvertFrom-Json
+          } catch {
+            Write-Error "doctor via launcher emitted no parseable JSON -- _derive_workspace likely exited 2 (regression: baked GAIA_WORKSPACE_PATH not honored). raw output:`n$raw"
+            exit 1
+          }
+          foreach ($c in $doc.checks) { Write-Host ("   [{0,-7}] {1}: {2}" -f $c.severity, $c.name, $c.detail) }
+          $errs = @($doc.checks | Where-Object { $_.severity -eq 'error' })
+          if ($errs.Count -gt 0) {
+            Write-Error "doctor via launcher reported $($errs.Count) RED check(s) -- wrong/uninitialized workspace resolved from GAIA_WORKSPACE_PATH"
+            foreach ($e in $errs) { Write-Host "   - $($e.name): $($e.detail)" }
+            exit 1
+          }
+          Write-Host "doctor via launcher HEALTHY (status=$($doc.status), 0 red) -- GAIA_WORKSPACE_PATH resolution OK"
+          exit 0
