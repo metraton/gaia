@@ -204,7 +204,15 @@ Written when the loop is paused or interrupted, so the next session can resume.
 
 ## Contract Integration
 
-Every response during the loop must include `loop_status` inside `agent_status`:
+Every response during the loop must include `loop_state` as a TOP-LEVEL field
+of the `agent_contract_handoff` envelope -- a sibling of `agent_status` /
+`evidence_report`, NOT nested inside `agent_status`. This is the exact name
+and shape `parse_loop_state` (`hooks/modules/agents/contract_validator.py`)
+reads via `contract.get("loop_state")`: `{iteration, max_iterations, metric,
+threshold}`. A field named `loop_status`, or one nested under `agent_status`,
+is invisible to `_check_loop_state_blocking` -- the runtime never sees it, so
+a `COMPLETE` below threshold is accepted instead of being forced to iterate
+again. See the canonical rendering in `agent-protocol/examples.md` #7.
 
 ```json
 {
@@ -212,15 +220,7 @@ Every response during the loop must include `loop_status` inside `agent_status`:
     "plan_status": "IN_PROGRESS",
     "agent_id": "a1b2c3",
     "pending_steps": ["continue iterating"],
-    "next_action": "iteration 6",
-    "loop_status": {
-      "iteration": 5,
-      "metric": 94.5,
-      "best": 94.5,
-      "baseline": 89.0,
-      "threshold": 98,
-      "status": "iterating"
-    }
+    "next_action": "iteration 6"
   },
   "evidence_report": {
     "patterns_checked": [],
@@ -232,25 +232,28 @@ Every response during the loop must include `loop_status` inside `agent_status`:
     "open_gaps": [],
     "verification": null
   },
+  "loop_state": {
+    "iteration": 5,
+    "max_iterations": 10,
+    "metric": 94.5,
+    "threshold": 98
+  },
   "consolidation_report": null,
   "approval_request": null
 }
 ```
 
-On loop completion, set `plan_status: "COMPLETE"` with verification:
+On loop completion, set `plan_status: "COMPLETE"` with verification. Only
+finalize as `COMPLETE` when `metric >= threshold` (or iterations are
+exhausted) -- otherwise the runtime blocks it and forces another iteration:
 
 ```json
 {
   "agent_status": {
     "plan_status": "COMPLETE",
-    "loop_status": {
-      "iteration": 12,
-      "metric": 98.1,
-      "best": 98.1,
-      "baseline": 89.0,
-      "threshold": 98,
-      "status": "threshold_reached"
-    }
+    "agent_id": "a1b2c3",
+    "pending_steps": [],
+    "next_action": "done"
   },
   "evidence_report": {
     "verification": {
@@ -259,6 +262,12 @@ On loop completion, set `plan_status: "COMPLETE"` with verification:
       "result": "pass",
       "details": "accuracy=98.1 (baseline=89.0) achieved in 12 iterations"
     }
+  },
+  "loop_state": {
+    "iteration": 12,
+    "max_iterations": 12,
+    "metric": 98.1,
+    "threshold": 98
   }
 }
 ```

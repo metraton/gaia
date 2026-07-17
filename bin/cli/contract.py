@@ -661,6 +661,7 @@ def _build_subcommands(sub) -> None:
 
     p_validate = sub.add_parser("validate", help="Validate the draft WITHOUT mutating it")
     _add_common_draft_arg(p_validate)
+    _add_agent_scope_arg(p_validate)
     p_validate.add_argument("--json", action="store_true", help="JSON output")
     p_validate.set_defaults(func=cmd_validate)
 
@@ -669,6 +670,7 @@ def _build_subcommands(sub) -> None:
         help="Validate the draft as final and write it to the store (idempotent, exactly-once)",
     )
     _add_common_draft_arg(p_finalize)
+    _add_agent_scope_arg(p_finalize)
     p_finalize.add_argument(
         "--workspace",
         dest="workspace",

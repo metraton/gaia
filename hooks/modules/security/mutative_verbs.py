@@ -221,6 +221,15 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
     "commit",
     "stash",
     "add",
+    "mv",         # local-only: renames/moves a tracked path in the working tree
+                  # and index -- no remote side effects, fully reversible (a
+                  # rename recoverable via `git mv` back or `git checkout`).
+                  # Purely local like `git add`; was a false T3 because the verb
+                  # scanner matched the standalone `mv` filesystem verb. An
+                  # ALWAYS-dangerous flag (`--force`) still escalates via
+                  # _scan_dangerous_flags. NOTE: `rm` is deliberately NOT here --
+                  # `git rm` deletes working-tree files (data loss on uncommitted
+                  # content, `-r` recursion) and stays T3 by design.
     "log",
     "diff",
     "status",

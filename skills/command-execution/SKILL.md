@@ -43,6 +43,7 @@ The agent cwd resets between Bash calls, so a relative path resolves against an 
 4. **Absolute paths** — agent cwd resets between calls; relative paths break silently.
 5. **Quote variables** — unquoted `${VAR}` with spaces becomes multiple arguments.
 6. **No redirects or background** — `>`/`>>` and trailing `&` are the part the runtime enforces on every command; redirects bypass the Write tool, `&` hides the exit code.
+7. **Git in a subagent: one canonical form, byte-identical on retry** — always target the repo with `git -C /absolute/path <verb> <fixed args>`. Two forces make this the only reliable form: the cwd resets between Bash calls, so `cd` then `git` cannot work; and a T3 grant matches only when the *whole* command string reproduces byte-for-byte (the semantic signature binds every non-flag token AND every flag token, path included, via `matches_approval_signature`). Pick the fully-specified form once and reuse it VERBATIM across block → approval → retry. Mutating the string between attempts (`git push` → `git push origin main` → `git -C /repo push`) yields a different signature each time, so the grant the user approved never matches the retry — that is the approval loop. The `-C /abs` classifies identically to the bare verb (the T3 gate parses `-C` as a flag; no bypass), so it is safe to standardize on.
 
 ## Traps
 
@@ -55,6 +56,7 @@ The agent cwd resets between Bash calls, so a relative path resolves against an 
 | "Let me cat/head this file (or use a heredoc)" | File I/O is a tool, not a shell call — use Read/Write; heredocs also break in batch |
 | "Let me cd first, then run" | The cwd resets between calls — use an absolute path or `-chdir` |
 | "Redirect output to a file / run it in background" | Redirect and `&` are the universal wall — use the Write tool; `&` hides the exit code, blocked for every command |
+| "It got blocked, I'll re-word the git command and try again" | Re-wording is what causes the approval loop — the re-worded string has a different signature than the grant the user approved, so it re-blocks. Retry the SAME `git -C /abs <verb>` string byte-for-byte |
 
 ## Anti-Patterns
 

@@ -44,16 +44,21 @@ Iterative improvement through small, reversible changes evaluated against a sing
 
 ## Contract Integration
 
-Include `loop_status` in your `agent_contract_handoff` agent_status on every response:
+Include `loop_state` as a TOP-LEVEL field of your `agent_contract_handoff` (a
+sibling of `agent_status`/`evidence_report`, NOT nested inside `agent_status`)
+on every response. This is the exact field name and shape
+`parse_loop_state`/`_check_loop_state_blocking` read in
+`hooks/modules/agents/contract_validator.py` -- a `loop_status` field, or one
+nested under `agent_status`, is invisible to that check, so the loop's
+COMPLETE-blocking safeguard (see `agent-contract-handoff` and
+`agent-protocol/examples.md` #7) never engages:
 
 ```json
-"loop_status": {
+"loop_state": {
   "iteration": 5,
+  "max_iterations": 10,
   "metric": 94.5,
-  "best": 94.5,
-  "baseline": 89.0,
-  "threshold": 98,
-  "status": "iterating"
+  "threshold": 98
 }
 ```
 

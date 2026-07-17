@@ -28,7 +28,7 @@ Read on-demand by infrastructure agents. Not injected automatically.
 
 ### Conditional (T0 or T3 depending on flags)
 
-- `git branch` -- T0 for listing (no args or `--list`), T3 with `-D`, `-d`, `-m`, `-M`, `--delete`, `--move`
+- `git branch` -- T0 for listing (no args or `--list`); T3 only with `-D` (force-delete), `-M` (force-rename), or the long-form `--delete`. The lowercase `-d` (delete -- git refuses on unmerged branches) and `-m` (plain rename) are intentionally left ungated: they are the safe counterparts of the same operations, and gating them would add a consent prompt for something git itself already refuses to do unsafely. `--move` is not a recognized git flag and is not gated by anything. Known asymmetry: `--delete` (long form of `-d`) IS gated even though it performs the identical safe deletion `-d` performs -- see `SKILL.md` for the full rationale and this documented (not fixed) inconsistency.
 
 ### T3 -- Realization
 

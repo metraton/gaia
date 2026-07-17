@@ -27,10 +27,27 @@ chore(deps): update terraform to v1.6.0
 
 ## Git Path Flags
 
-`git -C <path>`, `git --git-dir=<path>`, and `git --work-tree=<path>` break
-the permission system. Allow/deny rules match command prefixes like
-`git commit:*` -- path flags inserted before the subcommand shift the prefix
-and bypass all rules silently. Run `cd` as a separate Bash call, then run git.
+Target the repo with `git -C /absolute/path <verb>` -- this is the canonical
+form in a subagent. The T3 consent gate parses `-C` as a flag and classifies
+the command identically to the bare verb (`git -C /repo push` is T3 `push`,
+same as `git push`); there is NO bypass of Gaia's gate. The full discipline --
+why one byte-identical form prevents the approval loop, and why a separate `cd`
+call cannot work (the cwd resets between Bash calls) -- lives in
+`command-execution` Rule 7; follow it there.
+
+Two narrow caveats:
+- Prefer `-C /abs` (short flag) or `--git-dir=/abs` (equals form); both are
+  cleanly absorbed. Avoid the SPACE-separated `--git-dir /abs` / `--work-tree
+  /abs` forms -- the path leaks into the first non-flag token and shifts the
+  subcommand the local-safe guard reads (a mutative verb like `push` is still
+  caught by the fallback scanner, but commit-message-leak protection is lost).
+- The historical warning that a leading path flag "bypasses all rules silently"
+  described Claude Code's NATIVE settings.json prefix matching (`Bash(git
+  commit:*)`), which Gaia used in 3.2.1 but no longer ships -- enforcement is
+  now the PreToolUse hook, which is `-C`-robust. If a user adds their own
+  `Bash(git ...:*)` allow rules, a leading path flag can still shift that
+  prefix, but that affects only their auto-allow convenience, never Gaia's
+  consent gate.
 
 ## Push Defaults
 

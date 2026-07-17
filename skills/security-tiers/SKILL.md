@@ -33,7 +33,9 @@ Ask, in order -- the first "yes" wins:
 
 This mirrors `_classify_command_tier_cached` in `hooks/modules/security/tiers.py`: blocked patterns and mutative verbs resolve to T3 first, then simulation to T2, then validation to T1, and everything left over defaults to T0 -- safe by elimination, never by an allow-list.
 
-Conditional commands depend on flags: `git branch` is T0 for listing but T3 with `-D`, `-d`, `-m`. For cloud-specific verb patterns (kubectl, terraform, gcloud, helm, flux), see `reference.md`.
+Conditional commands depend on flags: `git branch` is T0 for listing but T3 only with `-D` or `-M` (the force-delete and force-rename flags checked by `_scan_dangerous_flags`) or the long-form `--delete`. The lowercase short forms `-d` (delete) and `-m` (rename) are deliberately LEFT UNGATED -- this is an intentional design decision, not a classification gap. Git itself refuses `-d` on a branch with unmerged commits (it exits non-zero and demands the explicit `-D` override to force it through), so the safety check already lives inside git before Gaia's tier classification ever runs; gating a command git already declines to run unsafely would add friction without closing a real risk. The same split applies to `-m` vs `-M`: `-m` renames without clobbering an existing branch of the same name, while `-M` forces the rename and can silently overwrite it. So the free/gated line mirrors git's own safe/force distinction -- the safe verbs (`-d`, `-m`) stay free, the force verbs (`-D`, `-M`) are gated.
+
+KNOWN ASYMMETRY (documented, not changed): `--delete` is git's documented long-form synonym for `-d` -- both invoke the same safe, refuses-if-unmerged deletion -- yet `--delete` IS currently gated (`DELETE_FLAG_IS_DESTRUCTIVE` in `mutative_verbs.py` lists `git`) while `-d` is not (`DANGEROUS_FLAGS` has no entry for `-d`). Two spellings of the identical safe operation currently classify differently. This is a known, accepted inconsistency between the two flag forms -- flagged here for visibility, left as-is by design. For cloud-specific verb patterns (kubectl, terraform, gcloud, helm, flux), see `reference.md`.
 
 ## Enforcement anchors
 

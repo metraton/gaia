@@ -157,6 +157,23 @@ def _cmd_new(args) -> int:
     )
     workspace = _resolve_workspace(getattr(args, "workspace", None))
 
+    # FIX (workspace-create footgun): the read-time cross-workspace hint
+    # (FIX 2 in _cmd_show, shipped 5.0.10) only warns when a brief LOOKUP
+    # misses locally but exists elsewhere -- it says nothing at CREATE time.
+    # Creating from the cwd of a sub-repo (e.g. ~/ws/aaxis/aos/aos) silently
+    # attributes the new brief to that repo's inferred workspace instead of
+    # the user's personal one, and the mistake surfaces only in a later
+    # session when the brief is "missing" from 'me'. Advisory only (stderr,
+    # non-blocking) so headless/agent flows are never gated -- mirrors the
+    # non-blocking "Warning: [...]" pattern in _cmd_close.
+    if not getattr(args, "workspace", None) and workspace != "me":
+        print(
+            f"Warning: creating brief in workspace '{workspace}' "
+            f"(inferred from cwd), not your personal workspace 'me'. "
+            f"Pass --workspace=me if that was not intended.",
+            file=sys.stderr,
+        )
+
     headless = getattr(args, "headless", False)
     as_json = getattr(args, "json", False)
 
