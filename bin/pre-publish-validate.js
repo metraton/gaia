@@ -363,18 +363,19 @@ class PrePublishValidator {
       }
     }
 
-    // Bonus check: bootstrap_database.sh specifically must exist.
-    // Presence-only on purpose: bin/cli/install.py:287 invokes the script as
-    // `bash <path>`, so the exec bit is NOT load-bearing. Checking it here
-    // would flake on WSL/Windows checkouts that lose the bit without
-    // preventing any real install failure. The relevant invariant is that
-    // the file ships -- which the files-array check above also enforces.
-    const bootstrapPath = path.join(GAIA_OPS_ROOT, 'scripts', 'bootstrap_database.sh');
+    // Bonus check: the authoritative DB bootstrapper must ship.
+    // The install path (install.py, lazy bootstrap, gaia update) invokes the
+    // cross-platform Python port `scripts/bootstrap_database.py` via
+    // `python3 <path>` -- no `sqlite3` CLI and no `bash` required (Windows).
+    // Presence-only on purpose: the exec bit is NOT load-bearing for a
+    // `python3 <path>` invocation. The relevant invariant is that the file
+    // ships -- which the files-array check above also enforces.
+    const bootstrapPath = path.join(GAIA_OPS_ROOT, 'scripts', 'bootstrap_database.py');
     if (!fs.existsSync(bootstrapPath)) {
-      this.log('  ✗ scripts/bootstrap_database.sh missing from repo', 'error');
-      missing.push('scripts/bootstrap_database.sh');
+      this.log('  ✗ scripts/bootstrap_database.py missing from repo', 'error');
+      missing.push('scripts/bootstrap_database.py');
     } else {
-      this.log('  ✓ scripts/bootstrap_database.sh exists', 'success');
+      this.log('  ✓ scripts/bootstrap_database.py exists', 'success');
     }
 
     if (missing.length > 0) {

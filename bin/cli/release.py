@@ -296,8 +296,14 @@ def gate_plugin_dryrun(
     return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or "ok", "duration_ms": duration}
 
 
-def gate_npm_test(repo_root: Path, *, timeout: int = 900) -> dict[str, Any]:
-    """Gate 4: `npm test` -- the L1 pytest suite CI runs."""
+def gate_npm_test(repo_root: Path, *, timeout: int = 1200) -> dict[str, Any]:
+    """Gate 4: `npm test` -- the L1 pytest suite CI runs.
+
+    `npm test` now runs the L1 suite under pytest-xdist (`-n auto`, wired
+    into the `test`/`test:layer1` package.json scripts). Measured parallel
+    wall time on a 4-core box is ~527s (8:47); the 1200s timeout keeps a
+    generous ~2.3x margin over that for slower CI runners.
+    """
     t0 = _now_ms()
     name = "npm test"
     rc, out, err = _run(["npm", "test"], cwd=repo_root, timeout=timeout)

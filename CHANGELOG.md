@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Windows compatibility** (brief `gaia-windows-compatibility`): Gaia now installs and runs on Windows. `hooks/modules/core/filelock.py` adds a cross-platform `exclusive_file_lock` (msvcrt on Windows, fcntl on POSIX) and replaces the POSIX-only `import fcntl` in `session_context_writer.py` that crashed every hook on Windows. `scripts/bootstrap_database.py` is a section-by-section parity port of `bootstrap_database.sh` that bootstraps `gaia.db` through Python's stdlib `sqlite3` module -- no `sqlite3` CLI and no `bash` on PATH required; `bin/gaia`, `gaia install`, and `gaia update` now invoke it via `sys.executable` (the `.sh` is retained as the shell/test reference, and the canonical schema source stays `gaia/store/schema.sql`). `bin/cli/_install_helpers.py` writes forward-slash (`.as_posix()`) hook paths into `settings.local.json` -- fixing the `re.sub` bad-escape on Windows backslashes -- and falls back from `symlink_to` to a version-stamped real copy (`.gaia-symlink-fallback.json`) on hosts without the symlink privilege, refreshing the copy on reinstall when the stamp drifts. It also fixes a pre-existing install defect where `settings.local.json` was written with empty deny rules: the `plugin_setup` import now runs with `hooks/` on `sys.path` via the runtime `modules.core.plugin_setup` form, so the full `_DENY_RULES` set is merged. `bin/cli/doctor.py` gains a symlink/copy freshness check and a hooks-importable check. A `windows-compat` CI job on `windows-latest` (`.github/workflows/ci.yml`) drives `tests/ci/windows_smoke.py` (import-every-hook, `gaia doctor --json` red-check parse, runtime post_tool_use / T3-grant / FTS5 smoke) as the evidence source for the brief's AC-2/4/6/8. The `npm pack` tarball reference is pinned to `${npm_package_version}` (the `*.tgz` glob does not expand on Windows), and CI test scripts run under `pytest-xdist` (`-n auto`).
+
 ### Changed
 
 - Approval grants redesign: a grant is single-use and consumed at match (before the command executes), TTL cut from 60 to 5 minutes. Approving is now coupled to execution — approval triggers an automatic verbatim re-dispatch of the approved command instead of a separate resume step. `COMMAND_SET` batches simplified to the hook-minted path only (>= 2 T3 sub-commands blocked in one compound Bash call, content-derived `approval_id`, 5-minute TTL); the plan-first batch declaration flow and the `gaia approvals derive-id` CLI are retired — there is no agent-declared or CLI-derived batch id, only the one the hook mints from the blocked chain.
@@ -163,8 +167,10 @@ Maintenance release focused on shrinking the surface area and hardening the rele
 #### Removed
 
 - **Dead and redundant surfaces and artifacts** — removed `evidence/`, `docs/`,
-  `git-hooks/` (the redundant `commit-msg` sed copy; runtime footer stripping stays in
-  `bash_validator`), `tools/agentic-loop/`, `tools/review/`, `logs/`, the `commands/`
+  `git-hooks/` (the `commit-msg` sed copy, redundant ONLY for the in-Bash
+  command-string path that `bash_validator` already strips; note the residual gap —
+  footers on `-F <file>` bodies, plain-terminal, and IDE/editor commits are no longer
+  backstopped by any layer), `tools/agentic-loop/`, `tools/review/`, `logs/`, the `commands/`
   slash-command surface (including `/gaia`), the `templates/` managed-settings surface,
   and `config/crons-schema.md`. These were either unused, duplicated by an active code
   path, or superseded surfaces with no remaining consumer.

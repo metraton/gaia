@@ -26,6 +26,7 @@ Checks (in order):
  120. memory_fts5_db     - episodes_fts present in gaia.db
  130. memory_fts5_count  - FTS5 index complete
  140. memory_scoring     - scoring module importable
+ 145. hooks-importable   - every hooks/ module imports on this platform (noisy fail)
  150. hooks-active-fresh - running session's hooks == currently wired build
 
 Severity: pass / info / warning / error
@@ -305,21 +306,21 @@ def check_package_integrity() -> dict:
     """Check that critical files the package SHOULD ship are present.
 
     The npm `files` array IS our manifest (like rustup's manifest.toml).
-    Past install failures traced back to missing scripts/bootstrap_database.sh
+    Past install failures traced back to a missing DB bootstrapper
     inside the published tarball -- this check fails loud at diagnostic time
     so the user knows their install is broken (vs. silently failing later).
 
-    Presence-only: we deliberately do NOT verify the executable bit on
-    scripts/bootstrap_database.sh. `install.py::_run_bootstrap` invokes
-    the script as `bash <path>` (see bin/cli/install.py:287), so bash
-    reads and interprets the file regardless of the exec bit. Checking
-    it would create cross-platform flakiness (WSL/Windows checkouts
-    routinely lose the exec bit) without preventing any real failure.
+    The authoritative bootstrapper is the cross-platform Python port
+    scripts/bootstrap_database.py: `install.py::_run_bootstrap`, the lazy
+    bootstrap (bin/gaia), and `gaia update` all invoke it via
+    `python3 <path>` (no `sqlite3` CLI and no `bash` required, so it works
+    on Windows). Presence-only -- exec bit is irrelevant for a `python3
+    <path>` invocation.
     """
     pkg_root = _package_root()
     required = [
         # The CRITICAL file: install.py shells out to this to bootstrap the DB.
-        "scripts/bootstrap_database.sh",
+        "scripts/bootstrap_database.py",
         # Top-level package metadata.
         "package.json",
         # bin/gaia is the entry point invoked by the launcher.
@@ -1008,6 +1009,15 @@ def _semver_tuple(v) -> tuple:
     return tuple(out) if out else (-1,)
 
 
+# Keep in sync with _install_helpers._FALLBACK_STAMP_FILE (a test asserts
+# parity). This registry records the package version each fallback COPY was
+# materialized from, so a copy's freshness can be judged by its stamp rather
+# than by resolved.parent/package.json (which is not the package root for a
+# copy). Imported as a literal to avoid pulling _install_helpers (and hooks/
+# onto sys.path) into the diagnostic.
+_FALLBACK_STAMP_FILE = ".gaia-symlink-fallback.json"
+
+
 @register_check("Symlinks freshness", order=55)
 def check_symlinks_freshness(project_root: Path) -> dict:
     """Warn when .claude/hooks resolves to a STALE package extraction.
@@ -1041,6 +1051,29 @@ def check_symlinks_freshness(project_root: Path) -> dict:
 
     if not hooks_link.exists():
         return _result(name, "info", ".claude/hooks not present")
+
+    # Fallback-copy freshness (Windows without symlink privilege): when
+    # .claude/hooks is a Gaia-materialized COPY (not a symlink), resolve()
+    # points at the copy itself, so resolved.parent/package.json is NOT the
+    # package root and the semver/content signals below cannot see staleness.
+    # Judge such a copy by the version stamp manage_symlinks recorded.
+    if not hooks_link.is_symlink():
+        stamps = _read_json(project_root / ".claude" / _FALLBACK_STAMP_FILE) or {}
+        stamp = stamps.get("hooks")
+        if stamp is not None:
+            stamped_ver = stamp.get("version")
+            if not stamped_ver or stamped_ver == "unknown":
+                return _result(name, "info", ".claude/hooks is a managed copy (version unknown)")
+            if _semver_tuple(stamped_ver) < _semver_tuple(installed_ver):
+                return _result(
+                    name, "warning",
+                    f".claude/hooks is a copy of gaia {stamped_ver} but {installed_ver} is installed",
+                    "Run `gaia update` (or `gaia install`) to refresh the copied hooks",
+                )
+            return _result(
+                name, "pass",
+                f"hooks copy at v{stamped_ver} matches installed {installed_ver}",
+            )
 
     try:
         resolved = hooks_link.resolve(strict=True)
@@ -1780,6 +1813,74 @@ def check_memory_scoring(project_root: Path) -> dict:
         )
     except Exception as exc:
         return _result("memory_scoring", "warning", f"Scoring module error: {exc}")
+
+
+@register_check("hooks-importable", order=145)
+def check_hooks_importable(project_root: Path) -> dict:
+    """Check that every module under hooks/ imports cleanly on this platform.
+
+    Platform-specific stdlib usage in a hook module (e.g. an unconditional
+    `import fcntl` -- POSIX-only, absent on Windows) otherwise surfaces only
+    at hook-execution time: Claude Code invokes the hook, Python raises
+    ModuleNotFoundError, and the failure is easy to miss because a hook's
+    stdout/stderr is not surfaced the way a normal command's is. This check
+    eagerly imports every hooks/ module (entry points + modules/*, mirroring
+    the sys.path setup pre_tool_use.py etc. rely on: `modules.xxx` /
+    `adapters.xxx` resolve because hooks/ itself is on sys.path) so a
+    platform incompatibility is caught here, LOUDLY (severity=error, not a
+    silent warning), naming the exact module and ImportError.
+    """
+    import importlib
+    import sys as _sys
+
+    hooks_dir = _package_root() / "hooks"
+    if not hooks_dir.is_dir():
+        return _result(
+            "hooks-importable",
+            "warning",
+            f"hooks/ directory not found at {hooks_dir}",
+        )
+
+    if str(hooks_dir) not in _sys.path:
+        _sys.path.insert(0, str(hooks_dir))
+
+    module_names = []
+    for py_file in sorted(hooks_dir.rglob("*.py")):
+        if "__pycache__" in py_file.parts:
+            continue
+        rel = py_file.relative_to(hooks_dir)
+        if rel.name == "__init__.py":
+            parts = rel.parts[:-1]
+            if not parts:
+                continue  # hooks/__init__.py itself does not exist today
+        else:
+            parts = rel.with_suffix("").parts
+        module_names.append(".".join(parts))
+
+    failures = []
+    for mod_name in module_names:
+        try:
+            importlib.import_module(mod_name)
+        except ImportError as exc:
+            failures.append(f"{mod_name}: {exc}")
+        except Exception as exc:
+            failures.append(f"{mod_name}: {type(exc).__name__}: {exc}")
+
+    total = len(module_names)
+    if failures:
+        return _result(
+            "hooks-importable",
+            "error",
+            f"{len(failures)}/{total} hook module(s) fail to import on "
+            f"{_sys.platform}: " + "; ".join(failures),
+            "Fix the platform-specific import named above (guard it behind "
+            "a platform check or replace it with a cross-platform equivalent).",
+        )
+    return _result(
+        "hooks-importable",
+        "pass",
+        f"{total}/{total} hook modules importable on {_sys.platform}",
+    )
 
 
 def _apply_agent_fix(project_root: Path) -> dict:

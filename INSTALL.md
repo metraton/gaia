@@ -86,7 +86,7 @@ User runs: npm install @jaguilar87/gaia   (or: pnpm add @jaguilar87/gaia)
         ↓
 User runs: gaia install    (or the SessionStart hook wires the workspace)
         ↓
-[Bootstrap] first `gaia` use runs scripts/bootstrap_database.sh (lazy)
+[Bootstrap] first `gaia` use runs scripts/bootstrap_database.py (lazy)
    - Seeds ~/.gaia/gaia.db with current schema
    - Seeds agent rows and permissions
         ↓

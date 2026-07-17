@@ -217,6 +217,49 @@ class TestCheckSymlinks:
         assert r["severity"] == "warning"
 
 
+class TestCheckSymlinksFreshnessCopy:
+    """Symlinks-freshness must recognize a Windows fallback COPY of .claude/hooks
+    (a real dir, not a symlink) and judge its freshness by the version stamp --
+    green when fresh, warning when the stamped version is older than installed.
+    """
+
+    def _setup(self, tmp_path, installed_ver, stamped_ver):
+        claude = tmp_path / ".claude"
+        # .claude/hooks as a COPY: a real directory, NOT a symlink.
+        (claude / "hooks").mkdir(parents=True)
+        (claude / "hooks" / "pre.py").write_text("# hook")
+        nm = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        (nm / "hooks").mkdir(parents=True)
+        (nm / "package.json").write_text(json.dumps({"version": installed_ver}))
+        if stamped_ver is not None:
+            (claude / doctor_mod._FALLBACK_STAMP_FILE).write_text(
+                json.dumps({"hooks": {"version": stamped_ver, "kind": "copy"}})
+            )
+        return tmp_path
+
+    def test_fresh_copy_passes(self, tmp_path):
+        root = self._setup(tmp_path, installed_ver="5.5.0", stamped_ver="5.5.0")
+        r = doctor_mod.check_symlinks_freshness(root)
+        assert r["severity"] == "pass"
+
+    def test_stale_copy_warns(self, tmp_path):
+        root = self._setup(tmp_path, installed_ver="5.5.0", stamped_ver="5.4.0")
+        r = doctor_mod.check_symlinks_freshness(root)
+        assert r["severity"] == "warning"
+
+    def test_copy_without_stamp_is_not_red(self, tmp_path):
+        # A copy with no stamp falls through to the legacy path -> info, never red.
+        root = self._setup(tmp_path, installed_ver="5.5.0", stamped_ver=None)
+        r = doctor_mod.check_symlinks_freshness(root)
+        assert r["severity"] in ("info", "pass")
+
+    def test_stamp_filename_parity_with_install_helper(self):
+        """The stamp filename literal must match between doctor and the install
+        helper -- a copy stamped by one is read by the other."""
+        import cli._install_helpers as helpers_mod
+        assert doctor_mod._FALLBACK_STAMP_FILE == helpers_mod._FALLBACK_STAMP_FILE
+
+
 class TestCheckIdentity:
     """Test identity check."""
 
@@ -581,7 +624,7 @@ class TestCheckPackageIntegrity:
 
         r = doctor_mod.check_package_integrity()
         assert r["severity"] == "error"
-        assert "scripts/bootstrap_database.sh" in r["detail"]
+        assert "scripts/bootstrap_database.py" in r["detail"]
         assert "npm install" in r.get("fix", ""), "hint must guide reinstall"
 
 
@@ -864,8 +907,11 @@ class TestCmdDoctorJson:
         # 1 hooks-active-fresh (order 150 -- running session's hooks == the
         #   currently wired build; live-freshness vs on-disk freshness) +
         # 1 episodes-growth (order 48 -- gaia.db size + episodes row count;
-        #   visibility for the 90-day auto-retention added to writer.py).
-        assert len(data["checks"]) == 27
+        #   visibility for the 90-day auto-retention added to writer.py) +
+        # 1 hooks-importable (order 145 -- every hooks/*.py entry point
+        #   imports cleanly; catches a broken hook before it reaches
+        #   PreToolUse/PostToolUse at runtime).
+        assert len(data["checks"]) == 28
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

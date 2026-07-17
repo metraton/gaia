@@ -55,7 +55,7 @@ bash bin/validate-sandbox.sh \
 ```
 
 **What `gaia install` does** (the wiring step -- there is no npm postinstall):
-1. Bootstraps `~/.gaia/gaia.db` via `scripts/bootstrap_database.sh` (schema, `agent_permissions` seed, project registration, FTS5 backfill, invariant checks) -- idempotent (`IF NOT EXISTS` / `INSERT OR IGNORE`).
+1. Bootstraps `~/.gaia/gaia.db` via `scripts/bootstrap_database.py` (the cross-platform Python bootstrapper on the install/lazy path; `bootstrap_database.sh` is retained for shell/test parity) -- schema, `agent_permissions` seed, project registration, FTS5 backfill, invariant checks; idempotent (`IF NOT EXISTS` / `INSERT OR IGNORE`).
 2. Seeds `agent_contract_permissions` from agent frontmatters.
 3. Configures `.claude/settings.json` and merges gaia permissions + hook events into `.claude/settings.local.json` (npm-surface hooks path).
 4. Creates/repairs the `.claude/{agents,tools,hooks,config,skills}` symlinks (+ a `CHANGELOG.md` link) pointing at the installed package.

@@ -14,9 +14,11 @@ lifecycle script. Workspace `.claude/` config is applied on demand by
 running `gaia install` (this module) or by the SessionStart hook.
 
 Responsibilities (in order):
-  1. Invoke `scripts/bootstrap_database.sh` -- the single source of truth for
-     creating/upgrading `~/.gaia/gaia.db` (schema, agent_permissions seed,
-     project registration, FTS5 backfill, invariant checks).
+  1. Invoke `scripts/bootstrap_database.py` -- the cross-platform Python
+     bootstrapper for creating/upgrading `~/.gaia/gaia.db` (schema,
+     agent_permissions seed, project registration, FTS5 backfill, invariant
+     checks). The canonical schema source is `gaia/store/schema.sql`;
+     `bootstrap_database.sh` is retained as the shell/test reference.
   2. Configure workspace `.claude/settings.json` (create if missing).
   3. Merge gaia permissions, env vars, and agent identity into
      `.claude/settings.local.json`.
@@ -76,7 +78,7 @@ from pathlib import Path
 
 # bin/cli/install.py -> bin/cli -> bin -> gaia/
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.sh"
+_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.py"
 
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
@@ -276,7 +278,7 @@ _create_path_symlink = _install_path_launcher
 # ---------------------------------------------------------------------------
 
 def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
-    """Invoke bootstrap_database.sh and return a structured result.
+    """Invoke bootstrap_database.py and return a structured result.
 
     Returns a dict with:
       - ``rc``: int exit code (0 on success).
@@ -298,7 +300,7 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
     if db_path:
         env["GAIA_DB"] = str(Path(db_path).expanduser().resolve())
 
-    cmd = ["bash", str(_BOOTSTRAP_SCRIPT)]
+    cmd = [sys.executable or "python3", str(_BOOTSTRAP_SCRIPT)]
 
     try:
         result = subprocess.run(
@@ -309,7 +311,7 @@ def _run_bootstrap(db_path: str | None, verbose: bool, quiet: bool) -> dict:
             check=False,
         )
     except OSError as exc:
-        msg = f"failed to invoke bash -- {exc}"
+        msg = f"failed to invoke python bootstrapper -- {exc}"
         print(f"gaia install: {msg}", file=sys.stderr)
         return {"rc": 1, "detail": msg}
 

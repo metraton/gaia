@@ -163,7 +163,7 @@ npm publish                    # publishes @jaguilar87/gaia
 There is **no npm postinstall hook**. `package.json` carries an explicit `_install_note` documenting this: the DB is bootstrapped lazily on first `gaia` CLI use (`_ensure_db_bootstrapped` in `bin/gaia`, skipped only for the `install`/`uninstall` subcommands themselves), and workspace `.claude/` config is applied on demand via `gaia install` or by the SessionStart hook. `gaia install --postinstall` still exists as a flag for fail-soft, non-interactive invocation, but nothing in the npm lifecycle calls it automatically.
 
 `gaia install` (interactive or `--postinstall`), first run (no `.claude/`):
-1. Run `scripts/bootstrap_database.sh` -- seeds the schema, agent rows, and `schema_version`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
+1. Run `scripts/bootstrap_database.py` -- seeds the schema, agent rows, and `schema_version`. Fail-loud in interactive mode (non-zero exit propagates); under `--postinstall` a failure writes `~/.gaia/last-install-error.json` and returns 0 so a wrapping flow does not abort.
 2. Create `.claude/` if missing (created early so subsequent steps can write into it).
 3. Merge permissions, env vars, and agent key into `settings.local.json` (preserves user config).
 4. Merge hooks from `hooks.json` into `settings.local.json`.

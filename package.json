@@ -51,8 +51,8 @@
     "index.js"
   ],
   "scripts": {
-    "test": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e",
-    "test:layer1": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e",
+    "test": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e -n auto",
+    "test:layer1": "python3 -m pytest tests/ -v --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e -n auto",
     "test:layer2": "python3 -m pytest tests/layer2_llm_evaluation/ -v -m llm",
     "test:layer3": "python3 -m pytest tests/layer3_e2e/ -v -m e2e",
     "test:all": "python3 -m pytest tests/ -v -m ''",
@@ -64,10 +64,10 @@
     "pre-publish": "node bin/pre-publish-validate.js",
     "pre-publish:dry": "node bin/pre-publish-validate.js --dry-run",
     "pre-publish:validate": "node bin/pre-publish-validate.js --validate-only",
-    "gaia:verify-install:local": "npm pack && bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target sandbox",
+    "gaia:verify-install:local": "npm pack && bash bin/validate-sandbox.sh --tarball \"./jaguilar87-gaia-${npm_package_version}.tgz\" --target sandbox",
     "gaia:verify-install:rc": "bash bin/validate-sandbox.sh --version @rc --target sandbox",
     "gaia:verify-install:latest": "bash bin/validate-sandbox.sh --version @latest --target sandbox",
-    "gaia:install-local": "npm pack && bash bin/validate-sandbox.sh --tarball ./jaguilar87-gaia-*.tgz --target local",
+    "gaia:install-local": "npm pack && bash bin/validate-sandbox.sh --tarball \"./jaguilar87-gaia-${npm_package_version}.tgz\" --target local",
     "gaia:plugin-dryrun": "bash bin/plugin-dryrun.sh",
     "prepack": "npm run clean && npm run generate:plugin-root",
     "prepublishOnly": "npm run generate:plugin-root && node bin/pre-publish-validate.js",

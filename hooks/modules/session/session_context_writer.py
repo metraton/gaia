@@ -8,7 +8,6 @@ Public API:
     - SessionContextWriter  (class with update_context method)
 """
 
-import fcntl
 import json
 import logging
 import os
@@ -16,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any
 
+from ..core.filelock import exclusive_file_lock
 from ..core.paths import get_session_dir
 
 logger = logging.getLogger(__name__)
@@ -53,43 +53,39 @@ class SessionContextWriter:
 
             # File lock to prevent race conditions from parallel tool calls
             lock_path = self.context_path.with_suffix(".lock")
-            with open(lock_path, "w") as lock_file:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-                try:
-                    context: Dict[str, Any] = {}
-                    if self.context_path.exists():
-                        with open(self.context_path, "r") as f:
-                            context = json.load(f)
+            with exclusive_file_lock(lock_path):
+                context: Dict[str, Any] = {}
+                if self.context_path.exists():
+                    with open(self.context_path, "r") as f:
+                        context = json.load(f)
 
-                    if "critical_events" not in context:
-                        context["critical_events"] = []
+                if "critical_events" not in context:
+                    context["critical_events"] = []
 
-                    event_data["timestamp"] = datetime.now().isoformat()
+                event_data["timestamp"] = datetime.now().isoformat()
 
-                    context["critical_events"].append(event_data)
+                context["critical_events"].append(event_data)
 
-                    # Keep only events within retention window
-                    retention_hours = int(
-                        os.environ.get(
-                            "SESSION_RETENTION_HOURS",
-                            str(DEFAULT_RETENTION_HOURS),
-                        )
+                # Keep only events within retention window
+                retention_hours = int(
+                    os.environ.get(
+                        "SESSION_RETENTION_HOURS",
+                        str(DEFAULT_RETENTION_HOURS),
                     )
-                    cutoff = datetime.now() - timedelta(hours=retention_hours)
+                )
+                cutoff = datetime.now() - timedelta(hours=retention_hours)
 
-                    context["critical_events"] = [
-                        event
-                        for event in context["critical_events"]
-                        if event.get("timestamp")
-                        and datetime.fromisoformat(event["timestamp"]) > cutoff
-                    ]
+                context["critical_events"] = [
+                    event
+                    for event in context["critical_events"]
+                    if event.get("timestamp")
+                    and datetime.fromisoformat(event["timestamp"]) > cutoff
+                ]
 
-                    context["last_modified"] = datetime.now().isoformat()
+                context["last_modified"] = datetime.now().isoformat()
 
-                    with open(self.context_path, "w") as f:
-                        json.dump(context, f, indent=2)
-                finally:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                with open(self.context_path, "w") as f:
+                    json.dump(context, f, indent=2)
 
             logger.info(
                 "Updated context with event: %s",

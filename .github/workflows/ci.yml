@@ -125,3 +125,94 @@ jobs:
 
       - name: Validate manifests (version drift check)
         run: npm run pre-publish:validate
+
+  # ==========================================================================
+  # Windows compatibility -- the evidence source for the Windows artifact
+  # acceptance criteria (brief gaia-windows-compatibility: AC-2/4/6/8).
+  #
+  # Every other job runs on ubuntu-latest, so before this job Gaia had ZERO
+  # Windows coverage. This job runs the landed compatibility fixes on a REAL
+  # windows-latest runner, so each is exercised on the platform it targets:
+  #   * hooks/modules/core/filelock.py     -- removes the POSIX-only `import
+  #                                            fcntl` crash (#5); msvcrt on Win
+  #   * bin/cli/_install_helpers.py        -- forward-slash (.as_posix) paths
+  #                                            (the installer bad-escape, #2) +
+  #                                            symlink copy/junction fallback
+  #                                            for an unprivileged Windows host
+  #   * scripts/bootstrap_database.py      -- DB bootstrap with NO `sqlite3`
+  #                                            CLI and NO `bash` in PATH
+  #   * `gaia doctor` hooks-importable check
+  #
+  # Step -> AC map:
+  #   AC-2  "AC-2 -- hooks import on Windows"      (fcntl / POSIX-only imports)
+  #   AC-4  "AC-4 -- gaia install exits 0"         (install success on Windows)
+  #   AC-6  "AC-6 -- gaia doctor is green"         (no RED checks; symlinks 6/6
+  #                                                 or recognized copy fallback)
+  #   AC-8  "AC-8 -- runtime smoke"                (whole job + the runtime
+  #                                                 post_tool_use / T3 grant /
+  #                                                 FTS5 smoke)
+  #
+  # The heavy assertions (import-every-hook, parse doctor JSON for red checks,
+  # drive the hook entry points + verify the DB) live in the committed helper
+  # tests/ci/windows_smoke.py so the YAML stays declarative and shell-agnostic.
+  # ==========================================================================
+  windows-compat:
+    name: Windows compatibility (windows-latest)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Prepare workspace + data dirs
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/_ws" | Out-Null
+          New-Item -ItemType Directory -Force -Path "${{ github.workspace }}/_gaia" | Out-Null
+
+      # AC-2 -- every module under hooks/ must import on Windows. This is the
+      # instant catcher for the fcntl regression (#5): a POSIX-only import
+      # raises ModuleNotFoundError here, by module name, before any hook runs.
+      # (Re-checked at runtime in AC-8 and by `gaia doctor` in AC-6.)
+      - name: AC-2 -- hooks import on Windows
+        run: python tests/ci/windows_smoke.py imports
+
+      # AC-4 -- `gaia install` must exit 0 on Windows. Exercises the
+      # cross-platform bootstrap (no sqlite3 CLI, no bash), the forward-slash
+      # settings paths, and the symlink copy/junction fallback on an
+      # unprivileged host. --no-path skips the POSIX ~/.local/bin launcher.
+      - name: AC-4 -- gaia install exits 0 on Windows
+        env:
+          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+        run: >-
+          python bin/gaia install
+          --workspace "${{ github.workspace }}/_ws"
+          --db-path "${{ github.workspace }}/_gaia/gaia.db"
+          --no-path
+
+      # AC-6 -- `gaia doctor` must report NO red (error) checks on Windows.
+      # windows_smoke.py parses `gaia doctor --json` and fails only on
+      # severity=error (warnings tolerated), so this asserts the exact AC:
+      # hooks-importable passes and Symlinks is 6/6 (real links, or the
+      # recognized version-stamped copy fallback).
+      - name: AC-6 -- gaia doctor is green on Windows
+        env:
+          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+        run: python tests/ci/windows_smoke.py doctor --workspace "${{ github.workspace }}/_ws"
+
+      # AC-8 -- the artifact works end to end on Windows. In a self-isolated
+      # throwaway data dir, windows_smoke.py: (a) drives hooks/post_tool_use.py
+      # with a synthetic critical-event payload so the filelock backend is
+      # acquired/released at RUNTIME (not just imported); (b) runs the T3 grant
+      # cycle block -> activate -> retry, activating at the DB plane under a
+      # DIFFERENT session so the check does not depend on the host's activation
+      # route (risk R3), verifying the pending-row lifecycle in the DB; and
+      # (c) inserts an episode and confirms the episodes_fts mirror stays synced
+      # via its AFTER INSERT trigger. The whole job passing + this smoke is AC-8.
+      - name: AC-8 -- runtime smoke (post_tool_use + T3 grant + FTS5)
+        run: python tests/ci/windows_smoke.py smoke

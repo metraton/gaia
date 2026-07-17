@@ -23,7 +23,7 @@ Flags:
   --dry-run   Detect what would change without mutating files.
   --verbose   Show all check results (including passing ones).
   --json      Machine-readable output.
-  --skip-bootstrap  Don't invoke bootstrap.sh (helpful when DB is on a
+  --skip-bootstrap  Don't invoke the DB bootstrapper (helpful when DB is on a
                     read-only mount or already known good).
   --workspace PATH  Override workspace detection.
 """
@@ -38,7 +38,7 @@ from pathlib import Path
 
 # bin/cli/update.py -> bin/cli -> bin -> gaia/
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
-_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.sh"
+_BOOTSTRAP_SCRIPT = _PACKAGE_ROOT / "scripts" / "bootstrap_database.py"
 
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
@@ -109,14 +109,14 @@ def _detect_versions(cwd: Path, pkg_root: Path) -> dict:
 # ---------------------------------------------------------------------------
 
 def _run_bootstrap_idempotent(verbose: bool) -> dict:
-    """Run bootstrap.sh; return result dict with action + details.
+    """Run bootstrap_database.py; return result dict with action + details.
 
     Failures are reported but never abort the update flow -- the user can
     still benefit from settings/symlink fixes even if the DB is unreachable.
     """
     if not _BOOTSTRAP_SCRIPT.is_file():
         return {"action": "skipped", "details": "bootstrap script missing"}
-    cmd = ["bash", str(_BOOTSTRAP_SCRIPT)]
+    cmd = [sys.executable or "python3", str(_BOOTSTRAP_SCRIPT)]
     try:
         result = subprocess.run(
             cmd,

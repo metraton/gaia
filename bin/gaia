@@ -62,13 +62,16 @@ def _ensure_db_bootstrapped(subcommand):
         db = _resolve_db_path()
         if db.exists():
             return
-        bootstrap = _PACKAGE_ROOT / "scripts" / "bootstrap_database.sh"
+        # Cross-platform Python bootstrapper (module sqlite3, no `sqlite3` CLI
+        # and no `bash` in PATH required -- works on Windows). See
+        # scripts/bootstrap_database.py.
+        bootstrap = _PACKAGE_ROOT / "scripts" / "bootstrap_database.py"
         if not bootstrap.is_file():
             return
         env = os.environ.copy()
         env["GAIA_DB"] = str(db)
         subprocess.run(
-            ["bash", str(bootstrap)],
+            [sys.executable or "python3", str(bootstrap)],
             env=env,
             capture_output=True,
             text=True,

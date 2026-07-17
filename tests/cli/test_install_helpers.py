@@ -19,6 +19,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 if str(_BIN_DIR) not in sys.path:
@@ -143,6 +144,49 @@ class TestMergeLocalPermissions(unittest.TestCase):
             self.assertNotIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data.get("env", {}))
             # Unrelated user env var preserved
             self.assertEqual(data["env"]["CUSTOM_VAR"], "x")
+
+    def test_writes_canonical_deny_rules(self):
+        """Regression (release-check gate 2): a fresh merge MUST write the
+        canonical deny rules into settings.local.json.
+
+        Root cause of the original failure: _install_helpers imported
+        PERMISSIONS via the dotted `hooks.modules.core.plugin_setup` path, whose
+        package __init__ transitively does `from adapters.host_session import ...`
+        -- a top-level `adapters` import that only resolves with hooks/ on
+        sys.path. During `gaia install` hooks/ was NOT on the path, the import
+        raised, the `except` fallback fired, and PERMISSIONS became the
+        EMPTY-deny fallback. A fresh install then wrote NO deny rules and
+        `gaia doctor` errored (rc=2, "No deny rules"), failing gate 2. This
+        asserts the user-visible outcome: deny rules are present and non-empty.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            helpers.merge_local_permissions(workspace)
+            data = json.loads(
+                (workspace / ".claude" / "settings.local.json").read_text()
+            )
+            deny = data["permissions"]["deny"]
+            self.assertTrue(deny, "deny rules must not be empty (gate-2 regression)")
+            # A canonical destructive rule must be present -- proves the real
+            # _DENY_RULES set was merged, not the empty-deny fallback.
+            self.assertIn("Bash(kubectl delete:*)", deny)
+
+    def test_permissions_is_not_empty_deny_fallback(self):
+        """Guard the ROOT cause directly: the module-level PERMISSIONS resolved
+        by _install_helpers must be the canonical set, never the empty-deny
+        fallback (allow==['Bash(*)'] and deny==[])."""
+        deny = helpers.PERMISSIONS["permissions"].get("deny", [])
+        allow = helpers.PERMISSIONS["permissions"].get("allow", [])
+        self.assertTrue(
+            deny,
+            "PERMISSIONS.deny is empty -- the plugin_setup import fell back to "
+            "the empty-deny fallback (hooks/ not on sys.path?)",
+        )
+        self.assertNotEqual(
+            allow, ["Bash(*)"],
+            "PERMISSIONS.allow is the 1-entry fallback, not the canonical set",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +378,132 @@ class TestManageSymlinks(unittest.TestCase):
 
             stale, _ = helpers._symlink_is_stale(link, pkg)
             self.assertFalse(stale)
+
+
+# ---------------------------------------------------------------------------
+# manage_symlinks -- Windows copy/junction fallback (WinError 1314)
+# ---------------------------------------------------------------------------
+
+class TestManageSymlinksFallbackCopy(unittest.TestCase):
+    """When symlink_to raises OSError (Windows without the symlink privilege),
+    manage_symlinks must (a) materialize a real copy, (b) stamp it so it is
+    recognized as Gaia-managed, and (c) refresh it on a reinstall/update when
+    the package version drifts -- never leaving it silently stale."""
+
+    def _make_pkg(self, root: Path, version="5.4.0", content="v1"):
+        (root / "agents").mkdir(parents=True, exist_ok=True)
+        (root / "agents" / "a.md").write_text(content)
+        (root / "hooks").mkdir(parents=True, exist_ok=True)
+        (root / "hooks" / "pre.py").write_text(content)
+        (root / "package.json").write_text(
+            json.dumps({"name": "@jaguilar87/gaia", "version": version})
+        )
+        return root
+
+    def test_creates_copy_when_symlink_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            pkg = self._make_pkg(Path(tmp) / "pkg")
+
+            with mock.patch.object(
+                helpers.Path, "symlink_to", side_effect=OSError("WinError 1314")
+            ):
+                res = helpers.manage_symlinks(workspace, plugin_root=pkg)
+
+            link = workspace / ".claude" / "agents"
+            # (a) a real copy exists -- NOT a symlink
+            self.assertFalse(link.is_symlink())
+            self.assertTrue(link.is_dir())
+            self.assertEqual((link / "a.md").read_text(), "v1")
+            self.assertEqual(res["action"], "updated")
+            # stamp records the package version + kind
+            stamps = json.loads(
+                (workspace / ".claude" / helpers._FALLBACK_STAMP_FILE).read_text()
+            )
+            self.assertEqual(stamps["agents"]["version"], "5.4.0")
+            self.assertEqual(stamps["agents"]["kind"], "copy")
+            self.assertEqual(stamps["hooks"]["version"], "5.4.0")
+
+    def test_copy_idempotent_same_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            pkg = self._make_pkg(Path(tmp) / "pkg")
+
+            with mock.patch.object(
+                helpers.Path, "symlink_to", side_effect=OSError("WinError 1314")
+            ):
+                helpers.manage_symlinks(workspace, plugin_root=pkg)
+                # (b) second run, same version, symlink still unavailable
+                res2 = helpers.manage_symlinks(workspace, plugin_root=pkg)
+
+            self.assertEqual(res2["action"], "noop")
+            self.assertIn("agents", res2["valid"])
+            self.assertEqual(res2["fixed"], [])
+
+    def test_reinstall_refreshes_stale_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            pkg = self._make_pkg(Path(tmp) / "pkg", version="5.4.0", content="v1")
+
+            with mock.patch.object(
+                helpers.Path, "symlink_to", side_effect=OSError("WinError 1314")
+            ):
+                helpers.manage_symlinks(workspace, plugin_root=pkg)
+                # bump version + content, reinstall with symlink STILL unavailable
+                self._make_pkg(pkg, version="5.5.0", content="v2")
+                res2 = helpers.manage_symlinks(workspace, plugin_root=pkg)
+
+            link = workspace / ".claude" / "agents"
+            # (c) content refreshed to the new package
+            self.assertEqual((link / "a.md").read_text(), "v2")
+            self.assertTrue(any("agents" in f for f in res2["fixed"]))
+            stamps = json.loads(
+                (workspace / ".claude" / helpers._FALLBACK_STAMP_FILE).read_text()
+            )
+            self.assertEqual(stamps["agents"]["version"], "5.5.0")
+
+    def test_user_managed_dir_without_stamp_untouched(self):
+        """A regular dir with NO fallback stamp is genuinely user-managed and
+        must NOT be refreshed or removed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            pkg = self._make_pkg(Path(tmp) / "pkg")
+            # Pre-create a real (user-managed) agents dir with distinct content
+            user_dir = workspace / ".claude" / "agents"
+            user_dir.mkdir()
+            (user_dir / "mine.md").write_text("keep me")
+
+            res = helpers.manage_symlinks(workspace, plugin_root=pkg)
+
+            self.assertIn("agents", res["valid"])
+            self.assertTrue((user_dir / "mine.md").exists())
+
+    def test_symlink_success_clears_stale_stamp(self):
+        """If a copy was stamped but a later run can create a symlink (privilege
+        restored) at a drifted version, the entry becomes a symlink and the
+        stale stamp is cleared."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            pkg = self._make_pkg(Path(tmp) / "pkg", version="5.4.0")
+
+            with mock.patch.object(
+                helpers.Path, "symlink_to", side_effect=OSError("WinError 1314")
+            ):
+                helpers.manage_symlinks(workspace, plugin_root=pkg)
+
+            # Privilege restored + version bump -> refresh path re-tries symlink
+            self._make_pkg(pkg, version="5.5.0", content="v2")
+            helpers.manage_symlinks(workspace, plugin_root=pkg)
+
+            link = workspace / ".claude" / "agents"
+            self.assertTrue(link.is_symlink())
+            stamps = helpers._read_stamps(workspace / ".claude")
+            self.assertNotIn("agents", stamps)
 
 
 # ---------------------------------------------------------------------------

@@ -7,9 +7,11 @@ Provides:
 - state: Pre/post hook state sharing
 - stdin: Stdin availability check (has_stdin_data)
 - logging_setup: Shared hook logging config (configure_hook_logging)
+- filelock: Cross-platform exclusive file lock (exclusive_file_lock)
 """
 
 from .paths import find_claude_dir, get_plugin_data_dir, get_logs_dir, get_memory_dir
+from .filelock import exclusive_file_lock
 from .plugin_mode import has_plugin
 from .state import HookState, get_hook_state, save_hook_state, clear_hook_state, get_session_id
 from .stdin import has_stdin_data
@@ -36,4 +38,6 @@ __all__ = [
     "run_hook",
     # Logging
     "configure_hook_logging",
+    # File locking
+    "exclusive_file_lock",
 ]

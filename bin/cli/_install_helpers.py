@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,12 +48,27 @@ from typing import Any
 # ---------------------------------------------------------------------------
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent  # bin/cli -> bin -> pkg/
+_HOOKS_ROOT = _PACKAGE_ROOT / "hooks"
 
-if str(_PACKAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_PACKAGE_ROOT))
+# The hooks/ dir must be on sys.path to pull PERMISSIONS from plugin_setup.
+# plugin_setup lives at hooks/modules/core/plugin_setup.py, and importing it
+# runs hooks/modules/core/__init__.py, which transitively does
+# `from adapters.host_session import ...` -- a TOP-LEVEL `adapters` import that
+# only resolves when hooks/ itself is on sys.path (that is how the hook
+# entrypoints set it up at runtime, and why the runtime import form is
+# `modules.core.plugin_setup`, NOT the dotted `hooks.modules.core...`).
+# During `gaia install` only the package root was on the path, so BOTH the
+# transitive `adapters` import AND the dotted-package form failed, the `except`
+# fallback below fired, and PERMISSIONS silently became the EMPTY-deny fallback
+# -- a fresh install then wrote settings.local.json with NO deny rules, which
+# `gaia doctor` correctly flags as an error (release-check gate 2). Putting
+# hooks/ on the path and importing via the runtime form makes the canonical
+# import succeed so the full _DENY_RULES set is merged in.
+if str(_HOOKS_ROOT) not in sys.path:
+    sys.path.insert(0, str(_HOOKS_ROOT))
 
 try:
-    from hooks.modules.core.plugin_setup import (  # type: ignore  # noqa: E402
+    from modules.core.plugin_setup import (  # type: ignore  # noqa: E402
         PERMISSIONS,
         _authoritative_merge,
         _tool_name,
@@ -255,19 +271,33 @@ def merge_local_hooks(
 
     source_hooks = hooks_data.get("hooks", hooks_data)
 
-    # Resolve absolute path for hook commands
+    # Resolve absolute path for hook commands. Always normalized to
+    # forward-slash via .as_posix() -- this is what neutralizes both the
+    # re.sub "bad escape" on a Windows "C:\Users\..." backslash (the string
+    # below is used as a *replacement* pattern, where backslash is special)
+    # and the Windows shell eating backslash escapes when the command is
+    # written into settings.local.json. Python accepts forward-slash paths
+    # natively on Windows, so this is safe on every platform.
     hooks_dir = claude_dir / "hooks"
     if hooks_dir.exists():
         try:
-            hooks_abs = str(hooks_dir.resolve())
+            hooks_abs = hooks_dir.resolve().as_posix()
         except OSError:
-            hooks_abs = str(hooks_dir)
+            hooks_abs = hooks_dir.as_posix()
     else:
-        hooks_abs = str(hooks_dir)
+        hooks_abs = hooks_dir.as_posix()
 
     def _convert(cmd: str) -> str:
-        # Replace ${CLAUDE_PLUGIN_ROOT}/hooks/ -> absolute hooks dir
-        return re.sub(r"\$\{CLAUDE_PLUGIN_ROOT\}/hooks/", f"{hooks_abs}/", cmd)
+        # Replace ${CLAUDE_PLUGIN_ROOT}/hooks/ -> absolute hooks dir.
+        # hooks_abs is forward-slash only (see above), so it never contains
+        # a backslash escape sequence -- but the replacement is still passed
+        # through a lambda (not a raw string) as defense in depth, since
+        # re.sub interprets backslashes in a string replacement specially.
+        return re.sub(
+            r"\$\{CLAUDE_PLUGIN_ROOT\}/hooks/",
+            lambda _m: f"{hooks_abs}/",
+            cmd,
+        )
 
     converted: dict[str, list] = {}
     for event, entries in source_hooks.items():
@@ -337,6 +367,101 @@ _SYMLINK_NAMES = ["agents", "tools", "hooks", "config", "skills"]
 # Files (not dirs) we link or copy into .claude/
 _SYMLINK_FILES = ["CHANGELOG.md"]
 
+# When symlink_to fails (Windows without the "Create symbolic links"
+# privilege -> OSError / WinError 1314), manage_symlinks falls back to a REAL
+# copy. A copy passes `resolve(strict=True)` (so doctor's Symlinks check stays
+# green) but is otherwise indistinguishable from a user-managed file, and would
+# fall into the "user-managed, never refreshed" branch -> silent staleness on a
+# reinstall/update (defect F5/R2). This registry, written next to the copies in
+# `.claude/`, records the package VERSION each fallback copy was materialized
+# from, so the copy is (a) RECOGNIZABLE as Gaia-managed and (b) REFRESHABLE:
+# manage_symlinks re-materializes it when the stamped version drifts from the
+# package version, exactly as it repairs a stale symlink. `doctor.py`
+# (check_symlinks_freshness) reads the same file to evaluate a copy's freshness
+# by its stamp rather than by `resolved.parent/package.json` (which is not the
+# package root for a copy). Keep this literal in sync with
+# `doctor._FALLBACK_STAMP_FILE` (a test asserts parity).
+_FALLBACK_STAMP_FILE = ".gaia-symlink-fallback.json"
+
+
+def _read_stamps(claude_dir: Path) -> dict:
+    """Read the fallback-copy stamp registry ({} when absent/invalid)."""
+    data = _read_json(claude_dir / _FALLBACK_STAMP_FILE)
+    return data if isinstance(data, dict) else {}
+
+
+def _set_stamp(claude_dir: Path, name: str, version: str) -> None:
+    """Record that `.claude/<name>` is a Gaia-managed copy of `version`."""
+    stamps = _read_stamps(claude_dir)
+    stamps[name] = {"version": version, "kind": "copy"}
+    _write_json(claude_dir / _FALLBACK_STAMP_FILE, stamps)
+
+
+def _clear_stamp(claude_dir: Path, name: str) -> None:
+    """Drop any fallback stamp for `name` (called when a symlink succeeds, so a
+    copy that later becomes a real symlink is no longer treated as a copy).
+
+    Removes the stamp file entirely once empty to keep `.claude/` clean. A
+    no-op when there is no stamp to clear -- never creates the file.
+    """
+    stamp_path = claude_dir / _FALLBACK_STAMP_FILE
+    stamps = _read_stamps(claude_dir)
+    if name not in stamps:
+        return
+    del stamps[name]
+    if stamps:
+        _write_json(stamp_path, stamps)
+    else:
+        try:
+            stamp_path.unlink()
+        except OSError:
+            pass
+
+
+def _materialize_copy(target: Path, link: Path) -> None:
+    """Copy `target` to `link` -- copytree for dirs, copy2 for files."""
+    if target.is_dir():
+        shutil.copytree(target, link)
+    else:
+        shutil.copy2(target, link)
+
+
+def _remove_link_entry(link: Path) -> None:
+    """Remove `link` whether it is a symlink, a file, or a copied directory."""
+    if link.is_symlink() or link.is_file():
+        link.unlink()
+    elif link.is_dir():
+        shutil.rmtree(link)
+    elif link.exists():
+        link.unlink()
+
+
+def _create_link_or_copy(
+    target: Path, link: Path, claude_dir: Path, version: str
+) -> tuple[str, str | None]:
+    """Create `link` -> `target` as a symlink; fall back to a real copy.
+
+    On platforms where symlink creation is unavailable (Windows without the
+    privilege -> OSError / WinError 1314), materialize a copy instead and stamp
+    it with `version` so freshness logic can recognize and refresh it later.
+
+    Returns ``(kind, error)`` where ``kind`` is ``"symlink"`` or ``"copy"`` on
+    success (``error`` None), or ``("error", <msg>)`` when even the copy failed.
+    """
+    try:
+        link.symlink_to(target)
+    except OSError:
+        # Symlink unavailable -> copy is the universal floor.
+        try:
+            _materialize_copy(target, link)
+        except OSError as exc:
+            return "error", str(exc)
+        _set_stamp(claude_dir, link.name, version)
+        return "copy", None
+    # Symlink succeeded -> this name is no longer a fallback copy.
+    _clear_stamp(claude_dir, link.name)
+    return "symlink", None
+
 
 def _symlink_is_stale(link: Path, plugin_root: Path) -> tuple[bool, str | None]:
     """Return (stale, reason).
@@ -398,12 +523,21 @@ def manage_symlinks(
 
     Idempotent: existing valid symlinks are preserved; broken or
     legacy-target symlinks are repaired.
+
+    Windows fallback: when symlink creation is unavailable (no privilege ->
+    OSError / WinError 1314), the entry is materialized as a REAL copy stamped
+    with the package version (see _FALLBACK_STAMP_FILE). Such a copy is NOT
+    treated as an immutable user-managed file -- it is refreshed on a reinstall/
+    update whenever the stamped version drifts from the package version, exactly
+    as a stale symlink is repaired.
     """
     claude_dir = workspace / ".claude"
     pkg_root = plugin_root or _PACKAGE_ROOT
 
     if not claude_dir.exists():
         return _result("skipped", claude_dir, ".claude/ not found")
+
+    version = _read_plugin_version(pkg_root) or "unknown"
 
     fixed: list[str] = []
     valid: list[str] = []
@@ -422,11 +556,11 @@ def manage_symlinks(
             if dry_run:
                 fixed.append(name)
                 continue
-            try:
-                link.symlink_to(target)
-                fixed.append(name)
-            except OSError as exc:
-                failed.append({"name": name, "error": str(exc)})
+            kind, err = _create_link_or_copy(target, link, claude_dir, version)
+            if err:
+                failed.append({"name": name, "error": err})
+            else:
+                fixed.append(name if kind == "symlink" else f"{name} (copy)")
             continue
 
         # Entry exists -- check if it's a stale symlink
@@ -438,15 +572,45 @@ def manage_symlinks(
                     continue
                 try:
                     link.unlink()
-                    link.symlink_to(target)
-                    fixed.append(f"{name} ({reason})")
                 except OSError as exc:
                     failed.append({"name": name, "error": str(exc)})
+                    continue
+                kind, err = _create_link_or_copy(target, link, claude_dir, version)
+                if err:
+                    failed.append({"name": name, "error": err})
+                else:
+                    fixed.append(f"{name} ({reason})")
             else:
                 valid.append(name)
-        else:
-            # Regular file/dir already exists; assume user-managed
+            continue
+
+        # Regular file/dir already exists. Distinguish a Gaia-materialized
+        # fallback copy (has a version stamp) from a genuinely user-managed
+        # entry (no stamp -- left untouched).
+        stamp = _read_stamps(claude_dir).get(name)
+        if stamp is None:
             valid.append(name)
+            continue
+
+        # Gaia-managed copy: refresh when the stamped version drifts from the
+        # package version, so a copy never goes silently stale on reinstall.
+        if stamp.get("version") == version:
+            valid.append(name)
+            continue
+
+        if dry_run:
+            fixed.append(f"{name} (stale copy)")
+            continue
+        try:
+            _remove_link_entry(link)
+        except OSError as exc:
+            failed.append({"name": name, "error": str(exc)})
+            continue
+        kind, err = _create_link_or_copy(target, link, claude_dir, version)
+        if err:
+            failed.append({"name": name, "error": err})
+        else:
+            fixed.append(f"{name} (refreshed copy)")
 
     total = len(fixed) + len(valid)
     if failed:
