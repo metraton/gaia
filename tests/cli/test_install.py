@@ -44,6 +44,9 @@ from cli.install import (  # noqa: E402
     _render_ps1_launcher,
     _write_install_error_marker,
     _clear_install_error_marker,
+    _persist_workspace_env,
+    _launcher_path_precedence,
+    _warn_launcher_shadowed,
 )
 import cli.install as install_mod  # noqa: E402  # for monkeypatching the marker path
 
@@ -1040,6 +1043,202 @@ class TestInstallPathLauncherWindows(unittest.TestCase):
             self.assertIn("/home/user/app", content)
             self.assertIn("/opt/gaia/bin/gaia", content)
             self.assertIn("GAIA_WORKSPACE_PATH", content)
+
+
+class TestPersistWorkspaceEnv(unittest.TestCase):
+    """rc.3: `gaia install` on Windows persists GAIA_WORKSPACE_PATH at USER
+    scope via setx, so `gaia doctor` resolves the workspace regardless of which
+    `gaia` wins PATH. Exercised on Linux by forcing the platform guard; the
+    setx subprocess is mocked and its command/value verified.
+    """
+
+    def _win(self):
+        return patch.object(install_mod.sys, "platform", "win32")
+
+    def test_noop_on_posix(self):
+        """On POSIX there is no user-env persistence to do -- noop, no setx."""
+        with patch("cli.install.subprocess.run") as mock_run:
+            res = _persist_workspace_env(Path("/home/user/app"))
+        self.assertEqual(res["action"], "noop")
+        mock_run.assert_not_called()
+
+    def test_windows_invokes_setx_with_workspace(self):
+        """The Windows branch calls setx GAIA_WORKSPACE_PATH <workspace>."""
+        workspace = Path("C:/Users/jorge/ws/app")
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with self._win():
+            with patch("cli.install.subprocess.run", return_value=completed) as mock_run:
+                res = _persist_workspace_env(workspace)
+
+        self.assertEqual(res["action"], "created")
+        mock_run.assert_called_once()
+        called_cmd = mock_run.call_args.args[0]
+        self.assertEqual(called_cmd[0], "setx")
+        self.assertEqual(called_cmd[1], "GAIA_WORKSPACE_PATH")
+        # (verify the VALUE): the exact resolved workspace string is persisted.
+        self.assertEqual(called_cmd[2], str(workspace))
+        self.assertIn(str(workspace), res["details"])
+
+    def test_windows_setx_failure_is_error_not_raise(self):
+        """A non-zero setx is reported as action='error', never raised."""
+        failed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="ERROR: Access is denied."
+        )
+        with self._win():
+            with patch("cli.install.subprocess.run", return_value=failed):
+                res = _persist_workspace_env(Path("C:/ws"))
+        self.assertEqual(res["action"], "error")
+        self.assertIn("Access is denied", res["details"])
+
+    def test_cmd_install_invokes_persist_on_windows(self):
+        """cmd_install (Windows branch) calls _persist_workspace_env with the
+        resolved workspace after configuring the workspace."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            (workspace / ".claude").mkdir()
+
+            ns = argparse.Namespace(
+                postinstall=False, quiet=True, verbose=False, db_path=None,
+                workspace=str(workspace), skip_workspace=False, no_path=True,
+            )
+
+            noop = {"action": "noop", "path": "x", "details": ""}
+            seed_ok = {"action": "created", "details": "seeded"}
+            spy = MagicMock(return_value={"action": "created", "details": "persisted"})
+
+            patches = [
+                patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}),
+                patch("cli.install._seed_contract_permissions", return_value=seed_ok),
+                patch("cli.install._seed_surface_routing", return_value=seed_ok),
+                patch("cli.install._install_helpers.configure_settings_json", return_value=noop),
+                patch("cli.install._install_helpers.merge_local_permissions", return_value=noop),
+                patch("cli.install._install_helpers.merge_local_hooks", return_value=noop),
+                patch("cli.install._install_helpers.manage_symlinks", return_value=noop),
+                patch("cli.install._install_helpers.register_plugin", return_value=noop),
+                patch("cli.install._persist_workspace_env", side_effect=spy),
+                patch.object(install_mod.sys, "platform", "win32"),
+            ]
+            for p in patches:
+                p.start()
+            try:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_install(ns)
+            finally:
+                for p in patches:
+                    p.stop()
+
+            self.assertEqual(rc, 0)
+            spy.assert_called_once_with(workspace.resolve())
+
+    def test_cmd_install_skips_persist_on_posix(self):
+        """On POSIX cmd_install never calls _persist_workspace_env (guarded)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            workspace.mkdir()
+            (workspace / ".claude").mkdir()
+
+            ns = argparse.Namespace(
+                postinstall=False, quiet=True, verbose=False, db_path=None,
+                workspace=str(workspace), skip_workspace=False, no_path=True,
+            )
+            noop = {"action": "noop", "path": "x", "details": ""}
+            seed_ok = {"action": "created", "details": "seeded"}
+            spy = MagicMock(return_value=noop)
+
+            patches = [
+                patch("cli.install._run_bootstrap", return_value={"rc": 0, "detail": ""}),
+                patch("cli.install._seed_contract_permissions", return_value=seed_ok),
+                patch("cli.install._seed_surface_routing", return_value=seed_ok),
+                patch("cli.install._install_helpers.configure_settings_json", return_value=noop),
+                patch("cli.install._install_helpers.merge_local_permissions", return_value=noop),
+                patch("cli.install._install_helpers.merge_local_hooks", return_value=noop),
+                patch("cli.install._install_helpers.manage_symlinks", return_value=noop),
+                patch("cli.install._install_helpers.register_plugin", return_value=noop),
+                patch("cli.install._persist_workspace_env", side_effect=spy),
+            ]
+            for p in patches:
+                p.start()
+            try:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_install(ns)
+            finally:
+                for p in patches:
+                    p.stop()
+
+            self.assertEqual(rc, 0)
+            spy.assert_not_called()
+
+
+class TestLauncherPathPrecedence(unittest.TestCase):
+    """rc.3: `gaia install` on Windows warns when Gaia's launcher dir does not
+    precede the npm prefix on PATH (or is absent) -- the launcher would be
+    shadowed by npm's own `gaia` shim. `_launcher_path_precedence` is pure, so
+    it is tested directly on Linux with crafted inputs.
+    """
+
+    def test_gaia_dir_ahead_of_npm_prefix_no_warning(self):
+        gaia_dir = Path("/home/u/.local/bin")
+        npm_prefix = Path("/home/u/AppData/Roaming/npm")
+        path_dirs = [str(gaia_dir), "/usr/bin", str(npm_prefix)]
+        self.assertIsNone(
+            _launcher_path_precedence(gaia_dir, npm_prefix, path_dirs)
+        )
+
+    def test_npm_prefix_ahead_of_gaia_dir_warns(self):
+        gaia_dir = Path("/home/u/.local/bin")
+        npm_prefix = Path("/home/u/AppData/Roaming/npm")
+        # npm prefix comes FIRST -> npm's shim wins -> warning.
+        path_dirs = [str(npm_prefix), "/usr/bin", str(gaia_dir)]
+        warning = _launcher_path_precedence(gaia_dir, npm_prefix, path_dirs)
+        self.assertIsNotNone(warning)
+        self.assertIn("npm", warning.lower())
+
+    def test_gaia_dir_absent_from_path_warns(self):
+        gaia_dir = Path("/home/u/.local/bin")
+        npm_prefix = Path("/home/u/AppData/Roaming/npm")
+        path_dirs = ["/usr/bin", str(npm_prefix)]  # gaia dir not present
+        warning = _launcher_path_precedence(gaia_dir, npm_prefix, path_dirs)
+        self.assertIsNotNone(warning)
+        self.assertIn("not on PATH", warning)
+
+    def test_no_npm_prefix_and_gaia_present_no_warning(self):
+        gaia_dir = Path("/home/u/.local/bin")
+        path_dirs = [str(gaia_dir), "/usr/bin"]
+        self.assertIsNone(
+            _launcher_path_precedence(gaia_dir, None, path_dirs)
+        )
+
+    def test_comparison_normalizes_trailing_separators(self):
+        """PATH entries with redundant trailing slashes still match the dir.
+
+        normpath collapses these on any platform; the case-insensitive and
+        backslash-separator handling is ntpath-specific and belongs to the
+        windows-compat CI (os.path is posixpath here).
+        """
+        gaia_dir = Path("/home/u/.local/bin")
+        npm_prefix = Path("/home/u/AppData/Roaming/npm")
+        # Trailing slash + redundant '.' segment -- normpath makes them equal.
+        path_dirs = ["/home/u/./.local/bin/", "/usr/bin", "/home/u/AppData/Roaming/npm"]
+        self.assertIsNone(
+            _launcher_path_precedence(gaia_dir, npm_prefix, path_dirs)
+        )
+
+    def test_warn_launcher_shadowed_noop_on_posix(self):
+        """The wrapper is a no-op on POSIX regardless of PATH state."""
+        self.assertIsNone(_warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=True))
+
+    def test_warn_launcher_shadowed_emits_under_windows(self):
+        """Under win32, a shadowed launcher returns and prints a warning."""
+        with patch.object(install_mod.sys, "platform", "win32"):
+            with patch("cli.install._npm_global_prefix",
+                       return_value=Path("C:/npm")):
+                # PATH has npm but not gaia's dir -> shadowed -> warning.
+                with patch.dict(os.environ, {"PATH": "C:/npm;C:/Windows"}, clear=False):
+                    warning = _warn_launcher_shadowed(
+                        link="C:/Users/u/.local/bin/gaia", quiet=True
+                    )
+        self.assertIsNotNone(warning)
 
 
 class TestLauncherShellBehavior(unittest.TestCase):

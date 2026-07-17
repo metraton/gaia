@@ -1171,6 +1171,27 @@ class TestDeriveWorkspace:
         assert "global or symlinked install detected" in err
         assert "--workspace" in err
 
+    def test_unresolvable_workspace_message_is_legible_and_actionable(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """rc.3: when no workspace resolves, doctor emits a readable, actionable
+        message naming BOTH remedies (--workspace now, or reinstall) instead of
+        a bare CRITICAL. GAIA_WORKSPACE_PATH must be unset for this branch."""
+        monkeypatch.delenv("GAIA_WORKSPACE_PATH", raising=False)
+        script_path = tmp_path / "usr" / "local" / "lib" / "gaia" / "bin" / "cli" / "doctor.py"
+        script_path.parent.mkdir(parents=True)
+        script_path.touch()
+        monkeypatch.setattr(doctor_mod, "__file__", str(script_path))
+
+        with pytest.raises(SystemExit) as exc:
+            doctor_mod._derive_workspace()
+        assert exc.value.code == 2
+        err = capsys.readouterr().err
+        # Legible framing (not a raw CRITICAL) + both concrete remedies.
+        assert "could not resolve a workspace" in err
+        assert "gaia doctor --workspace" in err
+        assert "gaia install --workspace" in err
+
     def test_env_workspace_path_used_before_file_derivation(self, tmp_path, monkeypatch):
         """GAIA_WORKSPACE_PATH (baked by the Windows launcher) with a valid
         .claude/ is honored BEFORE the __file__ derivation. Proof: __file__ is

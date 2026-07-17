@@ -121,15 +121,28 @@ _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing
 # and wins over npm's by being written to Gaia's own bin dir (default
 # ``~/.local/bin``): when that dir precedes the npm prefix on PATH, cmd.exe /
 # PowerShell resolve ``gaia`` (``gaia.cmd`` / ``gaia.ps1``) to Gaia's launcher,
-# which sets GAIA_WORKSPACE_PATH before dispatching. Where Gaia's dir is NOT
-# ahead of the npm prefix, npm's shim still runs and still dispatches correctly
-# for workspace-independent subcommands; only the workspace-derivation path
-# needs the env var, and the doctor `__file__` fallback keeps working. The
-# env-var contract is the load-bearing coupling, not the PATH order.
+# which sets GAIA_WORKSPACE_PATH before dispatching.
+#
+# Where Gaia's dir is NOT ahead of the npm prefix (the common case on Windows,
+# where ``~/.local/bin`` is not on PATH by convention), npm's shim wins and
+# execs ``bin/gaia`` WITHOUT the process-scoped GAIA_WORKSPACE_PATH export. The
+# doctor `__file__` fallback does NOT save this case: with the npm global shim,
+# ``__file__`` resolves into the npm prefix, so ``doctor._derive_workspace``
+# derives the npm prefix as the "workspace" and emits a FALSE CRITICAL (this is
+# the observed rc.2 bug, not a hypothetical). Two things close it, so the fix
+# does not depend on PATH order:
+#   1. `gaia install` on Windows PERSISTS GAIA_WORKSPACE_PATH to the USER
+#      environment (`setx`, see `_persist_workspace_env`). The next `gaia
+#      doctor` is a fresh process that inherits it, so doctor resolves the
+#      workspace via the env var regardless of which `gaia` won the PATH.
+#   2. `gaia install` WARNS when Gaia's launcher dir is not ahead of the npm
+#      prefix on PATH (see `_launcher_path_precedence`), so the shadowed-launcher
+#      condition is a visible, actionable signal instead of a silent surprise.
 #
 # Re-running `gaia install` from a different workspace rewrites the launcher(s)
-# to point at that workspace -- the install action is what selects which
-# workspace the launcher targets.
+# to point at that workspace AND re-persists GAIA_WORKSPACE_PATH -- the install
+# action is what selects which workspace both the launcher and the env var
+# target (last-install-wins, single-valued).
 
 # POSIX bash launcher. The workspace path is resolved at install time and baked
 # in verbatim. No discovery, no env vars, no fallbacks -- a 3-line exec.
@@ -449,6 +462,145 @@ def _write_windows_launcher_file(path: Path, content: str, overwrite: bool) -> s
 # Backward-compatible alias -- existing tests/imports continue to work
 # while migrating to the new name.
 _create_path_symlink = _install_path_launcher
+
+
+# ---------------------------------------------------------------------------
+# Windows: persist GAIA_WORKSPACE_PATH + PATH-shadow warning
+# ---------------------------------------------------------------------------
+#
+# On Windows the launcher only exports GAIA_WORKSPACE_PATH PROCESS-scoped (see
+# the launcher templates). If npm's own `gaia.cmd` wins the PATH lookup, Gaia's
+# launcher never runs, the env var is never set, and doctor derives the npm
+# prefix as the workspace -> false CRITICAL. Persisting the var at USER scope
+# (`setx`) makes doctor resolve the workspace regardless of which `gaia` wins,
+# because the next `gaia doctor` is a NEW process that inherits the user env.
+
+
+def _persist_workspace_env(workspace: Path) -> dict:
+    """Windows only: persist GAIA_WORKSPACE_PATH to the USER environment.
+
+    Uses ``setx GAIA_WORKSPACE_PATH "<workspace>"`` -- a documented, built-in
+    Windows command that writes the value under HKCU\\Environment and broadcasts
+    WM_SETTINGCHANGE. Chosen over a direct ``winreg.SetValueEx`` because it is
+    a single self-contained call (no manual broadcast, no HKCU key handling),
+    and it mirrors the subprocess pattern the rest of this module already uses
+    (bootstrap, seeders). ``setx`` truncates at 1024 chars, which a workspace
+    path never approaches.
+
+    Semantics: last-install-wins, single-valued -- coherent with the launcher,
+    which bakes exactly one workspace. ``setx`` applies to FUTURE processes
+    (the current shell keeps its old value), which is precisely what doctor
+    needs: the next `gaia doctor` invocation is a new process.
+
+    Returns a step-result dict (``action``/``details``) compatible with
+    ``_report_step``. Never raises -- a failure here is advisory (the
+    process-scoped launcher export still covers the launcher path).
+    """
+    if not _is_windows():
+        return {"action": "noop", "details": "not Windows -- no env persistence needed"}
+
+    value = str(workspace)
+    try:
+        result = subprocess.run(
+            ["setx", "GAIA_WORKSPACE_PATH", value],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        return {"action": "error", "details": f"setx invocation failed: {exc}"}
+
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()[:200]
+        return {"action": "error", "details": f"setx exited {result.returncode}: {detail}"}
+
+    return {
+        "action": "created",
+        "details": f"GAIA_WORKSPACE_PATH persisted (user env) -> {value}",
+    }
+
+
+def _npm_global_prefix() -> "Path | None":
+    """Best-effort npm global prefix on Windows (where npm writes its shim).
+
+    Under ``npm install -g``, npm writes ``gaia.cmd`` into ``%APPDATA%\\npm``.
+    We use that convention rather than shelling out to ``npm config get prefix``
+    to keep the check offline and fast -- it feeds only an ADVISORY warning, so
+    a heuristic is acceptable. Returns None when APPDATA is unset (then the
+    precedence check only verifies Gaia's dir is present at all).
+    """
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        return Path(appdata) / "npm"
+    return None
+
+
+def _launcher_path_precedence(
+    gaia_bin_dir: Path,
+    npm_prefix: "Path | None",
+    path_dirs: "list[str]",
+) -> "str | None":
+    """Return an actionable warning when Gaia's launcher will NOT win the
+    ``gaia`` name resolution against npm's own shim -- else None.
+
+    Pure and platform-agnostic (every input is passed in), so it is unit-
+    testable on any OS. Comparison is case-insensitive and path-normalized
+    (Windows PATH entries vary in case and separators).
+
+    Two shadowing conditions produce a warning:
+      1. Gaia's launcher dir is not on PATH at all -> npm's shim always wins.
+      2. The npm prefix precedes Gaia's dir on PATH -> npm's shim wins.
+    """
+    def _norm(p) -> str:
+        return os.path.normcase(os.path.normpath(str(p)))
+
+    normalized = [_norm(p) for p in path_dirs if p]
+    gaia_norm = _norm(gaia_bin_dir)
+
+    gaia_idx = normalized.index(gaia_norm) if gaia_norm in normalized else None
+
+    if gaia_idx is None:
+        return (
+            f"{gaia_bin_dir} is not on PATH -- npm's own `gaia` shim will run "
+            "instead of Gaia's workspace-bound launcher. Add that dir to PATH "
+            "(ahead of the npm prefix) so `gaia` resolves to Gaia's launcher."
+        )
+
+    if npm_prefix is not None:
+        npm_norm = _norm(npm_prefix)
+        npm_idx = normalized.index(npm_norm) if npm_norm in normalized else None
+        if npm_idx is not None and npm_idx < gaia_idx:
+            return (
+                f"the npm prefix ({npm_prefix}) precedes Gaia's launcher dir "
+                f"({gaia_bin_dir}) on PATH -- npm's `gaia` shim wins, so the "
+                "workspace-bound launcher will not run. Move Gaia's dir ahead "
+                "of the npm prefix on PATH."
+            )
+
+    return None
+
+
+def _warn_launcher_shadowed(link: "Path | str", quiet: bool) -> "str | None":
+    """Windows only: emit an actionable warning when the launcher dir will not
+    win ``gaia`` resolution against npm's shim.
+
+    The plain ``PATH launcher: gaia.cmd=created`` step line is misleading when
+    the launcher is shadowed on PATH (it reports creation, not effectiveness);
+    this converts that into a visible, actionable signal. Returns the warning
+    message (also printed to stderr unless quiet) or None when not shadowed.
+    """
+    if not _is_windows():
+        return None
+
+    gaia_bin_dir = Path(link).expanduser().parent
+    warning = _launcher_path_precedence(
+        gaia_bin_dir=gaia_bin_dir,
+        npm_prefix=_npm_global_prefix(),
+        path_dirs=os.environ.get("PATH", "").split(os.pathsep),
+    )
+    if warning and not quiet:
+        print(f"  [!] PATH launcher: {warning}", file=sys.stderr)
+    return warning
 
 
 # ---------------------------------------------------------------------------
@@ -931,6 +1083,21 @@ def cmd_install(args: argparse.Namespace) -> int:
         # retargets the shim.
         path_res = _install_path_launcher(workspace=workspace)
         _report_step(name="PATH launcher", result=path_res, quiet=quiet, verbose=verbose)
+        # Windows: the "created" line above reports the launcher was WRITTEN,
+        # not that it will WIN `gaia` resolution. Warn when Gaia's launcher dir
+        # is not ahead of the npm prefix on PATH -- an actionable signal, not a
+        # false all-clear. No-op on POSIX.
+        _warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=quiet)
+
+    # Step 6.6 -- Windows: persist GAIA_WORKSPACE_PATH to the user environment
+    # so `gaia doctor` resolves THIS workspace regardless of which `gaia` wins
+    # PATH. The launcher only exports it process-scoped; without this, when
+    # npm's shim wins, doctor derives the npm prefix and emits a false CRITICAL
+    # (the rc.2 bug). Runs even under --no-path: the env var, not the launcher,
+    # is what makes doctor's derivation correct. No-op on POSIX.
+    if _is_windows():
+        env_res = _persist_workspace_env(workspace)
+        _report_step(name="workspace-env", result=env_res, quiet=quiet, verbose=verbose)
 
     # Install owns Steps 1-6 only. Workspace scanning is a separate, on-demand
     # flow (`gaia scan`); install never triggers it. A clean install clears any

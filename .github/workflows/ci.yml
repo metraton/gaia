@@ -165,6 +165,36 @@ jobs:
   #        and the env-derivation path -- which is why the user-only false
   #        CRITICAL never surfaced in CI. These two steps exercise them.
   #
+  # rc.3 setx-persistence extension (Step -> what it proves):
+  #   "RC-3 setx-persistence"        -> `gaia install` on Windows PERSISTS
+  #        GAIA_WORKSPACE_PATH to the USER environment (install.py Step 6.6,
+  #        _persist_workspace_env -> `setx`; runs even under --no-path). The
+  #        RC-2 launcher-generated step above already ran `gaia install` into
+  #        _ws, so setx has fired. This step reads the value back from where
+  #        setx writes it -- HKCU\Environment, surfaced by
+  #        [Environment]::GetEnvironmentVariable('GAIA_WORKSPACE_PATH','User') --
+  #        and asserts it equals the installed workspace.
+  #   "RC-3 doctor-via-npm-shim"     -> reproduces the user's MACHINE 2: `gaia`
+  #        resolved via npm's GLOBAL SHIM (not Gaia's ~/.local/bin launcher), so
+  #        the launcher's process-scoped GAIA_WORKSPACE_PATH export never runs
+  #        and __file__ lands outside the workspace's node_modules -> doctor
+  #        derived the npm prefix and emitted a false CRITICAL. In CI this is
+  #        modeled by invoking `python bin/gaia doctor --json` DIRECTLY (bin/gaia
+  #        lives outside node_modules, exactly like the shim's __file__; neither
+  #        runs the launcher, neither self-exports the env var). A NEGATIVE
+  #        CONTROL first proves that WITHOUT the persisted env doctor cannot
+  #        resolve (no JSON, exit 2) -- the machine-2 failure, reproduced. Then,
+  #        with GAIA_WORKSPACE_PATH sourced from the setx-persisted USER env and
+  #        handed to a fresh doctor child, doctor resolves the workspace and
+  #        reports 0 RED -> HEALTHY, WITHOUT --workspace. Note on setx timing:
+  #        setx targets FUTURE processes and the Actions runner does NOT
+  #        re-broadcast WM_SETTINGCHANGE mid-job, so a naive later step would not
+  #        auto-inherit it; we therefore READ the persisted USER value and inject
+  #        it into the doctor child explicitly -- the same inheritance a fresh
+  #        shell gets automatically on the user's box (it reads HKCU\Environment
+  #        at spawn). The SOURCE is the setx-persisted var; only the injection
+  #        mechanism is manual.
+  #
   # The heavy assertions (import-every-hook, parse doctor JSON for red checks,
   # drive the hook entry points + verify the DB) live in the committed helper
   # tests/ci/windows_smoke.py so the YAML stays declarative and shell-agnostic.
@@ -304,4 +334,101 @@ jobs:
             exit 1
           }
           Write-Host "doctor via launcher HEALTHY (status=$($doc.status), 0 red) -- GAIA_WORKSPACE_PATH resolution OK"
+          exit 0
+
+      # RC-3 (setx-persistence) -- proves the PERSISTENCE half of the rc.3 fix:
+      # `gaia install` on Windows writes GAIA_WORKSPACE_PATH to the USER env via
+      # `setx` (install.py Step 6.6, _persist_workspace_env). The RC-2
+      # launcher-generated step above already ran `gaia install` into _ws (setx
+      # fires there, even without --no-path), so here we only READ it back from
+      # where setx persists it -- HKCU\Environment, exposed by
+      # [Environment]::GetEnvironmentVariable(...,'User') -- and assert it points
+      # at the installed workspace. Without this persistence, when npm's shim
+      # wins PATH the launcher never exports the var and doctor derives the npm
+      # prefix (the machine-2 false CRITICAL that RC-3 doctor-via-npm-shim below
+      # exercises end to end).
+      - name: RC-3 setx-persistence -- GAIA_WORKSPACE_PATH persisted to user env
+        run: |
+          $expected = (Resolve-Path -LiteralPath "${{ github.workspace }}/_ws").Path
+          $persisted = [Environment]::GetEnvironmentVariable('GAIA_WORKSPACE_PATH','User')
+          if ([string]::IsNullOrWhiteSpace($persisted)) {
+            Write-Error "GAIA_WORKSPACE_PATH was NOT persisted to the user env -- setx (install.py Step 6.6) did not run or failed"
+            exit 1
+          }
+          Write-Host "persisted GAIA_WORKSPACE_PATH (user env) = $persisted"
+          # Normalize both to canonical full paths; PATH entries and setx values
+          # vary in case/separators on Windows, so compare case-insensitively.
+          $persistedNorm = [System.IO.Path]::GetFullPath($persisted).TrimEnd('\')
+          $expectedNorm  = [System.IO.Path]::GetFullPath($expected).TrimEnd('\')
+          if ($persistedNorm -ine $expectedNorm) {
+            Write-Error "persisted workspace '$persistedNorm' != installed workspace '$expectedNorm'"
+            exit 1
+          }
+          Write-Host "RC-3 setx-persistence OK -> user env resolves to the installed workspace ($persistedNorm)"
+          exit 0
+
+      # RC-3 (doctor-via-npm-shim) -- reproduces the user's MACHINE 2 and proves
+      # the setx persistence fixes it. `gaia` resolved via npm's global shim (NOT
+      # Gaia's ~/.local/bin launcher): the launcher's process-scoped env export
+      # never runs, and __file__ lands outside the workspace's node_modules, so
+      # doctor._derive_workspace cannot infer a workspace and (without the fix)
+      # exits 2 -> false CRITICAL. We model the shim by invoking `python bin/gaia
+      # doctor --json` DIRECTLY -- in CI bin/gaia is outside node_modules, exactly
+      # like the shim's __file__, and neither runs the launcher nor self-exports
+      # GAIA_WORKSPACE_PATH. A NEGATIVE CONTROL first confirms the bug is real
+      # (no env -> no JSON), then the persisted USER value is injected into a
+      # fresh doctor child and doctor must be HEALTHY WITHOUT --workspace. Both
+      # doctor invocations run in a CHILD pwsh (mirroring the RC-2 step) so the
+      # child's exit code / stderr cannot fail this step -- parseable JSON, or its
+      # absence, is the signal. On setx timing: setx applies to FUTURE processes
+      # and the runner does not re-broadcast mid-job, so we READ the persisted
+      # value and inject it explicitly -- the same env a fresh shell inherits
+      # automatically on the user's machine (only the injection is manual; the
+      # SOURCE is the setx-persisted var).
+      - name: RC-3 doctor-via-npm-shim -- doctor without --workspace is HEALTHY
+        env:
+          GAIA_DB: ${{ github.workspace }}/_gaia/gaia.db
+        run: |
+          # --- Negative control: WITHOUT the persisted env, doctor must NOT
+          # resolve a workspace. Proves the reproduction is genuine (the bug is
+          # real) rather than an always-green assertion.
+          Remove-Item Env:GAIA_WORKSPACE_PATH -ErrorAction SilentlyContinue
+          $ctl = (pwsh -NoProfile -Command "python bin/gaia doctor --json" | Out-String)
+          $ctlResolved = $false
+          try {
+            $ctlDoc = $ctl | ConvertFrom-Json
+            if ($ctlDoc -and $ctlDoc.checks) { $ctlResolved = $true }
+          } catch { $ctlResolved = $false }
+          if ($ctlResolved) {
+            Write-Error "control FAILED: doctor resolved a workspace WITHOUT the persisted env -- machine-2 is not being reproduced (bin/gaia must be outside node_modules). raw:`n$ctl"
+            exit 1
+          }
+          Write-Host "control OK: without GAIA_WORKSPACE_PATH, doctor cannot resolve (no JSON / exit 2) -- machine-2 false CRITICAL reproduced."
+
+          # --- The fix: source GAIA_WORKSPACE_PATH from the setx-persisted USER
+          # env and hand it to a fresh doctor child (a new process inherits it,
+          # just as a fresh shell would on the user's box). Invoke bin/gaia
+          # DIRECTLY (npm-shim stand-in), WITHOUT --workspace.
+          $persisted = [Environment]::GetEnvironmentVariable('GAIA_WORKSPACE_PATH','User')
+          if ([string]::IsNullOrWhiteSpace($persisted)) {
+            Write-Error "GAIA_WORKSPACE_PATH is not persisted in the user env -- the setx step (install.py 6.6) must run first."
+            exit 1
+          }
+          $env:GAIA_WORKSPACE_PATH = $persisted
+          Write-Host "doctor via bin/gaia (npm-shim path, no --workspace), GAIA_WORKSPACE_PATH=$persisted"
+          $raw = (pwsh -NoProfile -Command "python bin/gaia doctor --json" | Out-String)
+          try {
+            $doc = $raw | ConvertFrom-Json
+          } catch {
+            Write-Error "doctor emitted no parseable JSON even WITH the persisted env -- the setx fix did not resolve the workspace. raw output:`n$raw"
+            exit 1
+          }
+          foreach ($c in $doc.checks) { Write-Host ("   [{0,-7}] {1}: {2}" -f $c.severity, $c.name, $c.detail) }
+          $errs = @($doc.checks | Where-Object { $_.severity -eq 'error' })
+          if ($errs.Count -gt 0) {
+            Write-Error "doctor via npm-shim path reported $($errs.Count) RED check(s) -- wrong/uninitialized workspace resolved from the persisted env"
+            foreach ($e in $errs) { Write-Host "   - $($e.name): $($e.detail)" }
+            exit 1
+          }
+          Write-Host "RC-3 doctor-via-npm-shim HEALTHY (status=$($doc.status), 0 red) WITHOUT --workspace -- setx persistence fixes the machine-2 scenario."
           exit 0

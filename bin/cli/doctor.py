@@ -204,10 +204,21 @@ def _derive_workspace(override: str = None) -> Path:
             return workspace
 
     # --- No inferable consumer workspace ---
+    # Legible, actionable failure -- NOT a raw CRITICAL. Reached when Gaia is
+    # not running from inside a workspace's node_modules/@jaguilar87/gaia tree
+    # (global or symlinked install) AND GAIA_WORKSPACE_PATH is unset or points
+    # at a dir without .claude/. The two remedies are explicit; no cwd walk-up
+    # and no forced --workspace (both deliberately avoided).
     print(
-        "gaia doctor: global or symlinked install detected; "
-        "no consumer workspace inferable. "
-        "Specify --workspace <path> to choose one.",
+        "gaia doctor: could not resolve a workspace to check "
+        "(global or symlinked install detected, and GAIA_WORKSPACE_PATH is "
+        "not set to a directory with .claude/).\n"
+        "  Fix it one of two ways:\n"
+        "    - run `gaia doctor --workspace <path>` to check a specific "
+        "workspace now, or\n"
+        "    - reinstall with `gaia install --workspace <path>` (on Windows "
+        "this also persists GAIA_WORKSPACE_PATH so doctor resolves the "
+        "workspace automatically).",
         file=sys.stderr,
     )
     sys.exit(2)

@@ -632,6 +632,81 @@ _PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
 })
 
 # ---------------------------------------------------------------------------
+# PowerShell lane (Step 1c-ps): Windows/.NET interpreter introspection
+# ---------------------------------------------------------------------------
+# The POSIX verb scanner is blind to PowerShell: `powershell.exe -Command
+# "<script>"` collapses the payload into one opaque token, so a mutative
+# `Remove-Item` inside it is never seen (false negative), while the old `-rf`
+# flag heuristic mis-read `-NoProfile` as `-rf` and over-blocked EVERY call
+# (false positive).  This lane mirrors `_INLINE_CODE_MAP`/`_check_script_file`
+# for the Windows shell: it introspects the payload and classifies each cmdlet
+# by its Verb-Noun VERB (the part before the hyphen) against PowerShell's own
+# approved-verb taxonomy -- so a never-seen cmdlet classifies correctly by its
+# verb (`Get-FooBar` -> read, `Set-FooBar` -> change) with NO per-cmdlet list.
+_POWERSHELL_INTERPRETERS: FrozenSet[str] = frozenset({
+    "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+})
+
+# Read/inspection verbs -> NON-mutative (T0/T1).  The part before the hyphen of
+# a Verb-Noun cmdlet; matched case-insensitively.  Drawn from PowerShell's
+# approved-verb groups (Common/Data/Diagnostic) that only OBSERVE state.
+_PS_READ_VERBS: FrozenSet[str] = frozenset({
+    "get", "measure", "select", "where", "sort", "compare",
+    "test", "resolve", "find", "search", "show", "format",
+    "convertfrom", "convertto", "group", "join", "split", "read",
+})
+
+# Change verbs -> MUTATIVE (T3).  Any of these anywhere in the payload escalates
+# the WHOLE payload (composition rule mirror: any mutative stage -> T3).
+_PS_CHANGE_VERBS: FrozenSet[str] = frozenset({
+    "set", "new", "remove", "clear", "add", "move", "copy", "rename",
+    "start", "stop", "restart", "suspend", "resume", "register",
+    "unregister", "install", "uninstall", "import", "export", "write",
+    "enable", "disable", "mount", "dismount", "invoke", "push", "pop",
+    "save", "publish", "send", "update", "edit", "reset", "limit", "block",
+})
+
+# The `Out-*` verb is ambiguous: `Out-String`/`Out-Host`/`Out-Null` only render
+# to the pipeline/console (read), while `Out-File`/`Out-Printer` WRITE (change).
+# Split by noun rather than lumping the whole verb into one set.
+_PS_OUT_READ_NOUNS: FrozenSet[str] = frozenset({
+    "string", "host", "null", "default", "gridview",
+})
+
+# A Verb-Noun cmdlet token: a letter-led word, a hyphen, then a noun word.
+# A leading flag ("-Recurse", "-Command") cannot match -- the pattern requires
+# a letter immediately BEFORE the hyphen, and flags start with the hyphen.
+_PS_CMDLET_RE = _re.compile(r"\b([A-Za-z][A-Za-z]*)-([A-Za-z][A-Za-z0-9]*)\b")
+
+# Obfuscation / non-inspectable-execution markers -> T3 regardless of the
+# surrounding cmdlets.  These run BEFORE the cmdlet allowlist so a benign read
+# cmdlet piped into `iex` (`Get-Content x | iex`) cannot launder the payload.
+#   iex / iwr / icm  : bare aliases (Invoke-Expression / -WebRequest / -Command)
+#   call operators   : `&`/`.` at a statement boundary invoke an arbitrary target
+_PS_OBFUSCATION_RES: Tuple["_re.Pattern[str]", ...] = (
+    _re.compile(r"\b(iex|iwr|icm)\b", _re.IGNORECASE),
+    _re.compile(r"\binvoke-expression\b", _re.IGNORECASE),
+    # `&` or `.` used as a call operator at a statement boundary (start of
+    # payload or right after `;` `|` `{` `(` `&&`), followed by whitespace and a
+    # target.  Excludes a trailing path dot ("Get-ChildItem .") which has no
+    # following target.
+    _re.compile(r"(?:^|[;|{(]|&&)\s*[&.]\s+\S"),
+)
+
+# PowerShell `-EncodedCommand <base64>` (and its unambiguous abbreviations) hides
+# the real script inside a base64 blob that cannot be introspected -> T3.  Any
+# flag whose body is a prefix of "encodedcommand" (len>=2) or the documented
+# short alias "ec" is treated as the encoded-command flag.
+def _is_ps_encoded_flag(flag: str) -> bool:
+    body = flag.lstrip("-").lower()
+    if not body:
+        return False
+    if body == "ec":
+        return True
+    return len(body) >= 2 and "encodedcommand".startswith(body)
+
+
+# ---------------------------------------------------------------------------
 # Layer 1: Shell command extraction from string literals
 # ---------------------------------------------------------------------------
 _STRING_LITERAL_RE = _re.compile(r"""(?:['"])((?:[^'"\\\n]|\\.){3,})(?:['"])""")
@@ -1255,6 +1330,44 @@ CLI_FAMILY_LOOKUP: Dict[str, str] = {
 # Dangerous Flag Scanning
 # ============================================================================
 
+# Longest packed POSIX short-flag bundle the ``-rf`` heuristic will consider.
+# Real destructive bundles are short ("-rf"=2, "-rfi"=3, "-rfvd"=4); a token
+# longer than this is a long-form word flag ("-NoProfile", "-Recurse"), not a
+# bundle of single-character flags.
+_MAX_POSIX_SHORT_FLAG_CLUSTER = 4
+
+# A CamelCase boundary (an uppercase letter immediately followed by a lowercase
+# one) marks a word, not a flag bundle: "No"/"Pro" in "-NoProfile", "Fo" in
+# "-Force".  Genuine packed short-flag bundles are lowercase ("-rf", "-rfi").
+_CAMEL_WORD_RE = _re.compile(r"[A-Z][a-z]")
+
+
+def _is_posix_short_flag_cluster(flag_chars: str) -> bool:
+    """True when *flag_chars* looks like a genuine packed POSIX short-flag bundle.
+
+    ``flag_chars`` is the token body with the leading ``-`` already stripped
+    ("rf" for "-rf", "NoProfile" for "-NoProfile").  A packed bundle is a run of
+    single-character flags -- short, all letters, no CamelCase word boundary.  A
+    long single-dash word flag from the .NET/PowerShell/Java family
+    ("-NoProfile", "-Force", "-Recurse", "-ExecutionPolicy") is NOT a bundle and
+    must not be mined for stray ``r``/``f`` characters.
+
+    Trade-off (documented): an uppercase-led bundle such as ``-Rf`` is treated
+    as a word ("Rf" trips the CamelCase gate) and so is NOT matched here.  This
+    is deliberate -- excluding the ubiquitous ``-NoProfile`` false positive on
+    every PowerShell command is worth far more than catching the rare
+    uppercase-packed ``-Rf`` form, and the ``-R``/``-r``/``-f`` single flags are
+    still caught by their exact-match handling above.
+    """
+    if not flag_chars or len(flag_chars) > _MAX_POSIX_SHORT_FLAG_CLUSTER:
+        return False
+    if not flag_chars.isalpha():
+        return False
+    if _CAMEL_WORD_RE.search(flag_chars):
+        return False
+    return True
+
+
 def _scan_dangerous_flags(
     tokens: Union[List[str], tuple],
     cli: str,
@@ -1314,15 +1427,26 @@ def _scan_dangerous_flags(
                     found.append(token)
 
         # Check for compound short flags containing dangerous combos
-        # e.g., "-rfi" contains both -r and -f
+        # e.g., "-rfi" contains both -r and -f.
+        #
+        # This heuristic MUST fire only on genuine packed POSIX short-flag
+        # bundles ("-rf", "-rfi", "-fv"), never on a long single-dash *word*
+        # flag from the .NET/PowerShell/Java family ("-NoProfile", "-Force",
+        # "-Recurse", "-Xmx").  The old rule tested only ``"r" in chars and "f"
+        # in chars`` on any >2-char single-dash token, so "-NoProfile"
+        # (P**rof**ile carries both r and f) was mis-read as "-rf" -- turning
+        # EVERY PowerShell invocation (Claude Code prepends ``-NoProfile``) into
+        # a spurious T3.  ``_is_posix_short_flag_cluster`` gates the branch so a
+        # word-flag no longer matches, while real packed bundles still do.
         elif len(token) > 2 and token[0] == "-" and token[1] != "-":
             flag_chars = token[1:]
-            if "r" in flag_chars and "f" in flag_chars:
-                found.append(token)
-            elif "f" in flag_chars and cli in F_FLAG_MEANS_FORCE:
-                found.append(token)
-            elif "r" in flag_chars and cli in R_FLAG_MEANS_RECURSIVE_DELETE:
-                found.append(token)
+            if _is_posix_short_flag_cluster(flag_chars):
+                if "r" in flag_chars and "f" in flag_chars:
+                    found.append(token)
+                elif "f" in flag_chars and cli in F_FLAG_MEANS_FORCE:
+                    found.append(token)
+                elif "r" in flag_chars and cli in R_FLAG_MEANS_RECURSIVE_DELETE:
+                    found.append(token)
 
     return tuple(found)
 
@@ -1644,6 +1768,22 @@ def detect_mutative_command(
     py_module_result = _check_python_module_runner(base_cmd, semantics)
     if py_module_result is not None:
         return py_module_result
+
+    # --- Step 1c-ps: PowerShell command / script introspection ---
+    # ``powershell.exe -Command "<script>"`` collapses its payload into a single
+    # opaque token, so the POSIX verb scanner never sees the cmdlets inside it --
+    # a destructive ``Remove-Item -Recurse`` slips through as safe-by-elimination
+    # while every benign PowerShell call is over-blocked.  Introspect the payload
+    # of ``-Command``/``-c`` (and ``-File <script.ps1>`` via its file contents),
+    # classify each cmdlet by its Verb-Noun verb against the approved-verb
+    # taxonomy, escalate the WHOLE payload to T3 on any change/unknown verb or
+    # obfuscation marker, and fall back to conservative T3 on an un-inspectable
+    # payload.  Returns None when the command is not a PowerShell interpreter.
+    ps_result = _check_powershell_command(
+        command, base_cmd, family, semantics, cwd=cwd, _depth=_depth,
+    )
+    if ps_result is not None:
+        return ps_result
 
     # --- Step 1d: Script-file analysis (python3 deploy.py, bash setup.sh, ./x) ---
     # An interpreter invoked with a script FILE as a positional argument, or a
@@ -2555,6 +2695,181 @@ def _resolve_script_argument(
             if invoked.endswith(ext):
                 return (invoked, lane)
     return None
+
+
+def _classify_powershell_verb(verb: str, noun: str) -> str:
+    """Classify a single PowerShell cmdlet by its Verb-Noun verb.
+
+    Returns one of ``"read"`` (non-mutative), ``"change"`` (mutative), or
+    ``"unknown"`` (verb in neither approved set -> conservative T3).  ``verb``
+    and ``noun`` are already lowercased.  The ``Out-*`` verb is split by noun:
+    ``Out-String``/``Out-Host``/``Out-Null`` render only (read), while
+    ``Out-File``/``Out-Printer`` write (change).
+    """
+    if verb == "out":
+        return "read" if noun in _PS_OUT_READ_NOUNS else "change"
+    if verb in _PS_READ_VERBS:
+        return "read"
+    if verb in _PS_CHANGE_VERBS:
+        return "change"
+    return "unknown"
+
+
+def _classify_powershell_payload(
+    payload: str, family: str, source: str,
+) -> MutativeResult:
+    """Classify a PowerShell script payload by cmdlet verb taxonomy.
+
+    ``payload`` is the raw text of a ``-Command`` string or a ``.ps1`` file.
+    Rules (all conservative / positive-allowlist):
+      1. Obfuscation markers (``iex``/``iwr``/``icm``, ``Invoke-Expression``,
+         a ``&``/``.`` call operator) escalate to T3 FIRST -- before the cmdlet
+         scan -- so a read cmdlet piped into ``iex`` cannot launder the payload.
+      2. Every Verb-Noun cmdlet is classified by its verb.  ANY change or
+         unknown verb escalates the WHOLE payload to T3 (composition mirror).
+      3. To drop BELOW T3 every cmdlet must be a read verb AND at least one
+         cmdlet must be present -- a payload with no recognizable cmdlet is
+         T3 (cannot prove it is read-only; no safe-by-elimination here).
+    """
+    # 1. Obfuscation / non-inspectable execution.
+    for rx in _PS_OBFUSCATION_RES:
+        if rx.search(payload):
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="powershell-obfuscation",
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"PowerShell {source} contains an obfuscation / "
+                    f"arbitrary-execution marker (iex / call-operator) "
+                    f"-- requires approval"
+                ),
+            )
+
+    # 2. Verb-Noun cmdlet scan.
+    matches = _PS_CMDLET_RE.findall(payload)
+    if not matches:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="powershell-uninspectable",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"PowerShell {source} has no recognizable Verb-Noun cmdlet "
+                f"-- cannot prove it is read-only (conservative default)"
+            ),
+        )
+
+    for verb, noun in matches:
+        v, n = verb.lower(), noun.lower()
+        kind = _classify_powershell_verb(v, n)
+        if kind == "change":
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=f"{v}-{n}",
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"PowerShell {source} invokes change cmdlet "
+                    f"'{verb}-{noun}' (verb '{verb}') -- requires approval"
+                ),
+            )
+        if kind == "unknown":
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=f"{v}-{n}",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"PowerShell {source} invokes cmdlet '{verb}-{noun}' whose "
+                    f"verb '{verb}' is not an approved read verb "
+                    f"(conservative default)"
+                ),
+            )
+
+    # 3. Every cmdlet is a read verb.
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_READ_ONLY,
+        verb="powershell-read",
+        cli_family=family,
+        confidence="high",
+        reason=(
+            f"PowerShell {source}: all cmdlets are approved read verbs "
+            f"(Get/Measure/Select/... ) -- non-mutative"
+        ),
+    )
+
+
+def _check_powershell_command(
+    command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Classify a PowerShell invocation by introspecting its payload.
+
+    Recognizes ``powershell``/``powershell.exe``/``pwsh``/``pwsh.exe``.  The
+    payload source is, in priority order:
+      * ``-EncodedCommand <base64>`` -> T3 immediately (non-inspectable).
+      * ``-File <script.ps1>``       -> read the file and classify its contents
+        (unreadable -> conservative T3, mirroring the script-file lane).
+      * ``-Command``/``-c`` inline   -> classify the raw command text (the
+        interpreter flags carry no Verb-Noun cmdlet, so scanning the whole
+        string is safe and captures the payload regardless of quoting).
+      * no explicit payload flag      -> scan the whole command text anyway; a
+        bare interactive ``powershell`` with no cmdlet falls to conservative T3.
+
+    Returns ``None`` when ``base_cmd`` is not a PowerShell interpreter.
+    """
+    if base_cmd not in _POWERSHELL_INTERPRETERS:
+        return None
+
+    flag_tokens = set(semantics.flag_tokens)
+
+    # -EncodedCommand: base64 payload is not inspectable -> conservative T3.
+    if any(_is_ps_encoded_flag(f) for f in flag_tokens):
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="powershell-encodedcommand",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                "PowerShell invoked with -EncodedCommand (base64 payload) "
+                "-- cannot introspect the script, requires approval"
+            ),
+        )
+
+    # -File <script.ps1>: classify the referenced file's contents.  Routed off
+    # an actual ``.ps1`` positional rather than the ``-File``/``-f`` flag: the
+    # tokenizer normalizes a long single-dash flag into its single chars
+    # (``-NoProfile`` -> ``-n -o ... -f ...``), so a flag-set membership test for
+    # ``-f`` would false-positive on every ``-NoProfile`` invocation.  A ``.ps1``
+    # positional is the reliable, collision-free signal.
+    ps_files = [
+        t for t in semantics.non_flag_tokens if t.lower().endswith(".ps1")
+    ]
+    if ps_files:
+        content = _read_script_content(ps_files[0], cwd=cwd)
+        if content is None:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="powershell-file-unreadable",
+                cli_family=family,
+                confidence="medium",
+                reason=(
+                    f"PowerShell -File '{ps_files[0]}' is not a readable file "
+                    f"-- cannot verify the payload (conservative default)"
+                ),
+            )
+        return _classify_powershell_payload(content, family, "script file")
+
+    # -Command / -c inline, or no explicit payload flag: scan the command text.
+    return _classify_powershell_payload(command, family, "-Command payload")
 
 
 def _read_script_content(

