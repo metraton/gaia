@@ -1121,17 +1121,30 @@ class TestDetectMutativeCommand:
         ("git branch -M old-name new-name", "-M"),
         ("git checkout --force main", "--force"),
         ("git reset --hard HEAD~1", "--hard"),
+        # Short-form force (-f) must escalate on git the same way --force does.
+        # Regression: git was absent from F_FLAG_MEANS_FORCE, so `git mv -f`
+        # (force-overwrite of an existing destination) silently classified T0.
+        ("git mv -f src existing_dst", "-f"),
+        ("git checkout -f main", "-f"),
     ], ids=[
         "branch-force-delete",
         "branch-force-move",
         "checkout-force",
         "reset-hard",
+        "mv-short-force",
+        "checkout-short-force",
     ])
     def test_git_local_with_dangerous_flags_mutative(self, cmd, expected_flag):
         """Local git subcommands with dangerous flags must remain mutative."""
         result = detect_mutative_command(cmd)
         assert result.is_mutative is True
         assert expected_flag in result.dangerous_flags
+
+    def test_git_mv_plain_is_non_mutative(self):
+        """A plain `git mv` (no force, non-protected target) stays local-safe."""
+        result = detect_mutative_command("git mv old.py new.py")
+        assert result.is_mutative is False
+        assert result.verb == "mv"
 
     # ------------------------------------------------------------------
     # Git local commands: correct category assignment
@@ -3755,3 +3768,85 @@ class TestGaiaScheduleTierGroup:
         )
         assert ("gaia", "schedule") in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
         assert COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS[("gaia", "schedule")] == frozenset({"sync", "remove"})
+
+
+class TestScriptRecursionCycleGuard:
+    """A script/npm body that references its OWN path (or a mutual A<->B cycle)
+    must NOT recurse forever.
+
+    Regression for the release-critical crash: classifying
+    ``bash bin/validate-sandbox.sh`` blew Python's stack with
+    "maximum recursion depth exceeded". Root cause: the script-body classifier
+    re-invokes ``detect_mutative_command`` per line, and validate-sandbox.sh's
+    usage() heredoc contains the literal line ``bin/validate-sandbox.sh
+    [--version ...]`` -- a bare invocation of the SAME file -- so the classifier
+    re-read and re-classified it without bound. ``_MAX_SCRIPT_RECURSION_DEPTH``
+    caps body descent: at the cap the body is not reopened and the line
+    classifies by ordinary token scan, breaking the cycle deterministically.
+    """
+
+    def _run_bounded(self, cmd, cwd=None):
+        """Run detection under a LOW recursion limit so a regression (unbounded
+        descent) raises RecursionError deterministically instead of relying on
+        the interpreter's large default limit."""
+        prev = sys.getrecursionlimit()
+        sys.setrecursionlimit(300)
+        try:
+            return detect_mutative_command(cmd, cwd=cwd)
+        finally:
+            sys.setrecursionlimit(prev)
+
+    def test_self_referencing_shell_script_does_not_recurse(self, tmp_path):
+        """A shell script whose body names its own relative path (mirrors the
+        validate-sandbox.sh usage heredoc) terminates instead of recursing."""
+        (tmp_path / "bin").mkdir()
+        script = tmp_path / "bin" / "self.sh"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "echo usage:\n"
+            "bin/self.sh --version x --target sandbox\n"
+        )
+        # Must not raise RecursionError.
+        result = self._run_bounded("bash bin/self.sh", cwd=str(tmp_path))
+        assert isinstance(result, MutativeResult)
+
+    def test_mutual_reference_scripts_do_not_recurse(self, tmp_path):
+        """A <-> B mutual reference (a.sh runs b.sh, b.sh runs a.sh) terminates."""
+        (tmp_path / "bin").mkdir()
+        (tmp_path / "bin" / "a.sh").write_text("bin/b.sh\n")
+        (tmp_path / "bin" / "b.sh").write_text("bin/a.sh\n")
+        result = self._run_bounded("bash bin/a.sh", cwd=str(tmp_path))
+        assert isinstance(result, MutativeResult)
+
+    def test_npm_run_self_reference_does_not_recurse(self, tmp_path):
+        """An ``npm run`` whose body re-invokes the same script terminates."""
+        (tmp_path / "package.json").write_text(
+            '{"scripts": {"loop": "npm run loop"}}'
+        )
+        result = self._run_bounded("npm run loop", cwd=str(tmp_path))
+        assert isinstance(result, MutativeResult)
+
+    def test_self_referencing_script_still_detects_a_real_mutation(self, tmp_path):
+        """The cycle guard must not mask a genuine mutation living ALONGSIDE the
+        self-reference: a script that both names its own path AND runs a
+        destructive command still classifies mutative."""
+        (tmp_path / "bin").mkdir()
+        script = tmp_path / "bin" / "self.sh"
+        script.write_text(
+            "bin/self.sh --help\n"
+            "kubectl apply -f manifest.yaml\n"
+        )
+        result = self._run_bounded("bash bin/self.sh", cwd=str(tmp_path))
+        assert result.is_mutative is True
+
+    def test_deep_but_acyclic_chain_is_not_truncated(self, tmp_path):
+        """A legitimate acyclic chain a few levels deep still descends far
+        enough to catch a mutation at the bottom (the cap only stops cycles,
+        not real nesting)."""
+        (tmp_path / "bin").mkdir()
+        # depth-3 chain: l0 -> l1 -> l2, mutation at l2
+        (tmp_path / "bin" / "l0.sh").write_text("bin/l1.sh\n")
+        (tmp_path / "bin" / "l1.sh").write_text("bin/l2.sh\n")
+        (tmp_path / "bin" / "l2.sh").write_text("kubectl delete pod x\n")
+        result = self._run_bounded("bash bin/l0.sh", cwd=str(tmp_path))
+        assert result.is_mutative is True

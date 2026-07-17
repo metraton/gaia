@@ -65,6 +65,9 @@ from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.subagent_memory_write_guard import (
     check as check_subagent_memory_write,
 )
+from ..security.protected_path_guard import (
+    check as check_protected_path_write,
+)
 from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
@@ -494,6 +497,34 @@ class BashValidator:
                 suggestions=[
                     "Emit a `memorialize_suggestions` block in your "
                     "agent_contract_handoff instead.",
+                ],
+            )
+
+        # ================================================================
+        # PROTECTED-PATH WRITE GUARD
+        # Reject any command that writes into the protected .claude/ tree
+        # (the Gaia hooks directory or .claude settings files). The
+        # Write/Edit sensitive-path backstop only inspects file_path params
+        # and never sees a Bash command string, so a working-tree writer such
+        # as `git mv payload.py .claude/hooks/pre_tool_use.py` (short-circuited
+        # to non-mutative via GIT_LOCAL_SAFE_SUBCOMMANDS) would otherwise
+        # overwrite hook code with no consent. Categorical deny, NOT approvable
+        # -- the .claude/ tree is a hard security boundary. Runs on the full
+        # (footer-normalized) command BEFORE unwrap/decompose so compound
+        # chains and quoted forms are inspected intact.
+        # ================================================================
+        pp_write_allowed, pp_write_reason = check_protected_path_write(command)
+        if not pp_write_allowed:
+            logger.warning(
+                "BLOCKED protected-path write via Bash: %s", command[:120]
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=pp_write_reason,
+                suggestions=[
+                    "Edit the SOURCE under gaia/ and run `gaia install` to "
+                    "propagate; never modify .claude/ directly.",
                 ],
             )
 
@@ -1239,13 +1270,23 @@ class BashValidator:
         Both newline-anchored footer LINES and footers carried in a SECOND
         ``-m "..."`` argument (no preceding newline) are handled.
 
-        LIMITATION -- ``git commit -F <file>`` / ``--file=<file>``: when the
-        message body lives in a file, the footer is NOT in the command string
-        the PreToolUse hook receives. This stripper CANNOT see or remove it,
-        and deliberately does NOT read the referenced file (reading arbitrary
-        paths from a hook would be an unbounded side effect and a new attack
-        surface). Footer suppression for ``-F`` commits is therefore out of
-        scope here and must be enforced elsewhere (e.g. a commit-msg git hook).
+        RESIDUAL GAP (accepted, no longer covered by a second layer) --
+        this in-Bash command-string stripper is the ONLY remaining footer
+        suppression path. It sees only footers present as literal text in the
+        Bash ``command`` string it receives, so footers still leak on any path
+        whose body is NOT in that string:
+          - ``git commit -F <file>`` / ``--file=<file>``: the message body lives
+            in a file; the footer is not in the command string. This stripper
+            deliberately does NOT read the referenced file (reading arbitrary
+            paths from a hook would be an unbounded side effect and a new attack
+            surface).
+          - a commit made outside Claude Code's Bash tool entirely -- a plain
+            terminal ``git commit``, or an IDE / editor commit.
+        A ``commit-msg`` git hook previously backstopped these paths at the git
+        level, but it was removed (commit 4dd88f2, ``git-hooks/commit-msg``), so
+        there is now no layer that catches them. Closing this gap would require
+        reintroducing a git-level hook; it is out of scope for the command-string
+        stripper here.
 
         Args:
             command: Raw command string

@@ -602,6 +602,20 @@ fi
 # isolated DB.
 wire_workspace
 
+# Isolate the PARENT Claude session identity before running the read-side
+# checks. This harness runs headless -- there is NO live Claude Code session
+# for the sandbox workspace -- but when invoked from inside a Claude session
+# (e.g. `gaia release check`), the child `gaia doctor` inherits the parent's
+# CLAUDE_CODE_SESSION_ID/CLAUDE_SESSION_ID. The "Hooks active & fresh" doctor
+# check then compares the PARENT session's pinned build (a DIFFERENT workspace/
+# install) against this sandbox's freshly-installed build, reports a spurious
+# STALE warning, and `gaia doctor` exits rc=1 -- which this gate treats as a
+# hard failure even though the sandbox install is perfectly fresh. Unsetting
+# the session vars makes the check see "no live session" and return INFO (its
+# correct headless verdict), mirroring how the sandbox already isolates
+# GAIA_DATA_DIR/GAIA_DB from the user's global state.
+unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID
+
 echo
 echo "=== Running checks ==="
 

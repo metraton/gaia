@@ -42,6 +42,8 @@ modules/
 │   ├── blocked_commands.py # Blocked patterns by category
 │   ├── mutative_verbs.py   # CLI-agnostic verb detector, nonce-based deny
 │   ├── subagent_memory_write_guard.py # Blocks `gaia memory` writes from subagents (non-operator)
+│   ├── gaia_db_write_guard.py # Blocks direct sqlite3 writes to gaia.db (categorical)
+│   ├── protected_path_guard.py # Blocks Bash writes into the .claude/ tree (hooks/settings) (categorical)
 │   ├── source_lexer.py     # Per-language comment/string lexer for the JS script lane
 │   ├── approval_grants.py  # Nonce-based approval grant management
 │   ├── approval_constants.py # Approval system constants
@@ -169,6 +171,7 @@ All security rules (blocked patterns, mutative verbs, tiers) are hardcoded in th
 ### Validation Order (Defense-in-Depth)
 bash_validator checks commands in this order (short-circuit on first match):
 0. **Indirect execution detection** — `bash -c`, `eval`, `python -c` etc. → ask or block
+0b. **Categorical write guards** — gaia_db_write_guard.py (direct sqlite3 writes to gaia.db), subagent_memory_write_guard.py (`gaia memory` writes from non-operator subagents), protected_path_guard.py (Bash writes into the `.claude/` hooks/settings tree) → exit 2, not approvable
 1. **Blocked commands** (blocked_commands.py) — permanently denied patterns, exit 2
 2. **Claude footer stripping** — transparent via updatedInput
 3. **Commit message validation** — conventional commits enforcement

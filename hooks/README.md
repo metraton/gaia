@@ -28,9 +28,11 @@ User sends prompt
 Orchestrator dispatches agent (Task/Agent tool call)
         |
 [pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage, Write, Edit
-        |  Bash calls: security gate (blocked_commands, mutative_verbs, cloud_pipe_validator)
+        |  Bash calls: security gate (blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard)
         |  Task/Agent calls: context injection via DB-backed contracts (project_context_contracts)
         |  Write/Edit calls: protected path validation (_is_protected())
+        |  NOTE: .claude/ tree is protected on BOTH surfaces -- _is_protected() for Write/Edit
+        |        file_path, protected_path_guard.py for Bash command strings (categorical deny)
         v
     ALLOWED / BLOCKED / ask dialog (T3)
         |
@@ -55,7 +57,7 @@ Every hook entry point is thin by design. The entry point reads stdin, calls the
 ```
 hooks/pre_tool_use.py              <- Entry point: stdin/stdout glue only
   -> adapters/claude_code.py       <- Adapter: parses event, dispatches to modules
-    -> modules/security/           <- blocked_commands, mutative_verbs, cloud_pipe_validator
+    -> modules/security/           <- blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard
     -> modules/context/            <- context_injector, contracts_loader
     -> modules/agents/             <- contract_validator, skill_injection
     -> modules/validation/         <- commit_validator

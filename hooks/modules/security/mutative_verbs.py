@@ -546,6 +546,21 @@ _SHEBANG_EXT_LANES: Dict[str, str] = {
 # enough to catch the mutative calls an evasion script front-loads.
 _MAX_SCRIPT_READ_BYTES = 256 * 1024
 
+# Maximum nesting depth for script-body / npm-run / exec-sink re-classification.
+# Each time detection descends INTO a referenced body (an interpreter reading a
+# script file, `npm run` resolving a package.json entry, an exec-sink string, or
+# the gaia-CLI re-dispatch) the depth increments by one.  A referenced body that
+# names its OWN path -- even in a usage/help heredoc such as validate-sandbox.sh's
+# ``bin/validate-sandbox.sh [--version ...]`` line -- or a mutual A->B->A cycle
+# would otherwise re-read and re-classify the same file forever, blowing Python's
+# stack ("maximum recursion depth exceeded") and crashing the PreToolUse hook.
+# Once the descent reaches this cap the body is NO LONGER opened: the invocation
+# classifies by ordinary token scan instead (safe by elimination), which breaks
+# the cycle deterministically.  Legitimate nesting is only a few levels deep
+# (`npm run x` -> `bash a.sh` -> `bash b.sh`), so this cap never truncates a real
+# chain; it exists solely to guarantee termination on a self/mutual reference.
+_MAX_SCRIPT_RECURSION_DEPTH = 12
+
 # Interpreter flags that CONSUME the next token as their value AND mean the
 # invocation has no script-file positional (the payload is inline code or a
 # module name).  When one of these is present the script-file lane defers --
@@ -718,7 +733,7 @@ _EXEC_SINK_PERCENT_X_RE = _re.compile(r"%x[\{\(\[]([^\}\)\]\n]{2,})[\}\)\]]")
 
 def _scan_exec_sink_string_args(
     code: str, family: str, shell_backticks: bool = True,
-    cwd: "Optional[str]" = None,
+    cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> "Optional[MutativeResult]":
     """Extract shell commands handed to exec sinks and re-classify them.
 
@@ -776,7 +791,7 @@ def _scan_exec_sink_string_args(
                         f"{blocked.category}"
                     ),
                 )
-        inner_result = detect_mutative_command(inner, cwd=cwd)
+        inner_result = detect_mutative_command(inner, cwd=cwd, _depth=_depth)
         if inner_result.is_mutative:
             return MutativeResult(
                 is_mutative=True,
@@ -1164,9 +1179,18 @@ DANGEROUS_FLAGS: Dict[str, str] = {
 GIT_HARD_RESET_FLAGS: FrozenSet[str] = frozenset({"--hard"})
 
 # CLIs where -f means --force (not --file or --format)
+#
+# `git` is included so the short-form force flag escalates the same way the
+# long-form `--force` (an ALWAYS flag in DANGEROUS_FLAGS) already does. Without
+# it, `git mv -f src existing_dst` (force-overwrite of the destination) and
+# `git checkout -f` (discard uncommitted changes) silently classified as
+# non-mutative because their subcommands live in GIT_LOCAL_SAFE_SUBCOMMANDS and
+# `git` was absent here -- the `-f` was never collected by _scan_dangerous_flags.
+# This mirrors D_FLAG_MEANS_FORCE_DELETE / M_FLAG_MEANS_FORCE_MOVE, which already
+# list `git` for `-D` / `-M`.
 F_FLAG_MEANS_FORCE: FrozenSet[str] = frozenset({
     "rm", "cp", "mv", "ln", "docker", "podman",
-    "kubectl", "helm", "apt-get", "brew",
+    "kubectl", "helm", "apt-get", "brew", "git",
 })
 
 # CLIs where -r means recursive delete (not --region or --role)
@@ -1409,6 +1433,7 @@ def _is_subcommand_identifier(token: str) -> bool:
 @functools.lru_cache(maxsize=128)
 def detect_mutative_command(
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
+    _depth: int = 0,
 ) -> MutativeResult:
     """Analyze a shell command and return a structured mutative assessment.
 
@@ -1459,8 +1484,12 @@ def detect_mutative_command(
     # corrects the cwd the script path resolves against.
     peeled_cwd, remainder, peeled = _peel_leading_cd(command, cwd)
     if peeled and remainder:
+        # Peeling a leading `cd` re-classifies the SAME command (minus the cd),
+        # not a nested body -- carry _depth through unchanged so the recursion
+        # budget is not consumed by cwd normalization.
         return detect_mutative_command(
             remainder, from_source_code=from_source_code, cwd=peeled_cwd,
+            _depth=_depth,
         )
 
     semantics = analyze_command(command)
@@ -1625,7 +1654,7 @@ def detect_mutative_command(
     # token) is still inspected.  Returns None when the command is not a
     # recognized script-file shape, so detection continues normally.
     script_result = _check_script_file(
-        command, base_cmd, family, semantics, cwd=cwd,
+        command, base_cmd, family, semantics, cwd=cwd, _depth=_depth,
     )
     if script_result is not None:
         return script_result
@@ -1637,7 +1666,9 @@ def detect_mutative_command(
     # to its real package.json body and classify THAT (mirroring the script-file
     # lane); `npm ci` is unconditionally mutative; unresolvable -> conservative
     # T3.  Returns None for other npm forms so ordinary detection continues.
-    npm_result = _check_npm_script_runner(base_cmd, family, semantics, cwd=cwd)
+    npm_result = _check_npm_script_runner(
+        base_cmd, family, semantics, cwd=cwd, _depth=_depth,
+    )
     if npm_result is not None:
         return npm_result
 
@@ -2300,6 +2331,7 @@ _GAIA_DISPATCHER_SIGNATURE: Tuple[str, ...] = ("Unified Gaia CLI", "_discover_pl
 
 def _check_gaia_cli_dispatcher(
     script_path: str, content: str, semantics: "CommandSemantics", family: str,
+    _depth: int = 0,
 ) -> "Optional[MutativeResult]":
     """Re-dispatch ``<python> <path>/bin/gaia <subcmd> ...`` as ``gaia <subcmd> ...``.
 
@@ -2360,7 +2392,7 @@ def _check_gaia_cli_dispatcher(
     import shlex
 
     rewritten = " ".join(shlex.quote(t) for t in ("gaia", *sub_args))
-    inner = detect_mutative_command(rewritten)
+    inner = detect_mutative_command(rewritten, _depth=_depth + 1)
     return MutativeResult(
         is_mutative=inner.is_mutative,
         category=inner.category,
@@ -2559,7 +2591,7 @@ def _read_script_content(
 
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
-    cwd: "Optional[str]" = None,
+    cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> "Optional[MutativeResult]":
     """Classify ``<interpreter> <file>`` / ``./script`` by the file's content.
 
@@ -2570,8 +2602,20 @@ def _check_script_file(
     read-only shell script both stay non-mutative, so the existing
     overbroad-classification complaint is not reintroduced.
 
+    ``_depth`` is the current body-descent depth.  At ``_MAX_SCRIPT_RECURSION_
+    DEPTH`` the script body is NOT opened -- returning ``None`` here makes the
+    invocation classify by ordinary token scan instead, which breaks a self- or
+    mutual-reference cycle (a script whose text names its own path re-reads and
+    re-classifies itself forever otherwise -- see the constant's docstring).
+
     Returns ``None`` when the command is not a script-file invocation.
     """
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        # Recursion budget exhausted: refuse to descend into (re-read) the
+        # referenced body. Falling through to ordinary token classification is
+        # the deterministic cycle break.
+        return None
+
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         return None
@@ -2630,7 +2674,9 @@ def _check_script_file(
     # the SUBCOMMAND, exactly as the launcher form `gaia <cmd>` is. Recognize the
     # dispatcher and re-dispatch to `gaia <args...>` classification. Returns None
     # for any non-dispatcher script, so ordinary analysis continues.
-    gaia_result = _check_gaia_cli_dispatcher(script_path, content, semantics, family)
+    gaia_result = _check_gaia_cli_dispatcher(
+        script_path, content, semantics, family, _depth=_depth,
+    )
     if gaia_result is not None:
         return gaia_result
 
@@ -2674,7 +2720,7 @@ def _check_script_file(
         spec = _spec_for_script(base_cmd, script_path)
         if spec is not None:
             return _classify_source_with_lexer(
-                content, script_path, family, spec, cwd=cwd,
+                content, script_path, family, spec, cwd=cwd, _depth=_depth + 1,
             )
 
     # "code" lane (non-shell source: ruby/perl/php) suppresses camelCase
@@ -2685,13 +2731,14 @@ def _check_script_file(
     # script was read from, not the hook's own cwd (see _classify_script_
     # content_by_regex's docstring).
     return _classify_script_content_by_regex(
-        content, script_path, family, from_source_code=(lane == "code"), cwd=cwd,
+        content, script_path, family, from_source_code=(lane == "code"),
+        cwd=cwd, _depth=_depth + 1,
     )
 
 
 def _classify_source_with_lexer(
     content: str, script_path: str, family: str, spec,
-    cwd: "Optional[str]" = None,
+    cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> MutativeResult:
     """Classify lexed non-shell source (currently the JS family) by real effect.
 
@@ -2759,7 +2806,7 @@ def _classify_source_with_lexer(
         if sink_line:
             sink_result = _scan_exec_sink_string_args(
                 sink_line, family, shell_backticks=spec.backticks_are_exec,
-                cwd=cwd,
+                cwd=cwd, _depth=_depth,
             )
             if sink_result is not None and sink_result.is_mutative:
                 return MutativeResult(
@@ -2788,6 +2835,7 @@ def _classify_source_with_lexer(
 def _classify_script_content_by_regex(
     content: str, script_path: str, family: str,
     from_source_code: bool = False, cwd: "Optional[str]" = None,
+    _depth: int = 0,
 ) -> MutativeResult:
     """Classify shell / non-Python script content via the existing regex layer.
 
@@ -2839,7 +2887,7 @@ def _classify_script_content_by_regex(
                 )
 
         line_result = detect_mutative_command(
-            line, from_source_code=from_source_code, cwd=cwd,
+            line, from_source_code=from_source_code, cwd=cwd, _depth=_depth,
         )
         if line_result.is_mutative:
             return MutativeResult(
@@ -2862,7 +2910,9 @@ def _classify_script_content_by_regex(
         # token).  Extract the command handed to a known exec sink and
         # re-classify it; escalate ONLY when the inner command is itself
         # mutative/blocked, so a benign ``execSync("ls")`` is not escalated.
-        sink_result = _scan_exec_sink_string_args(line, family, cwd=cwd)
+        sink_result = _scan_exec_sink_string_args(
+            line, family, cwd=cwd, _depth=_depth,
+        )
         if sink_result is not None and sink_result.is_mutative:
             return MutativeResult(
                 is_mutative=True,
@@ -2974,7 +3024,7 @@ def _extract_npm_prefix_override(tokens: "Tuple[str, ...]") -> "Optional[str]":
 
 def _check_npm_script_runner(
     base_cmd: str, family: str, semantics: "CommandSemantics",
-    cwd: "Optional[str]" = None,
+    cwd: "Optional[str]" = None, _depth: int = 0,
 ) -> "Optional[MutativeResult]":
     """Classify ``npm run <script>`` / ``npm ci`` by real effect, not by name.
 
@@ -3030,6 +3080,13 @@ def _check_npm_script_runner(
         return None
 
     script_name = non_flag[1]
+
+    # Recursion budget exhausted: refuse to descend into (re-resolve and
+    # re-classify) the package.json body. Returning None lets the invocation
+    # classify by ordinary token scan, breaking an npm-run self/mutual cycle.
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return None
+
     body = _resolve_npm_script_body(script_name, cwd=cwd)
     if body is None:
         # Conservative default: the script body cannot be resolved, so we
@@ -3054,6 +3111,7 @@ def _check_npm_script_runner(
     )
     inner = _classify_script_content_by_regex(
         segments, f"package.json:scripts.{script_name}", family, cwd=cwd,
+        _depth=_depth + 1,
     )
     return MutativeResult(
         is_mutative=inner.is_mutative,
