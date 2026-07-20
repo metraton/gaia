@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gaia context prune-workspaces --yes` is now correctly classified T3 (state-mutating): it hard-deletes `workspaces` rows, but the `context` group carried no mutative verb and classified read-only by elimination. Only the destructive subcommand is anchored (`COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES[("gaia","context")]`); other `context` subcommands stay read-only. Separately, the Step 5 ALWAYS-dangerous flag scan now runs before the read-only-verb early return, so `git fetch --prune` (a read-only verb with a destructive flag) escalates to T3 instead of being skipped.
 - SubagentStop M4 fence footgun: a turn that built its contract via the `gaia contract` CLI and ran `gaia contract finalize` (valid terminal row) but forgot to echo the fenced `agent_contract_handoff` in its response text was hard-rejected by the full-verdict gate. `adapt_subagent_stop` now reconstructs the envelope from the agent's own finalized draft when the fence is missing, so the gate parses the completed contract; non-fatal (falls back to the unchanged gate when no finalized row exists). The minted-agent-id resolver was factored into a shared `resolve_minted_agent_id` reused by the backstop, truncation salvage, and this path.
 
+## [5.2.0-rc.4] - 2026-07-20
+
 ## [5.2.0-rc.3] - 2026-07-17
 
 ## [5.2.0-rc.2] - 2026-07-17

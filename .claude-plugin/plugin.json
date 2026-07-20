@@ -1,6 +1,6 @@
 {
   "name": "gaia",
-  "version": "5.2.0-rc.3",
+  "version": "5.2.0-rc.4",
   "description": "Security-first multi-agent orchestration for Claude Code. Agents span the full lifecycle; commands are risk-classified \u2014 reads run free, state changes need approval, irreversible ops blocked.",
   "author": {
     "name": "jaguilar87",
