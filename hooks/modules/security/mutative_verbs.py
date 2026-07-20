@@ -652,12 +652,16 @@ _POWERSHELL_INTERPRETERS: FrozenSet[str] = frozenset({
 # approved-verb groups (Common/Data/Diagnostic) that only OBSERVE state.
 _PS_READ_VERBS: FrozenSet[str] = frozenset({
     "get", "measure", "select", "where", "sort", "compare",
-    "test", "resolve", "find", "search", "show", "format",
+    "test", "resolve", "find", "search", "show",
     "convertfrom", "convertto", "group", "join", "split", "read",
+    # NOTE: "format" is NOT here -- it is ambiguous by noun (see
+    # _PS_FORMAT_READ_NOUNS / _classify_powershell_verb): Format-Table/List/Wide
+    # only render (read) while Format-Volume/Format-* of storage WRITE (change).
 })
 
-# Change verbs -> MUTATIVE (T3).  Any of these anywhere in the payload escalates
-# the WHOLE payload (composition rule mirror: any mutative stage -> T3).
+# Change verbs -> MUTATIVE (T3).  Any of these at a command position (the first
+# cmdlet of any composition stage) escalates the WHOLE payload (composition rule
+# mirror: any mutative stage -> T3).
 _PS_CHANGE_VERBS: FrozenSet[str] = frozenset({
     "set", "new", "remove", "clear", "add", "move", "copy", "rename",
     "start", "stop", "restart", "suspend", "resume", "register",
@@ -673,10 +677,66 @@ _PS_OUT_READ_NOUNS: FrozenSet[str] = frozenset({
     "string", "host", "null", "default", "gridview",
 })
 
+# The `Format-*` verb is likewise ambiguous by noun: `Format-Table`/`Format-List`/
+# `Format-Wide`/`Format-Custom`/`Format-Hex` only render for display (read), while
+# `Format-Volume` and any other storage `Format-*` DESTROY data (change/T3).
+# Verb alone is insufficient -- classify by noun.
+_PS_FORMAT_READ_NOUNS: FrozenSet[str] = frozenset({
+    "table", "list", "wide", "custom", "hex", "default",
+})
+
+# Union of every recognized PowerShell verb (read + change + the two
+# noun-ambiguous verbs).  Used to decide whether a lowercase bare Verb-Noun
+# token is actually a PowerShell cmdlet vs an ordinary hyphenated POSIX command
+# name (`docker-compose`, `pre-commit`): a lowercase token counts as a cmdlet
+# only when its verb is a real PS verb; a PascalCase token (`Remove-Item`,
+# `Frobnicate-Thing`) is a cmdlet by its casing alone (see the bare-cmdlet lane).
+_PS_ALL_VERBS: FrozenSet[str] = (
+    _PS_READ_VERBS | _PS_CHANGE_VERBS | frozenset({"out", "format"})
+)
+
 # A Verb-Noun cmdlet token: a letter-led word, a hyphen, then a noun word.
 # A leading flag ("-Recurse", "-Command") cannot match -- the pattern requires
 # a letter immediately BEFORE the hyphen, and flags start with the hyphen.
 _PS_CMDLET_RE = _re.compile(r"\b([A-Za-z][A-Za-z]*)-([A-Za-z][A-Za-z0-9]*)\b")
+
+# Composition operators that separate pipeline / statement stages:  ';', '|',
+# '&&', '||'.  The cmdlet/verb classification runs PER STAGE on the FIRST
+# cmdlet-shaped token only (the command position); a Verb-Noun-shaped PATH or
+# FLAG argument ('C:\x\my-folder', 'a-b\file.txt') sits in an ARGUMENT position
+# -- AFTER the command in its stage -- so it must not be read as a cmdlet.
+# Two-char operators are listed first in the alternation so '||'/'&&' win over
+# the single-char '|'.
+_PS_STAGE_SPLIT_RE = _re.compile(r"\|\||&&|[;|]")
+
+
+def _ps_stage_command_cmdlets(payload: str) -> "List[Tuple[str, str]]":
+    """Split a PowerShell payload into composition stages and return the
+    command-position cmdlet ``(verb, noun)`` of each stage that has one.
+
+    Stages split on ';', '|', '&&', '||' (reusing the composition taxonomy).
+    Within a stage, ONLY the FIRST Verb-Noun-shaped token is the command; any
+    later Verb-Noun token is an ARGUMENT (a hyphenated path such as 'my-folder'
+    or a cmdlet name embedded in a file path) and is intentionally ignored, so
+    it can never be misread as a cmdlet.  Taking the first *match* rather than
+    the literal first whitespace token also transparently skips a leading
+    interpreter wrapper / flags ('powershell.exe -Command "..."') without a
+    fragile payload-extraction step.  A stage with no cmdlet-shaped token
+    contributes nothing (it is an alias / path / builtin command position).
+
+    Obfuscation / arbitrary-execution markers are NOT filtered here -- they are
+    scanned across the WHOLE payload by the caller (``_PS_OBFUSCATION_RES``)
+    before this per-stage scan runs.
+    """
+    cmdlets: "List[Tuple[str, str]]" = []
+    for stage in _PS_STAGE_SPLIT_RE.split(payload):
+        stage = stage.strip()
+        if not stage:
+            continue
+        m = _PS_CMDLET_RE.search(stage)  # FIRST cmdlet in the stage = the command
+        if m:
+            cmdlets.append((m.group(1), m.group(2)))
+    return cmdlets
 
 # Obfuscation / non-inspectable-execution markers -> T3 regardless of the
 # surrounding cmdlets.  These run BEFORE the cmdlet allowlist so a benign read
@@ -704,6 +764,98 @@ def _is_ps_encoded_flag(flag: str) -> bool:
     if body == "ec":
         return True
     return len(body) >= 2 and "encodedcommand".startswith(body)
+
+
+# ---------------------------------------------------------------------------
+# Bare Windows command lane (Step 1b-win): NO powershell.exe/pwsh wrapper
+# ---------------------------------------------------------------------------
+# rc.3 hole: a PEELED `Remove-Item -Recurse -Force`, a cmd.exe `del`/`rd`, or a
+# PowerShell alias (`gci`, `del`) reaches the POSIX verb scanner, which has no
+# subcommand to match, so it falls to safe-by-elimination -> T0 and mutates
+# without a gate.  The wrapped PS lane (`_check_powershell_command`) only fires
+# when base_cmd is an interpreter, so it never sees these.  This lane inverts the
+# default to conservative DEFAULT-DENY *scoped to recognized Windows tokens*: an
+# unknown verb / cmdlet / subcommand in a Windows context -> T3, mirroring the
+# `_check_script_file` (unreadable -> T3) and `_check_npm_script_runner`
+# (unresolvable -> T3) fallbacks.  It is deliberately NOT applied to arbitrary
+# bash tokens: an unrecognized base_cmd returns None so POSIX classification is
+# untouched.
+
+# cmd.exe single-token builtins that MUTATE filesystem/system state -> T3.
+# `del`/`rd`/`erase`/`ren`/`rename`/`move` also appear as PS aliases below; both
+# paths yield T3 (the documented del/rd collision).  `rmdir` is pre-empted by
+# COMMAND_ALIASES (T3) before this lane and is intentionally omitted here.
+_CMD_MUTATIVE_BUILTINS: FrozenSet[str] = frozenset({
+    "del", "erase", "rd", "ren", "rename", "move", "format",
+    "attrib", "taskkill", "shutdown", "diskpart", "cipher",
+    "takeown", "icacls",
+})
+
+# cmd.exe single-token builtins that only READ/observe state -> T0.  Several
+# overlap POSIX read commands already in READ_ONLY_BASE_CMDS (find/type/echo/
+# tree/more/whoami/hostname); those are caught earlier and never reach this lane
+# -- listed here for spec fidelity, harmless because unreachable.
+_CMD_READ_BUILTINS: FrozenSet[str] = frozenset({
+    "dir", "type", "findstr", "find", "where", "echo", "ver",
+    "whoami", "hostname", "ipconfig", "systeminfo", "tasklist",
+    "query", "netstat", "tree", "more", "fc", "comp",
+})
+
+# cmd.exe TWO-token builtins: base -> (mutative subcommands, read subcommands).
+# An unrecognized subcommand on a recognized base is default-denied to T3.
+_CMD_SUBCOMMAND_BUILTINS: "Dict[str, Tuple[FrozenSet[str], FrozenSet[str]]]" = {
+    "reg": (
+        frozenset({"delete", "add", "import", "restore", "load", "unload", "copy", "save"}),
+        frozenset({"query", "export", "compare"}),
+    ),
+    "sc": (
+        frozenset({"create", "delete", "config", "start", "stop", "pause",
+                   "continue", "control", "failure", "sdset"}),
+        frozenset({"query", "queryex", "qc", "getdisplayname", "enumdepend", "sdshow"}),
+    ),
+    "vssadmin": (
+        frozenset({"delete", "create", "resize", "revert", "add"}),
+        frozenset({"list", "query"}),
+    ),
+}
+
+# PowerShell aliases (Microsoft's verbatim alias table) -> (kind, cmdlet).
+# kind: "read" -> T0, "change" -> T3.  Navigation/output aliases (cd/sl/chdir,
+# cls/clear, write/echo) resolve to Set-Location/Clear-Host/Write-Output, which
+# do NOT destroy or grant, so they are "read" (T0) -- consistent with the tier
+# philosophy that T3 gates destruction/grant, not every "set"/"write" verb.
+# rm/rmdir/cp/mv are pre-empted by COMMAND_ALIASES before this lane; listed for
+# fidelity, unreachable, and consistent (all -> T3).
+_PS_ALIASES: "Dict[str, Tuple[str, str]]" = {
+    "rm": ("change", "Remove-Item"), "del": ("change", "Remove-Item"),
+    "erase": ("change", "Remove-Item"), "rd": ("change", "Remove-Item"),
+    "rmdir": ("change", "Remove-Item"),
+    "ls": ("read", "Get-ChildItem"), "dir": ("read", "Get-ChildItem"),
+    "gci": ("read", "Get-ChildItem"),
+    "cat": ("read", "Get-Content"), "type": ("read", "Get-Content"),
+    "gc": ("read", "Get-Content"),
+    "cp": ("change", "Copy-Item"), "copy": ("change", "Copy-Item"),
+    "cpi": ("change", "Copy-Item"),
+    "mv": ("change", "Move-Item"), "move": ("change", "Move-Item"),
+    "mi": ("change", "Move-Item"),
+    "ni": ("change", "New-Item"),
+    "ren": ("change", "Rename-Item"), "rename": ("change", "Rename-Item"),
+    "rni": ("change", "Rename-Item"),
+    "sl": ("read", "Set-Location"), "cd": ("read", "Set-Location"),
+    "chdir": ("read", "Set-Location"),
+    "cls": ("read", "Clear-Host"), "clear": ("read", "Clear-Host"),
+    "write": ("read", "Write-Output"), "echo": ("read", "Write-Output"),
+}
+
+# Bare PowerShell execution aliases: recognizing them enters this lane so the
+# obfuscation scan (Step 0) can escalate them to T3 (arbitrary code execution).
+_PS_BARE_OBFUSCATION_ALIASES: FrozenSet[str] = frozenset({"iex", "iwr", "icm"})
+
+# A PascalCase Verb-Noun token (`Remove-Item`, `Frobnicate-Thing`) is a
+# PowerShell cmdlet by casing alone -- distinguishes a real cmdlet from a
+# lowercase hyphenated POSIX command (`docker-compose`, `pre-commit`) whose verb
+# is not a PS verb.  Matched on the RAW (original-case) base token.
+_PS_PASCAL_CMDLET_RE = _re.compile(r"^[A-Z][A-Za-z]*-[A-Z][A-Za-z0-9]*$")
 
 
 # ---------------------------------------------------------------------------
@@ -1723,6 +1875,21 @@ def detect_mutative_command(
             reason=f"Read-only base command '{base_cmd}' (whitelist fast-path)",
         )
 
+    # --- Step 1b-win: Bare Windows command (no powershell.exe/pwsh wrapper) ---
+    # A peeled `Remove-Item -Recurse -Force`, a cmd.exe `del`/`rd`, or a PS alias
+    # would otherwise reach the POSIX verb scanner with no subcommand to match
+    # and fall to safe-by-elimination (T0), mutating without a gate.  This lane
+    # inverts the default to conservative DEFAULT-DENY for recognized Windows
+    # tokens (unknown verb/cmdlet/subcommand -> T3) and returns None for
+    # everything else so POSIX/bash classification is untouched.  Placed AFTER
+    # COMMAND_ALIASES and READ_ONLY_BASE_CMDS so rm/mv/cp/mkdir keep their POSIX
+    # overrides (scratch/sensitive-path) and ls/cat/type/echo stay T0.
+    win_result = _check_windows_native_command(
+        command, base_cmd, family, semantics, cwd=cwd, _depth=_depth,
+    )
+    if win_result is not None:
+        return win_result
+
     # --- Step 1c: Capability-class fast-path ---
     # Some CLIs (sqlite3, psql, mysql, mongosh, ...) accept the entire
     # mutation language as an argument string, so the verb scanner cannot
@@ -2702,12 +2869,16 @@ def _classify_powershell_verb(verb: str, noun: str) -> str:
 
     Returns one of ``"read"`` (non-mutative), ``"change"`` (mutative), or
     ``"unknown"`` (verb in neither approved set -> conservative T3).  ``verb``
-    and ``noun`` are already lowercased.  The ``Out-*`` verb is split by noun:
-    ``Out-String``/``Out-Host``/``Out-Null`` render only (read), while
-    ``Out-File``/``Out-Printer`` write (change).
+    and ``noun`` are already lowercased.  The ``Out-*`` and ``Format-*`` verbs
+    are split by noun: ``Out-String``/``Out-Host``/``Out-Null`` render only
+    (read) while ``Out-File``/``Out-Printer`` write (change); ``Format-Table``/
+    ``Format-List``/``Format-Wide`` render only (read) while ``Format-Volume``
+    and other storage ``Format-*`` destroy data (change).
     """
     if verb == "out":
         return "read" if noun in _PS_OUT_READ_NOUNS else "change"
+    if verb == "format":
+        return "read" if noun in _PS_FORMAT_READ_NOUNS else "change"
     if verb in _PS_READ_VERBS:
         return "read"
     if verb in _PS_CHANGE_VERBS:
@@ -2721,17 +2892,31 @@ def _classify_powershell_payload(
     """Classify a PowerShell script payload by cmdlet verb taxonomy.
 
     ``payload`` is the raw text of a ``-Command`` string or a ``.ps1`` file.
-    Rules (all conservative / positive-allowlist):
-      1. Obfuscation markers (``iex``/``iwr``/``icm``, ``Invoke-Expression``,
-         a ``&``/``.`` call operator) escalate to T3 FIRST -- before the cmdlet
-         scan -- so a read cmdlet piped into ``iex`` cannot launder the payload.
-      2. Every Verb-Noun cmdlet is classified by its verb.  ANY change or
-         unknown verb escalates the WHOLE payload to T3 (composition mirror).
-      3. To drop BELOW T3 every cmdlet must be a read verb AND at least one
-         cmdlet must be present -- a payload with no recognizable cmdlet is
-         T3 (cannot prove it is read-only; no safe-by-elimination here).
+    Two concerns are kept separate:
+
+      COMPOSITION / OBFUSCATION (whole-payload scan).  Obfuscation and
+      arbitrary-execution markers (``iex``/``iwr``/``icm``,
+      ``Invoke-Expression``, a ``&``/``.`` call operator) escalate to T3 FIRST
+      -- before the cmdlet scan -- so a read cmdlet piped into ``iex`` cannot
+      launder the payload.  These markers may appear as a stage of their own OR
+      embedded mid-stage, so they are matched across the ENTIRE payload, not per
+      first token.
+
+      CMDLET / VERB (per-stage FIRST-token scan).  The payload is split into
+      composition stages ('; | && ||') and ONLY the leading token of each stage
+      -- the command position -- is classified by its Verb-Noun verb.  Path and
+      flag ARGUMENTS ('C:\\x\\my-folder', 'a-b\\file.txt') sit in argument
+      positions and are NOT read as cmdlets, so a hyphenated path no longer
+      forces a false T3.  Rules (conservative / positive-allowlist):
+        * ANY change or unknown verb at a command position escalates the WHOLE
+          payload to T3 (tier = MAX across stages).
+        * To drop BELOW T3 at least one command-position cmdlet must be present
+          AND every command-position cmdlet must be a read verb -- a payload
+          with no recognizable command-position cmdlet is T3 (cannot prove it is
+          read-only; no safe-by-elimination here).
     """
-    # 1. Obfuscation / non-inspectable execution.
+    # 1. Obfuscation / non-inspectable execution -- whole-payload scan (NOT
+    #    restricted to first tokens: a marker may hide mid-stage).
     for rx in _PS_OBFUSCATION_RES:
         if rx.search(payload):
             return MutativeResult(
@@ -2747,22 +2932,11 @@ def _classify_powershell_payload(
                 ),
             )
 
-    # 2. Verb-Noun cmdlet scan.
-    matches = _PS_CMDLET_RE.findall(payload)
-    if not matches:
-        return MutativeResult(
-            is_mutative=True,
-            category=CATEGORY_MUTATIVE,
-            verb="powershell-uninspectable",
-            cli_family=family,
-            confidence="medium",
-            reason=(
-                f"PowerShell {source} has no recognizable Verb-Noun cmdlet "
-                f"-- cannot prove it is read-only (conservative default)"
-            ),
-        )
-
-    for verb, noun in matches:
+    # 2. Per-stage cmdlet scan: classify ONLY the FIRST cmdlet (the command) of
+    #    each composition stage.  A Verb-Noun-shaped path/flag argument
+    #    ('my-folder', 'a-b') follows the command in its stage, so it is skipped.
+    saw_read_cmdlet = False
+    for verb, noun in _ps_stage_command_cmdlets(payload):
         v, n = verb.lower(), noun.lower()
         kind = _classify_powershell_verb(v, n)
         if kind == "change":
@@ -2790,8 +2964,24 @@ def _classify_powershell_payload(
                     f"(conservative default)"
                 ),
             )
+        saw_read_cmdlet = True
 
-    # 3. Every cmdlet is a read verb.
+    # 3a. No recognizable command-position cmdlet -> cannot prove read-only.
+    if not saw_read_cmdlet:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="powershell-uninspectable",
+            cli_family=family,
+            confidence="medium",
+            reason=(
+                f"PowerShell {source} has no recognizable Verb-Noun cmdlet at a "
+                f"command position -- cannot prove it is read-only "
+                f"(conservative default)"
+            ),
+        )
+
+    # 3b. Every command-position cmdlet is a read verb.
     return MutativeResult(
         is_mutative=False,
         category=CATEGORY_READ_ONLY,
@@ -2799,8 +2989,8 @@ def _classify_powershell_payload(
         cli_family=family,
         confidence="high",
         reason=(
-            f"PowerShell {source}: all cmdlets are approved read verbs "
-            f"(Get/Measure/Select/... ) -- non-mutative"
+            f"PowerShell {source}: all command-position cmdlets are approved "
+            f"read verbs (Get/Measure/Select/... ) -- non-mutative"
         ),
     )
 
@@ -2870,6 +3060,133 @@ def _check_powershell_command(
 
     # -Command / -c inline, or no explicit payload flag: scan the command text.
     return _classify_powershell_payload(command, family, "-Command payload")
+
+
+def _check_windows_native_command(
+    command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Classify a BARE Windows command that has no powershell/pwsh wrapper.
+
+    Closes the rc.3 hole where a peeled ``Remove-Item -Recurse -Force``, a
+    cmd.exe ``del``/``rd``, or a PowerShell alias fell to safe-by-elimination
+    (T0) under the POSIX verb scanner.  SCOPED default-deny: fires ONLY for
+    recognized Windows tokens and returns ``None`` for everything else, so bash
+    / POSIX classification is untouched.  Recognition order:
+
+      0. obfuscation / arbitrary-execution markers (iex / iwr / call-operator)
+      1. cmd.exe two-token builtins (``reg``/``sc``/``vssadmin`` <sub>)
+      2. cmd.exe single-token mutative builtins (``del``/``rd``/``format``/...)
+      3. cmd.exe single-token read builtins (``dir``/``findstr``/...)
+      4. PowerShell aliases (``gci``/``del``/``cd``/...)
+      5. bare Verb-Noun cmdlet (``Remove-Item``, ``Frobnicate-Thing``)
+
+    An unknown verb / cmdlet / subcommand in a recognized Windows context ->
+    T3 (default-deny), mirroring ``_check_script_file`` (unreadable -> T3) and
+    ``_check_npm_script_runner`` (unresolvable -> T3).
+    """
+    tokens = list(semantics.tokens)
+    non_flags = semantics.non_flag_tokens
+    first_sub = non_flags[0] if non_flags else ""
+    raw_base = (
+        semantics.semantic_head_tokens_raw[0]
+        if semantics.semantic_head_tokens_raw else base_cmd
+    )
+
+    # Is base_cmd a PowerShell cmdlet?  A lowercase Verb-Noun token counts only
+    # when its verb is a real PS verb (excludes docker-compose / pre-commit); a
+    # PascalCase token is a cmdlet by casing alone (Remove-Item / Frobnicate-X).
+    cmdlet_shape = bool(_PS_CMDLET_RE.fullmatch(base_cmd))
+    verb_lc = base_cmd.split("-", 1)[0] if cmdlet_shape else ""
+    is_bare_cmdlet = cmdlet_shape and (
+        verb_lc in _PS_ALL_VERBS or bool(_PS_PASCAL_CMDLET_RE.match(raw_base))
+    )
+
+    recognized = (
+        base_cmd in _CMD_SUBCOMMAND_BUILTINS
+        or base_cmd in _CMD_MUTATIVE_BUILTINS
+        or base_cmd in _CMD_READ_BUILTINS
+        or base_cmd in _PS_ALIASES
+        or base_cmd in _PS_BARE_OBFUSCATION_ALIASES
+        or is_bare_cmdlet
+    )
+    if not recognized:
+        return None  # not a Windows-native token -- POSIX classification owns it
+
+    def _change(verb: str, reason: str) -> MutativeResult:
+        return MutativeResult(
+            is_mutative=True, category=CATEGORY_MUTATIVE, verb=verb,
+            dangerous_flags=_scan_dangerous_flags(tokens, base_cmd),
+            cli_family="powershell", confidence="high", reason=reason,
+        )
+
+    def _read(verb: str, reason: str) -> MutativeResult:
+        return MutativeResult(
+            is_mutative=False, category=CATEGORY_READ_ONLY, verb=verb,
+            cli_family="powershell", confidence="high", reason=reason,
+        )
+
+    # 0. Obfuscation / arbitrary-execution markers anywhere in the command.
+    for rx in _PS_OBFUSCATION_RES:
+        if rx.search(command):
+            return _change(
+                "windows-obfuscation",
+                "Bare Windows command contains an obfuscation / "
+                "arbitrary-execution marker (iex / iwr / call-operator) "
+                "-- requires approval",
+            )
+
+    # 1. cmd.exe two-token builtins (reg / sc / vssadmin).
+    if base_cmd in _CMD_SUBCOMMAND_BUILTINS:
+        mut_subs, read_subs = _CMD_SUBCOMMAND_BUILTINS[base_cmd]
+        label = f"{base_cmd} {first_sub}".strip()
+        if first_sub in read_subs:
+            return _read(label, f"cmd.exe '{label}' is a read-only builtin")
+        # mutative subcommand OR unrecognized subcommand -> default-deny.
+        return _change(
+            label,
+            f"cmd.exe '{label}' mutates system state "
+            f"(conservative default for unrecognized '{base_cmd}' subcommand)",
+        )
+
+    # 2. cmd.exe single-token mutative builtins.
+    if base_cmd in _CMD_MUTATIVE_BUILTINS:
+        return _change(
+            base_cmd,
+            f"cmd.exe builtin '{base_cmd}' mutates filesystem/system state "
+            f"-- requires approval",
+        )
+
+    # 3. cmd.exe single-token read builtins.
+    if base_cmd in _CMD_READ_BUILTINS:
+        return _read(base_cmd, f"cmd.exe builtin '{base_cmd}' is read-only")
+
+    # 4. PowerShell aliases (obfuscation aliases already handled at Step 0).
+    if base_cmd in _PS_ALIASES:
+        kind, cmdlet = _PS_ALIASES[base_cmd]
+        if kind == "read":
+            return _read(
+                base_cmd,
+                f"PowerShell alias '{base_cmd}' -> {cmdlet} (read-only)",
+            )
+        return _change(
+            cmdlet,
+            f"PowerShell alias '{base_cmd}' -> {cmdlet} (mutative) "
+            f"-- requires approval",
+        )
+
+    if base_cmd in _PS_BARE_OBFUSCATION_ALIASES:
+        # No marker matched at Step 0 (regex drift guard) -- still arbitrary exec.
+        return _change(
+            base_cmd,
+            f"Bare PowerShell execution alias '{base_cmd}' runs arbitrary code "
+            f"-- requires approval",
+        )
+
+    # 5. Bare Verb-Noun cmdlet: classify the WHOLE command via the shared
+    #    payload classifier (handles composition ';'/'|', ambiguous nouns, and
+    #    obfuscation identically to the wrapped -Command lane).
+    return _classify_powershell_payload(command, "powershell", "bare cmdlet")
 
 
 def _read_script_content(
