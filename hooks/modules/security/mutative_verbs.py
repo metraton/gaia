@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
-from .command_semantics import analyze_command
+from .command_semantics import CommandSemantics, analyze_command
 
 try:
     from .capability_classes import (
@@ -256,9 +256,95 @@ GIT_LOCAL_SAFE_SUBCOMMANDS: FrozenSet[str] = frozenset({
 # Checked AFTER a mutative verb is found but BEFORE returning the MUTATIVE result.
 
 VERB_FLAG_READ_ONLY_OVERRIDES: Dict[Tuple[str, str], FrozenSet[str]] = {
-    # "git tag -l" / "git tag --list" is listing, not creating/deleting
+    # Generic flag-set override: a mutative verb downgraded to READ_ONLY when a
+    # listing flag is present. For a whole-token `git tag`, the dedicated
+    # discriminator `_classify_git_tag` below (wired at the MUTATIVE_VERBS
+    # branch) takes precedence and handles the full dual-mode split (bare
+    # listing, --points-at/--contains/--merged, create-by-name, -a/-d/-f). This
+    # entry additionally backstops the camelCase-split path (a token like
+    # `tagCreate` -> parts [tag, create]) where the discriminator is not
+    # invoked, and keeps the generic override mechanism exercised.
     ("git", "tag"): frozenset({"-l", "--list"}),
 }
+
+
+# ============================================================================
+# git tag read-vs-write discriminator
+# ============================================================================
+# `git tag` is dual-mode: with no tag NAME and no mutation flags it LISTS tags
+# (read-only, T0); with a positional tag NAME to create or a
+# create/delete/force/sign/annotate flag it MUTATES refs (T3). The generic
+# MUTATIVE_VERBS entry ("tag") classified EVERY `git tag ...` as T3, so the
+# listing forms (`git tag`, `git tag -l`, `git tag --points-at HEAD`,
+# `git tag --contains <sha>`) demanded approval needlessly. This mirrors the
+# read-vs-write-by-flags refinement already applied to PowerShell cmdlets.
+#
+# git selects the tag operating mode from the flags, mirrored here:
+#   MUTATIVE (create/delete/verify-force): any create/delete/force/sign/
+#            annotate/message flag is present (-a/--annotate, -s/--sign,
+#            -d/--delete, -f/--force, -m/--message, -F/--file, -u/--local-user,
+#            -e/--edit, --cleanup).
+#   READ-ONLY (LIST mode): any listing flag is present (-l/--list, -n,
+#            --contains/--no-contains, --points-at, --merged/--no-merged,
+#            --sort, --format, --column/--no-column, -i/--ignore-case,
+#            -v/--verify). In list mode a trailing positional is a filter
+#            PATTERN (`git tag -l "v*"`), never a tag name to create.
+#   Otherwise (no recognized flags): a trailing positional is a tag NAME to
+#            create -> MUTATIVE (`git tag v1.2.3`); bare `git tag` lists -> READ-ONLY.
+
+GIT_TAG_MUTATIVE_FLAGS: FrozenSet[str] = frozenset({
+    "-a", "--annotate",
+    "-s", "--sign",
+    "-d", "--delete",
+    "-f", "--force",
+    "-m", "--message",
+    "-F", "--file",
+    "-u", "--local-user",
+    "-e", "--edit",
+    "--cleanup",
+})
+
+# Presence of any of these puts `git tag` in LIST/VERIFY mode: positionals are
+# filter patterns or a tag to inspect, never a tag name to create. Long flags
+# carrying an inline value (`--sort=...`, `--format=...`) still emit their bare
+# key into flag_tokens (see _normalize_flag_token), so the bare forms suffice.
+GIT_TAG_LISTING_FLAGS: FrozenSet[str] = frozenset({
+    "-l", "--list",
+    "-n",
+    "--contains", "--no-contains",
+    "--points-at",
+    "--merged", "--no-merged",
+    "--sort",
+    "--format",
+    "--column", "--no-column",
+    "-i", "--ignore-case",
+    "-v", "--verify",
+})
+
+
+def _classify_git_tag(semantics: CommandSemantics) -> str:
+    """Return CATEGORY_MUTATIVE or CATEGORY_READ_ONLY for a `git tag ...` command.
+
+    See the block comment above for the discriminator. Purely a function of the
+    parsed flag/non-flag tokens.
+    """
+    flags = frozenset(semantics.flag_tokens)
+
+    # Signal 1: an explicit create/delete/force/sign/annotate/message flag.
+    if flags & GIT_TAG_MUTATIVE_FLAGS:
+        return CATEGORY_MUTATIVE
+
+    # Signal 2: any listing/verify flag -> LIST mode; positionals are patterns.
+    if flags & GIT_TAG_LISTING_FLAGS:
+        return CATEGORY_READ_ONLY
+
+    # Signal 3: no recognized flags. A positional after the "tag" subcommand is
+    # a tag NAME to create; bare `git tag` merely lists.
+    positionals_after_tag = max(0, len(semantics.non_flag_tokens) - 1)
+    if positionals_after_tag > 0:
+        return CATEGORY_MUTATIVE
+
+    return CATEGORY_READ_ONLY
 
 
 # ============================================================================
@@ -2301,8 +2387,38 @@ def detect_mutative_command(
         if candidate in MUTATIVE_VERBS or full_lower in MUTATIVE_VERBS:
             verb = candidate if candidate in MUTATIVE_VERBS else full_lower
 
+            # git tag is dual-mode: a listing form (`git tag`, `-l`,
+            # `--points-at`, `--contains`, ...) is read-only (T0), while a
+            # create/delete/force form is mutative (T3). A plain flag-set
+            # override cannot express this, so a dedicated discriminator
+            # decides. See _classify_git_tag.
+            if family == "git" and verb == "tag":
+                if _classify_git_tag(semantics) == CATEGORY_READ_ONLY:
+                    return MutativeResult(
+                        is_mutative=False,
+                        category=CATEGORY_READ_ONLY,
+                        verb=verb,
+                        cli_family=family,
+                        confidence="high",
+                        reason="git tag listing form (no tag name / mutation flags) is read-only",
+                    )
+                dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+                flag_detail = (
+                    f" with dangerous flags {dangerous_flags}"
+                    if dangerous_flags else ""
+                )
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=verb,
+                    dangerous_flags=dangerous_flags,
+                    cli_family=family,
+                    confidence=confidence,
+                    reason=f"git tag create/delete/force is mutative{flag_detail}",
+                )
+
             # Check verb+flag overrides: some verbs become READ_ONLY with
-            # specific flags (e.g., "git tag -l" is listing, not creating).
+            # specific flags.
             override_key = (family, verb)
             if override_key in VERB_FLAG_READ_ONLY_OVERRIDES:
                 override_flags = VERB_FLAG_READ_ONLY_OVERRIDES[override_key]

@@ -330,3 +330,60 @@ class TestMutationBaselineSurvivors:
         # classify_command_tier is a pure function over the string.
         target = "mkfs.ext4 " + "/dev/sda1"
         assert classify_command_tier(target) == SecurityTier.T3_BLOCKED
+
+
+class TestGitTagTierMatrix:
+    """`git tag` read-vs-write tier discrimination (rc.5 FIX 1).
+
+    `git tag` is dual-mode: listing forms are read-only (T0) and must not
+    demand approval, while create/delete/force forms mutate refs (T3). This is
+    the real-tier probe matrix asserted end-to-end through the tier classifier.
+    """
+
+    # Listing / read-only forms -> T0 (no approval).
+    @pytest.mark.parametrize("cmd", [
+        "git tag",                      # bare -> lists
+        "git tag -l",                   # explicit list
+        "git tag --list",               # long-form list
+        'git tag -l "v*"',              # list with a filter PATTERN, not a name
+        "git tag --points-at HEAD",     # filter by commit
+        "git tag --contains abc1234",   # filter by containing commit
+        "git tag --no-contains abc1234",
+        "git tag --merged",             # filter merged
+        "git tag --no-merged main",
+        "git tag --sort=-v:refname",    # sorted listing
+        "git tag --format=%(refname)",  # formatted listing
+        "git tag -n",                   # list with annotation lines
+        "git tag -n5",
+        "git tag --column",
+        "git tag -i --list",
+    ])
+    def test_git_tag_listing_is_t0(self, cmd):
+        assert classify_command_tier(cmd) == SecurityTier.T0_READ_ONLY
+
+    # Create / delete / force forms -> T3 (require approval).
+    @pytest.mark.parametrize("cmd", [
+        "git tag v1.2.3",               # positional tag NAME to create
+        "git tag v1.2.3 HEAD",          # create pointing at a commit
+        "git tag -a v1 -m x",           # annotated create
+        "git tag --annotate v1 -m x",
+        "git tag -s v1 -m x",           # signed create
+        "git tag -d v1",                # delete
+        "git tag --delete v1",
+        "git tag -f v1",                # force (re)create
+        "git tag --force v1",
+        "git tag -m msg v1",            # message implies create
+    ])
+    def test_git_tag_mutation_is_t3(self, cmd):
+        assert classify_command_tier(cmd) == SecurityTier.T3_BLOCKED
+
+    # Regression: other git verbs are unchanged by the git-tag refinement.
+    @pytest.mark.parametrize("cmd,expected", [
+        ("git push", SecurityTier.T3_BLOCKED),
+        ("git push origin main", SecurityTier.T3_BLOCKED),
+        ("git status", SecurityTier.T0_READ_ONLY),
+        ("git log", SecurityTier.T0_READ_ONLY),
+        ("git commit -m x", SecurityTier.T0_READ_ONLY),  # local-safe, not T3
+    ])
+    def test_other_git_verbs_regression(self, cmd, expected):
+        assert classify_command_tier(cmd) == expected

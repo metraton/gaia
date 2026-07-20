@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -161,7 +161,10 @@ def _build_anomalies_block(window_hours: int) -> str | None:
     except Exception:
         ws = None
 
-    cutoff_dt = datetime.now() - timedelta(hours=window_hours)
+    # Compare UTC-against-UTC: stored timestamps are UTC (writer._now_iso), so
+    # the cutoff must be UTC too. datetime.now() (local naive) would skew the
+    # window by the machine's TZ offset and over-report anomalies.
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=window_hours)
     cutoff_iso = cutoff_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
     try:

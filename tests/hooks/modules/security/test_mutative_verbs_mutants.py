@@ -325,20 +325,34 @@ class TestDetectMutativeCommand:
         assert r.cli_family == "docker"
         assert r.confidence == "high"
 
-    # --- Step 4: verb+flag read-only override (lines 1445-1455) ----------
-    def test_git_tag_list_override(self):
+    # --- Step 4: git tag dual-mode discriminator (_classify_git_tag) -----
+    # rc.5 FIX 1: whole-token `git tag` on the main path routes through the
+    # dedicated read-vs-write discriminator (not the generic flag-set override,
+    # which now only backstops the camelCase-split path). Listing forms ->
+    # READ_ONLY; a positional tag NAME or a create/delete/force flag -> MUTATIVE.
+    def test_git_tag_list_discriminator_read_only(self):
         r = detect_mutative_command("git tag -l")
         assert r.is_mutative is False
         assert r.category == "READ_ONLY"
         assert r.verb == "tag"
-        assert "overridden to read-only by flag" in r.reason
+        assert r.reason == (
+            "git tag listing form (no tag name / mutation flags) is read-only"
+        )
+
+    def test_git_tag_bare_discriminator_read_only(self):
+        # Bare `git tag` lists -> READ_ONLY (the old generic override could not
+        # reach this because no flag was present).
+        r = detect_mutative_command("git tag")
+        assert r.is_mutative is False
+        assert r.category == "READ_ONLY"
+        assert r.verb == "tag"
 
     def test_git_tag_create_mutative(self):
         r = detect_mutative_command("git tag v1.0")
         assert r.is_mutative is True
         assert r.category == "MUTATIVE"
         assert r.verb == "tag"
-        assert r.reason == "Mutative verb 'tag'"
+        assert r.reason == "git tag create/delete/force is mutative"
 
     # --- Step 4: camelCase split (lines 1506-1550) -----------------------
     def test_camelcase_batch_delete(self):

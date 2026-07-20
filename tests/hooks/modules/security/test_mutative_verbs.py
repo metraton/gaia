@@ -427,13 +427,48 @@ class TestHTTPVerbDetection:
 class TestGitTagDetection:
     """Scenario #21 and #22: git tag behavior."""
 
-    def test_git_tag_is_mutative(self):
-        """Scenario #21: bare `git tag` is mutative (tag is in MUTATIVE_VERBS)."""
+    def test_git_tag_create_is_mutative(self):
+        """Scenario #21: creating a tag by NAME is mutative (`tag` in MUTATIVE_VERBS,
+        and a positional tag name means create)."""
         assert "tag" in MUTATIVE_VERBS
         result = detect_mutative_command("git tag v1.0.0")
         assert result.is_mutative is True
         assert result.verb == "tag"
         assert result.category == "MUTATIVE"
+
+    def test_git_tag_bare_is_read_only(self):
+        """rc.5 FIX 1: bare `git tag` (no name, no flags) LISTS tags -> READ_ONLY."""
+        result = detect_mutative_command("git tag")
+        assert result.is_mutative is False
+        assert result.verb == "tag"
+        assert result.category == "READ_ONLY"
+
+    def test_git_tag_points_at_is_read_only(self):
+        """rc.5 FIX 1: `git tag --points-at HEAD` filters the list -> READ_ONLY.
+
+        The filter value (HEAD) lands in non_flag_tokens but must not be read as
+        a tag name to create."""
+        result = detect_mutative_command("git tag --points-at HEAD")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_git_tag_contains_is_read_only(self):
+        """rc.5 FIX 1: `git tag --contains <sha>` filters the list -> READ_ONLY."""
+        result = detect_mutative_command("git tag --contains abc1234")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_git_tag_annotate_is_mutative(self):
+        """rc.5 FIX 1: `git tag -a v1 -m x` creates an annotated tag -> MUTATIVE."""
+        result = detect_mutative_command("git tag -a v1 -m x")
+        assert result.is_mutative is True
+        assert result.verb == "tag"
+
+    def test_git_tag_force_is_mutative(self):
+        """rc.5 FIX 1: `git tag -f v1` force-(re)creates -> MUTATIVE."""
+        result = detect_mutative_command("git tag -f v1")
+        assert result.is_mutative is True
+        assert result.verb == "tag"
 
     def test_git_tag_list_flag(self):
         """Scenario #22: `git tag -l` is listing -> READ_ONLY.

@@ -10,7 +10,7 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..core.paths import get_plugin_data_dir
@@ -220,7 +220,10 @@ def check_recent_critical_anomalies() -> str:
     try:
         con = _store_connect()
         try:
-            one_hour_ago_dt = datetime.now() - timedelta(hours=1)
+            # Compare UTC-against-UTC: stored timestamps are UTC (writer._now_iso),
+            # so the cutoff must be UTC too. datetime.now() (local naive) would
+            # skew the window by the machine's TZ offset and over-report anomalies.
+            one_hour_ago_dt = datetime.now(timezone.utc) - timedelta(hours=1)
             one_hour_ago_iso = one_hour_ago_dt.strftime("%Y-%m-%dT%H:%M:%S")
 
             if ws:
