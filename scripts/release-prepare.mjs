@@ -20,12 +20,15 @@
  *        - .claude-plugin/marketplace.json  (every plugin entry's top-level version)
  *        - CHANGELOG.md           (top versioned header; inserts a stub if absent)
  *      NOTE: .claude-plugin/plugin.json is NOT hand-bumped here -- it is a
- *      GENERATED artifact (inline hooks, version inherited from package.json via
- *      the manifest's "from:package.json"). Step 2 regenerates it.
+ *      GENERATED artifact (metadata only, NO inline hooks; version inherited
+ *      from package.json via the manifest's "from:package.json"). Step 2
+ *      regenerates it.
  *   2. npm run generate:plugin-root  (regenerates the ROOT .claude-plugin/plugin.json
- *                                     with inline hooks + hooks/hooks.json from the
- *                                     manifest -- the source:npm plugin surface. No
- *                                     dist/ bundle exists anymore.)
+ *                                     (metadata only) + the canonical hooks/hooks.json
+ *                                     from the manifest -- the source:npm plugin
+ *                                     surface. Hooks live ONLY in hooks/hooks.json,
+ *                                     never inline in plugin.json. No dist/ bundle
+ *                                     exists anymore.)
  *   3. npm run pre-publish:validate  (the drift gate -- fails loud on any
  *                                     source that did not move)
  *
@@ -194,7 +197,8 @@ function main() {
   }
   for (const r of results) log(`  ${r}`, 'success');
 
-  // Step 2 -- regenerate the ROOT plugin manifests (inline hooks + hooks.json)
+  // Step 2 -- regenerate the ROOT plugin manifests (plugin.json is metadata
+  // only; hooks live ONLY in the canonical hooks/hooks.json, never inline)
   // so the source:npm plugin surface carries the new version. No dist/ bundle.
   log('Step 2: Regenerating root plugin manifests (npm run generate:plugin-root)...', 'step');
   try {

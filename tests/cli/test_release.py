@@ -974,7 +974,9 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
                 return {"name": name, "status": "PASS", "detail": "ok", "duration_ms": 1}
             return _step
 
-        with patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
+        with patch("cli.release.preflight_publish",
+                   return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
+             patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
              patch("cli.release.gate_npm_test", side_effect=make_step("npm test")), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")), \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")), \
@@ -1004,7 +1006,9 @@ class TestRunReleasePublishOrchestration(unittest.TestCase):
                 return {"name": name, "status": "PASS", "detail": "ok", "duration_ms": 1}
             return _step
 
-        with patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
+        with patch("cli.release.preflight_publish",
+                   return_value={"name": "preconditions", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
+             patch("cli.release.step_release_prepare", side_effect=make_step("release:prepare")), \
              patch("cli.release.gate_npm_test", side_effect=failing_step), \
              patch("cli.release.step_git_commit", side_effect=make_step("git commit")) as mock_commit, \
              patch("cli.release.step_git_tag", side_effect=make_step("git tag")) as mock_tag, \

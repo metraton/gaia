@@ -39,9 +39,14 @@ local registry cache).
 
 `gaia release publish [version]` (Phase 3, this module's second subcommand)
 is the separate Layer-3 trigger sequence -- it TRIGGERS a release, it does
-not run the local confidence gate. It runs, strictly in order and stopping
-at the first failure (these steps are causally dependent, unlike `check`'s
-always-run-all-4-gates design):
+not run the local confidence gate. Before step 1 it runs a read-only (T0)
+preconditions gate (`preflight_publish`) that fails EARLY, loud, and
+actionably rather than mid-sequence: it verifies the active `gh` account has
+push/admin on metraton/gaia, that tag `v<version>` does not already exist
+(local or remote), and that pytest-xdist is importable (`npm test` uses
+`-n auto`). If any precondition fails, NO step runs. Then it runs, strictly
+in order and stopping at the first failure (these steps are causally
+dependent, unlike `check`'s always-run-all-4-gates design):
 
   1. `release:prepare <version>` (`scripts/release-prepare.mjs`) -- the
      atomic multi-source version bump + manifest regen + validate.
@@ -70,7 +75,9 @@ spawned, so nothing to approve.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -113,6 +120,19 @@ _REPORT_DETAIL_TAIL = 2000
 # leading "v" (the tag adds it, the sources never carry it).
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 _BUMP_KEYWORDS = ("patch", "minor", "major")
+
+# P1b: npm-test gate timeout. `npm test` runs the L1 suite under pytest-xdist
+# (`-n auto`); the suite has grown, so the DEFAULT is 1800s (was 1200s), and it
+# is overridable per-run via the GAIA_RELEASE_NPM_TEST_TIMEOUT env var (a
+# positive integer number of seconds). On expiry the gate reports an explicit
+# "TIMEOUT after Ns" message rather than the raw TimeoutExpired, which reads
+# like a test failure.
+_NPM_TEST_TIMEOUT_ENV = "GAIA_RELEASE_NPM_TEST_TIMEOUT"
+_DEFAULT_NPM_TEST_TIMEOUT = 1800
+
+# P0: the GitHub repo a Layer-3 publish targets -- the preconditions gate
+# verifies the active `gh` account has push/admin here before any step runs.
+_PUBLISH_REPO = "metraton/gaia"
 
 
 def _now_ms() -> int:
@@ -296,20 +316,70 @@ def gate_plugin_dryrun(
     return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or "ok", "duration_ms": duration}
 
 
-def gate_npm_test(repo_root: Path, *, timeout: int = 1200) -> dict[str, Any]:
+def _resolve_npm_test_timeout(explicit: int | None = None) -> int:
+    """Resolve the npm-test gate timeout in seconds.
+
+    Precedence: an explicit argument wins; else GAIA_RELEASE_NPM_TEST_TIMEOUT
+    (a positive integer number of seconds); else _DEFAULT_NPM_TEST_TIMEOUT.
+    A malformed or non-positive env value is ignored (falls through to the
+    default) rather than raising.
+    """
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get(_NPM_TEST_TIMEOUT_ENV)
+    if raw:
+        try:
+            value = int(raw.strip())
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return _DEFAULT_NPM_TEST_TIMEOUT
+
+
+def gate_npm_test(repo_root: Path, *, timeout: int | None = None) -> dict[str, Any]:
     """Gate 4: `npm test` -- the L1 pytest suite CI runs.
 
-    `npm test` now runs the L1 suite under pytest-xdist (`-n auto`, wired
-    into the `test`/`test:layer1` package.json scripts). Measured parallel
-    wall time on a 4-core box is ~527s (8:47); the 1200s timeout keeps a
-    generous ~2.3x margin over that for slower CI runners.
+    `npm test` runs the L1 suite under pytest-xdist (`-n auto`, wired into the
+    `test`/`test:layer1` package.json scripts). The suite has grown, so the
+    DEFAULT timeout is _DEFAULT_NPM_TEST_TIMEOUT (1800s), overridable per-run
+    via the GAIA_RELEASE_NPM_TEST_TIMEOUT env var (see `_resolve_npm_test_timeout`).
+
+    Unlike the other gates, this one calls `subprocess.run` directly rather than
+    via `_run` so it can distinguish a TIMEOUT from any other invocation error:
+    on expiry it returns an explicit "TIMEOUT after Ns" message that names the
+    env-var lever and pytest-xdist, instead of the raw TimeoutExpired string
+    (which reads like a test failure and hides the real, actionable cause).
     """
     t0 = _now_ms()
     name = "npm test"
-    rc, out, err = _run(["npm", "test"], cwd=repo_root, timeout=timeout)
+    effective = _resolve_npm_test_timeout(timeout)
+    try:
+        result = subprocess.run(
+            ["npm", "test"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=effective,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "name": name,
+            "status": "FAIL",
+            "detail": (
+                f"TIMEOUT after {effective}s -- the L1 suite did not finish. This is a "
+                f"TIMEOUT, not a test failure. Raise the cap via "
+                f"{_NPM_TEST_TIMEOUT_ENV}=<seconds>, or check that pytest-xdist "
+                f"(`-n auto`) is actually parallelizing the run."
+            ),
+            "duration_ms": _now_ms() - t0,
+        }
+    except OSError as exc:
+        return {"name": name, "status": "FAIL", "detail": str(exc), "duration_ms": _now_ms() - t0}
+
+    rc, out, err = result.returncode, (result.stdout or ""), (result.stderr or "")
     duration = _now_ms() - t0
-    if rc is None:
-        return {"name": name, "status": "FAIL", "detail": err, "duration_ms": duration}
     detail = (out + err).strip()[-_DETAIL_TAIL:]
     return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or "ok", "duration_ms": duration}
 
@@ -441,17 +511,53 @@ def step_git_commit(repo_root: Path, version: str, *, timeout: int = 60) -> dict
 
 
 def step_git_tag(repo_root: Path, version: str, *, timeout: int = 30) -> dict[str, Any]:
-    """Step 4: `git tag -a v<version>`. LOCAL-SAFE. A NEW tag only -- never
-    force-moves an existing one (`git tag -f` is hard-denied by
+    """Step 4: `git tag -a v<version>`. LOCAL-SAFE, force-free -- never
+    force-moves an existing tag (`git tag -f` is hard-denied by
     `blocked_commands.py` regardless; this step never attempts it).
+
+    IDEMPOTENT (P1a): if the tag already exists AND points at the current HEAD
+    (the release commit just made in step 3), this is treated as a PASS/skip,
+    not a FAIL -- so a re-run after a LATE failure (git push or gh release
+    create) advances through the tag to the gh-release step instead of dying on
+    it. If the tag exists but points at a DIFFERENT commit, this is a clear FAIL
+    -- the tag is never moved silently. `--force` is never used.
     """
     t0 = _now_ms()
     name = "git tag"
     tag = f"v{version}"
     rc, out, err = _run(["git", "tag", "-a", tag, "-m", f"Release {tag}"], cwd=repo_root, timeout=timeout)
-    duration = _now_ms() - t0
-    detail = (out + err).strip()[-_DETAIL_TAIL:]
-    return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or f"created {tag}", "duration_ms": duration}
+    combined = (out + err).strip()
+    if rc == 0:
+        return {"name": name, "status": "PASS", "detail": combined[-_DETAIL_TAIL:] or f"created {tag}", "duration_ms": _now_ms() - t0}
+
+    # Non-zero. The common cause is that the tag already exists. Distinguish an
+    # idempotent re-run (tag already at HEAD) from a genuine conflict (tag on a
+    # different commit); anything else is the raw failure.
+    if "already exists" not in combined.lower():
+        return {"name": name, "status": "FAIL", "detail": combined[-_DETAIL_TAIL:], "duration_ms": _now_ms() - t0}
+
+    rc_tag, tag_sha, _ = _run(["git", "rev-list", "-n", "1", tag], cwd=repo_root, timeout=timeout)
+    rc_head, head_sha, _ = _run(["git", "rev-parse", "HEAD"], cwd=repo_root, timeout=timeout)
+    tag_sha, head_sha = tag_sha.strip(), head_sha.strip()
+    if rc_tag == 0 and rc_head == 0 and tag_sha and tag_sha == head_sha:
+        return {
+            "name": name,
+            "status": "PASS",
+            "detail": f"{tag} already exists at the release commit ({head_sha[:12]}) -- idempotent skip",
+            "duration_ms": _now_ms() - t0,
+        }
+    return {
+        "name": name,
+        "status": "FAIL",
+        "detail": (
+            f"tag {tag} already exists but points at a DIFFERENT commit "
+            f"({tag_sha[:12] or 'unknown'}) than the current release HEAD "
+            f"({head_sha[:12] or 'unknown'}); NOT moving it. Delete the tag "
+            f"(`git tag -d {tag}`) and re-run to recreate it, or publish the "
+            f"existing tag with `gh release create {tag}`."
+        ),
+        "duration_ms": _now_ms() - t0,
+    }
 
 
 def step_git_push(repo_root: Path, *, timeout: int = 180) -> dict[str, Any]:
@@ -495,15 +601,156 @@ def step_gh_release_create(repo_root: Path, version: str, *, timeout: int = 180)
     return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or "ok", "duration_ms": duration}
 
 
+# ---------------------------------------------------------------------------
+# P0 -- publish preconditions gate (T0, read-only). Runs BEFORE step 1 of
+# run_release_publish and fails EARLY, loud, and actionably rather than
+# blowing up mid-sequence -- the failure mode that produced the release saga
+# (a tag created then a permission error at `gh`, or a 30-minute npm-test wait
+# that only failed because pytest-xdist was missing). Nothing here mutates.
+# ---------------------------------------------------------------------------
+
+def _check_gh_push_permission(repo_root: Path, *, repo: str = _PUBLISH_REPO, timeout: int = 30) -> str | None:
+    """Return an actionable error when the ACTIVE gh account definitively lacks
+    push/admin on *repo*; return None when push is confirmed OR when it could
+    not be verified (gh missing, no network, timeout, unexpected output).
+
+    The distinction is deliberate: a release must not abort on a transient or
+    ambiguous failure -- that would make the gate itself flaky -- only on a
+    definite "no". A confirmed `push:false` and a "no authenticated account"
+    are the two definite-no cases; everything else is "could not verify".
+    """
+    if shutil.which("gh") is None:
+        return None  # cannot verify -> do not block
+    rc, out, err = _run(
+        ["gh", "api", f"repos/{repo}", "-q", ".permissions.push"],
+        cwd=repo_root,
+        timeout=timeout,
+    )
+    if rc is None:
+        return None  # invocation error / timeout -> ambiguous, do not block
+    text = (out or "").strip().lower()
+    if rc == 0:
+        if text == "true":
+            return None  # confirmed push/admin
+        if text == "false":
+            return (
+                f"the active gh account does NOT have push access to {repo}. Switch "
+                f"to an account that does with `gh auth switch -u <account>` (see "
+                f"`gh auth status` for the accounts you have), or request push access."
+            )
+        return None  # unexpected/empty output -> could not verify, do not block
+    # rc != 0: distinguish "not authenticated" (a definite no, actionable) from a
+    # network / 5xx / DNS failure (ambiguous -> do not block).
+    combined = ((out or "") + (err or "")).lower()
+    if any(marker in combined for marker in ("not logged in", "no accounts", "gh auth login", "authentication")):
+        return (
+            f"no authenticated gh account with push access to {repo}. Run "
+            f"`gh auth login` (or `gh auth switch -u <account>`) with an account "
+            f"that has push/admin on {repo}."
+        )
+    return None  # network / transient -> could not verify, do not block
+
+
+def _check_tag_absent(repo_root: Path, version: str, *, remote: str = "origin", timeout: int = 30) -> str | None:
+    """Return an actionable error when tag ``v<version>`` already exists locally
+    or on *remote*; return None when it is absent. The local check is
+    authoritative and offline; a remote that cannot be reached simply does not
+    add a remote-exists finding (never a false block)."""
+    tag = f"v{version}"
+    rc_local, _, _ = _run(
+        ["git", "rev-parse", "-q", "--verify", f"refs/tags/{tag}"],
+        cwd=repo_root,
+        timeout=timeout,
+    )
+    local_exists = rc_local == 0
+    rc_remote, out_remote, _ = _run(
+        ["git", "ls-remote", "--tags", remote, tag],
+        cwd=repo_root,
+        timeout=timeout,
+    )
+    remote_exists = rc_remote == 0 and bool((out_remote or "").strip())
+    if not (local_exists or remote_exists):
+        return None
+    where = " and ".join(w for w, exists in (("local", local_exists), ("remote", remote_exists)) if exists)
+    delete_hint = f"`git tag -d {tag}`" + (f" and `git push {remote} :refs/tags/{tag}`" if remote_exists else "")
+    return (
+        f"tag {tag} already exists ({where}); a previous release may have "
+        f"half-completed. To COMPLETE it, run `gh release create {tag}`. To REDO "
+        f"it, delete the tag first ({delete_hint}) and re-run."
+    )
+
+
+def _xdist_available() -> bool:
+    """Whether pytest-xdist is importable (the `xdist` module). `npm test` runs
+    pytest with `-n auto`, which cannot start without it."""
+    return importlib.util.find_spec("xdist") is not None
+
+
+def _check_xdist_importable() -> str | None:
+    """Return an actionable error when pytest-xdist is not importable; None when
+    it is. Catches the missing-dependency failure in ~1s here instead of after
+    the full npm-test timeout, where it masquerades as a test failure."""
+    if _xdist_available():
+        return None
+    return (
+        "pytest-xdist is not importable, but `npm test` runs pytest with `-n auto` "
+        "and cannot start without it. Install it (e.g. `pip install pytest-xdist`) "
+        "so the suite fails in ~1s here, not after the full npm-test timeout."
+    )
+
+
+def preflight_publish(repo_root: Path, version: str, *, timeout: int = 30) -> dict[str, Any]:
+    """T0 read-only preconditions gate, run BEFORE step 1 of the publish
+    sequence. Aggregates every definite blocker into ONE actionable FAIL so a
+    release stops early -- before any mutation -- rather than mid-sequence.
+    Never mutates anything.
+
+    Checks:
+      1. the active gh account has push/admin on ``metraton/gaia``;
+      2. tag ``v<version>`` does not already exist (local or remote);
+      3. pytest-xdist is importable (`npm test` uses `-n auto`).
+    """
+    t0 = _now_ms()
+    name = "preconditions"
+    problems = [
+        p
+        for p in (
+            _check_gh_push_permission(repo_root, timeout=timeout),
+            _check_tag_absent(repo_root, version, timeout=timeout),
+            _check_xdist_importable(),
+        )
+        if p
+    ]
+    duration = _now_ms() - t0
+    if problems:
+        detail = "release preconditions not met -- fix and re-run:\n" + "\n".join(f"  - {p}" for p in problems)
+        return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": duration}
+    return {
+        "name": name,
+        "status": "PASS",
+        "detail": "gh push access, tag availability, and pytest-xdist all confirmed",
+        "duration_ms": duration,
+    }
+
+
 def run_release_publish(repo_root: Path, version: str) -> list[dict[str, Any]]:
     """Run the Layer-3 publish trigger sequence in order, STOPPING at the
     first failure.
+
+    A read-only preconditions gate (`preflight_publish`, P0) runs BEFORE step 1:
+    if it fails, this returns just that one FAIL result and NO step runs, so the
+    sequence never blows up mid-way (the release-saga failure mode). On PASS the
+    gate is transparent -- the six-step contract below is unchanged.
 
     Unlike `run_release_check`'s always-run-all-4-gates design, these steps
     are causally dependent: tagging an untested tree, or pushing before the
     tag exists, is actively harmful, not just incomplete reporting. Step 2
     reuses `gate_npm_test` unchanged rather than duplicating it.
     """
+    preflight = preflight_publish(repo_root, version)
+    if preflight["status"] != "PASS":
+        return [preflight]
+
     steps = (
         lambda: step_release_prepare(repo_root, version),
         lambda: gate_npm_test(repo_root),

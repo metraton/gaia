@@ -34,8 +34,9 @@ jobs:
       - name: Pack tarball
         # Produce the exact artifact that would be published. `npm pack` runs
         # the `prepack` script (clean + generate:plugin-root), which regenerates
-        # the ROOT .claude-plugin/plugin.json (inline hooks) + hooks/hooks.json
-        # from the manifest -- this is what makes the tarball root a valid
+        # the ROOT .claude-plugin/plugin.json (metadata only -- NO inline hooks) +
+        # the canonical hooks/hooks.json from the manifest -- this is what makes
+        # the tarball root a valid
         # `source: npm` Claude Code plugin. No dist/ bundle is built or committed
         # back: the package root IS the plugin, so the old "Build plugins" /
         # "Verify build outputs" / "Commit built plugins" (git add -f dist + tag
