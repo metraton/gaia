@@ -223,6 +223,77 @@ def temp_gaia_db(tmp_path):
 
 
 # ============================================================================
+# FULL-BOOTSTRAP DB TEMPLATE (perf: build once, copy per test)
+#
+# scripts/bootstrap_database.sh materializes the full production schema and
+# seeds it (agent_permissions, schema_version floor, FTS5 backfill) by spawning
+# dozens of individual `sqlite3` CLI subprocesses. Re-running it per test in a
+# fixture cost 10-17s of *setup* per test (see --durations), which serialized
+# the tests/test_writer_*.py tail onto a single xdist worker while the others
+# sat idle.
+#
+# This session-scoped fixture runs that bootstrap EXACTLY ONCE (per xdist
+# worker) into an immutable template .db file. Per-test fixtures then
+# `copy_bootstrapped_db(...)` it -- a filesystem copy is milliseconds vs a
+# multi-second subprocess storm. Isolation is preserved exactly: every test
+# still gets its OWN independent .db file that it alone mutates; the template
+# is never opened for writing after it is built. Coverage is preserved exactly:
+# the copied bytes ARE the real bootstrap output, not a hand-rolled substitute.
+# ============================================================================
+
+@pytest.fixture(scope="session")
+def bootstrapped_db_template(tmp_path_factory):
+    """Build the full bootstrapped Gaia DB once per session; return its Path.
+
+    Built via the real ``scripts/bootstrap_database.sh`` so the template is
+    byte-for-byte what a live bootstrap produces (schema + agent_permissions +
+    schema_version floor + FTS5 mirrors). Immutable after creation -- consumers
+    copy it, never mutate it.
+    """
+    import os
+    import subprocess
+
+    repo_root = Path(__file__).resolve().parents[1]
+    bootstrap = repo_root / "scripts" / "bootstrap_database.sh"
+    template_dir = tmp_path_factory.mktemp("gaia_db_template")
+    template = template_dir / "template.db"
+
+    env = os.environ.copy()
+    env["GAIA_DB"] = str(template)
+    # WORKSPACE only sets the bootstrap's seeded workspaces.identity row; the
+    # writer tests insert their own 'me' workspace and never rely on it.
+    env["WORKSPACE"] = str(template_dir)
+    res = subprocess.run(
+        ["bash", str(bootstrap)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert res.returncode == 0, (
+        f"bootstrap template build failed:\nstdout:\n{res.stdout}\n"
+        f"stderr:\n{res.stderr}"
+    )
+    assert template.exists(), "bootstrap did not produce a template DB"
+    return template
+
+
+def copy_bootstrapped_db(template: Path, dest: Path) -> Path:
+    """Copy the session bootstrap template to ``dest`` (a fresh per-test DB).
+
+    Returns ``dest``. Each caller gets an independent, fully-mutable DB file
+    identical to a freshly-bootstrapped one, with none of the per-test
+    subprocess cost.
+    """
+    import shutil
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(str(template), str(dest))
+    return dest
+
+
+# ============================================================================
 # FRONTMATTER PARSER (manual, no PyYAML)
 # ============================================================================
 

@@ -6,9 +6,7 @@ exercised separately by tests/cli/test_m5_integration.py.
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import subprocess
 import sys
 from pathlib import Path
 
@@ -24,24 +22,18 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def seeded_db(tmp_path, monkeypatch):
-    """Bootstrap a v5 DB and seed brief='test-brief' with one of each child."""
-    bootstrap = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+def seeded_db(tmp_path, monkeypatch, bootstrapped_db_template):
+    """Bootstrap a v5 DB and seed brief='test-brief' with one of each child.
+
+    Uses the session-scoped ``bootstrapped_db_template`` (built once via
+    ``scripts/bootstrap_database.sh``) and copies it per test instead of
+    re-running the multi-second bootstrap subprocess. Each test still gets its
+    own independent, fully-mutable DB file, so isolation is unchanged.
+    """
+    from tests.conftest import copy_bootstrapped_db
+
     db_path = tmp_path / "gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
-    env["WORKSPACE"] = str(tmp_path)
-    res = subprocess.run(
-        ["bash", str(bootstrap)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    assert res.returncode == 0, (
-        f"bootstrap failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
-    )
+    copy_bootstrapped_db(bootstrapped_db_template, db_path)
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
 
     con = sqlite3.connect(str(db_path))
