@@ -121,6 +121,55 @@ Do **not** persist plan content with `gaia brief edit`: it writes the `briefs`
 table (not `plans`), opens `$EDITOR` interactively (a subagent cannot drive it),
 and the content never surfaces in `gaia plan show`.
 
+**Then materialize one task row per plan task.** `gaia plan save` writes only
+the markdown; the machine-addressable task rows are a separate write. After the
+save, loop once per plan task:
+
+```bash
+gaia task add <brief> --order=N --goal="... AC-<n> ..." --workspace=<ws>
+```
+
+- `gaia plan save` MUST run first -- `gaia task add` attaches by
+  (brief -> its single plan -> order_num) and fails with "no plan attached" if
+  no plan row exists.
+- Embed the satisfied AC-ids in each goal (`AC-<n>` literals) so `verify_brief`
+  Invariant 2 (`orphan_task_ac_ref`) stays coherent; the referenced ACs must be
+  real ACs on the brief. A markdown-only plan (no rows) trips Invariant 1
+  (`empty_plan`).
+- `order_num` is 1-based and unique per plan; a duplicate is rejected.
+- `gaia task add` is safe bookkeeping (not T3) on the non-curator `tasks` table
+  -- an allowed, no-approval write for the planner.
+- Re-planning a brief whose plan already has rows: a repeated add at an existing
+  order_num errors; remove/reorder the stale rows first, or add only the new
+  order_nums.
+
+Confirm the rows with `gaia task list <name> --format=count` (it should equal
+the number of tasks you decomposed).
+
+**Then author the gate or gates each task needs.** A task row with no gate trips
+`verify_brief` Invariant 9 (`task_missing_gate`). After each row exists:
+
+```bash
+gaia task gate add <brief> <order> --type=<T> --evidence-shape="..." --workspace=<ws>
+```
+
+- Choose `--type` by the task's nature: `command`/`code` when the outcome is
+  executable or testable, `semantic` for prose/design/judgment, `self_review`
+  for a qualitative self-check. These four (`VALID_VERIFICATION_TYPES`) are the
+  only valid values.
+- Every gate needs a non-empty `--evidence-shape` -- the runnable command or
+  oracle, the rubric, or the review statement. An empty shape trips
+  `task_malformed_gate`; `--type` alone is insufficient.
+- `task_gates` is one-to-many, so a task MAY carry more than one gate of mixed
+  types when its outcome is proven on more than one axis (a `command` gate AND a
+  `semantic` gate). Author the gate or gates the task NEEDS, not a pile.
+- `gaia task gate add` attaches by (brief -> plan -> order_num -> task) and runs
+  after the matching `gaia task add`; it is safe bookkeeping on the non-curator
+  `task_gates` table (no approval).
+
+Confirm with `gaia task gate list <name> <order>` per task, or `gaia brief verify
+<name>` (Invariant 9 clean).
+
 ## Plan Structure
 
 This is the markdown you pass to `gaia plan save --content`. It mirrors the

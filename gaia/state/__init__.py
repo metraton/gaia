@@ -44,6 +44,7 @@ VALID_PLAN_STATUSES: tuple[str, ...] = (
     "COMPLETE",
     "BLOCKED",
     "NEEDS_INPUT",
+    "NEEDS_VERIFICATION",
 )
 
 # ---------------------------------------------------------------------------
@@ -113,10 +114,44 @@ VALID_MILESTONE_STATUSES: tuple[str, ...] = (
     "blocked",
 )
 
+# ---------------------------------------------------------------------------
+# 7) Verification type -- agent_contract_handoff evidence_report.verification.type
+#    AND task_gates.verification_type (v34, harness R1-A)
+#
+# This tuple has TWO consumers that must stay identical:
+#   * The pure form-layer validator (gaia.contract.validator.validate_form)
+#     enforces it on the *type* field of a contract-envelope verification block,
+#     the same way that module consumes VALID_PLAN_STATUSES -- an imported tuple
+#     with a byte-identical stdlib fallback.
+#   * As of v34 it is ALSO the CHECK on the persisted task_gates.verification_type
+#     column, so it IS registered in STATE_MACHINE_REGISTRY below (see the
+#     (task_gates, verification_type) entry). tools/state/diff_source_of_truth.py
+#     holds the SQL CHECK and this Python tuple enforceably identical.
+#
+# Ordered, extensible initial set:
+#   * "command" / "code" -- DETERMINISTIC oracle types: a third-party verifier
+#     runs a declared command/oracle (the two names are synonyms for the two
+#     shapes of a deterministic check).
+#   * "semantic"    -- requires human / rubric validation; the contract stays
+#     open pending that judgement.
+#   * "self_review" -- the agent states what it checked and observed.
+# ---------------------------------------------------------------------------
+VALID_VERIFICATION_TYPES: tuple[str, ...] = (
+    "command",
+    "code",
+    "semantic",
+    "self_review",
+)
+
 
 # ---------------------------------------------------------------------------
 # Convenience: a registry mapping (table, column) -> tuple, used by the
 # migration script and the diff tool so neither has to hard-code names.
+# VALID_VERIFICATION_TYPES is registered here as of v34: it now backs a real
+# persisted CHECK on task_gates.verification_type (harness R1-A), so the diff
+# tool holds the SQL CHECK and the Python tuple identical. (It remains ALSO an
+# envelope-field enum for the contract validator -- the two uses share one
+# SSOT tuple.)
 # ---------------------------------------------------------------------------
 STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
     ("episodes", "plan_status"): VALID_PLAN_STATUSES,
@@ -125,6 +160,7 @@ STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
     ("tasks", "status"): VALID_TASK_STATUSES,
     ("acceptance_criteria", "status"): VALID_AC_STATUSES,
     ("milestones", "status"): VALID_MILESTONE_STATUSES,
+    ("task_gates", "verification_type"): VALID_VERIFICATION_TYPES,
 }
 
 
@@ -135,5 +171,6 @@ __all__ = [
     "VALID_TASK_STATUSES",
     "VALID_AC_STATUSES",
     "VALID_MILESTONE_STATUSES",
+    "VALID_VERIFICATION_TYPES",
     "STATE_MACHINE_REGISTRY",
 ]

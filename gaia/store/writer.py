@@ -3985,6 +3985,227 @@ def reorder_tasks(
         con.close()
 
 
+def list_plan_tasks(
+    workspace: str,
+    brief_name: str,
+    *,
+    status: str | None = None,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return the task rows for the plan attached to ``brief_name``.
+
+    Read surface for ``gaia task list`` -- scoped to the single plan attached
+    to the brief (plans.brief_id is UNIQUE), ordered by order_num. Optionally
+    filtered by ``status`` (one of pending/done/skipped). Raises ValueError on
+    a missing brief or a brief with no plan attached (mirroring
+    add_task_to_plan's "no plan attached" contract), so a caller can tell an
+    empty plan (returns []) apart from an unplanned brief (raises).
+    """
+    if status is not None and status not in ("pending", "done", "skipped"):
+        raise ValueError(
+            f"status must be one of pending/done/skipped, got {status!r}"
+        )
+
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id(con, workspace, brief_name)
+        if brief_id is None:
+            raise ValueError(
+                f"brief '{brief_name}' not found in workspace '{workspace}'"
+            )
+        plan_row = con.execute(
+            "SELECT id FROM plans WHERE brief_id = ?", (brief_id,)
+        ).fetchone()
+        if plan_row is None:
+            raise ValueError(
+                f"no plan attached to brief '{brief_name}'"
+            )
+        plan_id = plan_row["id"]
+
+        if status is None:
+            rows = con.execute(
+                "SELECT id, plan_id, order_num, goal, status, evidence_path "
+                "FROM tasks WHERE plan_id = ? ORDER BY order_num",
+                (plan_id,),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT id, plan_id, order_num, goal, status, evidence_path "
+                "FROM tasks WHERE plan_id = ? AND status = ? ORDER BY order_num",
+                (plan_id, status),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# task_gates: planner-authored typed verification gate slot (v34, harness R1-A)
+#
+# A gate is a one-to-many child of a task, addressed by its parent task's
+# order_num within the plan attached to a brief -- consistent with how
+# add_task_to_plan / remove_task_from_plan address tasks. These writers persist
+# a gate AS GIVEN: structural validation (gaia.state.gate_validation) is a
+# separate, independently-invokable pure function; whether `add` blocks a
+# malformed gate at write time is the advisory-vs-blocking decision, which is
+# out of scope for R1-A.
+# ---------------------------------------------------------------------------
+
+def _resolve_task_id_by_order(
+    con: sqlite3.Connection,
+    workspace: str,
+    brief_name: str,
+    order_num: int,
+) -> int:
+    """Resolve the tasks.id for (brief plan, order_num). Raises ValueError."""
+    brief_id = _resolve_brief_id(con, workspace, brief_name)
+    if brief_id is None:
+        raise ValueError(
+            f"brief '{brief_name}' not found in workspace '{workspace}'"
+        )
+    plan_row = con.execute(
+        "SELECT id FROM plans WHERE brief_id = ?", (brief_id,)
+    ).fetchone()
+    if plan_row is None:
+        raise ValueError(f"no plan attached to brief '{brief_name}'")
+    task_row = con.execute(
+        "SELECT id FROM tasks WHERE plan_id = ? AND order_num = ?",
+        (plan_row["id"], order_num),
+    ).fetchone()
+    if task_row is None:
+        raise ValueError(
+            f"task with order_num={order_num} not found in plan for "
+            f"brief '{brief_name}'"
+        )
+    return task_row["id"]
+
+
+def add_gate_to_task(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    verification_type: str,
+    *,
+    evidence_type: str | None = None,
+    evidence_shape: str | None = None,
+    artifact_path: str | None = None,
+    status: str = "pending",
+    db_path: Path | None = None,
+) -> dict:
+    """Insert a task_gates row for the task at ``task_order_num``.
+
+    Persists the gate AS GIVEN. The DB CHECK on verification_type is the only
+    enforcement here (an out-of-enum type raises sqlite3.IntegrityError, which
+    surfaces as ValueError); structural completeness is validated separately by
+    gaia.state.gate_validation.validate_gate.
+
+    Raises ValueError on missing brief/plan/task or an out-of-enum
+    verification_type.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("tasks")
+
+    con = _connect(db_path)
+    try:
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, task_order_num
+        )
+        try:
+            cur = con.execute(
+                "INSERT INTO task_gates "
+                "(task_id, verification_type, evidence_type, evidence_shape, "
+                " artifact_path, status) VALUES (?, ?, ?, ?, ?, ?)",
+                (task_id, verification_type, evidence_type, evidence_shape,
+                 artifact_path, status),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"could not insert gate (verification_type={verification_type!r}): {exc}"
+            ) from exc
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "inserted",
+            "brief_name": brief_name,
+            "task_order_num": task_order_num,
+            "gate_id": cur.lastrowid,
+            "verification_type": verification_type,
+        }
+    finally:
+        con.close()
+
+
+def list_task_gates(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    *,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return the gate rows for the task at ``task_order_num`` (ordered by id).
+
+    Read surface for `gaia task gate list`. Raises ValueError on missing
+    brief/plan/task.
+    """
+    con = _connect(db_path)
+    try:
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, task_order_num
+        )
+        rows = con.execute(
+            "SELECT id, task_id, verification_type, evidence_type, "
+            "       evidence_shape, artifact_path, status "
+            "FROM task_gates WHERE task_id = ? ORDER BY id",
+            (task_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def remove_gate_from_task(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    gate_id: int,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Delete the task_gates row ``gate_id`` belonging to the task at
+    ``task_order_num``.
+
+    Raises ValueError on missing brief/plan/task, or when ``gate_id`` does not
+    belong to that task.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("tasks")
+
+    con = _connect(db_path)
+    try:
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, task_order_num
+        )
+        cur = con.execute(
+            "DELETE FROM task_gates WHERE id = ? AND task_id = ?",
+            (gate_id, task_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"gate id={gate_id} not found on task order_num={task_order_num} "
+                f"in plan for brief '{brief_name}'"
+            )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "deleted",
+            "brief_name": brief_name,
+            "task_order_num": task_order_num,
+            "gate_id": gate_id,
+        }
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Public API: wipe_workspace
 # ---------------------------------------------------------------------------

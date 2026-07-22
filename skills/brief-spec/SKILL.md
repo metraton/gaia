@@ -305,12 +305,31 @@ produces, not just the task list:
 - the **feasibility findings** it corroborated against the codebase
   (what already exists, what the brief assumed that does not),
 - the **assumptions** it had to make and the **risks** it sees,
-- the **rationale for task ordering** and parallelization.
+- the **rationale for task ordering** and parallelization,
+- the **gate or gates on each task** -- the typed verification the
+  planner authored to prove that task's outcome.
 
 Require those in the dispatch -- a plan you cannot audit is one you
 cannot own. When you review it, escalate to the user only what is
 **genuinely new or blocking** (a feasibility gap, a fork the planner
 could not resolve). Never re-ask what the brief already settled.
+
+### Judge that each task's gate captures its intent
+
+Part of owning the plan is judging its gates. The planner authors, per
+task, one or more typed gates (`command`, `code`, `semantic`,
+`self_review`) via `gaia task gate add`; the well-formedness of those
+gates is already checked deterministically (`verify_brief` Invariant 9:
+a task with no gate, or a gate with an empty evidence-shape). Your job is
+the half a check cannot do: judge that each gate actually captures the
+**intent** of its task. For each task ask -- does the chosen type and
+evidence-shape prove how *this* task's outcome should be shown, and where
+a task carries more than one gate, do they *together* cover its intent? A
+`semantic` rubric on a task whose outcome is a passing command, or a lone
+`command` gate on a task whose real deliverable is a design judgment, is a
+gate that passes well-formedness but misses intent. This is prompt
+discipline, not a deterministic check -- flag the mismatch back to the
+planner; do not silently accept a gate that does not fit its task.
 
 ## Anti-Patterns
 
@@ -323,9 +342,13 @@ could not resolve). Never re-ask what the brief already settled.
 - **Hard-deleting a brief that has plan history** -- prefer
   `set-status archived`. Delete is for genuinely abandoned drafts.
 - **Accepting a plan you cannot audit** -- dispatching the planner without
-  requiring its feasibility findings, assumptions, risks, and ordering
-  rationale leaves you owning a plan you cannot check. Require the audit
-  inputs in the dispatch.
+  requiring its feasibility findings, assumptions, risks, ordering
+  rationale, and per-task gates leaves you owning a plan you cannot check.
+  Require the audit inputs in the dispatch.
+- **Accepting a gate that misses its task's intent** -- a gate can pass
+  well-formedness (Invariant 9) yet prove the wrong thing. Judging that
+  each task's gate captures its intent is yours; flag a mismatch back to
+  the planner rather than accept it.
 - **Re-asking the user what the brief settled** -- the brief is the agreed
   contract. Escalate only genuinely new or blocking findings surfaced by
   the plan; questions the brief already answered are noise.

@@ -60,6 +60,20 @@ def seeded_db(tmp_path, monkeypatch, bootstrapped_db_template):
             "VALUES (?, 1, 'T1', 'pending')",
             (plan_id,),
         )
+        task_id = con.execute(
+            "SELECT id FROM tasks WHERE plan_id=? AND order_num=1", (plan_id,)
+        ).fetchone()["id"]
+        # Author a well-formed gate on the seeded task so verify_brief's gate
+        # well-formedness invariant (R1-B-1 / Invariant 9 in briefs/store.py)
+        # sees >=1 valid task_gates row, mirroring the pattern established in
+        # tests/cli/test_m5_integration.py (add_gate_to_task with
+        # verification_type='command' + evidence_shape).
+        con.execute(
+            "INSERT INTO task_gates "
+            "(task_id, verification_type, evidence_shape, status) "
+            "VALUES (?, 'command', 'pytest tests/ -q', 'pending')",
+            (task_id,),
+        )
         con.execute(
             "INSERT INTO acceptance_criteria (brief_id, ac_id, description, status) "
             "VALUES (?, 'AC-1', 'first', 'pending')",

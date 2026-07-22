@@ -59,6 +59,7 @@ def test_m5_end_to_end(bootstrapped_db):
     from gaia.store.writer import (
         upsert_plan,
         add_task_to_plan,
+        add_gate_to_task,
         update_brief_field,
     )
 
@@ -96,6 +97,12 @@ def test_m5_end_to_end(bootstrapped_db):
                 db_path=bootstrapped_db)
     add_task_to_plan("me", "m5-test-brief", 1,
                      "Implement AC-1 logic", db_path=bootstrapped_db)
+    # Author a well-formed gate on the task so verify_brief's gate
+    # well-formedness invariant (R1-B-1) sees a >=1 valid gate and the
+    # end-to-end verify stays clean.
+    add_gate_to_task("me", "m5-test-brief", 1, "command",
+                     evidence_shape="pytest tests/ -q",
+                     db_path=bootstrapped_db)
 
     # Step 5: Patch the surface_type metadata field
     res = update_brief_field("me", "m5-test-brief", "surface_type",

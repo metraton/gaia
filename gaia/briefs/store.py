@@ -40,6 +40,7 @@ from gaia.briefs.serializer import (
     serialize_brief_to_markdown,
 )
 from gaia.store.writer import _connect, _ensure_workspace_row
+from gaia.state.gate_validation import validate_gate
 
 
 def _now_iso() -> str:
@@ -1244,6 +1245,57 @@ def verify_brief(
                         f"cascade is performed)"
                     ),
                 })
+
+        # Invariant 9: gate well-formedness (harness R1-B-1). For each task of
+        # the plan, load its persisted task_gates (R1-A) and run validate_gate
+        # (gaia.state.gate_validation -- pure, no DB/IO) over each. A task with
+        # zero gates yields a task_missing_gate inconsistency; a gate that
+        # validate_gate rejects yields a task_malformed_gate (with the validator
+        # errors embedded in the detail). This connects validate_gate -- today
+        # wired to nothing -- into the plan verification flow, inheriting the
+        # EXISTING dual surface of verify_brief (advisory under `gaia brief
+        # close`, exit-2-capable under `gaia brief verify`) with NO new
+        # enforcement mechanism. Guarded by `plan_id is not None`, reusing the
+        # plan_id resolution and task iteration of Invariants 1/2.
+        if plan_id is not None:
+            gate_task_rows = con.execute(
+                "SELECT id, order_num FROM tasks WHERE plan_id = ?",
+                (plan_id,),
+            ).fetchall()
+            for trow in gate_task_rows:
+                gate_rows = con.execute(
+                    "SELECT verification_type, evidence_type, evidence_shape, "
+                    "artifact_path, status FROM task_gates WHERE task_id = ?",
+                    (trow["id"],),
+                ).fetchall()
+                if not gate_rows:
+                    inconsistencies.append({
+                        "kind": "task_missing_gate",
+                        "detail": (
+                            f"task order_num={trow['order_num']} has no "
+                            f"task_gates row (every task must carry >=1 gate)"
+                        ),
+                    })
+                    continue
+                for grow in gate_rows:
+                    gate = {
+                        "verification_type": grow["verification_type"],
+                        "evidence_type": grow["evidence_type"],
+                        "evidence_shape": grow["evidence_shape"],
+                        "artifact_path": grow["artifact_path"],
+                        "status": grow["status"],
+                    }
+                    result = validate_gate(gate)
+                    if result.ok is False:
+                        inconsistencies.append({
+                            "kind": "task_malformed_gate",
+                            "detail": (
+                                f"task order_num={trow['order_num']} has a "
+                                f"malformed gate "
+                                f"(verification_type={grow['verification_type']!r}): "
+                                f"{'; '.join(result.errors)}"
+                            ),
+                        })
 
         return {
             "brief_name": name,

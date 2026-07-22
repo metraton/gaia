@@ -98,7 +98,7 @@ def _build_diff(con: sqlite3.Connection) -> str:
     rows = con.execute(
         "SELECT name, sql FROM sqlite_master WHERE type='table' "
         "AND name IN ('episodes','briefs','plans','tasks',"
-        "             'acceptance_criteria','milestones')"
+        "             'acceptance_criteria','milestones','task_gates')"
     ).fetchall()
     sqls = {r[0]: (r[1] or "") for r in rows}
 

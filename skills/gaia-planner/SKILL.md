@@ -7,8 +7,8 @@ description: Use when planning features or decomposing work into tasks from a br
 
 Plan creation from briefs. The planner reads a brief from the substrate DB,
 decomposes it into tasks defined by outcome and verification, and persists the
-plan back through the `gaia plan` CLI. The orchestrator owns task dispatch and
-execution.
+plan back through the `gaia plan` CLI as markdown AND as one task row per task
+(`gaia task add`). The orchestrator owns task dispatch and execution.
 
 ## The brief is authoritative intent (read this first)
 
@@ -128,7 +128,17 @@ For sizing rules, AC citation, agent routing, and the plan structure, see
   that does not, says so. This is what lets the orchestrator optimize dispatch
   instead of serializing defensively.
 
-### Step 4: Persist the plan
+### Step 4: Persist the plan (markdown, task rows, THEN their gates)
+
+Persistence has three halves. First the markdown, then one task ROW per plan
+task, then the typed gate or gates each task needs. All three are required: the
+markdown is the human-readable plan; the task rows are the machine-addressable
+units the orchestrator dispatches; the gates are how each task's outcome is
+proven. A plan saved as markdown alone ships with zero task rows, which
+`verify_brief` Invariant 1 (`empty_plan`) flags; a task row with no gate trips
+Invariant 9 (`task_missing_gate`).
+
+**Half 1 -- save the markdown:**
 
 ```bash
 gaia plan save --brief=<name> --content="..." --workspace=<ws>
@@ -139,9 +149,78 @@ This upserts the plan row in the `plans` table: first call inserts (status
 tasks. It is the only supported writer. If the content is too large to pass
 inline, source it from a file: `--content="$(cat /tmp/plan.md)"`.
 
+**Half 2 -- materialize one task row per plan task:**
+
+After the plan is saved, loop over the tasks you decomposed in Step 3 and
+attach each as a row, once per task:
+
+```bash
+gaia task add <brief> --order=N --goal="... AC-<n> ..." --workspace=<ws>
+```
+
+Rules, in order:
+
+- **HARD SEQUENCING: `gaia plan save` MUST precede every `gaia task add`.**
+  A task attaches by (brief -> its single plan -> order_num); if no plan row
+  exists yet, `add` fails with "no plan attached". Never add tasks before
+  saving the plan.
+- **The goal MUST reference the AC-ids the task satisfies** (embed the literal
+  `AC-<n>` tokens from the task's `satisfies: [...]`, e.g.
+  `--goal="Implement the list reader (AC-1)"`). `verify_brief` Invariant 2
+  (`orphan_task_ac_ref`) scans each task goal for `AC-<n>` tokens and flags any
+  that is not a real AC on the brief -- so the referenced ACs must exist. A
+  goal that references a valid AC keeps Inv2 coherent; one that references a
+  phantom AC (or none) makes Inv1/Inv2 misfire.
+- **`order_num` is 1-based and unique within the plan.** Use the task's
+  position from Step 3. A duplicate order_num within the same plan is rejected.
+- **`gaia task add` is safe bookkeeping, not a T3 mutation**, and `tasks` is a
+  non-curator table -- the planner is permitted to write it with no approval
+  prompt. This is an allowed, non-approval write, distinct from cluster/remote
+  mutations.
+- **Re-planning a brief whose plan already has rows:** a repeated
+  `gaia task add` at an existing order_num errors on the duplicate. When
+  re-materializing, remove or reorder the stale rows first
+  (`gaia task remove` / `gaia task reorder`), or add only the new order_nums.
+
+**Half 3 -- author the typed gate or gates each task needs:**
+
+After a task row exists, attach the gate or gates that prove its outcome, once
+per gate:
+
+```bash
+gaia task gate add <brief> <order> --type=<T> --evidence-shape="..." --workspace=<ws>
+```
+
+- **Choose `--type` by the task's nature.** `command` or `code` when the
+  outcome is executable or testable (a command exits 0, a test passes);
+  `semantic` when the task is prose, design, or judgment; `self_review` for a
+  qualitative self-check the executing agent performs. The four values are the
+  only valid ones (`VALID_VERIFICATION_TYPES`).
+- **Pair a non-empty `--evidence-shape` with EVERY gate.** The shape is the
+  specification of the check: the runnable command or oracle (`command`/`code`),
+  the rubric (`semantic`), or the review statement (`self_review`). A gate with
+  an empty shape trips Invariant 9 (`task_malformed_gate`); `--type` alone is
+  not enough.
+- **A task MAY carry more than one gate, of mixed types.** `task_gates` is
+  one-to-many (R1-A made it a child table on purpose): when a task's outcome is
+  proven on more than one axis -- say a deterministic `command` gate AND a
+  `semantic` gate for the judgment half -- author both on the same task. Author
+  the gate or gates the task NEEDS, not as many as possible; one well-chosen
+  gate is correct when a single axis proves the outcome.
+- **Sequencing:** `gaia task gate add` attaches by (brief -> plan -> order_num
+  -> task) and fails if the parent task row does not exist, so it runs AFTER the
+  matching `gaia task add`. Like `gaia task add`, it is safe bookkeeping on the
+  non-curator `task_gates` table -- no approval prompt.
+
+Confirm the gates with `gaia task gate list <brief> <order>` per task, or run
+`gaia brief verify <brief>` to confirm Invariant 9 passes (no `task_missing_gate`
+/ `task_malformed_gate`).
+
 Lifecycle is `draft -> active -> closed` via `gaia plan set-status <name> <status>`.
 
-Confirm with `gaia plan show <name>` that the content is stored.
+Confirm the markdown with `gaia plan show <name>` and the rows with
+`gaia task list <name> --format=count` (the count should equal the number of
+tasks you decomposed).
 
 ### Step 5: Resolve blocking ambiguity before persisting
 
@@ -174,6 +253,14 @@ return the plan content as your output.
   opens `$EDITOR` interactively, which a subagent cannot drive. Content put
   there never appears in `gaia plan show` because plans and briefs are
   different rows in different tables. Persist with `gaia plan save`.
+- **Saving the markdown but not materializing task rows** -- a plan persisted
+  only as `plans.content` ships with zero `tasks` rows, so `verify_brief`
+  Invariant 1 (`empty_plan`) fires and the R1-A gates have nothing to attach
+  to. Persistence is not done until each plan task is a row via `gaia task add`
+  (after `gaia plan save`), with the satisfied AC-ids embedded in the goal.
+- **Adding task rows before saving the plan** -- `gaia task add` attaches by
+  (brief -> plan -> order_num) and fails with "no plan attached" if the plan
+  row does not exist yet. Always `gaia plan save` first, then loop the adds.
 - **Pinning implementation nomenclature** -- a task that names exact symbols or
   paths breaks when execution discoveries move them, and takes its downstream
   tasks with it. Reference areas loosely; let the executing agent resolve the
@@ -194,5 +281,8 @@ return the plan content as your output.
   dispatches. If you have `Agent` in your tools, something is wrong.
 - **Fat or micro tasks** -- a task spanning many outcomes loses the agent; a
   "task" too small to verify on its own is a step. Size to one testable outcome.
-- **Tasks without verification** -- an outcome with no evidence the orchestrator
-  can check post-dispatch cannot be confirmed complete. Every task carries its proof.
+- **Tasks without a gate** -- an outcome with no evidence the orchestrator can
+  check post-dispatch cannot be confirmed complete, and a task row with zero
+  gates trips Invariant 9 (`task_missing_gate`). Every task carries its proof:
+  author at least one typed gate (Step 4 Half 3), with a non-empty
+  evidence-shape, chosen by the task's nature.
