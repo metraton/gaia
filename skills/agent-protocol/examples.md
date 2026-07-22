@@ -367,6 +367,38 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
 }
 ```
 
+## 9. NEEDS_VERIFICATION (producer hands off, does not self-complete)
+
+Harness R2: the producer believes the increment is done and MAY propose `evidence_report.verification.result`, but this is a proposal, not a `COMPLETE` -- only a verifier-role agent transitions `NEEDS_VERIFICATION` to `COMPLETE` (a verifier rejecting it sends the increment back to `IN_PROGRESS`).
+
+```agent_contract_handoff
+{
+  "agent_status": {
+    "plan_status": "NEEDS_VERIFICATION",
+    "agent_id": "a5f3c07",
+    "pending_steps": ["verifier confirms HelmRelease reconciliation"],
+    "next_action": "Hand off to verifier -- change believed complete, awaiting independent confirmation"
+  },
+  "evidence_report": {
+    "patterns_checked": ["existing HelmRelease naming convention in flux/apps/"],
+    "files_checked": ["flux/apps/qxo-api/helmrelease.yaml"],
+    "commands_run": ["kubectl apply -f flux/apps/qxo-api/helmrelease.yaml -> configured"],
+    "key_outputs": ["HelmRelease applied; reconciliation not yet independently confirmed"],
+    "verbatim_outputs": [],
+    "cross_layer_impacts": [],
+    "open_gaps": ["Independent verifier confirmation of reconciled state"],
+    "verification": {
+      "method": "self-review",
+      "checks": ["kubectl apply exit code", "manifest diff matches intended change"],
+      "result": "pass",
+      "details": "Proposed by the producer, not a verifier -- offered for the verifier's reference, not a self-declared pass."
+    }
+  },
+  "consolidation_report": null,
+  "approval_request": null
+}
+```
+
 ## Notes on multi-command APPROVAL_REQUEST sweeps
 
 **Per-command (default):** when T3 commands appear one at a time as the agent

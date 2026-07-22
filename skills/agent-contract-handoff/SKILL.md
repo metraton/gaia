@@ -36,11 +36,11 @@ A still-emitted fenced `agent_contract_handoff` block is a supported migration f
 | `agent_status` | Required | always; container for the four status fields below; absent -> named code `MISSING_FIELD` (field `agent_status`) |
 | `agent_status.plan_status` | Required | always; enum (see state machine); absent -> `MISSING_FIELD`; present but out-of-enum -> named code `PLAN_STATUS` |
 | `agent_status.agent_id` | Required | always; must match `^a[0-9a-f]{5,}$`; absent -> `MISSING_FIELD`; present but malformed -> named code `AGENT_ID_FORMAT` -- so contract-repair can route back to you |
-| `agent_status.pending_steps` | Required | presence-only check (`[]` is valid); missing -> `MISSING_FIELD` (field `agent_status.pending_steps`) |
-| `agent_status.next_action` | Required | must be present and non-empty; missing -> `MISSING_FIELD` (field `agent_status.next_action`) |
+| `agent_status.pending_steps` | Required | presence-only check (`[]` is valid); missing -> `MISSING_FIELD` (field `agent_status.pending_steps`); on `COMPLETE`, a PRESENT but non-empty value -> named code `COMPLETE_SHAPE` (R4) |
+| `agent_status.next_action` | Required | must be present and non-empty; missing -> `MISSING_FIELD` (field `agent_status.next_action`); on `COMPLETE`, a PRESENT value other than exactly `"done"` -> named code `COMPLETE_SHAPE` (R4) |
 | `evidence_report` | Required | always present for every valid `plan_status`; see sub-field table |
 | `consolidation_report` | Conditional | required when INPUT set `consolidation_required` / `cross_check_required` / `surface_routing.multi_surface` (`requires_consolidation_report`); else may be `null` |
-| `approval_request` | Conditional | required when `plan_status` is `APPROVAL_REQUEST`; see sub-field table |
+| `approval_request` | Conditional | required (non-null) when `plan_status` is `APPROVAL_REQUEST`, else `APPROVAL_REQUEST_SHAPE` (R4); see sub-field table for which sub-fields that code also gates |
 | `loop_state` | Conditional | agentic-loop turns only; `_check_loop_state_blocking` blocks `COMPLETE` when `iteration < max_iterations AND metric < threshold` |
 | `user_facing_summary` | Optional | a brief prose summary written ONCE for the human reader; `parse_user_facing_summary`. The only human-audience field in the contract -- every other field is machine-audience for the orchestrator. On a single-agent `COMPLETE` (N=1) the orchestrator relays it near-verbatim (adapted to the user's language) instead of re-synthesizing `key_outputs`. Absent, or N>1 (multi-agent), the orchestrator falls back to synthesizing `key_outputs`. Purely additive: never required, never rejected. |
 | `memorialize_suggestions` | Optional | structured memory candidates for the user to triage; `parse_memorialize_suggestions` |
@@ -51,18 +51,21 @@ A still-emitted fenced `agent_contract_handoff` block is a supported migration f
 
 ## Named shape-error codes (SSOT)
 
-Four stable, named codes (`FormErrorCode` in `gaia/contract/validator.py`) are the SSOT for every SHAPE rejection, whichever path produced it -- the `gaia contract` CLI's write-time validation, the SubagentStop hook gate, and the fence fallback all resolve to the same four:
+Seven stable, named codes (`FormErrorCode` in `gaia/contract/validator.py`) are the SSOT for every SHAPE rejection, whichever path produced it -- the `gaia contract` CLI's write-time validation, the SubagentStop hook gate, and the fence fallback all resolve to the same set. Five were the original AC-1 set; `VERIFICATION_SHAPE` was added additively in R3; `APPROVAL_REQUEST_SHAPE` and `COMPLETE_SHAPE` were added additively in R4 to close two pure-shape cross-field conditionals the form layer had previously left unchecked:
 
 | Code | Fires when |
 |------|------------|
 | `AGENT_ID_FORMAT` | `agent_status.agent_id` is present but does not match `^a[0-9a-f]{5,}$` |
 | `PLAN_STATUS` | `agent_status.plan_status` is present but outside the canonical enum |
 | `VERIFICATION_RESULT` | `plan_status` is `COMPLETE` and `evidence_report.verification.result` is missing or not `"pass"` |
+| `VERIFICATION_SHAPE` | `evidence_report.verification.type` declares a known type (SSOT: `gaia.state.VALID_VERIFICATION_TYPES`) but the field that type requires is missing/empty -- a by-TYPE SHAPE check, independent of `plan_status` and DISTINCT from `VERIFICATION_RESULT` (see the `verification` sub-field note below). Absent `type` == no check. |
 | `MISSING_FIELD` | a required field is absent (`agent_status`, one of its four sub-fields, `evidence_report`, or one of its seven keys) |
+| `APPROVAL_REQUEST_SHAPE` (R4) | `plan_status` is `APPROVAL_REQUEST` and the top-level `approval_request` object is absent/null, OR present but its `exact_content` is missing/blank. Deliberately does NOT require `approval_id` (see "approval_request" sub-field table below for why). |
+| `COMPLETE_SHAPE` (R4) | `plan_status` is `COMPLETE` and (`agent_status.next_action` is present but not exactly `"done"`) OR (`agent_status.pending_steps` is present and non-empty). Pure cross-field coherence, independent of `VERIFICATION_RESULT`; each half only fires when the field in question is itself present -- the `MISSING_FIELD` checks already own the absent case, so this never stacks with `MISSING_FIELD` on the same field. |
 
 Each rejection carries `{code, field, detail}` (dotted `field` path, human `detail`) plus the byte-stable `repair_message` -- ALWAYS `CANONICAL_REPAIR_MESSAGE`, the single source of truth for the reissued fenced template, so a caller that injects it keeps a cache-stable surface regardless of which specific code fired. Read it at `gaia/contract/validator.py::CANONICAL_REPAIR_MESSAGE`; it is never duplicated inline elsewhere.
 
-**Legacy token relabeling (fence-fallback path only).** `hooks/modules/agents/contract_validator.py`'s migration-only `validate()` still surfaces the OLDER uppercase token vocabulary (`AGENT_ID`, `PLAN_STATUS`, `PENDING_STEPS`, `NEXT_ACTION`, `VERIFICATION_RESULT_MUST_BE_PASS`, `VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE`, per-key evidence tokens) in its `missing` list, for backward compatibility with pre-existing callers. `_legacy_tokens_for_form_error` is a pure relabeling of the four SSOT codes above -- it does not re-derive validity. The `gaia contract` CLI and the hook gate's full-verdict path speak the four SSOT codes directly; only the legacy fence-`validate()` caller sees the older tokens.
+**Legacy token relabeling (fence-fallback path only).** `hooks/modules/agents/contract_validator.py`'s migration-only `validate()` still surfaces the OLDER uppercase token vocabulary (`AGENT_ID`, `PLAN_STATUS`, `PENDING_STEPS`, `NEXT_ACTION`, `VERIFICATION_RESULT_MUST_BE_PASS`, `VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE`, `VERIFICATION_SHAPE`, per-key evidence tokens) in its `missing` list, for backward compatibility with pre-existing callers. `_legacy_tokens_for_form_error` is a pure relabeling of the SSOT codes above -- it does not re-derive validity. `VERIFICATION_SHAPE`, `APPROVAL_REQUEST_SHAPE`, and `COMPLETE_SHAPE` are all additive and have no legacy predecessor, so each relabels to its own value via the function's exhaustive fallback (`return [error.code.value]`). The `gaia contract` CLI and the hook gate's full-verdict path speak the SSOT codes directly; only the legacy fence-`validate()` caller sees the older tokens.
 
 ## Sub-field tables
 
@@ -82,6 +85,16 @@ The required keys are EXACTLY 7 (`REQUIRED_EVIDENCE_FIELDS` in `gaia/contract/va
 
 `verification` is a SEPARATE field, NOT one of the 7. It is required ONLY when `plan_status` is `COMPLETE`: it must be a dict and `verification.result` must equal `"pass"`. Either failure (missing/malformed, or present but not `"pass"`) is the single named code `VERIFICATION_RESULT` on the CLI/core path; the fence-fallback path relabels the same rejection to the legacy tokens `VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE` (missing) / `VERIFICATION_RESULT_MUST_BE_PASS` (non-pass) for backward compatibility. For non-COMPLETE statuses `verification` may be absent.
 
+**Optional `verification.type` (type-conditional SHAPE, any status).** `verification` may ALSO carry a `type` naming the KIND of check -- an enum whose SSOT is `gaia.state.VALID_VERIFICATION_TYPES` (mirrored with a byte-identical stdlib fallback in `gaia/contract/validator.py`, exactly as `VALID_PLAN_STATUSES` is). When `type` is present and names a known value, the field that type requires must be present and non-empty, else the rejection is `VERIFICATION_SHAPE` (DISTINCT from `VERIFICATION_RESULT`; both may fire on one block, as two invalidities). The initial enum and its required field:
+
+| `verification.type` | Meaning | Required field |
+|---------------------|---------|----------------|
+| `command` / `code` | deterministic oracle a third-party verifier runs | non-empty `command` (the command/oracle) |
+| `semantic` | needs human / rubric validation; contract stays open | truthy `requires_human` marker |
+| `self_review` | agent states what it checked and observed | non-empty `reviewed` statement |
+
+This is fully backward-compatible: an ABSENT `verification.type` (or a value outside the enum) adds NO requirement -- behaviour is identical to pre-R3. The enum is extensible: it is an envelope field, NOT a DB state machine, so it is deliberately absent from `STATE_MACHINE_REGISTRY` and triggers no schema migration.
+
 **Audience boundary.** `key_outputs` and every other `evidence_report` key are written for the **orchestrator** -- distilled findings it reasons over to route the next turn. The optional top-level `user_facing_summary` is the **single** field written for the **human**. Keeping the two distinct is what lets the orchestrator relay a human-shaped summary on N=1 without re-synthesizing machine-shaped evidence, and lets it still synthesize from `key_outputs` when the summary is absent or when multiple agents must be consolidated.
 
 ### consolidation_report
@@ -99,17 +112,23 @@ Required keys when present (`_CONSOLIDATION_REQUIRED_FIELDS`):
 
 ### approval_request
 
-Present when `plan_status` is `APPROVAL_REQUEST` (`APPROVAL_REQUEST_REQUIRED_FIELDS`). `rollback` and `verification` are BLOCKING (missing -> `APPROVAL_REQUEST_ROLLBACK` / `APPROVAL_REQUEST_VERIFICATION`); the rest are advisory warnings.
+Present when `plan_status` is `APPROVAL_REQUEST`. As of R4, enforcement is layered and each layer's actual reach is named below -- this reconciles a prior version of this section that overclaimed `rollback` and `verification` as uniformly "BLOCKING" (naming two phantom codes, `APPROVAL_REQUEST_ROLLBACK` and `APPROVAL_REQUEST_VERIFICATION`, that do not exist in the implementation) when the real behavior was, and remains, split across layers:
+
+- **FORM-blocking, on every path (`gaia/contract/validator.py`, code `APPROVAL_REQUEST_SHAPE`, R4).** The `approval_request` object itself must be present and non-null, and its `exact_content` must be non-empty -- the verbatim content the user must see to give informed consent (the `orchestrator-present-approval` iron law). This is the SSOT floor: the CLI's write-time validation, the SubagentStop hook gate, and the fence fallback all reject on it identically.
+- **Legacy-path-blocking only, NOT part of the FORM SSOT (`hooks/modules/agents/contract_validator.py`'s migration-only `validate()`, token `APPROVAL_REQUEST_VERIFICATION_REQUIRED`).** When `approval_request` is present, a missing/falsy `verification` is rejected -- but only on that one fence-fallback caller, not by `validate_form` itself.
+- **Fully advisory, never rejected, on any path.** `rollback` is logged with a warning when missing/null, never added to the blocking set: the hook hardcodes `rollback_hint=None` by design (`bash_validator._build_sealed_payload` computes no inverse), so a well-formed request always relays `rollback: null` -- treating that as blocking previously produced roughly 600 of 678 recorded false-positive anomalies (AC-5), which is why it stays advisory.
+- **Documented convention, unenforced by any layer.** `operation`, `scope`, `risk_level` are relayed verbatim from the hook's sealed payload by convention, but no layer currently validates their presence or shape.
+- **Deliberately optional, by design (not merely unenforced).** `approval_id` is NOT required even by the R4 FORM floor: `agent-response` documents a legitimate `approval_request` with no `approval_id` yet -- an agent presenting a T3 plan before the hook has blocked anything and minted a grant (`agent-response`'s "absent -> present the plan with options" branch). Requiring it would reject that documented, in-use protocol state, so R4 stops at `exact_content`.
 
 | Key | Status | Holds |
 |-----|--------|-------|
-| `operation` | required (advisory) | what the command does |
-| `exact_content` | required (advisory) | the command verbatim the user approves |
-| `scope` | required (advisory) | what it touches |
-| `risk_level` | required (advisory) | enum `LOW` \| `MEDIUM` \| `HIGH` \| `CRITICAL` (`VALID_RISK_LEVELS`) |
-| `rollback` | required (blocking) | how to undo |
-| `verification` | required (blocking) | how success is confirmed |
-| `approval_id` | optional | the id the hook produced, when one was issued |
+| `operation` | documented convention (unenforced) | what the command does |
+| `exact_content` | **FORM-blocking** (`APPROVAL_REQUEST_SHAPE`) | the command verbatim the user approves |
+| `scope` | documented convention (unenforced) | what it touches |
+| `risk_level` | documented convention (unenforced) | enum `LOW` \| `MEDIUM` \| `HIGH` \| `CRITICAL` (`VALID_RISK_LEVELS`) |
+| `rollback` | advisory only (never rejected) | how to undo |
+| `verification` | legacy-path-blocking only (fence fallback, not FORM SSOT) | how success is confirmed |
+| `approval_id` | optional, by design | the id the hook produced, when one was issued -- absent on the "plan not yet blocked" flavor |
 
 For the full sealed-payload schema and the approval lifecycle, see `agent-approval-protocol`.
 
@@ -151,15 +170,16 @@ Each entry is one `{contract, payload}` pair (`parse_update_contracts`). The `co
 
 ## plan_status enum + state machine
 
-The five canonical values (`VALID_PLAN_STATUSES` in `gaia.state`, re-exported by `response_contract.py`):
+The six canonical values (`VALID_PLAN_STATUSES` in `gaia.state`, re-exported by `response_contract.py`):
 
 | Value | Meaning |
 |-------|---------|
 | `IN_PROGRESS` | mid-loop; default during retry / verify-fail |
 | `APPROVAL_REQUEST` | a T3 command was blocked; `approval_request` populated |
-| `COMPLETE` | increment finished and verification passed |
+| `COMPLETE` | increment finished and verification passed; restricted to a verifier-role agent once the verifier registry (`gaia.state.permissions.verifier_fleet`) is non-empty -- dormant (any producer may still self-COMPLETE) until that registry is populated. Also requires `next_action == "done"` and `pending_steps == []` (R4, code `COMPLETE_SHAPE`) -- the cross-field coherence this skill has always taught (`agent-protocol`: "a finished turn still emits pending_steps: [] and next_action: 'done'") is, as of R4, enforced at the FORM layer rather than left to convention alone |
 | `BLOCKED` | cannot continue alone; name the gap in `open_gaps` |
 | `NEEDS_INPUT` | a user decision is required; list options in `next_action` |
+| `NEEDS_VERIFICATION` | producer proposes the increment is done and MAY propose `evidence_report.verification.result`, but this is a proposal, not a completion -- a verifier confirms (`-> COMPLETE`) or rejects (`-> IN_PROGRESS`); harness R2 |
 
 Legal transitions between these and the retry cap live in `state_tracker.py` -- `_LEGAL_TRANSITIONS` and `_MAX_IN_PROGRESS_RETRIES` (= 2). The runtime enforces them; this skill does not reproduce the transition table.
 

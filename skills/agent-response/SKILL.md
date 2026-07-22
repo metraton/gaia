@@ -9,15 +9,16 @@ The orchestrator loads this to interpret a returned `agent_contract_handoff` and
 
 ## State machine
 
-`plan_status` is the first field read; it selects the branch. The five values are canonical in `VALID_PLAN_STATUSES` (`gaia.state`, re-exported by `response_contract.py`) -- their meanings live in `agent-contract-handoff`, not here.
+`plan_status` is the first field read; it selects the branch. The six values are canonical in `VALID_PLAN_STATUSES` (`gaia.state`, re-exported by `response_contract.py`) -- their meanings live in `agent-contract-handoff`, not here.
 
 ```
 read agent_status.plan_status  (gaia contract view, or parse_contract on a fenced block)
-  |- COMPLETE         -> pedagogical summary (situation -> impact) + offer of available detail; verbatim only when imperative; surface verification, then close
-  |- APPROVAL_REQUEST -> split on approval_id (present: present-approval; absent: plan options)
-  |- NEEDS_INPUT      -> AskUserQuestion, then SendMessage the answer
-  |- BLOCKED          -> present open_gaps; new dispatch or accept the limitation
-  +- IN_PROGRESS      -> SendMessage to resume (runtime caps consecutive retries at 2)
+  |- COMPLETE            -> pedagogical summary (situation -> impact) + offer of available detail; verbatim only when imperative; surface verification, then close
+  |- APPROVAL_REQUEST    -> split on approval_id (present: present-approval; absent: plan options)
+  |- NEEDS_INPUT         -> AskUserQuestion, then SendMessage the answer
+  |- NEEDS_VERIFICATION  -> MUST dispatch a verifier-role agent to validate the task's gates before it can reach COMPLETE (a verifier rejection bounces it to IN_PROGRESS); a proposal, never a completion (harness R2)
+  |- BLOCKED             -> present open_gaps; new dispatch or accept the limitation
+  +- IN_PROGRESS         -> SendMessage to resume (runtime caps consecutive retries at 2)
 ```
 
 The agent builds its contract by-value with the `gaia contract` CLI across the turn (see `agent-protocol`); you can read the current draft directly with `gaia contract view` -- mid-conversation, between an agent's messages, without waiting for it to re-emit anything. Before acting on a fenced-block turn, the contract must still parse. A block that fails `parse_contract` (`contract_validator.py`, the migration-only fallback path) is treated as missing -- see Error handling.
@@ -29,6 +30,7 @@ The agent builds its contract by-value with the `gaia contract` CLI across the t
 | `COMPLETE` | Give the user a clear, pedagogical summary -- the real situation, then what it changes for them -- plus an explicit offer that the detail is available ("if you want to see X, I have it"). Build it from `user_facing_summary` when present on a single-agent turn, or from `key_outputs` when it is absent or N>1 (consolidation); either way the default is the landed synthesis, not the transcript. Show verbatim content only when it is imperative: (a) the contract obliges it -- an approval whose exact values / lock / ok the user must see (the `orchestrator-present-approval` iron law, unchanged) -- or (b) the user asked for the specific evidence. Either way, surface `verification.result` / `verification.details` -- that block is the proof the work landed, and relaying it is what lets the user trust the increment rather than take "done" on faith. Mention `cross_layer_impacts` and `open_gaps` when non-empty. |
 | `APPROVAL_REQUEST` | Split on `approval_request.approval_id`: present -> load `Skill('orchestrator-present-approval')`; absent -> present the plan with options (execute / modify / cancel) and on execute/modify resume the SAME agent via `SendMessage`. It splits because a hook-issued `approval_id` carries a pending T3 grant that needs the structured consent flow, while an `APPROVAL_REQUEST` with no `approval_id` carries no grant and only needs a direction (execute / modify / cancel) back to the same agent. |
 | `NEEDS_INPUT` | `AskUserQuestion` with the options in `next_action`, then `SendMessage` the answer back to resume. |
+| `NEEDS_VERIFICATION` | Harness R2: the agent is proposing the increment is done, not asserting it. Do NOT treat this as `COMPLETE` -- the gate never accepts it as done regardless of a proposed `evidence_report.verification.result`. A `NEEDS_VERIFICATION` contract is a GUARANTEED dispatch, not a judgment call: the orchestrator MUST dispatch a verifier-role agent to validate the task's gates before the task can reach `COMPLETE`. A verifier rejection bounces the task to `IN_PROGRESS` (resume the original agent with the verifier's findings); a verifier pass is what actually promotes the contract to `COMPLETE`. This applies uniformly whether or not the verifier registry (`gaia.state.permissions.verifier_fleet`) is populated -- while it is dormant (empty) any producer-role agent may be dispatched to perform the verifier step, but the dispatch itself is never skipped or held pending a judgment call. |
 | `BLOCKED` | Present `open_gaps` to the user. If they give direction, dispatch a NEW agent addressing the blocker; if they accept the limitation, close the task as incomplete and move on. |
 | `IN_PROGRESS` | `SendMessage` to resume the agent. The runtime caps consecutive `IN_PROGRESS` at 2 (`_MAX_IN_PROGRESS_RETRIES` in `state_tracker.py`) -- do not loop past that expecting progress; treat a third as a stall and escalate. The agent's draft persists across the resume by its own contract id, so you can `gaia contract view` it mid-conversation to check progress before deciding whether to resume again or escalate -- you do not have to wait on prose to know what changed. |
 
