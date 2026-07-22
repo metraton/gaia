@@ -41,6 +41,7 @@ except ImportError:
         "COMPLETE",
         "BLOCKED",
         "NEEDS_INPUT",
+        "NEEDS_VERIFICATION",
     }
 
 # Evidence is required for ALL valid states -- no exclusions.

@@ -312,13 +312,77 @@ def _gate_anomaly(agent_type: str, code: str, field: str, detail: str) -> Dict[s
     }
 
 
-def _three_case_verdict(parsed_contract: Any, agent_type: str) -> ContractGateVerdict:
-    """The legacy Option B gate: reject ONLY the 3 critical structural cases.
+# ---------------------------------------------------------------------------
+# Verifier-role gate (harness R2 -- NEEDS_VERIFICATION / verifier-gated
+# COMPLETE)
+# ---------------------------------------------------------------------------
+#
+# Deliberately NOT part of validate_form / crosscheck.validate: those are the
+# role-BLIND portability core (gaia.contract.validator / gaia.contract.
+# crosscheck), shared by the CLI, the finalize writer, and the fence
+# fallback -- they enforce SHAPE only and must never learn "who is allowed to
+# say COMPLETE" (that would break the portability contract tested by
+# tests/contract/test_validator_portable.py). The role check is an adapter-
+# layer concern -- it lives HERE, applied identically to BOTH gate paths
+# (ramp-ON full-verdict and ramp-OFF three-case) so neither is a bypass.
+#
+# ARMED vs DORMANT: the registry-non-empty check MUST run first. Checking
+# ``is_verifier(agent_type)`` alone -- with no registry-empty guard -- would
+# reject EVERY producer's COMPLETE the moment this code lands, before any
+# agent carries the ``verifier: true`` marker (B3's job). Checking
+# ``bool(verifier_fleet())`` first means: registry empty today -> dormant ->
+# every producer may still self-COMPLETE, byte-identical to pre-R2 behavior;
+# registry non-empty (post-B3) -> armed -> only a seeded verifier identity may
+# set COMPLETE.
+#
+# PROPOSE, NOT COMPLETE: this function only gates COMPLETE. A producer
+# transitioning to NEEDS_VERIFICATION is never touched here -- it is not a
+# violation for a non-verifier to propose NEEDS_VERIFICATION (that is exactly
+# the point of the state), and the shape core already never requires or
+# enforces evidence_report.verification on a non-COMPLETE status, so a
+# proposed verification.result alongside NEEDS_VERIFICATION is carried
+# through unevaluated -- the gate never accepts NEEDS_VERIFICATION as a
+# completed/done state regardless of that proposed value.
+def _verifier_role_violation(plan_status: str, agent_type: str) -> Optional[str]:
+    """Return a rejection reason iff a non-verifier agent tried to set
+    COMPLETE while the verifier registry is ARMED (non-empty). ``None`` means
+    no violation -- either the status is not COMPLETE, the registry is still
+    DORMANT (empty), or ``agent_type`` is a seeded verifier.
+    """
+    if plan_status != "COMPLETE":
+        return None
+    from gaia.state.permissions import is_verifier, verifier_fleet
 
-    Byte-identical to the pre-T16 inline gate so the ramp-OFF path preserves
-    today's behavior exactly (AC-10). Produces NO anomalies -- in this mode the
-    anomalies remain on the legacy validate_contract / validate_response_contract
-    path, unchanged.
+    fleet = verifier_fleet()
+    if not fleet:
+        # DORMANT: no agent has opted into the verifier role yet -- every
+        # producer may still self-COMPLETE (today's behavior, unchanged).
+        return None
+    if is_verifier(agent_type):
+        return None
+    return (
+        f"agent_status.plan_status is COMPLETE, but '{agent_type}' is not a "
+        f"seeded verifier (verifier registry is ARMED: {sorted(fleet)}). "
+        "Only a verifier-role agent may set COMPLETE once the registry is "
+        "non-empty. Set plan_status to NEEDS_VERIFICATION and propose "
+        "evidence_report.verification.result for a verifier to confirm, or "
+        "stay IN_PROGRESS."
+    )
+
+
+def _three_case_verdict(parsed_contract: Any, agent_type: str) -> ContractGateVerdict:
+    """The legacy Option B gate: reject the 3 critical structural cases, PLUS
+    the verifier-role check (harness R2).
+
+    Byte-identical to the pre-T16 inline gate for the 3 original structural
+    cases, preserving today's behavior exactly there (AC-10). The ONE
+    deliberate addition is ``_verifier_role_violation`` below: the brief's
+    locked decision is "enforce in BOTH ramp paths -- ramp-OFF is not a
+    bypass", so a non-verifier COMPLETE while the registry is ARMED is
+    rejected here too, not only in the full-verdict path. Still produces NO
+    anomalies for the 3 original cases -- those stay on the legacy
+    validate_contract / validate_response_contract path, unchanged; the new
+    verifier check reports via its own dedicated reason string.
     """
     from modules.agents.contract_validator import _resolve_status
     from modules.agents.response_contract import VALID_PLAN_STATUSES
@@ -354,6 +418,12 @@ def _three_case_verdict(parsed_contract: Any, agent_type: str) -> ContractGateVe
             f"Set plan_status to one of these values in agent_status."
         )
         return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
+
+    violation = _verifier_role_violation(normalized, agent_type)
+    if violation:
+        return ContractGateVerdict(
+            True, f"[CONTRACT REJECTED]\n{violation}", (), GATE_MODE_THREE_CASE
+        )
 
     return ContractGateVerdict(False, "", (), GATE_MODE_THREE_CASE)
 
@@ -395,6 +465,22 @@ def evaluate_contract_gate(
     _db = Path(db_path) if db_path else None
     result = _core_validate(parsed_contract, db_path=_db)
     if result.ok:
+        # The role-blind core (form + cross-check) is shape-valid. Layer the
+        # verifier-role check on top (harness R2) -- deliberately OUTSIDE
+        # validate_form/crosscheck.validate, which must stay role-blind (the
+        # portability contract). See _verifier_role_violation for the
+        # dormant/armed semantics.
+        agent_status = parsed_contract.get("agent_status") if isinstance(parsed_contract, dict) else None
+        plan_status = ""
+        if isinstance(agent_status, dict):
+            from modules.agents.contract_validator import _resolve_status
+            plan_status = _resolve_status(agent_status)
+        violation = _verifier_role_violation(plan_status, agent_type)
+        if violation:
+            anomaly = _gate_anomaly(agent_type, "VERIFIER_REQUIRED", "agent_status.plan_status", violation)
+            return ContractGateVerdict(
+                True, f"[CONTRACT REJECTED]\n{violation}", (anomaly,), GATE_MODE_FULL_VERDICT
+            )
         return ContractGateVerdict(False, "", (), GATE_MODE_FULL_VERDICT)
 
     # Salvage-vs-violation (T10/T11): a max_tokens truncation is NOT a hard

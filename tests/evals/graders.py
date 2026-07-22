@@ -116,7 +116,8 @@ _REQUIRED_TOP_KEYS = (
 )
 
 _VALID_PLAN_STATUSES = frozenset(
-    {"IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT"}
+    {"IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
+     "NEEDS_VERIFICATION"}
 )
 
 # When plan_status == APPROVAL_REQUEST, approval_request must carry at least

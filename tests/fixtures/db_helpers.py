@@ -407,7 +407,7 @@ def bootstrap_m4_schema(db_path: Path) -> None:
         workspace        TEXT NOT NULL,
         brief_id         INTEGER,
         task_status      TEXT NOT NULL
-                         CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT')),
+                         CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION')),
         raw_handoff_json TEXT NOT NULL,
         created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         FOREIGN KEY (workspace) REFERENCES workspaces(name),

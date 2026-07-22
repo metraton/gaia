@@ -526,6 +526,33 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id);
 
 -- ---------------------------------------------------------------------------
+-- task_gates (v34): planner-authored typed verification gate slot
+-- ---------------------------------------------------------------------------
+-- One-to-many child of tasks (a task may carry several gates). This is the
+-- persisted, queryable home for a planner-authored gate that today lives only
+-- as markdown prose in plans.content. verification_type is a REAL column with
+-- a CHECK against the four VALID_VERIFICATION_TYPES literals (gaia.state) --
+-- registered in STATE_MACHINE_REGISTRY so the SQL CHECK and the Python tuple
+-- are held identical by tools/state/diff_source_of_truth.py. The evidence
+-- column NAMES (evidence_type / evidence_shape / artifact_path) are copied
+-- VERBATIM from acceptance_criteria for cross-table consistency. `status` is a
+-- plain column with NO CHECK / state machine: gate lifecycle is the verifier's
+-- concern (out of scope for R1-A).
+CREATE TABLE IF NOT EXISTS task_gates (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id           INTEGER NOT NULL,
+    verification_type TEXT NOT NULL
+                      CHECK (verification_type IN ('command', 'code', 'semantic', 'self_review')),
+    evidence_type     TEXT,
+    evidence_shape    TEXT,
+    artifact_path     TEXT,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_gates_task ON task_gates(task_id);
+
+-- ---------------------------------------------------------------------------
 -- evidence (three-tier storage model)
 -- ---------------------------------------------------------------------------
 -- Per-AC evidence rows. Two storage modes:
@@ -611,7 +638,9 @@ CREATE TABLE IF NOT EXISTS episodes (
     output_length         INTEGER,
     output_tokens_approx  INTEGER,
     tier                  TEXT,                         -- security tier (T0/T1/T2/T3); v10 addition
-    CHECK (plan_status IS NULL OR plan_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT')),
+    -- v35: widened to include NEEDS_VERIFICATION (harness R2 -- verifier-role
+    -- gated COMPLETE; mirrors the agent_contract_handoffs.task_status CHECK).
+    CHECK (plan_status IS NULL OR plan_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION')),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
 
@@ -1066,7 +1095,8 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
                      -- canonical plan_status values -- see agent-protocol
                      -- SKILL.md and handoff_persister.py, which writes
                      -- envelope["agent_status"]["plan_status"] verbatim here).
-                     CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT')),
+                     -- v35: widened to include NEEDS_VERIFICATION (harness R2).
+                     CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION')),
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note

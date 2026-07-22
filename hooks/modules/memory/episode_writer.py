@@ -158,7 +158,11 @@ def write(
                 outcome = "failed"
                 success = False
             else:
-                # IN_PROGRESS, APPROVAL_REQUEST, NEEDS_INPUT -> partial
+                # IN_PROGRESS, APPROVAL_REQUEST, NEEDS_INPUT, NEEDS_VERIFICATION
+                # (harness R2) -> partial. NEEDS_VERIFICATION does not collide
+                # with the "COMPLETE" or "BLOCKED" substring checks above, so
+                # it already falls into this bucket by construction -- no
+                # behavior change, named here explicitly for auditability.
                 outcome = "partial"
                 success = None
         elif exit_code == 0:

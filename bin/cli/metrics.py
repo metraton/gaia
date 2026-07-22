@@ -794,6 +794,7 @@ _PLAN_STATUS_GLOSS = {
     "NEEDS_INPUT": "waiting on a decision from you",
     "APPROVAL_REQUEST": "waiting on your approval",
     "IN_PROGRESS": "still working",
+    "NEEDS_VERIFICATION": "waiting on a verifier to confirm (harness R2)",
 }
 
 # window_support (schema v2): which snapshot sections are backed by gaia.db

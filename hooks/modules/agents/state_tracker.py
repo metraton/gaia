@@ -12,6 +12,9 @@ Legal transitions (from agent-protocol):
     IN_PROGRESS -> BLOCKED                 (any point)
     IN_PROGRESS -> NEEDS_INPUT             (any point)
     IN_PROGRESS -> IN_PROGRESS             (retry, max 2)
+    IN_PROGRESS -> NEEDS_VERIFICATION      (producer proposes; verifier-gated COMPLETE)
+    NEEDS_VERIFICATION -> COMPLETE         (verifier confirms)
+    NEEDS_VERIFICATION -> IN_PROGRESS      (verifier rejects; back to work)
 
 Provides:
     - track_transition(): Record a state and validate the transition
@@ -35,6 +38,7 @@ try:
 except ImportError:
     _CANONICAL_PLAN_STATUSES = (
         "IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
+        "NEEDS_VERIFICATION",
     )
 
 logger = logging.getLogger(__name__)
@@ -50,8 +54,14 @@ _MAX_IN_PROGRESS_RETRIES = 2
 # tool ``tools/state/diff_source_of_truth.py`` flags any drift between this
 # table's domain and the SSOT tuple.
 _LEGAL_TRANSITIONS: Dict[str, Set[str]] = {
-    "IN_PROGRESS": {"COMPLETE", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT", "IN_PROGRESS"},
+    "IN_PROGRESS": {
+        "COMPLETE", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT", "IN_PROGRESS",
+        "NEEDS_VERIFICATION",
+    },
     "APPROVAL_REQUEST": {"IN_PROGRESS"},
+    # NEEDS_VERIFICATION is a non-terminal waiting-on-verifier state: a
+    # verifier-role agent confirms (-> COMPLETE) or rejects (-> IN_PROGRESS).
+    "NEEDS_VERIFICATION": {"COMPLETE", "IN_PROGRESS"},
     # Terminal states -- new task cycles can start from scratch
     "COMPLETE": {"IN_PROGRESS"},
     "BLOCKED": {"IN_PROGRESS"},

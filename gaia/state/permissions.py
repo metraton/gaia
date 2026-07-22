@@ -335,4 +335,126 @@ __all__ = [
     "_assert_dispatch_can_write_content",
     "handoff_writer_fleet",
     "is_handoff_writer",
+    "verifier_fleet",
+    "is_verifier",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Verifier fleet seed (harness R2 -- NEEDS_VERIFICATION / verifier-gated
+# COMPLETE)
+# ---------------------------------------------------------------------------
+#
+# Mirrors ``handoff_writer_fleet()`` / ``is_handoff_writer()`` above byte-for-
+# byte in MECHANISM: a frontmatter marker on ``agents/*.md`` (``verifier:
+# true``), the same top-level-key-only parser, the same ``lru_cache``
+# discipline, and the same fallback-floor idiom (an unresolvable ``agents/``
+# directory falls back to a hardcoded constant rather than failing open).
+#
+# The ONE deliberate difference from the handoff-writer precedent: the
+# fallback floor here is EMPTY (``_FALLBACK_VERIFIER_FLEET = frozenset()``),
+# not a known non-empty set. No agent ships the ``verifier: true`` marker as
+# of this brief (R2) -- the verifier ROLE is built here, but enrolling an
+# agent into it is deliberately left to a later brier (B3). Until then
+# ``verifier_fleet()`` is empty by construction on every resolvable and
+# unresolvable ``agents/`` path alike, which is exactly the DORMANT precondition
+# the SubagentStop gate (hooks/adapters/claude_code.py) checks before
+# enforcing verifier-only COMPLETE: an empty registry means the check never
+# activates and every producer may still self-COMPLETE (today's behavior,
+# unchanged). The mechanism (marker + loader + cached fleet + is_X predicate)
+# is what is load-bearing and shipped now; population is out of scope.
+#
+# Never-fails-open, exactly like the handoff-writer fleet: an identity absent
+# from the resolved fleet (empty or not) is always rejected by ``is_verifier``
+# -- there is no "fall back to allow everyone" path anywhere in this module.
+
+# Frontmatter marker that opts an agent .md into the verifier fleet.
+_VERIFIER_MARKER = "verifier"
+
+# Fallback floor when ``agents/`` is unresolvable. Deliberately EMPTY today --
+# see module comment above. When brief B3 ships the first verifier agent,
+# this constant is the place its identity would be added (mirroring
+# ``_FALLBACK_HANDOFF_WRITER_FLEET``'s role for the handoff-writer fleet).
+_FALLBACK_VERIFIER_FLEET: frozenset[str] = frozenset()
+
+
+def _parse_agent_verifier_frontmatter(md_text: str) -> tuple[str | None, bool]:
+    """Extract ``(name, is_verifier)`` from an agent .md frontmatter block.
+
+    Identical parsing discipline to ``_parse_agent_frontmatter``: only
+    top-level (non-indented) ``key: value`` lines are read, so a nested
+    ``routing:`` or ``project_context_contracts:`` block can never shadow the
+    ``verifier`` marker. Kept as a separate function (rather than teaching
+    ``_parse_agent_frontmatter`` a second marker) so the two fleets stay
+    independently auditable and neither loader's behavior can be perturbed by
+    a change aimed at the other.
+    """
+    lines = md_text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return (None, False)
+    name: str | None = None
+    is_verifier = False
+    for raw_line in lines[1:]:
+        if raw_line.strip() == "---":
+            break
+        if raw_line[:1].isspace():
+            continue
+        m = _FRONTMATTER_KEY_RE.match(raw_line)
+        if not m:
+            continue
+        key, value = m.group(1), m.group(2).strip()
+        if key == "name":
+            name = value or None
+        elif key == _VERIFIER_MARKER:
+            is_verifier = value.lower() in ("true", "yes", "1")
+    return (name, is_verifier)
+
+
+@functools.lru_cache(maxsize=1)
+def verifier_fleet() -> frozenset[str]:
+    """Return the set of agent identities authorized to set ``COMPLETE`` when
+    the verifier gate is armed.
+
+    Seeded from ``agents/*.md`` frontmatter (marker ``verifier: true``).
+    Falls back to ``_FALLBACK_VERIFIER_FLEET`` (empty today) when ``agents/``
+    is unresolvable. Cached exactly like ``handoff_writer_fleet``: the fleet
+    is a static property of the installed tree, not per-call state. Call
+    ``verifier_fleet.cache_clear()`` in a test that mutates the agent set.
+
+    Empty today by design (no agent ships the marker yet) -- callers that
+    gate on "is the verifier role armed" MUST check ``bool(verifier_fleet())``
+    first, not call ``is_verifier(agent)`` alone, or every producer would be
+    rejected the moment enforcement code lands, before any agent has opted
+    in. See hooks/adapters/claude_code.py for the dormant/armed branch.
+    """
+    agents_dir = _agents_dir()
+    if agents_dir is None:
+        return _FALLBACK_VERIFIER_FLEET
+    fleet: set[str] = set()
+    for md in sorted(agents_dir.glob("*.md")):
+        if md.name.lower() == "readme.md":
+            continue
+        try:
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        name, is_verifier_agent = _parse_agent_verifier_frontmatter(text)
+        if name and is_verifier_agent:
+            fleet.add(name)
+    if not fleet:
+        return _FALLBACK_VERIFIER_FLEET
+    return frozenset(fleet)
+
+
+def is_verifier(agent: str) -> bool:
+    """True iff ``agent`` is a seeded fleet identity permitted to verify.
+
+    Never fails open: an identity absent from the (possibly empty) fleet
+    always returns False. Callers deciding whether the verifier gate is
+    ARMED must check ``bool(verifier_fleet())`` separately -- this function
+    only answers "is this named identity in the fleet?", exactly mirroring
+    ``is_handoff_writer``.
+    """
+    if not agent:
+        return False
+    return agent.strip() in verifier_fleet()

@@ -252,7 +252,8 @@ def test_plan_status_missing_fails():
 
 @pytest.mark.parametrize(
     "status",
-    ["IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT"],
+    ["IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
+     "NEEDS_VERIFICATION"],
 )
 def test_s5_any_valid_status_passes_when_expect_empty(status):
     """S5 only requires a well-formed contract -- not a specific status."""

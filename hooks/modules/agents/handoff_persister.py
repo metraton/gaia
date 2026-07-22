@@ -54,7 +54,10 @@ logger = logging.getLogger(__name__)
 # yields task_status='COMPLETE'; the degraded flag then distinguishes it from
 # an agent-finalized COMPLETE for any reader that checks finalize-verification.
 _VALID_TASK_STATUSES = frozenset(
-    {"IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT"}
+    {
+        "IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
+        "NEEDS_VERIFICATION",
+    }
 )
 
 
