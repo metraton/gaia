@@ -24,7 +24,10 @@ PORTABILITY CONTRACT (enforced by tests/contract/test_validator_portable.py):
       package is not on the path, so the module remains importable in a bare
       stdlib subprocess.
 
-The four named codes (AC-1):
+The named codes (AC-1; VERIFICATION_SHAPE added additively in R3 per a
+plan-level decision -- brief contract-type-conditional-validation-harness-r3;
+APPROVAL_REQUEST_SHAPE and COMPLETE_SHAPE added additively in R4, closing the
+two pure-shape cross-field conditionals the form layer previously missed):
     AGENT_ID_FORMAT     -- agent_id is present but does not match ^a[0-9a-f]{5,}$
     PLAN_STATUS         -- plan_status is present but outside the canonical enum
     VERIFICATION_RESULT -- plan_status is COMPLETE but verification.result != "pass"
@@ -32,6 +35,27 @@ The four named codes (AC-1):
     MISSING_FIELD       -- a required field (agent_status, an agent_status
                            sub-field, evidence_report, or a required
                            evidence_report key) is absent
+    VERIFICATION_SHAPE  -- verification.type declares a known type but the field
+                           that type requires is missing/empty (a by-TYPE SHAPE
+                           check, independent of plan_status; DISTINCT from
+                           VERIFICATION_RESULT). Absent type == no check.
+    APPROVAL_REQUEST_SHAPE -- plan_status is APPROVAL_REQUEST but the top-level
+                           approval_request object is absent/null, or present
+                           without a non-empty exact_content (the verbatim
+                           content the user must see for informed consent).
+                           approval_id is deliberately NOT required here --
+                           agent-response documents a legitimate
+                           approval_request with no approval_id yet (a plan
+                           presented before the hook has blocked anything and
+                           minted a grant).
+    COMPLETE_SHAPE      -- plan_status is COMPLETE but next_action != "done"
+                           (when next_action is present) or pending_steps is
+                           non-empty (when pending_steps is present). Pure
+                           cross-field coherence, independent of
+                           VERIFICATION_RESULT; the MISSING_FIELD checks above
+                           already own the case where either sub-field is
+                           absent, so this never stacks with MISSING_FIELD on
+                           the same field.
 
 Design notes:
     - SHAPE ONLY: the form layer takes the already-parsed envelope dict. Fence
@@ -75,6 +99,29 @@ except ImportError:  # pragma: no cover -- exercised only on a bare stdlib path
         "COMPLETE",
         "BLOCKED",
         "NEEDS_INPUT",
+        "NEEDS_VERIFICATION",
+    )
+
+# ---------------------------------------------------------------------------
+# Canonical verification_type enum -- SSOT is gaia.state.VALID_VERIFICATION_TYPES.
+#
+# Imported with the SAME stdlib-only fallback idiom as VALID_PLAN_STATUSES above
+# so the module stays importable in a bare stdlib subprocess (portability
+# contract). Unlike plan statuses this maps to no DB column -- it is the SSOT for
+# the ``type`` field of a contract-envelope verification block. The fallback is
+# kept byte-identical to gaia.state.VALID_VERIFICATION_TYPES so behaviour cannot
+# drift between the two paths.
+# ---------------------------------------------------------------------------
+try:
+    from gaia.state import VALID_VERIFICATION_TYPES as _CANONICAL_VERIFICATION_TYPES
+
+    VALID_VERIFICATION_TYPES: Tuple[str, ...] = tuple(_CANONICAL_VERIFICATION_TYPES)
+except ImportError:  # pragma: no cover -- exercised only on a bare stdlib path
+    VALID_VERIFICATION_TYPES = (
+        "command",
+        "code",
+        "semantic",
+        "self_review",
     )
 
 # Evidence is required for every valid status (no exclusions), matching
@@ -123,6 +170,20 @@ class FormErrorCode(str, Enum):
     PLAN_STATUS = "PLAN_STATUS"
     VERIFICATION_RESULT = "VERIFICATION_RESULT"
     MISSING_FIELD = "MISSING_FIELD"
+    # Additive (R3): a verification.type was declared but the field that type
+    # requires is missing/empty. DISTINCT from VERIFICATION_RESULT (which is the
+    # by-VALUE "COMPLETE but result != pass" check); this is a by-TYPE SHAPE
+    # check, independent of plan_status. Absent verification.type == no check.
+    VERIFICATION_SHAPE = "VERIFICATION_SHAPE"
+    # Additive (R4): APPROVAL_REQUEST without a usable approval_request block
+    # (absent, or present but missing a non-empty exact_content). A pure-shape
+    # cross-field check, independent of the evidence_report/verification
+    # checks above.
+    APPROVAL_REQUEST_SHAPE = "APPROVAL_REQUEST_SHAPE"
+    # Additive (R4): COMPLETE without next_action == "done" or with a
+    # non-empty pending_steps. A pure-shape cross-field coherence check,
+    # independent of VERIFICATION_RESULT.
+    COMPLETE_SHAPE = "COMPLETE_SHAPE"
 
 
 @dataclass(frozen=True)
@@ -196,7 +257,7 @@ CANONICAL_REPAIR_MESSAGE = (
     "```agent_contract_handoff\n"
     "{\n"
     '  "agent_status": {\n'
-    '    "plan_status": "<IN_PROGRESS|APPROVAL_REQUEST|COMPLETE|BLOCKED|NEEDS_INPUT>",\n'
+    '    "plan_status": "<IN_PROGRESS|APPROVAL_REQUEST|COMPLETE|BLOCKED|NEEDS_INPUT|NEEDS_VERIFICATION>",\n'
     '    "agent_id": "<a + 5+ hex chars, e.g. a1b2c3>",\n'
     '    "pending_steps": [],\n'
     '    "next_action": "<done or the next concrete step>"\n'
@@ -237,6 +298,61 @@ def _normalize_status(raw: Any) -> str:
 def _evidence_has_key(evidence: dict, key_lower: str) -> bool:
     """Presence check accepting both lower-case (JSON) and UPPER-CASE keys."""
     return key_lower in evidence or key_lower.upper() in evidence
+
+
+def _is_nonempty_str(value: Any) -> bool:
+    """True when ``value`` is a non-empty (after strip) string.
+
+    Used for the per-type required fields that must carry a declared value (a
+    command/oracle to run, or a statement of what was reviewed).
+    """
+    return isinstance(value, str) and value.strip() != ""
+
+
+def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any, str]:
+    """Return ``(field, detail)`` for a missing type-required field, else ``(None, "")``.
+
+    Given a KNOWN ``verification.type`` (caller has already checked membership
+    in VALID_VERIFICATION_TYPES), enforce the field that type requires:
+
+      * "command"/"code" (DETERMINISTIC) -- a non-empty ``command`` naming the
+        command/oracle a third-party verifier would run.
+      * "semantic" -- a truthy ``requires_human`` marker: the contract declares
+        it needs human/rubric validation and stays open pending that judgement.
+      * "self_review" -- a non-empty ``reviewed`` statement of what was checked
+        and observed.
+
+    A ``(None, "")`` return means the type-required field is satisfied.
+    """
+    if vtype in ("command", "code"):
+        if not _is_nonempty_str(verification.get("command")):
+            return (
+                "evidence_report.verification.command",
+                (
+                    f"verification.type {vtype!r} (deterministic) requires a "
+                    "non-empty 'command' naming the command/oracle to run"
+                ),
+            )
+    elif vtype == "semantic":
+        if not bool(verification.get("requires_human")):
+            return (
+                "evidence_report.verification.requires_human",
+                (
+                    "verification.type 'semantic' requires a truthy "
+                    "'requires_human' marker (needs human/rubric validation; "
+                    "contract stays open)"
+                ),
+            )
+    elif vtype == "self_review":
+        if not _is_nonempty_str(verification.get("reviewed")):
+            return (
+                "evidence_report.verification.reviewed",
+                (
+                    "verification.type 'self_review' requires a non-empty "
+                    "'reviewed' statement of what was checked"
+                ),
+            )
+    return (None, "")
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +469,40 @@ def validate_form(envelope: Any) -> FormValidationResult:
                 )
             )
 
+        # --- COMPLETE cross-field coherence (pure SHAPE, R4) -----------------
+        # A COMPLETE turn must actually be done: next_action == "done" and
+        # pending_steps == [] are pure-shape cross-field checks, independent
+        # of evidence/verification. Each only fires when the field in question
+        # is itself PRESENT -- the MISSING_FIELD checks above already own the
+        # absent case, so this never stacks a second code on the same field
+        # (one code per invalidity).
+        if normalized_status == "COMPLETE":
+            if raw_next is not None and str(raw_next).strip() != "":
+                if str(raw_next).strip().lower() != "done":
+                    errors.append(
+                        FormError(
+                            code=FormErrorCode.COMPLETE_SHAPE,
+                            field="agent_status.next_action",
+                            detail=(
+                                "COMPLETE requires next_action == 'done', got "
+                                f"{raw_next!r}"
+                            ),
+                        )
+                    )
+            if "pending_steps" in agent_status:
+                raw_pending = agent_status.get("pending_steps")
+                if raw_pending:
+                    errors.append(
+                        FormError(
+                            code=FormErrorCode.COMPLETE_SHAPE,
+                            field="agent_status.pending_steps",
+                            detail=(
+                                "COMPLETE requires pending_steps == [], got "
+                                f"{raw_pending!r}"
+                            ),
+                        )
+                    )
+
     # --- evidence_report ----------------------------------------------------
     # Required for every valid status. An unknown/absent status leaves
     # normalized_status == "" and skips this block (already flagged above).
@@ -374,6 +524,29 @@ def validate_form(envelope: Any) -> FormValidationResult:
                             code=FormErrorCode.MISSING_FIELD,
                             field=f"evidence_report.{key}",
                             detail=f"required evidence_report key {key!r} is missing",
+                        )
+                    )
+
+        # --- verification.type (type-conditional SHAPE, any status) ---------
+        # Mirrors the conditional-by-VALUE pattern below (VERIFICATION_RESULT):
+        # if verification declares a KNOWN type, require the field that type
+        # demands and reject an omission with VERIFICATION_SHAPE. This is a
+        # SHAPE check independent of plan_status; it is DISTINCT from the
+        # by-VALUE COMPLETE/result==pass check and may co-occur with it (two
+        # different invalidities -> two codes). Backward compatible: an ABSENT
+        # verification.type (or a type outside the SSOT enum) fires no new
+        # requirement, preserving every pre-R3 contract.
+        verification = evidence.get("verification") if isinstance(evidence, dict) else None
+        if isinstance(verification, dict) and verification.get("type") is not None:
+            vtype = str(verification.get("type")).strip().lower()
+            if vtype in VALID_VERIFICATION_TYPES:
+                shape_field, shape_detail = _verification_type_shape_error(vtype, verification)
+                if shape_field is not None:
+                    errors.append(
+                        FormError(
+                            code=FormErrorCode.VERIFICATION_SHAPE,
+                            field=shape_field,
+                            detail=shape_detail,
                         )
                     )
 
@@ -404,6 +577,41 @@ def validate_form(envelope: Any) -> FormValidationResult:
                         )
                     )
 
+    # --- approval_request (APPROVAL_REQUEST only, pure SHAPE, R4) -----------
+    # A pure-shape cross-field check: when plan_status is APPROVAL_REQUEST the
+    # top-level approval_request object must itself be present, and its
+    # exact_content -- the verbatim content the user must see to give
+    # informed consent (the orchestrator-present-approval iron law) -- must
+    # be non-empty. approval_id is deliberately NOT required here:
+    # agent-response documents a legitimate approval_request with no
+    # approval_id yet (an agent presenting a T3 plan before the hook has
+    # blocked anything and minted a grant) -- requiring it would reject that
+    # documented, in-use protocol state.
+    if normalized_status == "APPROVAL_REQUEST":
+        approval_request = envelope.get("approval_request")
+        if not isinstance(approval_request, dict) or not approval_request:
+            errors.append(
+                FormError(
+                    code=FormErrorCode.APPROVAL_REQUEST_SHAPE,
+                    field="approval_request",
+                    detail=(
+                        "APPROVAL_REQUEST requires a non-null approval_request "
+                        "object"
+                    ),
+                )
+            )
+        elif not _is_nonempty_str(approval_request.get("exact_content")):
+            errors.append(
+                FormError(
+                    code=FormErrorCode.APPROVAL_REQUEST_SHAPE,
+                    field="approval_request.exact_content",
+                    detail=(
+                        "APPROVAL_REQUEST requires a non-empty 'exact_content' "
+                        "(the verbatim command/content the user must see)"
+                    ),
+                )
+            )
+
     return FormValidationResult(
         ok=not errors,
         errors=tuple(errors),
@@ -418,6 +626,7 @@ __all__ = [
     "validate_form",
     "CANONICAL_REPAIR_MESSAGE",
     "VALID_PLAN_STATUSES",
+    "VALID_VERIFICATION_TYPES",
     "REQUIRED_EVIDENCE_FIELDS",
     "REQUIRED_AGENT_STATUS_FIELDS",
 ]

@@ -145,6 +145,14 @@ def test_add_view_validate_fill_round_trip(cli_env):
     add_proc = _run(["add", "agent_status.pending_steps", "review diff"], cli_env)
     assert add_proc.returncode == 0, add_proc.stderr
 
+    # Pre-completion state (still IN_PROGRESS): pending_steps carries the
+    # added step -- proves the add/view round-trip before advancing to
+    # COMPLETE, where COMPLETE_SHAPE (R4) requires pending_steps == [].
+    pre_view_proc = _run(["view"], cli_env)
+    assert pre_view_proc.returncode == 0, pre_view_proc.stderr
+    pre_envelope = json.loads(pre_view_proc.stdout)["envelope"]
+    assert pre_envelope["agent_status"]["pending_steps"] == ["review diff"]
+
     patch = json.dumps({
         "evidence_report": {
             "verification": {"method": "pytest", "result": "pass", "details": "AC-4 green"},
@@ -152,6 +160,15 @@ def test_add_view_validate_fill_round_trip(cli_env):
     })
     fill_proc = _run(["fill", "--json", patch], cli_env)
     assert fill_proc.returncode == 0, fill_proc.stderr
+
+    # Clear pending_steps and mark next_action done before completing --
+    # COMPLETE_SHAPE (R4) requires pending_steps == [] and next_action ==
+    # 'done' on any COMPLETE contract.
+    clear_pending_proc = _run(["set", "agent_status.pending_steps", "[]"], cli_env)
+    assert clear_pending_proc.returncode == 0, clear_pending_proc.stderr
+
+    next_action_proc = _run(["set", "agent_status.next_action", "done"], cli_env)
+    assert next_action_proc.returncode == 0, next_action_proc.stderr
 
     complete_proc = _run(["set", "agent_status.plan_status", "COMPLETE"], cli_env)
     assert complete_proc.returncode == 0, complete_proc.stderr
@@ -162,7 +179,8 @@ def test_add_view_validate_fill_round_trip(cli_env):
 
     view_proc = _run(["view"], cli_env)
     envelope = json.loads(view_proc.stdout)["envelope"]
-    assert envelope["agent_status"]["pending_steps"] == ["review diff"]
+    assert envelope["agent_status"]["pending_steps"] == []
+    assert envelope["agent_status"]["next_action"] == "done"
     assert envelope["evidence_report"]["verification"]["result"] == "pass"
 
     finalize_proc = _run(["finalize", "--json"], cli_env)

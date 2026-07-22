@@ -94,10 +94,12 @@ def _build_complete_draft(env: dict) -> str:
     """init -> set/add -> fill a genuinely-valid COMPLETE envelope.
 
     Returns the draft_id. Uses the same by-value building blocks an agent
-    would: init, add to a list field, fill the verification block, and set
-    plan_status=COMPLETE last (COMPLETE requires verification.result==pass,
-    which the validator enforces -- so this proves the cycle produces a
-    truly-valid terminal envelope, not a stub).
+    would: init, add to a list field (exercised while still IN_PROGRESS,
+    then cleared before completing), fill the verification block, and set
+    plan_status=COMPLETE last. COMPLETE requires verification.result==pass
+    AND (COMPLETE_SHAPE, R4) pending_steps==[] and next_action=='done', all
+    enforced by the validator -- so this proves the cycle produces a
+    truly-valid terminal envelope, not a stub.
     """
     init = _run(["init", "--agent-id", VALID_AGENT_ID, "--json"], env)
     assert init.returncode == 0, f"init failed: {init.stderr!r}"
@@ -117,6 +119,11 @@ def _build_complete_draft(env: dict) -> str:
     })
     fill = _run(["fill", "--json", patch], env)
     assert fill.returncode == 0, fill.stderr
+
+    # COMPLETE_SHAPE (R4) requires pending_steps == [] on a COMPLETE
+    # contract -- clear the step exercised above before completing.
+    clear_pending = _run(["set", "agent_status.pending_steps", "[]"], env)
+    assert clear_pending.returncode == 0, clear_pending.stderr
 
     na = _run(["set", "agent_status.next_action", "done"], env)
     assert na.returncode == 0, na.stderr

@@ -130,3 +130,119 @@ def test_positive_valid_envelope():
     assert result.errors == ()
     # The canonical repair message is ALWAYS returned, even on success.
     assert result.repair_message == CANONICAL_REPAIR_MESSAGE
+
+
+# ---------------------------------------------------------------------------
+# R4 -- APPROVAL_REQUEST_SHAPE (Part 1a: approval_request presence + shape)
+# ---------------------------------------------------------------------------
+def _valid_approval_request_envelope() -> dict:
+    env = _valid_envelope()
+    env["agent_status"]["plan_status"] = "APPROVAL_REQUEST"
+    env["agent_status"]["next_action"] = "awaiting user approval"
+    env["approval_request"] = {
+        "operation": "MUTATIVE command intercepted: push",
+        "exact_content": "git push origin main",
+        "scope": "git",
+        "risk_level": "MEDIUM",
+        "rollback": None,
+        "verification": "confirm the push landed on origin/main",
+        "approval_id": "P-deadbeefcafebabe0000000000000000",
+    }
+    return env
+
+
+def test_positive_approval_request_with_block_present():
+    """A well-formed APPROVAL_REQUEST (approval_request present, exact_content
+    non-empty) is shape-valid."""
+    result = validate_form(_valid_approval_request_envelope())
+
+    assert result.ok is True
+    assert result.errors == ()
+    assert result.repair_message == CANONICAL_REPAIR_MESSAGE
+
+
+def test_negative_approval_request_missing_block():
+    """APPROVAL_REQUEST with approval_request left null/absent is rejected --
+    the FORM layer closes the gap where a plan_status of APPROVAL_REQUEST
+    previously carried no shape guarantee about the block itself."""
+    env = _valid_approval_request_envelope()
+    env["approval_request"] = None
+
+    result = validate_form(env)
+
+    assert result.ok is False
+    assert result.codes == [FormErrorCode.APPROVAL_REQUEST_SHAPE]
+    offending = [
+        e for e in result.errors if e.code == FormErrorCode.APPROVAL_REQUEST_SHAPE
+    ]
+    assert offending and offending[0].field == "approval_request"
+    assert result.repair_message == CANONICAL_REPAIR_MESSAGE
+
+
+def test_negative_approval_request_missing_exact_content():
+    """APPROVAL_REQUEST with approval_request present but exact_content blank
+    is rejected -- the user cannot give informed consent without seeing the
+    verbatim content."""
+    env = _valid_approval_request_envelope()
+    env["approval_request"]["exact_content"] = ""
+
+    result = validate_form(env)
+
+    assert result.ok is False
+    assert result.codes == [FormErrorCode.APPROVAL_REQUEST_SHAPE]
+    offending = [
+        e for e in result.errors if e.code == FormErrorCode.APPROVAL_REQUEST_SHAPE
+    ]
+    assert offending and offending[0].field == "approval_request.exact_content"
+    assert result.repair_message == CANONICAL_REPAIR_MESSAGE
+
+
+def test_positive_approval_request_without_approval_id_still_valid():
+    """approval_id is deliberately NOT required: agent-response documents a
+    legitimate approval_request with no approval_id yet (a plan presented
+    before the hook has blocked anything and minted a grant)."""
+    env = _valid_approval_request_envelope()
+    del env["approval_request"]["approval_id"]
+
+    result = validate_form(env)
+
+    assert result.ok is True
+    assert result.errors == ()
+
+
+# ---------------------------------------------------------------------------
+# R4 -- COMPLETE_SHAPE (Part 1b: COMPLETE => next_action=='done', pending_steps==[])
+# ---------------------------------------------------------------------------
+def test_positive_complete_with_done_and_empty_pending_steps():
+    """A well-formed COMPLETE (next_action == 'done', pending_steps == [])
+    is shape-valid -- the baseline this rule must not disturb."""
+    result = validate_form(_valid_complete_envelope())
+
+    assert result.ok is True
+    assert result.errors == ()
+
+
+def test_negative_complete_next_action_not_done():
+    env = _valid_complete_envelope()
+    env["agent_status"]["next_action"] = "keep going"
+
+    result = validate_form(env)
+
+    assert result.ok is False
+    assert result.codes == [FormErrorCode.COMPLETE_SHAPE]
+    offending = [e for e in result.errors if e.code == FormErrorCode.COMPLETE_SHAPE]
+    assert offending and offending[0].field == "agent_status.next_action"
+    assert result.repair_message == CANONICAL_REPAIR_MESSAGE
+
+
+def test_negative_complete_pending_steps_not_empty():
+    env = _valid_complete_envelope()
+    env["agent_status"]["pending_steps"] = ["one more thing"]
+
+    result = validate_form(env)
+
+    assert result.ok is False
+    assert result.codes == [FormErrorCode.COMPLETE_SHAPE]
+    offending = [e for e in result.errors if e.code == FormErrorCode.COMPLETE_SHAPE]
+    assert offending and offending[0].field == "agent_status.pending_steps"
+    assert result.repair_message == CANONICAL_REPAIR_MESSAGE

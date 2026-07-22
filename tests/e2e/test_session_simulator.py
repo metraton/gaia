@@ -444,7 +444,7 @@ def _build_valid_agent_output(
             "agent_status": {
                 "plan_status": plan_status,
                 "agent_id": agent_id,
-                "pending_steps": "none",
+                "pending_steps": [],
                 "next_action": "done",
             },
             "evidence_report": {

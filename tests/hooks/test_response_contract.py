@@ -33,11 +33,13 @@ from modules.agents.contract_validator import (
     parse_update_contracts,
     parse_loop_state,
     _check_loop_state_blocking,
+    _legacy_tokens_for_form_error,
     parse_rollback_executed,
     parse_context_consumption,
     parse_memory_suggestions,
 )
 from modules.agents.response_contract import validate_response_contract
+from gaia.contract.validator import FormError, FormErrorCode
 
 
 # ---------------------------------------------------------------------------
@@ -802,3 +804,44 @@ class TestParseMemorySuggestions:
         assert "42" in result
         assert "ok" in result
         assert None not in result
+
+
+class TestLegacyTokenRelabeler:
+    """R3: the additive VERIFICATION_SHAPE code relabels to its own legacy token
+    without disturbing the pre-existing token vocabulary."""
+
+    def test_verification_shape_maps_to_own_token(self):
+        err = FormError(
+            code=FormErrorCode.VERIFICATION_SHAPE,
+            field="evidence_report.verification.command",
+            detail="type 'command' requires a non-empty 'command'",
+        )
+        assert _legacy_tokens_for_form_error(err) == ["VERIFICATION_SHAPE"]
+
+    def test_verification_shape_distinct_from_verification_result_tokens(self):
+        shape = _legacy_tokens_for_form_error(
+            FormError(
+                code=FormErrorCode.VERIFICATION_SHAPE,
+                field="evidence_report.verification.reviewed",
+                detail="",
+            )
+        )
+        result_missing = _legacy_tokens_for_form_error(
+            FormError(
+                code=FormErrorCode.VERIFICATION_RESULT,
+                field="evidence_report.verification",
+                detail="",
+            )
+        )
+        result_notpass = _legacy_tokens_for_form_error(
+            FormError(
+                code=FormErrorCode.VERIFICATION_RESULT,
+                field="evidence_report.verification.result",
+                detail="",
+            )
+        )
+        assert shape == ["VERIFICATION_SHAPE"]
+        assert result_missing == ["VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE"]
+        assert result_notpass == ["VERIFICATION_RESULT_MUST_BE_PASS"]
+        # The new token is not confused with either legacy VERIFICATION_RESULT token.
+        assert shape[0] not in (result_missing + result_notpass)

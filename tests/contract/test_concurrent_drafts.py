@@ -208,19 +208,27 @@ def _run_cycle(
     draft_id = json.loads(init_proc.stdout)["draft_id"]
     result.draft_id = draft_id
 
-    # Step 2: add -- a marker-tagged pending step, explicit --draft-id (the
-    # concurrency-safe addressing; never rely on "most recently touched").
+    # Step 2: add -- a marker-tagged evidence_report.key_outputs entry,
+    # explicit --draft-id (the concurrency-safe addressing; never rely on
+    # "most recently touched"). The isolation-proof marker channel lives in
+    # evidence_report (a free-form field), NOT agent_status.pending_steps /
+    # next_action: COMPLETE_SHAPE (R4) requires those be [] / 'done' on
+    # every COMPLETE contract, so the per-draft marker this test needs to
+    # survive to the persisted row had to move off of them.
     barrier.wait(timeout=30)
     add_proc = _run(
-        ["add", "agent_status.pending_steps", f"step-{marker}", "--draft-id", draft_id],
+        ["add", "evidence_report.key_outputs", f"marker-{marker}", "--draft-id", draft_id],
         env,
     )
     _check(add_proc, "add")
 
-    # Step 3: fill -- a marker-tagged verification detail + next_action.
+    # Step 3: fill -- a marker-tagged verification detail (a second,
+    # independent isolation signal alongside the key_outputs marker above)
+    # plus next_action set to the literal 'done' every COMPLETE contract
+    # must carry (COMPLETE_SHAPE, R4) -- not a per-marker value.
     barrier.wait(timeout=30)
     patch = json.dumps({
-        "agent_status": {"next_action": f"done-{marker}"},
+        "agent_status": {"next_action": "done"},
         "evidence_report": {
             "verification": {
                 "method": "pytest",
@@ -296,7 +304,10 @@ def test_two_concurrent_cycles_produce_two_distinct_uncontaminated_rows(cli_env)
     assert _count_handoffs(cli_env, contract_id=result_b.draft_id) == 1
 
     # No cross-contamination in the persisted rows: A's row carries ONLY
-    # A's marker; B's marker never leaked into it, and vice versa.
+    # A's marker; B's marker never leaked into it, and vice versa. The
+    # COMPLETE contract itself is compliant (pending_steps == [], next_action
+    # == 'done') -- the isolation proof lives in evidence_report.key_outputs
+    # and evidence_report.verification.details instead.
     row_a = _fetch_row(cli_env, result_a.draft_id)
     row_b = _fetch_row(cli_env, result_b.draft_id)
 
@@ -308,10 +319,12 @@ def test_two_concurrent_cycles_produce_two_distinct_uncontaminated_rows(cli_env)
     envelope_a = json.loads(row_a["raw_handoff_json"])
     envelope_b = json.loads(row_b["raw_handoff_json"])
 
-    assert envelope_a["agent_status"]["pending_steps"] == ["step-A"]
-    assert envelope_b["agent_status"]["pending_steps"] == ["step-B"]
-    assert envelope_a["agent_status"]["next_action"] == "done-A"
-    assert envelope_b["agent_status"]["next_action"] == "done-B"
+    assert envelope_a["agent_status"]["pending_steps"] == []
+    assert envelope_b["agent_status"]["pending_steps"] == []
+    assert envelope_a["agent_status"]["next_action"] == "done"
+    assert envelope_b["agent_status"]["next_action"] == "done"
+    assert envelope_a["evidence_report"]["key_outputs"] == ["marker-A"]
+    assert envelope_b["evidence_report"]["key_outputs"] == ["marker-B"]
     assert envelope_a["evidence_report"]["verification"]["details"] == (
         "AC-14 concurrency cycle A"
     )
@@ -319,13 +332,13 @@ def test_two_concurrent_cycles_produce_two_distinct_uncontaminated_rows(cli_env)
         "AC-14 concurrency cycle B"
     )
 
-    # "step-B" must never appear anywhere inside A's persisted envelope, and
-    # symmetrically for A inside B's -- the strongest single check against
-    # any partial-merge / shared-buffer contamination.
+    # "marker-B" must never appear anywhere inside A's persisted envelope,
+    # and symmetrically for A inside B's -- the strongest single check
+    # against any partial-merge / shared-buffer contamination.
     raw_a = row_a["raw_handoff_json"]
     raw_b = row_b["raw_handoff_json"]
-    assert "step-B" not in raw_a and "done-B" not in raw_a and "cycle B" not in raw_a
-    assert "step-A" not in raw_b and "done-A" not in raw_b and "cycle A" not in raw_b
+    assert "marker-B" not in raw_a and "cycle B" not in raw_a
+    assert "marker-A" not in raw_b and "cycle A" not in raw_b
 
 
 # ---------------------------------------------------------------------------
@@ -346,15 +359,17 @@ def test_concurrent_cycles_do_not_contaminate_each_others_draft_files(cli_env):
     envelope_a = json.loads(path_a.read_text(encoding="utf-8"))
     envelope_b = json.loads(path_b.read_text(encoding="utf-8"))
 
-    assert envelope_a["agent_status"]["pending_steps"] == ["step-X"]
-    assert envelope_b["agent_status"]["pending_steps"] == ["step-Y"]
+    assert envelope_a["evidence_report"]["key_outputs"] == ["marker-X"]
+    assert envelope_b["evidence_report"]["key_outputs"] == ["marker-Y"]
+    assert envelope_a["agent_status"]["pending_steps"] == []
+    assert envelope_b["agent_status"]["pending_steps"] == []
     assert envelope_a["agent_status"]["agent_id"] == SHARED_AGENT_ID
     assert envelope_b["agent_status"]["agent_id"] == SHARED_AGENT_ID
 
     raw_a = path_a.read_text(encoding="utf-8")
     raw_b = path_b.read_text(encoding="utf-8")
-    assert "step-Y" not in raw_a and "done-Y" not in raw_a
-    assert "step-X" not in raw_b and "done-X" not in raw_b
+    assert "marker-Y" not in raw_a
+    assert "marker-X" not in raw_b
 
 
 # ---------------------------------------------------------------------------
@@ -387,8 +402,8 @@ def test_repeated_concurrent_rounds_stay_isolated(cli_env):
         row_b = _fetch_row(cli_env, result_b.draft_id)
         envelope_a = json.loads(row_a["raw_handoff_json"])
         envelope_b = json.loads(row_b["raw_handoff_json"])
-        assert envelope_a["agent_status"]["pending_steps"] == [f"step-{marker_a}"]
-        assert envelope_b["agent_status"]["pending_steps"] == [f"step-{marker_b}"]
+        assert envelope_a["evidence_report"]["key_outputs"] == [f"marker-{marker_a}"]
+        assert envelope_b["evidence_report"]["key_outputs"] == [f"marker-{marker_b}"]
 
     # After all rounds: exactly 2 * rounds rows total, every one distinct.
     assert _count_handoffs(cli_env) == 2 * rounds

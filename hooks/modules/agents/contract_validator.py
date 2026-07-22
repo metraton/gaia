@@ -247,6 +247,10 @@ def _legacy_tokens_for_form_error(error) -> List[str]:
         return ["PLAN_STATUS"]
     if error.code is FormErrorCode.VERIFICATION_RESULT:
         return [_FORM_VERIFICATION_TOKENS.get(error.field, "VERIFICATION_RESULT_MUST_BE_PASS")]
+    if error.code is FormErrorCode.VERIFICATION_SHAPE:
+        # R3: an additive code with no legacy predecessor -- its own value is
+        # the token (distinct from the VERIFICATION_RESULT_* vocabulary).
+        return ["VERIFICATION_SHAPE"]
     if error.code is FormErrorCode.MISSING_FIELD:
         if error.field in _FORM_MISSING_FIELD_TOKENS:
             return list(_FORM_MISSING_FIELD_TOKENS[error.field])

@@ -132,6 +132,18 @@ def _complete_failed_verification_envelope():
     return env
 
 
+def _declared_type_missing_field_envelope():
+    """R3: an IN_PROGRESS envelope whose verification declares a deterministic
+    type ('command') but omits the required 'command' field -- the full-verdict
+    gate rejects it with the additive VERIFICATION_SHAPE code."""
+    env = _valid_envelope()
+    env["evidence_report"]["verification"] = {
+        "method": "command",
+        "type": "command",  # missing required 'command'
+    }
+    return env
+
+
 # ---------------------------------------------------------------------------
 # 1. Ramp flag: DEFAULT ON (cutover); explicit falsy is the rollback path
 # ---------------------------------------------------------------------------
@@ -270,6 +282,22 @@ class TestOneAnomalyPerInvalidity:
         assert FormErrorCode.MISSING_FIELD.value in codes
         # exactly one anomaly per invalidity: 2 defects -> 2 anomalies
         assert len(v.anomalies) == 2
+
+    def test_single_defect_verification_shape_one_anomaly(self):
+        """R3: a declared verification.type missing its required field yields
+        EXACTLY one anomaly, typed off the additive VERIFICATION_SHAPE code and
+        rendered in the Inválidos group (present-but-wrong, not MISSING_FIELD)."""
+        v = evaluate_contract_gate(
+            _declared_type_missing_field_envelope(), ramp_enabled=True
+        )
+        assert v.rejected is True
+        assert len(v.anomalies) == 1
+        a = v.anomalies[0]
+        assert a["code"] == FormErrorCode.VERIFICATION_SHAPE.value
+        assert a["field"] == "evidence_report.verification.command"
+        assert a["type"] == "contract_gate_violation"
+        # A value-shape code renders under "Inválidos:", never "Faltan:".
+        assert FormErrorCode.VERIFICATION_SHAPE.value in v.rejection_reason
 
 
 # ---------------------------------------------------------------------------
