@@ -4,14 +4,14 @@ Hooks are the event-driven spine of Gaia. Every significant moment in a Claude C
 
 Each hook is a Python script that reads a JSON event from stdin, processes it, and writes a JSON response to stdout. Claude Code calls these scripts synchronously before or after each tool execution, which means the hook can allow, modify, or block the operation. The hook cannot do complex async work — it runs inline, in the critical path, so every module it calls must complete quickly.
 
-The hooks form a pipeline. A session opens at `session_start.py`, which emits a one-shot `additionalContext` manifest (Environment, Active Agentic Loop) for the orchestrator. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`, `elicitation_result.py`) fire at lifecycle transitions and carry lighter responsibilities.
+The hooks form a pipeline. A session opens at `session_start.py`, which emits a one-shot `additionalContext` manifest (Environment, Active Agentic Loop) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), `session_start.py` builds a different, lighter manifest — a post-compaction context refresh (agent roster + active anomalies) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`, `elicitation_result.py`) fire at lifecycle transitions and carry lighter responsibilities.
 
 ## Cuándo se activa
 
 ```
 Session opens
         |
-[session_start.py] <- fires on SessionStart (matcher: startup)
+[session_start.py] <- fires on SessionStart (matcher: startup|resume|compact)
         |  Registers session in heartbeat-based session_registry
         |  Sweeps stale registry entries and expired approval files
         |  Emits one-shot hookSpecificOutput.additionalContext manifest
@@ -88,6 +88,8 @@ hooks/
 ├── adapters/              # Adapter layer — event parsing and module dispatch
 └── modules/               # Module layer — security, context, validation, audit logic
 ```
+
+Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additionalContext`: Claude Code's hook-output validator has no `PreCompact`/`PostCompact` case in its discriminated union, and its response-consumption switch never applies their output even when the JSON is otherwise well-formed — so both now emit a schema-valid empty `{}` no-op. The real post-compaction context delivery happens via `session_start.py` when SessionStart fires with `source == "compact"` (see above). The pre-compaction checkpoint window (saving agentic-loop state in the narrow moment *before* compaction erases context) remains a genuine platform limitation — no hook shape can inject there.
 
 ## Convenciones
 

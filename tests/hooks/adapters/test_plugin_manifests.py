@@ -193,34 +193,39 @@ class TestHooksJson:
         assert "*" in matchers
 
     def test_session_start_matcher_includes_resume(self, gaia_manifest):
-        """SessionStart must fire on BOTH a fresh start and a resume.
+        """SessionStart must fire on a fresh start, a resume, AND a compact.
 
         A SessionStart hook wired with matcher "startup" ONLY never runs on
         `claude --resume`/`--continue` -- Claude Code dispatches those with
         `source: "resume"`, a distinct matcher. Without "resume" in the
         matcher, the pinned_build marker (`gaia doctor`'s "Hooks active &
         fresh" check) never refreshes on the user's real exit -> --resume
-        workflow. Checked in both the generated hooks/hooks.json (the file
-        Claude Code actually reads) and the source manifest it is derived
-        from (build/gaia.manifest.json), so drift between the two is caught
-        here rather than only at pack time.
+        workflow. "compact" is required too: it is the only source/event
+        combination whose hookSpecificOutput can carry additionalContext
+        around compaction -- PreCompact and PostCompact's hookSpecificOutput
+        is not part of Claude Code's validated schema and is never consumed
+        by the runtime (see hooks/pre_compact.py and hooks/post_compact.py).
+        Checked in both the generated hooks/hooks.json (the file Claude Code
+        actually reads) and the source manifest it is derived from
+        (build/gaia.manifest.json), so drift between the two is caught here
+        rather than only at pack time.
         """
         data = json.loads(self.hooks_path.read_text())
         installed_matchers = {
             entry["matcher"] for entry in data["hooks"]["SessionStart"]
         }
-        assert installed_matchers == {"startup|resume"}, (
-            f"hooks/hooks.json SessionStart matcher must be 'startup|resume', "
-            f"got {installed_matchers}"
+        assert installed_matchers == {"startup|resume|compact"}, (
+            f"hooks/hooks.json SessionStart matcher must be "
+            f"'startup|resume|compact', got {installed_matchers}"
         )
 
         manifest_matchers = {
             entry["matcher"]
             for entry in gaia_manifest["hooks"]["matchers"]["SessionStart"]
         }
-        assert manifest_matchers == {"startup|resume"}, (
+        assert manifest_matchers == {"startup|resume|compact"}, (
             f"build/gaia.manifest.json SessionStart matcher must be "
-            f"'startup|resume', got {manifest_matchers}"
+            f"'startup|resume|compact', got {manifest_matchers}"
         )
 
     def test_all_commands_use_plugin_root(self):

@@ -243,10 +243,29 @@ if __name__ == "__main__":
         # surfaced). Fully fail-safe -- an empty manifest just
         # means no hookSpecificOutput in the response, which Claude Code
         # treats as "nothing to inject".
+        #
+        # source == "compact": Claude Code fires SessionStart with this
+        # source right after compaction (matcherMetadata.values includes
+        # "compact" alongside startup/resume/clear/fork). This is the ONLY
+        # event/shape combination that can deliver additionalContext around
+        # compaction -- PreCompact and PostCompact's hookSpecificOutput are
+        # not part of Claude Code's validated schema and are not consumed by
+        # the runtime (see hooks/post_compact.py's module docstring). So the
+        # post-compaction context refresh (agent roster + active anomalies)
+        # is built here, via the same builder post_compact.py used to own,
+        # instead of the full startup/resume manifest -- re-running project
+        # scan/memory/environment content on every compaction would be both
+        # redundant (already delivered at true session start) and heavier
+        # than the lightweight refresh this moment calls for.
+        source = event_data.get("source", "")
         additional_context = ""
         try:
-            from modules.session.session_manifest import build_session_context
-            additional_context = build_session_context()
+            if source == "compact":
+                from modules.context.compact_context_builder import build_compact_context
+                additional_context = build_compact_context()
+            else:
+                from modules.session.session_manifest import build_session_context
+                additional_context = build_session_context()
         except Exception as _manifest_exc:
             logger.debug(
                 "build_session_context failed (non-fatal): %s", _manifest_exc

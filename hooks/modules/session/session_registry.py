@@ -39,14 +39,18 @@ Storage format:
     ``pinned_build`` is likewise OPTIONAL on read: entries written before this
     field existed simply lack it. Consumers (``gaia doctor``'s "Hooks active &
     fresh" check) MUST treat an absent ``pinned_build`` as UNKNOWN, never as a
-    match/pass — the marker is rewritten both by a fresh session (source
-    "startup") AND by a ``--continue``/``--resume`` of an existing session id
-    (source "resume"): SessionStart's matcher is ``startup|resume``, so Claude
-    Code re-reads settings and re-fires this hook on resume too, and this
-    hook does not branch on ``source`` -- it always re-registers and
-    re-pins. Only a session that never re-fires SessionStart at all (e.g. one
-    still running from before this wiring change) can be left with a stale
-    or absent marker.
+    match/pass — the marker is rewritten by a fresh session (source
+    "startup"), a ``--continue``/``--resume`` of an existing session id
+    (source "resume"), AND a ``/compact`` (source "compact"): SessionStart's
+    matcher is ``startup|resume|compact``, so Claude Code re-reads settings
+    and re-fires this hook on resume and on compact too, and this hook does
+    not branch on ``source`` for registration/pinning -- it always
+    re-registers and re-pins regardless (only the *content* of
+    ``additionalContext`` branches on ``source == "compact"``, see
+    ``hooks/session_start.py``'s call to ``build_compact_context()``). Only
+    a session that never re-fires SessionStart at all (e.g. one still
+    running from before this wiring change) can be left with a stale or
+    absent marker.
 
 Concurrency:
     All writes are atomic via os.rename() after writing to a per-call .tmp
@@ -203,9 +207,9 @@ def register_session(
             load newly-installed code (STALE). Omitted -> the entry carries no
             marker (doctor reports UNKNOWN). This self-heals on the next
             SessionStart fire for this session id -- which includes a plain
-            ``--continue``/``--resume``, since the SessionStart matcher is
-            ``startup|resume`` and this hook re-pins on every fire regardless
-            of ``source``.
+            ``--continue``/``--resume`` or a ``/compact``, since the
+            SessionStart matcher is ``startup|resume|compact`` and this hook
+            re-pins on every fire regardless of ``source``.
 
     Raises:
         SessionRegistryError: If session_id is empty or saving fails.

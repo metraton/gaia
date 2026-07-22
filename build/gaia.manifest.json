@@ -30,7 +30,7 @@
         {"matcher": "AskUserQuestion"}
       ],
       "SubagentStop": [{"matcher": "*"}],
-      "SessionStart": [{"matcher": "startup|resume"}],
+      "SessionStart": [{"matcher": "startup|resume|compact"}],
       "SessionEnd": [{}],
       "PreCompact": [{}],
       "PostCompact": [{}],
