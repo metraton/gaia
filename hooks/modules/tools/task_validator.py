@@ -31,6 +31,7 @@ _BASE_AGENTS = [
     "gaia-operator",
     "gaia-system",
     "gaia-planner",
+    "gaia-verifier",
     "Explore",
     "Plan",
     "claude-code-guide",

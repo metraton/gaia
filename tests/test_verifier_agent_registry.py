@@ -1,23 +1,27 @@
-"""Registry tests for the STAGED (not-yet-live) gaia-verifier agent definition.
+"""Registry tests for the gaia-verifier agent definition (staged fixture +
+live-tree confirmation).
 
-Brief: B3 (plan_id=33), Task T4, AC-4.
+Brief: B3 (plan_id=33), Task T4/T6, AC-4.
 
-M1 DORMANCY CONSTRAINT: this brief authors the gaia-verifier agent DEFINITION
-and proves it is well-formed and recognized by the registry mechanism, WITHOUT
-arming the live verifier registry. The canonical content lives at
-``tests/fixtures/agents_staging/gaia-verifier.md`` -- a staging path
+M1 authored the gaia-verifier agent DEFINITION at the staging path
+``tests/fixtures/agents_staging/gaia-verifier.md`` -- a path
 ``gaia.state.permissions._agents_dir()`` never scans (that function resolves
-only ``<repo_root>/agents``, see ``permissions.py``) -- so
-``verifier_fleet()`` against the LIVE ``agents/`` directory stays an empty
-frozenset after this module runs. Landing ``agents/gaia-verifier.md`` in the
-live tree is T6/M2, not this task.
+only ``<repo_root>/agents``, see ``permissions.py``) -- and proved it
+well-formed and recognized by the registry mechanism WITHOUT arming the live
+verifier registry.
+
+M2 (ARMING) landed the identical content at the live path
+``agents/gaia-verifier.md``. ``TestLiveRegistryIsArmed`` below reflects that:
+the live ``agents/`` directory now yields a non-empty ``verifier_fleet()``
+containing ``gaia-verifier`` -- this is the intended, deliberate effect of
+arming, not drift.
 
 Coverage mirrors ``tests/test_verifier_registry.py``'s
 ``TestSyntheticSeededFleet`` precedent in MECHANISM (an isolated, monkeypatched
 ``agents/`` fixture directory, never the real tree) but exercises the REAL
 staged file content instead of an inline literal, plus asserts the specific
 frontmatter shape this brief requires (tools, disallowedTools, no routing:
-block) and re-confirms the live registry is untouched.
+block) and confirms the live registry is now armed.
 """
 
 from __future__ import annotations
@@ -144,13 +148,15 @@ class TestStagedFrontmatterShape:
 
 
 # ---------------------------------------------------------------------------
-# Dormancy re-confirmation -- the LIVE agents/ dir is untouched by this task
+# Arming confirmation -- the LIVE agents/ dir now carries gaia-verifier.md
+# (B3 M2). Strengthened from the pre-arming dormancy guard: this is the
+# correct armed reality, not a weakening of the check.
 # ---------------------------------------------------------------------------
 
-class TestLiveRegistryStaysDormant:
-    def test_live_agents_dir_yields_empty_verifier_fleet(self):
+class TestLiveRegistryIsArmed:
+    def test_live_agents_dir_yields_fleet_with_gaia_verifier(self):
         # No monkeypatch active here: this resolves the REAL agents/ dir.
-        assert verifier_fleet() == frozenset()
+        assert verifier_fleet() == frozenset({"gaia-verifier"})
 
-    def test_live_agents_dir_has_no_gaia_verifier_file(self):
-        assert not (_LIVE_AGENTS_DIR / "gaia-verifier.md").exists()
+    def test_live_agents_dir_has_gaia_verifier_file(self):
+        assert (_LIVE_AGENTS_DIR / "gaia-verifier.md").exists()

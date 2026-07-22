@@ -42,7 +42,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | `memory/` | `episode_writer` | Episodic memory persistence |
 | `adapters/` | `base`, `channel`, `claude_code`, `types`, `utils` | Hook I/O abstraction layer |
 
-### Agents (8)
+### Agents (9)
 
 | Agent | File | Domain | permissionMode |
 |-------|------|--------|----------------|
@@ -54,6 +54,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (E
 | gitops-operator | `agents/gitops-operator.md` | Kubernetes, HelmRelease, Flux | `acceptEdits` |
 | platform-architect | `agents/platform-architect.md` | Terraform/Terragrunt IaC | `acceptEdits` |
 | gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition | `acceptEdits` |
+| gaia-verifier | `agents/gaia-verifier.md` | Clean-context verification: consumes `task_gates`, deterministic oracle for command/code, semantic rubric for semantic/self_review, promotes `NEEDS_VERIFICATION` to `COMPLETE` | (not set) |
 
 ### Skills (21 directories)
 

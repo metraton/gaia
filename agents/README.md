@@ -47,7 +47,8 @@ agents/
 ├── developer.md           # Application code: Node.js, Python, TypeScript
 ├── cloud-troubleshooter.md # Live cloud diagnostics: GCP, AWS, Azure
 ├── gitops-operator.md     # Kubernetes, Flux, HelmReleases, GitOps
-└── platform-architect.md  # Infrastructure-as-code (tool-agnostic): Terraform, Pulumi, CloudFormation, OpenTofu, CDK
+├── platform-architect.md  # Infrastructure-as-code (tool-agnostic): Terraform, Pulumi, CloudFormation, OpenTofu, CDK
+└── gaia-verifier.md       # Clean-context verifier: consumes task_gates, promotes NEEDS_VERIFICATION to COMPLETE
 ```
 
 ## Convenciones

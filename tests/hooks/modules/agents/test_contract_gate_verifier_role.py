@@ -97,9 +97,12 @@ def _needs_verification_envelope_with_proposed_result(result: str = "pass"):
 
 @pytest.fixture(autouse=True)
 def _clean_verifier_cache(monkeypatch):
-    """Every test starts with a fresh fleet cache and no synthetic agents/
-    override, so the real (empty) registry is the baseline unless a test
-    explicitly seeds a synthetic fleet."""
+    """Every test starts with a fresh fleet cache. Since B3 M2 (ARMING), the
+    real ``agents/`` tree is itself ARMED (``agents/gaia-verifier.md`` ships
+    live) -- so a test exercising DORMANT-registry behavior must explicitly
+    seed an isolated, verifier-free ``agents/`` fixture via ``_seed_fleet(...,
+    [])`` rather than relying on the live tree being empty. Tests that want
+    the ARMED behavior seed ``_seed_fleet(..., ["gaia-verifier"])`` as before."""
     verifier_fleet.cache_clear()
     yield
     verifier_fleet.cache_clear()
@@ -126,7 +129,15 @@ def _seed_fleet(monkeypatch, tmp_path, verifier_names):
 # ---------------------------------------------------------------------------
 
 class TestDormantRegistryContractGateVerifier:
-    def test_empty_registry_allows_producer_complete_full_verdict(self):
+    """Since B3 M2 (ARMING) the live ``agents/`` tree itself carries
+    ``agents/gaia-verifier.md`` (armed), so DORMANT-branch behavior is proven
+    against an isolated, verifier-free fixture (``_seed_fleet(..., [])``)
+    rather than the live tree -- the dormant CODE PATH is still real
+    behavior (a workspace / installed layout with no verifier-marked agent)
+    and must stay covered independently of the live tree's current state."""
+
+    def test_empty_registry_allows_producer_complete_full_verdict(self, monkeypatch, tmp_path):
+        _seed_fleet(monkeypatch, tmp_path, [])
         assert verifier_fleet() == frozenset()
         gate = evaluate_contract_gate(
             _complete_envelope(), agent_type="developer", ramp_enabled=True,
@@ -134,7 +145,8 @@ class TestDormantRegistryContractGateVerifier:
         assert gate.rejected is False
         assert gate.mode == GATE_MODE_FULL_VERDICT
 
-    def test_empty_registry_allows_producer_complete_three_case(self):
+    def test_empty_registry_allows_producer_complete_three_case(self, monkeypatch, tmp_path):
+        _seed_fleet(monkeypatch, tmp_path, [])
         assert verifier_fleet() == frozenset()
         gate = evaluate_contract_gate(
             _complete_envelope(), agent_type="developer", ramp_enabled=False,
@@ -142,7 +154,8 @@ class TestDormantRegistryContractGateVerifier:
         assert gate.rejected is False
         assert gate.mode == GATE_MODE_THREE_CASE
 
-    def test_verifier_role_violation_returns_none_when_dormant(self):
+    def test_verifier_role_violation_returns_none_when_dormant(self, monkeypatch, tmp_path):
+        _seed_fleet(monkeypatch, tmp_path, [])
         assert _verifier_role_violation("COMPLETE", "any-producer") is None
 
 
@@ -201,11 +214,14 @@ class TestArmedRegistryContractGateVerifierBothPaths:
 # ---------------------------------------------------------------------------
 
 class TestArmedFirstOrderingContractGateVerifier:
-    def test_dormant_producer_not_in_any_fleet_is_still_allowed(self):
+    def test_dormant_producer_not_in_any_fleet_is_still_allowed(self, monkeypatch, tmp_path):
         """The critical ordering bug this guards against: checking
         is_verifier(agent) alone (with no registry-empty guard) would reject
         EVERY producer once this code lands. Proves a producer with NO
-        relationship to the (empty) verifier fleet still passes today."""
+        relationship to a genuinely empty (dormant) verifier fleet still
+        passes -- exercised against an isolated fixture since the live tree
+        is armed as of B3 M2."""
+        _seed_fleet(monkeypatch, tmp_path, [])
         assert verifier_fleet() == frozenset()
         violation = _verifier_role_violation("COMPLETE", "totally-unseeded-agent")
         assert violation is None

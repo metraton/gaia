@@ -50,7 +50,8 @@
     "agents/cloud-troubleshooter.md",
     "agents/gitops-operator.md",
     "agents/platform-architect.md",
-    "agents/gaia-planner.md"
+    "agents/gaia-planner.md",
+    "agents/gaia-verifier.md"
   ],
   "skills": "all",
   "commands": [],

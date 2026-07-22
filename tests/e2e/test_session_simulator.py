@@ -551,8 +551,22 @@ class TestScenario1HappyPath:
             f"PostToolUse failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
 
-        # 6. Agent responds with valid contract
+        # 6. Agent responds -- proposes NEEDS_VERIFICATION, not COMPLETE.
+        # Updated at B3 M2 (ARMING): cloud-troubleshooter is a producer, not a
+        # seeded verifier, and the live verifier registry is now armed
+        # (agents/gaia-verifier.md carries `verifier: true`), so a producer's
+        # direct COMPLETE is correctly rejected by the verifier-role gate
+        # (hooks/adapters/claude_code.py::_verifier_role_violation). The
+        # producer instead proposes NEEDS_VERIFICATION with a proposed
+        # verification.result -- the gate never rejects that (the role check
+        # only fires on COMPLETE) -- and step 6b below dispatches the seeded
+        # verifier to independently confirm and promote to COMPLETE. This
+        # replaces the old direct-self-COMPLETE happy path and is itself the
+        # live, real-hook-subprocess proof of the "no single-agent-task
+        # freeze" property: the task still reaches done, just through the
+        # verifier-gated route rather than a producer self-completing.
         agent_output = _build_valid_agent_output(
+            plan_status="NEEDS_VERIFICATION",
             summary="El pod crashea por OOMKilled.",
             agent_id="a1f2c3",
         )
@@ -566,6 +580,38 @@ class TestScenario1HappyPath:
         )
         assert stop_data.get("contract_validated") is True, (
             f"Contract not validated: {stop_data}"
+        )
+
+        # 6b. gaia-verifier is dispatched to confirm and promote to COMPLETE.
+        # This is the guaranteed verifier dispatch NEEDS_VERIFICATION names
+        # (agent-response skill) -- proven here end-to-end through the real
+        # hook subprocess pipeline, not a unit-level stand-in.
+        result = sim.invoke_agent(
+            "gaia-verifier", "confirma la verificacion del diagnostico"
+        )
+        assert result["exit_code"] == 0, (
+            f"gaia-verifier invoke failed: exit={result['exit_code']}, "
+            f"stderr={result['stderr']}"
+        )
+
+        verifier_output = _build_valid_agent_output(
+            plan_status="COMPLETE",
+            summary="Verificado: el pod crashea por OOMKilled.",
+            agent_id="a9f9f9",
+        )
+        result = sim.agent_responds("gaia-verifier", "a9f9f9", verifier_output)
+        assert result["exit_code"] == 0, (
+            f"gaia-verifier SubagentStop failed: exit={result['exit_code']}, "
+            f"stderr={result['stderr']}"
+        )
+        verifier_stop_data = result["stdout_json"]
+        assert verifier_stop_data is not None, (
+            f"SubagentStop returned no JSON for gaia-verifier. "
+            f"stdout: {result['stdout_raw']}"
+        )
+        assert verifier_stop_data.get("contract_validated") is True, (
+            f"gaia-verifier's COMPLETE must be accepted (armed verifier role): "
+            f"{verifier_stop_data}"
         )
 
         # 7. End session
@@ -748,8 +794,16 @@ class TestScenario6EmptyEvidenceAdvisory:
         result = sim.start_session()
         assert result["exit_code"] == 0
 
-        # Invoke agent
-        result = sim.invoke_agent("cloud-troubleshooter", "diagnostica el pod")
+        # Invoke agent -- gaia-verifier (updated at B3 M2/ARMING): the completing
+        # identity must be a seeded verifier now that the live registry is
+        # armed, or a COMPLETE would be rejected by the (correct, newly armed)
+        # verifier-role gate before this scenario's actual property -- empty
+        # evidence lists are advisory -- is ever exercised. Using gaia-verifier
+        # keeps the scenario isolated to that ONE property, unconflated with
+        # verifier-role enforcement (covered separately in
+        # tests/hooks/modules/agents/test_contract_gate_verifier_role.py and
+        # this file's own armed-enforcement scenario).
+        result = sim.invoke_agent("gaia-verifier", "diagnostica el pod")
         assert result["exit_code"] == 0
 
         # Build agent output with valid plan_status but ALL evidence *lists*
@@ -798,7 +852,7 @@ class TestScenario6EmptyEvidenceAdvisory:
             f"{bt}{bt}{bt}\n\n"
         )
 
-        result = sim.agent_responds("cloud-troubleshooter", "ab12cd", agent_output)
+        result = sim.agent_responds("gaia-verifier", "ab12cd", agent_output)
         assert result["exit_code"] == 0, (
             f"Empty evidence with valid plan_status should be advisory (exit=0): "
             f"exit={result['exit_code']}, stderr: {result['stderr']}"

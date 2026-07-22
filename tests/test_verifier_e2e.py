@@ -35,10 +35,11 @@ Coverage, per AC-5:
     failing gate -> task transitions back ``done`` -> ``pending`` (the
     literal "return to pending" half of the branch, exercising the actual
     state-machine edge, not just a no-op).
-  * dormancy re-confirmation: after driving this flow, ``verifier_fleet()``
-    against the LIVE ``agents/`` directory is still empty and
-    ``agents/gaia-verifier.md`` does not exist live -- this task did not arm
-    anything.
+  * arming confirmation (updated at B3 M2): after driving this flow,
+    ``verifier_fleet()`` against the LIVE ``agents/`` directory contains
+    ``gaia-verifier`` and ``agents/gaia-verifier.md`` exists live -- M2 armed
+    the registry; this flow's own dormant/armed distinction is orthogonal to
+    that (see the two-level mapping note below) and is unaffected either way.
 
 Two-level mapping note (plan finding F2, restated): this module only proves
 the TASK ROW transition (``tasks.status`` pending/done, via
@@ -341,24 +342,26 @@ def test_verifier_e2e_rework_returns_done_task_to_pending(tmp_db):
 
 
 # ---------------------------------------------------------------------------
-# Dormancy re-confirmation: driving this flow did not arm anything. The
-# LIVE agents/ directory is untouched -- mirrors
-# tests/test_verifier_agent_registry.py::TestLiveRegistryStaysDormant.
+# Arming confirmation (updated at B3 M2): this task-row flow neither arms nor
+# disarms the registry -- it operates one level below (task_gates/tasks), so
+# the live registry state it observes is whatever M2 left it as: ARMED, with
+# gaia-verifier present. Mirrors
+# tests/test_verifier_agent_registry.py::TestLiveRegistryIsArmed.
 # ---------------------------------------------------------------------------
 
-class TestVerifierE2EStaysDormant:
-    def test_live_verifier_fleet_still_empty_after_e2e_flow(self):
+class TestVerifierE2ELiveRegistryIsArmed:
+    def test_live_verifier_fleet_contains_gaia_verifier_after_e2e_flow(self):
         from gaia.state import permissions as _permissions
         from gaia.state.permissions import verifier_fleet
 
         verifier_fleet.cache_clear()
         try:
-            assert verifier_fleet() == frozenset()
+            assert verifier_fleet() == frozenset({"gaia-verifier"})
         finally:
             verifier_fleet.cache_clear()
 
-    def test_live_agents_dir_has_no_gaia_verifier_file(self):
-        assert not (_REPO_ROOT / "agents" / "gaia-verifier.md").exists()
+    def test_live_agents_dir_has_gaia_verifier_file(self):
+        assert (_REPO_ROOT / "agents" / "gaia-verifier.md").exists()
 
 
 if __name__ == "__main__":

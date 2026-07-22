@@ -5,13 +5,20 @@ Brief: harness-r2-needs-verification-y-complete-restringido-por-rol-verificador
 
 Coverage mirrors the existing ``handoff_writer_fleet`` / ``is_handoff_writer``
 suite (tests/contract/test_finalize_store.py) in MECHANISM, plus the ONE
-deliberate difference this brief specifies: the fleet is EMPTY today (no
-shipped agent carries the ``verifier: true`` marker), unlike the
-handoff-writer fleet's non-empty fallback floor.
+deliberate difference this brief specifies: the FALLBACK floor (used only
+when ``agents/`` is unresolvable) is EMPTY, unlike the handoff-writer
+fleet's non-empty fallback floor.
+
+UPDATED at B3 M2 (ARMING, plan_id=33): the live ``agents/`` directory now
+carries ``agents/gaia-verifier.md`` with ``verifier: true`` -- the fleet
+against the REAL directory is ARMED (non-empty), not empty. The tests below
+that exercise the real tree were updated to assert the armed reality
+(``frozenset({"gaia-verifier"})``) rather than the pre-arming empty set --
+this is the M2 arming step's expected, intentional effect, not drift.
 
   * parser reads the top-level ``verifier:`` marker and ignores nested blocks.
-  * ``verifier_fleet()`` is empty against the REAL ``agents/`` directory today
-    (positive proof no agent has opted in yet -- the B3 premise).
+  * ``verifier_fleet()`` against the REAL ``agents/`` directory now contains
+    exactly ``{"gaia-verifier"}`` (positive proof the arming step landed).
   * ``verifier_fleet()`` also falls back to the (empty) floor when ``agents/``
     is unresolvable -- same fallback-floor MECHANISM as the handoff-writer
     fleet, just an empty constant.
@@ -94,22 +101,27 @@ class TestParseAgentVerifierFrontmatter:
 
 
 # ---------------------------------------------------------------------------
-# verifier_fleet() against the REAL agents/ dir -- empty today (B3 premise)
+# verifier_fleet() against the REAL agents/ dir -- ARMED as of B3 M2:
+# agents/gaia-verifier.md carries `verifier: true` live.
 # ---------------------------------------------------------------------------
 
-class TestVerifierFleetEmptyToday:
-    def test_real_agents_dir_yields_empty_fleet(self):
-        """No agent under agents/*.md carries `verifier: true` as of this
-        brief -- the registry mechanism ships now; population is B3's job."""
+class TestVerifierFleetArmed:
+    def test_real_agents_dir_yields_fleet_with_gaia_verifier(self):
+        """agents/gaia-verifier.md carries `verifier: true` live -- the
+        registry is ARMED (non-empty), containing exactly gaia-verifier."""
         fleet = verifier_fleet()
-        assert fleet == frozenset()
+        assert fleet == frozenset({"gaia-verifier"})
 
-    def test_no_shipped_agent_is_a_verifier(self):
+    def test_only_gaia_verifier_is_a_verifier_among_shipped_agents(self):
         for md in sorted(_AGENTS_DIR.glob("*.md")):
             if md.name.lower() == "readme.md":
                 continue
             name, _ = _parse_agent_verifier_frontmatter(md.read_text(encoding="utf-8"))
-            if name:
+            if not name:
+                continue
+            if name == "gaia-verifier":
+                assert is_verifier(name) is True, "gaia-verifier must be verified once armed"
+            else:
                 assert is_verifier(name) is False, f"{name} unexpectedly verified"
 
 

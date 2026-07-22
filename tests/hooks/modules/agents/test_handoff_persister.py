@@ -158,6 +158,16 @@ def test_reconstructs_envelope_from_finalized_draft(db):
 def test_reconstructed_envelope_passes_the_gate(db):
     # The bare (fence-less) turn would be rejected; the reconstructed envelope
     # must pass the SAME full-verdict gate.
+    #
+    # agent_type is "gaia-verifier" here (updated at B3 M2/ARMING), not
+    # "gaia-system": the envelope under test is a COMPLETE envelope, and the
+    # live verifier registry is now armed (agents/gaia-verifier.md carries
+    # `verifier: true`), so a non-verifier agent_type's COMPLETE would be
+    # correctly rejected by the verifier-role gate
+    # (hooks/adapters/claude_code.py::_verifier_role_violation) -- a concern
+    # orthogonal to what THIS test proves (that reconstruction produces a
+    # gate-passing envelope identical in shape to a real fence). Using a
+    # seeded verifier identity isolates that one property.
     draft_id = mint_draft_id(VALID_AGENT_ID)
     env = _complete_envelope()
     save_draft(draft_id, env)
@@ -165,7 +175,7 @@ def test_reconstructed_envelope_passes_the_gate(db):
 
     # Missing fence -> parse yields None -> gate rejects.
     bare_verdict = evaluate_contract_gate(
-        None, agent_type="gaia-system",
+        None, agent_type="gaia-verifier",
         stop_reason_classification=None, ramp_enabled=True, db_path=str(db),
     )
     assert bare_verdict.rejected is True
@@ -174,11 +184,11 @@ def test_reconstructed_envelope_passes_the_gate(db):
         task_info=_task_info(db), parsed_contract=None,
     )
     recon_verdict = evaluate_contract_gate(
-        recon, agent_type="gaia-system",
+        recon, agent_type="gaia-verifier",
         stop_reason_classification=None, ramp_enabled=True, db_path=str(db),
     )
     assert recon_verdict.rejected is False, (
-        f"reconstructed envelope must pass the gate: {recon_verdict.reason}"
+        f"reconstructed envelope must pass the gate: {recon_verdict.rejection_reason}"
     )
 
 
