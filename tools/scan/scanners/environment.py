@@ -228,7 +228,13 @@ class EnvironmentScanner(BaseScanner):
             except Exception as exc:
                 warnings.append(f"Runtime detection failed for {binary_name}: {exc}")
 
-        return runtimes
+        # Deterministic emission order -- `detected_canonical` is a set and
+        # its iteration order is not guaranteed across Python invocations
+        # (PYTHONHASHSEED). `runtimes` is already appended in a fixed order
+        # (driven by the `_RUNTIME_DEFINITIONS` list), but sort explicitly so
+        # the emitted section is stable regardless of how it is constructed
+        # upstream or downstream (e.g. re-ordering during a merge).
+        return sorted(runtimes, key=lambda r: r["name"])
 
     def _get_version(
         self, binary: str, flag: str, warnings: List[str]
