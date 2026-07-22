@@ -59,6 +59,24 @@ def _isolate_home_globals(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor_mod, "_SESSION_REGISTRY_PATH", fake_registry)
     for _var in doctor_mod._SESSION_ID_ENV_VARS:
         monkeypatch.delenv(_var, raising=False)
+
+    # check_global_cli_alignment (order 58) resolves `gaia` off the real PATH
+    # via shutil.which("gaia"). On a developer machine that resolves to
+    # whatever CLI is actually installed globally, which would make the check
+    # non-deterministic (and could spuriously WARN, breaking the "healthy
+    # project" fixtures' assumption of an all-pass run). Wrap shutil.which so
+    # "gaia" degrades to the isolated "not on PATH" info state while every
+    # other lookup (e.g. check_claude_code's "claude") still hits the real
+    # PATH -- tests that need a specific `gaia` resolution override this
+    # directly via their own monkeypatch.setattr(doctor_mod.shutil, "which", ...).
+    _real_which = doctor_mod.shutil.which
+
+    def _which_isolated_gaia(cmd, *a, **kw):
+        if cmd == "gaia":
+            return None
+        return _real_which(cmd, *a, **kw)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", _which_isolated_gaia)
     yield
 
 @pytest.fixture()
@@ -910,8 +928,11 @@ class TestCmdDoctorJson:
         #   visibility for the 90-day auto-retention added to writer.py) +
         # 1 hooks-importable (order 145 -- every hooks/*.py entry point
         #   imports cleanly; catches a broken hook before it reaches
-        #   PreToolUse/PostToolUse at runtime).
-        assert len(data["checks"]) == 28
+        #   PreToolUse/PostToolUse at runtime) +
+        # 1 global-cli-alignment (order 58 -- PATH gaia vs workspace-expected
+        #   install; catches a stale global CLI shadowing the workspace's own
+        #   gaia without warning).
+        assert len(data["checks"]) == 29
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1892,6 +1913,107 @@ def _mk_local_gaia_workspace(
     claude = ws / ".claude"
     claude.mkdir()
     (claude / "hooks").symlink_to(wired_pkg / "hooks")
+
+
+def _mk_global_gaia(root: Path, version: str, hooks_body: str) -> Path:
+    """Create a fake global gaia install (package.json + bin/gaia + hooks/) and
+    return the bin/gaia launcher path -- what `shutil.which("gaia")` would
+    return for this fake global install."""
+    (root / "bin").mkdir(parents=True)
+    launcher = root / "bin" / "gaia"
+    launcher.write_text("#!/usr/bin/env node\n")
+    (root / "package.json").write_text(
+        json.dumps({"name": "@jaguilar87/gaia", "version": version})
+    )
+    _mk_hooks_tree(root / "hooks", hooks_body)
+    return launcher
+
+
+class TestCheckGlobalCliAlignment:
+    """Order-58: does the PATH-resolved `gaia` match what this workspace expects?"""
+
+    def test_no_path_gaia_is_info(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: None)
+        r = doctor_mod.check_global_cli_alignment(tmp_path)
+        assert r["severity"] == "info"
+        assert "no `gaia` resolvable on PATH" in r["detail"]
+
+    def test_no_workspace_install_is_info(self, tmp_path, monkeypatch):
+        global_bin = _mk_global_gaia(tmp_path / "global", "5.2.0", "# build\n")
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: str(global_bin))
+        r = doctor_mod.check_global_cli_alignment(tmp_path / "ws-empty")
+        assert r["severity"] == "info"
+        assert "plugin-mode" in r["detail"]
+
+    def test_path_gaia_is_workspace_own_install_is_pass(self, tmp_path, monkeypatch):
+        # PATH resolves to the workspace's OWN node_modules install -- same
+        # physical tree, so this is trivially aligned regardless of version.
+        ws = tmp_path / "ws"
+        nm_gaia = ws / "node_modules" / "@jaguilar87" / "gaia"
+        launcher = _mk_global_gaia(nm_gaia, "5.2.0", "# build\n")
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: str(launcher))
+
+        r = doctor_mod.check_global_cli_alignment(ws)
+        assert r["severity"] == "pass"
+        assert "same tree" in r["detail"]
+
+    def test_divergent_version_is_warning(self, tmp_path, monkeypatch):
+        # The confirmed rc.4-shadows-R3-live-shim incident: a stale global
+        # CLI (rc.4) sits on PATH ahead of the workspace's own gaia (rc.5).
+        global_bin = _mk_global_gaia(tmp_path / "global", "5.2.0-rc.4", "# global build\n")
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: str(global_bin))
+
+        ws = tmp_path / "ws"
+        nm_gaia = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm_gaia.mkdir(parents=True)
+        (nm_gaia / "package.json").write_text(
+            json.dumps({"name": "@jaguilar87/gaia", "version": "5.2.0-rc.5"})
+        )
+        _mk_hooks_tree(nm_gaia / "hooks", "# workspace build\n")
+
+        r = doctor_mod.check_global_cli_alignment(ws)
+        assert r["severity"] == "warning"
+        assert "rc.4" in r["detail"]
+        assert "rc.5" in r["detail"]
+        assert str(tmp_path / "global") in r["detail"]
+        assert str(nm_gaia.resolve()) in r["detail"]
+        assert "fix" in r
+        assert "Realign" in r["fix"]
+
+    def test_same_version_different_content_is_warning(self, tmp_path, monkeypatch):
+        # The dev-pack case: `gaia dev` never bumps package.json's version, so
+        # two genuinely different builds can report the identical semver.
+        global_bin = _mk_global_gaia(tmp_path / "global", "5.2.0", "# OLD build\n")
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: str(global_bin))
+
+        ws = tmp_path / "ws"
+        nm_gaia = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm_gaia.mkdir(parents=True)
+        (nm_gaia / "package.json").write_text(
+            json.dumps({"name": "@jaguilar87/gaia", "version": "5.2.0"})
+        )
+        _mk_hooks_tree(nm_gaia / "hooks", "# NEW build\n")
+
+        r = doctor_mod.check_global_cli_alignment(ws)
+        assert r["severity"] == "warning"
+        assert "differ in content" in r["detail"]
+        assert "v5.2.0" in r["detail"]
+
+    def test_aligned_version_and_content_is_pass(self, tmp_path, monkeypatch):
+        global_bin = _mk_global_gaia(tmp_path / "global", "5.2.0", "# same build\n")
+        monkeypatch.setattr(doctor_mod.shutil, "which", lambda cmd: str(global_bin))
+
+        ws = tmp_path / "ws"
+        nm_gaia = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm_gaia.mkdir(parents=True)
+        (nm_gaia / "package.json").write_text(
+            json.dumps({"name": "@jaguilar87/gaia", "version": "5.2.0"})
+        )
+        _mk_hooks_tree(nm_gaia / "hooks", "# same build\n")
+
+        r = doctor_mod.check_global_cli_alignment(ws)
+        assert r["severity"] == "pass"
+        assert "matches" in r["detail"]
 
 
 class TestCheckSymlinksFreshnessContentHash:

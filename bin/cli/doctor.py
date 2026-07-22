@@ -16,6 +16,7 @@ Checks (in order):
   53. skill-cross-refs   - agent `skills:` refs resolve to skills/<name>/SKILL.md
   55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
   57. install-provenance - local (file:) vs npm install; mode, version, symlink resolution
+  58. global-cli-alignment - PATH gaia vs workspace-expected install (version/content drift)
   60. identity           - orchestrator agent configured
   65. agent-routing      - surface_routing table (DB) primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
@@ -242,7 +243,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 33
+EXPECTED_SCHEMA_VERSION = 35
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
@@ -1228,6 +1229,179 @@ def check_install_provenance(project_root: Path) -> dict:
     )
 
 
+def _resolve_global_gaia() -> "dict | None":
+    """Resolve the ``gaia`` a bare, unqualified PATH invocation would run.
+
+    Mirrors what a user's shell does for a plain ``gaia <subcommand>``:
+    ``command -v gaia`` (``shutil.which``), then follow any symlink to the
+    real launcher script. The launcher is always shipped at ``<pkg_root>/bin/gaia``
+    (same layout ``_package_root()`` assumes for the running script), so the
+    package root is two levels up from the resolved file.
+
+    Returns None when ``gaia`` is not on PATH, or the resolved target does
+    not exist -- both are the caller's signal to degrade to an advisory
+    result rather than fabricate a comparison.
+    """
+    which_path = shutil.which("gaia")
+    if not which_path:
+        return None
+    try:
+        resolved = Path(which_path).resolve(strict=True)
+    except OSError:
+        return None
+
+    pkg_root = resolved.parent.parent
+    pkg_json = _read_json(pkg_root / "package.json")
+    version = pkg_json.get("version") if pkg_json else None
+
+    content_hash = None
+    hooks_content_hash = _load_hooks_content_hash()
+    if hooks_content_hash is not None:
+        hooks_dir = pkg_root / "hooks"
+        if hooks_dir.is_dir():
+            content_hash = hooks_content_hash(hooks_dir) or None
+
+    return {"root": pkg_root, "version": version, "hash": content_hash}
+
+
+def _resolve_workspace_expected_gaia(project_root: Path) -> "dict | None":
+    """Resolve which ``gaia`` build THIS workspace expects.
+
+    Prefers the workspace's own ``node_modules/@jaguilar87/gaia`` (a local or
+    dev-pack install -- the R3-live shim case this check exists for), falling
+    back to whatever ``.claude/hooks`` resolves to (mirrors
+    ``check_symlinks_freshness``) when there is no node_modules install.
+
+    Returns None when neither source is present -- a plugin-mode workspace
+    with no local expectation to compare against.
+    """
+    hooks_content_hash = _load_hooks_content_hash()
+
+    nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
+    pkg_json = _read_json(nm_gaia / "package.json")
+    if pkg_json:
+        try:
+            root = nm_gaia.resolve(strict=True)
+        except OSError:
+            root = nm_gaia
+        content_hash = None
+        if hooks_content_hash is not None and (root / "hooks").is_dir():
+            content_hash = hooks_content_hash(root / "hooks") or None
+        return {
+            "root": root,
+            "version": pkg_json.get("version"),
+            "hash": content_hash,
+            "source": "node_modules/@jaguilar87/gaia",
+        }
+
+    hooks_link = project_root / ".claude" / "hooks"
+    if hooks_link.exists():
+        try:
+            resolved = hooks_link.resolve(strict=True)
+        except OSError:
+            return None
+        root = resolved.parent
+        pkg_json = _read_json(root / "package.json")
+        content_hash = hooks_content_hash(resolved) or None if hooks_content_hash is not None else None
+        return {
+            "root": root,
+            "version": pkg_json.get("version") if pkg_json else None,
+            "hash": content_hash,
+            "source": ".claude/hooks",
+        }
+
+    return None
+
+
+@register_check("Global CLI alignment", order=58)
+def check_global_cli_alignment(project_root: Path) -> dict:
+    """Detect a PATH ``gaia`` that silently shadows what this workspace expects.
+
+    The gap this closes: a stale GLOBAL install (e.g. an old ``npm install -g
+    @jaguilar87/gaia`` left over from before local/dev installs became the
+    norm) can sit earlier on PATH than the workspace's own gaia, so a bare
+    ``gaia <subcommand>`` silently runs the global copy instead of the
+    workspace's dev-pack shim -- with no warning that the two differ. This is
+    exactly the hole that let an rc.4 global CLI shadow an R3-live workspace
+    shim unnoticed.
+
+    Two independent signals, because a dev-pack rebuild (``gaia dev``)
+    content-addresses the tarball but never bumps the tarball's internal
+    ``package.json`` version (see ``check_symlinks_freshness``), so two
+    genuinely different builds can report the identical semver:
+
+      1. Version -- compares ``package.json`` version at each side.
+      2. Content hash -- when versions match, compares the hooks tree's
+         content digest (``gaia.hooks_build.hooks_content_hash``) to catch a
+         same-version, different-code drift semver alone cannot see.
+
+    A single physical file (PATH gaia IS the workspace's own install, e.g. a
+    workspace-local ``node_modules/.bin`` shim or an intentional symlink) is
+    always a pass regardless of the above -- there is nothing to diverge from.
+
+    Advisory (info) when there is nothing to compare: no ``gaia`` resolvable
+    on PATH, or no workspace-local install (node_modules or .claude/hooks) to
+    check it against (plugin-mode).
+    """
+    name = "Global CLI alignment"
+
+    global_info = _resolve_global_gaia()
+    if global_info is None:
+        return _result(
+            name, "info",
+            "no `gaia` resolvable on PATH -- nothing to compare against this workspace",
+        )
+
+    workspace_info = _resolve_workspace_expected_gaia(project_root)
+    if workspace_info is None:
+        return _result(
+            name, "info",
+            "no workspace-local gaia install (node_modules or .claude/hooks) to compare against (plugin-mode?)",
+        )
+
+    try:
+        if os.path.samefile(global_info["root"], workspace_info["root"]):
+            return _result(
+                name, "pass",
+                f"PATH gaia and the workspace's expected install are the same tree "
+                f"({global_info['root']}, v{global_info['version'] or '?'})",
+            )
+    except OSError:
+        pass
+
+    g_ver, w_ver = global_info["version"], workspace_info["version"]
+    g_root, w_root = global_info["root"], workspace_info["root"]
+
+    if g_ver != w_ver:
+        return _result(
+            name, "warning",
+            f"PATH gaia resolves to {g_root} (v{g_ver or '?'}) but this workspace "
+            f"expects {w_root} (v{w_ver or '?'}, via {workspace_info['source']})",
+            "Realign the global install with the workspace build "
+            f"(`npm install -g @jaguilar87/gaia@{w_ver or 'latest'}`), or reorder PATH so "
+            "the workspace's own gaia (its node_modules/.bin shim, ahead of the global "
+            "install) wins.",
+        )
+
+    g_hash, w_hash = global_info["hash"], workspace_info["hash"]
+    if g_hash and w_hash and g_hash != w_hash:
+        return _result(
+            name, "warning",
+            f"PATH gaia ({g_root}) and this workspace's expected install "
+            f"({w_root}, via {workspace_info['source']}) both report v{g_ver} but differ "
+            f"in content (global build {g_hash} vs workspace build {w_hash})",
+            "Realign the global install with the workspace build (reinstall the global "
+            "copy from the same source), or reorder PATH so the workspace's own gaia "
+            "wins over the global one.",
+        )
+
+    return _result(
+        name, "pass",
+        f"PATH gaia (v{g_ver or '?'}) matches this workspace's expected install "
+        f"(v{w_ver or '?'}, via {workspace_info['source']})",
+    )
+
+
 def _frontmatter_block(path: Path) -> "str | None":
     """Return the YAML frontmatter block (between the first two `---` fences).
 
@@ -2076,10 +2250,11 @@ def check_hooks_active_fresh(project_root: Path) -> dict:
                              a false pass: it self-heals on the next SessionStart
                              fire for this session id, and that includes a plain
                              `claude --resume`/`--continue` (SessionStart's
-                             matcher is `startup|resume`, so resuming re-reads
-                             settings and re-runs the hook, which re-pins the
-                             marker regardless of `source`) -- not only a
-                             brand-new session.
+                             matcher is `startup|resume|compact`, so resuming
+                             -- or a `/compact` -- re-reads settings and
+                             re-runs the hook, which re-pins the marker
+                             regardless of `source`) -- not only a brand-new
+                             session.
     """
     name = "Hooks active & fresh"
     hooks_link = project_root / ".claude" / "hooks"
