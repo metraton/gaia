@@ -78,22 +78,49 @@ omitting it on a later update never clobbers a previously-set anchor back to
 NULL (a later `add` that re-supplies only `--workspace` keeps the prior
 anchor).
 
-**Project-aware retrieval:** `gaia memory get-relevant` (the SessionStart
-injection path, `_cmd_get_relevant`) is no longer purely workspace-scoped.
-It resolves the active project from the cwd via the same shared resolver,
-and when that resolves, restricts and reorders results to prioritize rows
-anchored to the active project (`project_ref = active`) while still
-including unanchored workspace-wide notes (`project_ref IS NULL`) --
-rows anchored to a *different* project in the same workspace drop out.
-When the cwd does not resolve to a single project (e.g. at a workspace
-root), retrieval falls back to the previous behavior: workspace-scoped,
-all rows.
+**Retrieval is cwd-INDEPENDENT (schema v32, commit `d2fba1c`).** An earlier
+form of `gaia memory get-relevant` (`_cmd_get_relevant`) resolved an "active
+project" from the launch directory and used it to restrict/reorder results
+(`project_ref = active` prioritized, a *different* project's rows dropped
+out). That cwd-based project inference has been **removed** -- the launch
+directory no longer filters, restricts, or reorders anything. `_cmd_get_relevant`
+now dispatches on explicit flags only, workspace-scoped, never per-project by
+cwd:
 
-This cwd inference is **read-only and deliberate**: on retrieval a wrong
-guess only re-ranks what is shown (cheap, reversible), so inferring scope
-from the cwd is safe. It is **not** mirrored on the write side, where a wrong
-guess would persist a bad `project_ref` -- hence `add` demands explicit
-scope and refuses to infer (see "Required scope" above).
+- **(no flag, the default)** -- the TRANSVERSAL DIGEST (`_render_digest`): a
+  cross-project worklist of live-pending threads (`class=thread`, `status` in
+  `carry_forward`/`open`), grouped by the canonical `memory.initiative` key,
+  identical regardless of the directory the session started in. This is the
+  orchestrator's SessionStart view.
+- **`--sections=carry_forward,anchor,thread_open`** -- the class/status
+  SECTION renderer (`_render_sections`); this is the subagent-dispatch path
+  (`--sections=anchor` gives a dispatched subagent only the durable "About
+  you / What I know" anchors). Workspace-scoped, never filtered or
+  prioritized by the launch directory.
+- **`--initiative=X`** -- PROJECT MODE (`_render_project_mode`): the explicit
+  replacement for the old implicit cwd guess. Rather than inferring which
+  project is "active" from where the command was launched, the caller names
+  the initiative directly (normalized the same way the write side stores it,
+  via `normalize_initiative`); the special value `otros` targets the
+  NULL-initiative bucket. Returns the top-N freshest pending items of that
+  one initiative, with an overflow footer.
+- **`--types=...`** -- the legacy per-type flow (`_cmd_get_relevant_by_type`),
+  kept verbatim for back-compat; also workspace-scoped only.
+
+The *workspace* itself (not the project within it) may still be cwd-inferred
+when `--workspace` is omitted -- `_resolve_workspace` falls back to
+`gaia.project.current()`, same as the write side's default -- but that is
+workspace identity, not project-level filtering/reordering, and it was never
+the "active project" mechanism this note is about.
+
+This closes an asymmetry the earlier form had: read-side cwd inference used
+to be justified as "read-only and deliberate... a wrong guess only re-ranks
+what is shown," in contrast with the write side, which has always refused to
+infer project scope from the cwd (see "Required scope" above). With the cwd
+guess removed from retrieval too, both sides now share the same discipline:
+neither infers project scope from the launch directory -- `add` demands an
+explicit `--project`/`--project-ref`/`--workspace`, and `get-relevant` demands
+an explicit `--initiative` to narrow to one project's pending work.
 
 ## Curate flow
 

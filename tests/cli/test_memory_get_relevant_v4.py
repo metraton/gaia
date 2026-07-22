@@ -573,8 +573,15 @@ class TestSectionsFilter:
 
     The subagent-dispatch path passes --sections=anchor so a dispatched
     subagent receives only the durable anchors, never the session-scoped
-    carry_forward or open-thread state. The orchestrator omits --sections and
-    keeps all three sections (covered by TestSectionHeaders above).
+    carry_forward or open-thread state. The orchestrator's SessionStart
+    assembler (hooks/modules/session/session_manifest.py::build_session_context)
+    now calls this CLI TWICE: once with no --sections for the transversal
+    digest (TestSectionsFilter.test_sections_omitted_now_renders_digest_not_sections
+    below), and once more with --sections=anchor for these same durable
+    anchors -- it no longer receives all three class/status sections in one
+    call (that form is exercised only by an explicit multi-section request,
+    covered by TestSectionHeaders above and
+    test_sections_explicit_all_three_renders_all_three below).
     """
 
     def _seed_all_three(self, tmp_db):

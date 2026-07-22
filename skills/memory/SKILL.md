@@ -43,7 +43,7 @@ Two orthogonal axes describe every memory row:
 
 | Axis | Values | What it captures |
 |------|--------|------------------|
-| `class` | `anchor` / `thread` / `log` | The role the note plays in the session. `anchor` = stable knowledge available in any session, surfaced in `## Memory — About you / What I know` -- it is background knowledge, not a pending-item mechanism. `thread` = actionable work-in-progress that needs handoff; a `thread` with `status=carry_forward` is the one class/status pair that resurfaces at the top of the *next* session's opening block, `## Memory — For this session`. `log` = append-only history kept for traceability, never re-injected. |
+| `class` | `anchor` / `thread` / `log` | The role the note plays in the session. `anchor` = stable knowledge available in any session, surfaced in `## Memory — About you / What I know` -- it is background knowledge, not a pending-item mechanism. `thread` = actionable work-in-progress that needs handoff; a `thread` with `status=carry_forward` is the one class/status pair the SessionStart transversal digest surfaces as live-pending work at the top of the *next* session (grouped by initiative); the classic `## Memory — For this session` heading is what the CLI's section renderer emits for that same status when explicitly requested via `--sections=carry_forward`. `log` = append-only history kept for traceability, never re-injected. |
 | `type` | `atom` / `decision` / `negative` / `project` / `user` / `feedback` | The discipline of the body -- how the row is shaped and validated. Internal taxonomy: never surface `atom`/`decision`/`negative` to the user as the way to think about memory. |
 
 `status` only applies when `class=thread`. Its values form the thread
@@ -98,15 +98,29 @@ write.
 
 ### Trust the injected block first
 
-At SessionStart the orchestrator receives the curated memory block
-listing the top notes for the current workspace
-(`gaia memory get-relevant`, bounded). It is emitted as up to three
-sections: `## Memory — For this session` (carry-forward threads),
-`## Memory — About you / What I know` (anchors), and
-`## Memory — Open threads` (open threads). When the user's question
-can be answered from what is already in your context, do **not**
-re-query -- the injected block is already the relevance-ranked top,
-with `carry_forward` threads sorted first.
+At SessionStart the orchestrator receives TWO curated memory blocks
+(`gaia memory get-relevant`, both bounded, each a separate call querying a
+disjoint DB class so neither duplicates the other):
+
+- `## Memory — Pendientes vivos por proyecto` -- the TRANSVERSAL INITIATIVE
+  DIGEST (the default, no-`--sections` call): a cross-project worklist of
+  live-pending threads (`class=thread`, `status` in `carry_forward`/`open`)
+  grouped by `memory.initiative`, ordered by recency, top-K initiatives with
+  overflow. This is where a `carry_forward` thread actually surfaces today --
+  not the older per-status section below.
+- `## Memory — About you / What I know` -- the durable anchors (`class=anchor`,
+  via an explicit `--sections=anchor` call). Restores what a prior regression
+  (commit `d2fba1c`) dropped when it moved the orchestrator's default call to
+  digest-only with no compensating anchor call.
+
+The older class/status section renderer (`## Memory — For this session`,
+`## Memory — About you / What I know`, `## Memory — Open threads` as three
+sections in one call) still exists in the CLI and is what a dispatched
+subagent's `anchor`-only cut is built on, but the live SessionStart path no
+longer requests `carry_forward` or `thread_open` through it -- those are
+carried by the digest instead. When the user's question can be answered from
+what is already in your context, do **not** re-query -- the injected blocks
+are already the relevance-ranked top.
 
 ### Query for depth
 
@@ -190,29 +204,30 @@ and only an overlap pulls in dedup or supersede work.
 ### Decide from intention first, then apply the type defaults
 
 Before consulting the defaults table below, ask one question: **does this
-item need to appear at the top of the NEXT session's opening block?** That
-answer -- not the row's type -- is the primary criterion for `class`/`status`:
+item need to appear at the top of the NEXT session as live-pending work?**
+That answer -- not the row's type -- is the primary criterion for
+`class`/`status`:
 
-- **If YES** -- this is a pending for the next session, it must land in
-  `## Memory — For this session` -- the row MUST be `class=thread
-  --status=carry_forward`, regardless of what type/slug prefix it uses.
-  `atom_*`, `decision_*`, `project_*`, `user_*` all support this: the slug
-  prefix still picks the *content shape*, but the class/status override
-  expresses the *intent to carry forward*, not the type default.
+- **If YES** -- this is a pending for the next session, it must land in the
+  SessionStart transversal digest (`## Memory — Pendientes vivos por
+  proyecto`) -- the row MUST be `class=thread --status=carry_forward`,
+  regardless of what type/slug prefix it uses. `atom_*`, `decision_*`,
+  `project_*`, `user_*` all support this: the slug prefix still picks the
+  *content shape*, but the class/status override expresses the *intent to
+  carry forward*, not the type default.
 - **If NO** -- it is durable background knowledge, not a pending item -- the
   type's default `class=anchor` is correct, and the row is expected to
   surface only in `## Memory — About you / What I know`.
 
 Getting this backwards is the most common curated-memory mistake: a
 `class=anchor` row -- which is the DEFAULT for `project_*`, `user_*`,
-`atom_*`, and `decision_*` in the table below -- never appears in
-`## Memory — For this session`, no matter how urgent its content. It
-surfaces only in `About you / What I know`, a section that is capped at a
-small quota and is trimmed BEFORE `carry_forward` under char-budget
-pressure (see "Trim order and quotas" under Carry-forward / handoff below).
-A "pendiente para la próxima sesión" saved as an anchor does not fail
-loudly -- it is simply never presented as a pending, and can be the first
-thing dropped when the budget is tight.
+`atom_*`, and `decision_*` in the table below -- never appears in the
+transversal digest, no matter how urgent its content. It surfaces only in
+`About you / What I know`, a section capped at a small quota
+(see "Trim order and quotas" under Carry-forward / handoff below). A
+"pendiente para la próxima sesión" saved as an anchor does not fail loudly --
+it is simply never presented as a pending, and competes for a small,
+unrelated quota instead of the digest's own worklist budget.
 
 ### The slug is the single source of truth for type
 
@@ -227,7 +242,7 @@ slug prefix, and the prefix is the type. This table maps the shape of
 the body to its slug -- it is the form a row takes, not a checklist of
 when to write:
 
-| Body shape | Slug prefix → type | Class default | Resurfaces in "For this session"? |
+| Body shape | Slug prefix → type | Class default | Resurfaces in the pending digest? |
 |------------|-------------------|---------------|:---:|
 | A closed decision with its rationale | `decision_<topic>` → `--type=decision` | `anchor` | No -- surfaces in "About you / What I know" |
 | A stable reusable fact | `atom_<topic>` → `--type=atom` | `anchor` | No -- surfaces in "About you / What I know" |
@@ -235,7 +250,7 @@ when to write:
 | Cross-cutting repo / system knowledge | `project_<topic>` → `--type=project` | `anchor` | No -- surfaces in "About you / What I know" |
 | User preference or identity | `user_<topic>` → `--type=user` | `anchor` | No -- surfaces in "About you / What I know" |
 | Post-mortem / correction the system must remember | `feedback_<topic>` → `--type=feedback` | `log` | No -- `log` is never injected |
-| Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) | **Yes** -- the only row that lands in "For this session" |
+| Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) | **Yes** -- the only row that lands in the transversal digest |
 
 The CLI enforces `^{type}_[a-z0-9_]+$` with type-specific matching: a
 `decision_*` slug is only valid with `--type=decision`, not with
@@ -345,43 +360,53 @@ lifecycle is a state machine on the `status` column, not prose in the
 body:
 
 1. **Born** -- `gaia memory reclassify <slug> --class=thread --status=carry_forward`.
-2. **Surfaced** -- the SessionStart injector sorts `carry_forward`
-   threads ahead of everything else into `## Memory — For this session`,
-   so the next orchestrator instance sees it first.
+2. **Surfaced** -- at SessionStart the orchestrator's default (no-`--sections`)
+   call to `gaia memory get-relevant` renders the transversal initiative
+   digest, and a `carry_forward` thread (together with `status=open` threads)
+   is exactly the "pendiente vivo" population that query selects -- grouped
+   by `memory.initiative`, ordered by recency of the freshest pending in each
+   group, so the next orchestrator instance sees it near the top. The older
+   per-status section renderer (`## Memory — For this session`) still exists
+   in the CLI and still sorts `carry_forward` first when invoked directly via
+   `--sections=carry_forward,...`, but the live SessionStart path no longer
+   reaches it for this status -- the digest is what surfaces it today.
 3. **Closed** -- when the work concludes, `reclassify --status=closed`
    (no longer relevant) or `--status=graduated`, or promote to
    `class=anchor` if it became stable knowledge.
 
-### Trim order and quotas (why an anchor can vanish, but a carry_forward usually survives)
+### Budgets: the digest and the anchor block are independent (why an anchor can vanish, but a carry_forward usually survives)
 
-`class=anchor` and `class=thread status=carry_forward` are NOT equally
-durable in the SessionStart injection block -- this asymmetry is exactly
-why "pendientes para la próxima sesión" belong in `carry_forward`, never in
-`anchor`. Both a per-section quota and a char-budget trim order favor
-`carry_forward` over `anchor`:
+`class=anchor` and `class=thread status=carry_forward` are NOT surfaced
+through the same query or the same budget -- this is exactly why "pendientes
+para la próxima sesión" belong in `carry_forward`, never in `anchor`. The
+orchestrator's two SessionStart calls (see "Trust the injected block first"
+above) never compete against each other for space, but each has its own,
+much smaller headroom for the "wrong" class:
 
-- **Per-section quota.** `## Memory — About you / What I know` (`anchor`)
-  is capped at a small fixed quota (`_RELEVANT_PER_CLASS_QUOTA["anchor"]`)
-  at query time -- only the top few anchors (identity anchors pinned first,
-  then most-recently-updated) are even selected as candidates. `## Memory —
-  For this session` (`carry_forward`) gets its own, larger recency sub-cap
-  (`_RELEVANT_CARRY_FORWARD_CAP`) and is selected first, ahead of anchors.
-- **Char-budget trim order.** `gaia memory get-relevant` enforces a hard
-  character cap on the whole block. When the rendered block overflows that
-  cap, sections are trimmed one bullet at a time in this fixed order:
-  `thread_open` → `anchor` → `carry_forward`. `carry_forward` is the LAST
-  resort -- it is trimmed only once `thread_open` and `anchor` have both
-  been fully emptied and the block is still over budget. In practice this
-  means: under budget pressure, `anchor` rows are cut before a single
-  `carry_forward` row is touched.
+- **The digest (`carry_forward`/`open`) never carries anchors at all.** Its
+  query filters `class='thread' AND status IN ('carry_forward', 'open')`, so
+  an `anchor` row is invisible to it regardless of budget. Its own overflow
+  mechanism trims whole initiatives from the tail (top-K initiatives, with a
+  global "+N más" and a per-initiative "+N más en X" hint) when the
+  ~1500-char cap is exceeded -- it never competes with anchors for that
+  budget.
+- **The anchor call (`sections=["anchor"]`) never carries pendings at all.**
+  Its query filters `class='anchor'` only, and is additionally capped at a
+  small fixed quota (`_RELEVANT_PER_CLASS_QUOTA["anchor"]`, identity anchors
+  pinned first, then most-recently-updated) before it is even rendered --
+  independent of and much tighter than the digest's own worklist budget.
+- **The three-way, single-call trim order still exists in the CLI** --
+  `gaia memory get-relevant --sections=carry_forward,anchor,thread_open` (one
+  call, all three sections) trims one bullet at a time in the fixed order
+  `thread_open` → `anchor` → `carry_forward` when the combined render
+  overflows the char cap -- but no live caller requests that three-section
+  combination today; it is reachable only by an explicit manual invocation.
 
-The practical consequence: a pending saved as `class=anchor` is disadvantaged
-twice over -- it competes for a smaller quota, AND it is one of the first
-sections trimmed when the budget is tight -- on top of never appearing in
-`For this session` at all (see "Decide from intention first" above). A
-`carry_forward` thread is not literally exempt from trimming forever -- it
-IS in the trim-order list, as the last target -- but it is the row the
-mechanism protects hardest, exactly the property a "pendiente" needs.
+The practical consequence is unchanged even though the mechanism moved: a
+pending saved as `class=anchor` is disadvantaged -- it competes for the
+anchor call's small, unrelated quota instead of ever reaching the digest's
+worklist at all (see "Decide from intention first" above). It does not fail
+loudly; it is simply never presented as a pending.
 
 **One thread = one note.** A carry-forward captures *one* concern with
 *one* `status`. Do not pack independent items into a single body with
@@ -432,11 +457,11 @@ thread = one note" rule applied at the session boundary.
 - **Saving a "pendiente para la próxima sesión" as `class=anchor`** --
   including via `project_*` or `user_*`, which default to `anchor`. It
   lands in `## Memory — About you / What I know`, competes for that
-  section's small quota, is trimmed BEFORE `carry_forward` under
-  char-budget pressure (see "Trim order and quotas" under Carry-forward /
-  handoff), and never appears as a pending in `## Memory — For this
-  session` no matter how urgent its content. Pendings are threads: use
-  `class=thread --status=carry_forward`, regardless of the slug's type
+  section's small, unrelated quota (see "Budgets: the digest and the anchor
+  block are independent" under Carry-forward / handoff), and never reaches
+  the SessionStart transversal digest as a pending no matter how urgent its
+  content. Pendings are threads: use `class=thread --status=carry_forward`,
+  regardless of the slug's type
   prefix (see "Decide from intention first" in Write flow).
 - **Surfacing `atom`/`decision`/`negative` to the user as the way to
   think about memory** -- `type` is internal discipline of the body;

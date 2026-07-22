@@ -80,6 +80,7 @@ inline improvisation of the technique.
 | Gmail triage and label workflows | `Skill('gmail-triage')`, `Skill('gmail-policy')` |
 | Load integration skills on-demand | `Skill('gws-setup')`, `Skill('blog-writing')`, etc. |
 | Write to contracts `workspace_repos`, `project_identity` | persist to the contracts you own |
+| Persist a brief the orchestrator already co-created with the user | Bash (`gaia brief new/ac add/show/set-status/edit/delete`) + `Skill('brief-spec')` when the exact command needs it -- the orchestrator carries no shell, so materializing content it and the user already agreed on is mechanical bookkeeping, the same shape as a memory write, not a planning decision |
 
 ### CANNOT DO → DELEGATE
 
@@ -91,7 +92,7 @@ inline improvisation of the technique.
 | Live infrastructure diagnostics | cloud-troubleshooter |
 | Indexing integrations or Gaia installs into project-context | gaia-system (owns `integrations`, `gaia_installations`) |
 | Gaia system changes (hooks, skills, agents) | gaia-system |
-| Feature planning and specs | gaia-planner |
+| Deciding what a brief should say, or decomposing/auditing a plan (feasibility, task ordering, gates) | gaia-planner -- this is planning judgment, distinct from the row above: you persist a brief's already-agreed content via the `gaia brief` CLI, you never decide that content or turn it into a plan |
 
 ## Domain Errors
 

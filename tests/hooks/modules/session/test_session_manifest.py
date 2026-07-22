@@ -127,8 +127,9 @@ class TestBuildAgenticLoopBlock:
 
 class TestBuildSessionContext:
     """Pending approvals are no longer surfaced (M2): the assembler concatenates
-    Environment, Projects, agentic-loop resume, and Workspace Memory -- there is
-    no pending-approvals block in the join.
+    Environment, Projects, Contract Index, agentic-loop resume, task
+    notifications, schedule reconciliation, and Workspace Memory (digest +
+    anchors) -- there is no pending-approvals block in the join.
     """
 
     def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
@@ -139,10 +140,21 @@ class TestBuildSessionContext:
             session_manifest, "build_projects_context_block", lambda: "PROJ BLOCK"
         )
         monkeypatch.setattr(
-            session_manifest, "build_agentic_loop_block", lambda: "LOOP BLOCK"
+            session_manifest, "build_contracts_index_block", lambda: "CONTRACTS BLOCK"
         )
         monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
+            session_manifest, "build_agentic_loop_block", lambda: "LOOP BLOCK"
+        )
+        # Bug 2 fix: build_workspace_memory_block is now called twice -- once
+        # with no args (digest) and once with sections=["anchor"]. Assert on
+        # the call args so each call renders its own distinguishable text.
+        def _fake_memory(*args, **kwargs):
+            if kwargs.get("sections") == ["anchor"]:
+                return "ANCHOR BLOCK"
+            return "DIGEST BLOCK"
+
+        monkeypatch.setattr(
+            session_manifest, "build_workspace_memory_block", _fake_memory
         )
         # Neutralize the two blocks the assembler runs between the loop and
         # workspace-memory blocks that are NOT under test here: task
@@ -158,14 +170,44 @@ class TestBuildSessionContext:
 
         result = build_session_context()
         assert result == (
-            "ENV BLOCK\n\nPROJ BLOCK\n\nLOOP BLOCK\n\nMEM BLOCK"
+            "ENV BLOCK\n\nPROJ BLOCK\n\nCONTRACTS BLOCK\n\nLOOP BLOCK\n\n"
+            "DIGEST BLOCK\n\nANCHOR BLOCK"
         ), (
             "Blocks must be joined with exactly one blank line separator -- "
             "markdown convention; agents render this as paragraph breaks. "
-            "Project Context — Projects sits right after Environment. Pending "
-            "approvals are no longer part of the manifest."
+            "Project Context — Projects sits right after Environment, then "
+            "the Contract Index (Bug 1 fix: wired but never called before). "
+            "Workspace Memory is now two calls: the digest, then the anchors "
+            "(Bug 2 fix). Pending approvals are no longer part of the "
+            "manifest."
         )
         assert "[ACTIONABLE]" not in result
+
+    def test_workspace_memory_called_twice_disjoint_sections(self, monkeypatch):
+        """Bug 2: the assembler calls build_workspace_memory_block twice --
+        once with no sections (digest) and once with sections=["anchor"] --
+        so the orchestrator receives both without duplicating either."""
+        monkeypatch.setattr(session_manifest, "build_environment_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_projects_context_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_contracts_index_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_agentic_loop_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_task_notifications_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_schedule_reconciliation_block", lambda: "")
+
+        calls = []
+
+        def _fake_memory(*args, **kwargs):
+            calls.append(kwargs.get("sections"))
+            return "DIGEST" if kwargs.get("sections") is None else "ANCHORS"
+
+        monkeypatch.setattr(session_manifest, "build_workspace_memory_block", _fake_memory)
+
+        result = build_session_context()
+        assert calls == [None, ["anchor"]], (
+            "Expected exactly two calls: digest (no sections) then "
+            "anchor-only (sections=['anchor']), in that order."
+        )
+        assert result == "DIGEST\n\nANCHORS"
 
     def test_skips_empty_blocks_in_join(self, monkeypatch):
         """Empty blocks must not leave dangling blank lines in the output."""
@@ -187,12 +229,19 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_schedule_reconciliation_block", lambda: ""
         )
+        # Called twice by the assembler (digest, then sections=["anchor"]);
+        # accept both call shapes and return distinct text for each so the
+        # join is unambiguous.
         monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda: "MEM BLOCK"
+            session_manifest,
+            "build_workspace_memory_block",
+            lambda *a, **kw: (
+                "ANCHOR BLOCK" if kw.get("sections") == ["anchor"] else "DIGEST BLOCK"
+            ),
         )
 
         result = build_session_context()
-        assert result == "ENV BLOCK\n\nMEM BLOCK"
+        assert result == "ENV BLOCK\n\nDIGEST BLOCK\n\nANCHOR BLOCK"
         assert "\n\n\n" not in result, (
             "Triple-newline indicates an empty block sneaked into the join."
         )
@@ -216,8 +265,10 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_schedule_reconciliation_block", lambda: ""
         )
+        # Called twice by the assembler (digest, then sections=["anchor"]);
+        # accept both call shapes.
         monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda: ""
+            session_manifest, "build_workspace_memory_block", lambda *a, **kw: ""
         )
 
         assert build_session_context() == ""
@@ -234,7 +285,7 @@ class TestBuildSessionContext:
             session_manifest, "build_agentic_loop_block", lambda: "LOOP"
         )
         monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda: ""
+            session_manifest, "build_workspace_memory_block", lambda *a, **kw: ""
         )
 
         # Either the assembler swallows the exception entirely (returning "")

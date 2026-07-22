@@ -11,9 +11,20 @@ Approvals are **in-loop and single-session**: a pending is raised and resolved
 within the same session, and there is no proactive surfacing of it outside
 that flow -- no `[ACTIONABLE]` block at SessionStart, no per-turn resurfacing.
 The orchestrator's role here is to translate an explicit user ask into the
-right `gaia approvals` subcommand against the right store. See "Approvals do
-not resurface across sessions" below for what does and does not survive
-cross-session.
+right `gaia approvals` subcommand against the right store, then get it run.
+See "Approvals do not resurface across sessions" below for what does and does
+not survive cross-session.
+
+**Execution: dispatch, don't run directly.** The orchestrator carries no
+shell. Every `gaia approvals` subcommand named in this skill (`show`,
+`approve`, `revoke`, `reject`, `reject-all`, `clean`, `pending`) is executed
+by dispatching a subagent -- gaia-operator by default, the general-purpose
+executor -- with the exact command; the subagent returns the output for the
+orchestrator to relay, verify, or build the `AskUserQuestion` payload from.
+Wherever this skill says "run" or "call" a `gaia approvals` subcommand, read
+it as "dispatch gaia-operator to run" -- the orchestrator's job is choosing
+the right subcommand and store and acting on what comes back, never executing
+it itself.
 
 For the universal envelope of an approval payload see `agent-approval-protocol`;
 for how the orchestrator relays a *subagent-initiated* APPROVAL_REQUEST into
@@ -74,17 +85,17 @@ query -- distinct from proactive resurfacing, and still supported.
 
 ## When user says "ver P-XXXX"
 
-1. Run `gaia approvals show P-XXXX` -- `cmd_show_v2` checks the DB row first,
-   then falls back to the filesystem pending. Either path returns the verbatim
-   command and the context fields.
+1. Dispatch gaia-operator to run `gaia approvals show P-XXXX` -- `cmd_show_v2`
+   checks the DB row first, then falls back to the filesystem pending. Either
+   path returns the verbatim command and the context fields.
 2. Relay the detail to the user. Do not paraphrase the command.
 3. Ask whether to approve or reject.
 
 ## When user says "aprobar P-XXXX"
 
-1. If you have not already, call `gaia approvals show P-XXXX` to load the
-   verbatim command and context fields (`cmd_show_v2` checks the DB then the
-   filesystem).
+1. If you have not already, dispatch gaia-operator to run
+   `gaia approvals show P-XXXX` to load the verbatim command and context
+   fields (`cmd_show_v2` checks the DB then the filesystem).
 2. Present the approval via `AskUserQuestion` following
    `orchestrator-present-approval` -- 5 labeled fields and the `[P-{nonce8}]`
    option label. The same presentation works for both stores; the nonce-prefix
@@ -114,23 +125,27 @@ The CLI `gaia approvals approve P-XXXX` is the explicit, user-invoked admin
 path: it inserts `APPROVED` directly in the DB and does **not** create a
 hook-side grant, so it does **not** trigger the approve-executes-automatically
 flow above. Use it only when the user explicitly wants the CLI-only path
-(audit, marking a row from a different session as decided). For any approval
-that needs to execute the blocked command in this session, AskUserQuestion is
-the only path that activates the grant and the automatic re-dispatch.
+(audit, marking a row from a different session as decided) -- dispatch
+gaia-operator to run it, the same as every other `gaia approvals` subcommand
+in this skill. For any approval that needs to execute the blocked command in
+this session, AskUserQuestion is the only path that activates the grant and
+the automatic re-dispatch.
 
 ## When user says "rechazar P-XXXX" / "reject P-XXXX"
 
-Single rejection has two routes; pick by which store owns the row.
+Single rejection has two routes; pick by which store owns the row. Both are
+dispatched to gaia-operator, never run by the orchestrator directly.
 
-- **DB row**: `gaia approvals revoke P-XXXX --yes` -- `store.revoke` inserts a
-  `REVOKED` event and updates `approvals.status` to `revoked`.
-- **Filesystem pending**: `gaia approvals reject P-XXXX` -- `reject_pending`
-  rewrites the JSON file with `status: "rejected"` (no `rm`, which would itself
-  be T3).
+- **DB row**: dispatch gaia-operator to run `gaia approvals revoke P-XXXX
+  --yes` -- `store.revoke` inserts a `REVOKED` event and updates
+  `approvals.status` to `revoked`.
+- **Filesystem pending**: dispatch gaia-operator to run `gaia approvals reject
+  P-XXXX` -- `reject_pending` rewrites the JSON file with
+  `status: "rejected"` (no `rm`, which would itself be T3).
 
-Confirm to the user: "P-XXXX rechazado." If `revoke` returns `not_found`, fall
-back to `reject` before declaring failure -- the row may have been a legacy
-filesystem pending.
+Confirm to the user: "P-XXXX rechazado." If `revoke` returns `not_found`,
+dispatch gaia-operator to fall back to `reject` before declaring failure --
+the row may have been a legacy filesystem pending.
 
 ## Bulk cleanup
 
@@ -140,6 +155,9 @@ pendientes", or when the user explicitly checks `gaia approvals pending
 the orchestrator surfaces proactively -- there is no SessionStart scan that
 counts stale pendings and offers to clean them; the user has to ask, or to
 have already looked.
+
+Dispatch gaia-operator to run these, same as every other `gaia approvals`
+subcommand -- the orchestrator carries no shell.
 
 - `gaia approvals reject-all` -- bulk soft-reject across the **filesystem** queue.
   Returns "0 rejected" when the queue is empty. Does not touch DB rows.
@@ -153,8 +171,9 @@ have already looked.
   when `gaia approvals pending --all-sessions` shows a backlog of stale rows.
 
 Do not report "bulk cleanup done" after `reject-all` alone -- it only clears
-the filesystem queue. Run `gaia approvals clean` to drain the DB backlog, then
-confirm with `gaia approvals pending --all-sessions`.
+the filesystem queue. Dispatch gaia-operator to run `gaia approvals clean` to
+drain the DB backlog, then confirm with `gaia approvals pending
+--all-sessions`.
 
 Do not offer `reject-all` when there are active same-session pendings the user
 may still want to approve.

@@ -562,8 +562,15 @@ def _append_workspace_memory(context: str) -> str:
     NOT ``## Memory — For this session`` (carry_forward) nor
     ``## Memory — Open threads`` (thread/open): those are session-scoped state
     that belongs to the orchestrator's turn, not to a one-shot subagent. The
-    orchestrator's own SessionStart path calls the primitive with no ``sections``
-    argument and still receives all three sections -- this cut is subagent-only.
+    orchestrator's own SessionStart assembler (``session_manifest.build_session_context``)
+    now calls the primitive TWICE -- once with no ``sections`` for the
+    transversal digest, once more with ``sections=["anchor"]`` for these same
+    durable anchors -- so this is no longer a subagent-only cut; it is the
+    same ``["anchor"]`` call the orchestrator itself makes, just reused here
+    for the dispatched subagent's context. The two DB classes queried
+    (``thread`` for the digest, ``anchor`` here) are disjoint, so neither the
+    orchestrator's two SessionStart calls nor this subagent call duplicate
+    each other's content.
     Joins with a blank-line separator when context is non-empty. Returns the
     original context unchanged on any error (fail-safe: dispatch must never
     fail because memory injection misbehaved).

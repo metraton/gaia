@@ -215,13 +215,20 @@ def build_workspace_memory_block(
     workspace, when the workspace cannot be inferred, or when the
     subprocess fails for any reason.
 
-    v32 (cwd-INDEPENDENT). When ``sections`` is omitted (the orchestrator's
-    SessionStart call) the CLI emits the TRANSVERSAL INITIATIVE DIGEST: a
-    cross-project worklist of live-pending threads grouped by
-    ``memory.initiative``, ordered by recency, top-K initiatives with global +
-    per-initiative overflow. It no longer anchors to the launch directory --
-    the digest is identical whether the session starts at a workspace root or
-    inside one project.
+    v32 (cwd-INDEPENDENT). When ``sections`` is omitted the CLI emits the
+    TRANSVERSAL INITIATIVE DIGEST: a cross-project worklist of live-pending
+    threads (``class='thread'``, ``status`` in ``carry_forward``/``open``)
+    grouped by ``memory.initiative``, ordered by recency, top-K initiatives
+    with global + per-initiative overflow. It no longer anchors to the launch
+    directory -- the digest is identical whether the session starts at a
+    workspace root or inside one project.
+
+    The orchestrator's SessionStart assembler (``build_session_context``)
+    calls this builder TWICE: once with no ``sections`` for the digest above,
+    and once more with ``sections=["anchor"]`` for the durable "About you /
+    What I know" anchors (``class='anchor'``) -- see the ``sections``
+    paragraph below. The two calls query DISJOINT DB classes (``thread`` vs
+    ``anchor``), so nothing is duplicated between the two injected blocks.
 
     Budget: ``--max-chars`` is raised 800 -> 1500. The old 800 cap, combined
     with the retired cwd anchoring, truncated the block to a SINGLE project as
@@ -233,9 +240,13 @@ def build_workspace_memory_block(
 
     ``sections`` (optional): a subset of ``carry_forward``/``anchor``/
     ``thread_open``. When set, the CLI uses the class/status section renderer
-    instead of the digest. The subagent-dispatch path passes ``["anchor"]`` so
-    a dispatched subagent receives only the durable "About you / What I know"
-    anchors. When set, it is forwarded verbatim as ``--sections`` to the CLI.
+    instead of the digest. The subagent-dispatch path (``_append_workspace_memory``
+    in ``hooks/adapters/claude_code.py``) and the orchestrator's own
+    SessionStart assembler both pass ``["anchor"]`` so their caller receives
+    only the durable "About you / What I know" anchors -- never the
+    session-scoped ``carry_forward``/``thread_open`` state, which for the
+    orchestrator is instead carried by the no-``sections`` digest call. When
+    set, it is forwarded verbatim as ``--sections`` to the CLI.
 
     Fail-safe: any error (subprocess timeout, non-zero exit, missing CLI,
     empty output) returns "". SessionStart must not block on memory.
@@ -773,6 +784,14 @@ def build_session_context() -> str:
             # lets a bare mention in memory (e.g. "AOS", "nfi") resolve to a
             # path the orchestrator already holds, without spending a subagent.
             build_projects_context_block(),
+            # Project Context — Contract Index: which project-context sections
+            # each specialist surface receives when dispatched (surface ->
+            # contract_sections, DB-backed via surface_routing). Grouped right
+            # after Projects because both are static "project-context setup"
+            # blocks the orchestrator reads before routing/dispatch decisions --
+            # this was implemented and tested (42a6231) but never wired into
+            # the assembler until this fix.
+            build_contracts_index_block(),
             build_agentic_loop_block(),
             # Unread headless-task notifications: a compact list of reports left
             # by scheduled tasks (task_name + headline + time + resumable
@@ -792,8 +811,20 @@ def build_session_context() -> str:
             # user inspects/acts on pendings on demand via `gaia approvals`.
             # Workspace Memory is injected last so the orchestrator sees the
             # operational state (environment, projects, loop) before the curated
-            # knowledge it should anchor against.
+            # knowledge it should anchor against. Two calls, DISJOINT DB classes
+            # so neither duplicates the other's tokens:
+            #   1. No `sections` -> the transversal initiative digest, the
+            #      live-pending worklist (class='thread', status in
+            #      carry_forward/open).
+            #   2. `sections=["anchor"]` -> the durable "About you / What I
+            #      know" anchors (class='anchor'). This second call is the
+            #      Bug-2 fix: d2fba1c (15 jul) moved the orchestrator's default
+            #      call from the three-section renderer to the digest-only
+            #      call above, dropping the anchors with no replacement. This
+            #      restores them via the disjoint class so the orchestrator's
+            #      durable "about you" facts are never silently lost again.
             build_workspace_memory_block(),
+            build_workspace_memory_block(sections=["anchor"]),
         ]
         non_empty = [b for b in blocks if b]
         if not non_empty:

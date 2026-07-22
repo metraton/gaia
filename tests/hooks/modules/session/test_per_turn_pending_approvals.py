@@ -82,6 +82,11 @@ class TestNoPendingSurfacingBuilderRemains:
         monkeypatch.setattr(
             session_manifest, "build_projects_context_block", lambda: "PROJ"
         )
+        # Contract Index (Bug 1 fix): stub to "" here -- this test targets the
+        # pending-approvals contract, not the contract index's own rendering.
+        monkeypatch.setattr(
+            session_manifest, "build_contracts_index_block", lambda: ""
+        )
         monkeypatch.setattr(
             session_manifest, "build_agentic_loop_block", lambda: "LOOP"
         )
@@ -95,11 +100,16 @@ class TestNoPendingSurfacingBuilderRemains:
         monkeypatch.setattr(
             session_manifest, "build_schedule_reconciliation_block", lambda: ""
         )
+        # Bug 2 fix: build_workspace_memory_block is now called twice -- once
+        # with no args (digest) and once with sections=["anchor"] -- so the
+        # stub must accept both call shapes and render distinguishable text.
         monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", lambda: "MEM"
+            session_manifest,
+            "build_workspace_memory_block",
+            lambda *a, **kw: ("ANCHOR" if kw.get("sections") == ["anchor"] else "MEM"),
         )
 
         result = session_manifest.build_session_context()
-        assert result == "ENV\n\nPROJ\n\nLOOP\n\nMEM"
+        assert result == "ENV\n\nPROJ\n\nLOOP\n\nMEM\n\nANCHOR"
         assert "[ACTIONABLE]" not in result
         assert "PENDING-APPROVALS-VERIFIED" not in result

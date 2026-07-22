@@ -15,8 +15,10 @@ names the specific action. No exceptions. No brevity shortcuts.
 an approval needs the user's consent: relay the sealed fields into
 AskUserQuestion -- mandatory fields in the question, mandatory nonce in the
 option label. The orchestrator has no shell, so it never dispatches a subagent
-to derive or verify an approval; it presents from a trusted source it already
-holds. For the subagent side that produced the payload see
+to derive or verify an approval it already holds; it presents from a trusted
+source -- either the same-turn relay it already has, or, when it does not,
+a gaia-operator dispatch that fetches (never derives or verifies) the payload
+on its behalf (Step 0). For the subagent side that produced the payload see
 `subagent-request-approval`; for the data contract itself see
 `agent-approval-protocol`.
 
@@ -37,9 +39,13 @@ itself never needs a verify-dispatch.
 The orchestrator has no shell. It MUST NOT dispatch a subagent solely to derive
 or verify an approval before presenting -- that dispatch is both unnecessary
 (the integrity check runs at activation, below) and harmful (its SubagentStop
-can sweep the very pending being verified). Approvals are **in-loop and
-single-session**: there is no per-turn feed of previously-seen pendings
-anymore. Present from one of two **trusted**, in-session sources:
+can sweep the very pending being verified). This bans re-checking a payload
+you already hold, not fetching one you don't: source 2 below (an explicit,
+later-turn user lookup) still requires a dispatch, because the orchestrator
+has no shell to run `gaia approvals show` itself -- that dispatch is a fetch,
+never a verify/derive. Approvals are **in-loop and single-session**: there is
+no per-turn feed of previously-seen pendings anymore. Present from one of two
+**trusted**, in-session sources:
 
 1. **The subagent's same-turn relayed `approval_request`.** This is the normal
    case: the pending was freshly minted THIS turn by a trusted dispatch, and
@@ -48,8 +54,13 @@ anymore. Present from one of two **trusted**, in-session sources:
    pre-presentation verify dispatch is needed.
 2. **An explicit, user-invoked lookup.** If the user asks again later in the
    same session ("ver P-XXXX", "aprobar P-XXXX" without a fresh relay in this
-   turn), read the pending via `gaia approvals show P-XXXX` per
-   `pending-approvals` -- a direct, user-driven query, not a proactive feed.
+   turn), you do not already hold the payload, and you have no shell of your
+   own -- dispatch gaia-operator to run `gaia approvals show P-XXXX` per
+   `pending-approvals` and relay the result back to you. This is a fetch of
+   data you do not have, not the verify/derive dispatch forbidden below --
+   that one re-checks a payload you already hold; this one retrieves one you
+   don't. Either way it is still a direct, user-driven query, not a proactive
+   feed.
 
 There is no automatic resurfacing of pendings across turns or sessions; do not
 look for or expect an injected verified-pendings block.
@@ -177,3 +188,4 @@ wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
 | "I can paraphrase a field before relaying" | The fingerprint covers all sealed fields and is checked at grant **activation** (`verify_fingerprint`, when the user selects the Approve label); a paraphrase there raises `ChainTamperError` and the grant never forms. Relay verbatim so activation succeeds. |
 | "I'll wait for the pending to resurface next turn / next session" | There is no cross-turn or cross-session resurfacing anymore -- no `[ACTIONABLE]` SessionStart block, no per-turn verified-pendings feed. Approvals are in-loop and single-session: present from the subagent's same-turn relayed `approval_request` (or a user's explicit `gaia approvals show`), and resolve within the session. |
 | **"I'll dispatch a subagent to verify or derive the approval before presenting"** | The orchestrator must NEVER dispatch a subagent to verify or derive an approval, singular or `COMMAND_SET`. Present from the subagent's same-turn relayed `approval_request`; integrity is enforced at grant **activation** (`verify_fingerprint`), not at presentation, so a pre-presentation verify is unnecessary. A `COMMAND_SET`'s content-derived `approval_id` arrives in the same relay as a singular block -- there is nothing to derive. |
+| **"I'll pack several approvals into one AskUserQuestion to save a turn"** | The hook extracts ONE nonce per answered label (`extract_nonce_from_label`), so packing N pendings into one question activates one grant and orphans N−1. One AskUserQuestion per approval -- the only multi-command consent is the hook-minted `COMMAND_SET` batch, which arrives as ONE pending with ONE nonce. |
