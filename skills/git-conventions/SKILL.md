@@ -63,3 +63,27 @@ module-level constants in that file (`TYPE_ALLOWED`, `SUBJECT_MAX_LENGTH`,
 format, subject, and body rules. Forbidden-footer detection lives separately
 in `bash_validator` (hardcoded there). Format violations block the commit.
 Body line length triggers warnings only.
+
+## Pull Request Body
+
+A PR is written retrospectively, after the commits already exist -- it
+explains the change to a reviewer who was not present while it was made, in
+English, self-contained, with no reference to the process that produced it
+(no task IDs, no plan/sprint labels, no "as requested"). The title reuses the
+same `type(scope): outcome` rule as the commit subject above -- no plan
+jargon there either.
+
+| Section | Content |
+|---------|---------|
+| Context / Situation | The state that existed before this change and why it needed one |
+| What changed | The concrete change made, stated plainly |
+| Impact / what it solves | The outcome the change produces for the system or the user |
+| Plan impact | For IaC changes: the plan summary -- resources to add, change, destroy |
+| Verification | How the change was verified -- tests run, dry-run/plan output, manual check |
+| Risk / rollback (optional) | What could go wrong and how to revert, when the change carries real risk |
+| Links (optional) | Related PRs, issues, or docs -- only when they add context a reviewer needs |
+
+This structure is advisory, not enforced: `commit_validator.py` validates
+only the commit message format above -- it does not parse or gate the PR
+body. Writing a body without this structure will not block anything; the
+structure exists so a reviewer gets the same shape every time.
