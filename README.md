@@ -30,7 +30,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 ### Features
 
 - **Multi-cloud support** - GCP, AWS, Azure
-- **8 agents** - platform-architect, gitops-operator, cloud-troubleshooter, developer, gaia-planner, gaia-operator, gaia-orchestrator, gaia-system (meta-agent)
+- **9 agents** - platform-architect, gitops-operator, cloud-troubleshooter, developer, gaia-planner, gaia-operator, gaia-orchestrator, gaia-system (meta-agent), gaia-verifier
 - **Contracts as SSOT** - Cloud-agnostic base contracts with per-cloud extensions (GCP, AWS)
 - **Dynamic identity** - Orchestrator identity defined in `agents/gaia-orchestrator.md`, activated via `settings.json` agent config; skills loaded on-demand
 - **Dual-barrier security** - Settings deny rules (Claude Code native) + hook-level blocking (enforced from the installed plugin source, not user-editable)
