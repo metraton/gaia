@@ -23,6 +23,9 @@ Subcommands:
                         [--workspace W] [--json]
     gaia task gate remove <brief> <order_num> <gate_id>  Remove a gate
                           [--workspace W] [--json]
+    gaia task gate set-status <brief> <order_num> <gate_id> <status>
+                          Set a gate's status (pending|pass|fail)
+                          [--workspace W] [--json]
 """
 
 from __future__ import annotations
@@ -303,17 +306,41 @@ def _cmd_gate_remove(args) -> int:
     return 0
 
 
+def _cmd_gate_set_status(args) -> int:
+    from gaia.store.writer import set_gate_status
+    from gaia.state.permissions import StateTransitionForbidden
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+
+    try:
+        res = set_gate_status(workspace, args.brief, args.order_num,
+                              args.gate_id, args.status, db_path=None)
+    except StateTransitionForbidden as exc:
+        return _err(f"forbidden: {exc}", as_json=as_json)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"Gate id={args.gate_id} on task order_num={args.order_num} "
+              f"in '{args.brief}': {res['old_status']} -> {res['new_status']}")
+    return 0
+
+
 def _cmd_gate(args) -> int:
     """Dispatch handler for `gaia task gate`."""
     action = getattr(args, "gate_action", None)
     handlers = {
-        "add":    _cmd_gate_add,
-        "list":   _cmd_gate_list,
-        "remove": _cmd_gate_remove,
+        "add":        _cmd_gate_add,
+        "list":       _cmd_gate_list,
+        "remove":     _cmd_gate_remove,
+        "set-status": _cmd_gate_set_status,
     }
     if action in handlers:
         return handlers[action](args)
-    print("Usage: gaia task gate <add|list|remove>", file=sys.stderr)
+    print("Usage: gaia task gate <add|list|remove|set-status>", file=sys.stderr)
     return 0
 
 
@@ -455,6 +482,7 @@ def register(subparsers) -> None:
             "--evidence-shape='pytest -q'\n"
             "  gaia task gate list my-brief 1\n"
             "  gaia task gate remove my-brief 1 3\n"
+            "  gaia task gate set-status my-brief 1 3 pass\n"
         ),
     )
     gate_actions = gate_p.add_subparsers(dest="gate_action", metavar="<action>")
@@ -478,7 +506,8 @@ def register(subparsers) -> None:
     gate_add_p.add_argument("--artifact-path", dest="artifact_path",
                             default=None, help="Artifact path for evidence.")
     gate_add_p.add_argument("--status", default="pending",
-                            help="Gate status (free column; default 'pending').")
+                            choices=("pending", "pass", "fail"),
+                            help="Gate status (VALID_GATE_STATUSES; default 'pending').")
     gate_add_p.add_argument("--workspace", default=None, metavar="W")
     gate_add_p.add_argument("--json", action="store_true", default=False,
                             help="Emit JSON.")
@@ -506,6 +535,28 @@ def register(subparsers) -> None:
     gate_remove_p.add_argument("--workspace", default=None, metavar="W")
     gate_remove_p.add_argument("--json", action="store_true", default=False,
                                help="Emit JSON.")
+
+    gate_setstatus_p = gate_actions.add_parser(
+        "set-status", help="Set a gate's status",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia task gate set-status my-brief 1 3 pass\n"
+        ),
+    )
+    gate_setstatus_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+    gate_setstatus_p.add_argument("order_num", type=int, metavar="ORDER_NUM",
+                                  help="Parent task order_num.")
+    gate_setstatus_p.add_argument("gate_id", type=int, metavar="GATE_ID",
+                                  help="task_gates.id to update.")
+    gate_setstatus_p.add_argument(
+        "status",
+        choices=("pending", "pass", "fail"),
+        help="Target gate status (VALID_GATE_STATUSES).",
+    )
+    gate_setstatus_p.add_argument("--workspace", default=None, metavar="W")
+    gate_setstatus_p.add_argument("--json", action="store_true", default=False,
+                                  help="Emit JSON.")
 
 
 def cmd_task(args) -> int:

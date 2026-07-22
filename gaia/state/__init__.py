@@ -143,6 +143,35 @@ VALID_VERIFICATION_TYPES: tuple[str, ...] = (
     "self_review",
 )
 
+# ---------------------------------------------------------------------------
+# 8) Gate lifecycle -- task_gates.status (harness B3/T3)
+#
+# Same shape as task_gates.verification_type (item 7 above): this tuple is
+# the vocabulary a gate's *result* is reported in once a verifier runs it --
+# 'pending' (not yet run) -> 'pass' | 'fail'.
+#
+# As of v36 (scripts/migrations/v35_to_v36.sql) this is ALSO the CHECK on the
+# persisted task_gates.status column, backed by the classic table-rebuild
+# migration (SQLite cannot ALTER TABLE to add a CHECK to an existing column;
+# create-copy-drop-rename, mirroring v34_to_v35.sql). This closes what was
+# until then a deliberate, documented asymmetry: every other
+# STATE_MACHINE_REGISTRY entry paired a Python tuple with a real SQL CHECK,
+# while this one was enforced code-level only (gaia.store.writer
+# add_gate_to_task / set_gate_status guards). Both enforcement layers remain
+# in place -- the writers' guard is not redundant with the DB CHECK, it gives
+# a clean ValueError instead of a raw sqlite3.IntegrityError at the call site.
+#
+# Consequence for tools/state/diff_source_of_truth.py: with the CHECK now
+# present, this pair converges with every other registry entry -- the diff
+# tool reports no divergence for ("task_gates", "status") once a DB is at
+# v36 or above.
+# ---------------------------------------------------------------------------
+VALID_GATE_STATUSES: tuple[str, ...] = (
+    "pending",
+    "pass",
+    "fail",
+)
+
 
 # ---------------------------------------------------------------------------
 # Convenience: a registry mapping (table, column) -> tuple, used by the
@@ -152,6 +181,10 @@ VALID_VERIFICATION_TYPES: tuple[str, ...] = (
 # tool holds the SQL CHECK and the Python tuple identical. (It remains ALSO an
 # envelope-field enum for the contract validator -- the two uses share one
 # SSOT tuple.)
+#
+# ("task_gates", "status") is backed by a real DB CHECK as of v36 (see the
+# VALID_GATE_STATUSES docstring above) -- every entry in this registry now
+# pairs a Python tuple with a matching SQL CHECK.
 # ---------------------------------------------------------------------------
 STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
     ("episodes", "plan_status"): VALID_PLAN_STATUSES,
@@ -161,6 +194,7 @@ STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
     ("acceptance_criteria", "status"): VALID_AC_STATUSES,
     ("milestones", "status"): VALID_MILESTONE_STATUSES,
     ("task_gates", "verification_type"): VALID_VERIFICATION_TYPES,
+    ("task_gates", "status"): VALID_GATE_STATUSES,
 }
 
 
@@ -172,5 +206,6 @@ __all__ = [
     "VALID_AC_STATUSES",
     "VALID_MILESTONE_STATUSES",
     "VALID_VERIFICATION_TYPES",
+    "VALID_GATE_STATUSES",
     "STATE_MACHINE_REGISTRY",
 ]

@@ -535,9 +535,15 @@ CREATE INDEX IF NOT EXISTS idx_tasks_plan ON tasks(plan_id);
 -- registered in STATE_MACHINE_REGISTRY so the SQL CHECK and the Python tuple
 -- are held identical by tools/state/diff_source_of_truth.py. The evidence
 -- column NAMES (evidence_type / evidence_shape / artifact_path) are copied
--- VERBATIM from acceptance_criteria for cross-table consistency. `status` is a
--- plain column with NO CHECK / state machine: gate lifecycle is the verifier's
--- concern (out of scope for R1-A).
+-- VERBATIM from acceptance_criteria for cross-table consistency. `status` is
+-- also a REAL column with a CHECK against the three VALID_GATE_STATUSES
+-- literals (gaia.state) as of v36 -- registered in STATE_MACHINE_REGISTRY
+-- alongside verification_type, closing the documented asymmetry where this
+-- column previously had no matching DB CHECK (see v35_to_v36.sql for the
+-- rebuild migration that added it). `status` carries membership-only
+-- enforcement -- no transition-legality state machine, just pending/pass/fail
+-- (gate lifecycle beyond that vocabulary is the verifier's concern, out of
+-- scope for R1-A).
 CREATE TABLE IF NOT EXISTS task_gates (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     task_id           INTEGER NOT NULL,
@@ -546,7 +552,8 @@ CREATE TABLE IF NOT EXISTS task_gates (
     evidence_type     TEXT,
     evidence_shape    TEXT,
     artifact_path     TEXT,
-    status            TEXT NOT NULL DEFAULT 'pending',
+    status            TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending', 'pass', 'fail')),
     FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 

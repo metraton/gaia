@@ -4080,6 +4080,25 @@ def _resolve_task_id_by_order(
     return task_row["id"]
 
 
+def _assert_valid_gate_status(status: str) -> None:
+    """Raise ValueError when ``status`` is outside VALID_GATE_STATUSES.
+
+    Code-level guard for task_gates.status (harness B3/T3). As of v36 the
+    column also carries a DB CHECK (scripts/migrations/v35_to_v36.sql; see
+    gaia.state.VALID_GATE_STATUSES), but this guard remains the first
+    enforcement point: it raises a clean ValueError at the call site instead
+    of letting an out-of-vocabulary value reach sqlite3 and surface as a raw
+    IntegrityError. Shared by every write path that touches the column --
+    add_gate_to_task (initial status) and set_gate_status (transition) -- so
+    neither can slip an out-of-vocabulary value past the other.
+    """
+    from gaia.state import VALID_GATE_STATUSES
+    if status not in VALID_GATE_STATUSES:
+        raise ValueError(
+            f"invalid gate status {status!r}: must be one of {VALID_GATE_STATUSES}"
+        )
+
+
 def add_gate_to_task(
     workspace: str,
     brief_name: str,
@@ -4094,16 +4113,20 @@ def add_gate_to_task(
 ) -> dict:
     """Insert a task_gates row for the task at ``task_order_num``.
 
-    Persists the gate AS GIVEN. The DB CHECK on verification_type is the only
-    enforcement here (an out-of-enum type raises sqlite3.IntegrityError, which
-    surfaces as ValueError); structural completeness is validated separately by
+    Persists the gate AS GIVEN, except for ``status``: it is validated
+    up front against ``gaia.state.VALID_GATE_STATUSES`` (code-level guard --
+    see ``_assert_valid_gate_status``) so an out-of-vocabulary value raises a
+    clean ValueError here rather than surfacing as a raw sqlite3
+    IntegrityError from the DB CHECK the column also carries as of v36.
+    Structural completeness of the rest of the gate is validated separately by
     gaia.state.gate_validation.validate_gate.
 
-    Raises ValueError on missing brief/plan/task or an out-of-enum
-    verification_type.
+    Raises ValueError on missing brief/plan/task, an out-of-enum
+    verification_type, or an out-of-vocabulary status.
     """
     from gaia.state.permissions import _assert_dispatch_can_advance_state
     _assert_dispatch_can_advance_state("tasks")
+    _assert_valid_gate_status(status)
 
     con = _connect(db_path)
     try:
@@ -4201,6 +4224,67 @@ def remove_gate_from_task(
             "brief_name": brief_name,
             "task_order_num": task_order_num,
             "gate_id": gate_id,
+        }
+    finally:
+        con.close()
+
+
+def set_gate_status(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    gate_id: int,
+    status: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """Set the ``status`` of the task_gates row ``gate_id`` on the task at
+    ``task_order_num``.
+
+    Write surface for `gaia task gate set-status` (harness B3/T3): the ONLY
+    way, prior to this, to move task_gates.status off its INSERT-time value
+    was to re-run add_gate_to_task. ``status`` is enforced against
+    ``gaia.state.VALID_GATE_STATUSES`` ('pending' / 'pass' / 'fail') by
+    ``_assert_valid_gate_status`` -- a code-level guard that raises a clean
+    ValueError ahead of the DB CHECK the column also carries as of v36 (see
+    gaia.state.VALID_GATE_STATUSES docstring).
+
+    Raises ValueError on missing brief/plan/task, when ``gate_id`` does not
+    belong to that task, or when ``status`` is out of vocabulary.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("tasks")
+    _assert_valid_gate_status(status)
+
+    con = _connect(db_path)
+    try:
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, task_order_num
+        )
+        gate_row = con.execute(
+            "SELECT status FROM task_gates WHERE id = ? AND task_id = ?",
+            (gate_id, task_id),
+        ).fetchone()
+        if gate_row is None:
+            raise ValueError(
+                f"gate id={gate_id} not found on task order_num={task_order_num} "
+                f"in plan for brief '{brief_name}'"
+            )
+        old_status = gate_row["status"]
+
+        con.execute(
+            "UPDATE task_gates SET status = ? WHERE id = ? AND task_id = ?",
+            (status, gate_id, task_id),
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "status_updated",
+            "brief_name": brief_name,
+            "task_order_num": task_order_num,
+            "gate_id": gate_id,
+            "old_status": old_status,
+            "new_status": status,
         }
     finally:
         con.close()
