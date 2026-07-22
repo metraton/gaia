@@ -24,6 +24,7 @@ skills:
   - investigation
   - command-execution
   - git-conventions
+  - coding-standards
 ---
 
 ## Identity

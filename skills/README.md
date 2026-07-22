@@ -56,6 +56,8 @@ skills/
 ├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
+├── coding-standards/      # Language-agnostic code + inline documentation conventions
+│   └── reference.md       # per-stack table of where input docs natively live (Terraform description, JSDoc, docstrings, ...)
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
 ├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (thinking method + section/component dialect + authoring modes)
@@ -107,9 +109,9 @@ skills/
 | Agent | Core Skills | Domain Skills |
 |-------|-------------|---------------|
 | cloud-troubleshooter | agent-protocol, security-tiers, investigation, command-execution | fast-queries |
-| platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions | — |
-| gitops-operator | agent-protocol, security-tiers, investigation, command-execution | fast-queries |
-| developer | agent-protocol, security-tiers, investigation, command-execution | git-conventions |
+| platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | — |
+| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | fast-queries |
+| developer | agent-protocol, security-tiers, investigation, command-execution | git-conventions, coding-standards |
 | gaia-system | agent-protocol, security-tiers, investigation, command-execution, gaia-patterns | gaia-audit (on-demand: agent-creation, skill-creation, gaia-release, gaia-verify) |
 | gaia-planner | agent-protocol, security-tiers | gaia-planner |
 | gaia-operator | agent-protocol, security-tiers, command-execution, memory, gmail-triage, gws-setup | blog-writing |
