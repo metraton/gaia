@@ -75,6 +75,24 @@ def _read_only_base_cmds() -> "frozenset[str]":
         return frozenset()
 
 
+def _peel_env_prefix(command: str) -> Tuple[str, bool]:
+    """Peel a leading env-var assignment / ``env`` wrapper prefix off *command*.
+
+    Reuses ``mutative_verbs._peel_leading_env_prefix`` (ONE source of truth for
+    the peel logic that the T3 classifier already relies on) so the catastrophic
+    hard-block layer matches the REAL command rather than the ``env`` token or a
+    leading ``NAME=value`` assignment.  Lazy import mirrors ``_read_only_base_cmds``
+    and avoids the declared import cycle with mutative_verbs.  On failure, returns
+    the command unchanged (fail-open on the peel only -- the un-peeled command is
+    still fully classified by the caller).
+    """
+    try:
+        from .mutative_verbs import _peel_leading_env_prefix
+        return _peel_leading_env_prefix(command)
+    except ImportError:
+        return command, False
+
+
 def _rm_confined_to_scratch(command: str) -> bool:
     """Return True if an ``rm`` command is textually confined to Gaia scratch.
 
@@ -671,6 +689,40 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
 
     command = command.strip()
 
+    # Classify the command as written.
+    result = _classify_stripped_command(command)
+    if result.is_blocked:
+        return result
+
+    # ------------------------------------------------------------------
+    # Env-prefix / env-wrapper evasion guard (mirror of the T3 fix in
+    # mutative_verbs._peel_leading_env_prefix).
+    # ------------------------------------------------------------------
+    # A leading ``env [opts] NAME=val ...`` wrapper or one/more ``NAME=value``
+    # assignments land the base-command scan on ``env`` (a READ_ONLY_BASE_CMDS
+    # carrier -> whole command skipped as a false positive) or on the assignment
+    # token itself (defeating the ``^``-anchored regexes such as disk_operations
+    # ``^dd``/``^fdisk``/``^mkfs`` that have no semantic-rule backup).  Either
+    # way a CATASTROPHIC command hidden behind the prefix would EVADE this
+    # permanent-deny floor with no approval path.  Peel the prefix and classify
+    # the REAL command.  Strictly additive: the un-peeled form was already
+    # classified above, so this can only ADD a block, never remove one.
+    remainder, peeled = _peel_env_prefix(command)
+    if peeled and remainder and remainder != command:
+        peeled_result = _classify_stripped_command(remainder)
+        if peeled_result.is_blocked:
+            return peeled_result
+
+    return result
+
+
+def _classify_stripped_command(command: str) -> BlockedCommandResult:
+    """Classify an already-stripped command against the permanent-deny floor.
+
+    Runs the false-positive fast-path, the semantic deny rules, and the raw
+    regex loop.  Called once for the command as written and, when a leading
+    env-prefix is peeled, once for the underlying real command.
+    """
     # ------------------------------------------------------------------
     # False-positive fast-paths (mirror of mutative_verbs.py / 77219f0)
     # ------------------------------------------------------------------

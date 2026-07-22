@@ -728,3 +728,54 @@ class TestBlockedCommandsFalsePositiveFix:
             'git commit -m "kubectl delete && rm -rf legacy stuff (prose)"'
         )
         assert result.is_blocked is False
+
+
+class TestBlockedCommandsEnvPrefixEvasion:
+    """A leading env-var assignment / `env` wrapper must NOT let a catastrophic
+    command evade the permanent-deny floor.
+
+    Two evasion classes existed before the peel fix:
+      1. `env` is in READ_ONLY_BASE_CMDS, so `env [VAR=val] <catastrophic>` was
+         treated as a read-only false-positive carrier and the whole command
+         was skipped.
+      2. The disk_operations regexes (`^dd`/`^fdisk`/`^mkfs`) are start-anchored
+         with no semantic-rule backup, so a leading `NAME=value` assignment
+         defeated the anchor.
+
+    `is_blocked_command` now peels the leading env prefix (reusing
+    `mutative_verbs._peel_leading_env_prefix`) and classifies the REAL command.
+    """
+
+    @pytest.mark.parametrize("command,expected_category", [
+        # env-wrapper form (evaded via the READ_ONLY_BASE_CMDS `env` carrier)
+        ("env FOO=bar gh repo delete owner/repo", "repo_delete"),
+        ("env FOO=bar gsutil rm -r gs://x", "gcp_critical"),
+        ("env X=y kubectl delete namespace prod", "kubernetes_critical"),
+        ("env gsutil rm -r gs://x", "gcp_critical"),
+        ("env TF_LOG=debug terraform destroy", "terraform_destroy"),
+        # env-wrapper defeating the ^-anchored disk_operations regexes
+        ("env X=y dd if=/dev/zero of=/dev/sda", "disk_operations"),
+        # bare NAME=value assignment prefix defeating the ^-anchored disk regexes
+        ("FOO=bar dd if=/dev/zero of=/dev/sda", "disk_operations"),
+        # env value that is itself a command substitution
+        ("GITHUB_TOKEN=$(gh auth token) env A=1 gsutil rm -r gs://x", "gcp_critical"),
+    ])
+    def test_env_prefixed_catastrophic_still_blocked(self, command, expected_category):
+        result = is_blocked_command(command)
+        assert result.is_blocked is True
+        assert result.category == expected_category
+
+    @pytest.mark.parametrize("command", [
+        # env-wrapping a genuinely read-only command must stay UN-blocked
+        "env FOO=bar ls -la",
+        "env X=y kubectl get pods",
+        "FOO=bar echo hello",
+        # no-over-strip: `A=B` here is an argument to echo, not a leading
+        # assignment -- the real command (echo) is read-only and safe.
+        "echo A=B terraform apply",
+        # assignment prefix in front of a safe command
+        "TF_LOG=debug terraform plan",
+    ])
+    def test_env_prefixed_safe_not_over_blocked(self, command):
+        result = is_blocked_command(command)
+        assert result.is_blocked is False

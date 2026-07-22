@@ -1854,6 +1854,23 @@ def detect_mutative_command(
             _depth=_depth,
         )
 
+    # --- Honor a leading env-var assignment / `env` wrapper prefix ---
+    # A shell command may be prefixed with one or more ``NAME=value`` assignments
+    # (``GITHUB_TOKEN=$(gh auth token) terragrunt apply``) or wrapped in ``env``
+    # (``env FOO=bar terragrunt apply``).  In both forms the REAL command -- and
+    # its mutative verb -- follows the prefix, but ``analyze_command`` keys off
+    # ``tokens[0]``, which lands on the assignment token (``github_token=$(gh``)
+    # or on ``env`` (a read-only base command), so the mutative verb was never
+    # scanned and the operation slipped the T3 gate.  Peel the prefix and
+    # re-classify the underlying command -- SAME command minus an inert prefix,
+    # so ``_depth`` is carried through unchanged (mirrors the ``cd`` peel above).
+    env_remainder, env_peeled = _peel_leading_env_prefix(command)
+    if env_peeled and env_remainder and env_remainder != command.strip():
+        return detect_mutative_command(
+            env_remainder, from_source_code=from_source_code, cwd=cwd,
+            _depth=_depth,
+        )
+
     semantics = analyze_command(command)
     tokens = list(semantics.tokens)
     if not tokens:
@@ -2923,6 +2940,166 @@ def cwd_after_component(command: str, base_cwd: "Optional[str]") -> "Optional[st
     """
     cwd, _remaining, peeled = _peel_leading_cd(command, base_cwd)
     return cwd if peeled else base_cwd
+
+
+# A leading shell env-var assignment:  NAME=  (value consumed separately, so it
+# may be empty, a bare word, a quoted string, or a $(...)/`...` substitution).
+# Anchored at the scan cursor -- a `=` inside a LATER argument is never matched
+# because the cursor only ever sits at the start of the command or immediately
+# after a fully-consumed prior assignment / peeled `env` token.
+_ENV_ASSIGN_PREFIX_RE = _re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+
+# `env`-wrapper option flags.  Boolean flags carry no value; value flags consume
+# the following token (short form) as their argument.  Long `--opt=value` forms
+# are self-contained and handled inline.
+_ENV_WRAPPER_BOOL_FLAGS = frozenset({
+    "-i", "--ignore-environment", "-0", "--null", "-v", "--debug", "-",
+})
+_ENV_WRAPPER_VALUE_FLAGS = frozenset({"-u", "-C", "-S"})
+_ENV_WRAPPER_VALUE_LONG_FLAGS = frozenset({
+    "--unset", "--chdir", "--split-string",
+    "--block-signal", "--default-signal", "--ignore-signal",
+})
+
+
+def _consume_shell_word(s: str, i: int) -> int:
+    """Return the index just past the shell word beginning at ``s[i]``.
+
+    Scans a single unquoted-whitespace-delimited word, but treats quotes and
+    command substitution as opaque so their inner whitespace does NOT end the
+    word.  This is what lets a ``NAME=$(gh auth token)`` assignment value be
+    consumed whole instead of splitting at the spaces inside ``$( ... )``:
+
+    * ``'...'``   -- single-quoted: verbatim until the closing quote.
+    * ``"..."``   -- double-quoted: until the closing quote, honoring ``\\"``.
+    * `` `...` ``  -- backtick substitution: until the closing backtick.
+    * ``$( ... )`` -- command substitution: until the balanced closing paren.
+    * ``\\x``      -- a backslash escapes the next character (incl. a space).
+
+    An unterminated quote / substitution consumes to end-of-string, which keeps
+    the peeler conservative: it never leaves a dangling half-assignment for the
+    verb scanner to misread.
+    """
+    n = len(s)
+    while i < n:
+        c = s[i]
+        if c.isspace():
+            break
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            j = s.find("'", i + 1)
+            i = n if j == -1 else j + 1
+            continue
+        if c == '"':
+            i += 1
+            while i < n:
+                if s[i] == "\\":
+                    i += 2
+                    continue
+                if s[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if c == "`":
+            j = s.find("`", i + 1)
+            i = n if j == -1 else j + 1
+            continue
+        if c == "$" and i + 1 < n and s[i + 1] == "(":
+            depth = 0
+            i += 1  # now at '('
+            while i < n:
+                if s[i] == "(":
+                    depth += 1
+                elif s[i] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        break
+                i += 1
+            continue
+        i += 1
+    return i
+
+
+def _peel_leading_env_prefix(command: str) -> "Tuple[str, bool]":
+    """Peel a leading env-var assignment / ``env`` wrapper prefix off *command*.
+
+    Returns ``(remainder, peeled)`` where ``remainder`` is the underlying command
+    with any leading ``NAME=value`` assignments and/or a leading ``env [opts]``
+    wrapper removed, and ``peeled`` reports whether anything was stripped.  The
+    real (possibly mutative) command follows such a prefix, but the token-0 base
+    command scan lands on the assignment token or on ``env`` and never sees the
+    verb -- this restores it (T3 gate-evasion fix).
+
+    Careful NOT to over-strip: the assignment regex is anchored at the scan
+    cursor, which only ever sits at the command start or immediately after a
+    fully-consumed prior assignment / peeled ``env`` token.  A ``=`` inside a
+    later argument (``echo A=B terragrunt apply``) is therefore never mistaken
+    for a leading assignment -- the cursor is past ``echo`` (a real command) by
+    then and the loop has already stopped.
+    """
+    s = command.strip() if command else ""
+    n = len(s)
+    i = 0
+    peeled = False
+
+    # --- Optional leading `env` wrapper (env [opts] NAME=val ... cmd) ---
+    # Only a bare `env` TOKEN (followed by whitespace or end) is the wrapper;
+    # `env=x` is an assignment named `env`, handled by the assignment loop below.
+    if s[i : i + 3] == "env" and (i + 3 >= n or s[i + 3].isspace()):
+        i += 3
+        peeled = True
+        while i < n:
+            while i < n and s[i].isspace():
+                i += 1
+            if i >= n:
+                break
+            # An assignment ends the env-flag scan; the assignment loop takes over.
+            if _ENV_ASSIGN_PREFIX_RE.match(s, i):
+                break
+            tok_end = _consume_shell_word(s, i)
+            tok = s[i:tok_end]
+            if tok == "--":
+                i = tok_end
+                break
+            if tok in _ENV_WRAPPER_BOOL_FLAGS:
+                i = tok_end
+                continue
+            if tok in _ENV_WRAPPER_VALUE_FLAGS:
+                # Short value flag consumes the following token as its argument.
+                i = tok_end
+                while i < n and s[i].isspace():
+                    i += 1
+                i = _consume_shell_word(s, i)
+                continue
+            if tok.startswith("--") and "=" in tok:
+                # Self-contained long option (--chdir=/x, --unset=FOO).
+                i = tok_end
+                continue
+            if tok in _ENV_WRAPPER_VALUE_LONG_FLAGS:
+                i = tok_end
+                while i < n and s[i].isspace():
+                    i += 1
+                i = _consume_shell_word(s, i)
+                continue
+            # Any other token is the wrapped command -- stop peeling here.
+            break
+
+    # --- Leading NAME=value assignments (one or more) ---
+    while True:
+        while i < n and s[i].isspace():
+            i += 1
+        m = _ENV_ASSIGN_PREFIX_RE.match(s, i)
+        if not m:
+            break
+        i = _consume_shell_word(s, m.end())
+        peeled = True
+
+    remainder = s[i:].strip()
+    return remainder, peeled
 
 
 def _resolve_script_argument(

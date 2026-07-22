@@ -2407,6 +2407,105 @@ class TestScriptFileEvasion:
         assert result.is_mutative is False
 
 
+class TestEnvAssignmentPrefixEvasion:
+    """A leading env-var assignment / ``env`` wrapper must not hide a mutative
+    verb from the T3 gate.
+
+    Before the fix, ``analyze_command`` keyed the base command off ``tokens[0]``,
+    which landed on the assignment token (``GITHUB_TOKEN=$(gh``) or on ``env`` (a
+    read-only base command).  The mutative verb behind the prefix was never
+    scanned, so ``terragrunt apply``/``kubectl delete``/... executed WITHOUT a
+    T3 approval.  ``detect_mutative_command`` now peels the prefix and
+    re-classifies the underlying command.
+    """
+
+    def test_command_substitution_assignment_prefix_is_mutative(self):
+        """The reported evasion vector: a ``NAME=$(...)`` prefix whose command
+        substitution shlex-splits into several tokens, the first of which
+        (``auth``) is read-only, hiding the real ``terragrunt apply``."""
+        result = detect_mutative_command(
+            "GITHUB_TOKEN=$(gh auth token) terragrunt apply -auto-approve"
+        )
+        assert result.is_mutative is True
+        assert result.verb == "apply"
+
+    def test_multiple_leading_assignments_are_mutative(self):
+        result = detect_mutative_command("FOO=bar BAR=baz terragrunt apply")
+        assert result.is_mutative is True
+        assert result.verb == "apply"
+
+    def test_multiple_command_substitution_assignments_are_mutative(self):
+        result = detect_mutative_command(
+            "A=$(echo x) B=$(echo y) gcloud compute instances delete inst-1"
+        )
+        assert result.is_mutative is True
+        assert result.verb == "delete"
+
+    def test_backtick_assignment_value_is_mutative(self):
+        result = detect_mutative_command("PASS=`cat pw` terragrunt apply")
+        assert result.is_mutative is True
+        assert result.verb == "apply"
+
+    def test_quoted_assignment_value_with_space_is_mutative(self):
+        result = detect_mutative_command("MSG='hello world' git push origin main")
+        assert result.is_mutative is True
+        assert result.verb == "push"
+
+    def test_env_wrapper_with_assignment_is_mutative(self):
+        result = detect_mutative_command("env FOO=bar terragrunt apply")
+        assert result.is_mutative is True
+        assert result.verb == "apply"
+
+    def test_env_wrapper_with_flags_and_assignment_is_mutative(self):
+        result = detect_mutative_command("env -i FOO=bar kubectl delete pod x")
+        assert result.is_mutative is True
+        assert result.verb == "delete"
+
+    def test_env_wrapper_value_flag_and_assignment_is_mutative(self):
+        """``env -u HOME`` consumes ``HOME`` as the flag's value; the assignment
+        and the wrapped ``terraform apply`` still classify correctly."""
+        result = detect_mutative_command("env -u HOME FOO=bar terraform apply")
+        assert result.is_mutative is True
+        assert result.verb == "apply"
+
+    # --- No over-strip / no false positive regressions ---
+
+    def test_equals_in_later_argument_is_not_stripped(self):
+        """An ``=`` inside a NON-leading argument (``echo``'s positional) must not
+        be mistaken for a leading assignment; ``echo`` stays the base command."""
+        result = detect_mutative_command("echo A=B terragrunt apply")
+        assert result.is_mutative is False
+        assert result.verb == "echo"
+
+    def test_flag_with_equals_value_unaffected(self):
+        result = detect_mutative_command(
+            "kubectl get pods --field-selector=status.phase=Running"
+        )
+        assert result.is_mutative is False
+        assert result.verb == "get"
+
+    def test_leading_assignment_then_read_only_command_stays_read_only(self):
+        """Peeling ``FOO=bar`` must not upgrade a genuinely read-only command."""
+        result = detect_mutative_command("FOO=bar echo hello")
+        assert result.is_mutative is False
+        assert result.verb == "echo"
+
+    def test_bare_env_stays_read_only(self):
+        """``env`` with no wrapped command prints the environment -- read-only."""
+        result = detect_mutative_command("env")
+        assert result.is_mutative is False
+
+    def test_already_correct_mutative_command_unaffected(self):
+        result = detect_mutative_command("terragrunt apply -auto-approve")
+        assert result.is_mutative is True
+        assert result.verb == "apply"
+
+    def test_env_wrapping_read_only_command_stays_read_only(self):
+        result = detect_mutative_command("env FOO=bar kubectl get pods")
+        assert result.is_mutative is False
+        assert result.verb == "get"
+
+
 class TestRelativeScriptCwdResolution:
     """A RELATIVE script path behind a ``cd`` must resolve against the ``cd``
     TARGET, not the hook's own cwd.
