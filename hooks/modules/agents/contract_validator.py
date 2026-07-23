@@ -3,10 +3,11 @@ Contract validation for agent output: structural checks, evidence parsing,
 command extraction, PLAN_STATUS parsing, and exit code derivation.
 
 The canonical fenced-block format is ``agent_contract_handoff`` with field
-name ``plan_status``. Legacy HTML-comment blocks (``<!-- AGENT_STATUS -->``,
-etc.) are **not** parsed. As a tolerant fallback, a ```json``` fence is also
-accepted when its body already has the shape of a handoff envelope (an
-``agent_status.plan_status`` key) -- this covers the recurring case of an
+name ``agent_state`` (renamed from ``plan_status`` in plan 34 task 4). Legacy
+HTML-comment blocks (``<!-- AGENT_STATUS -->``, etc.) are **not** parsed. As a
+tolerant fallback, a ```json``` fence is also accepted when its body already
+has the shape of a handoff envelope (an ``agent_status.agent_state`` key) --
+this covers the recurring case of an
 agent mislabeling the fence out of the generic-JSON habit. The fallback is
 content-based, not a relaxation of field validation: once a dict is
 extracted, its SHAPE is delegated to the portable core
@@ -32,7 +33,7 @@ Provides:
     - validate(): Check agent output against contract requirements -> ValidationResult
     - extract_commands_from_evidence(): Parse COMMANDS_RUN field
     - requires_consolidation_report(): Check if consolidation is needed
-    - extract_plan_status_from_output(): Extract PLAN_STATUS string
+    - extract_plan_status_from_output(): Extract agent_state string
     - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS
     - parse_loop_state(): Parse loop_state clause (blocking check on COMPLETE)
     - parse_update_contracts(): Parse update_contracts array clause
@@ -98,7 +99,7 @@ class ValidationResult:
 
 
 # ============================================================================
-# JSON contract parser (single-mode: agent_contract_handoff with plan_status)
+# JSON contract parser (single-mode: agent_contract_handoff with agent_state)
 # ============================================================================
 
 # Single supported fenced tag for agent handoff envelope.
@@ -130,7 +131,7 @@ def _looks_like_handoff_envelope(parsed: Any) -> bool:
     """Return True when a parsed JSON value has the shape of a handoff envelope.
 
     Content-based check, deliberately narrow: a dict with an
-    ``agent_status.plan_status`` key. This is what distinguishes an
+    ``agent_status.agent_state`` key. This is what distinguishes an
     ``agent_contract_handoff`` payload from an arbitrary ```json``` block the
     agent may have emitted for an unrelated reason (e.g. quoting a command's
     JSON output in ``verbatim_outputs``).
@@ -138,15 +139,17 @@ def _looks_like_handoff_envelope(parsed: Any) -> bool:
     if not isinstance(parsed, dict):
         return False
     agent_status = parsed.get("agent_status")
-    return isinstance(agent_status, dict) and bool(agent_status.get("plan_status"))
+    return isinstance(agent_status, dict) and bool(agent_status.get("agent_state"))
 
 
 def parse_contract(agent_output: str) -> Optional[dict]:
     """Extract structured contract dict from an ``agent_contract_handoff`` block.
 
-    The single supported envelope uses ``plan_status`` as the canonical status
-    field (matching the database column ``episodes.plan_status`` and the
-    ``AgentStatus.plan_status`` dataclass).
+    The single supported envelope uses ``agent_state`` as the canonical
+    turn-status field (renamed from the former ``plan_status`` envelope key,
+    plan 34 task 4). It matches the persisted
+    ``agent_contract_handoffs.agent_state`` column; the lifecycle column
+    ``episodes.plan_status`` keeps its own name.
 
     The parsed dict is augmented with a ``_contract_tag`` key
     (``"agent_contract_handoff"``) so downstream callers can identify the
@@ -197,11 +200,12 @@ def parse_contract(agent_output: str) -> Optional[dict]:
 def _resolve_status(agent_status: dict) -> str:
     """Resolve the effective status string from an agent_status dict.
 
-    The canonical field is ``plan_status`` (matches DB ``episodes.plan_status``
-    and the ``AgentStatus.plan_status`` dataclass).
+    The canonical field is ``agent_state`` (matches DB column
+    ``agent_contract_handoffs.agent_state``, renamed from the former
+    ``plan_status`` envelope key in plan 34 task 4).
     """
-    plan_status = str(agent_status.get("plan_status", "")).strip()
-    return plan_status.upper().rstrip(".,;")
+    agent_state = str(agent_status.get("agent_state", "")).strip()
+    return agent_state.upper().rstrip(".,;")
 
 
 # ============================================================================
@@ -218,7 +222,7 @@ def _resolve_status(agent_status: dict) -> str:
 _FORM_MISSING_FIELD_TOKENS = {
     "agent_contract_handoff": ("AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"),
     "agent_status": ("AGENT_STATUS", "PLAN_STATUS", "AGENT_ID"),
-    "agent_status.plan_status": ("PLAN_STATUS",),
+    "agent_status.agent_state": ("PLAN_STATUS",),
     "agent_status.agent_id": ("AGENT_ID",),
     "agent_status.pending_steps": ("PENDING_STEPS",),
     "agent_status.next_action": ("NEXT_ACTION",),
@@ -380,7 +384,7 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     validator here.
 
     Checks:
-    1. AGENT_STATUS block with plan_status and agent_id (SSOT core)
+    1. AGENT_STATUS block with agent_state and agent_id (SSOT core)
     2. EVIDENCE_REPORT with required fields, when status requires it (SSOT core)
     3. CONSOLIDATION_REPORT (when multi-surface task requires it) -- additive,
        task-context dependent, not a form-layer concern
@@ -639,7 +643,7 @@ def parse_loop_state(contract: dict) -> Optional[Dict[str, Any]]:
 def _check_loop_state_blocking(contract: dict, effective_status: str) -> Optional[str]:
     """Check loop_state blocking invariant (T2.3).
 
-    Blocking condition: plan_status=COMPLETE AND iteration < max_iterations
+    Blocking condition: agent_state=COMPLETE AND iteration < max_iterations
     AND metric is not None AND metric < threshold.
 
     Returns an error token string if the check fails, None otherwise.
@@ -754,11 +758,12 @@ def parse_user_facing_summary(contract: dict) -> Optional[str]:
 
 
 def extract_plan_status_from_output(agent_output: str) -> str:
-    """Extract the effective plan_status string from agent output.
+    """Extract the effective agent_state string from agent output.
 
-    Reads the canonical ``plan_status`` field from the ``agent_contract_handoff``
-    block. Returns the raw status string (e.g. "COMPLETE", "BLOCKED",
-    "NEEDS_INPUT") or empty string if not found.
+    Reads the canonical ``agent_state`` field (renamed from ``plan_status`` in
+    plan 34 task 4) from the ``agent_contract_handoff`` block. Returns the raw
+    status string (e.g. "COMPLETE", "BLOCKED", "NEEDS_INPUT") or empty string
+    if not found. (Function name retained for import stability.)
     """
     contract = parse_contract(agent_output)
     if contract is None:
@@ -1019,21 +1024,21 @@ _NONCE_HEX_RE = re.compile(r"^[a-f0-9]{32}$")
 
 def validate_approval_request(
     contract: dict,
-    plan_status: str,
+    agent_state: str,
 ) -> Optional[Dict[str, Any]]:
-    """Validate the approval_request block when plan_status is APPROVAL_REQUEST.
+    """Validate the approval_request block when agent_state is APPROVAL_REQUEST.
 
     Advisory only -- returns an anomaly dict if validation fails, None if OK
     or if the check does not apply.
 
     Args:
         contract: Parsed dict from parse_contract().
-        plan_status: The agent's reported plan_status string (already uppercased).
+        agent_state: The agent's reported agent_state string (already uppercased).
 
     Returns:
         An anomaly dict (severity: info or warning) when the check triggers, None otherwise.
     """
-    if plan_status.upper() not in _APPROVAL_STATUSES:
+    if agent_state.upper() not in _APPROVAL_STATUSES:
         return None
 
     approval_req = contract.get("approval_request")
@@ -1042,7 +1047,7 @@ def validate_approval_request(
             "type": "approval_request_missing",
             "severity": "info",
             "detail": (
-                f"Agent returned {plan_status} without an approval_request block. "
+                f"Agent returned {agent_state} without an approval_request block. "
                 f"Expected fields: {', '.join(_APPROVAL_REQUIRED_FIELDS)}"
             ),
         }
@@ -1073,7 +1078,7 @@ def validate_approval_request(
         "type": "approval_request_incomplete",
         "severity": "warning",
         "detail": (
-            f"approval_request block for {plan_status} has issues: "
+            f"approval_request block for {agent_state} has issues: "
             f"{'; '.join(issues)}"
         ),
         "missing_fields": missing_fields,

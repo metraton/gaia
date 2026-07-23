@@ -72,7 +72,7 @@ def _complete_envelope() -> dict:
     """A genuine, gate-passing COMPLETE envelope as the CLI would finalize it."""
     return {
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "agent_id": VALID_AGENT_ID,
             "pending_steps": [],
             "next_action": "done",
@@ -103,7 +103,7 @@ def _finalize(draft_id: str, envelope: dict, db_path: Path) -> None:
         contract_id=draft_id,
         agent_id=VALID_AGENT_ID,
         workspace=WORKSPACE,
-        task_status=envelope["agent_status"]["plan_status"],
+        agent_state=envelope["agent_status"]["agent_state"],
         raw_handoff_json=json.dumps(envelope),
         db_path=db_path,
     )
@@ -150,7 +150,7 @@ def test_reconstructs_envelope_from_finalized_draft(db):
     assert recon is not None, (
         "a finalized draft with a missing fence must be reconstructed"
     )
-    assert recon["agent_status"]["plan_status"] == "COMPLETE"
+    assert recon["agent_status"]["agent_state"] == "COMPLETE"
     assert recon["reconstructed_from_finalized_draft"] == draft_id
     assert recon["_contract_tag"] == "agent_contract_handoff"
 
@@ -218,7 +218,7 @@ def test_no_reconstruction_when_fence_present(db):
 
     recon = _adapter()._reconstruct_contract_from_finalized_draft(
         task_info=_task_info(db),
-        parsed_contract={"agent_status": {"plan_status": "COMPLETE",
+        parsed_contract={"agent_status": {"agent_state": "COMPLETE",
                                           "agent_id": VALID_AGENT_ID}},
     )
     assert recon is None

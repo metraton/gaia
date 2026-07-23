@@ -7,7 +7,7 @@ hard constraint, this avoids the ``gaia dev`` / DB-bootstrap path entirely):
 
     1. "gaia contract init --agent-id a1234abcd" -> exit 0
        (a genuinely SHAPE-VALID envelope is produced and persisted).
-    2. "gaia contract set agent_status.plan_status BOGUS" -> exit != 0,
+    2. "gaia contract set agent_status.agent_state BOGUS" -> exit != 0,
        and the rejection carries the enum text (not a crash).
 
 Also covers the CLI's own by-value building blocks (add / view / validate /
@@ -73,7 +73,7 @@ def test_set_bogus_plan_status_rejected_with_enum_text(cli_env):
     init_proc = _run(["init", "--agent-id", VALID_AGENT_ID], cli_env)
     assert init_proc.returncode == 0, init_proc.stderr
 
-    set_proc = _run(["set", "agent_status.plan_status", "BOGUS"], cli_env)
+    set_proc = _run(["set", "agent_status.agent_state", "BOGUS"], cli_env)
 
     assert set_proc.returncode != 0, (
         f"expected non-zero exit for a bogus plan_status, got 0; stdout={set_proc.stdout!r}"
@@ -92,13 +92,13 @@ def test_set_bogus_plan_status_does_not_persist_the_bad_value(cli_env):
     means the invalid state never lands, not merely that the CLI printed an
     error)."""
     _run(["init", "--agent-id", VALID_AGENT_ID], cli_env)
-    set_proc = _run(["set", "agent_status.plan_status", "BOGUS"], cli_env)
+    set_proc = _run(["set", "agent_status.agent_state", "BOGUS"], cli_env)
     assert set_proc.returncode != 0
 
     view_proc = _run(["view"], cli_env)
     assert view_proc.returncode == 0, view_proc.stderr
     payload = json.loads(view_proc.stdout)
-    assert payload["envelope"]["agent_status"]["plan_status"] == "IN_PROGRESS"
+    assert payload["envelope"]["agent_status"]["agent_state"] == "IN_PROGRESS"
 
 
 # ---------------------------------------------------------------------------
@@ -108,10 +108,10 @@ def test_set_bogus_plan_status_does_not_persist_the_bad_value(cli_env):
 # ---------------------------------------------------------------------------
 def test_valid_write_after_a_rejected_write_still_succeeds(cli_env):
     _run(["init", "--agent-id", VALID_AGENT_ID], cli_env)
-    rejected = _run(["set", "agent_status.plan_status", "BOGUS"], cli_env)
+    rejected = _run(["set", "agent_status.agent_state", "BOGUS"], cli_env)
     assert rejected.returncode != 0
 
-    good = _run(["set", "agent_status.plan_status", "COMPLETE"], cli_env)
+    good = _run(["set", "agent_status.agent_state", "COMPLETE"], cli_env)
     # COMPLETE with no verification.result == "pass" is ALSO invalid -- this
     # proves the validator is not merely rejecting the string "BOGUS" as a
     # special case, but genuinely enforcing the VERIFICATION_RESULT rule.
@@ -170,7 +170,7 @@ def test_add_view_validate_fill_round_trip(cli_env):
     next_action_proc = _run(["set", "agent_status.next_action", "done"], cli_env)
     assert next_action_proc.returncode == 0, next_action_proc.stderr
 
-    complete_proc = _run(["set", "agent_status.plan_status", "COMPLETE"], cli_env)
+    complete_proc = _run(["set", "agent_status.agent_state", "COMPLETE"], cli_env)
     assert complete_proc.returncode == 0, complete_proc.stderr
 
     validate_proc = _run(["validate", "--json"], cli_env)
@@ -192,7 +192,7 @@ def test_add_view_validate_fill_round_trip(cli_env):
     # An invalid fill afterward is rejected and does not disturb the
     # already-valid, already-finalized-checked draft.
     bad_fill = _run(
-        ["fill", "--json", json.dumps({"agent_status": {"plan_status": "NOT_REAL"}})],
+        ["fill", "--json", json.dumps({"agent_status": {"agent_state": "NOT_REAL"}})],
         cli_env,
     )
     assert bad_fill.returncode != 0
@@ -200,14 +200,14 @@ def test_add_view_validate_fill_round_trip(cli_env):
 
     still_good = _run(["view"], cli_env)
     envelope_after = json.loads(still_good.stdout)["envelope"]
-    assert envelope_after["agent_status"]["plan_status"] == "COMPLETE"
+    assert envelope_after["agent_status"]["agent_state"] == "COMPLETE"
 
 
 # ---------------------------------------------------------------------------
 # Operating on a nonexistent draft is a clean error, not a crash.
 # ---------------------------------------------------------------------------
 def test_set_without_any_draft_is_a_clean_error(cli_env):
-    proc = _run(["set", "agent_status.plan_status", "COMPLETE"], cli_env)
+    proc = _run(["set", "agent_status.agent_state", "COMPLETE"], cli_env)
 
     assert proc.returncode != 0
     assert "Traceback" not in proc.stderr

@@ -59,7 +59,7 @@ DRAFT_ID = "a1b2c3d4e.deadbeefcafe"
 
 FIXED_ENVELOPE = {
     "agent_status": {
-        "plan_status": "COMPLETE",
+        "agent_state": "COMPLETE",
         "agent_id": "a1b2c3d4e",
         "pending_steps": [],
         "next_action": "done",
@@ -155,7 +155,7 @@ def test_reduction_grows_as_the_contract_grows():
     heavier contracts."""
     lean = {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": "a1b2c3d4e",
             "pending_steps": [],
             "next_action": "starting",

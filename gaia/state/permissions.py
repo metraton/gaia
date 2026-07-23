@@ -359,7 +359,7 @@ __all__ = [
 # harness B3), so ``verifier_fleet()`` resolves to a non-empty set on any
 # installed tree, and the SubagentStop gate (hooks/adapters/claude_code.py,
 # ``_verifier_role_violation``) enforces the ARMED branch: only a seeded
-# verifier-role agent (``gaia-verifier``) may set ``plan_status: COMPLETE``;
+# verifier-role agent (``gaia-verifier``) may set ``agent_state: COMPLETE``;
 # every other producer proposing done work must transition through
 # ``NEEDS_VERIFICATION`` and wait for that agent's independent pass. The
 # mechanism (marker + loader + cached fleet + is_X predicate) is what is

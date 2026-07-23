@@ -31,7 +31,7 @@ def _valid_envelope(approval_id: str) -> dict:
     """A shape-valid APPROVAL_REQUEST envelope carrying ``approval_id``."""
     return {
         "agent_status": {
-            "plan_status": "APPROVAL_REQUEST",
+            "agent_state": "APPROVAL_REQUEST",
             "agent_id": "a1b2c3",
             "pending_steps": ["blocked command"],
             "next_action": "awaiting user approval",
@@ -174,7 +174,7 @@ def test_without_db_composed_validate_passes_on_form_alone(tmp_path):
 def test_no_approval_id_present_is_a_noop(tmp_path):
     envelope = {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": "a1b2c3",
             "pending_steps": [],
             "next_action": "continue",

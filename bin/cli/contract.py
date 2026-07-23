@@ -26,7 +26,7 @@ Validate-on-write, no false-pass (AC-4):
     draft, call ``gaia.contract.crosscheck.validate()`` on that copy, and
     persist to disk ONLY when the verdict is ok. On rejection, the on-disk
     draft is left untouched at its last-known-good state, the concrete
-    errors (including the enum text for an out-of-range plan_status) are
+    errors (including the enum text for an out-of-range agent_state) are
     printed to stderr, and the process exits non-zero -- never a crash.
     ``validate`` and ``finalize`` never mutate; they only report the verdict.
 
@@ -138,14 +138,14 @@ def _initial_envelope(agent_id: str) -> dict:
 
     Deliberately a genuinely SHAPE-VALID envelope (not a stub that would
     later need a special-cased pass) so init's own validate-on-write is a
-    real check, not a smuggled-through no-op: plan_status defaults to
+    real check, not a smuggled-through no-op: agent_state defaults to
     IN_PROGRESS, pending_steps is present (empty list), next_action is a
     non-empty placeholder the agent overwrites via `set`/`add`, and
     evidence_report carries all seven required keys.
     """
     return {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": agent_id,
             "pending_steps": [],
             "next_action": "pending",
@@ -510,7 +510,7 @@ def cmd_finalize(args) -> int:
 
     agent_status = envelope.get("agent_status") or {}
     agent_id = agent_status.get("agent_id")
-    task_status = agent_status.get("plan_status")
+    agent_state = agent_status.get("agent_state")
     workspace = _resolve_finalize_workspace(getattr(args, "workspace", None))
 
     from gaia.store.writer import finalize_agent_contract_handoff
@@ -520,7 +520,7 @@ def cmd_finalize(args) -> int:
             contract_id=draft_id,
             agent_id=agent_id,
             workspace=workspace,
-            task_status=task_status,
+            agent_state=agent_state,
             raw_handoff_json=json.dumps(envelope),
             # session_id is deliberately omitted: the CLI/core never reads
             # CLAUDE_SESSION_ID or any harness-specific value (decisions #1,
@@ -618,7 +618,7 @@ def _build_subcommands(sub) -> None:
     p_init.set_defaults(func=cmd_init)
 
     p_set = sub.add_parser("set", help="Set a scalar field by dotted path (validate-on-write)")
-    p_set.add_argument("field", metavar="FIELD", help="Dotted path, e.g. agent_status.plan_status")
+    p_set.add_argument("field", metavar="FIELD", help="Dotted path, e.g. agent_status.agent_state")
     p_set.add_argument(
         "value",
         metavar="VALUE",

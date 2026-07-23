@@ -196,7 +196,7 @@ class TestEvidenceRequiredFields:
         # Contract with only the original 4 fields -- missing the 3 new ones
         contract = {
             "agent_status": {
-                "plan_status": "COMPLETE",
+                "agent_state": "COMPLETE",
                 "agent_id": "a1f2c3d4",
                 "pending_steps": [],
                 "next_action": "done",
@@ -222,7 +222,7 @@ class TestEvidenceRequiredFields:
         """validate() passes when all 7 evidence fields plus verification are provided."""
         contract = {
             "agent_status": {
-                "plan_status": "COMPLETE",
+                "agent_state": "COMPLETE",
                 "agent_id": "a1f2c3d4",
                 "pending_steps": [],
                 "next_action": "done",

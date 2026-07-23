@@ -112,7 +112,7 @@ _CHILD_SCRIPT = textwrap.dedent(
 
     envelope = {
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "agent_id": "a1b2c3",
             "pending_steps": [],
             "next_action": "done",

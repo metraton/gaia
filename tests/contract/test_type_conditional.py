@@ -39,7 +39,7 @@ def _base_envelope() -> dict:
     """
     return {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": "a1b2c3",
             "pending_steps": [],
             "next_action": "continue",
@@ -145,7 +145,7 @@ def test_type_conditional_shape_distinct_from_verification_result():
     (VERIFICATION_RESULT) AND a declared type missing its field
     (VERIFICATION_SHAPE). They are distinct codes and both fire."""
     env = _base_envelope()
-    env["agent_status"]["plan_status"] = "COMPLETE"
+    env["agent_status"]["agent_state"] = "COMPLETE"
     env["agent_status"]["next_action"] = "done"
     env["evidence_report"]["verification"] = {
         "method": "command",
@@ -203,7 +203,7 @@ def test_type_conditional_valid_complete_command_contract_passes():
     """A COMPLETE contract declaring a deterministic type with BOTH its
     required 'command' AND result == 'pass' satisfies both branches."""
     env = _base_envelope()
-    env["agent_status"]["plan_status"] = "COMPLETE"
+    env["agent_status"]["agent_state"] = "COMPLETE"
     env["agent_status"]["next_action"] = "done"
     env["evidence_report"]["verification"] = {
         "method": "command",

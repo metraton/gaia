@@ -55,7 +55,7 @@ def _hooks_on_path():
 def _valid_complete_envelope() -> dict:
     return {
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "agent_id": "a1b2c3",
             "pending_steps": [],
             "next_action": "done",
@@ -80,7 +80,7 @@ def _broken_envelope() -> dict:
     stop_reason isolation, since a truncated turn is exactly where an agent's
     envelope is most likely to be incomplete/malformed."""
     env = _valid_complete_envelope()
-    env["agent_status"]["plan_status"] = "BOGUS"
+    env["agent_status"]["agent_state"] = "BOGUS"
     return env
 
 

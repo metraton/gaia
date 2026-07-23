@@ -64,7 +64,7 @@ def _evidence():
 def _envelope(plan_status: str, agent_id: str = "a1b2c3"):
     return {
         "agent_status": {
-            "plan_status": plan_status,
+            "agent_state": plan_status,
             "agent_id": agent_id,
             "pending_steps": [],
             "next_action": "done" if plan_status == "COMPLETE" else "continue",

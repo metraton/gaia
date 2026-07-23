@@ -71,11 +71,11 @@ class TestExtractExitCode:
     """Test AGENT_STATUS-based exit code extraction via agent_contract_handoff."""
 
     def test_complete_status_returns_zero(self):
-        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_blocked_status_returns_one(self):
-        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 1
 
     def test_no_status_returns_zero(self):
@@ -84,12 +84,12 @@ class TestExtractExitCode:
 
     def test_last_status_wins(self):
         # Only the first agent_contract_handoff block is parsed, so this tests a single block
-        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_no_false_positive_on_error_text(self):
         """Text like 'No errors found' should not trigger exit_code=1."""
-        output = 'No errors found.\n```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = 'No errors found.\n```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a00001"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
 
@@ -102,13 +102,13 @@ class TestBuildTaskInfoExitCode:
 
     def test_exit_code_from_complete_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "COMPLETE", "agent_id": "a123"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a123"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 0
 
     def test_exit_code_from_blocked_output(self):
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = '```agent_contract_handoff\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a123"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a123"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1
 
@@ -217,7 +217,7 @@ class TestSubagentStopHookPostRemoval:
         output = (
             '## Findings\n\n'
             '```agent_contract_handoff\n'
-            '{"agent_status": {"plan_status": "COMPLETE", "pending_steps": "[]", '
+            '{"agent_status": {"agent_state": "COMPLETE", "pending_steps": "[]", '
             '"next_action": "Done", "agent_id": "a12345"}}\n'
             '```\n'
         )
@@ -259,7 +259,7 @@ class TestSubagentStopHookPostRemoval:
         # Has evidence + agent_status but NO consolidation_report
         contract = {
             "agent_status": {
-                "plan_status": "COMPLETE",
+                "agent_state": "COMPLETE",
                 "pending_steps": "[]",
                 "next_action": "Report findings to the orchestrator",
                 "agent_id": "a12345",

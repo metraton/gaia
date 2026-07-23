@@ -48,7 +48,7 @@ def _fence(body: str, tag: str = "agent_contract_handoff") -> str:
 def _valid_complete_body() -> str:
     return """{
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a1b2c3",
     "pending_steps": [],
     "next_action": "done"
@@ -105,7 +105,7 @@ def test_legacy_validate_calls_the_ssot_validate_form(monkeypatch):
 
     assert result.is_valid
     assert len(calls) == 1, "validate() must call the SSOT validate_form exactly once"
-    assert calls[0]["agent_status"]["plan_status"] == "COMPLETE"
+    assert calls[0]["agent_status"]["agent_state"] == "COMPLETE"
 
 
 def test_legacy_validate_verdict_is_entirely_driven_by_the_core(monkeypatch):
@@ -121,7 +121,7 @@ def test_legacy_validate_verdict_is_entirely_driven_by_the_core(monkeypatch):
     def _stub_validate_form(envelope):
         return FormValidationResult(
             ok=False,
-            errors=(FormError(code=FormErrorCode.PLAN_STATUS, field="agent_status.plan_status", detail="stubbed"),),
+            errors=(FormError(code=FormErrorCode.PLAN_STATUS, field="agent_status.agent_state", detail="stubbed"),),
             repair_message=CANONICAL_REPAIR_MESSAGE,
         )
 
@@ -146,7 +146,7 @@ def test_legacy_validate_verdict_is_entirely_driven_by_the_core(monkeypatch):
     "mutate,expected_code",
     [
         (lambda b: b.replace('"agent_id": "a1b2c3"', '"agent_id": "nope"'), FormErrorCode.AGENT_ID_FORMAT),
-        (lambda b: b.replace('"plan_status": "COMPLETE"', '"plan_status": "BOGUS"'), FormErrorCode.PLAN_STATUS),
+        (lambda b: b.replace('"agent_state": "COMPLETE"', '"agent_state": "BOGUS"'), FormErrorCode.PLAN_STATUS),
         (lambda b: b.replace('"result": "pass"', '"result": "fail"'), FormErrorCode.VERIFICATION_RESULT),
         (lambda b: b.replace('"files_checked": [], "commands_run": [],', '"files_checked": [],'), FormErrorCode.MISSING_FIELD),
     ],

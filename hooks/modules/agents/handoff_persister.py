@@ -44,14 +44,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Mirrors the agent_contract_handoffs.task_status CHECK enum (schema.sql) --
-# the canonical plan_status values. A backstop row whose source envelope
-# carries none of these (a crash / partial / missing plan_status) is recorded
+# Mirrors the agent_contract_handoffs.agent_state CHECK enum (schema.sql) --
+# the canonical agent_state values. A backstop row whose source envelope
+# carries none of these (a crash / partial / missing agent_state) is recorded
 # as IN_PROGRESS: honest ("this turn did not reach a verified terminal state")
 # and -- crucially -- NOT 'COMPLETE', so it never falsely satisfies the
 # briefs "plan closed => a COMPLETE handoff row exists" invariant
 # (gaia/briefs/store.py, invariant 5). Only a genuine, valid COMPLETE envelope
-# yields task_status='COMPLETE'; the degraded flag then distinguishes it from
+# yields agent_state='COMPLETE'; the degraded flag then distinguishes it from
 # an agent-finalized COMPLETE for any reader that checks finalize-verification.
 _VALID_TASK_STATUSES = frozenset(
     {
@@ -210,8 +210,8 @@ def persist_handoff(
         if isinstance(source_envelope, dict):
             envelope = dict(source_envelope)
             agent_status = envelope.get("agent_status")
-            plan_status = (
-                agent_status.get("plan_status")
+            agent_state = (
+                agent_status.get("agent_state")
                 if isinstance(agent_status, dict)
                 else None
             )
@@ -221,16 +221,16 @@ def persist_handoff(
             envelope = {
                 "agent_output_preview": agent_output[:200] if agent_output else "",
             }
-            plan_status = None
+            agent_state = None
 
-        task_status = (
-            plan_status if plan_status in _VALID_TASK_STATUSES else "IN_PROGRESS"
+        agent_state = (
+            agent_state if agent_state in _VALID_TASK_STATUSES else "IN_PROGRESS"
         )
 
         # Backstop provenance: this row was captured by the hook, NOT written
         # by the agent's verified `gaia contract finalize`. degraded=true is
         # how a reader that cares about finalize-verification tells it apart
-        # from an agent-finalized row; task_status stays faithful for the
+        # from an agent-finalized row; agent_state stays faithful for the
         # readers that key on it (briefs invariants). We add flags only --
         # never synthetic evidence.
         envelope["degraded"] = True
@@ -244,7 +244,7 @@ def persist_handoff(
             contract_id=contract_id,
             agent_id=agent_id,
             workspace=workspace,
-            task_status=task_status,
+            agent_state=agent_state,
             raw_handoff_json=raw_handoff_json,
             session_id=session_id,
             brief_id=brief_id,

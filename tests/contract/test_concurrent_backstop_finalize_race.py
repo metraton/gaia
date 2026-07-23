@@ -93,7 +93,7 @@ def db(tmp_path):
 def _envelope() -> dict:
     return {
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "agent_id": VALID_AGENT_ID,
             "pending_steps": [],
             "next_action": "done",
@@ -179,7 +179,7 @@ def test_true_concurrent_backstop_and_finalize_yield_one_row(db):
                     contract_id=draft_id,
                     agent_id=VALID_AGENT_ID,
                     workspace=WORKSPACE,
-                    task_status="COMPLETE",
+                    agent_state="COMPLETE",
                     raw_handoff_json=json.dumps(envelope),
                     db_path=db,
                 )
@@ -236,7 +236,7 @@ def test_true_concurrent_double_finalize_exactly_one_created(db):
                     contract_id=draft_id,
                     agent_id=VALID_AGENT_ID,
                     workspace=WORKSPACE,
-                    task_status="COMPLETE",
+                    agent_state="COMPLETE",
                     raw_handoff_json=raw,
                     db_path=db,
                 )

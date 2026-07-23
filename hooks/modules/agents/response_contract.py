@@ -5,7 +5,7 @@ Validates the structured JSON contract block returned by agents
 (``agent_contract_handoff`` fenced blocks parsed by ``contract_validator.parse_contract``).
 
 Validated sections:
-- agent_status  (plan_status, agent_id, pending_steps, next_action)
+- agent_status  (agent_state, agent_id, pending_steps, next_action)
 - evidence_report  (patterns_checked, files_checked, commands_run, key_outputs, ...)
 - consolidation_report  (ownership_assessment, confirmed_findings, ...)
 
@@ -94,7 +94,7 @@ _AGENT_ID_PATTERN = re.compile(r"^a[0-9a-f]{5,}$")
 @dataclass(frozen=True)
 class AgentStatusBlock:
     marker_present: bool
-    plan_status: str
+    agent_state: str
     pending_steps: str
     next_action: str
     agent_id: str
@@ -208,20 +208,21 @@ def _get_list(d: dict, key: str) -> List[str]:
 def _extract_agent_status(contract: dict) -> AgentStatusBlock:
     """Build an AgentStatusBlock from the parsed ``agent_contract_handoff`` dict.
 
-    Single-mode: ``plan_status`` is the canonical status field.
+    Single-mode: ``agent_state`` is the canonical turn-status field (renamed
+    from ``plan_status`` in plan 34 task 4).
     """
     agent_status = contract.get("agent_status")
     if not agent_status or not isinstance(agent_status, dict):
         return AgentStatusBlock(
             marker_present=False,
-            plan_status="",
+            agent_state="",
             pending_steps="",
             next_action="",
             agent_id="",
         )
 
-    plan_status_raw = _get_str(agent_status, "plan_status")
-    effective_status = plan_status_raw.upper().rstrip(".,;")
+    agent_state_raw = _get_str(agent_status, "agent_state")
+    effective_status = agent_state_raw.upper().rstrip(".,;")
 
     pending_steps = _get_str(agent_status, "pending_steps")
     next_action = _get_str(agent_status, "next_action")
@@ -229,7 +230,7 @@ def _extract_agent_status(contract: dict) -> AgentStatusBlock:
 
     return AgentStatusBlock(
         marker_present=True,
-        plan_status=effective_status,
+        agent_state=effective_status,
         pending_steps=pending_steps,
         next_action=next_action,
         agent_id=agent_id,
@@ -357,7 +358,7 @@ def parse_agent_status(agent_output: str, parsed_contract: Optional[dict] = None
     contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
     if contract is None:
         return AgentStatusBlock(
-            marker_present=False, plan_status="", pending_steps="",
+            marker_present=False, agent_state="", pending_steps="",
             next_action="", agent_id="",
         )
     return _extract_agent_status(contract)
@@ -470,7 +471,7 @@ def validate_response_contract(
             fields={field: [] for field in CONSOLIDATION_FIELDS},
         )
         empty_status = AgentStatusBlock(
-            marker_present=False, plan_status="", pending_steps="",
+            marker_present=False, agent_state="", pending_steps="",
             next_action="", agent_id="",
         )
         missing = ["AGENT_STATUS", "PLAN_STATUS", "PENDING_STEPS", "NEXT_ACTION", "AGENT_ID"]
@@ -507,10 +508,10 @@ def validate_response_contract(
     if not status.marker_present:
         missing.append("AGENT_STATUS")
 
-    if not status.plan_status:
+    if not status.agent_state:
         missing.append("PLAN_STATUS")
-    elif status.plan_status not in VALID_PLAN_STATUSES:
-        invalid.append(f"PLAN_STATUS:{status.plan_status}")
+    elif status.agent_state not in VALID_PLAN_STATUSES:
+        invalid.append(f"PLAN_STATUS:{status.agent_state}")
 
     if not status.pending_steps:
         missing.append("PENDING_STEPS")
@@ -522,7 +523,7 @@ def validate_response_contract(
     effective_agent_id = status.agent_id if _is_resume_agent_id(status.agent_id) else task_agent_id
     if not _is_resume_agent_id(effective_agent_id):
         effective_agent_id = ""
-    evidence_required = status.plan_status in EVIDENCE_REQUIRED_PLAN_STATUSES
+    evidence_required = status.agent_state in EVIDENCE_REQUIRED_PLAN_STATUSES
     if evidence_required:
         if not evidence.marker_present:
             missing.append("EVIDENCE_REPORT")
@@ -576,7 +577,7 @@ def validate_response_contract(
             warnings.append(f"APPROVAL_REQUEST_INVALID_RISK_LEVEL:{risk}")
 
     # Blocking: verification.result must be "pass" when status is COMPLETE (T2.2)
-    if status.plan_status == "COMPLETE":
+    if status.agent_state == "COMPLETE":
         evidence_block = contract.get("evidence_report") or {}
         verification = evidence_block.get("verification")
         if not isinstance(verification, dict):

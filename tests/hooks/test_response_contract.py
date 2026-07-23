@@ -54,7 +54,7 @@ def _make_complete_output(
     approval_rollback: bool = True,
     approval_verification: bool = True,
     tag: str = "agent_contract_handoff",
-    status_field: str = "plan_status",
+    status_field: str = "agent_state",
 ) -> str:
     """Build a minimal contract output string."""
     verification_block = ""
@@ -125,7 +125,7 @@ def _make_approval_request_output(
 ```agent_contract_handoff
 {{
   "agent_status": {{
-    "plan_status": "APPROVAL_REQUEST",
+    "agent_state": "APPROVAL_REQUEST",
     "agent_id": "a1b2c3d4e5",
     "pending_steps": ["apply"],
     "next_action": "wait for approval"
@@ -182,7 +182,7 @@ class TestBlockingPromotions:
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "IN_PROGRESS",
+    "agent_state": "IN_PROGRESS",
     "agent_id": "a1b2c3d4e5",
     "pending_steps": ["s"],
     "next_action": "continue"
@@ -269,7 +269,7 @@ class TestJsonFenceFallback:
         output = _make_complete_output(tag="json")
         contract = parse_contract(output)
         assert contract is not None
-        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+        assert contract["agent_status"]["agent_state"] == "COMPLETE"
         # Uniform tag regardless of the actual fence label used.
         assert contract["_contract_tag"] == "agent_contract_handoff"
 
@@ -288,7 +288,7 @@ class TestJsonFenceFallback:
 ```json
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a1b2c3d4e5",
     "pending_steps": [],
     "next_action": "done"
@@ -330,24 +330,24 @@ No contract emitted.
         output = (
             "Unrelated JSON for reference:\n\n"
             "```json\n"
-            '{"agent_status": {"plan_status": "BLOCKED"}}\n'
+            '{"agent_status": {"agent_state": "BLOCKED"}}\n'
             "```\n\n"
             + _make_complete_output(tag="agent_contract_handoff")
         )
         contract = parse_contract(output)
         assert contract is not None
-        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+        assert contract["agent_status"]["agent_state"] == "COMPLETE"
 
     def test_last_matching_json_fence_wins(self):
         """When multiple ```json``` fences look like envelopes, the LAST one is
         used -- matching the protocol convention that the contract is the
         final block of the turn."""
-        first = _make_complete_output(tag="json", status_field="plan_status")
+        first = _make_complete_output(tag="json", status_field="agent_state")
         second_body = first.replace('"COMPLETE"', '"BLOCKED"', 1)
         output = first + "\n" + second_body
         contract = parse_contract(output)
         assert contract is not None
-        assert contract["agent_status"]["plan_status"] == "BLOCKED"
+        assert contract["agent_status"]["agent_state"] == "BLOCKED"
 
 
 # ============================================================================
@@ -366,7 +366,7 @@ No contract emitted.
 def _contract_with_verbatim_code_fence() -> dict:
     return {
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "agent_id": "a1b2c3d4e5",
             "pending_steps": [],
             "next_action": "done",
@@ -403,7 +403,7 @@ class TestTripleBacktickBodyNotTruncated:
         output = f"```agent_contract_handoff\n{body}\n```"
         contract = parse_contract(output)
         assert contract is not None
-        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+        assert contract["agent_status"]["agent_state"] == "COMPLETE"
         assert "```python" in contract["evidence_report"]["verbatim_outputs"][0]
 
     def test_canonical_tag_with_verbatim_code_fence_passes_validate(self):
@@ -420,7 +420,7 @@ class TestTripleBacktickBodyNotTruncated:
         contract = parse_contract(output)
         assert contract is not None
         assert contract["_contract_tag"] == "agent_contract_handoff"
-        assert contract["agent_status"]["plan_status"] == "COMPLETE"
+        assert contract["agent_status"]["agent_state"] == "COMPLETE"
 
     def test_multiple_quoted_fences_in_body_do_not_truncate(self):
         """A body quoting two separate fenced snippets is captured whole, not
@@ -441,7 +441,7 @@ class TestTripleBacktickBodyNotTruncated:
         fail to parse -- tolerating inline fences must not mean accepting an
         unterminated block."""
         contract = {
-            "agent_status": {"plan_status": "COMPLETE", "agent_id": "a1b2c3d4e5"},
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d4e5"},
             "evidence_report": {"patterns_checked": []},
         }
         output = f"```agent_contract_handoff\n{json.dumps(contract)}\n"  # no closing fence
@@ -452,7 +452,7 @@ class TestTripleBacktickBodyNotTruncated:
         still be rejected -- the fix does not relax json.loads validity."""
         output = (
             '```agent_contract_handoff\n'
-            '{"agent_status": {"plan_status": "COMPLETE"\n'
+            '{"agent_status": {"agent_state": "COMPLETE"\n'
             '```'
         )
         assert parse_contract(output) is None
@@ -689,7 +689,7 @@ class TestLoopStateBlockingCheck:
 ```agent_contract_handoff
 {{
   "agent_status": {{
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a1b2c3d4e5",
     "pending_steps": [],
     "next_action": "done"

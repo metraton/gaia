@@ -80,7 +80,7 @@ def _valid_envelope():
     """A shape-valid IN_PROGRESS envelope (passes both gates)."""
     return {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": "a1b2c3",
             "pending_steps": [],
             "next_action": "continue the increment",
@@ -123,7 +123,7 @@ def _complete_failed_verification_envelope():
     gate rejects it (VERIFICATION_RESULT). A COMPLETE that asserts success while
     verification actually failed; drives the honest-failure signpost (CAMBIO 2)."""
     env = _valid_envelope()
-    env["agent_status"]["plan_status"] = "COMPLETE"
+    env["agent_status"]["agent_state"] = "COMPLETE"
     env["evidence_report"]["verification"] = {
         "method": "test",
         "result": "fail",
@@ -220,7 +220,7 @@ class TestOffPreservesThreeCase:
         ).rejected is True
         # bad plan_status
         bad = _valid_envelope()
-        bad["agent_status"]["plan_status"] = "BOGUS"
+        bad["agent_status"]["agent_state"] = "BOGUS"
         assert evaluate_contract_gate(bad, ramp_enabled=False).rejected is True
 
 

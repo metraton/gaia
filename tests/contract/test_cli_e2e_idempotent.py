@@ -96,7 +96,7 @@ def _build_complete_draft(env: dict) -> str:
     Returns the draft_id. Uses the same by-value building blocks an agent
     would: init, add to a list field (exercised while still IN_PROGRESS,
     then cleared before completing), fill the verification block, and set
-    plan_status=COMPLETE last. COMPLETE requires verification.result==pass
+    agent_state=COMPLETE last. COMPLETE requires verification.result==pass
     AND (COMPLETE_SHAPE, R4) pending_steps==[] and next_action=='done', all
     enforced by the validator -- so this proves the cycle produces a
     truly-valid terminal envelope, not a stub.
@@ -128,7 +128,7 @@ def _build_complete_draft(env: dict) -> str:
     na = _run(["set", "agent_status.next_action", "done"], env)
     assert na.returncode == 0, na.stderr
 
-    complete = _run(["set", "agent_status.plan_status", "COMPLETE"], env)
+    complete = _run(["set", "agent_status.agent_state", "COMPLETE"], env)
     assert complete.returncode == 0, complete.stderr
 
     return draft_id

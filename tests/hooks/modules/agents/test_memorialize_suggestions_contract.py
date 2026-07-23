@@ -53,7 +53,7 @@ _BASE_EVIDENCE = {
 }
 
 _BASE_STATUS = {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "pending_steps": "[]",
     "next_action": "done",
     "agent_id": "a99001",

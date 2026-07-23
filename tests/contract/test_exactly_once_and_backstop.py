@@ -83,7 +83,7 @@ def db(tmp_path):
 def _envelope(plan_status: str = "COMPLETE") -> dict:
     return {
         "agent_status": {
-            "plan_status": plan_status,
+            "agent_state": plan_status,
             "agent_id": VALID_AGENT_ID,
             "pending_steps": [],
             "next_action": "done",
@@ -137,7 +137,7 @@ def test_finalized_turn_backstop_is_passive_no_duplicate(db):
         contract_id=draft_id,
         agent_id=VALID_AGENT_ID,
         workspace=WORKSPACE,
-        task_status="COMPLETE",
+        agent_state="COMPLETE",
         raw_handoff_json=json.dumps(envelope),
         db_path=db,
     )
@@ -232,7 +232,7 @@ def test_race_backstop_then_finalize_one_row(db):
         contract_id=draft_id,
         agent_id=VALID_AGENT_ID,
         workspace=WORKSPACE,
-        task_status="COMPLETE",
+        agent_state="COMPLETE",
         raw_handoff_json=json.dumps(envelope),
         db_path=db,
     )
@@ -253,7 +253,7 @@ def test_race_finalize_then_backstop_one_row(db):
         contract_id=draft_id,
         agent_id=VALID_AGENT_ID,
         workspace=WORKSPACE,
-        task_status="COMPLETE",
+        agent_state="COMPLETE",
         raw_handoff_json=json.dumps(envelope),
         db_path=db,
     )

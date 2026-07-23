@@ -61,7 +61,7 @@ def _evidence():
 def _in_progress_envelope(agent_id="a1b2c3", next_action="continue"):
     return {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": agent_id,
             "pending_steps": ["step-1"],
             "next_action": next_action,
@@ -74,7 +74,7 @@ def _in_progress_envelope(agent_id="a1b2c3", next_action="continue"):
 
 def _complete_envelope(agent_id="a1b2c3"):
     env = _in_progress_envelope(agent_id, next_action="done")
-    env["agent_status"]["plan_status"] = "COMPLETE"
+    env["agent_status"]["agent_state"] = "COMPLETE"
     env["evidence_report"]["verification"] = {
         "method": "test",
         "result": "pass",
@@ -132,12 +132,12 @@ class TestDraftHoldsInProgressAcrossResumes:
             assert resolved == draft_id
             loaded = drafts_mod.load_draft(draft_id)
             assert loaded is not None
-            assert loaded["agent_status"]["plan_status"] == "IN_PROGRESS"
+            assert loaded["agent_status"]["agent_state"] == "IN_PROGRESS"
 
         # Only a terminal write flips it -- and only then.
         drafts_mod.save_draft(draft_id, _complete_envelope(agent_id))
         loaded = drafts_mod.load_draft(draft_id)
-        assert loaded["agent_status"]["plan_status"] == "COMPLETE"
+        assert loaded["agent_status"]["agent_state"] == "COMPLETE"
 
 
 class TestStateMachineHoldsAcrossResumes:

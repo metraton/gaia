@@ -2198,7 +2198,7 @@ class TestGaiaPlanningBookkeepingException:
 
     def test_gaia_contract_set_not_mutative(self):
         result = detect_mutative_command(
-            "gaia contract set agent_status.plan_status IN_PROGRESS"
+            "gaia contract set agent_status.agent_state IN_PROGRESS"
         )
         assert result.is_mutative is False, (
             f"gaia contract set must be local-only bookkeeping. "
@@ -2258,7 +2258,7 @@ class TestGaiaPlanningBookkeepingException:
         """A dangerous flag under the excepted `contract` group re-gates to T3,
         mirroring test_gaia_brief_with_force_flag_re_gates."""
         result = detect_mutative_command(
-            "gaia contract set agent_status.plan_status IN_PROGRESS --force"
+            "gaia contract set agent_status.agent_state IN_PROGRESS --force"
         )
         assert result.is_mutative is True, (
             f"--force under an excepted group must re-gate to T3. "

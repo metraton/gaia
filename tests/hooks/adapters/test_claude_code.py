@@ -117,7 +117,7 @@ def subagent_stop_payload():
         "agent_type": "cloud-troubleshooter",
         "agent_id": "a1b2c3d",
         "agent_transcript_path": "/tmp/transcripts/a1b2c3d.jsonl",
-        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n```agent_contract_handoff\n{\"plan_status\": \"COMPLETE\", \"agent_id\": \"a1b2c3d\", \"pending_steps\": [], \"next_action\": \"done\"}\n```",
+        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n```agent_contract_handoff\n{\"agent_state\": \"COMPLETE\", \"agent_id\": \"a1b2c3d\", \"pending_steps\": [], \"next_action\": \"done\"}\n```",
         "cwd": "/home/user/project",
         "stop_hook_active": True,
         "permission_mode": "default",
@@ -441,7 +441,7 @@ class TestParseAgentCompletion:
         assert comp.agent_type == "cloud-troubleshooter"
         assert comp.agent_id == "a1b2c3d"
         assert comp.transcript_path == "/tmp/transcripts/a1b2c3d.jsonl"
-        assert '"plan_status": "COMPLETE"' in comp.last_message
+        assert '"agent_state": "COMPLETE"' in comp.last_message
         assert comp.session_id == "sess-ghi789"
 
     def test_missing_fields(self, adapter):
@@ -629,7 +629,7 @@ class TestAdaptSubagentStopSessionId:
 
 class TestAdaptSubagentStopPreservesApprovalRequest:
     """adapt_subagent_stop must not delete pending files that the agent's
-    final contract still references via plan_status=APPROVAL_REQUEST.
+    final contract still references via agent_state=APPROVAL_REQUEST.
 
     The user needs those files to act on the [ACTIONABLE] block; cleaning
     them up at SubagentStop would silently void the approval request and
@@ -746,13 +746,13 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
     def test_approval_request_contract_preserves_its_nonce(
         self, adapter, subagent_stop_payload, monkeypatch
     ):
-        """A contract with plan_status=APPROVAL_REQUEST and an approval_id
+        """A contract with agent_state=APPROVAL_REQUEST and an approval_id
         must produce preserve_nonces={approval_id} in the cleanup call.
         """
         captured = {}
         parsed_contract = {
             "agent_status": {
-                "plan_status": "APPROVAL_REQUEST",
+                "agent_state": "APPROVAL_REQUEST",
                 "agent_id": "a12345abc",
             },
             "approval_request": {
@@ -794,7 +794,7 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         captured = {}
         parsed_contract = {
             "agent_status": {
-                "plan_status": "COMPLETE",
+                "agent_state": "COMPLETE",
                 "agent_id": "a99999abc",
             },
             "approval_request": None,
@@ -826,7 +826,7 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         captured = {}
         parsed_contract = {
             "agent_status": {
-                "plan_status": "APPROVAL_REQUEST",
+                "agent_state": "APPROVAL_REQUEST",
                 "agent_id": "amalformed",
             },
             # approval_request present but no approval_id field

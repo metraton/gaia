@@ -1,6 +1,6 @@
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a7c3f9",
     "pending_steps": "[]",
     "next_action": "done"

@@ -65,7 +65,7 @@ def _malformed_agent_id_envelope():
     rejects it (AGENT_ID_FORMAT)."""
     return {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": "BADID",
             "pending_steps": [],
             "next_action": "continue",
@@ -121,7 +121,7 @@ class TestRollbackPreservesDrafts:
         draft_id = drafts_mod.mint_draft_id(agent_id)
         original = {
             "agent_status": {
-                "plan_status": "IN_PROGRESS",
+                "agent_state": "IN_PROGRESS",
                 "agent_id": agent_id,
                 "pending_steps": ["step-1"],
                 "next_action": "continue the increment",
@@ -151,7 +151,7 @@ class TestRollbackPreservesDrafts:
         assert path.read_bytes() == bytes_before
         loaded = drafts_mod.load_draft(draft_id)
         assert loaded == original
-        assert loaded["agent_status"]["plan_status"] == "IN_PROGRESS"
+        assert loaded["agent_status"]["agent_state"] == "IN_PROGRESS"
 
     def test_gate_never_creates_or_removes_drafts(self, isolated_data_dir):
         # No drafts to start.

@@ -39,7 +39,7 @@ A resumed subagent's prompt has two distinct regions from two distinct paths:
 
   2. RESUME HINT -- what THIS module renders and the hook injects as
      ``additionalContext``, BELOW the identity prompt. It is VOLATILE BY DESIGN
-     (T6): it reflects the draft's current ``plan_status`` / ``next_action`` /
+     (T6): it reflects the draft's current ``agent_state`` / ``next_action`` /
      ``pending_steps``, which change between messages. Its whole job is to be
      MINIMAL -- a pointer + a status line -- so the full variable contract is
      NEVER re-injected atop the prompt.
@@ -141,18 +141,18 @@ def render_resume_hint_volatile(envelope: dict) -> str:
     """The VOLATILE tail of the resume hint (T6: volatile by design).
 
     A single status line summarizing the draft's current state. It reads ONLY
-    the three summary fields (``plan_status``, ``next_action``, and the COUNT of
+    the three summary fields (``agent_state``, ``next_action``, and the COUNT of
     ``pending_steps``) -- never the bulky evidence payload -- so its size does
     not scale with the contract body. This is what keeps the injected view
     minimal and decoupled from the full variable contract.
     """
     agent_status = envelope.get("agent_status") or {}
-    plan_status = agent_status.get("plan_status", "?")
+    agent_state = agent_status.get("agent_state", "?")
     next_action = agent_status.get("next_action", "?")
     pending_steps = agent_status.get("pending_steps") or []
     return (
         f"{VOLATILE_MARKER}\n"
-        f"plan_status={plan_status} next_action={next_action!r} "
+        f"agent_state={agent_state} next_action={next_action!r} "
         f"pending_steps={len(pending_steps)}"
     )
 

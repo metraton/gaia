@@ -100,7 +100,7 @@ def test_view_field_returns_nested_dict_subtree(base_env):
 def test_view_field_returns_scalar_leaf(base_env):
     """A dotted path to a scalar leaf returns just that scalar."""
     _init_draft(base_env)
-    view = _run(["view", "--field", "agent_status.plan_status"], base_env)
+    view = _run(["view", "--field", "agent_status.agent_state"], base_env)
     assert view.returncode == 0, f"stderr={view.stderr!r}"
     assert json.loads(view.stdout) == "IN_PROGRESS"
 
@@ -133,7 +133,7 @@ def test_view_field_through_scalar_is_clean_error(base_env):
     not a traceback -- the read helper never blindly indexes a non-dict."""
     _init_draft(base_env)
     view = _run(
-        ["view", "--field", "agent_status.plan_status.deeper"], base_env
+        ["view", "--field", "agent_status.agent_state.deeper"], base_env
     )
     assert view.returncode != 0
     assert "Traceback" not in view.stderr

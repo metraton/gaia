@@ -48,7 +48,7 @@ _BASE_EVIDENCE = {
 }
 
 _BASE_STATUS = {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "pending_steps": "[]",
     "next_action": "Report findings to the orchestrator",
     "agent_id": "a12345",
@@ -84,7 +84,7 @@ class TestParseResponseBlocks:
     def test_parse_agent_status(self):
         status = parse_agent_status(VALID_OUTPUT)
         assert status.marker_present is True
-        assert status.plan_status == "COMPLETE"
+        assert status.agent_state == "COMPLETE"
         assert status.next_action == "Report findings to the orchestrator"
         assert status.agent_id == "a12345"
 
@@ -127,7 +127,7 @@ class TestValidateResponseContract:
 
     def test_invalid_plan_status_is_rejected(self):
         contract = {
-            "agent_status": {**_BASE_STATUS, "plan_status": "DONE"},
+            "agent_status": {**_BASE_STATUS, "agent_state": "DONE"},
             "evidence_report": _BASE_EVIDENCE,
         }
         output = _make_contract_output(contract)

@@ -105,7 +105,7 @@ def _partial_envelope(plan_status: str = "IN_PROGRESS") -> dict:
     verified COMPLETE (no verification.result=='pass' terminal)."""
     return {
         "agent_status": {
-            "plan_status": plan_status,
+            "agent_state": plan_status,
             "agent_id": VALID_AGENT_ID,
             "pending_steps": ["finish the write", "verify"],
             "next_action": "continue",
@@ -124,7 +124,7 @@ def _partial_envelope(plan_status: str = "IN_PROGRESS") -> dict:
 def _verified_complete_envelope() -> dict:
     return {
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "agent_id": VALID_AGENT_ID,
             "pending_steps": [],
             "next_action": "done",
@@ -214,7 +214,7 @@ def test_salvaged_row_distinguishable_from_verified_complete(db):
         contract_id=complete_draft,
         agent_id=VALID_AGENT_ID,
         workspace=WORKSPACE,
-        task_status="COMPLETE",
+        agent_state="COMPLETE",
         raw_handoff_json=json.dumps(complete_env),
         db_path=db,
     )

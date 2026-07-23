@@ -29,17 +29,20 @@ plan-level decision -- brief contract-type-conditional-validation-harness-r3;
 APPROVAL_REQUEST_SHAPE and COMPLETE_SHAPE added additively in R4, closing the
 two pure-shape cross-field conditionals the form layer previously missed):
     AGENT_ID_FORMAT     -- agent_id is present but does not match ^a[0-9a-f]{5,}$
-    PLAN_STATUS         -- plan_status is present but outside the canonical enum
-    VERIFICATION_RESULT -- plan_status is COMPLETE but verification.result != "pass"
+    PLAN_STATUS         -- agent_state is present but outside the canonical enum
+                           (the error CODE keeps the name PLAN_STATUS -- a stable
+                           public-surface identifier -- while the FIELD it guards
+                           is now agent_state)
+    VERIFICATION_RESULT -- agent_state is COMPLETE but verification.result != "pass"
                            (including a missing/malformed verification block)
     MISSING_FIELD       -- a required field (agent_status, an agent_status
                            sub-field, evidence_report, or a required
                            evidence_report key) is absent
     VERIFICATION_SHAPE  -- verification.type declares a known type but the field
                            that type requires is missing/empty (a by-TYPE SHAPE
-                           check, independent of plan_status; DISTINCT from
+                           check, independent of agent_state; DISTINCT from
                            VERIFICATION_RESULT). Absent type == no check.
-    APPROVAL_REQUEST_SHAPE -- plan_status is APPROVAL_REQUEST but the top-level
+    APPROVAL_REQUEST_SHAPE -- agent_state is APPROVAL_REQUEST but the top-level
                            approval_request object is absent/null, or present
                            without a non-empty exact_content (the verbatim
                            content the user must see for informed consent).
@@ -48,7 +51,7 @@ two pure-shape cross-field conditionals the form layer previously missed):
                            approval_request with no approval_id yet (a plan
                            presented before the hook has blocked anything and
                            minted a grant).
-    COMPLETE_SHAPE      -- plan_status is COMPLETE but next_action != "done"
+    COMPLETE_SHAPE      -- agent_state is COMPLETE but next_action != "done"
                            (when next_action is present) or pending_steps is
                            non-empty (when pending_steps is present). Pure
                            cross-field coherence, independent of
@@ -64,7 +67,7 @@ Design notes:
     - NO TASK CONTEXT: consolidation_report is context-dependent (needs
       task_info / multi-surface signals) and is therefore NOT a form-layer
       concern -- it belongs to a higher layer that has that context.
-    - ONE CODE PER INVALIDITY: an out-of-enum plan_status yields exactly
+    - ONE CODE PER INVALIDITY: an out-of-enum agent_state yields exactly
       PLAN_STATUS and suppresses the downstream evidence requirement (an invalid
       status cannot be classified as evidence-requiring), so a single defect
       does not fan out into multiple codes. This matches AC-9's "one anomaly per
@@ -146,12 +149,20 @@ REQUIRED_EVIDENCE_FIELDS: Tuple[str, ...] = (
     "open_gaps",
 )
 
-# Required agent_status sub-fields. plan_status and agent_id have dedicated
+# Required agent_status sub-fields. agent_state and agent_id have dedicated
 # codes for the "present-but-malformed" case; all four are subject to
 # MISSING_FIELD when absent. pending_steps accepts an empty list (presence
 # check); next_action must be a non-empty value.
+#
+# agent_state is the canonical name of the TURN-status field (renamed from the
+# former ``plan_status`` envelope key, plan 34 task 4). It carries a
+# VALID_PLAN_STATUSES value and matches the persisted
+# ``agent_contract_handoffs.agent_state`` column. The enum constant and the
+# PLAN_STATUS error code keep their names -- the enum is still the SSOT shared
+# with the ``episodes.plan_status`` lifecycle column, and the error code is a
+# stable public-surface identifier.
 REQUIRED_AGENT_STATUS_FIELDS: Tuple[str, ...] = (
-    "plan_status",
+    "agent_state",
     "agent_id",
     "pending_steps",
     "next_action",
@@ -173,7 +184,7 @@ class FormErrorCode(str, Enum):
     # Additive (R3): a verification.type was declared but the field that type
     # requires is missing/empty. DISTINCT from VERIFICATION_RESULT (which is the
     # by-VALUE "COMPLETE but result != pass" check); this is a by-TYPE SHAPE
-    # check, independent of plan_status. Absent verification.type == no check.
+    # check, independent of agent_state. Absent verification.type == no check.
     VERIFICATION_SHAPE = "VERIFICATION_SHAPE"
     # Additive (R4): APPROVAL_REQUEST without a usable approval_request block
     # (absent, or present but missing a non-empty exact_content). A pure-shape
@@ -257,7 +268,7 @@ CANONICAL_REPAIR_MESSAGE = (
     "```agent_contract_handoff\n"
     "{\n"
     '  "agent_status": {\n'
-    '    "plan_status": "<IN_PROGRESS|APPROVAL_REQUEST|COMPLETE|BLOCKED|NEEDS_INPUT|NEEDS_VERIFICATION>",\n'
+    '    "agent_state": "<IN_PROGRESS|APPROVAL_REQUEST|COMPLETE|BLOCKED|NEEDS_INPUT|NEEDS_VERIFICATION>",\n'
     '    "agent_id": "<a + 5+ hex chars, e.g. a1b2c3>",\n'
     '    "pending_steps": [],\n'
     '    "next_action": "<done or the next concrete step>"\n'
@@ -277,11 +288,11 @@ CANONICAL_REPAIR_MESSAGE = (
     "}\n"
     "```\n"
     "\n"
-    "Required: agent_status (plan_status in the enum above; agent_id matching "
+    "Required: agent_status (agent_state in the enum above; agent_id matching "
     "^a[0-9a-f]{5,}$; pending_steps; next_action) and evidence_report with keys "
     "patterns_checked, files_checked, commands_run, key_outputs, "
     "verbatim_outputs, cross_layer_impacts, open_gaps. "
-    "When plan_status is COMPLETE, evidence_report.verification.result must be "
+    "When agent_state is COMPLETE, evidence_report.verification.result must be "
     '"pass".'
 )
 
@@ -400,14 +411,14 @@ def validate_form(envelope: Any) -> FormValidationResult:
             )
         )
     else:
-        # plan_status: absent -> MISSING_FIELD; present-but-invalid -> PLAN_STATUS
-        raw_status = agent_status.get("plan_status")
+        # agent_state: absent -> MISSING_FIELD; present-but-invalid -> PLAN_STATUS
+        raw_status = agent_status.get("agent_state")
         if raw_status is None or str(raw_status).strip() == "":
             errors.append(
                 FormError(
                     code=FormErrorCode.MISSING_FIELD,
-                    field="agent_status.plan_status",
-                    detail="plan_status is missing",
+                    field="agent_status.agent_state",
+                    detail="agent_state is missing",
                 )
             )
         else:
@@ -416,7 +427,7 @@ def validate_form(envelope: Any) -> FormValidationResult:
                 errors.append(
                     FormError(
                         code=FormErrorCode.PLAN_STATUS,
-                        field="agent_status.plan_status",
+                        field="agent_status.agent_state",
                         detail=(
                             f"{raw_status!r} is not one of "
                             f"{list(VALID_PLAN_STATUSES)}"
@@ -531,7 +542,7 @@ def validate_form(envelope: Any) -> FormValidationResult:
         # Mirrors the conditional-by-VALUE pattern below (VERIFICATION_RESULT):
         # if verification declares a KNOWN type, require the field that type
         # demands and reject an omission with VERIFICATION_SHAPE. This is a
-        # SHAPE check independent of plan_status; it is DISTINCT from the
+        # SHAPE check independent of agent_state; it is DISTINCT from the
         # by-VALUE COMPLETE/result==pass check and may co-occur with it (two
         # different invalidities -> two codes). Backward compatible: an ABSENT
         # verification.type (or a type outside the SSOT enum) fires no new
@@ -578,7 +589,7 @@ def validate_form(envelope: Any) -> FormValidationResult:
                     )
 
     # --- approval_request (APPROVAL_REQUEST only, pure SHAPE, R4) -----------
-    # A pure-shape cross-field check: when plan_status is APPROVAL_REQUEST the
+    # A pure-shape cross-field check: when agent_state is APPROVAL_REQUEST the
     # top-level approval_request object must itself be present, and its
     # exact_content -- the verbatim content the user must see to give
     # informed consent (the orchestrator-present-approval iron law) -- must

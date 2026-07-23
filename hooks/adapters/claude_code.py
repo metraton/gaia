@@ -200,7 +200,7 @@ def classify_stop_reason(stop_reason: Optional[str]) -> str:
 # -handoff-agnostico-por-cli, T16 / AC-9).
 #
 # The live SubagentStop gate historically enforced only 3 structural cases
-# (Option B: missing block / missing agent_status / bad plan_status) and let
+# (Option B: missing block / missing agent_status / bad agent_state) and let
 # EVERYTHING else exit 0 + a bare anomaly, never delivering the rich repair
 # message. T16 replaces that with a FULL-VERDICT gate driven by the SINGLE
 # portable core (gaia.contract.crosscheck.validate == form + cross-check), so
@@ -219,7 +219,7 @@ def classify_stop_reason(stop_reason: Optional[str]) -> str:
 #
 # WHY the default flipped: in 3-case mode the ONLY thing that forces a subagent
 # to repair its handoff (exit 2) is one of three structural cases (no block, no
-# agent_status, bad plan_status). A handoff that PARSES but is otherwise
+# agent_status, bad agent_state). A handoff that PARSES but is otherwise
 # incomplete or drifted (missing evidence_report keys, missing next_action,
 # malformed agent_id, missing consolidation_report) produced a CRITICAL
 # response_contract_violation anomaly WITHOUT forcing repair -- the turn ended
@@ -253,7 +253,7 @@ def full_verdict_gate_enabled() -> bool:
     Option B gate, still fully supported as the one-env-var rollback path (T17).
 
     The default was flipped ON to close the SubagentStop enforcement gap: in
-    3-case mode a handoff that PARSES (agent_status + valid plan_status present)
+    3-case mode a handoff that PARSES (agent_status + valid agent_state present)
     but is otherwise incomplete/drifted produced a critical
     response_contract_violation anomaly WITHOUT forcing repair (exit 0), so
     recovery fell to the orchestrator via SendMessage. Full-verdict forces the
@@ -343,13 +343,13 @@ def _gate_anomaly(agent_type: str, code: str, field: str, detail: str) -> Dict[s
 # proposed verification.result alongside NEEDS_VERIFICATION is carried
 # through unevaluated -- the gate never accepts NEEDS_VERIFICATION as a
 # completed/done state regardless of that proposed value.
-def _verifier_role_violation(plan_status: str, agent_type: str) -> Optional[str]:
+def _verifier_role_violation(agent_state: str, agent_type: str) -> Optional[str]:
     """Return a rejection reason iff a non-verifier agent tried to set
     COMPLETE while the verifier registry is ARMED (non-empty). ``None`` means
     no violation -- either the status is not COMPLETE, the registry is still
     DORMANT (empty), or ``agent_type`` is a seeded verifier.
     """
-    if plan_status != "COMPLETE":
+    if agent_state != "COMPLETE":
         return None
     from gaia.state.permissions import is_verifier, verifier_fleet
 
@@ -361,10 +361,10 @@ def _verifier_role_violation(plan_status: str, agent_type: str) -> Optional[str]
     if is_verifier(agent_type):
         return None
     return (
-        f"agent_status.plan_status is COMPLETE, but '{agent_type}' is not a "
+        f"agent_status.agent_state is COMPLETE, but '{agent_type}' is not a "
         f"seeded verifier (verifier registry is ARMED: {sorted(fleet)}). "
         "Only a verifier-role agent may set COMPLETE once the registry is "
-        "non-empty. Set plan_status to NEEDS_VERIFICATION and propose "
+        "non-empty. Set agent_state to NEEDS_VERIFICATION and propose "
         "evidence_report.verification.result for a verifier to confirm, or "
         "stay IN_PROGRESS."
     )
@@ -403,19 +403,19 @@ def _three_case_verdict(parsed_contract: Any, agent_type: str) -> ContractGateVe
         reason = (
             "[CONTRACT REJECTED] agent_status block missing from agent_contract_handoff.\n"
             "The agent_contract_handoff block must include an agent_status object with "
-            "plan_status, agent_id, pending_steps, and next_action."
+            "agent_state, agent_id, pending_steps, and next_action."
         )
         return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
 
     normalized = _resolve_status(agent_status)
-    raw_plan_status = agent_status.get("plan_status", "")
+    raw_agent_state = agent_status.get("agent_state", "")
     if not normalized or normalized not in VALID_PLAN_STATUSES:
         valid_list = ", ".join(sorted(VALID_PLAN_STATUSES))
         reason = (
-            f"[CONTRACT REJECTED] plan_status is missing or invalid: "
-            f"'{raw_plan_status}'.\n"
+            f"[CONTRACT REJECTED] agent_state is missing or invalid: "
+            f"'{raw_agent_state}'.\n"
             f"Valid statuses: {valid_list}.\n"
-            f"Set plan_status to one of these values in agent_status."
+            f"Set agent_state to one of these values in agent_status."
         )
         return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
 
@@ -471,13 +471,13 @@ def evaluate_contract_gate(
         # portability contract). See _verifier_role_violation for the
         # dormant/armed semantics.
         agent_status = parsed_contract.get("agent_status") if isinstance(parsed_contract, dict) else None
-        plan_status = ""
+        agent_state = ""
         if isinstance(agent_status, dict):
             from modules.agents.contract_validator import _resolve_status
-            plan_status = _resolve_status(agent_status)
-        violation = _verifier_role_violation(plan_status, agent_type)
+            agent_state = _resolve_status(agent_status)
+        violation = _verifier_role_violation(agent_state, agent_type)
         if violation:
-            anomaly = _gate_anomaly(agent_type, "VERIFIER_REQUIRED", "agent_status.plan_status", violation)
+            anomaly = _gate_anomaly(agent_type, "VERIFIER_REQUIRED", "agent_status.agent_state", violation)
             return ContractGateVerdict(
                 True, f"[CONTRACT REJECTED]\n{violation}", (anomaly,), GATE_MODE_FULL_VERDICT
             )
@@ -2143,7 +2143,7 @@ class ClaudeCodeAdapter(HookAdapter):
             # missing but the agent's own draft was already finalized,
             # reconstruct the envelope from that draft so the gate parses the
             # completed contract instead of rejecting persisted work. Placed
-            # BEFORE plan_status resolution and the gate so both see the
+            # BEFORE agent_state resolution and the gate so both see the
             # reconstructed envelope. Non-fatal: returns None -> gate unchanged.
             if not (
                 isinstance(parsed_contract, dict)
@@ -2173,9 +2173,9 @@ class ClaudeCodeAdapter(HookAdapter):
             else:
                 _validation_anomalies = []
 
-            # Resolve canonical plan_status from the agent_contract_handoff envelope.
+            # Resolve canonical agent_state from the agent_contract_handoff envelope.
             from modules.agents.contract_validator import _resolve_status
-            _resolved_plan_status = (
+            _resolved_agent_state = (
                 _resolve_status(parsed_contract.get("agent_status") or {})
                 if isinstance(parsed_contract, dict) else ""
             )
@@ -2238,7 +2238,7 @@ class ClaudeCodeAdapter(HookAdapter):
             if isinstance(parsed_contract, dict):
                 _approval_req = parsed_contract.get("approval_request") or {}
                 _nonce = _approval_req.get("approval_id") if isinstance(_approval_req, dict) else None
-                if _resolved_plan_status == "APPROVAL_REQUEST" and _nonce:
+                if _resolved_agent_state == "APPROVAL_REQUEST" and _nonce:
                     preserved_nonces.add(_nonce)
 
             cleanup_approval(
@@ -2500,7 +2500,7 @@ class ClaudeCodeAdapter(HookAdapter):
             # Write AGENT_COMPLETE event (non-blocking)
             try:
                 from modules.events.event_writer import EventWriter, AGENT_COMPLETE
-                _plan = _resolved_plan_status
+                _plan = _resolved_agent_state
                 _key_outputs = []
                 if parsed_contract and isinstance(parsed_contract.get("evidence_report"), dict):
                     _key_outputs = parsed_contract["evidence_report"].get("key_outputs", [])
@@ -2534,10 +2534,10 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
 
             # ----------------------------------------------------------
-            # Extract plan_status for downstream checks (canonical field
+            # Extract agent_state for downstream checks (canonical field
             # resolved earlier via _resolve_status).
             # ----------------------------------------------------------
-            _plan_status = _resolved_plan_status
+            _agent_state = _resolved_agent_state
 
             # ----------------------------------------------------------
             # State transition tracking
@@ -2559,10 +2559,10 @@ class ClaudeCodeAdapter(HookAdapter):
                 _is_resume = (
                     self.RESUME_MAP_CACHE_DIR / f"{session_id}.json"
                 ).is_file()
-                if _plan_status and _agent_id:
+                if _agent_state and _agent_id:
                     transition_result = track_transition(
                         _agent_id,
-                        _plan_status,
+                        _agent_state,
                         has_review_phase=False,  # Conservative: no T3 detection yet
                         is_resume=_is_resume,
                     )
@@ -2594,7 +2594,7 @@ class ClaudeCodeAdapter(HookAdapter):
             # Advisory only -- adds to anomalies but never blocks.
             # ----------------------------------------------------------
             if parsed_contract is not None:
-                approval_check = validate_approval_request(parsed_contract, _plan_status)
+                approval_check = validate_approval_request(parsed_contract, _agent_state)
                 if approval_check:
                     anomalies.append(approval_check)
                     logger.info(
@@ -2757,7 +2757,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 return None
             recon = dict(envelope)
             # Tag it exactly like parse_contract output so every downstream
-            # consumer (plan_status resolution, the gate, update_contracts)
+            # consumer (agent_state resolution, the gate, update_contracts)
             # treats it uniformly, plus a provenance marker for the audit trail.
             recon["_contract_tag"] = "agent_contract_handoff"
             recon["reconstructed_from_finalized_draft"] = draft_id
@@ -2792,8 +2792,8 @@ class ClaudeCodeAdapter(HookAdapter):
         Consistency with T9 semantics: the row is marked ``degraded=true`` (it
         is NOT an agent-verified COMPLETE) with a ``salvaged="truncation"``
         marker recording WHY it degraded; only flags are added, never
-        fabricated evidence. task_status mirrors T9: the draft's own
-        plan_status when it is a valid terminal value, else the honest
+        fabricated evidence. agent_state mirrors T9: the draft's own
+        agent_state when it is a valid terminal value, else the honest
         ``IN_PROGRESS``.
 
         OPTIMIZATION, never a gate: every failure is swallowed and returns
@@ -2841,13 +2841,13 @@ class ClaudeCodeAdapter(HookAdapter):
 
             salvaged = dict(envelope)
             agent_status = salvaged.get("agent_status")
-            plan_status = (
-                agent_status.get("plan_status")
+            agent_state = (
+                agent_status.get("agent_state")
                 if isinstance(agent_status, dict)
                 else None
             )
-            task_status = (
-                plan_status if plan_status in VALID_PLAN_STATUSES else "IN_PROGRESS"
+            agent_state = (
+                agent_state if agent_state in VALID_PLAN_STATUSES else "IN_PROGRESS"
             )
             salvaged["degraded"] = True
             salvaged["auto_captured"] = True
@@ -2857,7 +2857,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 contract_id=draft_id,
                 agent_id=str(agent_id_col),
                 workspace=workspace,
-                task_status=task_status,
+                agent_state=agent_state,
                 raw_handoff_json=json.dumps(salvaged),
                 session_id=session_id,
                 brief_id=None,

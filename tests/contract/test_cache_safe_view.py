@@ -13,7 +13,7 @@ A resumed subagent's prompt has TWO regions from TWO paths:
      and the byte-stability the cache actually depends on.
   2. RESUME HINT -- what the hook injects as ``additionalContext``, BELOW the
      identity prompt. It is VOLATILE BY DESIGN (T6, carry-forward): it reflects
-     the draft's current plan_status / next_action / pending_steps. Its job is
+     the draft's current agent_state / next_action / pending_steps. Its job is
      to be MINIMAL, so the full variable contract is NEVER re-injected atop the
      prompt.
 
@@ -53,12 +53,12 @@ DRAFT_ID = "a1b2c3d4e.deadbeefcafe"
 IDENTITY_FILE = _REPO_ROOT / "agents" / "gaia-system.md"
 
 
-def _envelope(plan_status="IN_PROGRESS", next_action="starting", n_pending=0, bulk=0):
+def _envelope(agent_state="IN_PROGRESS", next_action="starting", n_pending=0, bulk=0):
     """Build an envelope; ``bulk`` inflates ONLY the evidence payload (the part
     the by-value view must NOT re-inject)."""
     return {
         "agent_status": {
-            "plan_status": plan_status,
+            "agent_state": agent_state,
             "agent_id": "a1b2c3d4e",
             "pending_steps": [f"step-{i}" for i in range(n_pending)],
             "next_action": next_action,
@@ -127,8 +127,8 @@ def test_byte_stable_substrate_is_the_identity_prompt_not_the_volatile_hint():
     # Model the assembled resumed prompt: identity ABOVE, hint BELOW.
     identity_prompt = IDENTITY_FILE.read_text(encoding="utf-8")
 
-    env_msg1 = _envelope(plan_status="IN_PROGRESS", next_action="investigating", n_pending=3)
-    env_msg2 = _envelope(plan_status="COMPLETE", next_action="done", n_pending=0)
+    env_msg1 = _envelope(agent_state="IN_PROGRESS", next_action="investigating", n_pending=3)
+    env_msg2 = _envelope(agent_state="COMPLETE", next_action="done", n_pending=0)
 
     # The identity substrate is a pure function of the agent definition -- it
     # never reads the draft, so it is byte-identical across the two resumes.
@@ -149,9 +149,9 @@ def test_invariant_hint_prefix_is_byte_stable_across_resumes_only_tail_moves():
     resumes; ONLY the trailing volatile status line changes. This maximizes the
     cache-reusable prefix without ever claiming the volatile tail is stable."""
     resumes = [
-        _envelope(plan_status="IN_PROGRESS", next_action="step one", n_pending=4),
-        _envelope(plan_status="IN_PROGRESS", next_action="step two", n_pending=2),
-        _envelope(plan_status="COMPLETE", next_action="done", n_pending=0),
+        _envelope(agent_state="IN_PROGRESS", next_action="step one", n_pending=4),
+        _envelope(agent_state="IN_PROGRESS", next_action="step two", n_pending=2),
+        _envelope(agent_state="COMPLETE", next_action="done", n_pending=0),
     ]
     prefixes = set()
     tails = set()
@@ -175,7 +175,7 @@ def test_invariant_prefix_carries_no_volatile_field():
     """Defensive: the byte-stable prefix must contain none of the volatile
     field VALUES -- if a status ever leaked above the marker, the cache prefix
     would silently churn between messages."""
-    env = _envelope(plan_status="BLOCKED", next_action="waiting-on-approval", n_pending=7)
+    env = _envelope(agent_state="BLOCKED", next_action="waiting-on-approval", n_pending=7)
     prefix, _ = split_resume_hint(render_resume_hint(DRAFT_ID, env))
     assert "BLOCKED" not in prefix
     assert "waiting-on-approval" not in prefix
@@ -206,7 +206,7 @@ def test_hook_injection_path_uses_the_same_renderer(tmp_path, monkeypatch):
 
     agent_id = "a1b2c3d4e"
     draft_id = f"{agent_id}.cafefeed0001"
-    env = _envelope(plan_status="IN_PROGRESS", next_action="mid-flight", n_pending=2, bulk=50)
+    env = _envelope(agent_state="IN_PROGRESS", next_action="mid-flight", n_pending=2, bulk=50)
     save_draft(draft_id, env)
 
     adapter = ClaudeCodeAdapter()

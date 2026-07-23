@@ -5,7 +5,7 @@ DB-only since Task E FS retirement:
   All pending approvals are stored exclusively in gaia.db (approvals table).
 
 P-3d23 invariant (Fix A): a pending younger than its TTL MUST survive ANY
-subagent's SubagentStop, regardless of that subagent's final plan_status.
+subagent's SubagentStop, regardless of that subagent's final agent_state.
 SubagentStop is the normal lifecycle of the documented block -> approve ->
 retry flow, and because subagents share the main session_id, revoking pendings
 by session-membership at SubagentStop wiped out every other outstanding pending
@@ -212,7 +212,7 @@ def cleanup(
     user still needed to act on. cleanup() now only EXPIRES pendings that have
     aged past DEFAULT_PENDING_TTL_MINUTES (the 24h user-wait window); a pending
     within its TTL ALWAYS survives, regardless of the stopping subagent's
-    plan_status.
+    agent_state.
 
     DB-only since Task E FS retirement. No filesystem files are scanned or
     deleted.

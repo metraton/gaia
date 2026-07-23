@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 SKILL_FINGERPRINTS: Dict[str, List[str]] = {
     "agent-protocol": [
         "agent_contract_handoff",
-        "plan_status",
+        "agent_state",
         "evidence_report",
     ],
     "security-tiers": [

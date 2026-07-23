@@ -91,7 +91,7 @@ def _agent_names_from_dir() -> list[str]:
 def _envelope(plan_status: str = "COMPLETE") -> str:
     return json.dumps({
         "agent_status": {
-            "plan_status": plan_status,
+            "agent_state": plan_status,
             "agent_id": "a1234abcd",
             "pending_steps": [],
             "next_action": "done",
@@ -138,7 +138,7 @@ def test_seeded_agent_finalize_writes_correct_task_status(db, monkeypatch):
         contract_id=cid,
         agent_id="a1234abcd",
         workspace=WORKSPACE,
-        task_status="COMPLETE",
+        agent_state="COMPLETE",
         raw_handoff_json=_envelope("COMPLETE"),
         db_path=db,
     )
@@ -167,7 +167,7 @@ def test_unset_dispatch_is_allowed(db):
         contract_id="a1234abcd.tok-unset",
         agent_id="a1234abcd",
         workspace=WORKSPACE,
-        task_status="IN_PROGRESS",
+        agent_state="IN_PROGRESS",
         raw_handoff_json=_envelope("IN_PROGRESS"),
         db_path=db,
     )
@@ -187,7 +187,7 @@ def test_unseeded_agent_is_rejected(db, monkeypatch):
             contract_id="a1234abcd.tok-rogue",
             agent_id="a1234abcd",
             workspace=WORKSPACE,
-            task_status="COMPLETE",
+            agent_state="COMPLETE",
             raw_handoff_json=_envelope("COMPLETE"),
             db_path=db,
         )
@@ -211,7 +211,7 @@ def test_raw_sqlite_forged_row_blocked_by_schema(db):
         contract_id="a1234abcd.tok-seed",
         agent_id="a1234abcd",
         workspace=WORKSPACE,
-        task_status="COMPLETE",
+        agent_state="COMPLETE",
         raw_handoff_json=_envelope("COMPLETE"),
         db_path=db,
     )
@@ -267,7 +267,7 @@ def test_every_seeded_agent_can_finalize(db, monkeypatch):
             contract_id=cid,
             agent_id="a1234abcd",
             workspace=WORKSPACE,
-            task_status="COMPLETE",
+            agent_state="COMPLETE",
             raw_handoff_json=_envelope("COMPLETE"),
             db_path=db,
         )

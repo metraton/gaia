@@ -26,7 +26,7 @@ def _valid_envelope() -> dict:
     """A fully shape-valid, non-COMPLETE envelope used as the mutation base."""
     return {
         "agent_status": {
-            "plan_status": "IN_PROGRESS",
+            "agent_state": "IN_PROGRESS",
             "agent_id": "a1b2c3",
             "pending_steps": [],
             "next_action": "continue",
@@ -47,7 +47,7 @@ def _valid_envelope() -> dict:
 
 def _valid_complete_envelope() -> dict:
     env = _valid_envelope()
-    env["agent_status"]["plan_status"] = "COMPLETE"
+    env["agent_status"]["agent_state"] = "COMPLETE"
     env["agent_status"]["next_action"] = "done"
     env["evidence_report"]["verification"] = {
         "method": "test",
@@ -78,7 +78,7 @@ def test_negative_agent_id_format():
 # ---------------------------------------------------------------------------
 def test_negative_plan_status_out_of_enum():
     env = _valid_envelope()
-    env["agent_status"]["plan_status"] = "BOGUS"
+    env["agent_status"]["agent_state"] = "BOGUS"
 
     result = validate_form(env)
 
@@ -137,7 +137,7 @@ def test_positive_valid_envelope():
 # ---------------------------------------------------------------------------
 def _valid_approval_request_envelope() -> dict:
     env = _valid_envelope()
-    env["agent_status"]["plan_status"] = "APPROVAL_REQUEST"
+    env["agent_status"]["agent_state"] = "APPROVAL_REQUEST"
     env["agent_status"]["next_action"] = "awaiting user approval"
     env["approval_request"] = {
         "operation": "MUTATIVE command intercepted: push",

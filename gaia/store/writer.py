@@ -6075,7 +6075,7 @@ def _assert_dispatch_can_write_handoff() -> None:
 def insert_agent_contract_handoff(
     agent_id: str,
     workspace: str,
-    task_status: str,
+    agent_state: str,
     raw_handoff_json: str,
     *,
     session_id: str | None = None,
@@ -6090,7 +6090,9 @@ def insert_agent_contract_handoff(
     Args:
         agent_id:         Agent identity string (e.g. "a1b2c3d4e5").
         workspace:        Workspace name (FK -> workspaces.name).
-        task_status:      Resolved plan_status from the contract envelope.
+        agent_state:      Resolved agent_state (turn status) from the contract
+                          envelope; maps to the agent_contract_handoffs.agent_state
+                          column.
         raw_handoff_json: Full contract envelope serialized as JSON string.
         session_id:       CLAUDE_SESSION_ID at SubagentStop time (optional).
         brief_id:         briefs.id FK (optional -- EXTENSION_POINT for
@@ -6118,9 +6120,9 @@ def insert_agent_contract_handoff(
                     """
                     -- v37: the persisted column is `agent_state` (renamed from
                     -- task_status; born-at-dispatch redesign, plan 34). The
-                    -- Python parameter is still named task_status pending the
-                    -- envelope-field rename (plan 34 task 4); it maps to the
-                    -- agent_state column.
+                    -- Python parameter is now also `agent_state` (plan 34 task 4
+                    -- completed the envelope-field rename plan_status ->
+                    -- agent_state); it maps directly to the agent_state column.
                     INSERT INTO agent_contract_handoffs
                         (agent_id, session_id, workspace, brief_id,
                          agent_state, raw_handoff_json, created_at)
@@ -6131,7 +6133,7 @@ def insert_agent_contract_handoff(
                         session_id,
                         workspace,
                         brief_id,
-                        task_status,
+                        agent_state,
                         raw_handoff_json,
                         _now_iso(),
                     ),
@@ -6195,7 +6197,7 @@ def insert_agent_contract_handoff(
 #       contract_id: str,
 #       agent_id: str,
 #       workspace: str,
-#       task_status: str,
+#       agent_state: str,
 #       raw_handoff_json: str,
 #       *,
 #       session_id: str | None = None,
@@ -6219,7 +6221,7 @@ def finalize_agent_contract_handoff(
     contract_id: str,
     agent_id: str,
     workspace: str,
-    task_status: str,
+    agent_state: str,
     raw_handoff_json: str,
     *,
     session_id: str | None = None,
@@ -6238,7 +6240,9 @@ def finalize_agent_contract_handoff(
                           key). Required (raises ValueError if empty).
         agent_id:         Agent identity string (e.g. "a1b2c3d4e5").
         workspace:        Workspace name (FK -> workspaces.name).
-        task_status:      Resolved plan_status from the contract envelope.
+        agent_state:      Resolved agent_state (turn status) from the contract
+                          envelope; maps to the agent_contract_handoffs.agent_state
+                          column.
         raw_handoff_json: Full contract envelope serialized as JSON string.
         session_id:       CLAUDE_SESSION_ID at write time (optional; the
                           harness-agnostic CLI path leaves this None -- only
@@ -6286,9 +6290,10 @@ def finalize_agent_contract_handoff(
                 cur = con.execute(
                     """
                     -- v37: the persisted column is `agent_state` (renamed from
-                    -- task_status). The Python parameter keeps the name
-                    -- task_status pending the envelope-field rename (plan 34
-                    -- task 4); it maps to the agent_state column here.
+                    -- task_status). The Python parameter is now also `agent_state`
+                    -- (plan 34 task 4 completed the envelope-field rename
+                    -- plan_status -> agent_state); it maps directly to the
+                    -- agent_state column here.
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
                          agent_state, raw_handoff_json, created_at)
@@ -6301,7 +6306,7 @@ def finalize_agent_contract_handoff(
                         session_id,
                         workspace,
                         brief_id,
-                        task_status,
+                        agent_state,
                         raw_handoff_json,
                         _now_iso(),
                     ),
@@ -6453,7 +6458,7 @@ def list_agent_contract_handoffs(
     agent_id: str | None = None,
     session_id: str | None = None,
     brief_id: int | None = None,
-    task_status: str | None = None,
+    agent_state: str | None = None,
     contract_id: str | None = None,
     limit: int = 100,
     db_path: "Path | None" = None,
@@ -6465,7 +6470,7 @@ def list_agent_contract_handoffs(
         agent_id:    Filter by agent identity string.
         session_id:  Filter by CLAUDE session ID.
         brief_id:    Filter by briefs.id FK.
-        task_status: Filter by resolved plan_status.
+        agent_state: Filter by resolved agent_state (turn status).
         contract_id: Filter by the T7 idempotency key (the CLI-minted
             draft/contract id) -- see finalize_agent_contract_handoff.
         limit:       Maximum rows to return (default 100).
@@ -6490,11 +6495,11 @@ def list_agent_contract_handoffs(
         if brief_id is not None:
             clauses.append("brief_id = ?")
             params.append(brief_id)
-        if task_status is not None:
-            # v37: column renamed task_status -> agent_state; the keyword arg
-            # name is preserved pending plan 34 task 4.
+        if agent_state is not None:
+            # v37: column renamed task_status -> agent_state (plan 34 task 3);
+            # the keyword arg is now agent_state to match (plan 34 task 4).
             clauses.append("agent_state = ?")
-            params.append(task_status)
+            params.append(agent_state)
         if contract_id is not None:
             clauses.append("contract_id = ?")
             params.append(contract_id)

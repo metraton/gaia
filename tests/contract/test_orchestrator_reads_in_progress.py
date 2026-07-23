@@ -99,11 +99,11 @@ def test_orchestrator_view_sees_mid_cycle_state_without_agent_reemitting(cli_env
     seen = json.loads(orchestrator_view.stdout)
 
     assert seen["draft_id"] == draft_id
-    assert seen["envelope"]["agent_status"]["plan_status"] == "IN_PROGRESS"
+    assert seen["envelope"]["agent_status"]["agent_state"] == "IN_PROGRESS"
     assert seen["envelope"]["agent_status"]["next_action"] == "investigating AC-20"
     # The draft is NOT finalized yet -- this really is an in-progress read,
     # not a post-hoc read of a completed row.
-    assert seen["envelope"]["agent_status"]["plan_status"] != "COMPLETE"
+    assert seen["envelope"]["agent_status"]["agent_state"] != "COMPLETE"
 
     # -- Agent turn 2: more progress, unaware the orchestrator peeked. --
     set2 = _run(

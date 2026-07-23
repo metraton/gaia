@@ -240,11 +240,11 @@ def _run_cycle(
     fill_proc = _run(["fill", "--json", patch, "--draft-id", draft_id], env)
     _check(fill_proc, "fill")
 
-    # Step 4: set plan_status=COMPLETE (requires the fill above to have
+    # Step 4: set agent_state=COMPLETE (requires the fill above to have
     # already landed verification.result=="pass").
     barrier.wait(timeout=30)
     complete_proc = _run(
-        ["set", "agent_status.plan_status", "COMPLETE", "--draft-id", draft_id],
+        ["set", "agent_status.agent_state", "COMPLETE", "--draft-id", draft_id],
         env,
     )
     _check(complete_proc, "set plan_status")

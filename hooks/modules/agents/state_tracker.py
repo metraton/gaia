@@ -161,7 +161,7 @@ def track_transition(
 
     Args:
         agent_id: The agent's unique identifier.
-        new_state: The new plan_status being reported.
+        new_state: The new agent_state being reported.
         has_review_phase: Hint that this task involves T3 / plan-first flow.
             When True, IN_PROGRESS -> COMPLETE without an intervening REVIEW
             is flagged as a warning.
