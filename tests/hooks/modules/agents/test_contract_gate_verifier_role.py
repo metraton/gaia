@@ -1,25 +1,22 @@
 #!/usr/bin/env python3
-"""Verifier-role gate (harness R2 -- NEEDS_VERIFICATION / verifier-gated
-COMPLETE).
+"""The finalize gate is DECOUPLED from the verifier registry (plan 34 task 7).
 
-Brief: harness-r2-needs-verification-y-complete-restringido-por-rol-verificador
-(plan_id=32, task order_num=4, AC-3 + AC-5).
+Brief: contrato-binding-y-verificacion-por-task-id (plan_id=34, task order_num=7).
 
-Covers the locked decisions verbatim:
+Historical note: until task 7 this file asserted the OLD harness-R2 behavior --
+a non-verifier COMPLETE was rejected once the verifier registry armed (keyed on
+``gaia.state.permissions.verifier_fleet`` / ``is_verifier``). That role/registry
+coupling has been REMOVED from the finalize gate: the gate now keys on the
+turn's dispatch binding (``plan_task_id``), never on who the agent is. The
+positive plan_task_id behavior lives in
+``tests/hooks/test_verification_keyed_on_task_id.py`` and
+``tests/hooks/test_memory_self_completes.py``; THIS file is the regression guard
+proving the decoupling -- an armed verifier registry no longer influences the
+gate at all.
 
-1. DORMANT until B3: an empty verifier registry means every producer may
-   still self-COMPLETE (today's behavior, unchanged) -- no deadlock.
-2. PROPOSE, not COMPLETE: a producer may propose
-   evidence_report.verification.result at NEEDS_VERIFICATION; the gate never
-   treats NEEDS_VERIFICATION as a completed/done state regardless of that
-   proposed value.
-3. ENFORCE IN BOTH RAMP PATHS: evaluate_contract_gate (ramp-ON) AND
-   _three_case_verdict (ramp-OFF) both reject a non-verifier COMPLETE once
-   the registry is armed -- ramp-OFF is not a bypass.
-4. ARMED-FIRST ORDERING: the check is "is the registry non-empty, and if so
-   is this agent in it" -- NOT "is this agent in it" alone (which would
-   deadlock every producer the moment the code lands, before any agent has
-   opted in).
+The registry infrastructure itself (skill injection, dispatch-side role
+detection) is unchanged and still exercised by ``tests/test_verifier_registry.py``
+and friends; only the FINALIZE gate stopped consulting it.
 """
 
 from __future__ import annotations
@@ -38,8 +35,7 @@ for _p in (str(HOOKS_DIR), str(PKG_ROOT)):
 from adapters.claude_code import (  # noqa: E402
     GATE_MODE_FULL_VERDICT,
     GATE_MODE_THREE_CASE,
-    _three_case_verdict,
-    _verifier_role_violation,
+    _blind_verification_required,
     evaluate_contract_gate,
 )
 from gaia.state import permissions as _permissions  # noqa: E402
@@ -61,48 +57,27 @@ def _evidence():
     return {k: [] for k in _EVIDENCE_KEYS}
 
 
-def _envelope(plan_status: str, agent_id: str = "a1b2c3"):
+def _complete_envelope(agent_id: str = "a1b2c3"):
     return {
         "agent_status": {
-            "agent_state": plan_status,
+            "agent_state": "COMPLETE",
             "agent_id": agent_id,
             "pending_steps": [],
-            "next_action": "done" if plan_status == "COMPLETE" else "continue",
+            "next_action": "done",
         },
-        "evidence_report": _evidence(),
+        "evidence_report": {
+            **_evidence(),
+            "verification": {
+                "method": "test", "result": "pass", "details": "suite green",
+            },
+        },
         "consolidation_report": None,
         "approval_request": None,
     }
 
 
-def _complete_envelope(agent_id: str = "a1b2c3"):
-    env = _envelope("COMPLETE", agent_id)
-    env["evidence_report"]["verification"] = {
-        "method": "test", "result": "pass", "details": "suite green",
-    }
-    return env
-
-
-def _needs_verification_envelope_with_proposed_result(result: str = "pass"):
-    """A producer proposing evidence_report.verification.result alongside
-    NEEDS_VERIFICATION -- the shape core does not require or enforce
-    verification on a non-COMPLETE status, so this is carried through, but
-    the gate must never treat it as a completed/done state."""
-    env = _envelope("NEEDS_VERIFICATION")
-    env["evidence_report"]["verification"] = {
-        "method": "test", "result": result, "details": "proposed by producer",
-    }
-    return env
-
-
 @pytest.fixture(autouse=True)
-def _clean_verifier_cache(monkeypatch):
-    """Every test starts with a fresh fleet cache. Since B3 M2 (ARMING), the
-    real ``agents/`` tree is itself ARMED (``agents/gaia-verifier.md`` ships
-    live) -- so a test exercising DORMANT-registry behavior must explicitly
-    seed an isolated, verifier-free ``agents/`` fixture via ``_seed_fleet(...,
-    [])`` rather than relying on the live tree being empty. Tests that want
-    the ARMED behavior seed ``_seed_fleet(..., ["gaia-verifier"])`` as before."""
+def _clean_verifier_cache():
     verifier_fleet.cache_clear()
     yield
     verifier_fleet.cache_clear()
@@ -110,7 +85,7 @@ def _clean_verifier_cache(monkeypatch):
 
 def _seed_fleet(monkeypatch, tmp_path, verifier_names):
     """Point gaia.state.permissions._agents_dir at a synthetic agents/ dir
-    carrying `verifier: true` for each name in verifier_names."""
+    carrying ``verifier: true`` for each name -- i.e. an ARMED registry."""
     agents_dir = tmp_path / "agents"
     agents_dir.mkdir(exist_ok=True)
     for name in verifier_names:
@@ -125,162 +100,65 @@ def _seed_fleet(monkeypatch, tmp_path, verifier_names):
 
 
 # ---------------------------------------------------------------------------
-# 1. DORMANT (empty registry) -- producers may still self-COMPLETE
+# An ARMED verifier registry no longer influences the finalize gate.
 # ---------------------------------------------------------------------------
 
-class TestDormantRegistryContractGateVerifier:
-    """Since B3 M2 (ARMING) the live ``agents/`` tree itself carries
-    ``agents/gaia-verifier.md`` (armed), so DORMANT-branch behavior is proven
-    against an isolated, verifier-free fixture (``_seed_fleet(..., [])``)
-    rather than the live tree -- the dormant CODE PATH is still real
-    behavior (a workspace / installed layout with no verifier-marked agent)
-    and must stay covered independently of the live tree's current state."""
-
-    def test_empty_registry_allows_producer_complete_full_verdict(self, monkeypatch, tmp_path):
-        _seed_fleet(monkeypatch, tmp_path, [])
-        assert verifier_fleet() == frozenset()
+class TestArmedRegistryNoLongerGatesComplete:
+    def test_armed_registry_allows_unbound_non_verifier_complete_full_verdict(
+        self, monkeypatch, tmp_path
+    ):
+        """The exact case the OLD gate rejected: a non-verifier COMPLETE with the
+        registry ARMED. Now that the gate keys on plan_task_id, an UNBOUND turn
+        (plan_task_id=None) self-completes regardless of the armed registry."""
+        _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
+        assert verifier_fleet() == frozenset({"gaia-verifier"})
         gate = evaluate_contract_gate(
-            _complete_envelope(), agent_type="developer", ramp_enabled=True,
+            _complete_envelope(), agent_type="developer",
+            plan_task_id=None, ramp_enabled=True,
         )
         assert gate.rejected is False
         assert gate.mode == GATE_MODE_FULL_VERDICT
+        assert gate.anomalies == ()
 
-    def test_empty_registry_allows_producer_complete_three_case(self, monkeypatch, tmp_path):
-        _seed_fleet(monkeypatch, tmp_path, [])
-        assert verifier_fleet() == frozenset()
+    def test_armed_registry_allows_unbound_non_verifier_complete_three_case(
+        self, monkeypatch, tmp_path
+    ):
+        _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
         gate = evaluate_contract_gate(
-            _complete_envelope(), agent_type="developer", ramp_enabled=False,
+            _complete_envelope(), agent_type="developer",
+            plan_task_id=None, ramp_enabled=False,
         )
         assert gate.rejected is False
         assert gate.mode == GATE_MODE_THREE_CASE
 
-    def test_verifier_role_violation_returns_none_when_dormant(self, monkeypatch, tmp_path):
-        _seed_fleet(monkeypatch, tmp_path, [])
-        assert _verifier_role_violation("COMPLETE", "any-producer") is None
+    def test_bound_complete_rejected_regardless_of_registry_state(
+        self, monkeypatch, tmp_path
+    ):
+        """And a BOUND COMPLETE is rejected whether the registry is armed or
+        empty -- the verdict tracks plan_task_id, not the fleet."""
+        for names in ([], ["gaia-verifier"]):
+            _seed_fleet(monkeypatch, tmp_path, names)
+            gate = evaluate_contract_gate(
+                _complete_envelope(), agent_type="developer",
+                plan_task_id=44, ramp_enabled=True,
+            )
+            assert gate.rejected is True, f"fleet={names}: bound turn must be gated"
 
 
 # ---------------------------------------------------------------------------
-# 3. ARMED registry -- non-verifier COMPLETE rejected in BOTH ramp paths
+# The gate helper does not consult the registry -- it is a pure function of
+# (agent_state, plan_task_id).
 # ---------------------------------------------------------------------------
 
-class TestArmedRegistryContractGateVerifierBothPaths:
-    def test_armed_registry_rejects_non_verifier_complete_full_verdict(self, monkeypatch, tmp_path):
+class TestBlindCheckIsRegistryBlind:
+    def test_helper_signature_has_no_role_parameter(self):
+        import inspect
+        params = list(inspect.signature(_blind_verification_required).parameters)
+        assert params == ["agent_state", "plan_task_id"]
+
+    def test_helper_verdict_independent_of_fleet(self, monkeypatch, tmp_path):
         _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
-        gate = evaluate_contract_gate(
-            _complete_envelope(), agent_type="developer", ramp_enabled=True,
-        )
-        assert gate.rejected is True
-        assert gate.mode == GATE_MODE_FULL_VERDICT
-        assert "not a seeded verifier" in gate.rejection_reason
-        assert any(a["code"] == "VERIFIER_REQUIRED" for a in gate.anomalies)
-
-    def test_armed_registry_rejects_non_verifier_complete_three_case(self, monkeypatch, tmp_path):
-        """Ramp-OFF is NOT a bypass -- the identical armed-registry rejection
-        must fire in _three_case_verdict too."""
-        _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
-        gate = evaluate_contract_gate(
-            _complete_envelope(), agent_type="developer", ramp_enabled=False,
-        )
-        assert gate.rejected is True
-        assert gate.mode == GATE_MODE_THREE_CASE
-        assert "not a seeded verifier" in gate.rejection_reason
-
-    def test_armed_registry_allows_seeded_verifier_complete_full_verdict(self, monkeypatch, tmp_path):
-        _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
-        gate = evaluate_contract_gate(
-            _complete_envelope(), agent_type="gaia-verifier", ramp_enabled=True,
-        )
-        assert gate.rejected is False
-
-    def test_armed_registry_allows_seeded_verifier_complete_three_case(self, monkeypatch, tmp_path):
-        _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
-        gate = evaluate_contract_gate(
-            _complete_envelope(), agent_type="gaia-verifier", ramp_enabled=False,
-        )
-        assert gate.rejected is False
-
-    def test_three_case_verdict_called_directly_rejects_non_verifier(self, monkeypatch, tmp_path):
-        """Exercises _three_case_verdict directly (not only through the
-        evaluate_contract_gate dispatcher) so the ramp-OFF path is proven
-        independently touched, not assumed inherited from ramp-ON."""
-        _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
-        gate = _three_case_verdict(_complete_envelope(), "developer")
-        assert gate.rejected is True
-        assert gate.mode == GATE_MODE_THREE_CASE
-
-
-# ---------------------------------------------------------------------------
-# 4. ARMED-FIRST ORDERING -- registry-non-empty is checked before is_verifier
-# ---------------------------------------------------------------------------
-
-class TestArmedFirstOrderingContractGateVerifier:
-    def test_dormant_producer_not_in_any_fleet_is_still_allowed(self, monkeypatch, tmp_path):
-        """The critical ordering bug this guards against: checking
-        is_verifier(agent) alone (with no registry-empty guard) would reject
-        EVERY producer once this code lands. Proves a producer with NO
-        relationship to a genuinely empty (dormant) verifier fleet still
-        passes -- exercised against an isolated fixture since the live tree
-        is armed as of B3 M2."""
-        _seed_fleet(monkeypatch, tmp_path, [])
-        assert verifier_fleet() == frozenset()
-        violation = _verifier_role_violation("COMPLETE", "totally-unseeded-agent")
-        assert violation is None
-
-
-# ---------------------------------------------------------------------------
-# 2. PROPOSE, NOT COMPLETE -- NEEDS_VERIFICATION with a proposed
-# verification.result is never treated as done
-# ---------------------------------------------------------------------------
-
-class TestNeedsVerificationProposeNotComplete:
-    def test_needs_verification_propose_pass_not_rejected_dormant(self):
-        """A producer may propose verification.result='pass' at
-        NEEDS_VERIFICATION -- the gate does not reject the shape (dormant
-        registry), but this is NOT the same as accepting it as COMPLETE."""
-        gate = evaluate_contract_gate(
-            _needs_verification_envelope_with_proposed_result("pass"),
-            agent_type="developer",
-            ramp_enabled=True,
-        )
-        assert gate.rejected is False
-        assert gate.mode == GATE_MODE_FULL_VERDICT
-
-    def test_needs_verification_propose_never_treated_as_complete_verdict(self):
-        """The verifier-role check ONLY gates plan_status == COMPLETE.
-        NEEDS_VERIFICATION never triggers it, proposed result notwithstanding
-        -- it is not accepted AS done, it is simply not a violation of the
-        COMPLETE-only role gate."""
-        assert _verifier_role_violation("NEEDS_VERIFICATION", "developer") is None
-
-    def test_needs_verification_propose_armed_registry_still_not_rejected(self, monkeypatch, tmp_path):
-        """Even with the registry ARMED, a non-verifier proposing
-        NEEDS_VERIFICATION is not rejected by the verifier-role gate -- only
-        an actual COMPLETE from a non-verifier is."""
-        _seed_fleet(monkeypatch, tmp_path, ["gaia-verifier"])
-        gate = evaluate_contract_gate(
-            _needs_verification_envelope_with_proposed_result("pass"),
-            agent_type="developer",
-            ramp_enabled=True,
-        )
-        assert gate.rejected is False
-
-    def test_needs_verification_propose_fail_also_not_rejected(self):
-        """A producer may equally propose a 'fail' result at
-        NEEDS_VERIFICATION -- the shape core never enforces verification on a
-        non-COMPLETE status, so neither result value is rejected here; the
-        verifier's own judgement (not this gate) decides what happens next."""
-        gate = evaluate_contract_gate(
-            _needs_verification_envelope_with_proposed_result("fail"),
-            agent_type="developer",
-            ramp_enabled=True,
-        )
-        assert gate.rejected is False
-
-    def test_needs_verification_three_case_path_also_not_rejected(self):
-        gate = evaluate_contract_gate(
-            _needs_verification_envelope_with_proposed_result("pass"),
-            agent_type="developer",
-            ramp_enabled=False,
-        )
-        assert gate.rejected is False
-        assert gate.mode == GATE_MODE_THREE_CASE
+        # Armed registry present, yet the helper's verdict depends only on the
+        # binding: bound -> reason, unbound -> None.
+        assert _blind_verification_required("COMPLETE", 44) is not None
+        assert _blind_verification_required("COMPLETE", None) is None

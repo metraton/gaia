@@ -6709,6 +6709,43 @@ def find_orphaned_dispatched_handoff(
         con.close()
 
 
+def dispatched_binding_plan_task_id(
+    session_id: "str | None",
+    agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "int | None":
+    """Return the ``plan_task_id`` bound to the nascent DISPATCHED row for
+    ``(session_id, agent_id)``, or None.
+
+    The finalize gate (plan 34 task 7) keys blind verification on whether the
+    turn's dispatch binding carries a ``plan_task_id``. A row born at dispatch
+    stamps that binding alongside ``session_id`` + ``agent_id`` (the same
+    coordinate pair :func:`find_orphaned_dispatched_handoff` reaps by), so the
+    SubagentStop gate can recover the binding for the turn that is ending. Only
+    a row still in the 'DISPATCHED' ROW state is consulted -- the binding of the
+    turn as dispatched, before it converges to a terminal verdict; the
+    most-recent (highest id) match wins. Returns None when no DISPATCHED row
+    exists for that pair or its ``plan_task_id`` is NULL (an unbound turn --
+    investigation / memory / a free-standing verifier turn).
+    """
+    if not session_id or not agent_id:
+        return None
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT plan_task_id FROM agent_contract_handoffs "
+            "WHERE agent_state = 'DISPATCHED' AND session_id = ? AND agent_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["plan_task_id"]
+    finally:
+        con.close()
+
+
 def insert_handoff_approval(
     handoff_id: int,
     approval_id: str,

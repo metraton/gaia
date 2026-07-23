@@ -313,76 +313,91 @@ def _gate_anomaly(agent_type: str, code: str, field: str, detail: str) -> Dict[s
 
 
 # ---------------------------------------------------------------------------
-# Verifier-role gate (harness R2 -- NEEDS_VERIFICATION / verifier-gated
-# COMPLETE)
+# Blind-verification gate (plan 34 task 7 -- finalize gate keyed on plan_task_id)
 # ---------------------------------------------------------------------------
 #
 # Deliberately NOT part of validate_form / crosscheck.validate: those are the
-# role-BLIND portability core (gaia.contract.validator / gaia.contract.
-# crosscheck), shared by the CLI, the finalize writer, and the fence
-# fallback -- they enforce SHAPE only and must never learn "who is allowed to
-# say COMPLETE" (that would break the portability contract tested by
-# tests/contract/test_validator_portable.py). The role check is an adapter-
-# layer concern -- it lives HERE, applied identically to BOTH gate paths
-# (ramp-ON full-verdict and ramp-OFF three-case) so neither is a bypass.
+# portability core (gaia.contract.validator / gaia.contract.crosscheck), shared
+# by the CLI, the finalize writer, and the fence fallback -- they enforce SHAPE
+# only and must never learn "who is allowed to say COMPLETE" (that would break
+# the portability contract tested by tests/contract/test_validator_portable.py).
+# The blind-verification check is an adapter-layer concern -- it lives HERE,
+# applied identically to BOTH gate paths (ramp-ON full-verdict and ramp-OFF
+# three-case) so neither is a bypass.
 #
-# ARMED vs DORMANT: the registry-non-empty check MUST run first. Checking
-# ``is_verifier(agent_type)`` alone -- with no registry-empty guard -- would
-# reject EVERY producer's COMPLETE the moment this code lands, before any
-# agent carries the ``verifier: true`` marker (B3's job). Checking
-# ``bool(verifier_fleet())`` first means: registry empty today -> dormant ->
-# every producer may still self-COMPLETE, byte-identical to pre-R2 behavior;
-# registry non-empty (post-B3) -> armed -> only a seeded verifier identity may
-# set COMPLETE.
+# KEYED ON plan_task_id, NOT ROLE, NOT KIND: this is the redesign's core. The
+# decision is a function of the DISPATCH BINDING, not of who the emitting agent
+# is or what label its turn carries:
+#
+#   * A turn WHOSE BINDING CARRIES A plan_task_id is a plan-task-bound producer
+#     turn. It may NOT self-COMPLETE -- it is forced to NEEDS_VERIFICATION so an
+#     independent (blind) verifier confirms the increment. The producer proposes
+#     evidence_report.verification.result; a separate verifier turn -- which
+#     binds to the producer via parent_handoff_id and therefore carries NO
+#     plan_task_id of its own -- is what promotes the increment to COMPLETE.
+#   * A turn with NO plan_task_id (investigation, memory, a free-standing
+#     verifier turn) is NOT bound to a plan task, so blind verification does not
+#     apply: it may self-COMPLETE. This is why an unbound memory turn reaches
+#     COMPLETE even when the agents/ tree ships a seeded verifier -- the old
+#     registry-armed role gate would have wrongly blocked it.
+#
+# The former verifier-registry coupling (verifier_fleet / is_verifier) is gone
+# from this gate on purpose: keying on role made every non-verifier COMPLETE a
+# violation the moment the registry armed, which contradicts "an unbound turn
+# self-completes". The registry infrastructure still exists (skill injection,
+# dispatch-side role detection); the FINALIZE gate simply no longer consults it.
 #
 # PROPOSE, NOT COMPLETE: this function only gates COMPLETE. A producer
 # transitioning to NEEDS_VERIFICATION is never touched here -- it is not a
-# violation for a non-verifier to propose NEEDS_VERIFICATION (that is exactly
-# the point of the state), and the shape core already never requires or
-# enforces evidence_report.verification on a non-COMPLETE status, so a
-# proposed verification.result alongside NEEDS_VERIFICATION is carried
-# through unevaluated -- the gate never accepts NEEDS_VERIFICATION as a
-# completed/done state regardless of that proposed value.
-def _verifier_role_violation(agent_state: str, agent_type: str) -> Optional[str]:
-    """Return a rejection reason iff a non-verifier agent tried to set
-    COMPLETE while the verifier registry is ARMED (non-empty). ``None`` means
-    no violation -- either the status is not COMPLETE, the registry is still
-    DORMANT (empty), or ``agent_type`` is a seeded verifier.
+# violation to propose NEEDS_VERIFICATION (that is exactly the point of the
+# state), and the shape core never requires evidence_report.verification on a
+# non-COMPLETE status, so a proposed verification.result alongside
+# NEEDS_VERIFICATION is carried through unevaluated -- the gate never accepts
+# NEEDS_VERIFICATION as a completed/done state regardless of that proposed value.
+def _blind_verification_required(
+    agent_state: str, plan_task_id: Optional[int]
+) -> Optional[str]:
+    """Return a rejection reason iff a COMPLETE turn is bound to a plan task
+    (its dispatch binding carries a ``plan_task_id``) and therefore must be
+    blind-verified rather than self-completed. ``None`` means no violation --
+    either the status is not COMPLETE, or the turn carries no ``plan_task_id``
+    (an investigation / memory / free-standing turn, free to self-COMPLETE).
+
+    The decision is a pure function of ``(agent_state, plan_task_id)``: it does
+    NOT consult the emitting agent's role or the turn's ``kind``.
     """
     if agent_state != "COMPLETE":
         return None
-    from gaia.state.permissions import is_verifier, verifier_fleet
-
-    fleet = verifier_fleet()
-    if not fleet:
-        # DORMANT: no agent has opted into the verifier role yet -- every
-        # producer may still self-COMPLETE (today's behavior, unchanged).
-        return None
-    if is_verifier(agent_type):
+    if plan_task_id is None:
+        # UNBOUND: no plan task -- self-COMPLETE is permitted (today's behavior
+        # for investigation / memory turns, now keyed explicitly on the binding).
         return None
     return (
-        f"agent_status.agent_state is COMPLETE, but '{agent_type}' is not a "
-        f"seeded verifier (verifier registry is ARMED: {sorted(fleet)}). "
-        "Only a verifier-role agent may set COMPLETE once the registry is "
-        "non-empty. Set agent_state to NEEDS_VERIFICATION and propose "
-        "evidence_report.verification.result for a verifier to confirm, or "
-        "stay IN_PROGRESS."
+        f"agent_status.agent_state is COMPLETE, but this turn is bound to "
+        f"plan_task_id={plan_task_id}: a plan-task-bound producer turn may not "
+        "self-COMPLETE. Set agent_state to NEEDS_VERIFICATION and propose "
+        "evidence_report.verification.result for an independent verifier to "
+        "confirm, or stay IN_PROGRESS. (A turn with no plan_task_id -- "
+        "investigation / memory -- may self-COMPLETE.)"
     )
 
 
-def _three_case_verdict(parsed_contract: Any, agent_type: str) -> ContractGateVerdict:
+def _three_case_verdict(
+    parsed_contract: Any,
+    agent_type: str,
+    plan_task_id: Optional[int] = None,
+) -> ContractGateVerdict:
     """The legacy Option B gate: reject the 3 critical structural cases, PLUS
-    the verifier-role check (harness R2).
+    the blind-verification check (plan 34 task 7).
 
     Byte-identical to the pre-T16 inline gate for the 3 original structural
     cases, preserving today's behavior exactly there (AC-10). The ONE
-    deliberate addition is ``_verifier_role_violation`` below: the brief's
-    locked decision is "enforce in BOTH ramp paths -- ramp-OFF is not a
-    bypass", so a non-verifier COMPLETE while the registry is ARMED is
-    rejected here too, not only in the full-verdict path. Still produces NO
-    anomalies for the 3 original cases -- those stay on the legacy
-    validate_contract / validate_response_contract path, unchanged; the new
-    verifier check reports via its own dedicated reason string.
+    deliberate addition is ``_blind_verification_required`` below: the locked
+    decision is "enforce in BOTH ramp paths -- ramp-OFF is not a bypass", so a
+    plan-task-bound COMPLETE is rejected here too, not only in the full-verdict
+    path. Still produces NO anomalies for the 3 original cases -- those stay on
+    the legacy validate_contract / validate_response_contract path, unchanged;
+    the blind-verification check reports via its own dedicated reason string.
     """
     from modules.agents.contract_validator import _resolve_status
     from modules.agents.response_contract import VALID_PLAN_STATUSES
@@ -419,7 +434,7 @@ def _three_case_verdict(parsed_contract: Any, agent_type: str) -> ContractGateVe
         )
         return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
 
-    violation = _verifier_role_violation(normalized, agent_type)
+    violation = _blind_verification_required(normalized, plan_task_id)
     if violation:
         return ContractGateVerdict(
             True, f"[CONTRACT REJECTED]\n{violation}", (), GATE_MODE_THREE_CASE
@@ -432,6 +447,7 @@ def evaluate_contract_gate(
     parsed_contract: Any,
     *,
     agent_type: str = "unknown",
+    plan_task_id: Optional[int] = None,
     stop_reason_classification: str = STOP_REASON_UNKNOWN,
     ramp_enabled: Optional[bool] = None,
     db_path: Optional[str] = None,
@@ -442,6 +458,11 @@ def evaluate_contract_gate(
         parsed_contract: the parsed agent_contract_handoff envelope dict, or
             None when no parseable block was found.
         agent_type: the emitting agent (for anomaly messages).
+        plan_task_id: the plan task this turn is bound to (from the dispatch
+            binding), or None for an unbound turn. Drives the blind-verification
+            gate (plan 34 task 7): a bound COMPLETE is forced to
+            NEEDS_VERIFICATION; an unbound turn may self-COMPLETE. Keyed on the
+            binding, NOT on the agent's role or the turn's kind.
         stop_reason_classification: the ALREADY-resolved T10 classification
             (STOP_REASON_TRUNCATION / _VIOLATION / _UNKNOWN). Read, not
             recomputed -- decides salvage-vs-violation.
@@ -457,7 +478,7 @@ def evaluate_contract_gate(
         ramp_enabled = full_verdict_gate_enabled()
 
     if not ramp_enabled:
-        return _three_case_verdict(parsed_contract, agent_type)
+        return _three_case_verdict(parsed_contract, agent_type, plan_task_id)
 
     # Full-verdict: the SINGLE core (form + cross-check) is the SSOT verdict.
     from gaia.contract.crosscheck import validate as _core_validate
@@ -465,19 +486,19 @@ def evaluate_contract_gate(
     _db = Path(db_path) if db_path else None
     result = _core_validate(parsed_contract, db_path=_db)
     if result.ok:
-        # The role-blind core (form + cross-check) is shape-valid. Layer the
-        # verifier-role check on top (harness R2) -- deliberately OUTSIDE
-        # validate_form/crosscheck.validate, which must stay role-blind (the
-        # portability contract). See _verifier_role_violation for the
-        # dormant/armed semantics.
+        # The portability core (form + cross-check) is shape-valid. Layer the
+        # blind-verification check on top (plan 34 task 7) -- deliberately
+        # OUTSIDE validate_form/crosscheck.validate, which must stay role- and
+        # binding-blind (the portability contract). See
+        # _blind_verification_required for the plan_task_id semantics.
         agent_status = parsed_contract.get("agent_status") if isinstance(parsed_contract, dict) else None
         agent_state = ""
         if isinstance(agent_status, dict):
             from modules.agents.contract_validator import _resolve_status
             agent_state = _resolve_status(agent_status)
-        violation = _verifier_role_violation(agent_state, agent_type)
+        violation = _blind_verification_required(agent_state, plan_task_id)
         if violation:
-            anomaly = _gate_anomaly(agent_type, "VERIFIER_REQUIRED", "agent_status.agent_state", violation)
+            anomaly = _gate_anomaly(agent_type, "BLIND_VERIFICATION_REQUIRED", "agent_status.agent_state", violation)
             return ContractGateVerdict(
                 True, f"[CONTRACT REJECTED]\n{violation}", (anomaly,), GATE_MODE_FULL_VERDICT
             )
@@ -2285,10 +2306,31 @@ class ClaudeCodeAdapter(HookAdapter):
             # ----------------------------------------------------------
             _full_verdict = full_verdict_gate_enabled()
             _gate_mode = GATE_MODE_FULL_VERDICT if _full_verdict else GATE_MODE_THREE_CASE
+            # Resolve the plan_task_id this turn was BOUND to at dispatch (plan 34
+            # task 7): the blind-verification gate forces a bound COMPLETE to
+            # NEEDS_VERIFICATION and lets an unbound turn self-COMPLETE. Best-effort
+            # and non-fatal -- an unresolvable binding (no born-at-dispatch row, or
+            # a DB read error) leaves plan_task_id None, i.e. treated as unbound.
+            _bound_plan_task_id: Optional[int] = None
+            try:
+                from gaia.store.writer import dispatched_binding_plan_task_id
+                _db_for_binding = task_info.get("db_path")
+                _bound_plan_task_id = dispatched_binding_plan_task_id(
+                    session_id,
+                    agent_type,
+                    db_path=Path(_db_for_binding) if _db_for_binding else None,
+                )
+            except Exception:
+                logger.debug(
+                    "Could not resolve dispatch binding plan_task_id for %s "
+                    "(session=%s) -- treating turn as unbound.",
+                    agent_type, session_id, exc_info=True,
+                )
             try:
                 _gate = evaluate_contract_gate(
                     parsed_contract,
                     agent_type=agent_type,
+                    plan_task_id=_bound_plan_task_id,
                     stop_reason_classification=_stop_reason_classification,
                     ramp_enabled=_full_verdict,
                     db_path=task_info.get("db_path"),

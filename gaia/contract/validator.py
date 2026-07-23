@@ -127,6 +127,28 @@ except ImportError:  # pragma: no cover -- exercised only on a bare stdlib path
         "self_review",
     )
 
+# ---------------------------------------------------------------------------
+# Envelope-only verification.type enum (plan 34 task 7).
+#
+# The CONTRACT ENVELOPE additionally accepts ``verification.type == "none"`` for
+# a turn that performed NO plan-task-bound verification -- an investigation or
+# memory turn that carries no ``plan_task_id`` and is therefore free to
+# self-COMPLETE (the finalize gate keys on plan_task_id, not role). "none" names
+# "no external oracle was required"; it demands no additional field.
+#
+# This extension is DELIBERATELY scoped to the envelope and MUST NOT widen
+# VALID_VERIFICATION_TYPES -- that tuple is the shared SSOT (gaia.state) backing
+# the persisted CHECK on task_gates.verification_type, which must stay exactly
+# command / code / semantic / self_review. Extending the envelope enum here can
+# never contaminate the task_gates CHECK: the two vocabularies are now distinct
+# on purpose (a gate's verification_type is a promise to run a real oracle; the
+# envelope's "none" is the explicit absence of one).
+# ---------------------------------------------------------------------------
+_ENVELOPE_ONLY_VERIFICATION_TYPES: Tuple[str, ...] = ("none",)
+ENVELOPE_VERIFICATION_TYPES: Tuple[str, ...] = (
+    VALID_VERIFICATION_TYPES + _ENVELOPE_ONLY_VERIFICATION_TYPES
+)
+
 # Evidence is required for every valid status (no exclusions), matching
 # EVIDENCE_REQUIRED_PLAN_STATUSES in response_contract.py.
 _EVIDENCE_REQUIRING_STATUSES = frozenset(VALID_PLAN_STATUSES)
@@ -324,7 +346,7 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
     """Return ``(field, detail)`` for a missing type-required field, else ``(None, "")``.
 
     Given a KNOWN ``verification.type`` (caller has already checked membership
-    in VALID_VERIFICATION_TYPES), enforce the field that type requires:
+    in ENVELOPE_VERIFICATION_TYPES), enforce the field that type requires:
 
       * "command"/"code" (DETERMINISTIC) -- a non-empty ``command`` naming the
         command/oracle a third-party verifier would run.
@@ -332,9 +354,16 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
         it needs human/rubric validation and stays open pending that judgement.
       * "self_review" -- a non-empty ``reviewed`` statement of what was checked
         and observed.
+      * "none" (envelope-only, plan 34 task 7) -- no plan-task-bound verification
+        was performed; demands NO field (falls through to the ``(None, "")``
+        return below).
 
     A ``(None, "")`` return means the type-required field is satisfied.
     """
+    if vtype == "none":
+        # No external oracle was required (a turn with no plan_task_id). Nothing
+        # to enforce -- the explicit absence of a check is itself well-formed.
+        return (None, "")
     if vtype in ("command", "code"):
         if not _is_nonempty_str(verification.get("command")):
             return (
@@ -550,7 +579,11 @@ def validate_form(envelope: Any) -> FormValidationResult:
         verification = evidence.get("verification") if isinstance(evidence, dict) else None
         if isinstance(verification, dict) and verification.get("type") is not None:
             vtype = str(verification.get("type")).strip().lower()
-            if vtype in VALID_VERIFICATION_TYPES:
+            # Membership is tested against the ENVELOPE enum (which adds "none"),
+            # NOT the task_gates SSOT VALID_VERIFICATION_TYPES -- so "none" is a
+            # first-class envelope type while the task_gates CHECK stays at its
+            # four deterministic/judgement types (plan 34 task 7).
+            if vtype in ENVELOPE_VERIFICATION_TYPES:
                 shape_field, shape_detail = _verification_type_shape_error(vtype, verification)
                 if shape_field is not None:
                     errors.append(
@@ -638,6 +671,7 @@ __all__ = [
     "CANONICAL_REPAIR_MESSAGE",
     "VALID_PLAN_STATUSES",
     "VALID_VERIFICATION_TYPES",
+    "ENVELOPE_VERIFICATION_TYPES",
     "REQUIRED_EVIDENCE_FIELDS",
     "REQUIRED_AGENT_STATUS_FIELDS",
 ]
