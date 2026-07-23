@@ -6167,22 +6167,35 @@ def insert_agent_contract_handoff(
 #   `gaia.contract.drafts.mint_draft_id` (shape `"{agent_id}.{token}"`; NEVER
 #   derived from CLAUDE_SESSION_ID or any harness value -- decisions #1/#3).
 #   `agent_contract_handoffs.contract_id` carries a UNIQUE index (schema v28,
-#   scripts/migrations/v27_to_v28.sql). This function issues:
+#   scripts/migrations/v27_to_v28.sql). v37 (born-at-dispatch, plan 34 task 5)
+#   this function CONVERGES rather than only DO NOTHING:
 #
 #       INSERT INTO agent_contract_handoffs (...) VALUES (...)
-#       ON CONFLICT(contract_id) DO NOTHING
+#       ON CONFLICT(contract_id) DO UPDATE SET <terminal fields>
+#       WHERE agent_contract_handoffs.agent_state = 'DISPATCHED'
+#       RETURNING id
 #
-#   -- the first writer to COMMIT for a given contract_id wins and owns the
-#   row; every subsequent write attempt for the SAME contract_id (a retried
-#   `gaia contract finalize`, or -- T9 -- a racing SubagentStop hook backstop)
-#   is a genuine no-op: no duplicate row, no exception, no data mutation of
-#   the existing row. This is what makes finalize+hook-backstop converge to
-#   EXACTLY ONE row under a race (never-lost because SOME writer always
-#   succeeds first; exactly-once because the UNIQUE constraint rejects every
-#   writer after that). Whichever writer loses the race is expected to accept
-#   the winner's row as-is; this function does not overwrite on conflict
-#   (contrast with a `DO UPDATE` UPSERT) -- a terminal handoff row is
-#   write-once by construction, never edited in place.
+#   Two shapes of row can pre-exist the finalize: (a) NONE (legacy / no
+#   born-at-dispatch) -- the INSERT lands the terminal row directly; (b) a
+#   NASCENT row born at dispatch with agent_state='DISPATCHED' (see
+#   insert_dispatched_handoff) -- the DO UPDATE CONVERGES that single row to the
+#   terminal verdict, so there is still exactly ONE row per turn and no duplicate
+#   INSERT. The born-at-dispatch binding columns (plan_task_id, plan_id,
+#   parent_handoff_id, kind) and the birth created_at are NOT in the SET list, so
+#   convergence preserves them.
+#
+#   The `WHERE agent_state = 'DISPATCHED'` guard is what preserves the
+#   write-once-for-terminal + exactly-once invariant under a race: the first
+#   writer to COMMIT for a contract_id wins (it inserts, or converges the
+#   nascent DISPATCHED row); every subsequent write for the SAME contract_id (a
+#   retried `gaia contract finalize`, or -- T9 -- a racing SubagentStop hook
+#   backstop) finds the row already terminal, the WHERE is false, the UPDATE is
+#   skipped, RETURNING yields no row, and the call is a genuine no-op: no
+#   duplicate row, no exception, no mutation of the terminal row. finalize+hook-
+#   backstop therefore converge to EXACTLY ONE row (never-lost because SOME
+#   writer always succeeds first; exactly-once because only a DISPATCHED row is
+#   ever converged and a terminal row is never edited in place). Whichever writer
+#   loses the race accepts the winner's terminal row as-is.
 #
 #   `contract_id` may be omitted (None/empty) by a caller that has no draft
 #   concept (legacy/back-compat path) -- SQLite's UNIQUE index permits any
@@ -6294,11 +6307,41 @@ def finalize_agent_contract_handoff(
                     -- (plan 34 task 4 completed the envelope-field rename
                     -- plan_status -> agent_state); it maps directly to the
                     -- agent_state column here.
+                    --
+                    -- v37 born-at-dispatch (plan 34 task 5): finalize CONVERGES
+                    -- onto the nascent row instead of only DO NOTHING. A row may
+                    -- already exist for this contract_id because it was BORN at
+                    -- dispatch with agent_state='DISPATCHED' (see
+                    -- insert_dispatched_handoff). The UPSERT therefore:
+                    --   * INSERTs a fresh terminal row when none exists (the
+                    --     legacy / no-born-at-dispatch path), OR
+                    --   * CONVERGES a nascent DISPATCHED row to the terminal
+                    --     verdict via DO UPDATE ... WHERE agent_state='DISPATCHED',
+                    --     leaving the born-at-dispatch binding columns
+                    --     (plan_task_id, plan_id, parent_handoff_id, kind) AND the
+                    --     birth created_at untouched -- one row per turn, no
+                    --     duplicate INSERT.
+                    -- The `WHERE agent_state = 'DISPATCHED'` guard is what
+                    -- preserves the write-once-for-terminal + exactly-once
+                    -- invariant: a row that is ALREADY terminal (a prior finalize,
+                    -- or -- T9 -- a racing hook backstop that got there first) does
+                    -- NOT match the WHERE, so the second writer's UPDATE is skipped
+                    -- and `RETURNING id` yields no row -> a genuine no-op. This is
+                    -- what makes finalize+finalize and finalize+backstop converge to
+                    -- EXACTLY ONE row under a race, in either arrival order, while a
+                    -- terminal row is still never edited in place.
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
                          agent_state, raw_handoff_json, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(contract_id) DO NOTHING
+                    ON CONFLICT(contract_id) DO UPDATE SET
+                        agent_id         = excluded.agent_id,
+                        session_id       = excluded.session_id,
+                        brief_id         = excluded.brief_id,
+                        agent_state      = excluded.agent_state,
+                        raw_handoff_json = excluded.raw_handoff_json
+                    WHERE agent_contract_handoffs.agent_state = 'DISPATCHED'
+                    RETURNING id
                     """,
                     (
                         contract_id,
@@ -6311,11 +6354,15 @@ def finalize_agent_contract_handoff(
                         _now_iso(),
                     ),
                 )
-                if cur.rowcount and cur.rowcount > 0:
-                    # This call is the winner -- cur.lastrowid is authoritative
-                    # here (unlike on the DO NOTHING branch, where lastrowid would
-                    # be stale/unrelated -- see the no-op branch below).
-                    handoff_id = cur.lastrowid
+                # RETURNING yields exactly one row iff THIS call inserted a fresh
+                # row OR converged a nascent DISPATCHED row (the WHERE matched); it
+                # yields NO row when the UPSERT hit a conflict against an already
+                # terminal row (WHERE false -> DO UPDATE skipped) -- the idempotent
+                # no-op. This is deterministic and avoids the ambiguous cur.rowcount
+                # of an ON CONFLICT DO UPDATE ... WHERE upsert.
+                returned = cur.fetchone()
+                if returned is not None:
+                    handoff_id = returned["id"]
                     con.commit()
                     # Automatic retention (mirrors episodes): occasionally prune
                     # handoffs older than the 90-day window. Runs on its own
@@ -6328,12 +6375,164 @@ def finalize_agent_contract_handoff(
                         "handoff_id": handoff_id,
                         "contract_id": contract_id,
                     }
-                # Conflict -- a row for this contract_id was already committed
-                # (a prior finalize call, or -- T9 -- a racing hook backstop that
-                # got there first). Do NOT trust cur.lastrowid here: sqlite3
-                # leaves it at whatever the connection's last SUCCESSFUL insert
-                # was, which is unrelated to this DO-NOTHING no-op. Look the row
-                # up explicitly instead.
+                # No returned row -- a terminal row for this contract_id already
+                # existed (a prior finalize call, or -- T9 -- a racing hook backstop
+                # that got there first). Look the winner's row up explicitly and
+                # report the no-op with its id.
+                existing = con.execute(
+                    "SELECT id FROM agent_contract_handoffs WHERE contract_id = ?",
+                    (contract_id,),
+                ).fetchone()
+                con.commit()
+                return {
+                    "status": "applied",
+                    "created": False,
+                    "handoff_id": existing["id"] if existing is not None else None,
+                    "contract_id": contract_id,
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+# ---------------------------------------------------------------------------
+# Public API: insert_dispatched_handoff (v37 -- born-at-dispatch nascent row)
+# ---------------------------------------------------------------------------
+#
+# Brief: contrato-binding-y-verificacion-por-task-id, plan 34 task 5
+# ("born-at-dispatch writer lifecycle").
+#
+# The FIRST half of the born-at-dispatch lifecycle: a handoff row is BORN at
+# dispatch time -- before the agent produces any contract envelope -- carrying
+# agent_state='DISPATCHED' and the four binding coordinates (plan_task_id,
+# plan_id, parent_handoff_id, kind) that bind the turn to the plan/task it
+# executes. The SECOND half is finalize_agent_contract_handoff, which CONVERGES
+# this nascent row to a terminal verdict (DO UPDATE ... WHERE
+# agent_state='DISPATCHED'), so exactly ONE row exists per turn.
+#
+# Idempotent by construction (INSERT ... ON CONFLICT(contract_id) DO NOTHING):
+# a re-dispatch / re-fire for the SAME contract_id never births a second row
+# and never clobbers a row that has already converged to a terminal verdict.
+# 'DISPATCHED' is a ROW state only -- never an envelope agent_state value (plan
+# 34 F9); it exists solely to mark "born but not yet finalized" so the backstop
+# can reap an orphan (an agent that crashed before finalize) without producing a
+# false COMPLETE.
+#
+# Same permission gate as finalize (_assert_dispatch_can_write_handoff): only a
+# seeded fleet agent (or the gate-less CLI/hook context) may birth a row.
+# ---------------------------------------------------------------------------
+
+def insert_dispatched_handoff(
+    contract_id: str,
+    agent_id: str,
+    workspace: str,
+    *,
+    plan_task_id: int | None = None,
+    plan_id: int | None = None,
+    parent_handoff_id: int | None = None,
+    kind: str | None = None,
+    raw_handoff_json: str | None = None,
+    session_id: str | None = None,
+    brief_id: int | None = None,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Birth a nascent ``agent_contract_handoffs`` row (agent_state='DISPATCHED').
+
+    See the module comment above for the born-at-dispatch lifecycle. Called at
+    dispatch time to stamp the binding before the agent runs; the row later
+    CONVERGES to a terminal verdict via
+    :func:`finalize_agent_contract_handoff`.
+
+    Args:
+        contract_id:       The CLI-minted draft/contract id (idempotency key).
+                           Required (raises ValueError if empty).
+        agent_id:          Agent identity string (e.g. "a1b2c3d4e5").
+        workspace:         Workspace name (FK -> workspaces.name).
+        plan_task_id:      NULLABLE FK -> tasks.id (the plan task this turn runs).
+        plan_id:           NULLABLE FK -> plans.id.
+        parent_handoff_id: NULLABLE FK -> agent_contract_handoffs.id.
+        kind:              Dispatch label (task_execution / verifier / ...).
+        raw_handoff_json:  Optional serialized placeholder envelope. Defaults to
+                           a minimal born-at-dispatch marker (the column is NOT
+                           NULL, but no contract envelope exists yet at birth).
+        session_id:        CLAUDE_SESSION_ID at dispatch time (optional).
+        brief_id:          briefs.id FK (optional).
+        db_path:           Optional explicit DB path (used by tests).
+
+    Returns:
+        {"status": "applied", "created": True, "handoff_id": <new id>,
+         "contract_id": contract_id} when this call birthed the row.
+        {"status": "applied", "created": False, "handoff_id": <existing id>,
+         "contract_id": contract_id} when a row for this contract_id already
+        existed (idempotent no-op -- nascent re-birth or an already-converged row).
+
+    Raises:
+        ValueError: contract_id is empty/None.
+        HandoffWriteForbidden: when GAIA_DISPATCH_AGENT names an unseeded agent.
+    """
+    if not contract_id:
+        raise ValueError(
+            "insert_dispatched_handoff requires a non-empty contract_id -- it "
+            "is the idempotency key the nascent row is born under."
+        )
+
+    _assert_dispatch_can_write_handoff()
+
+    if raw_handoff_json is None:
+        raw_handoff_json = json.dumps(
+            {"agent_state": "DISPATCHED", "born_at_dispatch": True}
+        )
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            # BEGIN IMMEDIATE (write-lock-first): same rationale as finalize --
+            # serialize concurrent births at the RESERVED lock instead of racing
+            # a SHARED->RESERVED upgrade.
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                _ensure_workspace_row(con, workspace)
+                cur = con.execute(
+                    """
+                    INSERT INTO agent_contract_handoffs
+                        (contract_id, agent_id, session_id, workspace, brief_id,
+                         plan_task_id, plan_id, parent_handoff_id, kind,
+                         agent_state, raw_handoff_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCHED', ?, ?)
+                    ON CONFLICT(contract_id) DO NOTHING
+                    RETURNING id
+                    """,
+                    (
+                        contract_id,
+                        agent_id,
+                        session_id,
+                        workspace,
+                        brief_id,
+                        plan_task_id,
+                        plan_id,
+                        parent_handoff_id,
+                        kind,
+                        raw_handoff_json,
+                        _now_iso(),
+                    ),
+                )
+                returned = cur.fetchone()
+                if returned is not None:
+                    handoff_id = returned["id"]
+                    con.commit()
+                    return {
+                        "status": "applied",
+                        "created": True,
+                        "handoff_id": handoff_id,
+                        "contract_id": contract_id,
+                    }
+                # A row already exists for this contract_id (idempotent no-op):
+                # a re-dispatch, or the row already converged to a terminal
+                # verdict. Never clobber it -- birth is write-once.
                 existing = con.execute(
                     "SELECT id FROM agent_contract_handoffs WHERE contract_id = ?",
                     (contract_id,),
@@ -6359,14 +6558,20 @@ def agent_contract_handoff_exists(
     *,
     db_path: "Path | None" = None,
 ) -> bool:
-    """Return True iff a terminal row already exists for ``contract_id``.
+    """Return True iff ANY row exists for ``contract_id``.
 
-    Read-only helper exposing the exact existence check T9's conditional
-    hook backstop is designed around ("finalizes the draft only if no row
-    exists yet for that contract id"). Kept here (rather than inlined in the
-    hook) so T9 shares the SAME notion of "does a row already exist" that
-    :func:`finalize_agent_contract_handoff` itself relies on (the
-    `contract_id` UNIQUE index) -- no separate query to keep in sync.
+    Read-only helper exposing the existence check T9's conditional hook
+    backstop was originally designed around. Kept here (rather than inlined in
+    the hook) so callers share the SAME notion of existence that
+    :func:`finalize_agent_contract_handoff` relies on (the `contract_id` UNIQUE
+    index) -- no separate query to keep in sync.
+
+    NOTE (v37 born-at-dispatch): this returns True for a NASCENT row too -- one
+    born at dispatch with ``agent_state='DISPATCHED'`` that has not yet
+    converged to a terminal verdict. A caller that means "did the agent
+    FINALIZE a terminal row" must use :func:`agent_contract_handoff_finalized`
+    instead; "any row exists" and "a terminal row exists" only coincide when no
+    born-at-dispatch nascent row is in play.
 
     Args:
         contract_id: The draft/contract id to check. A falsy value always
@@ -6374,8 +6579,8 @@ def agent_contract_handoff_exists(
         db_path:     Optional explicit DB path (used by tests).
 
     Returns:
-        True iff a row with this contract_id exists; False otherwise
-        (including when contract_id is empty/None).
+        True iff a row with this contract_id exists (nascent OR terminal);
+        False otherwise (including when contract_id is empty/None).
     """
     if not contract_id:
         return False
@@ -6386,6 +6591,120 @@ def agent_contract_handoff_exists(
             (contract_id,),
         ).fetchone()
         return row is not None
+    finally:
+        con.close()
+
+
+def agent_contract_handoff_state(
+    contract_id: str,
+    *,
+    db_path: "Path | None" = None,
+) -> "str | None":
+    """Return the current ``agent_state`` of the row for ``contract_id``, or None.
+
+    v37 born-at-dispatch (plan 34 task 5). The three states a caller cares about:
+
+      * None            -- no row exists at all for this contract_id.
+      * 'DISPATCHED'    -- a NASCENT row was born at dispatch but has not yet
+                           converged to a terminal verdict (the agent is still
+                           running, or crashed before finalize -- an ORPHAN that
+                           the backstop/reaper must reconcile).
+      * anything else   -- a TERMINAL verdict is already recorded (the agent's
+                           own finalize, or a prior backstop) -- the row is done.
+
+    The backstop uses this to tell "no row yet" (write a degraded row) from
+    "orphaned DISPATCHED" (reap: converge to a degraded NON-COMPLETE verdict)
+    from "already terminal" (stay passive).
+
+    Args:
+        contract_id: The draft/contract id to inspect. A falsy value returns None.
+        db_path:     Optional explicit DB path (used by tests).
+
+    Returns:
+        The ``agent_state`` string of the row, or None when no row exists.
+    """
+    if not contract_id:
+        return None
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT agent_state FROM agent_contract_handoffs "
+            "WHERE contract_id = ? LIMIT 1",
+            (contract_id,),
+        ).fetchone()
+        return row["agent_state"] if row is not None else None
+    finally:
+        con.close()
+
+
+def agent_contract_handoff_finalized(
+    contract_id: str,
+    *,
+    db_path: "Path | None" = None,
+) -> bool:
+    """Return True iff a TERMINAL (non-DISPATCHED) row exists for ``contract_id``.
+
+    v37 born-at-dispatch (plan 34 task 5). This is the "did the agent FINALIZE"
+    question, distinct from :func:`agent_contract_handoff_exists` ("does ANY row
+    exist"): a nascent row born at dispatch (``agent_state='DISPATCHED'``) exists
+    but is NOT finalized. The conditional hook backstop and the M4 fence-missing
+    reconstruction both key on THIS notion -- a nascent row must not be mistaken
+    for a completed one.
+
+    Args:
+        contract_id: The draft/contract id to check. A falsy value returns False.
+        db_path:     Optional explicit DB path (used by tests).
+
+    Returns:
+        True iff a row exists whose ``agent_state`` is a terminal verdict (any
+        value other than 'DISPATCHED'); False otherwise.
+    """
+    state = agent_contract_handoff_state(contract_id, db_path=db_path)
+    return state is not None and state != "DISPATCHED"
+
+
+def find_orphaned_dispatched_handoff(
+    session_id: "str | None",
+    agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """Locate a nascent DISPATCHED row for ``(session_id, agent_id)``, or None.
+
+    v37 born-at-dispatch (plan 34 task 5) -- the REAPER's orphan-discovery
+    query. A row born at dispatch is keyed by its ``contract_id`` (the minted
+    draft id), but a turn that crashed BEFORE the agent ever created a draft
+    leaves the SubagentStop backstop with no draft to resolve that id from. The
+    born row DOES carry the ``session_id`` + ``agent_id`` stamped at dispatch,
+    so the backstop can still find the orphan by that coordinate pair and reap
+    it by its own ``contract_id`` -- never leaving a second, un-converged row.
+
+    Only rows still in the 'DISPATCHED' ROW state are returned: a row that has
+    already converged to a terminal verdict is not an orphan and is skipped. The
+    most-recent (highest id) match is returned when several exist.
+
+    Args:
+        session_id: The dispatch session id (falsy -> None: nothing to match).
+        agent_id:   The minted agent id stamped at dispatch (falsy -> None).
+        db_path:    Optional explicit DB path (used by tests).
+
+    Returns:
+        ``{"id": int, "contract_id": str}`` of the orphaned nascent row, or None
+        when no DISPATCHED row exists for that (session, agent) pair.
+    """
+    if not session_id or not agent_id:
+        return None
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id, contract_id FROM agent_contract_handoffs "
+            "WHERE agent_state = 'DISPATCHED' AND session_id = ? AND agent_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id, agent_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"id": row["id"], "contract_id": row["contract_id"]}
     finally:
         con.close()
 

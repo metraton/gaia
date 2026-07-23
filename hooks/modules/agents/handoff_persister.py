@@ -23,7 +23,12 @@ Role (brief contract-as-managed-data, task T9 -- SUPERSEDES the original
       * never-lost   -- a turn that crashes / forgets / is truncated before
                         finalize still leaves a row (the draft finalized as
                         degraded, or a minimal degraded row when no draft
-                        exists) -- exactly one row, never zero.
+                        exists) -- exactly one row, never zero. v37 born-at-
+                        dispatch: when the row was BORN at dispatch and left
+                        orphaned in 'DISPATCHED', the backstop is also the
+                        REAPER -- it converges that nascent row to a degraded
+                        NON-COMPLETE verdict (never a false COMPLETE) rather
+                        than mistaking the born row for a finalized one.
       * exactly-once -- under a race between the agent finalize and this hook
                         backstop, both key on the SAME ``contract_id`` and the
                         writer's ``ON CONFLICT(contract_id) DO NOTHING`` leaves
@@ -130,10 +135,16 @@ def persist_handoff(
        prefer the agent's own on-disk draft (same key its ``gaia contract
        finalize`` UPSERTs on, so a race converges to one row); otherwise
        synthesize a deterministic backstop id for this (agent, session).
-    2. CONDITIONAL: if a row already exists for that ``contract_id`` (the agent
-       already finalized), do NOTHING -- the backstop stays fully passive.
-    3. Otherwise finalize a row marked ``degraded=true`` / ``auto_captured``,
-       via the idempotent writer, without fabricating fields the hook lacks.
+    2. CONDITIONAL on the current row state (v37 born-at-dispatch):
+       * a TERMINAL row already exists (the agent finalized) -> do NOTHING,
+         the backstop stays fully passive.
+       * a NASCENT 'DISPATCHED' row exists (the agent crashed before finalize)
+         -> REAP it: converge the orphan to a degraded NON-COMPLETE verdict.
+       * no row at all -> the pre-born-at-dispatch path (write a degraded row).
+    3. Finalize (convergent, idempotent writer) a row marked ``degraded=true`` /
+       ``auto_captured`` (and ``reaped=true`` when reconciling an orphan),
+       without fabricating fields the hook lacks. A reaped orphan is never
+       recorded COMPLETE -- an unfinalized turn never truly completed.
     4. If the backstop actually wrote the row AND the envelope carried an
        approval_request, record the linked approvals audit row.
     """
@@ -187,9 +198,27 @@ def persist_handoff(
             # drafts substrate unavailable / unreadable -> synthesize below.
             pass
 
-        # 1b. No resolvable draft: synthesize a deterministic backstop id. A
-        #     turn with no draft never ran finalize (finalize needs a draft),
-        #     so there is no primary-path row to converge with; the
+        # 1b. No resolvable draft, but a nascent row may have been BORN at
+        #     dispatch (v37) and left orphaned in 'DISPATCHED' by a crash BEFORE
+        #     the agent ever created a draft. That orphan carries the SAME
+        #     (session, agent) this backstop fires under, so reap it by ITS
+        #     contract_id -- never leave a second, un-converged row.
+        if not contract_id:
+            try:
+                orphan = _writer.find_orphaned_dispatched_handoff(
+                    session_id, minted_agent_id or agent_id, db_path=db_path
+                )
+                if orphan is not None:
+                    contract_id = orphan["contract_id"]
+                    if isinstance(parsed_contract, dict):
+                        source_envelope = parsed_contract
+            except Exception:
+                # discovery is best-effort -- fall through to synthesize below.
+                pass
+
+        # 1c. No draft AND no orphaned nascent row: synthesize a deterministic
+        #     backstop id. A turn with no draft and no born row never ran
+        #     finalize, so there is no primary-path row to converge with; the
         #     deterministic id only makes a re-fire of the hook for the same
         #     (agent, session) idempotent against itself.
         if not contract_id:
@@ -198,13 +227,29 @@ def persist_handoff(
             if isinstance(parsed_contract, dict):
                 source_envelope = parsed_contract
 
-        # --- 2. CONDITIONAL: a row already exists -> the backstop is passive --
-        if _writer.agent_contract_handoff_exists(contract_id, db_path=db_path):
+        # --- 2. CONDITIONAL: inspect the current row state -------------------
+        # v37 born-at-dispatch (plan 34 task 5): a row for this contract_id may
+        # already exist in one of two ways --
+        #   * TERMINAL (agent_state != 'DISPATCHED') -> the agent already
+        #     finalized (or a prior backstop captured it) -> stay PASSIVE.
+        #   * NASCENT 'DISPATCHED' -> the row was BORN at dispatch but the agent
+        #     crashed / was truncated before finalize -> an ORPHAN the backstop
+        #     must REAP: converge it to a degraded NON-COMPLETE verdict (never a
+        #     false COMPLETE) through the same idempotent convergent writer
+        #     (finalize's DO UPDATE ... WHERE agent_state='DISPATCHED').
+        #   * None -> no row at all -> the pre-born-at-dispatch backstop path:
+        #     finalize a degraded row (possibly COMPLETE-degraded from the draft).
+        existing_state = _writer.agent_contract_handoff_state(
+            contract_id, db_path=db_path
+        )
+        if existing_state is not None and existing_state != "DISPATCHED":
             logger.debug(
-                "T9 backstop: row already exists for contract_id=%s; no-op.",
-                contract_id,
+                "T9 backstop: terminal row already exists for contract_id=%s "
+                "(state=%s); no-op.",
+                contract_id, existing_state,
             )
             return
+        reaping = existing_state == "DISPATCHED"
 
         # --- 3. Build the degraded / auto-captured row -----------------------
         if isinstance(source_envelope, dict):
@@ -227,6 +272,17 @@ def persist_handoff(
             agent_state if agent_state in _VALID_TASK_STATUSES else "IN_PROGRESS"
         )
 
+        # REAPER (v37 born-at-dispatch, plan 34 task 5): an orphaned nascent
+        # DISPATCHED row is being reconciled after a crash -- the agent never ran
+        # its own verified `gaia contract finalize`, so this turn MUST NOT be
+        # recorded COMPLETE. A false COMPLETE would falsely satisfy the briefs
+        # "plan closed => a COMPLETE handoff row exists" invariant
+        # (gaia/briefs/store.py, invariant 5) for a turn that never truly
+        # completed. Downgrade a COMPLETE claim to the honest IN_PROGRESS; any
+        # other (already non-COMPLETE) state is faithful and left untouched.
+        if reaping and agent_state == "COMPLETE":
+            agent_state = "IN_PROGRESS"
+
         # Backstop provenance: this row was captured by the hook, NOT written
         # by the agent's verified `gaia contract finalize`. degraded=true is
         # how a reader that cares about finalize-verification tells it apart
@@ -236,6 +292,10 @@ def persist_handoff(
         envelope["degraded"] = True
         envelope["auto_captured"] = True
         envelope["backstop"] = "hook_subagent_stop"
+        if reaping:
+            # Distinguish a reaped-orphan row (nascent DISPATCHED converged by
+            # the backstop) from a plain no-row-yet degraded capture.
+            envelope["reaped"] = True
 
         raw_handoff_json = _json.dumps(envelope)
         brief_id = _extract_brief_id(envelope)

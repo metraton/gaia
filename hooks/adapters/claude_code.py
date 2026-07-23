@@ -2745,10 +2745,13 @@ class ClaudeCodeAdapter(HookAdapter):
             db_path_str = task_info.get("db_path")
             db_path = Path(db_path_str) if db_path_str else None
             # "Finalized" == the agent's own `gaia contract finalize` already
-            # wrote the terminal row for this draft_id. If no row exists, the
-            # draft is not finalized -- do NOT reconstruct (that is the salvage
-            # / backstop path's job, which marks the row degraded).
-            if not _writer.agent_contract_handoff_exists(draft_id, db_path=db_path):
+            # wrote the TERMINAL row for this draft_id. If no terminal row exists,
+            # the draft is not finalized -- do NOT reconstruct (that is the
+            # salvage / backstop path's job, which marks the row degraded).
+            # v37 born-at-dispatch: a NASCENT 'DISPATCHED' row born at dispatch is
+            # NOT finalized, so use the terminal-row check (not "any row exists")
+            # -- a born-but-orphaned row must not be mistaken for a completed one.
+            if not _writer.agent_contract_handoff_finalized(draft_id, db_path=db_path):
                 return None
             envelope = load_draft(draft_id)
             if not isinstance(envelope, dict) or not isinstance(
