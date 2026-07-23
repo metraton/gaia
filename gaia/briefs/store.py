@@ -1161,7 +1161,7 @@ def verify_brief(
                     })
 
         # Invariant 5: if a plan is closed, at least one agent_contract_handoffs
-        # row with task_status='COMPLETE' must exist for this brief.
+        # row with agent_state='COMPLETE' must exist for this brief.
         # Catches plans manually forced-closed without any agent completing them.
         if plan_id is not None:
             plan_status_row = con.execute(
@@ -1170,7 +1170,7 @@ def verify_brief(
             if plan_status_row and plan_status_row["status"] == "closed":
                 complete_count = con.execute(
                     "SELECT COUNT(*) AS c FROM agent_contract_handoffs "
-                    "WHERE brief_id = ? AND task_status = 'COMPLETE'",
+                    "WHERE brief_id = ? AND agent_state = 'COMPLETE'",
                     (brief_id,),
                 ).fetchone()["c"]
                 if complete_count == 0:
@@ -1178,28 +1178,28 @@ def verify_brief(
                         "kind": "closed_plan_without_completion_handoff",
                         "detail": (
                             f"plan for brief '{name}' is 'closed' but no "
-                            f"agent_contract_handoffs row with task_status='COMPLETE' "
+                            f"agent_contract_handoffs row with agent_state='COMPLETE' "
                             f"exists for this brief"
                         ),
                     })
 
         # Invariant 6: if the most recent agent_contract_handoffs row for this
-        # brief has task_status != 'COMPLETE', the agent session ended without
+        # brief has agent_state != 'COMPLETE', the agent session ended without
         # completing. Surface as a stalled_handoff inconsistency.
         latest_handoff = con.execute(
-            "SELECT id, agent_id, task_status, created_at "
+            "SELECT id, agent_id, agent_state, created_at "
             "FROM agent_contract_handoffs "
             "WHERE brief_id = ? "
             "ORDER BY created_at DESC LIMIT 1",
             (brief_id,),
         ).fetchone()
-        if latest_handoff is not None and latest_handoff["task_status"] != "COMPLETE":
+        if latest_handoff is not None and latest_handoff["agent_state"] != "COMPLETE":
             inconsistencies.append({
                 "kind": "stalled_handoff",
                 "detail": (
                     f"most recent handoff (agent_id='{latest_handoff['agent_id']}', "
                     f"created_at='{latest_handoff['created_at']}') has "
-                    f"task_status='{latest_handoff['task_status']}' (not COMPLETE)"
+                    f"agent_state='{latest_handoff['agent_state']}' (not COMPLETE)"
                 ),
             })
 

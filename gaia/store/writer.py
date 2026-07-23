@@ -6116,9 +6116,14 @@ def insert_agent_contract_handoff(
                 _ensure_workspace_row(con, workspace)
                 cur = con.execute(
                     """
+                    -- v37: the persisted column is `agent_state` (renamed from
+                    -- task_status; born-at-dispatch redesign, plan 34). The
+                    -- Python parameter is still named task_status pending the
+                    -- envelope-field rename (plan 34 task 4); it maps to the
+                    -- agent_state column.
                     INSERT INTO agent_contract_handoffs
                         (agent_id, session_id, workspace, brief_id,
-                         task_status, raw_handoff_json, created_at)
+                         agent_state, raw_handoff_json, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
@@ -6280,9 +6285,13 @@ def finalize_agent_contract_handoff(
                 _ensure_workspace_row(con, workspace)
                 cur = con.execute(
                     """
+                    -- v37: the persisted column is `agent_state` (renamed from
+                    -- task_status). The Python parameter keeps the name
+                    -- task_status pending the envelope-field rename (plan 34
+                    -- task 4); it maps to the agent_state column here.
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
-                         task_status, raw_handoff_json, created_at)
+                         agent_state, raw_handoff_json, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(contract_id) DO NOTHING
                     """,
@@ -6482,7 +6491,9 @@ def list_agent_contract_handoffs(
             clauses.append("brief_id = ?")
             params.append(brief_id)
         if task_status is not None:
-            clauses.append("task_status = ?")
+            # v37: column renamed task_status -> agent_state; the keyword arg
+            # name is preserved pending plan 34 task 4.
+            clauses.append("agent_state = ?")
             params.append(task_status)
         if contract_id is not None:
             clauses.append("contract_id = ?")

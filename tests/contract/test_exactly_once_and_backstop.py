@@ -112,7 +112,7 @@ def _rows(db_path: Path):
     con.row_factory = sqlite3.Row
     try:
         return con.execute(
-            "SELECT contract_id, agent_id, task_status, raw_handoff_json "
+            "SELECT contract_id, agent_id, agent_state, raw_handoff_json "
             "FROM agent_contract_handoffs ORDER BY id"
         ).fetchall()
     finally:
@@ -154,7 +154,7 @@ def test_finalized_turn_backstop_is_passive_no_duplicate(db):
     rows = _rows(db)
     assert len(rows) == 1, "backstop duplicated an already-finalized row"
     assert rows[0]["contract_id"] == draft_id
-    assert rows[0]["task_status"] == "COMPLETE"
+    assert rows[0]["agent_state"] == "COMPLETE"
     # An agent-finalized row is NOT degraded -- distinguishable from a backstop.
     assert _is_degraded(rows[0]["raw_handoff_json"]) is False
 
@@ -203,7 +203,7 @@ def test_no_draft_backstop_writes_minimal_degraded_row(db):
     row = rows[0]
     assert _is_degraded(row["raw_handoff_json"]) is True
     # NOT falsely COMPLETE -- a crash never satisfies the briefs COMPLETE invariant.
-    assert row["task_status"] == "IN_PROGRESS"
+    assert row["agent_state"] == "IN_PROGRESS"
     payload = json.loads(row["raw_handoff_json"])
     # Minimal: no fabricated evidence_report / verification.
     assert "evidence_report" not in payload

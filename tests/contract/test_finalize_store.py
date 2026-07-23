@@ -149,13 +149,13 @@ def test_seeded_agent_finalize_writes_correct_task_status(db, monkeypatch):
     try:
         con.row_factory = sqlite3.Row
         row = con.execute(
-            "SELECT agent_id, task_status FROM agent_contract_handoffs WHERE contract_id = ?",
+            "SELECT agent_id, agent_state FROM agent_contract_handoffs WHERE contract_id = ?",
             (cid,),
         ).fetchone()
     finally:
         con.close()
     assert row is not None
-    assert row["task_status"] == "COMPLETE"
+    assert row["agent_state"] == "COMPLETE"
     assert row["agent_id"] == "a1234abcd"
 
 
@@ -219,11 +219,11 @@ def test_raw_sqlite_forged_row_blocked_by_schema(db):
     con = sqlite3.connect(str(db))
     con.execute("PRAGMA foreign_keys = ON")
     try:
-        # (a) out-of-enum task_status -> CHECK constraint rejects it.
+        # (a) out-of-enum agent_state -> CHECK constraint rejects it.
         with pytest.raises(sqlite3.IntegrityError):
             con.execute(
                 "INSERT INTO agent_contract_handoffs "
-                "(contract_id, agent_id, workspace, task_status, raw_handoff_json, created_at) "
+                "(contract_id, agent_id, workspace, agent_state, raw_handoff_json, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 ("raw.bogus", "aRAW", WORKSPACE, "BOGUS", "{}", "2026-07-08T00:00:00Z"),
             )
@@ -233,7 +233,7 @@ def test_raw_sqlite_forged_row_blocked_by_schema(db):
         with pytest.raises(sqlite3.IntegrityError):
             con.execute(
                 "INSERT INTO agent_contract_handoffs "
-                "(contract_id, workspace, task_status, raw_handoff_json, created_at) "
+                "(contract_id, workspace, agent_state, raw_handoff_json, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 ("raw.nokey", WORKSPACE, "COMPLETE", "{}", "2026-07-08T00:00:00Z"),
             )

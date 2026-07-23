@@ -113,6 +113,16 @@ CREATE INDEX IF NOT EXISTS idx_memory_history_workspace_name ON memory_history(w
 -- agent_contract_handoffs
 -- ---------------------------------------------------------------------------
 
+-- v37 REPLAY-SAFETY: schema.sql renamed task_status -> agent_state as of v37
+-- (v36_to_v37.sql). On a fresh install schema.sql builds the v37 shape and this
+-- v33-era rebuild is replayed, so its SELECT task_status would abort on the
+-- now-absent column. Defensively (re)add it -- the bootstrap runner's ADD
+-- COLUMN idempotency guard neutralises this line when task_status already
+-- exists (the genuine upgrade path with real data) and applies it only on the
+-- fresh-install v37 shape, where the table is EMPTY during replay (0 rows
+-- copied). See v21_to_v22.sql for the full rationale.
+ALTER TABLE agent_contract_handoffs ADD COLUMN task_status TEXT;
+
 CREATE TABLE IF NOT EXISTS agent_contract_handoffs_v33_new (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     contract_id      TEXT,

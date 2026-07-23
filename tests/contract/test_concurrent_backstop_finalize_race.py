@@ -134,7 +134,7 @@ def _all_rows(db_path: Path, contract_id: str):
     con.row_factory = sqlite3.Row
     try:
         return con.execute(
-            "SELECT id, contract_id, agent_id, task_status "
+            "SELECT id, contract_id, agent_id, agent_state "
             "FROM agent_contract_handoffs WHERE contract_id = ? ORDER BY id",
             (contract_id,),
         ).fetchall()

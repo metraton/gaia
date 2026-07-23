@@ -155,7 +155,7 @@ def _rows(db_path: Path):
     con.row_factory = sqlite3.Row
     try:
         return con.execute(
-            "SELECT contract_id, agent_id, task_status, raw_handoff_json "
+            "SELECT contract_id, agent_id, agent_state, raw_handoff_json "
             "FROM agent_contract_handoffs ORDER BY id"
         ).fetchall()
     finally:
@@ -198,7 +198,7 @@ def test_salvage_finalizes_partial_draft_as_degraded(db):
     assert payload.get("degraded") is True
     assert payload.get("salvaged") == "truncation"
     # A truncated turn never reached a verified terminal state.
-    assert row["task_status"] == "IN_PROGRESS"
+    assert row["agent_state"] == "IN_PROGRESS"
 
 
 # ---------------------------------------------------------------------------

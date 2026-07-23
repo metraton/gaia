@@ -45,6 +45,19 @@
 -- matching agent_contract_handoff_approvals row (verified prior to writing
 -- this migration), so no child cleanup is needed either way.
 
+-- v37 REPLAY-SAFETY: from v37 on, schema.sql produces the table with the
+-- RENAMED column agent_state (task_status was renamed by v36_to_v37.sql).
+-- On a fresh install schema.sql builds the v37 shape and THEN every forward
+-- migration is replayed, so this v22-era rebuild would reference a task_status
+-- column that no longer exists and abort ("no such column: task_status").
+-- Defensively (re)add it: the bootstrap runner's ADD COLUMN idempotency guard
+-- (_filter_add_column_idempotent) NEUTRALISES this line when task_status
+-- already exists (the genuine v21->v22 upgrade path, where it holds real data),
+-- and applies it only on the fresh-install v37 shape -- where the handoffs
+-- table is EMPTY during migration replay, so the column is added NULL and the
+-- rebuild below copies zero rows. Data on the genuine path is untouched.
+ALTER TABLE agent_contract_handoffs ADD COLUMN task_status TEXT;
+
 DELETE FROM agent_contract_handoffs WHERE task_status = 'RANDOM_STATUS';
 
 CREATE TABLE IF NOT EXISTS agent_contract_handoffs_v22_new (

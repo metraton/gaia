@@ -238,7 +238,7 @@ def test_persisted_row_carries_task_status_and_contract_id(cli_env):
     try:
         con.row_factory = sqlite3.Row
         rows = con.execute(
-            "SELECT contract_id, agent_id, task_status FROM agent_contract_handoffs"
+            "SELECT contract_id, agent_id, agent_state FROM agent_contract_handoffs"
         ).fetchall()
     finally:
         con.close()
@@ -247,4 +247,4 @@ def test_persisted_row_carries_task_status_and_contract_id(cli_env):
     row = rows[0]
     assert row["contract_id"] == draft_id
     assert row["agent_id"] == VALID_AGENT_ID
-    assert row["task_status"] == "COMPLETE"
+    assert row["agent_state"] == "COMPLETE"

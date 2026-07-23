@@ -1097,20 +1097,48 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
     session_id       TEXT,                        -- CLAUDE_SESSION_ID at SubagentStop time
     workspace        TEXT NOT NULL,               -- FK -> workspaces.name
     brief_id         INTEGER,                     -- NULLABLE FK -> briefs.id; EXTENSION_POINT
-    task_status      TEXT NOT NULL               -- resolved plan_status from contract envelope
-                     -- v22: CHECK mirrors the episodes.plan_status enum (the
+    -- v37: born-at-dispatch binding section. These four coordinates are stamped
+    -- when the row is born at dispatch time (plan 34 / brief 114). All NULLABLE:
+    -- a turn with no plan/task binding (investigation, memory) and every legacy
+    -- row simply carries NULLs; only referential integrity of a PRESENT binding
+    -- is validated (kind has no CHECK -- plan 34 S3). NOTE the column is named
+    -- plan_task_id, NOT task_id, ON PURPOSE: it references tasks.id (a plan
+    -- task), and the bare name `task_id` already denotes the harness agent id in
+    -- task_info["task_id"] (plan 34 A1/F6). brief_id above is the fifth
+    -- coordinate and already existed.
+    plan_task_id      INTEGER,                    -- NULLABLE FK -> tasks.id (the plan task this turn executes)
+    plan_id           INTEGER,                    -- NULLABLE FK -> plans.id
+    parent_handoff_id INTEGER,                    -- NULLABLE FK -> agent_contract_handoffs.id (e.g. a verifier turn -> its producer's row)
+    kind              TEXT,                        -- dispatch label (task_execution/verifier/investigation/memory/...); pure tag, no CHECK
+    agent_state      TEXT NOT NULL               -- resolved turn state from the contract envelope
+                     -- v37: RENAMED from task_status. v22/v35 (as task_status):
+                     -- the CHECK mirrored the episodes.plan_status enum (the
                      -- canonical plan_status values -- see agent-protocol
                      -- SKILL.md and handoff_persister.py, which writes
-                     -- envelope["agent_status"]["plan_status"] verbatim here).
-                     -- v35: widened to include NEEDS_VERIFICATION (harness R2).
-                     CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION')),
+                     -- envelope["agent_status"]["plan_status"] verbatim here);
+                     -- v35 had widened it to include NEEDS_VERIFICATION (harness
+                     -- R2). v37 renames the column to agent_state and adds the
+                     -- born-at-dispatch ROW state DISPATCHED (a row is born
+                     -- DISPATCHED and converges to a terminal verdict on
+                     -- finalize). DISPATCHED is a ROW state ONLY, never an
+                     -- envelope plan_status value (plan 34 F9) -- episodes.plan_status
+                     -- and the envelope enum do NOT gain it.
+                     CHECK (agent_state IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION', 'DISPATCHED')),
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note
     -- above; same prune-vs-audit-trail rationale. brief_id is left untouched
     -- (out of scope for this fix; briefs are curated content, not audit debris).
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE,
-    FOREIGN KEY (brief_id)  REFERENCES briefs(id)
+    FOREIGN KEY (brief_id)  REFERENCES briefs(id),
+    -- v37 born-at-dispatch binding FKs. No ON DELETE action: a handoff is an
+    -- audit row that must survive the deletion of the plan/task it referenced
+    -- (SET NULL would need a table rebuild anyway; leaving it RESTRICT-by-omission
+    -- is harmless because migrations run with foreign_keys=OFF and the runtime
+    -- never hard-deletes tasks/plans out from under a live handoff).
+    FOREIGN KEY (plan_task_id)      REFERENCES tasks(id),
+    FOREIGN KEY (plan_id)           REFERENCES plans(id),
+    FOREIGN KEY (parent_handoff_id) REFERENCES agent_contract_handoffs(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_workspace ON agent_contract_handoffs(workspace);

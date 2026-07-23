@@ -137,7 +137,7 @@ def test_hook_inserts_handoff_row(tmp_db):
     row = rows[0]
     assert row["agent_id"] in ("atest123456", "test-agent", "unknown")
     assert row["workspace"] == "test-ws"
-    assert row["task_status"] in ("COMPLETE", "IN_PROGRESS", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT")
+    assert row["agent_state"] in ("COMPLETE", "IN_PROGRESS", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT")
     assert row["raw_handoff_json"]  # non-empty JSON blob
 
 

@@ -398,18 +398,24 @@ def bootstrap_m4_schema(db_path: Path) -> None:
     CREATE INDEX IF NOT EXISTS idx_approval_grants_session ON approval_grants(session_id);
     CREATE INDEX IF NOT EXISTS idx_approval_grants_status  ON approval_grants(status);
 
-    -- agent_contract_handoffs table (v9/M4; contract_id added v28/T7)
+    -- agent_contract_handoffs table (v9/M4; contract_id added v28/T7;
+    -- v37 born-at-dispatch: binding columns + task_status renamed agent_state,
+    -- CHECK widened with DISPATCHED)
     CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
-        id               INTEGER PRIMARY KEY AUTOINCREMENT,
-        contract_id      TEXT,
-        agent_id         TEXT NOT NULL,
-        session_id       TEXT,
-        workspace        TEXT NOT NULL,
-        brief_id         INTEGER,
-        task_status      TEXT NOT NULL
-                         CHECK (task_status IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION')),
-        raw_handoff_json TEXT NOT NULL,
-        created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id       TEXT,
+        agent_id          TEXT NOT NULL,
+        session_id        TEXT,
+        workspace         TEXT NOT NULL,
+        brief_id          INTEGER,
+        plan_task_id      INTEGER,
+        plan_id           INTEGER,
+        parent_handoff_id INTEGER,
+        kind              TEXT,
+        agent_state       TEXT NOT NULL
+                          CHECK (agent_state IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION', 'DISPATCHED')),
+        raw_handoff_json  TEXT NOT NULL,
+        created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         FOREIGN KEY (workspace) REFERENCES workspaces(name),
         FOREIGN KEY (brief_id)  REFERENCES briefs(id)
     );

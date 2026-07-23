@@ -91,14 +91,14 @@ def _insert_handoff(db_path: Path, brief_id: int, task_status: str,
         if created_at is not None:
             con.execute(
                 "INSERT INTO agent_contract_handoffs "
-                "  (agent_id, workspace, brief_id, task_status, raw_handoff_json, created_at) "
+                "  (agent_id, workspace, brief_id, agent_state, raw_handoff_json, created_at) "
                 "VALUES (?, 'me', ?, ?, '{}', ?)",
                 (agent_id, brief_id, task_status, created_at),
             )
         else:
             con.execute(
                 "INSERT INTO agent_contract_handoffs "
-                "  (agent_id, workspace, brief_id, task_status, raw_handoff_json) "
+                "  (agent_id, workspace, brief_id, agent_state, raw_handoff_json) "
                 "VALUES (?, 'me', ?, ?, '{}')",
                 (agent_id, brief_id, task_status),
             )

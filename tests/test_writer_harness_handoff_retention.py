@@ -149,7 +149,7 @@ def _insert_handoff_raw(db_path, contract_id, days_ago, *, status="COMPLETE"):
     try:
         con.execute(
             "INSERT INTO agent_contract_handoffs "
-            "  (contract_id, agent_id, workspace, task_status, "
+            "  (contract_id, agent_id, workspace, agent_state, "
             "   raw_handoff_json, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (contract_id, "a1b2c3", "me", status, "{}", _iso_days_ago(days_ago)),

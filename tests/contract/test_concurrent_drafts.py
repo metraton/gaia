@@ -121,7 +121,7 @@ def _fetch_row(env: dict, contract_id: str) -> sqlite3.Row:
     try:
         con.row_factory = sqlite3.Row
         row = con.execute(
-            "SELECT id, contract_id, agent_id, task_status, raw_handoff_json "
+            "SELECT id, contract_id, agent_id, agent_state, raw_handoff_json "
             "FROM agent_contract_handoffs WHERE contract_id = ?",
             (contract_id,),
         ).fetchone()
@@ -313,8 +313,8 @@ def test_two_concurrent_cycles_produce_two_distinct_uncontaminated_rows(cli_env)
 
     assert row_a["agent_id"] == SHARED_AGENT_ID
     assert row_b["agent_id"] == SHARED_AGENT_ID
-    assert row_a["task_status"] == "COMPLETE"
-    assert row_b["task_status"] == "COMPLETE"
+    assert row_a["agent_state"] == "COMPLETE"
+    assert row_b["agent_state"] == "COMPLETE"
 
     envelope_a = json.loads(row_a["raw_handoff_json"])
     envelope_b = json.loads(row_b["raw_handoff_json"])

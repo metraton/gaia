@@ -127,7 +127,7 @@ def _audit_collateral(dbp, workspace):
         )
         con.execute(
             "INSERT INTO agent_contract_handoffs "
-            "(agent_id, workspace, task_status, raw_handoff_json, created_at) "
+            "(agent_id, workspace, agent_state, raw_handoff_json, created_at) "
             "VALUES ('a000001', ?, 'COMPLETE', '{}', '2026-01-01T00:00:00Z')",
             (workspace,),
         )

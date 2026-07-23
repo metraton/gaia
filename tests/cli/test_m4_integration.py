@@ -77,7 +77,7 @@ def _seed_state(db_path: Path, brief_name: str, plan_status: str = "closed",
         if add_complete_handoff:
             con.execute(
                 "INSERT INTO agent_contract_handoffs "
-                "  (agent_id, workspace, brief_id, task_status, raw_handoff_json) "
+                "  (agent_id, workspace, brief_id, agent_state, raw_handoff_json) "
                 "VALUES ('test-agent', 'me', ?, 'COMPLETE', '{}')",
                 (brief_id,),
             )
