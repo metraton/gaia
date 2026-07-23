@@ -10,11 +10,11 @@ description: Use when a mutative command was blocked by the hook and you need to
 When the hook blocks your T3 Bash command, it returns a `[T3_BLOCKED]` message
 ending in `approval_id: P-{uuid4hex}`. This skill is how you turn that block into
 an `APPROVAL_REQUEST`: copy the hook's operation fields and `approval_id` into
-your `agent_contract_handoff`, set `plan_status: "APPROVAL_REQUEST"`, and wait for the
+your `agent_contract_handoff`, set `agent_state: "APPROVAL_REQUEST"`, and wait for the
 orchestrator to relay the user's decision. The hook authors and fingerprints the sealed_payload; you relay it back in your APPROVAL_REQUEST.
 
 Per `agent-protocol`, build this by-value via the `gaia contract` CLI as the
-primary path -- `gaia contract set agent_status.plan_status APPROVAL_REQUEST`,
+primary path -- `gaia contract set agent_status.agent_state APPROVAL_REQUEST`,
 then `gaia contract fill --json '{"approval_request": {...}}'` with the
 hook's fields, then `finalize`. But the CLI build does not replace the fence:
 the SubagentStop gate parses the fenced `agent_contract_handoff` block out of
@@ -38,7 +38,7 @@ Subagent EXECUTES the T3 command (no pre-ask)
    |
    +-- hook blocks: [T3_BLOCKED] ... approval_id: P-{uuid4hex}
           |
-   Emit plan_status APPROVAL_REQUEST + approval_request{...} with that approval_id
+   Emit agent_state APPROVAL_REQUEST + approval_request{...} with that approval_id
           |
    Orchestrator validates fingerprint, presents to user, user approves
           |

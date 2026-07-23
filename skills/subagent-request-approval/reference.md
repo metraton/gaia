@@ -158,7 +158,7 @@ runs on its own retry, single-use, within the 5-minute window.
 
 ## Status to emit -- with vs without approval_id
 
-Always `plan_status: "APPROVAL_REQUEST"`. The presence of `approval_id` tells the
+Always `agent_state: "APPROVAL_REQUEST"`. The presence of `approval_id` tells the
 orchestrator which path:
 
 - **With `approval_id`** -- the hook blocked a command, singular or a

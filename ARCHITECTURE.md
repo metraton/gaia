@@ -99,7 +99,7 @@ Fires after every agent tool completes:
 1. Consume approval file    --> delete pending approval if matches agent
 2. Capture workflow metrics  --> duration, exit code, plan status -> metrics.jsonl
 3. Validate response contract
-   |  Parse AGENT_STATUS block (plan_status, agent_id, pending_steps, next_action)
+   |  Parse AGENT_STATUS block (agent_state, agent_id, pending_steps, next_action)
    |  Parse EVIDENCE_REPORT block (7 required fields)
    |  Parse CONSOLIDATION_REPORT if multi-surface task
    |  If invalid -> save pending-repair.json for pre_tool_use guard

@@ -20,7 +20,7 @@ The reader must already know what `agent-protocol` covers to understand what thi
 
 **After** (self-contained opening):
 
-> `agent-approval-protocol` documents the data contract that flows between a subagent and the orchestrator when a T3 command is blocked: the `sealed_payload` fields, the `approval_id` format, the `APPROVAL_REQUEST` contract shape, and how to confirm a grant is active before proceeding. For the universal response envelope (plan_status states, evidence_report), see `agent-protocol`.
+> `agent-approval-protocol` documents the data contract that flows between a subagent and the orchestrator when a T3 command is blocked: the `sealed_payload` fields, the `approval_id` format, the `APPROVAL_REQUEST` contract shape, and how to confirm a grant is active before proceeding. For the universal response envelope (agent_state states, evidence_report), see `agent-protocol`.
 
 The skill now opens by stating what it IS. The disambiguation pointer comes after, framed as a continuation handoff rather than a defining contrast.
 

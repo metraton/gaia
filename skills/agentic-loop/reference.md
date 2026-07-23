@@ -217,7 +217,7 @@ again. See the canonical rendering in `agent-protocol/examples.md` #7.
 ```json
 {
   "agent_status": {
-    "plan_status": "IN_PROGRESS",
+    "agent_state": "IN_PROGRESS",
     "agent_id": "a1b2c3",
     "pending_steps": ["continue iterating"],
     "next_action": "iteration 6"
@@ -243,14 +243,14 @@ again. See the canonical rendering in `agent-protocol/examples.md` #7.
 }
 ```
 
-On loop completion, set `plan_status: "COMPLETE"` with verification. Only
+On loop completion, set `agent_state: "COMPLETE"` with verification. Only
 finalize as `COMPLETE` when `metric >= threshold` (or iterations are
 exhausted) -- otherwise the runtime blocks it and forces another iteration:
 
 ```json
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a1b2c3",
     "pending_steps": [],
     "next_action": "done"
@@ -372,7 +372,7 @@ These hooks assist with resume:
 - `git commit -m "final: pass_rate 68.5->95.3 in 18 iterations"`
 - Write final state.json (status: "threshold_reached")
 - Write summary in worklog.md
-- Return `plan_status: "COMPLETE"` with verification passing
+- Return `agent_state: "COMPLETE"` with verification passing
 
 ## Protocol Fingerprint Check (every 10 iterations)
 

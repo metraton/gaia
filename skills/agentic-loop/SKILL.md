@@ -62,7 +62,7 @@ COMPLETE-blocking safeguard (see `agent-contract-handoff` and
 }
 ```
 
-Do NOT return `plan_status: "COMPLETE"` until the loop finishes. The user may be away for hours.
+Do NOT return `agent_state: "COMPLETE"` until the loop finishes. The user may be away for hours.
 
 ## Rules
 

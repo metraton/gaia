@@ -20,7 +20,7 @@ same contract:
 
 ```
 gaia contract init --agent-id af7e4d2
-gaia contract set agent_status.plan_status IN_PROGRESS
+gaia contract set agent_status.agent_state IN_PROGRESS
 # ... work happens: kubectl get hr -n qxo, etc ...
 gaia contract fill --json '{
   "evidence_report": {
@@ -33,7 +33,7 @@ gaia contract fill --json '{
     "open_gaps": []
   }
 }'
-gaia contract set agent_status.plan_status COMPLETE
+gaia contract set agent_status.agent_state COMPLETE
 gaia contract fill --json '{"evidence_report": {"verification": {"method": "test", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}'
 gaia contract validate   # confirm the verdict before finalizing
 gaia contract finalize   # writes the sole, idempotent agent_contract_handoffs row
@@ -52,7 +52,7 @@ Standard terminal envelope after a successful increment. `verification` is requi
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "ab7e4d2",
     "pending_steps": [],
     "next_action": "done"
@@ -84,7 +84,7 @@ Escalation envelope -- the agent identified a gap it cannot close on its own sur
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "BLOCKED",
+    "agent_state": "BLOCKED",
     "agent_id": "ac3a1f9",
     "pending_steps": ["validate IAM binding", "apply terraform change"],
     "next_action": "User must grant roles/container.admin to SA"
@@ -111,7 +111,7 @@ Escalation envelope -- the agent identified a gap it cannot close on its own sur
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "NEEDS_INPUT",
+    "agent_state": "NEEDS_INPUT",
     "agent_id": "ad9f2b1",
     "pending_steps": ["create namespace manifest", "configure HelmRelease"],
     "next_action": "User must choose: Option A (shared namespace) or Option B (dedicated namespace)"
@@ -138,7 +138,7 @@ Hook produced `approval_id` -- pass it through verbatim. The orchestrator presen
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "APPROVAL_REQUEST",
+    "agent_state": "APPROVAL_REQUEST",
     "agent_id": "af1d9b7",
     "pending_steps": ["execute git push", "verify Flux reconciliation"],
     "next_action": "Hook blocked git push -- awaiting user approval"
@@ -173,7 +173,7 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and offers i
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a2e8c14",
     "pending_steps": [],
     "next_action": "done"
@@ -213,7 +213,7 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "af4b2e8",
     "pending_steps": [],
     "next_action": "done"
@@ -256,7 +256,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a19a3d7",
     "pending_steps": [],
     "next_action": "done"
@@ -294,7 +294,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a4e8b21",
     "pending_steps": [],
     "next_action": "done"
@@ -332,7 +332,7 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "agent_id": "a7c1d93",
     "pending_steps": [],
     "next_action": "done"
@@ -374,7 +374,7 @@ Harness R2: the producer believes the increment is done and MAY propose `evidenc
 ```agent_contract_handoff
 {
   "agent_status": {
-    "plan_status": "NEEDS_VERIFICATION",
+    "agent_state": "NEEDS_VERIFICATION",
     "agent_id": "a5f3c07",
     "pending_steps": ["verifier confirms HelmRelease reconciliation"],
     "next_action": "Hand off to verifier -- change believed complete, awaiting independent confirmation"

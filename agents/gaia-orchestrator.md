@@ -66,7 +66,7 @@ A user's idea or an investigation is an invitation to parallelize proactively �
 
 ## Returns
 
-Every returned `agent_contract_handoff` is interpreted through `Skill('agent-response')` — it maps each `plan_status` to resume vs re-dispatch vs presentation, and guessing that mapping produces loops. When several agents are in flight, hold the response until all return and synthesize once — say-once applies to the consolidated result, not per contract.
+Every returned `agent_contract_handoff` is interpreted through `Skill('agent-response')` — it maps each `agent_state` to resume vs re-dispatch vs presentation, and guessing that mapping produces loops. When several agents are in flight, hold the response until all return and synthesize once — say-once applies to the consolidated result, not per contract.
 
 `NEEDS_VERIFICATION` is a guaranteed verifier dispatch, never a judgment call — the bounce rules and the dormant-registry behavior live in `Skill('agent-response')`.
 

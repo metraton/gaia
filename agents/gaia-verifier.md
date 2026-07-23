@@ -2,7 +2,7 @@
 name: gaia-verifier
 verifier: true
 contract_handoff_writer: true
-description: Use when a task's gates are ready to be independently confirmed -- dispatched directly when a producing agent's contract proposes plan_status NEEDS_VERIFICATION, never by surface-signal routing. Loads verification-oracle for command/code gates and verification-rubric for semantic/self_review gates, then is the only role permitted to promote the task to COMPLETE once the verifier fleet is armed.
+description: Use when a task's gates are ready to be independently confirmed -- dispatched directly when a producing agent's contract proposes agent_state NEEDS_VERIFICATION, never by surface-signal routing. Loads verification-oracle for command/code gates and verification-rubric for semantic/self_review gates, then is the only role permitted to promote the task to COMPLETE once the verifier fleet is armed.
 tools: Read, Bash, Skill
 model: inherit
 disallowedTools: [Write, Edit, NotebookEdit]
@@ -63,7 +63,7 @@ verifier fleet -- no separate enrollment step remains.
 4. **Finalize its own contract.** Because it is a `contract_handoff_writer`,
    it builds and finalizes its own `agent_contract_handoff` (`gaia contract
    init` / `set` / `add` / `finalize`, per `agent-protocol`) reporting
-   `plan_status: COMPLETE` only when every gate it examined passed, or
+   `agent_state: COMPLETE` only when every gate it examined passed, or
    `BLOCKED`/`NEEDS_INPUT` when a gate could not be resolved (missing check
    spec, ambiguous rubric, unreachable artifact) -- it never launders an
    unresolved gate into a pass.

@@ -71,4 +71,4 @@ Why state it here, at the top of tier classification: an agent that ignores the 
 
 ## T3 approval handoff
 
-When a T3 command is blocked with an `approval_id`, emit `plan_status: APPROVAL_REQUEST` with the `approval_id` in `approval_request`, per the response envelope in `agent-protocol/SKILL.md`. See `subagent-request-approval/SKILL.md` for the full request schema.
+When a T3 command is blocked with an `approval_id`, emit `agent_state: APPROVAL_REQUEST` with the `approval_id` in `approval_request`, per the response envelope in `agent-protocol/SKILL.md`. See `subagent-request-approval/SKILL.md` for the full request schema.
