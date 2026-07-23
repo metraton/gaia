@@ -1389,7 +1389,77 @@ class ClaudeCodeAdapter(HookAdapter):
         except Exception:
             pass  # Events are non-critical
 
+        # Born-at-dispatch (v37, plan 34 task 6): stamp the nascent
+        # agent_contract_handoffs row FROM the dispatch metadata, validated for
+        # referential integrity. Best-effort and STRICTLY non-blocking -- a
+        # dispatch is never blocked by a binding that fails to resolve or a birth
+        # that errors; the row simply is not born (the SubagentStop backstop/reaper
+        # still guarantees exactly-one row). The contract_id here is a synthetic
+        # dispatch key derived from (session, agent, task); the agent later mints
+        # its own draft id (correlation resolved by the reaper's (session, agent)
+        # discovery -- plan 34 S2).
+        self._maybe_birth_dispatched_row(parameters, result.agent_name, session_id)
+
         return HookResponse(output={}, exit_code=0)
+
+    @staticmethod
+    def _maybe_birth_dispatched_row(parameters, agent_name, session_id) -> None:
+        """Best-effort born-at-dispatch row birth (plan 34 task 6).
+
+        Never raises: extraction gaps, an unresolvable binding
+        (DispatchBindingError), or any writer error are all swallowed so a
+        dispatch is never blocked. See _adapt_task for the rationale.
+        """
+        try:
+            import os as _os
+            from modules.agents.dispatch_binding import (
+                DispatchBindingError,
+                birth_dispatched_row,
+            )
+
+            meta = {
+                "prompt": parameters.get("prompt", ""),
+                "subagent_type": agent_name,
+            }
+            from modules.agents.dispatch_binding import extract_dispatch_binding
+            binding = extract_dispatch_binding(meta)
+
+            workspace = (
+                parameters.get("workspace")
+                or _os.environ.get("GAIA_WORKSPACE")
+                or "global"
+            )
+            sid = session_id or "unknown"
+            agent = agent_name or "unknown"
+            ptid = binding.get("plan_task_id")
+            # Synthetic, idempotent dispatch key: a re-dispatch for the same
+            # (session, agent, task) is a no-op via the writer's ON CONFLICT.
+            contract_id = f"dispatch.{sid}.{agent}.{ptid}"
+
+            try:
+                birth_dispatched_row(
+                    contract_id=contract_id,
+                    agent_id=agent,
+                    workspace=workspace,
+                    kind=binding.get("kind"),
+                    turn_role=binding.get("turn_role"),
+                    plan_task_id=ptid,
+                    plan_id=binding.get("plan_id"),
+                    session_id=sid,
+                )
+                logger.info(
+                    "Born-at-dispatch: nascent row stamped (agent=%s, task=%s)",
+                    agent, ptid,
+                )
+            except DispatchBindingError as exc:
+                # A binding that does not resolve is NOT an error to block on --
+                # log why the row was not born and let the dispatch proceed.
+                logger.info(
+                    "Born-at-dispatch: binding not born (agent=%s): %s",
+                    agent, exc,
+                )
+        except Exception:
+            logger.debug("Born-at-dispatch birth failed (non-fatal)", exc_info=True)
 
     def _adapt_send_message(
         self, tool_name: str, parameters: dict, session_id: str = "",
