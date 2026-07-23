@@ -353,16 +353,18 @@ __all__ = [
 #
 # The ONE deliberate difference from the handoff-writer precedent: the
 # fallback floor here is EMPTY (``_FALLBACK_VERIFIER_FLEET = frozenset()``),
-# not a known non-empty set. No agent ships the ``verifier: true`` marker as
-# of this brief (R2) -- the verifier ROLE is built here, but enrolling an
-# agent into it is deliberately left to a later brier (B3). Until then
-# ``verifier_fleet()`` is empty by construction on every resolvable and
-# unresolvable ``agents/`` path alike, which is exactly the DORMANT precondition
-# the SubagentStop gate (hooks/adapters/claude_code.py) checks before
-# enforcing verifier-only COMPLETE: an empty registry means the check never
-# activates and every producer may still self-COMPLETE (today's behavior,
-# unchanged). The mechanism (marker + loader + cached fleet + is_X predicate)
-# is what is load-bearing and shipped now; population is out of scope.
+# not a known non-empty set -- it is reached only when ``agents/`` itself is
+# unresolvable, never as a description of the live fleet. The fleet IS
+# populated today: ``agents/gaia-verifier.md`` ships ``verifier: true`` (Gaia
+# harness B3), so ``verifier_fleet()`` resolves to a non-empty set on any
+# installed tree, and the SubagentStop gate (hooks/adapters/claude_code.py,
+# ``_verifier_role_violation``) enforces the ARMED branch: only a seeded
+# verifier-role agent (``gaia-verifier``) may set ``plan_status: COMPLETE``;
+# every other producer proposing done work must transition through
+# ``NEEDS_VERIFICATION`` and wait for that agent's independent pass. The
+# mechanism (marker + loader + cached fleet + is_X predicate) is what is
+# load-bearing; the fallback floor above exists only for the unresolvable-path
+# edge case, not as the steady-state expectation.
 #
 # Never-fails-open, exactly like the handoff-writer fleet: an identity absent
 # from the resolved fleet (empty or not) is always rejected by ``is_verifier``
@@ -371,10 +373,11 @@ __all__ = [
 # Frontmatter marker that opts an agent .md into the verifier fleet.
 _VERIFIER_MARKER = "verifier"
 
-# Fallback floor when ``agents/`` is unresolvable. Deliberately EMPTY today --
-# see module comment above. When brief B3 ships the first verifier agent,
-# this constant is the place its identity would be added (mirroring
-# ``_FALLBACK_HANDOFF_WRITER_FLEET``'s role for the handoff-writer fleet).
+# Fallback floor when ``agents/`` is unresolvable. Deliberately EMPTY -- see
+# module comment above; this is the unresolvable-path floor, not a
+# description of the populated, ARMED fleet that ships today
+# (``agents/gaia-verifier.md``, ``verifier: true``). Mirrors
+# ``_FALLBACK_HANDOFF_WRITER_FLEET``'s role for the handoff-writer fleet.
 _FALLBACK_VERIFIER_FLEET: frozenset[str] = frozenset()
 
 
@@ -416,16 +419,19 @@ def verifier_fleet() -> frozenset[str]:
     the verifier gate is armed.
 
     Seeded from ``agents/*.md`` frontmatter (marker ``verifier: true``).
-    Falls back to ``_FALLBACK_VERIFIER_FLEET`` (empty today) when ``agents/``
+    Falls back to ``_FALLBACK_VERIFIER_FLEET`` (empty) only when ``agents/``
     is unresolvable. Cached exactly like ``handoff_writer_fleet``: the fleet
     is a static property of the installed tree, not per-call state. Call
     ``verifier_fleet.cache_clear()`` in a test that mutates the agent set.
 
-    Empty today by design (no agent ships the marker yet) -- callers that
-    gate on "is the verifier role armed" MUST check ``bool(verifier_fleet())``
-    first, not call ``is_verifier(agent)`` alone, or every producer would be
-    rejected the moment enforcement code lands, before any agent has opted
-    in. See hooks/adapters/claude_code.py for the dormant/armed branch.
+    Populated today: ``agents/gaia-verifier.md`` ships ``verifier: true``, so
+    this resolves to a non-empty set (``{"gaia-verifier"}``) on any installed
+    tree. Callers that gate on "is the verifier role armed" still MUST check
+    ``bool(verifier_fleet())`` first rather than calling ``is_verifier(agent)``
+    alone -- that guard is what lets the same code degrade safely to
+    unenforced on a tree where ``agents/`` cannot be resolved at all, instead
+    of rejecting every producer outright. See hooks/adapters/claude_code.py,
+    ``_verifier_role_violation``, for the ARMED enforcement branch.
     """
     agents_dir = _agents_dir()
     if agents_dir is None:

@@ -98,8 +98,8 @@ skills/
 │   └── reference.md
 ├── session-reflection/    # End-of-session reflection on conversational arc
 ├── skill-creation/        # How to design and write new skills
-├── verification-oracle/   # Deterministically re-execute a command/code task_gates entry and compare actual vs expected exit code (verifier-loaded, currently dormant -- no live consumer yet)
-├── verification-rubric/   # Judge a semantic/self_review task_gates entry against its rubric, emit a justified pass/fail verdict (verifier-loaded, currently dormant -- no live consumer yet)
+├── verification-oracle/   # Deterministically re-execute a command/code task_gates entry and compare actual vs expected exit code (loaded by gaia-verifier, the seeded verifier-role agent)
+├── verification-rubric/   # Judge a semantic/self_review task_gates entry against its rubric, emit a justified pass/fail verdict (loaded by gaia-verifier, the seeded verifier-role agent)
 │   └── scripts/           # rubric_verdict.py -- pure criteria-parse + verdict-assembly reference implementation
 ├── visual-verify/         # Technique: screenshot a UI/HTML with cached Chromium and read the result (invocable directly via the Skill tool)
 │   └── scripts/           # screenshot.cjs -- zero-install Playwright capture
@@ -139,8 +139,8 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `jira-ticket-writing` — formula for Jira Stories and Subtasks; invocable directly via the Skill tool
 - `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, invocable directly via the Skill tool
 - `diagram-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); carries the dialect vocabulary so the orchestrator can propose a decomposition and the agent can author it; delegates the visual check to `visual-verify`; loaded on demand by description match, invocable directly via the Skill tool
-- `verification-oracle` — deterministically re-executes a `task_gates` entry of `verification_type` `command`/`code` (or a proposed contract `evidence_report.verification` block of the same types), comparing the actual exit code against the gate's expected value; the judgment-based `verification-rubric` skill's deterministic counterpart for `semantic`/`self_review` gates. Currently dormant: no agent frontmatter references it yet, pending the `gaia-verifier` agent that will load it by name (Gaia harness B3, milestone M1)
-- `verification-rubric` — judges a `task_gates` entry of `verification_type` `semantic`/`self_review` against its rubric (`evidence_shape`) and emits a justified pass/fail verdict; the deterministic-oracle skill's judgment-based counterpart for `command`/`code` gates. Currently dormant: no agent frontmatter references it yet, pending the `gaia-verifier` agent that will load it by name (Gaia harness B3, milestone M1)
+- `verification-oracle` — deterministically re-executes a `task_gates` entry of `verification_type` `command`/`code` (or a proposed contract `evidence_report.verification` block of the same types), comparing the actual exit code against the gate's expected value; the judgment-based `verification-rubric` skill's deterministic counterpart for `semantic`/`self_review` gates. Loaded by `gaia-verifier` (`agents/gaia-verifier.md`, `verifier: true`), the seeded verifier-role agent (Gaia harness B3, milestone M1)
+- `verification-rubric` — judges a `task_gates` entry of `verification_type` `semantic`/`self_review` against its rubric (`evidence_shape`) and emits a justified pass/fail verdict; the deterministic-oracle skill's judgment-based counterpart for `command`/`code` gates. Loaded by `gaia-verifier` (`agents/gaia-verifier.md`, `verifier: true`), the seeded verifier-role agent (Gaia harness B3, milestone M1)
 
 **Skill types:**
 
