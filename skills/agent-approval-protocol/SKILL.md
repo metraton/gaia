@@ -22,7 +22,7 @@ Approve label, so a tampered payload fails to form a grant regardless of how it
 was presented. See `Skill('orchestrator-present-approval')` for the presentation
 discipline.
 
-For the universal response envelope (`plan_status` states, `evidence_report`),
+For the universal response envelope (`agent_state` states, `evidence_report`),
 see `agent-protocol`. For the deep mechanics -- fingerprint canonicalization,
 the hash chain, grant activation, reading a granted approval from Python -- see
 `reference.md`.
@@ -67,7 +67,7 @@ becomes `rollback` in the contract; `commands` (`[exact_content]`) and
 ```json
 {
   "agent_status": {
-    "plan_status": "APPROVAL_REQUEST",
+    "agent_state": "APPROVAL_REQUEST",
     "agent_id": "<a + 5+ hex chars>",
     "pending_steps": ["<blocked command description>"],
     "next_action": "awaiting user approval"

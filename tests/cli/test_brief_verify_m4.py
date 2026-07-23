@@ -81,7 +81,7 @@ def _seed_brief_and_plan(db_path: Path, brief_name: str, plan_status: str = "clo
         con.close()
 
 
-def _insert_handoff(db_path: Path, brief_id: int, task_status: str,
+def _insert_handoff(db_path: Path, brief_id: int, agent_state: str,
                     agent_id: str = "test-agent", created_at: str | None = None) -> int:
     import sqlite3
     con = sqlite3.connect(str(db_path))
@@ -93,14 +93,14 @@ def _insert_handoff(db_path: Path, brief_id: int, task_status: str,
                 "INSERT INTO agent_contract_handoffs "
                 "  (agent_id, workspace, brief_id, agent_state, raw_handoff_json, created_at) "
                 "VALUES (?, 'me', ?, ?, '{}', ?)",
-                (agent_id, brief_id, task_status, created_at),
+                (agent_id, brief_id, agent_state, created_at),
             )
         else:
             con.execute(
                 "INSERT INTO agent_contract_handoffs "
                 "  (agent_id, workspace, brief_id, agent_state, raw_handoff_json) "
                 "VALUES (?, 'me', ?, ?, '{}')",
-                (agent_id, brief_id, task_status),
+                (agent_id, brief_id, agent_state),
             )
         row_id = con.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
         con.commit()
@@ -126,7 +126,7 @@ class TestInvariant5ClosedPlanWithoutCompletionHandoff:
     def test_closed_plan_with_complete_handoff_passes(self, tmp_db):
         from gaia.briefs.store import verify_brief
         brief_id, _ = _seed_brief_and_plan(tmp_db, "inv5-with-handoff", plan_status="closed")
-        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE")
         result = verify_brief("me", "inv5-with-handoff", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
         assert "closed_plan_without_completion_handoff" not in kinds
@@ -141,9 +141,9 @@ class TestInvariant6StalledHandoff:
         from gaia.briefs.store import verify_brief
         brief_id, _ = _seed_brief_and_plan(tmp_db, "inv6-stalled", plan_status="active")
         # Use explicit timestamps so ORDER BY created_at DESC picks the later one reliably.
-        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE",
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE",
                         created_at="2026-01-01T10:00:00Z")
-        _insert_handoff(tmp_db, brief_id, task_status="IN_PROGRESS",
+        _insert_handoff(tmp_db, brief_id, agent_state="IN_PROGRESS",
                         created_at="2026-01-01T11:00:00Z")
         result = verify_brief("me", "inv6-stalled", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
@@ -153,9 +153,9 @@ class TestInvariant6StalledHandoff:
         from gaia.briefs.store import verify_brief
         brief_id, _ = _seed_brief_and_plan(tmp_db, "inv6-complete", plan_status="closed")
         # Most recent is COMPLETE -> no stalled_handoff
-        _insert_handoff(tmp_db, brief_id, task_status="IN_PROGRESS",
+        _insert_handoff(tmp_db, brief_id, agent_state="IN_PROGRESS",
                         created_at="2026-01-01T10:00:00Z")
-        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE",
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE",
                         created_at="2026-01-01T11:00:00Z")
         result = verify_brief("me", "inv6-complete", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
@@ -196,7 +196,7 @@ class TestInvariant7ClosedBriefNonterminalAc:
         brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-pending", plan_status="closed")
         _set_brief_status(tmp_db, brief_id, "closed")
         _add_ac(tmp_db, brief_id, "AC-1", "pending")
-        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE")
         result = verify_brief("me", "inv7-pending", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
         assert "closed_brief_nonterminal_ac" in kinds
@@ -207,7 +207,7 @@ class TestInvariant7ClosedBriefNonterminalAc:
         brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-blocked", plan_status="closed")
         _set_brief_status(tmp_db, brief_id, "closed")
         _add_ac(tmp_db, brief_id, "AC-1", "blocked")
-        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE")
         result = verify_brief("me", "inv7-blocked", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
         assert "closed_brief_nonterminal_ac" in kinds
@@ -219,7 +219,7 @@ class TestInvariant7ClosedBriefNonterminalAc:
         _set_brief_status(tmp_db, brief_id, "closed")
         _add_ac(tmp_db, brief_id, "AC-1", "done")
         _add_ac(tmp_db, brief_id, "AC-2", "descoped")
-        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE")
         result = verify_brief("me", "inv7-terminal", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
         assert "closed_brief_nonterminal_ac" not in kinds
@@ -252,7 +252,7 @@ class TestInvariant8ClosedBriefOpenPlan:
         from gaia.briefs.store import verify_brief
         brief_id, _ = _seed_brief_and_plan(tmp_db, "inv8-closed", plan_status="closed")
         _set_brief_status(tmp_db, brief_id, "closed")
-        _insert_handoff(tmp_db, brief_id, task_status="COMPLETE")
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE")
         result = verify_brief("me", "inv8-closed", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
         assert "closed_brief_open_plan" not in kinds

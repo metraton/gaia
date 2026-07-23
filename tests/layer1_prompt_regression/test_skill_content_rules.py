@@ -73,10 +73,10 @@ class TestAgentProtocolSkill:
         assert "agent_contract_handoff" in content, \
             "agent-protocol must document agent_contract_handoff block format"
 
-    def test_has_plan_status(self, content):
-        """Must document plan_status field."""
-        assert "plan_status" in content, \
-            "agent-protocol must document plan_status"
+    def test_has_agent_state(self, content):
+        """Must document agent_state field."""
+        assert "agent_state" in content, \
+            "agent-protocol must document agent_state"
 
     def test_has_pending_steps(self, content, skills_dir):
         """pending_steps field schema is documented in the owning skill.

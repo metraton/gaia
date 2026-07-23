@@ -255,7 +255,7 @@ class TestPruneHandoffs:
             contract_id="a1b2c3.freshtoken",
             agent_id="a1b2c3",
             workspace="me",
-            task_status="COMPLETE",
+            agent_state="COMPLETE",
             raw_handoff_json="{}",
             db_path=db,
         )
