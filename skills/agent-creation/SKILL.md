@@ -87,6 +87,15 @@ Do not hardcode a tool-to-skill mapping — the catalog changes and a fixed mapp
 
 For agents in automatic routing, propose a `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks — `keywords` is retired, the matcher scores from `commands`/`artifacts` only) written for gaia-system to apply directly to the agent's own file. Do not apply it yourself, and check existing agents' `routing:` blocks so the new agent's surface and signals do not overlap a sibling's.
 
+## Step 7: Register the agent so it ships — manifest, then marketplace
+
+Writing `agents/<name>.md` is necessary but not sufficient: a component absent from `build/gaia.manifest.json` is not part of the publishable plugin (see the Release Surface pillar), and a component that is only in the manifest is still absent from every already-installed marketplace copy until a release carries it there. This is the exact gap `gaia-verifier` fell into — committed to `agents/`, later added to the manifest, yet never reached by a release, so it never appeared in any installed `~/.claude/plugins/marketplaces/*` copy. Close both halves, and verify each with a concrete command:
+
+1. **Add the agent to the build manifest.** Append `"agents/<name>.md"` to the `agents` array in `build/gaia.manifest.json`. Verify with `grep -c "agents/<name>.md" build/gaia.manifest.json` returning `>= 1` — an entry that does not grep back has not landed.
+2. **Ship it through a release, then confirm the marketplace actually carries it.** The manifest entry alone does not reach a workspace that already added the marketplace: an installed `~/.claude/plugins/marketplaces/<name>` copy is a git checkout of the source repo, and it does not track new commits until it is explicitly refreshed. Getting the agent from "in the manifest" to "in the installed marketplace" is a `gaia-release` action (see that skill), not a hand-edit of the `.claude/` copy — never `git -C ~/.claude/plugins/marketplaces/<name> pull` or a manual file copy. After the release/update step runs, verify the file actually landed: `find ~/.claude/plugins/marketplaces -name <name>.md` returning `>= 1`.
+
+Skipping step 2 (or treating step 1 alone as "done") reproduces the gaia-verifier gap verbatim: correct in source, correct in the manifest, absent from every install.
+
 ## Anti-patterns
 
 - **Designing identity before the contract**: the contract is the first decision because it sets token cost and write safety. Authoring a personality first and bolting a contract on after produces an agent that reads too much and may write where it should not.
@@ -95,3 +104,4 @@ For agents in automatic routing, propose a `routing:` frontmatter block (surface
 - **Treating this as a form**: filling sections without the weight test produces a well-structured agent the LLM ignores in favor of baseline behavior.
 - **Writing the description as a role summary**: the orchestrator reads it to decide *when* to dispatch; a summary satisfies the read without triggering the dispatch.
 - **Domain Errors that only say "report"**: every row should redirect to a concrete action a naive agent would not take by default.
+- **Stopping at the manifest entry**: adding `agents/<name>.md` to `build/gaia.manifest.json` makes the agent part of the publishable artifact, but not yet part of any installed marketplace copy. Skipping Step 7's second half is exactly how `gaia-verifier` shipped in source and manifest while staying invisible to every installed workspace until a release/update carried it forward — verify the marketplace copy, do not assume the manifest entry alone is enough.

@@ -225,9 +225,11 @@ This skill guides thinking about each file, but gaia-system (the invoking agent)
 
 | File | What changes | Who writes it |
 |------|--------------|---------------|
-| `.claude/agents/<name>.md` | New agent definition | gaia-system |
+| `agents/<name>.md` (source, under `gaia/`, never the `.claude/` copy) | New agent definition | gaia-system |
 | new agent's `routing:` frontmatter block | New surface entry with signals; seeded into the `surface_routing` DB table by `tools/scan/seed_surface_routing.py` at install time | gaia-system |
 | `.claude/skills/README.md` | Agent assignment matrix (if agent gets new skills) | gaia-system |
 | `agents/README.md` | New agent in the roster | gaia-system |
+| `build/gaia.manifest.json` (`agents` array) | New `"agents/<name>.md"` entry — without it the agent is not part of the publishable plugin | gaia-system, Step 7 of this skill |
+| Installed marketplace copy (`~/.claude/plugins/marketplaces/<name>`) | Reached only via a `gaia-release` publish/update action, never a hand-edit of the `.claude/` copy — verify with `find ~/.claude/plugins/marketplaces -name <name>.md` | `gaia-release` flow, not this skill directly |
 
 The skill does not modify any of these files directly.
