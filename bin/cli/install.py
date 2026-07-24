@@ -520,19 +520,52 @@ def _persist_workspace_env(workspace: Path) -> dict:
     }
 
 
-def _npm_global_prefix() -> "Path | None":
-    """Best-effort npm global prefix on Windows (where npm writes its shim).
+def _npm_config_prefix_posix() -> "Path | None":
+    """Best-effort npm global prefix on POSIX (the dir whose ``bin/`` holds the
+    global ``gaia`` shim under ``npm install -g``/``npm link``).
 
-    Under ``npm install -g``, npm writes ``gaia.cmd`` into ``%APPDATA%\\npm``.
-    We use that convention rather than shelling out to ``npm config get prefix``
-    to keep the check offline and fast -- it feeds only an ADVISORY warning, so
-    a heuristic is acceptable. Returns None when APPDATA is unset (then the
-    precedence check only verifies Gaia's dir is present at all).
+    Resolution order (first hit wins): the ``NPM_CONFIG_PREFIX`` env var, then
+    ``npm config get prefix`` (offline, no network -- it reads local config),
+    then the ``~/.npm-global`` convention the drift-free design names as the
+    global surface. Feeds only an ADVISORY warning, so a heuristic is
+    acceptable; a missing/unresolvable prefix returns None (the precedence check
+    then only verifies Gaia's own dir is present).
     """
-    appdata = os.environ.get("APPDATA")
-    if appdata:
-        return Path(appdata) / "npm"
-    return None
+    for var in ("NPM_CONFIG_PREFIX", "npm_config_prefix"):
+        val = os.environ.get(var)
+        if val:
+            return Path(val).expanduser()
+    try:
+        result = subprocess.run(
+            ["npm", "config", "get", "prefix"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        out = (result.stdout or "").strip()
+        if result.returncode == 0 and out and out.lower() not in ("undefined", "null"):
+            return Path(out).expanduser()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    default = Path("~/.npm-global").expanduser()
+    return default if default.is_dir() else None
+
+
+def _npm_global_prefix() -> "Path | None":
+    """Best-effort directory where npm writes the global ``gaia`` shim.
+
+    Cross-platform: on Windows npm writes ``gaia.cmd`` directly into
+    ``%APPDATA%\\npm``; on POSIX npm writes the ``gaia`` shim into
+    ``<prefix>/bin`` (see ``_npm_config_prefix_posix``). Returns None when the
+    location cannot be resolved (then the precedence check only verifies Gaia's
+    own dir is present). Feeds only an ADVISORY warning, so a heuristic is fine.
+    """
+    if _is_windows():
+        appdata = os.environ.get("APPDATA")
+        return Path(appdata) / "npm" if appdata else None
+    prefix = _npm_config_prefix_posix()
+    return prefix / "bin" if prefix is not None else None
 
 
 def _launcher_path_precedence(
@@ -581,26 +614,125 @@ def _launcher_path_precedence(
 
 
 def _warn_launcher_shadowed(link: "Path | str", quiet: bool) -> "str | None":
-    """Windows only: emit an actionable warning when the launcher dir will not
-    win ``gaia`` resolution against npm's shim.
+    """Emit an actionable warning when the launcher dir will not win ``gaia``
+    name resolution against a global npm shim -- on BOTH Windows and POSIX.
 
-    The plain ``PATH launcher: gaia.cmd=created`` step line is misleading when
-    the launcher is shadowed on PATH (it reports creation, not effectiveness);
-    this converts that into a visible, actionable signal. Returns the warning
-    message (also printed to stderr unless quiet) or None when not shadowed.
+    The plain ``PATH launcher: ...=created`` step line is misleading when the
+    launcher is shadowed on PATH (it reports creation, not effectiveness); this
+    converts that into a visible, actionable signal. Returns the warning message
+    (also printed to stderr unless quiet) or None when not shadowed.
+
+    Windows: npm writes ``gaia.cmd`` into its prefix under ``npm install -g``, so
+    the check runs on dir precedence alone (the shim is assumed present in the
+    install context -- unchanged behavior).
+
+    POSIX (new, per the drift-free design): a bare dir-precedence check would
+    over-warn, because npm's prefix (e.g. ``/usr/local/bin``) commonly precedes
+    ``~/.local/bin`` even when NO global ``gaia`` exists there. So on POSIX the
+    check first confirms npm's global bin actually holds a ``gaia`` shim
+    DISTINCT from Gaia's own launcher; only then does it evaluate precedence.
+    This makes the reconcile of the global surface (surface 4) an actionable
+    signal without a spurious warning on every install.
     """
-    if not _is_windows():
-        return None
-
     gaia_bin_dir = Path(link).expanduser().parent
+    npm_prefix = _npm_global_prefix()
+
+    if not _is_windows():
+        # Only meaningful when npm's global bin actually holds a distinct `gaia`
+        # shim -- otherwise nothing shadows Gaia's launcher.
+        if npm_prefix is None:
+            return None
+        npm_gaia = npm_prefix / "gaia"
+        try:
+            if not npm_gaia.exists():
+                return None
+            launcher = Path(link).expanduser()
+            if launcher.exists() and os.path.samefile(npm_gaia, launcher):
+                # npm's `gaia` IS Gaia's launcher (e.g. same file via npm link) --
+                # aligned, nothing to warn about.
+                return None
+        except OSError:
+            return None
+
     warning = _launcher_path_precedence(
         gaia_bin_dir=gaia_bin_dir,
-        npm_prefix=_npm_global_prefix(),
+        npm_prefix=npm_prefix,
         path_dirs=os.environ.get("PATH", "").split(os.pathsep),
     )
     if warning and not quiet:
         print(f"  [!] PATH launcher: {warning}", file=sys.stderr)
     return warning
+
+
+# ---------------------------------------------------------------------------
+# Global npm reconcile (npm link the origin -> global `gaia`)
+# ---------------------------------------------------------------------------
+#
+# The drift-free design's surface 4 (the global npm install, ~/.npm-global) was
+# never reconciled by `gaia dev`: a stale `npm install -g @jaguilar87/gaia` left
+# an old global `gaia` on PATH that shadowed the workspace's dev-pack shim, and
+# with the DB migrated forward that stale global CLI broke `gaia contract
+# finalize`. This reconciles the global surface to the command's ORIGIN (no
+# `--from` flag: `gaia dev` links the local source, so the global `gaia` becomes
+# the source tree). It is best-effort/advisory -- a failure never aborts the
+# install, mirroring the seeder steps.
+
+
+def reconcile_global_via_npm_link(
+    source_root: "Path | str",
+    *,
+    quiet: bool = True,
+    runner=subprocess.run,
+    timeout: int = 120,
+) -> dict:
+    """`npm link` *source_root* so the global ``gaia`` points at the origin.
+
+    ``npm link`` (run FROM the package dir) registers a global symlink to that
+    package and writes a global ``gaia`` bin shim -- aligning surface 4 (the
+    global npm install) with the command's origin. Returns a ``{action, path,
+    details}`` step-result dict compatible with ``_report_step``; never raises.
+
+    *runner* is injectable (defaults to ``subprocess.run``) so the reconcile is
+    unit-testable without mutating the real global npm store.
+    """
+    root = Path(source_root).expanduser()
+    if not (root / "package.json").is_file():
+        return {
+            "action": "skipped",
+            "path": str(root),
+            "details": "no package.json at source root -- cannot npm link",
+        }
+    try:
+        result = runner(
+            ["npm", "link"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {
+            "action": "error",
+            "path": str(root),
+            "details": f"npm link failed to invoke: {exc}",
+        }
+
+    rc = getattr(result, "returncode", 1)
+    if rc != 0:
+        detail = (
+            getattr(result, "stderr", "") or getattr(result, "stdout", "") or "unknown error"
+        ).strip()[-300:]
+        return {
+            "action": "error",
+            "path": str(root),
+            "details": f"npm link exited {rc}: {detail}",
+        }
+    return {
+        "action": "created",
+        "path": str(root),
+        "details": "global `gaia` linked to the source tree (npm link)",
+    }
 
 
 # ---------------------------------------------------------------------------

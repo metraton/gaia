@@ -450,6 +450,7 @@ def _run_pack_mode(
     verbose: bool,
     keep_tarball: bool,
     pack_dest: str | None,
+    no_global_link: bool = False,
 ) -> int:
     # keep_tarball is retained for CLI compatibility only: now that the
     # pack destination is always stable and persistent (never a tmp dir
@@ -509,6 +510,19 @@ def _run_pack_mode(
     _report_step(name="gaia install (wire)", result=wire_res, quiet=quiet, verbose=verbose)
     if wire_res["action"] == "error":
         return 1
+
+    # Reconcile surface 4 (the global npm install) to the command's ORIGIN. For
+    # `gaia dev` the origin is this local SOURCE tree, so `npm link` makes the
+    # global `gaia` point at the source -- closing the drift where a stale
+    # `npm install -g` copy shadowed the workspace shim (and, run against a
+    # forward-migrated DB, broke `gaia contract finalize`). Best-effort: a link
+    # failure is advisory and never aborts the dev loop. Opt out with
+    # --no-global-link. Then surface a PATH-precedence skew (POSIX + Windows) so
+    # a linked-but-shadowed global is a visible signal, not a silent surprise.
+    if not no_global_link:
+        link_res = install_mod.reconcile_global_via_npm_link(_PACKAGE_ROOT, quiet=quiet)
+        _report_step(name="global npm link", result=link_res, quiet=quiet, verbose=verbose)
+        install_mod._warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=quiet)
 
     if not quiet:
         print(
@@ -596,6 +610,18 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "auto-deleted, so the workspace's file: dependency always resolves)"
         ),
     )
+    p.add_argument(
+        "--no-global-link",
+        dest="no_global_link",
+        action="store_true",
+        default=False,
+        help=(
+            "Skip reconciling the global npm `gaia` (surface 4) to this source "
+            "via `npm link`. By default pack mode links the source globally so a "
+            "bare `gaia` on PATH matches the workspace build (no stale-global "
+            "drift); pass this to leave the global install untouched"
+        ),
+    )
     return p
 
 
@@ -629,6 +655,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
     mode = getattr(args, "mode", "pack")
     keep_tarball = bool(getattr(args, "keep_tarball", False))
     pack_dest = getattr(args, "pack_dest", None)
+    no_global_link = bool(getattr(args, "no_global_link", False))
     workspace_arg = getattr(args, "workspace", None)
 
     workspace = (
@@ -655,4 +682,5 @@ def cmd_dev(args: argparse.Namespace) -> int:
         verbose=verbose,
         keep_tarball=keep_tarball,
         pack_dest=pack_dest,
+        no_global_link=no_global_link,
     )

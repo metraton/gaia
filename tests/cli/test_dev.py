@@ -474,6 +474,10 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
         ns.verbose = overrides.get("verbose", False)
         ns.keep_tarball = overrides.get("keep_tarball", False)
         ns.pack_dest = overrides.get("pack_dest", None)
+        # Default OFF in these orchestration tests so they never invoke a real
+        # `npm link` against the machine's global store. The reconcile-ON default
+        # path is covered by TestGlobalNpmLinkReconcile below (runner mocked).
+        ns.no_global_link = overrides.get("no_global_link", True)
         return ns
 
     def test_invokes_pack_install_wire_in_order(self):
@@ -700,6 +704,46 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             self.assertIn("hooks", out)
             self.assertIn("⚠", out)  # the warning glyph
 
+    def test_global_link_reconcile_invoked_by_default(self):
+        """By default (no --no-global-link) pack mode reconciles surface 4 by
+        `npm link`-ing the SOURCE tree globally. The reconcile function is
+        mocked so no real global mutation happens; we assert it was called with
+        the source root (_PACKAGE_ROOT), and the shadow check ran after it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_tarball = Path(tmp) / "pkg.tgz"; fake_tarball.write_bytes(b"x")
+            p_pack, p_install, p_wire = self._mock_pack_steps(fake_tarball)
+            with p_pack, p_install, p_wire, \
+                 patch("cli.install.reconcile_global_via_npm_link",
+                       return_value={"action": "created", "path": "src", "details": "linked"}) as spy_link, \
+                 patch("cli.install._warn_launcher_shadowed", return_value=None) as spy_warn:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_dev(self._make_args(workspace, no_global_link=False))
+
+            self.assertEqual(rc, 0)
+            spy_link.assert_called_once()
+            # First positional arg is the SOURCE tree (the command's origin).
+            called_root = Path(spy_link.call_args[0][0])
+            self.assertEqual(called_root, dev_mod._PACKAGE_ROOT)
+            spy_warn.assert_called_once()
+
+    def test_no_global_link_skips_reconcile(self):
+        """--no-global-link leaves the global install untouched: neither the
+        reconcile nor the shadow check runs."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            fake_tarball = Path(tmp) / "pkg.tgz"; fake_tarball.write_bytes(b"x")
+            p_pack, p_install, p_wire = self._mock_pack_steps(fake_tarball)
+            with p_pack, p_install, p_wire, \
+                 patch("cli.install.reconcile_global_via_npm_link") as spy_link, \
+                 patch("cli.install._warn_launcher_shadowed") as spy_warn:
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_dev(self._make_args(workspace, no_global_link=True))
+
+            self.assertEqual(rc, 0)
+            spy_link.assert_not_called()
+            spy_warn.assert_not_called()
+
 
 class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
     def _make_args(self, workspace, **overrides) -> argparse.Namespace:
@@ -824,6 +868,9 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
                 verbose=False,
                 keep_tarball=False,
                 pack_dest=None,
+                # Opt out of the real global `npm link` -- this e2e asserts the
+                # workspace wiring, not the machine's global npm store.
+                no_global_link=True,
             )
 
             with patch.dict(os.environ, env_patch):

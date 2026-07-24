@@ -47,6 +47,9 @@ from cli.install import (  # noqa: E402
     _persist_workspace_env,
     _launcher_path_precedence,
     _warn_launcher_shadowed,
+    _npm_global_prefix,
+    _npm_config_prefix_posix,
+    reconcile_global_via_npm_link,
 )
 import cli.install as install_mod  # noqa: E402  # for monkeypatching the marker path
 
@@ -1224,9 +1227,56 @@ class TestLauncherPathPrecedence(unittest.TestCase):
             _launcher_path_precedence(gaia_dir, npm_prefix, path_dirs)
         )
 
-    def test_warn_launcher_shadowed_noop_on_posix(self):
-        """The wrapper is a no-op on POSIX regardless of PATH state."""
-        self.assertIsNone(_warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=True))
+    def test_warn_launcher_shadowed_posix_no_global_gaia_is_noop(self):
+        """POSIX (drift-free): with no `gaia` shim in npm's global bin, nothing
+        shadows Gaia's launcher, so the check is a no-op even if npm's prefix
+        precedes Gaia's dir on PATH."""
+        with tempfile.TemporaryDirectory() as tmp:
+            npm_bin = Path(tmp) / "npm-bin"
+            npm_bin.mkdir()
+            # No `gaia` file in npm_bin -> nothing distinct to shadow.
+            with patch("cli.install._npm_global_prefix", return_value=npm_bin):
+                with patch.dict(os.environ, {"PATH": f"{npm_bin}:/home/u/.local/bin"}, clear=False):
+                    self.assertIsNone(
+                        _warn_launcher_shadowed(link="/home/u/.local/bin/gaia", quiet=True)
+                    )
+
+    def test_warn_launcher_shadowed_posix_distinct_global_shadows(self):
+        """POSIX: a distinct `gaia` shim in npm's global bin that PRECEDES Gaia's
+        launcher dir on PATH produces the actionable warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            npm_bin = Path(tmp) / "npm-bin"
+            npm_bin.mkdir()
+            (npm_bin / "gaia").write_text("#!/bin/sh\n")  # a distinct global gaia
+            gaia_dir = Path(tmp) / "local-bin"
+            gaia_dir.mkdir()
+            launcher = gaia_dir / "gaia"
+            launcher.write_text("#!/bin/bash\n")
+            with patch("cli.install._npm_global_prefix", return_value=npm_bin):
+                # npm's bin comes FIRST on PATH -> it wins -> warning.
+                with patch.dict(os.environ, {"PATH": f"{npm_bin}:{gaia_dir}"}, clear=False):
+                    warning = _warn_launcher_shadowed(link=str(launcher), quiet=True)
+            self.assertIsNotNone(warning)
+            self.assertIn("npm", warning.lower())
+
+    def test_warn_launcher_shadowed_posix_same_file_is_noop(self):
+        """POSIX: when npm's global `gaia` IS Gaia's own launcher (e.g. after
+        `npm link` made them the same file), the surfaces are aligned -- no
+        warning."""
+        with tempfile.TemporaryDirectory() as tmp:
+            gaia_dir = Path(tmp) / "local-bin"
+            gaia_dir.mkdir()
+            launcher = gaia_dir / "gaia"
+            launcher.write_text("#!/bin/bash\n")
+            npm_bin = Path(tmp) / "npm-bin"
+            npm_bin.mkdir()
+            # npm's `gaia` is a symlink to the SAME launcher file.
+            (npm_bin / "gaia").symlink_to(launcher)
+            with patch("cli.install._npm_global_prefix", return_value=npm_bin):
+                with patch.dict(os.environ, {"PATH": f"{npm_bin}:{gaia_dir}"}, clear=False):
+                    self.assertIsNone(
+                        _warn_launcher_shadowed(link=str(launcher), quiet=True)
+                    )
 
     def test_warn_launcher_shadowed_emits_under_windows(self):
         """Under win32, a shadowed launcher returns and prints a warning."""
@@ -1239,6 +1289,92 @@ class TestLauncherPathPrecedence(unittest.TestCase):
                         link="C:/Users/u/.local/bin/gaia", quiet=True
                     )
         self.assertIsNotNone(warning)
+
+
+class TestNpmGlobalPrefixResolution(unittest.TestCase):
+    """`_npm_global_prefix` is cross-platform: it returns the dir where npm
+    writes the global `gaia` shim so the precedence check can find a shadowing
+    global."""
+
+    def test_posix_prefix_from_env_var(self):
+        with patch.object(install_mod.sys, "platform", "linux"):
+            with patch.dict(os.environ, {"NPM_CONFIG_PREFIX": "/opt/npm-global"}, clear=False):
+                prefix = _npm_config_prefix_posix()
+                self.assertEqual(prefix, Path("/opt/npm-global"))
+                # _npm_global_prefix appends /bin (where npm writes shims).
+                self.assertEqual(_npm_global_prefix(), Path("/opt/npm-global/bin"))
+
+    def test_windows_prefix_from_appdata(self):
+        with patch.object(install_mod.sys, "platform", "win32"):
+            with patch.dict(os.environ, {"APPDATA": "C:/Users/u/AppData/Roaming"}, clear=False):
+                self.assertEqual(
+                    _npm_global_prefix(), Path("C:/Users/u/AppData/Roaming") / "npm"
+                )
+
+
+class TestGlobalNpmLinkReconcile(unittest.TestCase):
+    """`reconcile_global_via_npm_link` links the origin so the global `gaia`
+    matches the command's source. The npm runner is injectable so the reconcile
+    is unit-testable without mutating the machine's real global store."""
+
+    def _make_source(self, tmp: str) -> Path:
+        root = Path(tmp) / "src"
+        root.mkdir()
+        (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}\n')
+        return root
+
+    def test_runs_npm_link_from_source_root(self):
+        calls = {}
+
+        def fake_run(cmd, **kwargs):
+            calls["cmd"] = cmd
+            calls["cwd"] = kwargs.get("cwd")
+            return subprocess.CompletedProcess(cmd, 0, "linked", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_source(tmp)
+            res = reconcile_global_via_npm_link(root, runner=fake_run)
+
+        self.assertEqual(res["action"], "created")
+        self.assertEqual(calls["cmd"], ["npm", "link"])
+        self.assertEqual(Path(calls["cwd"]), root)
+
+    def test_skips_when_no_package_json(self):
+        recorded = []
+
+        def fake_run(cmd, **kwargs):
+            recorded.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "empty"
+            root.mkdir()
+            res = reconcile_global_via_npm_link(root, runner=fake_run)
+
+        self.assertEqual(res["action"], "skipped")
+        self.assertEqual(recorded, [])  # runner never invoked
+
+    def test_nonzero_exit_is_error_not_raise(self):
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, "", "EACCES: permission denied")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_source(tmp)
+            res = reconcile_global_via_npm_link(root, runner=fake_run)
+
+        self.assertEqual(res["action"], "error")
+        self.assertIn("EACCES", res["details"])
+
+    def test_invocation_failure_is_error_not_raise(self):
+        def fake_run(cmd, **kwargs):
+            raise OSError("npm not found")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._make_source(tmp)
+            res = reconcile_global_via_npm_link(root, runner=fake_run)
+
+        self.assertEqual(res["action"], "error")
+        self.assertIn("npm not found", res["details"])
 
 
 class TestLauncherShellBehavior(unittest.TestCase):
