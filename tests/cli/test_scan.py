@@ -464,6 +464,68 @@ class TestScanReport:
             f"got {count}"
         )
 
+    def test_dry_run_matches_apply_for_persisted_name_ne_basename(
+        self, tmp_db, tmp_path
+    ):
+        """Dry-run fidelity for the identity-collapse survivor (R2 parity).
+
+        When a projects row already persists under a name X that differs from
+        the repo basename Y but carries the SAME project_identity P (e.g. a row
+        first written under a collision-disambiguated or otherwise renamed
+        slot), apply=True collapses the re-scanned repo ONTO that survivor row
+        in place and marks nothing missing (did_mark_missing == 0). The dry-run
+        preview must reach the SAME conclusion: preview_project_name has to
+        replicate upsert_project's identity-collapse lookup and return the
+        persisted X, not the basename Y -- otherwise it treats the survivor as
+        vanished and over-counts (would_mark_missing == 1 != 0).
+        """
+        from tools.scan.store_populator import resolve_project_identity
+        from gaia.store.writer import upsert_project
+
+        # Repo whose basename is 'svc' (Y), directly under workspace 'aaxis'.
+        repo = _mk_repo(tmp_path, "aaxis", "svc")
+        identity = resolve_project_identity(repo)  # P -- what the scan resolves
+
+        # Seed a row persisted under name X ('svc-legacy') != basename 'svc',
+        # keyed on the SAME identity P the scan will resolve for this repo.
+        classify_mod._ensure_scan_permissions(tmp_db)
+        seeded = upsert_project(
+            workspace="aaxis",
+            name="svc-legacy",
+            fields={
+                "project_identity": identity,
+                "path": str(repo),
+                "status": "active",
+            },
+            agent=classify_mod.SCAN_AGENT,
+            db_path=tmp_db,
+            strip_agent_owned=True,
+        )
+        assert seeded.get("name") == "svc-legacy", (
+            f"fixture must persist X != basename, got {seeded!r}"
+        )
+
+        # Dry-run over the SAME persisted state: no writes, pure preview.
+        rep_dry = classify_mod.scan(
+            tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=False
+        )
+        assert rep_dry.error is None
+        would_mark_missing = rep_dry.diff["would_mark_missing"]
+
+        # Apply over the SAME starting state: identity-collapse keeps the
+        # survivor row, marking nothing missing.
+        rep_apply = classify_mod.scan(
+            tmp_path / "aaxis", "aaxis", db_path=tmp_db, apply=True
+        )
+        assert rep_apply.error is None
+        did_mark_missing = rep_apply.diff["did_mark_missing"]
+
+        assert would_mark_missing == did_mark_missing == 0, (
+            "dry-run must be faithful to apply for the identity-collapse "
+            f"survivor: would_mark_missing={would_mark_missing}, "
+            f"did_mark_missing={did_mark_missing}"
+        )
+
     def test_scan_populates_primary_language_and_platform(self, tmp_db, tmp_path):
         """The LIVE scan (classify._upsert) must populate the scan-owned scalars
         `primary_language` (dominant language from disk manifests) and

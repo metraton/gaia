@@ -682,6 +682,20 @@ def preview_project_name(
 
     con = _connect(resolved)
     try:
+        # Identity-collapse fidelity: upsert_project (identity-collapse path)
+        # looks up any existing row keyed by project_identity and UPDATEs it
+        # IN PLACE, returning that row's PERSISTED name -- which can differ
+        # from `name` when the row was first seen under a different basename.
+        # A dry-run preview must return that SAME survivor name; otherwise a
+        # still-present project (survivor under the persisted name) is counted
+        # as vanished and would_mark_missing over-counts vs. did_mark_missing.
+        if _projects_has_identity_column(con):
+            existing = con.execute(
+                "SELECT name FROM projects WHERE project_identity = ?",
+                (project_identity,),
+            ).fetchone()
+            if existing is not None:
+                return existing["name"]
         return _find_collision_free_name(con, workspace, name, project_identity)
     finally:
         con.close()
