@@ -640,6 +640,163 @@ class TestCleanSettingsLocalJson(unittest.TestCase):
             self.assertFalse(result["found"])
             self.assertEqual(json.loads(path.read_text())["agent"], "my-custom-agent")
 
+    # -- hooks key (mirror of merge_local_hooks / setup_project_hooks) --------
+
+    def _gaia_hooks_block(self, root: Path) -> dict:
+        """A hooks block shaped like what the writers bake into the file:
+        commands resolved through the workspace .claude/hooks/ dir."""
+        base = f"{(root / '.claude' / 'hooks').as_posix()}"
+        return {
+            "PreToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": f"python3 {base}/pre_tool_use.py"}
+                    ],
+                }
+            ],
+            "PostToolUse": [
+                {
+                    "matcher": "*",
+                    "hooks": [
+                        {"type": "command", "command": f"python3 {base}/post_tool_use.py"}
+                    ],
+                }
+            ],
+        }
+
+    def test_removes_orphan_hooks_block_gaia_sole_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {"hooks": self._gaia_hooks_block(root)})
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertIn("hooks", result["removed_fields"])
+            # Gaia was the sole owner -> whole file collapses to {} and is removed.
+            self.assertTrue(result["file_removed"])
+            self.assertFalse(path.exists())
+
+    def test_removes_hooks_key_but_keeps_user_keys(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {
+                "hooks": self._gaia_hooks_block(root),
+                "userOnlyKey": {"nested": True},
+            })
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertIn("hooks", result["removed_fields"])
+            self.assertFalse(result.get("file_removed"))
+            data = json.loads(path.read_text())
+            self.assertNotIn("hooks", data)
+            self.assertEqual(data["userOnlyKey"], {"nested": True})
+
+    def test_preserves_user_authored_hooks(self):
+        """A user's own hook entry (not resolving into .claude/hooks/) survives;
+        only Gaia's commands are stripped, and the shared event is kept."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            base = (root / ".claude" / "hooks").as_posix()
+            path = self._write_local(root, {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {"type": "command",
+                                 "command": f"python3 {base}/pre_tool_use.py"},
+                            ],
+                        },
+                        {
+                            "matcher": "Bash",
+                            "hooks": [
+                                {"type": "command",
+                                 "command": "/usr/local/bin/my-own-hook.sh"},
+                            ],
+                        },
+                    ],
+                },
+            })
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertIn("hooks", result["removed_fields"])
+            data = json.loads(path.read_text())
+            entries = data["hooks"]["PreToolUse"]
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(
+                entries[0]["hooks"][0]["command"], "/usr/local/bin/my-own-hook.sh"
+            )
+
+    def test_hooks_dry_run_preserves_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {"hooks": self._gaia_hooks_block(root)})
+            result = _clean_settings_local_json(root, dry_run=True)
+            self.assertTrue(result["found"])
+            self.assertIn("hooks", result["removed_fields"])
+            # Dry-run must not mutate the file on disk.
+            data = json.loads(path.read_text())
+            self.assertIn("hooks", data)
+            self.assertIn("PreToolUse", data["hooks"])
+
+    def test_no_gaia_hooks_returns_not_found(self):
+        """A hooks block with only user hooks is not Gaia-owned -> nothing removed."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self._write_local(root, {
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": "*",
+                         "hooks": [{"type": "command", "command": "echo hi"}]},
+                    ],
+                },
+            })
+            result = _clean_settings_local_json(root, dry_run=False)
+            self.assertFalse(result["found"])
+            data = json.loads(path.read_text())
+            self.assertIn("hooks", data)
+
+    def test_install_then_uninstall_leaves_no_hooks_key(self):
+        """End-to-end mirror: the REAL writer merge_local_hooks bakes the hooks
+        key, and _clean_settings_local_json (what `gaia uninstall` calls) must
+        remove exactly that. Proves the two are true inverses, not just that the
+        cleaner handles a hand-built block."""
+        from cli._install_helpers import merge_local_hooks  # local import
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            pkg = workspace / "pkg"
+            (pkg / "hooks").mkdir(parents=True)
+            (pkg / "hooks" / "hooks.json").write_text(json.dumps({
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command",
+                                   "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"}],
+                    }],
+                    "PostToolUse": [{
+                        "matcher": "*",
+                        "hooks": [{"type": "command",
+                                   "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post_tool_use.py"}],
+                    }],
+                }
+            }))
+
+            # INSTALL: real writer bakes the hooks key into settings.local.json.
+            res = merge_local_hooks(workspace, plugin_root=pkg)
+            self.assertEqual(res["action"], "updated")
+            settings = workspace / ".claude" / "settings.local.json"
+            self.assertIn("hooks", json.loads(settings.read_text()))
+
+            # UNINSTALL: the cleaner removes exactly what install wrote. Gaia was
+            # the sole owner, so the file collapses to {} and is removed.
+            result = _clean_settings_local_json(workspace, dry_run=False)
+            self.assertTrue(result["found"])
+            self.assertIn("hooks", result["removed_fields"])
+            self.assertTrue(result["file_removed"])
+            self.assertFalse(settings.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

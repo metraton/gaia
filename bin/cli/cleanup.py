@@ -8,7 +8,8 @@ The full-cleanup footprint mirrors what `gaia install` writes, in reverse:
   - .claude/plugin-registry.json (surgical: only Gaia's installed[] entry is
     removed; the file is shared with Claude Code's plugin system)
   - .claude/settings.local.json (surgical: only Gaia-injected keys are removed
-    -- agent, two env vars, Gaia's permission entries; user config preserved)
+    -- agent, two env vars, Gaia's permission entries, and Gaia's hook commands
+    -- the mirror of merge_local_hooks; user config preserved)
 The user DB at ~/.gaia/gaia.db is never touched here.
 
 Modes:
@@ -20,6 +21,7 @@ Flags:
   --json              Machine-readable output
 """
 
+import copy
 import json
 import os
 import sys
@@ -486,17 +488,78 @@ def _gaia_managed_permission_sets():
         return {"Bash"}, set()
 
 
+def _is_gaia_hook_command(command: object) -> bool:
+    """True when a hook command string was injected by Gaia.
+
+    Both hook writers -- ``merge_local_hooks`` (cli/_install_helpers.py) and
+    ``setup_project_hooks`` (hooks/modules/core/plugin_setup.py) -- bake the
+    ``${CLAUDE_PLUGIN_ROOT}/hooks/`` prefix into the workspace's
+    ``.claude/hooks/`` directory (the stable symlink into the Gaia package).
+    A command Gaia owns therefore resolves through ``.claude/hooks/``. We also
+    match the un-converted ``${CLAUDE_PLUGIN_ROOT}/hooks/`` literal in case a
+    block was written before symlink resolution. Backslashes are normalized so
+    the check holds for Windows-authored paths.
+    """
+    if not isinstance(command, str):
+        return False
+    norm = command.replace("\\", "/")
+    return ".claude/hooks/" in norm or "${CLAUDE_PLUGIN_ROOT}/hooks/" in norm
+
+
+def _strip_gaia_hooks(hooks: dict) -> bool:
+    """Remove Gaia-owned hook commands from a settings ``hooks`` block, in place.
+
+    Mirrors the writers in reverse: drops individual hook commands that resolve
+    into ``.claude/hooks/``, prunes a hook entry whose command list becomes
+    empty, and drops an event whose entry list becomes empty. User-authored
+    hook entries (and entries with no ``hooks`` list) are preserved untouched.
+    Returns True if anything was removed.
+    """
+    changed = False
+    for event in list(hooks.keys()):
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            continue
+        kept_entries: list = []
+        for entry in entries:
+            inner = entry.get("hooks") if isinstance(entry, dict) else None
+            if isinstance(inner, list):
+                kept_inner = [
+                    h for h in inner
+                    if not _is_gaia_hook_command(
+                        h.get("command") if isinstance(h, dict) else None
+                    )
+                ]
+                if len(kept_inner) != len(inner):
+                    changed = True
+                if not kept_inner:
+                    # Every command in this entry was Gaia's -> drop the entry.
+                    continue
+                entry = {**entry, "hooks": kept_inner}
+            kept_entries.append(entry)
+        if len(kept_entries) != len(entries):
+            changed = True
+        if kept_entries:
+            hooks[event] = kept_entries
+        else:
+            del hooks[event]
+    return changed
+
+
 def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
     """Remove only Gaia-injected keys from settings.local.json; preserve user config.
 
-    Mirrors merge_local_permissions:
+    Mirrors merge_local_permissions and the hook writers:
       - agent: removed only if it equals "gaia-orchestrator".
       - env: removes the two Gaia keys only when their value matches what
         install set (a user override of the value is preserved).
       - permissions.allow: drops entries whose tool name Gaia manages.
       - permissions.deny: drops Gaia's deny rules.
-      - Empty containers (env / permissions / allow / deny) are pruned so the
-        file does not retain hollow Gaia scaffolding.
+      - hooks: drops hook commands Gaia injected (those resolving into
+        ``.claude/hooks/``); the ``hooks`` key is removed when Gaia was its
+        sole owner, so no orphan block referencing deleted symlinks survives.
+      - Empty containers (env / permissions / allow / deny / hooks) are pruned
+        so the file does not retain hollow Gaia scaffolding.
 
     If nothing Gaia-owned remains and the file becomes ``{}``, it is removed.
     Idempotent: a file with no Gaia keys returns found=False.
@@ -563,6 +626,20 @@ def _clean_settings_local_json(root: Path, dry_run: bool) -> dict:
                     del perms[empty_key]
             if not perms:
                 del data["permissions"]
+
+    # hooks (Gaia-injected event commands resolving into .claude/hooks/).
+    # This is the mirror of merge_local_hooks / setup_project_hooks: removing
+    # them here prevents an orphan `hooks` block (pointing at deleted symlinks)
+    # from surviving uninstall and double-registering if the Claude Code plugin
+    # is later mounted.
+    hooks = data.get("hooks")
+    if isinstance(hooks, dict):
+        # Detect on a copy so dry-run never mutates; apply in place otherwise.
+        probe = copy.deepcopy(hooks) if dry_run else hooks
+        if _strip_gaia_hooks(probe):
+            removed_fields.append("hooks")
+        if not dry_run and not hooks:
+            del data["hooks"]
 
     if not removed_fields:
         return {"found": False}
