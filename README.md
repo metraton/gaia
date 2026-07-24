@@ -1,6 +1,6 @@
 # Gaia
 
-> **G**eneral **A**gentic **I**ntegration **A**rchitecture
+> **G**enerative **AI** **A**rchitecture
 
 [![npm version](https://badge.fury.io/js/@jaguilar87%2Fgaia.svg)](https://www.npmjs.com/package/@jaguilar87/gaia)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

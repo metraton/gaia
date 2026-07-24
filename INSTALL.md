@@ -6,7 +6,7 @@ This guide will help you install and configure Gaia in your project. The process
 
 Gaia is a system of specialized AI agents that automate DevOps tasks. Think of it as having a team of experts (Terraform, Kubernetes, GCP, AWS) working together, coordinated by an intelligent orchestrator.
 
-Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (`source: npm`), so there is no separate `dist/` bundle.
+Gaia ships as a **single, unified plugin** named `gaia` — one artifact carrying the full orchestrator, all agents, all skills, all hooks, all tools, and all config. It is distributed as the `@jaguilar87/gaia` npm package; that same package root IS the Claude Code plugin (declared in `.claude-plugin/marketplace.json` with `source: github`, repo `metraton/gaia`, ref `v5.2.0`), so there is no separate `dist/` bundle.
 
 ---
 
@@ -34,7 +34,7 @@ After install, `gaia doctor` verifies the result. If a bootstrap or wire-up step
 
 ### Surface 2: Claude Code plugin
 
-Claude Code consumes the npm package directly (`source: npm`) — it runs `npm install @jaguilar87/gaia` into its plugin cache. Add the marketplace and install the single plugin:
+Claude Code consumes the plugin from GitHub (`source: github`, repo `metraton/gaia`, ref `v5.2.0`, per `.claude-plugin/marketplace.json`) — it clones the tagged repo into its plugin cache. Add the marketplace and install the single plugin:
 
 ```bash
 # Add the marketplace
@@ -232,8 +232,8 @@ Once installed, you have access to **complete documentation** in each directory:
 
 ```
 .claude/
-├── agents/               8 agents (platform-architect, gitops-operator, etc.)
-├── skills/README.md      32 skill modules
+├── agents/               9 agents (platform-architect, gitops-operator, etc.)
+├── skills/README.md      37 skill modules
 ├── config/README.md      Contracts, git standards, surface routing
 ├── hooks/README.md       Hook scripts (primary + event handlers)
 ├── tools/                Context, memory, validation, review
@@ -461,6 +461,6 @@ A: `npm update @jaguilar87/gaia` then `gaia update` - symlinks point to the new 
 
 ---
 
-**Version:** 5.0.11
+**Version:** 5.2.0
 **Last updated:** 2026-07-01
 **Maintained by:** Jorge Aguilar + Gaia (meta-agent)
