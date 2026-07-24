@@ -235,9 +235,12 @@ def merge_local_hooks(
     """Merge hooks from hooks.json into settings.local.json.
 
     In npm mode Claude Code reads hooks from settings.local.json, not from
-    hooks.json directly, so this is required for hooks to fire. Resolves
-    command paths to absolute via the .claude/hooks symlink so hooks work
-    regardless of cwd at execution time.
+    hooks.json directly, so this is required for hooks to fire. Command
+    paths are made absolute through the STABLE `.claude/hooks` symlink (the
+    symlink itself is NOT followed) so hooks work regardless of cwd at
+    execution time AND survive repeated `gaia dev` runs -- see the
+    hooks_abs computation below for why the symlink must not be resolved
+    through.
 
     Args:
         workspace: directory containing .claude/.
@@ -271,20 +274,34 @@ def merge_local_hooks(
 
     source_hooks = hooks_data.get("hooks", hooks_data)
 
-    # Resolve absolute path for hook commands. Always normalized to
-    # forward-slash via .as_posix() -- this is what neutralizes both the
-    # re.sub "bad escape" on a Windows "C:\Users\..." backslash (the string
-    # below is used as a *replacement* pattern, where backslash is special)
-    # and the Windows shell eating backslash escapes when the command is
-    # written into settings.local.json. Python accepts forward-slash paths
-    # natively on Windows, so this is safe on every platform.
+    # Absolute path for hook commands. Always normalized to forward-slash via
+    # .as_posix() -- this is what neutralizes both the re.sub "bad escape" on a
+    # Windows "C:\Users\..." backslash (the string below is used as a
+    # *replacement* pattern, where backslash is special) and the Windows shell
+    # eating backslash escapes when the command is written into
+    # settings.local.json. Python accepts forward-slash paths natively on
+    # Windows, so this is safe on every platform.
+    #
+    # CRITICAL: resolve the .claude PARENT to an absolute, normalized path, but
+    # do NOT follow the `hooks` symlink itself. `.claude/hooks` is the STABLE
+    # indirection point `manage_symlinks` repoints on every install; following
+    # it (the old `hooks_dir.resolve()`) baked the symlink's *current* target
+    # into settings.local.json. Under `gaia dev` that target is the pnpm
+    # content-addressed virtual-store path
+    # (node_modules/.pnpm/@jaguilar87+gaia@file+...+<sha8>.tgz/...), whose <sha8>
+    # segment changes on EVERY content change (see content_address_tarball in
+    # cli/dev.py) and whose old store dir is pruned/replaced on reinstall. The
+    # Claude Code harness pins hook commands at session start (no hot-reload),
+    # so a resumed/next-run session kept the stale resolved path and its hooks
+    # pointed at a store dir that no longer existed. Baking the stable
+    # `.claude/hooks/...` path instead keeps settings.local.json valid across
+    # repeated dev iterations -- install just repoints the one symlink.
     hooks_dir = claude_dir / "hooks"
-    if hooks_dir.exists():
-        try:
-            hooks_abs = hooks_dir.resolve().as_posix()
-        except OSError:
-            hooks_abs = hooks_dir.as_posix()
-    else:
+    try:
+        # Resolve only the parent (the real workspace `.claude` dir), then
+        # re-attach the unresolved `hooks` symlink component.
+        hooks_abs = (claude_dir.resolve() / "hooks").as_posix()
+    except OSError:
         hooks_abs = hooks_dir.as_posix()
 
     def _convert(cmd: str) -> str:

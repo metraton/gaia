@@ -472,11 +472,20 @@ def setup_project_hooks() -> bool:
     # Unwrap outer "hooks" key if present
     source_hooks = hooks_data.get("hooks", hooks_data)
 
-    # Resolve absolute path to hooks directory so hooks work regardless of
-    # CWD at execution time (Stop/PostCompact hooks may run from unknown CWD)
+    # Absolute path to the hooks directory so hooks work regardless of CWD at
+    # execution time (Stop/PostCompact hooks may run from unknown CWD).
+    #
+    # CRITICAL: resolve the .claude PARENT to an absolute path, but do NOT
+    # follow the `hooks` symlink itself -- `.claude/hooks` is the STABLE
+    # indirection that install repoints on every run. Following it (the old
+    # `hooks_dir.resolve()`) baked the symlink's current target -- under
+    # `gaia dev` the pnpm content-addressed store path whose hash segment
+    # changes on every content change and whose old dir is pruned -- into
+    # settings.local.json, so a resumed session pinned a path that no longer
+    # existed. This mirrors the same fix in cli/_install_helpers.merge_local_hooks.
     hooks_dir = claude_dir / "hooks"
     if hooks_dir.exists():
-        hooks_abs = str(hooks_dir.resolve())
+        hooks_abs = str(claude_dir.resolve() / "hooks")
     else:
         # Fallback: use relative .claude/hooks/ if symlink not yet created
         hooks_abs = str(claude_dir / "hooks")

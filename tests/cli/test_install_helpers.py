@@ -236,6 +236,46 @@ class TestMergeLocalHooks(unittest.TestCase):
             self.assertNotIn("${CLAUDE_PLUGIN_ROOT}", cmd)
             self.assertTrue(cmd.endswith("/pre.py"))
 
+    def test_bakes_stable_symlink_path_not_resolved_target(self):
+        """Regression: dev+resume hook breakage.
+
+        When `.claude/hooks` is a symlink (the normal installed state), the
+        baked hook command must reference the STABLE `.claude/hooks/...` path,
+        NOT the symlink's resolved target. Following the symlink baked the
+        pnpm content-addressed virtual-store path into settings.local.json;
+        that path's content-hash segment changes on every `gaia dev` content
+        change and the old store dir is pruned, so the harness -- which pins
+        hook commands at session start -- kept a dangling path on resume.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "ws"
+            (workspace / ".claude").mkdir(parents=True)
+            pkg = workspace / ".claude" / ".pkg"
+            (pkg / "hooks").mkdir(parents=True)
+            (pkg / "hooks" / "hooks.json").write_text(json.dumps({
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Bash",
+                        "hooks": [{"type": "command",
+                                   "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre.py"}],
+                    }]
+                }
+            }))
+            # A VOLATILE target standing in for the pnpm content-addressed
+            # store dir: the .claude/hooks symlink points here today.
+            volatile = Path(tmp) / "store-97c4c22d" / "hooks"
+            volatile.mkdir(parents=True)
+            (workspace / ".claude" / "hooks").symlink_to(volatile)
+
+            res = helpers.merge_local_hooks(workspace, plugin_root=pkg)
+            self.assertEqual(res["action"], "updated")
+            data = json.loads((workspace / ".claude" / "settings.local.json").read_text())
+            cmd = data["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            # Baked path must go through the stable .claude/hooks symlink...
+            self.assertIn("/.claude/hooks/pre.py", cmd)
+            # ...and must NOT bake the volatile resolved store target.
+            self.assertNotIn("store-97c4c22d", cmd)
+
     def test_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
