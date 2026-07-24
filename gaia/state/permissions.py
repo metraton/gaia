@@ -356,15 +356,24 @@ __all__ = [
 # not a known non-empty set -- it is reached only when ``agents/`` itself is
 # unresolvable, never as a description of the live fleet. The fleet IS
 # populated today: ``agents/gaia-verifier.md`` ships ``verifier: true`` (Gaia
-# harness B3), so ``verifier_fleet()`` resolves to a non-empty set on any
-# installed tree, and the SubagentStop gate (hooks/adapters/claude_code.py,
-# ``_verifier_role_violation``) enforces the ARMED branch: only a seeded
-# verifier-role agent (``gaia-verifier``) may set ``agent_state: COMPLETE``;
-# every other producer proposing done work must transition through
-# ``NEEDS_VERIFICATION`` and wait for that agent's independent pass. The
-# mechanism (marker + loader + cached fleet + is_X predicate) is what is
-# load-bearing; the fallback floor above exists only for the unresolvable-path
-# edge case, not as the steady-state expectation.
+# harness B3), so ``verifier_fleet()`` resolves to a non-empty set
+# (``{"gaia-verifier"}``) on any installed tree.
+#
+# DECOUPLED FROM THE FINALIZE GATE (plan 34 task 7): this fleet no longer gates
+# COMPLETE. The SubagentStop finalize gate is keyed on the dispatch binding's
+# ``plan_task_id`` (hooks/adapters/claude_code.py,
+# ``_blind_verification_required`` / ``BLIND_VERIFICATION_REQUIRED``), NOT on
+# the emitting agent's role: a plan-task-bound producer turn (its binding
+# carries a ``plan_task_id``) is forced to ``NEEDS_VERIFICATION`` so an
+# independent verifier confirms the increment, while a turn with NO
+# ``plan_task_id`` (investigation / memory / a free-standing verifier turn) may
+# self-``COMPLETE``. The former role coupling was removed on purpose: keying on
+# role made every non-verifier COMPLETE a violation the moment the registry
+# armed, which contradicts "an unbound turn self-completes". This fleet
+# (marker + loader + cached fleet + is_X predicate) remains as ROLE
+# INFRASTRUCTURE -- dispatch-side role detection, skill injection, and
+# authorization for oracle-mode verification (see ``gaia.state.gate_oracle``) --
+# but the finalize gate does not consult it.
 #
 # Never-fails-open, exactly like the handoff-writer fleet: an identity absent
 # from the resolved fleet (empty or not) is always rejected by ``is_verifier``
@@ -415,8 +424,7 @@ def _parse_agent_verifier_frontmatter(md_text: str) -> tuple[str | None, bool]:
 
 @functools.lru_cache(maxsize=1)
 def verifier_fleet() -> frozenset[str]:
-    """Return the set of agent identities authorized to set ``COMPLETE`` when
-    the verifier gate is armed.
+    """Return the set of agent identities carrying the verifier role.
 
     Seeded from ``agents/*.md`` frontmatter (marker ``verifier: true``).
     Falls back to ``_FALLBACK_VERIFIER_FLEET`` (empty) only when ``agents/``
@@ -426,12 +434,14 @@ def verifier_fleet() -> frozenset[str]:
 
     Populated today: ``agents/gaia-verifier.md`` ships ``verifier: true``, so
     this resolves to a non-empty set (``{"gaia-verifier"}``) on any installed
-    tree. Callers that gate on "is the verifier role armed" still MUST check
-    ``bool(verifier_fleet())`` first rather than calling ``is_verifier(agent)``
-    alone -- that guard is what lets the same code degrade safely to
-    unenforced on a tree where ``agents/`` cannot be resolved at all, instead
-    of rejecting every producer outright. See hooks/adapters/claude_code.py,
-    ``_verifier_role_violation``, for the ARMED enforcement branch.
+    tree.
+
+    NOTE: this fleet does NOT gate ``COMPLETE`` (plan 34 task 7). The
+    SubagentStop finalize gate is keyed on the dispatch binding's
+    ``plan_task_id`` (hooks/adapters/claude_code.py,
+    ``_blind_verification_required``), not on membership here. This fleet is
+    role infrastructure -- dispatch-side role detection, skill injection, and
+    oracle-mode authorization (``gaia.state.gate_oracle``).
     """
     agents_dir = _agents_dir()
     if agents_dir is None:
@@ -453,13 +463,13 @@ def verifier_fleet() -> frozenset[str]:
 
 
 def is_verifier(agent: str) -> bool:
-    """True iff ``agent`` is a seeded fleet identity permitted to verify.
+    """True iff ``agent`` is a seeded fleet identity carrying the verifier role.
 
     Never fails open: an identity absent from the (possibly empty) fleet
-    always returns False. Callers deciding whether the verifier gate is
-    ARMED must check ``bool(verifier_fleet())`` separately -- this function
-    only answers "is this named identity in the fleet?", exactly mirroring
-    ``is_handoff_writer``.
+    always returns False. This function only answers "is this named identity
+    in the fleet?", exactly mirroring ``is_handoff_writer`` -- it does NOT gate
+    ``COMPLETE`` (the finalize gate keys on ``plan_task_id`` via
+    ``_blind_verification_required``, see the module comment above).
     """
     if not agent:
         return False

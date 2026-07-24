@@ -159,15 +159,14 @@ def test_reconstructed_envelope_passes_the_gate(db):
     # The bare (fence-less) turn would be rejected; the reconstructed envelope
     # must pass the SAME full-verdict gate.
     #
-    # agent_type is "gaia-verifier" here (updated at B3 M2/ARMING), not
-    # "gaia-system": the envelope under test is a COMPLETE envelope, and the
-    # live verifier registry is now armed (agents/gaia-verifier.md carries
-    # `verifier: true`), so a non-verifier agent_type's COMPLETE would be
-    # correctly rejected by the verifier-role gate
-    # (hooks/adapters/claude_code.py::_verifier_role_violation) -- a concern
-    # orthogonal to what THIS test proves (that reconstruction produces a
-    # gate-passing envelope identical in shape to a real fence). Using a
-    # seeded verifier identity isolates that one property.
+    # agent_type is "gaia-verifier" here, not "gaia-system": the envelope under
+    # test is a COMPLETE envelope. Under the plan 34 finalize gate
+    # (hooks/adapters/claude_code.py::_blind_verification_required), a COMPLETE
+    # is rejected ONLY when the turn is bound to a plan_task_id; this test
+    # reconstructs an UNBOUND turn (no plan_task_id), so the COMPLETE passes
+    # regardless of the emitting agent's role -- a concern orthogonal to what
+    # THIS test proves (that reconstruction produces a gate-passing envelope
+    # identical in shape to a real fence).
     draft_id = mint_draft_id(VALID_AGENT_ID)
     env = _complete_envelope()
     save_draft(draft_id, env)
