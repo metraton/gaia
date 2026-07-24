@@ -16,8 +16,8 @@ cover each stage in isolation plus the decoupling and ownership guarantees:
   * matching is by physical identity (local_path / remote), so a re-scan
     refreshes the existing entry in place instead of duplicating (requirement 4);
   * dry-run (apply=False) writes nothing and materializes no DB file;
-  * a hand-authored FLAT contract with >1 promotable project is DEFERRED, never
-    silently converted to a map;
+  * a hand-authored FLAT contract with >1 promotable project is AUTO-CONVERTED
+    to a map, preserving the old workspace-level metadata under a reserved key;
   * promote_workspace is independently invocable (no scan run required).
 
 Isolation: GAIA_DATA_DIR -> tmp_path so ~/.gaia/gaia.db is never touched.
@@ -284,10 +284,11 @@ def test_dry_run_against_fresh_workspace_touches_nothing(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Flat single-project / workspace contract with >1 project -> deferred
+# Flat workspace contract with >1 project -> auto-converted to a map,
+# preserving the old workspace-level metadata under the reserved key
 # ---------------------------------------------------------------------------
 
-def test_flat_contract_with_multiple_projects_is_deferred(tmp_db):
+def test_flat_contract_with_multiple_projects_is_converted_to_map(tmp_db):
     from tools.scan.promote import promote_workspace
     ws = "me-like"
     # A hand-authored FLAT workspace-identity contract.
@@ -299,13 +300,110 @@ def test_flat_contract_with_multiple_projects_is_deferred(tmp_db):
     _seed_project(tmp_db, ws, "b", path="/home/u/ws/me/b", identity="/home/u/ws/me/b/.git")
 
     rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    # The flat multi-project contract is auto-converted, not deferred.
     assert rep["shape"] == "flat"
-    assert rep["applied"] is False
-    assert len(rep["deferred"]) == 2
-    # The hand-authored flat contract is untouched.
+    assert rep["applied"] is True
+    assert rep["deferred"] == []
+    assert rep["added_entries"] == 2
+
     payload = _read_contract(tmp_db, ws)
-    assert payload["name"] == "me"
-    assert "a" not in payload and "b" not in payload
+    # Both scanned projects are now first-class map entries.
+    assert "a" in payload and "b" in payload
+    assert payload["a"]["local_path"] == "/home/u/ws/me/a"
+    assert payload["b"]["local_path"] == "/home/u/ws/me/b"
+    # The map no longer has a top-level workspace-identity `name`.
+    assert "name" not in payload
+
+
+def test_flat_multi_conversion_preserves_workspace_metadata(tmp_db):
+    """The old flat top-level metadata survives under the reserved key."""
+    from tools.scan.promote import promote_workspace
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    ws = "me-meta"
+    _write_contract(tmp_db, ws, {
+        "name": "me", "identity": "me", "local_path": "/home/u/ws/me",
+        "_source": "hand-authored",
+    })
+    _seed_project(tmp_db, ws, "a", path="/home/u/ws/me/a", identity="/home/u/ws/me/a/.git")
+    _seed_project(tmp_db, ws, "b", path="/home/u/ws/me/b", identity="/home/u/ws/me/b/.git")
+
+    promote_workspace(ws, db_path=tmp_db, apply=True)
+    payload = _read_contract(tmp_db, ws)
+
+    # Hand-authored workspace-level data is preserved verbatim, not lost.
+    assert WORKSPACE_META_KEY in payload
+    meta = payload[WORKSPACE_META_KEY]
+    assert meta["name"] == "me"
+    assert meta["identity"] == "me"
+    assert meta["local_path"] == "/home/u/ws/me"
+    assert meta["_source"] == "hand-authored"
+
+
+def test_scanner_shape_single_project_not_flat_refreshed(tmp_db):
+    """A scanner (workspace_repos) shape must never go through _merge_flat,
+    which would inject top-level scan-owned keys and corrupt it. It is
+    converted to a map with the scanner payload preserved under the reserved
+    key instead."""
+    from tools.scan.promote import promote_workspace
+    from gaia.identity_shape import WORKSPACE_META_KEY
+    ws = "scanner-like"
+    _write_contract(tmp_db, ws, {
+        "_source": "scanner:stack",
+        "name": "bild-platform",
+        "type": "multi-repo-workspace",
+        "workspace_repos": [{"name": "bild-iac", "path": "bild-iac", "role": "iac"}],
+    })
+    # Exactly ONE promotable -- the pre-fix bug routed this through _merge_flat.
+    _seed_project(tmp_db, ws, "bild-iac", path="/abs/bild-iac",
+                  identity="/abs/bild-iac/.git")
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["shape"] == "scanner"
+    payload = _read_contract(tmp_db, ws)
+    # The scanner payload is preserved intact under the reserved key, NOT
+    # polluted with a top-level local_path.
+    assert "local_path" not in payload
+    assert payload[WORKSPACE_META_KEY]["workspace_repos"][0]["name"] == "bild-iac"
+    # The project promoted as a first-class map entry.
+    assert payload["bild_iac"]["local_path"] == "/abs/bild-iac"
+
+
+# ---------------------------------------------------------------------------
+# The shared shape classifier (gaia.identity_shape) -- one predicate, four forms
+# ---------------------------------------------------------------------------
+
+def test_classify_identity_shape_distinguishes_all_forms():
+    from gaia.identity_shape import classify_identity_shape
+
+    # empty
+    assert classify_identity_shape(None) == "empty"
+    assert classify_identity_shape({}) == "empty"
+
+    # map: slug-keyed, values are project dicts, no top-level name
+    assert classify_identity_shape({
+        "aos_iac": {"name": "AOS - IaC", "local_path": "/x/aos-iac"},
+        "svc": {"local_path": "/x/svc"},
+    }) == "map"
+
+    # scanner: top-level name PLUS a workspace_repos list
+    assert classify_identity_shape({
+        "name": "bild-platform", "type": "multi-repo-workspace",
+        "workspace_repos": [{"name": "bild-iac", "path": "bild-iac"}],
+    }) == "scanner"
+
+    # flat: top-level name, NO workspace_repos
+    assert classify_identity_shape({
+        "name": "nfi", "type": "application", "local_path": "/x/nfi",
+    }) == "flat"
+
+
+def test_classify_identity_shape_scanner_is_not_flat():
+    """The latent-bug guard: a scanner shape must NOT classify as flat, or the
+    flat single-project refresh path would corrupt its structured payload."""
+    from gaia.identity_shape import classify_identity_shape
+    scanner = {"name": "w", "workspace_repos": []}
+    assert classify_identity_shape(scanner) == "scanner"
+    assert classify_identity_shape(scanner) != "flat"
 
 
 # ---------------------------------------------------------------------------

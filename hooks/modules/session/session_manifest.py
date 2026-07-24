@@ -342,17 +342,11 @@ def _extract_projects_from_identity(
             return ws_paths[0]
         return ""
 
-    is_map_shape = (
-        bool(payload)
-        and "name" not in payload
-        and all(isinstance(v, dict) for v in payload.values())
-        and any(("local_path" in v or "name" in v)
-                for v in payload.values() if isinstance(v, dict))
-    )
+    from gaia.identity_shape import classify_identity_shape, is_reserved_slug
 
-    if is_map_shape:
+    if classify_identity_shape(payload) == "map":
         for slug, v in payload.items():
-            if not isinstance(v, dict):
+            if is_reserved_slug(slug) or not isinstance(v, dict):
                 continue
             name = v.get("name") or slug
             path = v.get("local_path") or _resolve(slug) or _resolve(name)
@@ -393,9 +387,11 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     repo under ``me`` that passed the promotion gate (resolvable
     ``project_identity``, absolute path, ``status='active'``) and was merged
     into the contract as a scan-owned entry -- a cloned reference repo is only
-    excluded here if it was never scanned, failed the gate, or its workspace's
-    existing contract is a flat (non-map) shape with more than one promotable
-    project deferred for human review. No path-prefix filtering is used.
+    excluded here if it was never scanned or failed the gate. A flat or scanner
+    (non-map) contract with more than one promotable project is auto-converted
+    to a map (its old top-level metadata preserved under a reserved key), so
+    those projects are included rather than held back. No path-prefix filtering
+    is used.
 
     Each entry is ``- <name>: <path>`` -- the path being the value the
     orchestrator wants (where the project lives on disk). Workspace is not a

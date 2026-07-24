@@ -167,11 +167,6 @@ def _render_human(report, *, dry_run: bool) -> None:
                     f"  ! promotion-rejected project={rej.get('name')} "
                     f"reasons={rej.get('reasons')}"
                 )
-            for dfr in promo.get("deferred", []):
-                print(
-                    f"  ~ promotion-deferred project={dfr.get('project')}: "
-                    f"{dfr.get('reason')}"
-                )
 
     if not dry_run:
         print(f"{prefix}marked_missing     : {report.marked_missing}")

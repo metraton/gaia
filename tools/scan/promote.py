@@ -181,26 +181,6 @@ def validate_promotion(workspace: str, *, db_path: Optional[Path] = None) -> dic
 # Payload shape + merge helpers
 # ---------------------------------------------------------------------------
 
-def _classify_shape(payload: Optional[dict]) -> str:
-    """Classify a project_identity payload as 'empty' | 'map' | 'flat'.
-
-    Mirrors ``session_manifest._extract_projects_from_identity``'s inline
-    ``is_map_shape`` test so promotion and the reader agree on the shape.
-    """
-    if not isinstance(payload, dict) or not payload:
-        return "empty"
-    is_map = (
-        "name" not in payload
-        and all(isinstance(v, dict) for v in payload.values())
-        and any(
-            ("local_path" in v or "name" in v)
-            for v in payload.values()
-            if isinstance(v, dict)
-        )
-    )
-    return "map" if is_map else "flat"
-
-
 def _scan_entry(proj: dict) -> dict:
     """Return the non-null scan-owned refresh keys for a project row.
 
@@ -307,6 +287,23 @@ def _merge_flat(existing: dict, proj: dict) -> tuple[dict, dict]:
     return result, {"added_entries": 0, "refreshed_entries": refreshed}
 
 
+def _auto_convert_to_map(existing: Optional[dict], promotable: list) -> tuple[dict, dict]:
+    """Convert a non-map (flat multi / scanner) payload into a map, losslessly.
+
+    Builds a fresh map from ``promotable`` via :func:`_merge_map`. The old
+    top-level metadata of the source payload is preserved verbatim under the
+    reserved :data:`WORKSPACE_META_KEY` slug so hand-authored workspace-level
+    data (name, identity, workspace_repos, monorepo, ...) is never lost -- the
+    reader treats a ``_``-prefixed slug as a non-project reserved slot.
+    """
+    from gaia.identity_shape import WORKSPACE_META_KEY
+
+    seed: dict = {}
+    if existing:
+        seed[WORKSPACE_META_KEY] = copy.deepcopy(existing)
+    return _merge_map(seed, promotable)
+
+
 # ---------------------------------------------------------------------------
 # Contract read / write (reuses the store connection + the SQL history trigger)
 # ---------------------------------------------------------------------------
@@ -404,33 +401,26 @@ def promote_workspace(
     if not promotable:
         return report
 
+    from gaia.identity_shape import classify_identity_shape
+
     existing = _read_identity_contract(workspace, db_path)
-    shape = _classify_shape(existing)
+    shape = classify_identity_shape(existing)
     report["shape"] = shape
 
     if shape in ("map", "empty"):
         new_payload, stats = _merge_map(existing or {}, promotable)
-    else:  # flat
-        if len(promotable) == 1:
-            new_payload, stats = _merge_flat(existing or {}, promotable[0])
-        else:
-            # Conservative: do NOT auto-convert a hand-authored flat
-            # (single-project / workspace-identity) contract into a map. Defer
-            # for human review rather than risk corrupting curated context.
-            report["deferred"] = [
-                {
-                    "project": p.get("name"),
-                    "path": p.get("path"),
-                    "reason": (
-                        "existing project_identity contract is flat "
-                        "(single-project/workspace shape) but scan found "
-                        f"{len(promotable)} promotable projects; map conversion "
-                        "needs a human decision -- not auto-applied."
-                    ),
-                }
-                for p in promotable
-            ]
-            return report
+    elif shape == "flat" and len(promotable) == 1:
+        # P2 (parked): a single-project flat / workspace-identity contract keeps
+        # its top-level shape -- refresh scan-owned keys in place, no conversion.
+        new_payload, stats = _merge_flat(existing or {}, promotable[0])
+    else:
+        # Flat with >1 promotable, OR a scanner (workspace_repos) shape: convert
+        # to a map so every project promotes cleanly, preserving the old
+        # top-level metadata under the reserved workspace key. A scanner shape
+        # is routed here (never through _merge_flat) precisely so its structured
+        # payload is preserved intact instead of being clobbered with top-level
+        # scan-owned keys.
+        new_payload, stats = _auto_convert_to_map(existing, promotable)
 
     report["added_entries"] = stats["added_entries"]
     report["refreshed_entries"] = stats["refreshed_entries"]
