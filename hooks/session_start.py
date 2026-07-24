@@ -225,6 +225,24 @@ if __name__ == "__main__":
         except Exception as _bak_exc:
             logger.debug("maybe_backup_db failed (non-fatal): %s", _bak_exc)
 
+        # Contract-drafts GC. The draft substrate (~/.gaia/contract_drafts)
+        # accumulates one JSON per agent contract; finalize writes the terminal
+        # DB row but never deletes the draft file, so the directory grows
+        # unbounded. Prune drafts older than GAIA_CONTRACT_DRAFTS_MAX_DAYS
+        # (default 7) here -- once per session at launch, never during a turn,
+        # so it can never race the SubagentStop backstop and a live draft
+        # (recent mtime) is always preserved. Non-fatal like the sweeps above.
+        try:
+            from modules.session.contract_drafts_gc import gc_contract_drafts
+            _gc_n = gc_contract_drafts()
+            if _gc_n:
+                logger.info(
+                    "contract_drafts_gc: pruned %d stale draft(s) at SessionStart",
+                    _gc_n,
+                )
+        except Exception as _gc_exc:
+            logger.debug("gc_contract_drafts failed (non-fatal): %s", _gc_exc)
+
         # First-time setup: create project permissions if needed.
         # mark_done=False so UserPromptSubmit can detect first-run
         # and show the welcome message before marking initialized.

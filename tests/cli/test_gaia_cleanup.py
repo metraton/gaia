@@ -23,6 +23,8 @@ from cli.cleanup import (
     _find_project_root,
     _matches_pattern,
     _apply_retention_policy,
+    _prune_contract_drafts,
+    _contract_drafts_max_days,
     _truncate_jsonl,
     _clean_settings_local_json,
     _remove_claude_md,
@@ -32,6 +34,7 @@ from cli.cleanup import (
     _remove_symlinks,
     register,
     cmd_cleanup,
+    CONTRACT_DRAFTS_DEFAULT_MAX_DAYS,
     RETENTION_POLICY,
     SYMLINKS_TO_REMOVE,
 )
@@ -286,6 +289,97 @@ class TestApplyRetentionPolicy(unittest.TestCase):
         keys = {p["key"] for p in RETENTION_POLICY}
         self.assertNotIn("workflowMetrics", keys)
         self.assertNotIn("anomalies", keys)
+
+
+class TestContractDraftsRetention(unittest.TestCase):
+    """Manual cleanup path (`gaia cleanup --prune`) purges ~/.gaia/contract_drafts
+    by age. Unlike every other rule, these live under data_dir() (absolute),
+    not under the workspace .claude/ tree.
+    """
+
+    def _sandbox(self):
+        """Return (patcher, drafts_dir) with GAIA_DATA_DIR redirected to tmp."""
+        tmp = tempfile.mkdtemp()
+        patcher = patch.dict(os.environ, {"GAIA_DATA_DIR": tmp}, clear=False)
+        patcher.start()
+        drafts = Path(tmp) / "contract_drafts"
+        drafts.mkdir(parents=True)
+        return patcher, drafts
+
+    @staticmethod
+    def _write_old(drafts: Path, name: str, days: int) -> Path:
+        path = drafts / name
+        path.write_text('{"agent_status": {}}')
+        old = time.time() - days * 86400
+        os.utime(path, (old, old))
+        return path
+
+    def test_policy_has_contract_drafts_entry(self):
+        entry = next((p for p in RETENTION_POLICY if p["key"] == "contractDrafts"), None)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry["type"], "abs-drafts")
+
+    def test_default_max_days_is_seven(self):
+        # env unset -> default threshold
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
+            self.assertEqual(_contract_drafts_max_days(), CONTRACT_DRAFTS_DEFAULT_MAX_DAYS)
+
+    def test_prunes_old_draft_via_retention_policy(self):
+        patcher, drafts = self._sandbox()
+        try:
+            os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
+            old = self._write_old(drafts, "a123456.old.json", days=30)
+            # root is irrelevant here: the handler resolves data_dir() itself.
+            actions = _apply_retention_policy(Path(tempfile.gettempdir()), dry_run=False)
+            drafted = [a for a in actions if a["label"] == "Contract drafts"]
+            self.assertTrue(len(drafted) >= 1)
+            self.assertFalse(old.exists())
+            # Absolute path reported (lives outside the workspace root).
+            self.assertTrue(os.path.isabs(drafted[0]["path"]))
+        finally:
+            patcher.stop()
+
+    def test_preserves_recent_draft(self):
+        patcher, drafts = self._sandbox()
+        try:
+            os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
+            recent = self._write_old(drafts, "a123456.recent.json", days=1)
+            actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=False)
+            self.assertEqual(actions, [])
+            self.assertTrue(recent.exists())
+        finally:
+            patcher.stop()
+
+    def test_dry_run_does_not_delete(self):
+        patcher, drafts = self._sandbox()
+        try:
+            os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
+            old = self._write_old(drafts, "a123456.old.json", days=30)
+            actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=True)
+            self.assertTrue(len(actions) >= 1)
+            self.assertTrue(old.exists())  # not deleted in dry-run
+        finally:
+            patcher.stop()
+
+    def test_env_override_threshold(self):
+        patcher, drafts = self._sandbox()
+        try:
+            with patch.dict(os.environ, {"GAIA_CONTRACT_DRAFTS_MAX_DAYS": "1"}, clear=False):
+                self.assertEqual(_contract_drafts_max_days(), 1)
+                old = self._write_old(drafts, "a123456.json", days=3)
+                actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=False)
+                self.assertTrue(len(actions) >= 1)
+                self.assertFalse(old.exists())
+        finally:
+            patcher.stop()
+
+    def test_missing_dir_is_noop(self):
+        tmp = tempfile.mkdtemp()
+        with patch.dict(os.environ, {"GAIA_DATA_DIR": tmp}, clear=False):
+            # No contract_drafts dir created.
+            actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=False)
+            self.assertEqual(actions, [])
 
 
 class TestRegisterSubcommand(unittest.TestCase):

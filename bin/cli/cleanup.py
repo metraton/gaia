@@ -105,7 +105,39 @@ RETENTION_POLICY = [
         "max_hours": 1,
         "label": "Anomaly signal flag",
     },
+    # Contract drafts differ from every rule above: they live under Gaia's own
+    # data substrate (~/.gaia/contract_drafts), NOT under the workspace .claude/
+    # tree. The "abs-drafts" handler resolves the directory to an ABSOLUTE path
+    # via gaia.paths.data_dir() rather than root/dir_rel, and its threshold is
+    # env-overridable (GAIA_CONTRACT_DRAFTS_MAX_DAYS, default 7). This is the
+    # manual mirror of the SessionStart contract_drafts_gc hook.
+    {
+        "key": "contractDrafts",
+        "type": "abs-drafts",
+        "pattern": "*.json",
+        "label": "Contract drafts",
+    },
 ]
+
+
+# Contract-drafts retention: default threshold, env-overridable. Resolved at
+# apply time (not import) so monkeypatched env is honored in tests. Mirrors
+# hooks/modules/session/contract_drafts_gc.py.
+CONTRACT_DRAFTS_DEFAULT_MAX_DAYS = 7
+CONTRACT_DRAFTS_MAX_DAYS_ENV = "GAIA_CONTRACT_DRAFTS_MAX_DAYS"
+
+
+def _contract_drafts_max_days() -> int:
+    """Resolve the contract-drafts retention threshold in days (env-overridable)."""
+    raw = os.environ.get(CONTRACT_DRAFTS_MAX_DAYS_ENV, "")
+    if raw:
+        try:
+            value = int(raw)
+            if value >= 0:
+                return value
+        except ValueError:
+            pass
+    return CONTRACT_DRAFTS_DEFAULT_MAX_DAYS
 
 
 def _matches_pattern(filename: str, pattern: str) -> bool:
@@ -134,6 +166,50 @@ def _prune_old_files(root: Path, dir_rel: str, pattern: str, max_days: int, labe
                 actions.append({
                     "action": "delete-file",
                     "path": str(entry.relative_to(root)),
+                    "label": label,
+                })
+                if not dry_run:
+                    entry.unlink()
+        except OSError:
+            pass
+
+    return actions
+
+
+def _prune_contract_drafts(pattern: str, label: str, dry_run: bool) -> list:
+    """Prune contract-draft JSON files under data_dir()/contract_drafts by age.
+
+    Unlike every other retention rule, contract drafts live under Gaia's own
+    data substrate (~/.gaia/contract_drafts), NOT under the workspace .claude/
+    tree. So the directory is resolved to an ABSOLUTE path via
+    ``gaia.paths.data_dir()`` (not ``root / dir_rel``) and reported paths are
+    absolute. Age-only, mtime-based, threshold GAIA_CONTRACT_DRAFTS_MAX_DAYS
+    (default 7). Best-effort: a per-file OSError is swallowed.
+    """
+    import time
+
+    actions = []
+    try:
+        from gaia.paths import data_dir
+    except ImportError:
+        return actions
+
+    full_dir = data_dir() / "contract_drafts"
+    if not full_dir.exists():
+        return actions
+
+    cutoff = time.time() - _contract_drafts_max_days() * 86400
+
+    for entry in full_dir.iterdir():
+        if not _matches_pattern(entry.name, pattern):
+            continue
+        if not entry.is_file():
+            continue
+        try:
+            if entry.stat().st_mtime < cutoff:
+                actions.append({
+                    "action": "delete-file",
+                    "path": str(entry),
                     "label": label,
                 })
                 if not dry_run:
@@ -313,6 +389,10 @@ def _apply_retention_policy(root: Path, dry_run: bool) -> list:
         elif ptype == "flag-ttl":
             all_actions.extend(
                 _prune_flag_by_ttl(root, policy["file"], policy["max_hours"], policy["label"], dry_run)
+            )
+        elif ptype == "abs-drafts":
+            all_actions.extend(
+                _prune_contract_drafts(policy["pattern"], policy["label"], dry_run)
             )
 
     return all_actions
@@ -790,6 +870,7 @@ def cmd_cleanup(args) -> int:
         "episodic_episodes_days": 90,
         "legacy_logs": "all removed",
         "anomaly_flag_hours": 1,
+        "contract_drafts_days": _contract_drafts_max_days(),
     }
 
     if prune_only:
@@ -802,6 +883,7 @@ def cmd_cleanup(args) -> int:
             print("  Episodic episodes:   90 days")
             print("  Legacy logs:         all removed")
             print("  Anomaly flag:         1 hour TTL")
+            print(f"  Contract drafts:     {_contract_drafts_max_days()} days")
             if dry_run:
                 print("  (dry-run mode -- no files will be modified)\n")
             else:
