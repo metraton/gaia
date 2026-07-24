@@ -447,41 +447,24 @@ def rewrite_workspace_dep_spec(workspace: Path, tarball: Path) -> dict[str, Any]
 def _print_convergence_report(workspace: Path, origin_version: str | None, quiet: bool) -> dict:
     """Inspect + report the 5 install surfaces of *workspace* vs this origin.
 
-    The READ half of the shared convergence routine (see cli/_converge.py):
-    `gaia dev` calls it AFTER its reconcile steps to confirm the destination
-    converged on the local-source origin, and `gaia release` can call the same
-    inspector for an artifact origin -- one classification of "where does the
-    destination stand?", not three. Best-effort and read-only: never raises, and
-    prints only when not quiet. Returns the raw report dict for callers/tests.
+    A thin `gaia dev` adapter over the shared convergence driver (see
+    `cli/_converge.run_convergence_report`): it resolves the dev-side origin
+    inputs -- `EXPECTED_SCHEMA_VERSION` (code's schema expectation), the DB path,
+    and the global-npm bin dir -- then hands off to the SAME inspect+format+
+    degrade path `gaia release` uses, so the convergence classification is
+    written once, not duplicated between the two commands. Best-effort and
+    read-only: never raises, prints only when not quiet, returns the raw report.
     """
     from cli.doctor import EXPECTED_SCHEMA_VERSION  # noqa: PLC0415
 
-    db_path = Path(os.environ.get("GAIA_DB", str(Path("~/.gaia/gaia.db").expanduser()))).expanduser()
-    try:
-        report = _converge.converge_report(
-            workspace,
-            origin_version=origin_version,
-            expected_version=EXPECTED_SCHEMA_VERSION,
-            db_path=db_path,
-            npm_global_bin=install_mod._npm_global_prefix(),
-        )
-    except Exception as exc:  # never let inspection break the dev loop
-        report = {"surfaces": [], "converged": False, "reverse_direction": False, "error": str(exc)}
-        if not quiet:
-            print(f"  [?] convergence: inspection failed ({exc})")
-        return report
-
-    if not quiet:
-        verdict = "CONVERGED" if report["converged"] else "SKEW"
-        print(f"\n  convergence ({verdict}) -- 5 surfaces vs origin v{origin_version or '?'}:")
-        for s in report["surfaces"]:
-            print(f"    [{s['state']:<7}] {s['surface']:<22} {s['detail']}")
-        if report["reverse_direction"]:
-            print(
-                "  [!] DB is NEWER than this code (reverse-direction drift): an install "
-                "would be REFUSED. Use a newer origin; do NOT downgrade the DB."
-            )
-    return report
+    return _converge.run_convergence_report(
+        workspace,
+        origin_version=origin_version,
+        expected_version=EXPECTED_SCHEMA_VERSION,
+        db_path=_converge.default_db_path(),
+        npm_global_bin=install_mod._npm_global_prefix(),
+        quiet=quiet,
+    )
 
 
 def _run_pack_mode(

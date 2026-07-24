@@ -61,6 +61,7 @@ from cli.release import (  # noqa: E402
     gate_npm_sandbox,
     gate_plugin_dryrun,
     gate_npm_test,
+    gate_convergence,
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -430,11 +431,113 @@ class TestGateNpmTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# run_release_check / cmd_release_check -- orchestration (all 4 gates, mocked)
+# gate_convergence -- gate 5 (shared cli/_converge, schema-direction guard)
+# ---------------------------------------------------------------------------
+
+class TestGateConvergence(unittest.TestCase):
+    """The 5th gate wires `gaia release` onto the SAME `cli/_converge` inspector
+    `gaia dev` uses -- origin = the release artifact, guard = reverse-direction
+    schema drift is a hard FAIL. Every case mocks `_converge.run_convergence_report`
+    at the release-module boundary, so no test touches the real machine DB, PATH,
+    or npm bin dir; the shared driver itself is covered by test_converge.py."""
+
+    def _pkg_repo(self, tmp: str, version: str) -> Path:
+        repo = Path(tmp) / "repo"
+        repo.mkdir()
+        (repo / "package.json").write_text(f'{{"version": "{version}"}}')
+        return repo
+
+    def test_pass_when_converged_no_reverse(self):
+        report = {"surfaces": [], "converged": True, "reverse_direction": False}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._pkg_repo(tmp, "5.2.0")
+            with patch("cli.release._converge.run_convergence_report", return_value=report):
+                res = gate_convergence(repo)
+        self.assertEqual(res["name"], "convergence")
+        self.assertEqual(res["status"], "PASS")
+
+    def test_fail_on_reverse_direction_drift(self):
+        """Live DB newer than the artifact -> the schema-direction guard fails
+        the gate (installing this artifact would be REFUSED by bootstrap)."""
+        report = {
+            "surfaces": [
+                {"surface": "db_schema", "state": "stale",
+                 "detail": "schema v99 > code expects v37", "direction": "reverse"},
+            ],
+            "converged": False,
+            "reverse_direction": True,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._pkg_repo(tmp, "5.2.0")
+            with patch("cli.release._converge.run_convergence_report", return_value=report):
+                res = gate_convergence(repo)
+        self.assertEqual(res["status"], "FAIL")
+        self.assertIn("reverse-direction", res["detail"])
+
+    def test_forward_skew_is_pass_not_fail(self):
+        """Forward/stale surfaces are informational -- release does not reconcile
+        the machine, so only the reverse-direction guard is a hard stop."""
+        report = {
+            "surfaces": [
+                {"surface": "db_schema", "state": "stale",
+                 "detail": "schema v35 < code expects v37", "direction": "forward"},
+            ],
+            "converged": False,
+            "reverse_direction": False,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._pkg_repo(tmp, "5.2.0")
+            with patch("cli.release._converge.run_convergence_report", return_value=report):
+                res = gate_convergence(repo)
+        self.assertEqual(res["status"], "PASS")
+
+    def test_inspection_error_is_skip(self):
+        report = {"surfaces": [], "converged": False, "reverse_direction": False,
+                  "error": "boom"}
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._pkg_repo(tmp, "5.2.0")
+            with patch("cli.release._converge.run_convergence_report", return_value=report):
+                res = gate_convergence(repo)
+        self.assertEqual(res["status"], "SKIP")
+        self.assertIn("boom", res["detail"])
+
+    def test_origin_version_read_from_package_json(self):
+        """The origin passed to the shared inspector is the artifact version
+        (repo package.json), NOT the local source -- the one difference from dev."""
+        captured = {}
+
+        def fake_report(ws, *, origin_version, **kwargs):
+            captured["origin_version"] = origin_version
+            return {"surfaces": [], "converged": True, "reverse_direction": False}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._pkg_repo(tmp, "9.9.9")
+            with patch("cli.release._converge.run_convergence_report", side_effect=fake_report):
+                gate_convergence(repo)
+        self.assertEqual(captured["origin_version"], "9.9.9")
+
+    def test_unreadable_package_json_gives_none_origin_not_crash(self):
+        captured = {}
+
+        def fake_report(ws, *, origin_version, **kwargs):
+            captured["origin_version"] = origin_version
+            return {"surfaces": [], "converged": True, "reverse_direction": False}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()  # no package.json
+            with patch("cli.release._converge.run_convergence_report", side_effect=fake_report):
+                res = gate_convergence(repo)
+        self.assertIsNone(captured["origin_version"])
+        self.assertEqual(res["status"], "PASS")
+
+
+# ---------------------------------------------------------------------------
+# run_release_check / cmd_release_check -- orchestration (all 5 gates, mocked)
 # ---------------------------------------------------------------------------
 
 class TestRunReleaseCheckOrchestration(unittest.TestCase):
-    def test_runs_all_four_gates_in_order(self):
+    def test_runs_all_five_gates_in_order(self):
         call_order = []
 
         def make_gate(name):
@@ -446,14 +549,15 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
         with patch("cli.release.gate_pre_publish_validate", side_effect=make_gate("g1")), \
              patch("cli.release.gate_npm_sandbox", side_effect=make_gate("g2")), \
              patch("cli.release.gate_plugin_dryrun", side_effect=make_gate("g3")), \
-             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")):
+             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")), \
+             patch("cli.release.gate_convergence", side_effect=make_gate("g5")):
             results = run_release_check(_REPO_ROOT)
 
-        self.assertEqual(call_order, ["g1", "g2", "g3", "g4"])
-        self.assertEqual(len(results), 4)
+        self.assertEqual(call_order, ["g1", "g2", "g3", "g4", "g5"])
+        self.assertEqual(len(results), 5)
 
     def test_does_not_short_circuit_on_early_failure(self):
-        """All 4 gates run even when gate 1 fails -- full picture, per AC-2."""
+        """All 5 gates run even when gate 1 fails -- full picture, per AC-2."""
         call_order = []
 
         def failing_gate1(*a, **k):
@@ -469,10 +573,11 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
         with patch("cli.release.gate_pre_publish_validate", side_effect=failing_gate1), \
              patch("cli.release.gate_npm_sandbox", side_effect=make_gate("g2")), \
              patch("cli.release.gate_plugin_dryrun", side_effect=make_gate("g3")), \
-             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")):
+             patch("cli.release.gate_npm_test", side_effect=make_gate("g4")), \
+             patch("cli.release.gate_convergence", side_effect=make_gate("g5")):
             results = run_release_check(_REPO_ROOT)
 
-        self.assertEqual(call_order, ["g1", "g2", "g3", "g4"])
+        self.assertEqual(call_order, ["g1", "g2", "g3", "g4", "g5"])
         self.assertEqual(results[0]["status"], "FAIL")
 
     def test_functional_flag_forwarded_to_plugin_dryrun_gate(self):
@@ -488,7 +593,9 @@ class TestRunReleaseCheckOrchestration(unittest.TestCase):
                    return_value={"name": "g2", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
              patch("cli.release.gate_plugin_dryrun", side_effect=fake_gate3), \
              patch("cli.release.gate_npm_test",
-                   return_value={"name": "g4", "status": "PASS", "detail": "ok", "duration_ms": 1}):
+                   return_value={"name": "g4", "status": "PASS", "detail": "ok", "duration_ms": 1}), \
+             patch("cli.release.gate_convergence",
+                   return_value={"name": "g5", "status": "PASS", "detail": "ok", "duration_ms": 1}):
             run_release_check(_REPO_ROOT, functional=True)
 
         self.assertTrue(captured["functional"])

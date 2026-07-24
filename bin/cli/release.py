@@ -4,9 +4,9 @@ Phase 3 adds `gaia release publish`.
 
 `gaia release check [--functional]` collapses today's manual gaia-release
 Layer 2 runbook (npm scripts run by hand, in the right order, remembered
-correctly) into ONE local/offline command. It runs, in order, exactly the
-four gates the `gaia-release` skill documents as Layer 2 -- "prove a clean
-install works on BOTH surfaces, reproducing CI":
+correctly) into ONE local/offline command. It runs, in order, the gates the
+`gaia-release` skill documents as Layer 2 -- "prove a clean install works on
+BOTH surfaces, reproducing CI" -- plus the shared drift-free convergence gate:
 
   1. pre-publish:validate  -- the version-drift / manifest gate
      (`bin/pre-publish-validate.js --validate-only`).
@@ -25,13 +25,23 @@ install works on BOTH surfaces, reproducing CI":
      binary is not on PATH: with no `claude`, the plugin loader this gate
      exists to exercise cannot run at all.
   4. npm test -- the L1 pytest suite CI runs.
+  5. convergence -- the SAME drift-free convergence `gaia dev` runs, but with
+     the origin being the release ARTIFACT (this repo's package.json version)
+     rather than the local source. It reuses `cli/_converge` to inspect the
+     destination's 5 install surfaces and applies the schema-DIRECTION guard:
+     a live DB NEWER than the artifact's schema (reverse-direction drift) is a
+     hard FAIL, because installing that artifact would be REFUSED by bootstrap
+     (never ship code older than the DB). This is what makes `gaia release` as
+     drift-safe as `gaia dev`.
 
-Every gate is a subprocess call to the EXISTING script/binary -- this module
-never reimplements pre-publish-validate.js, validate-sandbox.sh, or
-plugin-dryrun.sh. All four gates always run (no short-circuit) so the
-summary reports a complete PASS/FAIL/SKIP picture per gate, mirroring how
-`bin/validate-sandbox.sh`'s own check harness aggregates through to a
-summary rather than stopping at the first failure.
+Gates 1-4 are each a subprocess call to the EXISTING script/binary -- this
+module never reimplements pre-publish-validate.js, validate-sandbox.sh, or
+plugin-dryrun.sh; gate 5 is an in-process, read-only inspection via the shared
+`cli/_converge` inspector (no reimplementation of the direction guard either).
+All five gates always run (no short-circuit) so the summary reports a complete
+PASS/FAIL/SKIP picture per gate, mirroring how `bin/validate-sandbox.sh`'s own
+check harness aggregates through to a summary rather than stopping at the first
+failure.
 
 Fully local/offline: no npm registry publish, no external repo, no network
 beyond what the gates already reach out for (npm pack/install against the
@@ -46,7 +56,7 @@ push/admin on metraton/gaia, that tag `v<version>` does not already exist
 (local or remote), and that pytest-xdist is importable (`npm test` uses
 `-n auto`). If any precondition fails, NO step runs. Then it runs, strictly
 in order and stopping at the first failure (these steps are causally
-dependent, unlike `check`'s always-run-all-4-gates design):
+dependent, unlike `check`'s always-run-all-gates design):
 
   1. `release:prepare <version>` (`scripts/release-prepare.mjs`) -- the
      atomic multi-source version bump + manifest regen + validate.
@@ -98,6 +108,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
+from cli import _converge  # type: ignore  # noqa: E402
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
 
@@ -382,6 +393,65 @@ def gate_npm_test(repo_root: Path, *, timeout: int | None = None) -> dict[str, A
     duration = _now_ms() - t0
     detail = (out + err).strip()[-_DETAIL_TAIL:]
     return {"name": name, "status": "PASS" if rc == 0 else "FAIL", "detail": detail or "ok", "duration_ms": duration}
+
+
+def gate_convergence(repo_root: Path, *, workspace: Path | None = None) -> dict[str, Any]:
+    """Gate 5: shared drift-free convergence (reuses `cli/_converge`).
+
+    Runs the SAME convergence `gaia dev` runs after its reconcile -- inspecting
+    the destination's 5 install surfaces (PATH gaia, wired hooks, workspace
+    node_modules, global npm, DB schema) -- but with the ORIGIN being the
+    release ARTIFACT (this repo's `package.json` version, the version a publish
+    would ship), which is the only difference from dev. It applies the
+    schema-DIRECTION guard of `scripts/bootstrap_database.py`: a live
+    `~/.gaia/gaia.db` NEWER than the artifact's expected schema
+    (reverse-direction drift) is a hard FAIL -- installing that artifact would
+    be REFUSED by bootstrap (never ship code older than the DB, the
+    finalize-breaking drift). Forward/stale surfaces are informational and do
+    NOT fail the gate: a release does not reconcile the developer's machine, so
+    only the reverse-direction guard is a stop. Inspection failure (or an
+    unreadable artifact version) is a SKIP -- convergence inspection is
+    best-effort and never blocks a release on its own inability to run.
+
+    Read-only: no surface is mutated, no migration is applied here. The forward
+    migration + direction guard run at install time inside bootstrap (surface
+    5); this gate is the pre-publish REPORT of where the destination stands.
+    """
+    t0 = _now_ms()
+    name = "convergence"
+    ws = Path(workspace) if workspace is not None else repo_root
+
+    # Origin = the artifact version this release ships (repo package.json).
+    try:
+        origin_version = json.loads((repo_root / "package.json").read_text())["version"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        origin_version = None
+
+    from cli.doctor import EXPECTED_SCHEMA_VERSION  # noqa: PLC0415
+    from cli import install as install_mod  # noqa: PLC0415
+
+    report = _converge.run_convergence_report(
+        ws,
+        origin_version=origin_version,
+        expected_version=EXPECTED_SCHEMA_VERSION,
+        db_path=_converge.default_db_path(),
+        npm_global_bin=install_mod._npm_global_prefix(),
+        quiet=True,  # capture, don't print inline -- the gate report owns the sink
+    )
+    duration = _now_ms() - t0
+
+    if report.get("error"):
+        return {
+            "name": name,
+            "status": "SKIP",
+            "detail": f"convergence inspection unavailable: {report['error']}",
+            "duration_ms": duration,
+        }
+
+    detail = "\n".join(_converge.format_convergence_report(report, origin_version)).strip()
+    if report.get("reverse_direction"):
+        return {"name": name, "status": "FAIL", "detail": detail, "duration_ms": duration}
+    return {"name": name, "status": "PASS", "detail": detail or "ok", "duration_ms": duration}
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +812,7 @@ def run_release_publish(repo_root: Path, version: str) -> list[dict[str, Any]]:
     sequence never blows up mid-way (the release-saga failure mode). On PASS the
     gate is transparent -- the six-step contract below is unchanged.
 
-    Unlike `run_release_check`'s always-run-all-4-gates design, these steps
+    Unlike `run_release_check`'s always-run-all-gates design, these steps
     are causally dependent: tagging an untested tree, or pushing before the
     tag exists, is actively harmful, not just incomplete reporting. Step 2
     reuses `gate_npm_test` unchanged rather than duplicating it.
@@ -797,21 +867,24 @@ def build_publish_plan(version: str) -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Orchestration -- run all four gates, always, then aggregate.
+# Orchestration -- run all gates, always, then aggregate.
 # ---------------------------------------------------------------------------
 
 def run_release_check(repo_root: Path, *, functional: bool = False) -> list[dict[str, Any]]:
-    """Run the full Layer-2 pre-release gate in order and return all 4 results.
+    """Run the full Layer-2 pre-release gate in order and return all 5 results.
 
     Every gate runs regardless of earlier gate outcomes -- the summary must
     report a complete pass/fail/skip picture per gate (AC-2), not stop at
-    the first red light.
+    the first red light. The 5th gate (`gate_convergence`) runs the same
+    drift-free convergence `gaia dev` runs, applying the schema-direction guard
+    so a release is refused when the live DB is newer than the artifact.
     """
     return [
         gate_pre_publish_validate(repo_root),
         gate_npm_sandbox(repo_root),
         gate_plugin_dryrun(repo_root, functional=functional),
         gate_npm_test(repo_root),
+        gate_convergence(repo_root),
     ]
 
 
@@ -897,6 +970,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "                                    (bin/plugin-dryrun.sh); SKIPs when the `claude`\n"
             "                                    binary is not on PATH\n"
             "  4. npm test                   -- the L1 pytest suite CI runs\n"
+            "  5. convergence                -- the same drift-free convergence `gaia dev`\n"
+            "                                    runs (shared cli/_converge), origin = the\n"
+            "                                    release artifact; FAILs on reverse-direction\n"
+            "                                    schema drift (live DB newer than the artifact)\n"
             "\n"
             "Fully local: no npm publish, no external repo, no network beyond what the\n"
             "gates already reach for.\n"
@@ -925,7 +1002,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Trigger the Layer-3 release pipeline (bump -> test -> commit -> tag -> push -> gh release create)",
         description=(
             "Runs, in order, the gaia-release Layer 3 trigger sequence -- STOPS at the\n"
-            "first failure (unlike `check`'s always-run-all-4-gates design):\n"
+            "first failure (unlike `check`'s always-run-all-gates design):\n"
             "  1. release:prepare <version>  -- atomic multi-source version bump +\n"
             "                                    manifest regen + validate\n"
             "                                    (scripts/release-prepare.mjs)\n"

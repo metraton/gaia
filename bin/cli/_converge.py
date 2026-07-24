@@ -312,3 +312,88 @@ def converge_report(
     # reconcile inputs (ABSENT = the not-installed case a reconcile creates).
     converged = all(s["state"] in (STATE_ALIGNED, STATE_ABSENT) for s in surfaces)
     return {"surfaces": surfaces, "converged": converged, "reverse_direction": reverse}
+
+
+# ---------------------------------------------------------------------------
+# Shared driver -- ONE inspect + format + degrade path for dev AND release
+# ---------------------------------------------------------------------------
+#
+# `converge_report` above is the PURE aggregate (every external dependency
+# injected). The three helpers below are the shared DRIVER both callers use so
+# the "resolve the DB path, inspect, format the report, degrade on failure"
+# sequence is written ONCE, not once in `gaia dev` and again in `gaia release`.
+# They stay import-light: the caller still resolves `expected_version` (from
+# `cli.doctor`) and `npm_global_bin` (from `cli.install`) and injects them, so
+# this module never imports doctor/install and stays a leaf.
+
+def default_db_path() -> Path:
+    """The gaia.db path both callers inspect: ``$GAIA_DB`` or ``~/.gaia/gaia.db``.
+
+    Written once here so `gaia dev` and `gaia release` resolve the SAME DB path
+    for the schema-direction surface rather than each spelling out the env
+    lookup (and risking a drift between them).
+    """
+    return Path(
+        os.environ.get("GAIA_DB", str(Path("~/.gaia/gaia.db").expanduser()))
+    ).expanduser()
+
+
+def format_convergence_report(report: dict, origin_version: "str | None") -> list[str]:
+    """Render a `converge_report` result into display lines (pure -- no I/O).
+
+    The shared human-facing rendering of the 5-surface convergence: a header
+    naming the verdict + origin, one line per surface, and -- when the DB is the
+    refuse-reverse case -- the reverse-direction warning. Returned as lines so a
+    caller can print them (dev), fold them into a gate `detail` (release), or
+    assert on them (tests) without this module owning the sink.
+    """
+    verdict = "CONVERGED" if report.get("converged") else "SKEW"
+    lines = [f"\n  convergence ({verdict}) -- 5 surfaces vs origin v{origin_version or '?'}:"]
+    for s in report.get("surfaces", []):
+        lines.append(f"    [{s['state']:<7}] {s['surface']:<22} {s['detail']}")
+    if report.get("reverse_direction"):
+        lines.append(
+            "  [!] DB is NEWER than this code (reverse-direction drift): an install "
+            "would be REFUSED. Use a newer origin; do NOT downgrade the DB."
+        )
+    return lines
+
+
+def run_convergence_report(
+    workspace: Path,
+    *,
+    origin_version: "str | None",
+    expected_version: int,
+    db_path: Path,
+    npm_global_bin: "Path | None",
+    quiet: bool = False,
+    emit=print,
+) -> dict:
+    """Inspect *workspace*'s 5 surfaces vs the origin, report, and never raise.
+
+    The shared driver `gaia dev` calls after its reconcile (origin = the local
+    SOURCE) and `gaia release` calls as a pre-release gate (origin = the release
+    ARTIFACT). Wraps `converge_report` in a best-effort guard: on any inspection
+    failure it returns a degraded ``{"surfaces": [], "converged": False,
+    "reverse_direction": False, "error": <str>}`` instead of propagating, so an
+    inspection error never breaks the dev loop or aborts a release run. When not
+    *quiet*, prints the `format_convergence_report` lines (or the failure note)
+    via *emit*. Returns the raw report dict for callers/tests.
+    """
+    try:
+        report = converge_report(
+            workspace,
+            origin_version=origin_version,
+            expected_version=expected_version,
+            db_path=db_path,
+            npm_global_bin=npm_global_bin,
+        )
+    except Exception as exc:  # never let inspection break the caller
+        if not quiet:
+            emit(f"  [?] convergence: inspection failed ({exc})")
+        return {"surfaces": [], "converged": False, "reverse_direction": False, "error": str(exc)}
+
+    if not quiet:
+        for line in format_convergence_report(report, origin_version):
+            emit(line)
+    return report

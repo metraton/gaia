@@ -300,5 +300,101 @@ class TestConvergeReport(unittest.TestCase):
         self.assertFalse(report["converged"])
 
 
+# ---------------------------------------------------------------------------
+# Shared driver -- default_db_path / format_convergence_report / run_convergence_report
+# ---------------------------------------------------------------------------
+
+class TestDefaultDbPath(unittest.TestCase):
+    def test_env_override_wins(self):
+        with patch.dict("os.environ", {"GAIA_DB": "/tmp/custom-gaia.db"}, clear=False):
+            self.assertEqual(_converge.default_db_path(), Path("/tmp/custom-gaia.db"))
+
+    def test_falls_back_to_home_default(self):
+        env = {k: v for k, v in __import__("os").environ.items() if k != "GAIA_DB"}
+        with patch.dict("os.environ", env, clear=True):
+            self.assertEqual(
+                _converge.default_db_path(),
+                Path("~/.gaia/gaia.db").expanduser(),
+            )
+
+
+class TestFormatConvergenceReport(unittest.TestCase):
+    def test_converged_header_and_no_reverse_line(self):
+        report = {
+            "surfaces": [{"surface": "path_gaia", "state": "aligned", "detail": "PATH gaia v5.2.0"}],
+            "converged": True,
+            "reverse_direction": False,
+        }
+        lines = _converge.format_convergence_report(report, "5.2.0")
+        self.assertIn("CONVERGED", lines[0])
+        self.assertIn("origin v5.2.0", lines[0])
+        self.assertTrue(any("path_gaia" in line for line in lines))
+        self.assertFalse(any("reverse-direction" in line for line in lines))
+
+    def test_skew_header_and_reverse_warning(self):
+        report = {
+            "surfaces": [{"surface": "db_schema", "state": "stale", "detail": "schema v99 > v37"}],
+            "converged": False,
+            "reverse_direction": True,
+        }
+        lines = _converge.format_convergence_report(report, None)
+        self.assertIn("SKEW", lines[0])
+        self.assertIn("origin v?", lines[0])
+        self.assertTrue(any("reverse-direction" in line for line in lines))
+
+
+class TestRunConvergenceReport(unittest.TestCase):
+    def _fully_aligned(self, tmp: Path):
+        ws = tmp / "ws"
+        (ws / ".claude").mkdir(parents=True)
+        (ws / ".claude" / "settings.local.json").write_text('{"hooks": {"PreToolUse": []}}')
+        nm = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm.mkdir(parents=True)
+        (nm / "package.json").write_text('{"version": "5.2.0"}')
+        db = tmp / "gaia.db"
+        _make_schema_db(db, 37)
+        return ws, db
+
+    def test_returns_report_and_emits_when_not_quiet(self):
+        emitted = []
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, db = self._fully_aligned(Path(tmp))
+            with patch("cli._converge.shutil.which", return_value=None):
+                report = _converge.run_convergence_report(
+                    ws, origin_version="5.2.0", expected_version=37,
+                    db_path=db, npm_global_bin=None, quiet=False,
+                    emit=emitted.append,
+                )
+        self.assertTrue(report["converged"])
+        self.assertTrue(emitted)  # printed the report lines
+        self.assertTrue(any("CONVERGED" in line for line in emitted))
+
+    def test_quiet_suppresses_emit(self):
+        emitted = []
+        with tempfile.TemporaryDirectory() as tmp:
+            ws, db = self._fully_aligned(Path(tmp))
+            with patch("cli._converge.shutil.which", return_value=None):
+                report = _converge.run_convergence_report(
+                    ws, origin_version="5.2.0", expected_version=37,
+                    db_path=db, npm_global_bin=None, quiet=True,
+                    emit=emitted.append,
+                )
+        self.assertTrue(report["converged"])
+        self.assertEqual(emitted, [])
+
+    def test_inspection_failure_degrades_not_raises(self):
+        emitted = []
+        with patch("cli._converge.converge_report", side_effect=RuntimeError("boom")):
+            report = _converge.run_convergence_report(
+                Path("/nonexistent"), origin_version="5.2.0", expected_version=37,
+                db_path=Path("/nope.db"), npm_global_bin=None, quiet=False,
+                emit=emitted.append,
+            )
+        self.assertIn("error", report)
+        self.assertEqual(report["surfaces"], [])
+        self.assertFalse(report["converged"])
+        self.assertTrue(any("inspection failed" in line for line in emitted))
+
+
 if __name__ == "__main__":
     unittest.main()
