@@ -53,7 +53,9 @@
   // ── variant → CSS class maps (mirror the classes already in index.html) ──
   const COMPONENT_VARIANT = {
     normal: '', crit: 'crit', warn: 'warn', ok: 'ok',
-    strong: 'strong', ext: 'ext', store: 'store'
+    strong: 'strong', ext: 'ext', store: 'store',
+    // layout-only role (via variant_extra): center the box's text; no colour.
+    centered: 'centered'
   };
   // Section variants: normal (dashed zone), danger/safe (colored zone),
   // envelope (borderless dashed container that groups nested sections), plain
@@ -292,12 +294,28 @@
 
     const act = el('section', pageIndex === 0 ? 'act active' : 'act', { 'data-act': String(pageIndex) });
 
-    // filter chips bar
+    // filter chips bar. Default (no selection) MUST show everything, undimmed
+    // — so the reset chip ('all') is always present and always the one
+    // marked 'on' at load. A page's own data may declare it explicitly
+    // (`key: all`, the documented seed pattern); when it does not, the
+    // engine synthesizes one rather than falling back to marking a REAL
+    // filter chip as if it were selected. That prior fallback (marking chip
+    // i===0 'on' when no 'all' key existed) is what caused the
+    // default-looks-filtered bug: a chip with real membership showed as
+    // active while nothing was actually highlighted, and — since 'all' never
+    // existed as a key — clicking any OTHER chip then had no way back to a
+    // fully unfiltered view.
     const actbar = el('div', 'actbar');
     actbar.appendChild(el('span', 'spacer'));
     const chips = el('div', 'chips');
-    filters.forEach((f, i) => {
-      const chip = el('button', 'chip' + (f.key === 'all' || (i === 0 && !filters.some(x => x.key === 'all')) ? ' on' : ''));
+    if (!filters.some(f => f.key === 'all')) {
+      const allChip = el('button', 'chip on');
+      allChip.setAttribute('data-flow', 'all');
+      allChip.textContent = 'Todos';
+      chips.appendChild(allChip);
+    }
+    filters.forEach(f => {
+      const chip = el('button', 'chip' + (f.key === 'all' ? ' on' : ''));
       chip.setAttribute('data-flow', f.key);
       chip.textContent = f.label;
       chips.appendChild(chip);
@@ -391,7 +409,13 @@
       act.querySelectorAll('[data-k],.zone').forEach(e => e.classList.remove('lit'));
     }
 
+    let activeKey = 'all';
     function setFlow(key) {
+      // Toggle affordance: clicking the chip that is ALREADY active resets to
+      // 'all' instead of re-applying the same filter — the second way back to
+      // the unfiltered view, alongside clicking the dedicated 'all' chip.
+      if (key !== 'all' && key === activeKey) key = 'all';
+      activeKey = key;
       chips.forEach(c => c.classList.toggle('on', c.dataset.flow === key));
       clearLit();
       if (key === 'all') { stage.classList.remove('flowing'); closePanel(); return; }

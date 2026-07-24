@@ -113,6 +113,14 @@
 //                            margin from centering narrower content (the old hero
 //                            "extra hueco" defect, L274/R274 each side). Asserted
 //                            at width ≥ 1200.
+//   N  word-fit             — (flow+dashboard) every leaf cell is at least as
+//                            wide as the longest indivisible TOKEN of its title,
+//                            measured on the live render; below that the title
+//                            wraps mid-word under .box overflow-wrap:break-word
+//                            (the S4 "Orquestac/ión" defect). Independent of M:
+//                            a 136px cell clears M's 120px floor yet is narrower
+//                            than a 12-char monospace title, so N catches what M
+//                            misses. All tiers.
 // ─────────────────────────────────────────────────────────────────────────
 const { chromium } = require('playwright');
 const path = require('path');
@@ -152,6 +160,10 @@ const SPAN_TOL_PCT = 15;  // % a compound section child's rendered width may
                           // deviate from its AUTHORED-span share (Q). Absorbs the
                           // min-content floor (~3% on the reference 2:1 split); a
                           // regression to equal shares is 25%+ off and so fails.
+const WORDFIT_TOL = 1.5;  // px sub-pixel slack between the canvas-measured token
+                          // width and the cell's available width (N). Small: a
+                          // token that needs >~1.5px more than its cell WILL wrap
+                          // mid-word under .box overflow-wrap:break-word.
 
 // The equality used by the geometry checks (deep-equal via JSON).
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
@@ -171,9 +183,10 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 //   INTEGRITY (D R T C O F S B H) — the layout "adds up": determinism, capture,
 //     no clipping/overflow, the collapse cascade, band/inline fit, centering,
 //     headers contained. TRUE FOR EVERY FORM, always `dura`.
-//   DESIGN (E P U L Y + M) — how the deck reads: no dead track, no orphan cell,
-//     equal/uniform cells, filled bands, and the new readable-cell floor. SCOPED
-//     to the forms where the concern is real.
+//   DESIGN (E P U L Y + M + N) — how the deck reads: no dead track, no orphan
+//     cell, equal/uniform cells, filled bands, the readable-cell floor (M), and
+//     the word-fit floor (N — a title token never wider than its cell). SCOPED to
+//     the forms where the concern is real.
 //   V (verticality) — now a `consejo` (was `dura`): a long single row is a
 //     LEGITIMATE shape for a `timeline`, so V never applies to it and, where it
 //     does apply (the grid-dense forms), it only ADVISES, never fails.
@@ -190,6 +203,12 @@ const GRIDDED = new Set(['dashboard', 'comparison', 'flow', 'mindmap', 'planner'
 // stack is worth flagging). A `timeline`/`flow`/`mindmap` may legitimately be
 // sparse or linear, so P/V do not judge them.
 const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
+// WORDFIT — the narrative forms whose cells carry a real, human-language TITLE
+// that must not fracture mid-word. Scoped to flow + dashboard (the forms in this
+// deck); a token wider than its cell breaks under .box overflow-wrap:break-word,
+// a defect the M floor can miss (a 136px cell clears M's 120px floor yet is still
+// narrower than a 12-char monospace title). See invariant N.
+const WORDFIT = new Set(['dashboard', 'flow']);
 
 const INVARIANTS = [
   // ── INTEGRITY — all forms, dura ──────────────────────────────────────────
@@ -288,6 +307,19 @@ const INVARIANTS = [
       return { ok: bad.length === 0, detail: bad.length
         ? bad.map(g => `${g.zone}:cell ${g.minSingleW}px < ${MIN_LEGIBLE}px (illegible — grid should collapse columns first)`).join(', ')
         : `all ${grids.length} leaf grids keep cells >= ${MIN_LEGIBLE}px (min observed ${overall}px)` }; } },
+  // N — WORD-FIT. Complements M: M guards a fixed READABLE floor (120px); N
+  // guards a CONTENT-RELATIVE floor — a leaf cell must be at least as wide as the
+  // longest indivisible TOKEN of its own title, or the title wraps mid-word under
+  // .box overflow-wrap:break-word. The two are independent: a 136px cell clears
+  // M's 120px floor yet is narrower than a 12-char monospace title ("Orquestación"
+  // ~137px), so N fails exactly where M passes (the S4 defect). Scoped to WORDFIT
+  // (flow + dashboard) — the forms whose cells carry human-language titles.
+  { id: 'N', name: 'word-fit (title token fits its cell)', cls: 'design', sev: 'dura', forms: WORDFIT,
+    when: () => true, superseded: null,
+    check: (m) => { const bad = (m.wordFit || []).filter(b => b.wordW > b.availW + WORDFIT_TOL);
+      return { ok: bad.length === 0, detail: bad.length
+        ? bad.map(b => `${b.zone}>${b.k}:"${b.word}" needs ${b.wordW}px > cell ${b.availW}px (title wraps mid-word; below the longest token — M's ${MIN_LEGIBLE}px floor can pass here)`).join(', ')
+        : `all ${(m.wordFit || []).length} leaf titles fit their cell (longest token <= cell width)` }; } },
   { id: 'Y', name: 'band content fills band (no dead margin)', cls: 'design', sev: 'dura', forms: ALL_FORMS,
     when: (c) => c.w >= 1200, superseded: null,
     check: (m) => { const FILL_MARGIN_TOL = 48, SYM_TOL = 16; const bands = m.topZones.filter(z => z.band);
@@ -408,6 +440,42 @@ function measure() {
   // a MULTIPLE height, so it must not break the uniform-cell-height (U) invariant.
   const heights = [...new Set(boxes.filter(b => !b.rowspan).map(b => b.h))].sort((a,b)=>a-b);
   const clipped = boxes.filter(b => b.clipped).length;
+
+  // WORD-FIT (invariant N): for every leaf box, measure the RENDERED width of the
+  // longest indivisible token in its TITLE and the title's available content
+  // width, on the live render. `.box` sets overflow-wrap:break-word, so a token
+  // WIDER than its cell wraps MID-WORD (the S4 "Orquestac/ión" defect). This
+  // returns the raw px per box; the Node-side N check applies WORDFIT_TOL and
+  // decides pass/fail (measure() must stay a pure browser-side geometry read).
+  // A 2D canvas measures the token at the title's own computed font, so it does
+  // not mutate layout. `.t` carries no padding (box padding is on .box), so its
+  // clientWidth IS the space the title has. Row-span/bands included — every leaf
+  // title must fit whatever cell it lands in.
+  const wordFit = (() => {
+    const ctx = document.createElement('canvas').getContext('2d');
+    const out = [];
+    for (const b of allBoxes) {
+      const t = b.querySelector('.t');
+      if (!t) continue;
+      const txt = (t.textContent || '').trim();
+      if (!txt) continue;
+      const cs = getComputedStyle(t);
+      ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const ls = parseFloat(cs.letterSpacing) || 0;   // may be negative (tightening)
+      const availW = t.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      let word = '', wordW = 0;
+      for (const w of txt.split(/\s+/)) {
+        if (!w) continue;
+        const ww = ctx.measureText(w).width + ls * Math.max(0, w.length - 1);
+        if (ww > wordW) { wordW = ww; word = w; }
+      }
+      const zoneEl = b.closest('.zone[data-zone]');
+      out.push({ zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)',
+        k: b.getAttribute('data-k') || '?', word,
+        wordW: Math.round(wordW), availW: Math.round(availW) });
+    }
+    return out;
+  })();
 
   // rows: max boxes sharing a rounded top => visible column count
   const rows = {};
@@ -715,7 +783,7 @@ function measure() {
   });
 
   return { singleWidths, heights, clipped, maxRowCount, overflowX,
-    leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, nBoxes: boxes.length,
+    leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, wordFit, nBoxes: boxes.length,
     canvasScrollHeight: canvas.scrollHeight, canvasClientWidth: cw };
 }
 

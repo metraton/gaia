@@ -486,7 +486,8 @@ pixels.
    advises), and an optional retirement clause (`superseded` — a retired row is
    listed, never evaluated). The scopes: **all** = every form; **gridded** =
    every form but `timeline`; **grid-dense** = `dashboard` / `comparison` /
-   `planner`.
+   `planner`; **wordfit** = `dashboard` / `flow` (the narrative forms whose
+   cells carry a real, human-language title).
 
    | id | family | forms | sev | invariant |
    |----|--------|-------|-----|-----------|
@@ -506,6 +507,7 @@ pixels.
    | **E** | design | gridded | dura | no empty grid column — every declared track is filled |
    | **P** | design | grid-dense | dura | no orphan cell — no lone cell beside grouped sibling rows (>1000px; row-span rows exempt) |
    | **M** | design | gridded | dura | cells legible — no 1-column cell below `MIN_LEGIBLE` 120px (collapse columns first) |
+   | **N** | design | dashboard, flow | dura | word-fit — a leaf title's longest indivisible token never exceeds its cell's available width (below the M floor's reach: a 136px cell clears `MIN_LEGIBLE` yet can still be narrower than a 12-char title) |
    | **Y** | design | all | dura | band content fills the band — no dead margin (≥1200px) |
    | **Q** | design | all | dura | compound section widths follow authored span — a compound row's sections are proportional to their authored `span` weight, not stretched or shrunk by an inherited parent band (≥1200px) |
    | **V** | design | grid-dense | **consejo** | horizontal composition — the deck earns its canvas (ultra tier; advises, never fails) |

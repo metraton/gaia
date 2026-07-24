@@ -68,8 +68,8 @@ per-invariant detail lives in `reference.md`.
 
 | Family | Ids | Scope · severity |
 |--------|-----|------------------|
-| **INTEGRITY** | **D** determinism · **R** scrollbar-robust · **T** capture · **C** clamp · **O** no h-overflow · **F** collapse cascade · **S** inline fit / band spans block · **B** centered · **H** headers contained | every form, `dura` |
-| **DESIGN** | **U** equal/uniform cells · **E** no empty column · **P** no orphan cell · **L** cells fill width · **M** readable ≥120px · **Y** band fill | form-scoped, `dura` |
+| **INTEGRITY** | **D** determinism · **R** scrollbar-robust · **T** capture · **C** clamp · **O** no h-overflow · **F** collapse cascade · **S** inline fit / band spans block · **B** centered · **H** headers contained · **X** no sibling-section collision · **G** no compound-leaf balloon / no stacked-section overflow | every form, `dura` |
+| **DESIGN** | **U** equal/uniform cells · **E** no empty column · **P** no orphan cell · **L** cells fill width · **M** readable ≥120px · **N** word-fit (title token fits its cell) · **Y** band fill | form-scoped, `dura` |
 | advisory | **V** horizontal composition (the deck earns its canvas) | grid-dense forms, `consejo` |
 | retired | **W** fixed 232px cell width | `superseded: 'U'`, never evaluated |
 
@@ -110,6 +110,7 @@ kicker words a security-review deck might use — not a canonical default:
 | `strong` | marked green 2px border — a highlighted new component |
 | `ext` | dotted border — outside the perimeter |
 | `store` | secondary fill — data stores |
+| `centered` | layout-only, no colour — centers the box's text; authored via `variant_extra: [centered]`, composable with a colour role |
 
 **Section** `variant` (the frame/tint of a zone):
 
@@ -124,5 +125,5 @@ kicker words a security-review deck might use — not a canonical default:
 > `envelope` and `plain` are **style values**, not layout modes. Any section can
 > nest other sections regardless of its variant; `envelope`/`plain` only change
 > how (or whether) the wrapper's frame is drawn. Author variant values in
-> **English** (`crit`, `warn`, `ok`, `strong`, `ext`, `store`, `danger`, `safe`,
-> `envelope`, `plain`).
+> **English** (`crit`, `warn`, `ok`, `strong`, `ext`, `store`, `centered`,
+> `danger`, `safe`, `envelope`, `plain`).
