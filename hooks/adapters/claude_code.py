@@ -1453,9 +1453,15 @@ class ClaudeCodeAdapter(HookAdapter):
             sid = session_id or "unknown"
             agent = agent_name or "unknown"
             ptid = binding.get("plan_task_id")
+            parent_hid = binding.get("parent_handoff_id")
             # Synthetic, idempotent dispatch key: a re-dispatch for the same
             # (session, agent, task) is a no-op via the writer's ON CONFLICT.
-            contract_id = f"dispatch.{sid}.{agent}.{ptid}"
+            # A verifier turn carries no plan_task_id of its own (it binds by
+            # parent_handoff_id), so key it on the parent instead -- otherwise
+            # every verifier dispatch in a session would collapse onto the same
+            # `...None` key and only the first would be born.
+            _key = ptid if ptid is not None else f"p{parent_hid}"
+            contract_id = f"dispatch.{sid}.{agent}.{_key}"
 
             try:
                 birth_dispatched_row(
@@ -1466,6 +1472,7 @@ class ClaudeCodeAdapter(HookAdapter):
                     turn_role=binding.get("turn_role"),
                     plan_task_id=ptid,
                     plan_id=binding.get("plan_id"),
+                    parent_handoff_id=binding.get("parent_handoff_id"),
                     session_id=sid,
                 )
                 logger.info(

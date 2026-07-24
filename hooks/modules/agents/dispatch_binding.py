@@ -271,7 +271,7 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     hard gate; this is only extraction).
 
     Returns a dict with keys ``plan_id``, ``plan_task_id``, ``kind``,
-    ``turn_role`` -- any of which may be None.
+    ``turn_role``, ``parent_handoff_id`` -- any of which may be None.
     """
     import re as _re
 
@@ -289,6 +289,14 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
 
     plan_id = _int_token(r"plan_id\s*=\s*(\d+)")
     plan_task_id = _int_token(r"task_id\s*=\s*(\d+)")
+    # A verifier dispatch names the PRODUCER handoff it verifies via a
+    # ``parent_handoff_id=<N>`` token in its prompt. Without this the verifier
+    # branch of validate_dispatch_binding (which REQUIRES a resolvable
+    # parent_handoff_id) always failed with 'verifier_requires_parent_handoff_id'
+    # and the verifier's nascent row was never born. Extract it so the birth
+    # can stamp the parent binding. Left None for a non-verifier dispatch, where
+    # it is optional (and only existence-checked if present).
+    parent_handoff_id = _int_token(r"parent_handoff_id\s*=\s*(\d+)")
 
     is_verifier = "verifier" in agent.lower()
     turn_role = _VERIFIER_ROLE if is_verifier else None
@@ -313,4 +321,5 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
         "plan_task_id": plan_task_id,
         "kind": kind,
         "turn_role": turn_role,
+        "parent_handoff_id": parent_handoff_id,
     }

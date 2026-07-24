@@ -41,7 +41,10 @@ from gaia.store.writer import (
     agent_contract_handoff_state,
     finalize_agent_contract_handoff,
 )
-from modules.agents.dispatch_binding import birth_dispatched_row
+from modules.agents.dispatch_binding import (
+    birth_dispatched_row,
+    extract_dispatch_binding,
+)
 
 WORKSPACE = "me"
 AGENT_ID = "a1234abcd"
@@ -215,3 +218,58 @@ def test_re_dispatch_is_idempotent(db):
     assert second["created"] is False
     assert first["handoff_id"] == second["handoff_id"]
     assert len(_rows(db, cid)) == 1
+
+
+# ---------------------------------------------------------------------------
+# (4) a verifier turn is BORN via the extract -> birth path (plan 34 wiring)
+# ---------------------------------------------------------------------------
+
+def test_verifier_row_born_via_extracted_parent_handoff_id(db):
+    """End-to-end for the verifier-birth wiring: extract_dispatch_binding must
+    surface parent_handoff_id from the dispatch prompt so birth_dispatched_row
+    can stamp it. Before this wiring the binding carried no parent_handoff_id,
+    so the verifier branch of validate_dispatch_binding always failed with
+    'verifier_requires_parent_handoff_id' and the verifier row never nació."""
+    _seed_binding_targets(db)
+
+    # A resolvable PRODUCER row for the verifier to bind to via parent_handoff_id.
+    producer = birth_dispatched_row(
+        contract_id="a1234abcd.producer", agent_id=AGENT_ID, workspace=WORKSPACE,
+        kind="task_execution", plan_task_id=TASK_ID, plan_id=PLAN_ID, db_path=db,
+    )
+    parent_id = producer["handoff_id"]
+
+    # The orchestrator dispatches gaia-verifier naming the producer handoff it
+    # verifies via a parent_handoff_id=<N> token.
+    binding = extract_dispatch_binding({
+        "prompt": (
+            f"Verifica la TASK (task_id={TASK_ID}) del plan_id={PLAN_ID}, "
+            f"parent_handoff_id={parent_id}"
+        ),
+        "subagent_type": "gaia-verifier",
+    })
+    assert binding["turn_role"] == "verifier"
+    assert binding["parent_handoff_id"] == parent_id
+    assert binding["plan_task_id"] is None  # verifier binds by parent, not task
+
+    cid = "dispatch.sess.gaia-verifier.pparent"
+    out = birth_dispatched_row(
+        contract_id=cid,
+        agent_id="gaia-verifier",
+        workspace=WORKSPACE,
+        kind=binding["kind"],
+        turn_role=binding["turn_role"],
+        plan_task_id=binding["plan_task_id"],
+        plan_id=binding["plan_id"],
+        parent_handoff_id=binding["parent_handoff_id"],
+        db_path=db,
+    )
+    assert out["created"] is True, "the verifier row must now be born"
+
+    rows = _rows(db, cid)
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["agent_state"] == "DISPATCHED"
+    assert r["parent_handoff_id"] == parent_id
+    assert r["plan_task_id"] is None
+    assert r["kind"] == "verifier"

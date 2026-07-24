@@ -131,6 +131,35 @@ class TestVerifierBindingDropsPlanTaskId:
         assert binding["kind"] == "task_execution"
         assert binding["plan_task_id"] == 45
 
+    def test_verifier_turn_extracts_parent_handoff_id(self):
+        """A verifier dispatch names the PRODUCER handoff it verifies via a
+        `parent_handoff_id=<N>` token. Extraction must surface it so the birth
+        can stamp the parent binding -- without it the verifier branch of
+        validate_dispatch_binding (which REQUIRES a resolvable parent) always
+        failed with 'verifier_requires_parent_handoff_id' and the verifier's
+        nascent row was never born."""
+        binding = extract_dispatch_binding({
+            "prompt": (
+                "Verifica la TASK 8 (task_id=45) del plan_id=34, "
+                "parent_handoff_id=712"
+            ),
+            "subagent_type": "gaia-verifier",
+        })
+        assert binding["turn_role"] == "verifier"
+        assert binding["parent_handoff_id"] == 712
+        # A verifier binds by parent_handoff_id, NOT a plan_task_id of its own.
+        assert binding["plan_task_id"] is None
+
+    def test_producer_turn_has_no_parent_handoff_id(self):
+        """A plain producer dispatch carries no parent_handoff_id token, so the
+        extracted binding leaves it None (it is optional for non-verifier
+        turns)."""
+        binding = extract_dispatch_binding({
+            "prompt": "Ejecuta la TASK 8 (task_id=45) del plan_id=34",
+            "subagent_type": "gaia-system",
+        })
+        assert binding["parent_handoff_id"] is None
+
 
 # ===========================================================================
 # (a) PATH A -- the SubagentStop fence gate
