@@ -39,13 +39,13 @@ Validates the exact npm tarball as a plugin -- pack, extract, and validate the e
 cd <repo>
 npm run gaia:plugin-dryrun                  # pack -> temp extract -> asserts + `claude plugin validate` -> trap cleanup
 ```
-`bin/plugin-dryrun.sh` packs the tarball (its `prepack` regenerates the root inline `plugin.json` + `hooks/hooks.json`), extracts to a throwaway temp dir (the package root IS the plugin), and asserts the root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`, then runs `claude plugin validate`. Both temp dirs are removed by an EXIT trap.
+`bin/plugin-dryrun.sh` packs the tarball (its `prepack` regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`), extracts to a throwaway temp dir (the package root IS the plugin), and asserts the root `plugin.json` carries NO inline `hooks` block (the `assert "hooks" not in plugin` gate -- hooks live only in `hooks/hooks.json`), plus `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`, then runs `claude plugin validate`. Both temp dirs are removed by an EXIT trap.
 
 Optional live functional probe (needs Claude auth/tokens, opt-in):
 ```bash
 npm run gaia:plugin-dryrun -- --functional  # `claude --plugin-dir <temp> -p '...'` from a temp cwd
 ```
-If hooks do not fire, inspect the root `.claude-plugin/plugin.json` for the inline `hooks` block (regenerate with `npm run generate:plugin-root`). After publish, the marketplace path can also be exercised inside CC: `/plugin marketplace add <repo>` (source: npm) + `/plugin install gaia@gaia-marketplace` + `/reload-plugins`.
+If hooks do not fire, inspect the root `hooks/hooks.json` (the canonical hook source; `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block -- regenerate both with `npm run generate:plugin-root`). After publish, the marketplace path can also be exercised inside CC: `/plugin marketplace add <repo>` (`source: github`, pinned `ref`) + `/plugin install gaia@gaia-marketplace` + `/reload-plugins`.
 
 ## Mode: registry
 
@@ -75,4 +75,4 @@ rm -rf /tmp/gaia-registry-verify-*
 - `npm pack` lands the `.tgz` in the current working directory; run it from `<repo>`.
 - The `registry` mode needs network access. `E404` means the version has not published yet -- wait and retry.
 - `gaia doctor` exits non-zero on failure. If it fails, stop and report the error; do not run `gaia status`.
-- Picking up changes mid-session: npm/pnpm hook edits reload automatically (file-watcher); the plugin surface needs `/reload-plugins`; a slash-command change needs a full restart. See `gaia-release/SKILL.md` -> "Reloading a change".
+- Picking up changes mid-session: npm/pnpm hook edits do NOT hot-reload -- the harness pins each hook's command at session start, so an open session keeps running the OLD hooks until Claude Code is restarted (`bin/cli/dev.py::_restart_warning`); the plugin surface needs `/reload-plugins`; a slash-command change needs a full restart. See `gaia-release/SKILL.md` -> "Reloading a change".

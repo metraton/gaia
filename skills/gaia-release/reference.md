@@ -207,10 +207,10 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 
 When you bump `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py`, the four steps below must move in lockstep. `tests/cli/test_schema_version_lockstep.py` verifies the relationship; skipping a step fails in CI.
 
-1. Update `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py`.
-2. Add `INSERT INTO schema_version VALUES (N+1, datetime('now'), '<description>');` to `scripts/bootstrap_database.sh` so fresh installs land at the new version.
-3. Add migration SQL (`UPDATE` / `ALTER TABLE`) when existing DBs need to upgrade in place; otherwise old workspaces stay below the expected version and `gaia doctor` fails.
-4. Run `pytest tests/cli/test_schema_version_lockstep.py` -- it cross-references the constant, the bootstrap insert, and the migration SQL to confirm they all agree.
+1. Update `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py` -- the single source of truth for the target version (`_read_expected_schema_version()` in the bootstrapper reads it).
+2. Add the forward-migration file `scripts/migrations/v{N-1}_to_v{N}.sql` -- the `ALTER TABLE` / `UPDATE` / `CREATE` that advances a DB from `N-1` to `N`. This is **required**, not optional: the bootstrapper ABORTS with "missing migration file" if `EXPECTED_SCHEMA_VERSION` is bumped past the migrations on disk.
+3. Do NOT hand-write any `schema_version` insert into a bootstrap script. The canonical bootstrapper is `scripts/bootstrap_database.py` (the cross-platform install/lazy path; `bootstrap_database.sh` is retained for shell/test parity -- see the same distinction in "What `gaia install` does" above). It uses the **floor + forward-migration** model: it seals a fresh DB at `SCHEMA_FLOOR` from `schema.sql`, then applies every pending migration from `floor+1` up to `_read_expected_schema_version()`, stamping each in the ledger with `INSERT OR IGNORE INTO schema_version (version, applied_at, description) VALUES (n, ...)` automatically -- so shipping the migration file (step 2) is what makes fresh installs and in-place upgrades both land at the new version.
+4. Run `pytest tests/cli/test_schema_version_lockstep.py` -- it verifies `EXPECTED_SCHEMA_VERSION` agrees with the migration files present (equal to the highest `v{N-1}_to_v{N}.sql` target, or the floor when none exist yet).
 
 ### Build/pre-publish Schema-Drift Guard
 

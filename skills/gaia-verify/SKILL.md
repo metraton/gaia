@@ -7,7 +7,7 @@ description: Use when the user wants to verify a Gaia installation -- "probemos"
 
 Confirm that a Gaia installation actually works. Given a workspace and a delivery surface, run the checks that match that surface and report PASS/FAIL. This skill owns the definition of "a healthy install" -- the wire-up checklist and the per-surface checks. It is the check that `gaia-release` calls at the close of every layer; here it stands alone so the user can invoke it directly against whatever they just installed.
 
-Gaia ships as one npm artifact (`@jaguilar87/gaia`) reaching a workspace through two surfaces -- npm/pnpm (symlinks + `settings.local.json`) and the Claude Code plugin (`source: npm` -- CC installs the package into its plugin cache and reads the package root's inline-hooks `plugin.json`; there is no `dist/` bundle). A change can pass on one surface and break on the other, so the mode you pick must match the surface you are validating.
+Gaia ships as one tree reaching a workspace through two surfaces -- npm/pnpm (the npm package `@jaguilar87/gaia`: symlinks + `settings.local.json`) and the Claude Code plugin (`source: github` with a pinned `ref` -- `.claude-plugin/marketplace.json` advertises the plugin, so `/plugin install` makes CC clone the git repo into its plugin cache and load hooks from the repo root's `hooks/hooks.json`; the root `.claude-plugin/plugin.json` is metadata-only, and there is no `dist/` bundle). A change can pass on one surface and break on the other, so the mode you pick must match the surface you are validating.
 
 ## Decision tree
 
@@ -35,9 +35,9 @@ Primary path: `gaia release check` runs this gate (as gate 2, `gaia:verify-insta
 
 ## Mode: plugin
 
-Validates the Claude Code plugin surface -- the exact npm tarball, extracted, with its root mounted as a plugin. This is the only mode that exercises the root inline `plugin.json` / `hooks.json`, the packaged agents/skills, and `bin/gaia` on PATH; the npm surface never touches any of it.
+Validates the Claude Code plugin surface -- the exact npm tarball, extracted, with its root mounted as a plugin. This is the only mode that exercises the root `plugin.json` (metadata-only) / `hooks/hooks.json`, the packaged agents/skills, and `bin/gaia` on PATH; the npm surface never touches any of it.
 
-Primary path: `gaia release check` runs this gate (as gate 3, `gaia:plugin-dryrun`) inside the full Layer 2 sequence, and SKIPs it gracefully when the `claude` binary is absent. To run just this surface, `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`, what `gaia release check` wraps) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root inline `plugin.json`, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; the temps are trap-cleaned. Add `gaia release check --functional` (or `npm run gaia:plugin-dryrun -- --functional`) for an optional live `claude --plugin-dir <temp> -p '...'` probe (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 gate 3 calls. Do NOT publish or install to the real registry to run this.
+Primary path: `gaia release check` runs this gate (as gate 3, `gaia:plugin-dryrun`) inside the full Layer 2 sequence, and SKIPs it gracefully when the `claude` binary is absent. To run just this surface, `npm run gaia:plugin-dryrun` (`bin/plugin-dryrun.sh`, what `gaia release check` wraps) packs the tarball, extracts it to a throwaway temp dir, and runs a headless, offline gate -- filesystem asserts (root `plugin.json` present with NO inline `hooks` block, `hooks/hooks.json`, `bin/gaia`, `agents/`, `skills/`, and NO `dist/`) + `claude plugin validate`. It touches no real workspace and spawns no session; the temps are trap-cleaned. Add `gaia release check --functional` (or `npm run gaia:plugin-dryrun -- --functional`) for an optional live `claude --plugin-dir <temp> -p '...'` probe (needs Claude auth/tokens). This is the mode `gaia-release` Layer 2 gate 3 calls. Do NOT publish or install to the real registry to run this.
 
 ## Mode: registry
 
@@ -51,7 +51,7 @@ After wiring a workspace, these checks catch what `gaia doctor` cannot reach whe
 
 1. `ls -la <workspace>/.claude/` -- **5 symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
 2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). A fresh install always writes `gaia`; fail the check if the name is anything other than `gaia`.
-3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the bundle's `hooks.json` / inline `plugin.json`, not from `settings.local.json`).
+3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the repo root's `hooks/hooks.json`, not from `settings.local.json` or the metadata-only `plugin.json`).
 4. `ls ~/.gaia/gaia.db` -- DB file exists. It is bootstrapped **lazily on first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`) or by `gaia install` -- there is no postinstall.
 5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist. `gaia install` writes this marker on any bootstrap or wire-up failure; treat its presence as a hard failure regardless of what `gaia doctor` reports.
 6. `cd <workspace> && gaia doctor` -- `Status: HEALTHY`, checks pass, 0 errors.
