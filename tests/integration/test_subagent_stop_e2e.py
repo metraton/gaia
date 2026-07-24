@@ -77,7 +77,7 @@ def _make_agent_output(contract: str, payload: dict) -> str:
     """
     envelope = {
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "agent_id": "cloud-troubleshooter",
             "pending_steps": [],
             "next_action": "done",
@@ -263,7 +263,7 @@ class TestProcessContextUpdatesE2E:
             + json.dumps(
                 {
                     "agent_status": {
-                        "plan_status": "COMPLETE",
+                        "agent_state": "COMPLETE",
                         "agent_id": "cloud-troubleshooter",
                         "pending_steps": [],
                         "next_action": "done",
@@ -541,7 +541,7 @@ class TestStdinHandler:
             "```agent_contract_handoff\n"
             '{\n'
             '  "agent_status": {\n'
-            '    "plan_status": "COMPLETE",\n'
+            '    "agent_state": "COMPLETE",\n'
             '    "agent_id": "cloud-troubleshooter",\n'
             '    "pending_steps": [],\n'
             '    "next_action": "done"\n'
@@ -729,6 +729,6 @@ class TestBuildTaskInfoFromHookData:
     def test_exit_code_from_agent_output(self):
         mod = _import_subagent_stop()
         hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a789"}
-        output = 'Checking...\n```agent_contract_handoff\n{"agent_status": {"plan_status": "BLOCKED", "agent_id": "a789"}}\n```\nCannot reach cluster'
+        output = 'Checking...\n```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a789"}}\n```\nCannot reach cluster'
         task_info = mod._build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1

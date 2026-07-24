@@ -82,7 +82,7 @@ _VALID_EVIDENCE = {
 }
 
 _VALID_STATUS = {
-    "plan_status": "COMPLETE",
+    "agent_state": "COMPLETE",
     "pending_steps": "none",
     "next_action": "Report findings to orchestrator",
     "agent_id": "a1b2c3d4e5",
@@ -127,7 +127,7 @@ _VERBATIM_EVIDENCE = {
 
 AGENT_OUTPUT_WITH_VERBATIM = _make_contract_output({
     "agent_status": {
-        "plan_status": "COMPLETE",
+        "agent_state": "COMPLETE",
         "pending_steps": "none",
         "next_action": "Report findings",
         "agent_id": "af097c4abc",
@@ -189,7 +189,7 @@ class TestValidAgentResponse:
         assert validation.valid is True
         assert len(validation.missing) == 0
         assert len(validation.invalid) == 0
-        assert validation.agent_status.plan_status == "COMPLETE"
+        assert validation.agent_status.agent_state == "COMPLETE"
         assert validation.agent_status.agent_id == "a1b2c3d4e5"
 
     def test_valid_response_formatted_as_completion(self):
@@ -214,7 +214,7 @@ class TestValidAgentResponse:
         status = parse_agent_status(VALID_AGENT_OUTPUT)
 
         assert status.marker_present is True
-        assert status.plan_status == "COMPLETE"
+        assert status.agent_state == "COMPLETE"
         assert status.agent_id == "a1b2c3d4e5"
         assert "none" in status.pending_steps.lower()
 
@@ -319,7 +319,7 @@ class TestConsolidationRequired:
 
     VALID_WITH_CONSOLIDATION = _make_contract_output({
         "agent_status": {
-            "plan_status": "COMPLETE",
+            "agent_state": "COMPLETE",
             "pending_steps": "none",
             "next_action": "Report to orchestrator",
             "agent_id": "ab1234cdef",
@@ -420,7 +420,7 @@ class TestSubagentEdgeCases:
         """Invalid PLAN_STATUS value -> invalid field reported."""
         bad_output = _make_contract_output({
             "agent_status": {
-                "plan_status": "INVALID_STATUS",
+                "agent_state": "INVALID_STATUS",
                 "pending_steps": "none",
                 "next_action": "none",
                 "agent_id": "a12345abcde",

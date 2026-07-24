@@ -413,7 +413,7 @@ class SessionSimulator:
 
 
 def _build_valid_agent_output(
-    plan_status: str = "COMPLETE",
+    agent_state: str = "COMPLETE",
     agent_id: str = "a1f2c3",
     summary: str = "Task completed successfully.",
     include_consolidation: bool = True,
@@ -442,7 +442,7 @@ def _build_valid_agent_output(
     contract_block = json.dumps(
         {
             "agent_status": {
-                "plan_status": plan_status,
+                "agent_state": agent_state,
                 "agent_id": agent_id,
                 "pending_steps": [],
                 "next_action": "done",
@@ -552,21 +552,21 @@ class TestScenario1HappyPath:
         )
 
         # 6. Agent responds -- proposes NEEDS_VERIFICATION, not COMPLETE.
-        # Updated at B3 M2 (ARMING): cloud-troubleshooter is a producer, not a
-        # seeded verifier, and the live verifier registry is now armed
-        # (agents/gaia-verifier.md carries `verifier: true`), so a producer's
-        # direct COMPLETE is correctly rejected by the verifier-role gate
-        # (hooks/adapters/claude_code.py::_verifier_role_violation). The
-        # producer instead proposes NEEDS_VERIFICATION with a proposed
-        # verification.result -- the gate never rejects that (the role check
-        # only fires on COMPLETE) -- and step 6b below dispatches the seeded
-        # verifier to independently confirm and promote to COMPLETE. This
-        # replaces the old direct-self-COMPLETE happy path and is itself the
-        # live, real-hook-subprocess proof of the "no single-agent-task
-        # freeze" property: the task still reaches done, just through the
-        # verifier-gated route rather than a producer self-completing.
+        # Updated for plan 34 (finalize gate keyed on plan_task_id, not role):
+        # a plan-task-bound producer turn may not self-COMPLETE -- the gate
+        # (hooks/adapters/claude_code.py::_blind_verification_required) forces
+        # it to NEEDS_VERIFICATION so an independent (blind) verifier confirms
+        # the increment. cloud-troubleshooter is a producer here, so it proposes
+        # NEEDS_VERIFICATION with a proposed verification.result -- the gate
+        # never rejects that (it only gates COMPLETE) -- and step 6b below
+        # dispatches gaia-verifier to independently confirm and promote to
+        # COMPLETE. The decision is a pure function of the dispatch binding's
+        # plan_task_id, NOT of the emitting agent's role: a turn with no
+        # plan_task_id may self-COMPLETE. This is the live, real-hook-subprocess
+        # proof of the "no single-agent-task freeze" property: the task still
+        # reaches done, through the verifier-gated route.
         agent_output = _build_valid_agent_output(
-            plan_status="NEEDS_VERIFICATION",
+            agent_state="NEEDS_VERIFICATION",
             summary="El pod crashea por OOMKilled.",
             agent_id="a1f2c3",
         )
@@ -595,7 +595,7 @@ class TestScenario1HappyPath:
         )
 
         verifier_output = _build_valid_agent_output(
-            plan_status="COMPLETE",
+            agent_state="COMPLETE",
             summary="Verificado: el pod crashea por OOMKilled.",
             agent_id="a9f9f9",
         )
@@ -737,7 +737,7 @@ class TestScenario4IncompleteContract:
 
 
 class TestScenario5InvalidPlanStatus:
-    """Agent response with agent_contract_handoff but invalid plan_status should be rejected (exit=2)."""
+    """Agent response with agent_contract_handoff but invalid agent_state should be rejected (exit=2)."""
 
     def test_invalid_plan_status_rejected(self, tmp_path):
         sim = SessionSimulator(tmp_path)
@@ -752,7 +752,7 @@ class TestScenario5InvalidPlanStatus:
 
         # Agent responds with an agent_contract_handoff block but INVALID plan_status
         agent_output = _build_valid_agent_output(
-            plan_status="RANDOM_STATUS",
+            agent_state="RANDOM_STATUS",
             agent_id="a5e6f7",
             summary="Refactoring done.",
         )
@@ -785,7 +785,7 @@ class TestScenario5InvalidPlanStatus:
 
 
 class TestScenario6EmptyEvidenceAdvisory:
-    """Agent response with valid plan_status but empty evidence fields should NOT be blocked."""
+    """Agent response with valid agent_state but empty evidence fields should NOT be blocked."""
 
     def test_empty_evidence_allowed(self, tmp_path):
         sim = SessionSimulator(tmp_path)
@@ -794,15 +794,15 @@ class TestScenario6EmptyEvidenceAdvisory:
         result = sim.start_session()
         assert result["exit_code"] == 0
 
-        # Invoke agent -- gaia-verifier (updated at B3 M2/ARMING): the completing
-        # identity must be a seeded verifier now that the live registry is
-        # armed, or a COMPLETE would be rejected by the (correct, newly armed)
-        # verifier-role gate before this scenario's actual property -- empty
-        # evidence lists are advisory -- is ever exercised. Using gaia-verifier
-        # keeps the scenario isolated to that ONE property, unconflated with
-        # verifier-role enforcement (covered separately in
-        # tests/hooks/modules/agents/test_contract_gate_verifier_role.py and
-        # this file's own armed-enforcement scenario).
+        # Invoke agent -- gaia-verifier (updated for plan 34: finalize gate
+        # keyed on plan_task_id, not role). This SubagentStop turn is UNBOUND
+        # (the simulator binds no plan_task_id), so under
+        # _blind_verification_required an unbound COMPLETE self-completes
+        # regardless of the emitting agent's role. gaia-verifier is retained
+        # only to keep the scenario isolated to its ONE property -- empty
+        # evidence lists are advisory, not blocking -- unconflated with the
+        # binding-keyed gate (covered separately in
+        # tests/hooks/modules/agents/test_contract_gate_verifier_role.py).
         result = sim.invoke_agent("gaia-verifier", "diagnostica el pod")
         assert result["exit_code"] == 0
 
@@ -821,7 +821,7 @@ class TestScenario6EmptyEvidenceAdvisory:
         contract_block = json.dumps(
             {
                 "agent_status": {
-                    "plan_status": "COMPLETE",
+                    "agent_state": "COMPLETE",
                     "agent_id": "ab12cd",
                     "pending_steps": [],
                     "next_action": "done",
