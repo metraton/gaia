@@ -42,6 +42,18 @@ live copy: `agents/gaia-verifier.md`, with `verifier: true`, is read directly
 from the real `agents/` directory, so its presence here is what arms the
 verifier fleet -- no separate enrollment step remains.
 
+Its own dispatch is bound by `parent_handoff_id=<N>`, not by a `plan_task_id`
+of its own: the orchestrator's prompt names the producer's `handoff_id` via
+that literal token, and the dispatch hook's `extract_dispatch_binding` parses
+it out of the prompt to stamp the verifier's born-at-dispatch row against the
+producer turn it confirms. Carrying no `plan_task_id` is what the finalize
+gate needs to treat this turn as UNBOUND and let it self-`COMPLETE` -- if a
+verifier turn carried the producer's `plan_task_id` instead, the same gate
+that forces a plan-task-bound producer into `NEEDS_VERIFICATION` would force
+gaia-verifier's own `COMPLETE` back into `NEEDS_VERIFICATION` too, a deadlock
+where the verifier could never promote the increment it was dispatched to
+confirm.
+
 ## Workflow
 
 1. **Load the task's gates.** `gaia task gate list <brief> <order_num>` to

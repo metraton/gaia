@@ -273,3 +273,51 @@ def test_verifier_row_born_via_extracted_parent_handoff_id(db):
     assert r["parent_handoff_id"] == parent_id
     assert r["plan_task_id"] is None
     assert r["kind"] == "verifier"
+
+
+# ---------------------------------------------------------------------------
+# (5) WITHOUT the parent_handoff_id token, birth is a clean no-op (best-effort)
+# ---------------------------------------------------------------------------
+
+def test_verifier_row_not_born_without_parent_handoff_id_token(db):
+    """The companion, negative-space case for (4): a verifier dispatch prompt
+    that does NOT carry a `parent_handoff_id=<N>` token (the orchestrator
+    template omitted it, or the producer never surfaced its handoff_id)
+    extracts a binding with `parent_handoff_id=None`. Attempting to birth that
+    binding is REJECTED by referential integrity (the verifier branch of
+    validate_dispatch_binding requires a resolvable parent) -- but this must
+    never corrupt state or raise anything OTHER than the clean
+    DispatchBindingError the real hook path (_maybe_birth_dispatched_row)
+    already catches best-effort and non-blocking (see
+    hooks/adapters/claude_code.py). No row is born either way."""
+    _seed_binding_targets(db)
+
+    binding = extract_dispatch_binding({
+        "prompt": f"Verifica la TASK (task_id={TASK_ID}) del plan_id={PLAN_ID}",
+        "subagent_type": "gaia-verifier",
+    })
+    assert binding["turn_role"] == "verifier"
+    assert binding["parent_handoff_id"] is None, (
+        "no token in the prompt -- extraction leaves it None, not a guess"
+    )
+    assert binding["plan_task_id"] is None  # verifier never binds by task_id
+
+    cid = "dispatch.sess.gaia-verifier.no-token"
+    from modules.agents.dispatch_binding import DispatchBindingError
+
+    with pytest.raises(DispatchBindingError) as ei:
+        birth_dispatched_row(
+            contract_id=cid,
+            agent_id="gaia-verifier",
+            workspace=WORKSPACE,
+            kind=binding["kind"],
+            turn_role=binding["turn_role"],
+            plan_task_id=binding["plan_task_id"],
+            plan_id=binding["plan_id"],
+            parent_handoff_id=binding["parent_handoff_id"],
+            db_path=db,
+        )
+    assert ei.value.reason == "verifier_requires_parent_handoff_id"
+
+    # best-effort: the rejection births nothing -- no dangling / partial row.
+    assert len(_rows(db, cid)) == 0
