@@ -62,6 +62,7 @@
     "bin/cli/",
     "bin/cli/dev.py",
     "bin/cli/_pack_helpers.py",
+    "bin/cli/_converge.py",
     "bin/cli/release.py",
     "bin/cli/contract.py",
     "bin/cli/schedule.py"

@@ -67,6 +67,7 @@ _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
+from cli import _converge  # type: ignore  # noqa: E402
 from cli import _pack_helpers  # type: ignore  # noqa: E402
 from cli import install as install_mod  # type: ignore  # noqa: E402
 from cli._pack_helpers import _is_source_checkout  # type: ignore  # noqa: E402
@@ -443,6 +444,46 @@ def rewrite_workspace_dep_spec(workspace: Path, tarball: Path) -> dict[str, Any]
     return {"action": "updated", "path": str(pkg_path), "details": f"pinned {_NPM_PACKAGE_NAME} -> {spec}"}
 
 
+def _print_convergence_report(workspace: Path, origin_version: str | None, quiet: bool) -> dict:
+    """Inspect + report the 5 install surfaces of *workspace* vs this origin.
+
+    The READ half of the shared convergence routine (see cli/_converge.py):
+    `gaia dev` calls it AFTER its reconcile steps to confirm the destination
+    converged on the local-source origin, and `gaia release` can call the same
+    inspector for an artifact origin -- one classification of "where does the
+    destination stand?", not three. Best-effort and read-only: never raises, and
+    prints only when not quiet. Returns the raw report dict for callers/tests.
+    """
+    from cli.doctor import EXPECTED_SCHEMA_VERSION  # noqa: PLC0415
+
+    db_path = Path(os.environ.get("GAIA_DB", str(Path("~/.gaia/gaia.db").expanduser()))).expanduser()
+    try:
+        report = _converge.converge_report(
+            workspace,
+            origin_version=origin_version,
+            expected_version=EXPECTED_SCHEMA_VERSION,
+            db_path=db_path,
+            npm_global_bin=install_mod._npm_global_prefix(),
+        )
+    except Exception as exc:  # never let inspection break the dev loop
+        report = {"surfaces": [], "converged": False, "reverse_direction": False, "error": str(exc)}
+        if not quiet:
+            print(f"  [?] convergence: inspection failed ({exc})")
+        return report
+
+    if not quiet:
+        verdict = "CONVERGED" if report["converged"] else "SKEW"
+        print(f"\n  convergence ({verdict}) -- 5 surfaces vs origin v{origin_version or '?'}:")
+        for s in report["surfaces"]:
+            print(f"    [{s['state']:<7}] {s['surface']:<22} {s['detail']}")
+        if report["reverse_direction"]:
+            print(
+                "  [!] DB is NEWER than this code (reverse-direction drift): an install "
+                "would be REFUSED. Use a newer origin; do NOT downgrade the DB."
+            )
+    return report
+
+
 def _run_pack_mode(
     workspace: Path,
     *,
@@ -523,6 +564,10 @@ def _run_pack_mode(
         link_res = install_mod.reconcile_global_via_npm_link(_PACKAGE_ROOT, quiet=quiet)
         _report_step(name="global npm link", result=link_res, quiet=quiet, verbose=verbose)
         install_mod._warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=quiet)
+
+    # READ half of the shared convergence routine: confirm the destination's 5
+    # surfaces converged on this origin (the local source). Read-only.
+    _print_convergence_report(workspace, pack_res.get("version"), quiet=quiet)
 
     if not quiet:
         print(
