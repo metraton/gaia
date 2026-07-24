@@ -23,5 +23,16 @@
     "hooks/",
     "tools/",
     "**/*.py"
+  ],
+  "overrides": [
+    {
+      "files": [
+        "skills/diagram-builder/assets/engine/**/*.js",
+        "skills/diagram-builder/assets/data/**/*.js"
+      ],
+      "env": {
+        "browser": true
+      }
+    }
   ]
 }

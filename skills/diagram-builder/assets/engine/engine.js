@@ -106,7 +106,7 @@
     if (comp.status) { const k = el('div', 'k'); k.textContent = comp.status; box.appendChild(k); }
     const t = el('div', 't'); t.textContent = comp.title || ''; box.appendChild(t);
     const rawDesc = comp.description;
-    const lines = Array.isArray(rawDesc) ? rawDesc : (rawDesc != null ? [rawDesc] : []);
+    const lines = Array.isArray(rawDesc) ? rawDesc : (rawDesc !== null && rawDesc !== undefined ? [rawDesc] : []);
     // Description lines live in ONE `.desc` container so CSS can clamp the whole
     // description to a fixed number of visual lines (see .box .desc line-clamp),
     // keeping every box at the same fixed --cell-h regardless of line count. The
@@ -478,7 +478,7 @@
         if (moved) suppressClick = true; // this was a pan, not a click on a box
         canvas.classList.remove('dragging');
         moved = false;
-        if (captured && e && e.pointerId != null) { try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ } }
+        if (captured && e && e.pointerId !== null && e.pointerId !== undefined) { try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* ignore */ } }
         captured = false;
       };
       canvas.addEventListener('pointerup', endDrag);

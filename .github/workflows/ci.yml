@@ -23,6 +23,20 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      # The Python suite includes tests that shell out to real Node scripts
+      # (e.g. tests/cli/test_pre_publish_dry_run_representative.py runs
+      # `node bin/pre-publish-validate.js --dry-run`, which imports the `chalk`
+      # devDependency). ubuntu-latest ships Node, so those tests do NOT skip --
+      # without node_modules they fail with "Cannot find package 'chalk'".
+      # Install the dev dependencies so the Node-backed tests resolve chalk.
+      - name: Install Node dependencies
+        run: npm ci
+
       - name: Install test dependencies
         run: pip install pytest==8.3.5
 
