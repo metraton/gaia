@@ -338,6 +338,36 @@ def main() -> int:
             f"schema_version: current={current_version}, expected={expected_version}"
         )
 
+        # --- Section 3c.0: schema-DIRECTION guard (drift-free install) ---
+        # bootstrap only ever migrates FORWARD (code newer than DB). The reverse
+        # direction -- a live DB migrated by a NEWER Gaia than the code now being
+        # installed -- was previously unguarded: the `else` branch below logged
+        # "up-to-date" and the install "succeeded", leaving stale code to run
+        # against a newer schema. That is the exact drift that broke
+        # `gaia contract finalize` ("no column named ...") when a stale global CLI
+        # (code v36) ran against a DB migrated to v37. Refuse it: never install
+        # code OLDER than the DB (no clobber). The DB is left untouched (schema.sql
+        # is all CREATE ... IF NOT EXISTS, and no migration or stamp runs past this
+        # point); the remedy is to install a Gaia at least as new as the DB, not to
+        # downgrade the DB.
+        if current_version > expected_version:
+            _err(
+                f"ERROR: live DB schema_version={current_version} is NEWER than the "
+                f"schema this code expects (v{expected_version})."
+            )
+            _err(
+                "This Gaia code is OLDER than the database it would run against; "
+                "installing it would leave stale code reading a newer schema "
+                "(the finalize-breaking drift). Refusing to install -- the DB is "
+                "left untouched (no clobber)."
+            )
+            _err(
+                f"Install a Gaia whose EXPECTED_SCHEMA_VERSION >= {current_version} "
+                "(the source checkout or release artifact that produced this DB), "
+                "then re-run. To validate without changing anything, run `gaia doctor`."
+            )
+            return 1
+
         if current_version < expected_version:
             for n in range(current_version + 1, expected_version + 1):
                 prev = n - 1

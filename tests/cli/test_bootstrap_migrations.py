@@ -36,6 +36,7 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +44,7 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+_BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _DOCTOR_PY = _REPO_ROOT / "bin" / "cli" / "doctor.py"
 _MIGRATIONS_DIR = _REPO_ROOT / "scripts" / "migrations"
@@ -86,6 +88,29 @@ def _run_bootstrap(workspace: Path, env_overrides: dict | None = None) -> subpro
     )
 
 
+def _run_bootstrap_py(workspace: Path, env_overrides: dict | None = None) -> subprocess.CompletedProcess:
+    """Invoke the canonical Python bootstrapper with GAIA_DB inside the workspace.
+
+    This is the path `gaia install`/`gaia update`/the lazy bootstrap all use
+    (see bin/cli/install.py::_run_bootstrap), so the direction guard must hold
+    here, not only in the shell reference.
+    """
+    tmp_db = workspace / "tmp_gaia.db"
+    env = os.environ.copy()
+    env["GAIA_DB"] = str(tmp_db)
+    env["WORKSPACE"] = str(workspace)
+    if env_overrides:
+        env.update(env_overrides)
+    return subprocess.run(
+        [sys.executable, str(_BOOTSTRAP_PY)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+
 def _build_below_floor_db(db_path: Path, version: int) -> None:
     """Materialise a minimal DB whose schema_version ledger is below the floor.
 
@@ -105,6 +130,28 @@ def _build_below_floor_db(db_path: Path, version: int) -> None:
         con.execute(
             "INSERT INTO schema_version (version, applied_at, description) "
             "VALUES (?, '2026-01-01T00:00:00Z', 'synthetic pre-floor')",
+            (version,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _build_above_expected_db(db_path: Path, version: int) -> None:
+    """Materialise a full, valid DB whose schema_version ledger is stamped at
+    *version* -- used to simulate a DB migrated FORWARD by a NEWER Gaia than the
+    code under test. Applies the current schema.sql (so every table/trigger the
+    later bootstrap sections touch exists), then rewrites the ledger to a single
+    row at *version*.
+    """
+    schema_sql = _SCHEMA_SQL.read_text()
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.executescript(schema_sql)
+        con.execute("DELETE FROM schema_version")
+        con.execute(
+            "INSERT INTO schema_version (version, applied_at, description) "
+            "VALUES (?, '2026-01-01T00:00:00Z', 'synthetic newer-than-code DB')",
             (version,),
         )
         con.commit()
@@ -502,6 +549,83 @@ class TestBootstrapFloorModel(unittest.TestCase):
 
             # Second run sees a DB already at or above the floor.
             self.assertIn(f">= floor v{self.floor}", res2.stdout)
+
+
+class TestSchemaDirectionGuard(unittest.TestCase):
+    """The drift-free direction guard: an install must REFUSE to run code older
+    than the live DB (DB schema_version > code's EXPECTED_SCHEMA_VERSION).
+
+    This is the reverse of the forward-migration case: bootstrap only migrates
+    FORWARD, and the reverse direction (a DB migrated by a newer Gaia than the
+    code being installed) was previously unguarded -- the `else` branch logged
+    "up-to-date" and the install "succeeded", leaving stale code to read a newer
+    schema. That is the exact drift that broke `gaia contract finalize`. Both
+    bootstrap paths (the canonical .py and the shell reference) must:
+      * exit non-zero,
+      * name the direction ("NEWER than ... expects"),
+      * leave the DB ledger UNTOUCHED (no clobber).
+    """
+
+    def setUp(self):
+        if not _SCHEMA_SQL.is_file():
+            self.skipTest(f"schema.sql not found at {_SCHEMA_SQL}")
+        self.expected = _read_expected_version()
+
+    def _assert_refused_and_untouched(self, res, db: Path, stamped: int) -> None:
+        self.assertNotEqual(
+            res.returncode, 0,
+            "bootstrap must refuse code older than the DB; got rc=0\n"
+            f"stdout:\n{res.stdout}\nstderr:\n{res.stderr}",
+        )
+        self.assertIn("NEWER than", res.stderr)
+        con = sqlite3.connect(str(db))
+        try:
+            versions = [r[0] for r in con.execute("SELECT version FROM schema_version")]
+        finally:
+            con.close()
+        self.assertEqual(
+            versions, [stamped],
+            "guard clobbered the ledger of a DB it should have refused to touch",
+        )
+
+    def test_py_bootstrap_refuses_newer_db(self):
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap_database.py not found at {_BOOTSTRAP_PY}")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            db = workspace / "tmp_gaia.db"
+            newer = self.expected + 1
+            _build_above_expected_db(db, newer)
+            res = _run_bootstrap_py(workspace)
+            self._assert_refused_and_untouched(res, db, newer)
+
+    def test_sh_bootstrap_refuses_newer_db(self):
+        if not _BOOTSTRAP_SH.is_file():
+            self.skipTest(f"bootstrap_database.sh not found at {_BOOTSTRAP_SH}")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            db = workspace / "tmp_gaia.db"
+            newer = self.expected + 5
+            _build_above_expected_db(db, newer)
+            res = _run_bootstrap(workspace)
+            self._assert_refused_and_untouched(res, db, newer)
+
+    def test_py_bootstrap_accepts_db_at_expected(self):
+        """Control: a DB exactly AT the expected version is the aligned case --
+        the guard must NOT fire (idempotent no-op, rc=0)."""
+        if not _BOOTSTRAP_PY.is_file():
+            self.skipTest(f"bootstrap_database.py not found at {_BOOTSTRAP_PY}")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            db = workspace / "tmp_gaia.db"
+            _build_above_expected_db(db, self.expected)
+            res = _run_bootstrap_py(workspace)
+            self.assertEqual(
+                res.returncode, 0,
+                f"aligned DB (==expected) wrongly refused:\nstdout:\n{res.stdout}\n"
+                f"stderr:\n{res.stderr}",
+            )
+            self.assertIn("up-to-date", res.stdout)
 
 
 # ---------------------------------------------------------------------------

@@ -317,6 +317,25 @@ fi
 CURRENT_VERSION="$(sqlite3 "$GAIA_DB" "SELECT COALESCE(MAX(version), 0) FROM schema_version;")"
 echo "[bootstrap] schema_version: current=${CURRENT_VERSION}, expected=${EXPECTED_VERSION}"
 
+# --- Schema-DIRECTION guard (drift-free install) -----------------------------
+#
+# bootstrap only ever migrates FORWARD (code newer than DB). The reverse
+# direction -- a live DB migrated by a NEWER Gaia than the code now being
+# installed -- was previously unguarded: the `else` branch below logged
+# "up-to-date" and the install "succeeded", leaving stale code to run against a
+# newer schema. That is the exact drift that broke `gaia contract finalize`
+# ("no column named ...") when a stale global CLI (code v36) ran against a DB
+# migrated to v37. Refuse it: never install code OLDER than the DB (no clobber).
+# The DB is left untouched (schema.sql is all CREATE ... IF NOT EXISTS, and no
+# migration or stamp runs past this point); the remedy is to install a Gaia at
+# least as new as the DB, not to downgrade the DB.
+if [ "$CURRENT_VERSION" -gt "$EXPECTED_VERSION" ]; then
+    echo "[bootstrap] ERROR: live DB schema_version=${CURRENT_VERSION} is NEWER than the schema this code expects (v${EXPECTED_VERSION})." >&2
+    echo "[bootstrap] This Gaia code is OLDER than the database it would run against; installing it would leave stale code reading a newer schema (the finalize-breaking drift). Refusing to install -- the DB is left untouched (no clobber)." >&2
+    echo "[bootstrap] Install a Gaia whose EXPECTED_SCHEMA_VERSION >= ${CURRENT_VERSION} (the source checkout or release artifact that produced this DB), then re-run. To validate without changing anything, run \`gaia doctor\`." >&2
+    exit 1
+fi
+
 MIG_DIR="${SCRIPT_DIR}/migrations"
 
 # --- Idempotent ADD COLUMN guard (runner-level) ------------------------------
