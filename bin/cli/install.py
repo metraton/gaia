@@ -664,6 +664,50 @@ def _warn_launcher_shadowed(link: "Path | str", quiet: bool) -> "str | None":
     return warning
 
 
+def _warn_launcher_dir_absent(link: "Path | str", quiet: bool) -> "str | None":
+    """Warn when the launcher's own directory is entirely absent from PATH, so
+    a bare ``gaia`` cannot resolve at all -- on BOTH Windows and POSIX.
+
+    This is orthogonal to ``_warn_launcher_shadowed`` (which covers the case
+    where a DISTINCT npm global ``gaia`` shim WINS the name lookup). Here the
+    condition is unambiguous: the launcher file was written, but its directory
+    (default ``~/.local/bin``) is on no PATH entry, so the shell will never find
+    ``gaia`` regardless of any npm shim. This is exactly the wrinkle the docs
+    assumed away -- ``gaia install`` is expected to make a bare ``gaia`` work,
+    but on a fresh local install (``npm install`` / ``pnpm add``) the CLI lands
+    in ``node_modules/.bin`` (not on PATH) and ``~/.local/bin`` is frequently not
+    on PATH either. Without this signal, the ``PATH launcher: ...=created`` step
+    line misleads the user into believing a bare ``gaia`` now works.
+
+    Deliberately narrow: it fires ONLY on the dir-absent case, never on npm
+    precedence (that is ``_warn_launcher_shadowed``'s concern), so it does not
+    reintroduce the over-warning the POSIX shadow check was tuned to avoid.
+    Comparison is case-insensitive and path-normalized (mirrors
+    ``_launcher_path_precedence``). Returns the warning (also printed to stderr
+    unless quiet) or None when the launcher dir is already on PATH.
+    """
+    launcher_dir = Path(link).expanduser().parent
+
+    def _norm(p) -> str:
+        return os.path.normcase(os.path.normpath(str(p)))
+
+    path_dirs = {
+        _norm(p) for p in os.environ.get("PATH", "").split(os.pathsep) if p
+    }
+    if _norm(launcher_dir) in path_dirs:
+        return None
+
+    warning = (
+        f"{launcher_dir} is not on PATH -- a bare `gaia` will not resolve yet. "
+        f'Add it to PATH (e.g. add `export PATH="{launcher_dir}:$PATH"` to your '
+        "shell profile), or invoke Gaia through your package manager "
+        "(`npx gaia ...`) until you do."
+    )
+    if not quiet:
+        print(f"  [!] PATH launcher: {warning}", file=sys.stderr)
+    return warning
+
+
 # ---------------------------------------------------------------------------
 # Global npm reconcile (npm link the origin -> global `gaia`)
 # ---------------------------------------------------------------------------
@@ -1219,7 +1263,16 @@ def cmd_install(args: argparse.Namespace) -> int:
         # not that it will WIN `gaia` resolution. Warn when Gaia's launcher dir
         # is not ahead of the npm prefix on PATH -- an actionable signal, not a
         # false all-clear. No-op on POSIX.
-        _warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=quiet)
+        shadow_warning = _warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=quiet)
+        # If the shadow check found nothing, the launcher may still be
+        # unreachable because its dir is entirely absent from PATH -- the common
+        # fresh-local-install case (~/.local/bin not on PATH). Surface that
+        # unambiguous condition so a bare `gaia` failing is a visible signal
+        # instead of a silent surprise. Skipped when the shadow check already
+        # warned, to avoid a double message (Windows dir-absent is covered
+        # there via _launcher_path_precedence).
+        if shadow_warning is None:
+            _warn_launcher_dir_absent(link="~/.local/bin/gaia", quiet=quiet)
 
     # Step 6.6 -- Windows: persist GAIA_WORKSPACE_PATH to the user environment
     # so `gaia doctor` resolves THIS workspace regardless of which `gaia` wins

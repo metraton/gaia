@@ -47,6 +47,7 @@ from cli.install import (  # noqa: E402
     _persist_workspace_env,
     _launcher_path_precedence,
     _warn_launcher_shadowed,
+    _warn_launcher_dir_absent,
     _npm_global_prefix,
     _npm_config_prefix_posix,
     reconcile_global_via_npm_link,
@@ -1289,6 +1290,46 @@ class TestLauncherPathPrecedence(unittest.TestCase):
                         link="C:/Users/u/.local/bin/gaia", quiet=True
                     )
         self.assertIsNotNone(warning)
+
+
+class TestWarnLauncherDirAbsent(unittest.TestCase):
+    """`_warn_launcher_dir_absent` warns when the launcher's own directory is
+    entirely absent from PATH -- the unambiguous "bare `gaia` cannot resolve"
+    case the POSIX shadow check deliberately stays silent on. Pure w.r.t. the
+    PATH env var, so it is exercised directly with crafted PATH values.
+    """
+
+    def test_dir_absent_from_path_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher = Path(tmp) / "local-bin" / "gaia"
+            with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=False):
+                warning = _warn_launcher_dir_absent(link=str(launcher), quiet=True)
+            self.assertIsNotNone(warning)
+            self.assertIn("not on PATH", warning)
+            self.assertIn(str(launcher.parent), warning)
+
+    def test_dir_present_on_path_no_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher_dir = Path(tmp) / "local-bin"
+            launcher = launcher_dir / "gaia"
+            with patch.dict(
+                os.environ, {"PATH": f"{launcher_dir}:/usr/bin"}, clear=False
+            ):
+                self.assertIsNone(
+                    _warn_launcher_dir_absent(link=str(launcher), quiet=True)
+                )
+
+    def test_dir_present_normalizes_trailing_separator(self):
+        """A PATH entry with a redundant trailing slash still matches the dir."""
+        with tempfile.TemporaryDirectory() as tmp:
+            launcher_dir = Path(tmp) / "local-bin"
+            launcher = launcher_dir / "gaia"
+            with patch.dict(
+                os.environ, {"PATH": f"{launcher_dir}/:/usr/bin"}, clear=False
+            ):
+                self.assertIsNone(
+                    _warn_launcher_dir_absent(link=str(launcher), quiet=True)
+                )
 
 
 class TestNpmGlobalPrefixResolution(unittest.TestCase):
