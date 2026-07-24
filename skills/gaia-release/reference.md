@@ -77,12 +77,12 @@ Zero network. Proves both install surfaces and reproduces CI before any tag exis
 
 `gaia release check` (and `gaia release publish`) validate what will be **PUBLISHED**, which lives only in the SOURCE checkout (the pre-publish validator needs devDependencies, the pack/dry-run gates need `build/gaia.manifest.json`, `npm test` needs `tests/` -- all excluded from the slim installed copy). They resolve the canonical source via `resolve_source_root` and **fail loud** if no source checkout is reachable rather than silently validating the slim installed copy. Run them **from the source checkout** (`python3 <checkout>/bin/gaia release check`) -- there is no env-var escape hatch; do not expect the bare launcher invoked from a consumer workspace to locate the source for you.
 
-**Primary path -- one command, all four gates, always run:**
+**Primary path -- one command, all five gates, always run:**
 ```
 gaia release check                # add --functional for the opt-in live plugin probe
 gaia release check --quiet        # suppress per-gate progress, only print the summary
 ```
-`gaia release check` (`bin/cli/release.py`) runs, in order, every gate below and reports a complete PASS/FAIL/SKIP picture -- it never stops at the first red light, so a single run tells you exactly which of the four broke. Each gate is a subprocess call to the existing script (never reimplemented); the raw forms below are what it wraps, useful when diagnosing which one failed.
+`gaia release check` (`bin/cli/release.py`) runs, in order, every gate below and reports a complete PASS/FAIL/SKIP picture -- it never stops at the first red light, so a single run tells you exactly which one broke. Gates 1-4 are each a subprocess call to the existing script (never reimplemented); gate 5 is an in-process read-only inspection via the shared `cli/_converge` inspector. The raw forms below are what gates 1-4 wrap, useful when diagnosing which one failed.
 
 **1 -- version-drift gate (reproduces `validate-manifests`):**
 ```
@@ -127,7 +127,9 @@ npm test                                    # L1 suite
 python3 tools/gaia_simulator/cli.py "<test prompt>"   # optional routing check
 ```
 
-A pass here means both surfaces of the exact artifact are green and CI's drift gate is satisfied.
+**5 -- drift-free convergence (shared with `gaia dev`):** No raw form to wrap -- this gate is an in-process, read-only call to `bin/cli/_converge.py` (`gate_convergence` in `release.py`), the SAME convergence `gaia dev` runs after its reconcile, but with the **origin = the release artifact** (this repo's `package.json` version). It inspects the destination's 5 install surfaces and applies the **schema-DIRECTION guard** (`scripts/bootstrap_database.py`): a live `~/.gaia/gaia.db` NEWER than the artifact's expected schema (reverse-direction drift) is a hard **FAIL** -- installing that artifact would be REFUSED by bootstrap (never ship code older than the DB). Forward/stale surfaces are informational (a release does not reconcile the developer's machine), so only the reverse-direction guard fails the gate; an inspection error is a **SKIP**. To see the same report by hand outside a release: `gaia doctor` (which reports the 5-surface + schema-direction skew) or `gaia dev` (which prints the convergence report after wiring).
+
+A pass here means both surfaces of the exact artifact are green, CI's drift gate is satisfied, and the destination is not carrying a DB newer than the artifact would ship.
 
 ## Layer 3 runbook -- release (pipeline publish)
 
@@ -138,7 +140,7 @@ The expansion of the "release" intention in `SKILL.md`. The orchestrator runs th
 gaia release publish [version]              # version: bare semver, or patch/minor/major (default: patch)
 gaia release publish --dry-run [version]    # preview the six-step sequence, execute nothing
 ```
-`gaia release publish` (`bin/cli/release.py`) runs `release:prepare` -> `npm test` -> `git commit` -> `git tag` -> `git push --follow-tags` -> `gh release create`, in that order, STOPPING at the first failure (unlike `release check`'s always-run-all-4-gates design -- these steps are causally dependent). The first four steps are local and un-gated; the last two are Tier 3 and the hook layer will require your approval before they run -- that is expected, not retried around. It never runs npm's own registry-publish command directly: that command runs only inside `.github/workflows/publish.yml`, gated behind `NODE_AUTH_TOKEN`. `--dry-run` prints the resolved version and all six planned commands (with the two Tier-3 ones flagged) without spawning any subprocess.
+`gaia release publish` (`bin/cli/release.py`) runs `release:prepare` -> `npm test` -> `git commit` -> `git tag` -> `git push --follow-tags` -> `gh release create`, in that order, STOPPING at the first failure (unlike `release check`'s always-run-all-gates design -- these steps are causally dependent). The first four steps are local and un-gated; the last two are Tier 3 and the hook layer will require your approval before they run -- that is expected, not retried around. It never runs npm's own registry-publish command directly: that command runs only inside `.github/workflows/publish.yml`, gated behind `NODE_AUTH_TOKEN`. `--dry-run` prints the resolved version and all six planned commands (with the two Tier-3 ones flagged) without spawning any subprocess.
 
 **Preconditions gate (T0, before step 1).** `run_release_publish` first runs `preflight_publish` -- a read-only gate that fails EARLY, loud, and actionably rather than mid-sequence. If any check fails, **no step runs** and the failure names its own fix:
 
@@ -195,6 +197,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 | DB missing / `no such table` on first use | Lazy bootstrap did not run (e.g. `gaia` never invoked yet) | Run any `gaia` command (it triggers `_ensure_db_bootstrapped`), or `gaia install` for the full seed. There is no postinstall to "re-run". |
 | Plugin mounts but hooks never fire | Generated `hooks/hooks.json` broken at the package root, or CC did not reload | Regenerate (`npm run generate:plugin-root`), re-run `npm run gaia:plugin-dryrun`, and `/reload-plugins`. Inspect the root `hooks/hooks.json` (the canonical hook source); `.claude-plugin/plugin.json` is metadata only and must NOT carry an inline `hooks` block. |
 | `bootstrap exited 1: table projects has no column named identity` | Schema/bootstrap drift (old seed SQL) | Update to a build whose seed matches the current schema. |
+| `gaia contract finalize` (or another CLI) errors `no column named ...`; `gaia doctor` reports `schema_version=N > code expected M` | **Reverse-direction drift**: the live `~/.gaia/gaia.db` was migrated by a NEWER Gaia than the code now running -- stale code mis-reading a newer schema. | Install code at least as new as the DB by running the drift-safe convergence -- `gaia dev` (from a source checkout whose `EXPECTED_SCHEMA_VERSION` >= the DB) or `gaia install`/`gaia release` (artifact). The bootstrap direction guard now REFUSES this case (no clobber) and migrates forward when the code is newer; do **not** `npm install @latest` a build older than the DB, and **never** downgrade the DB. |
 | `Permission denied` invoking a hook `.py` | Exec bit lost on cross-platform checkout | Hooks are invoked via `python3 <script>` (see `build-plugin.py` `generate_hooks_json`), so the exec bit should not matter; if it does, update to a build that uses the `python3 <script>` invoker. |
 | Agent says "no conozco Gaia" or "developer agent does not exist" | `settings.local.json` missing or mis-wired (npm surface) | Re-run `gaia install`. In plugin surface, `/reload-plugins`. |
 | Same approved command emits a fresh `approval_id` on retry | Not a bug -- single-use per sub-agent invocation is intentional | Re-approve. Each blocked command produces its own approval; there is no batch grant. See `orchestrator-present-approval/SKILL.md` -> Rule 3. |
