@@ -537,6 +537,17 @@ COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES: Dict[Tuple[str, str], Optional[FrozenSet[s
     # `gaia context` read/inspect subcommands stay READ_ONLY. Scoped to the
     # subcommand set (not None) so the upgrade never widens past `prune-workspaces`.
     ("gaia", "context"): frozenset({"prune-workspaces"}),
+    # `gaia scan --workspace <name>` (write mode) UPSERTs (workspace, project)
+    # rows into gaia.db and promotes the resolved workspace -- a persistent DB
+    # mutation. Like `context`, `scan` carries no verb in MUTATIVE_VERBS, so it
+    # would fall through to Step 4 and classify READ_ONLY by elimination,
+    # leaving the write un-gated. `scan` is a flat command with no read-only
+    # subcommands (only flags: --workspace, --dry-run, positional root), so the
+    # WHOLE group is anchored MUTATIVE (None). The `--dry-run` classify-only
+    # mode is NOT re-implemented here: it is a SIMULATION_FLAG handled by Step 3
+    # above this check, which returns non-mutative before the upgrade runs, so
+    # `gaia scan --dry-run` stays READ_ONLY.
+    ("gaia", "scan"): None,
 }
 
 
