@@ -27,7 +27,8 @@ User sends prompt
         v
 Orchestrator dispatches agent (Task/Agent tool call)
         |
-[pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage, Write, Edit
+[pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage,
+        |                 and Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit
         |  Bash calls: security gate (blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard)
         |  Task/Agent calls: context injection via DB-backed contracts (project_context_contracts)
         |  Write/Edit calls: protected path validation (_is_protected())

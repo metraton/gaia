@@ -56,8 +56,9 @@ bin/
 └── cli/                       # Subcommand modules (one file per subcommand)
     ├── __init__.py            # Discovery: imports every sibling that defines register()
     ├── _install_helpers.py    # Shared helpers for install/update (private, leading _)
+    ├── _converge.py           # Shared drift-free convergence primitives for dev/release (private, no register())
     ├── ac.py                  # gaia ac         — acceptance criteria for briefs (DB-canonical)
-    ├── approvals.py           # gaia approvals  — list/show/reject/clean/stats T3 grants
+    ├── approvals.py           # gaia approvals  — list/pending/show/approve/revoke/reject/reject-all/history/replay/clean/stats T3 grants
     ├── brief.py               # gaia brief      — feature briefs / specs lifecycle
     ├── cleanup.py             # gaia cleanup    — preuninstall: caches, logs, __pycache__
     ├── context.py             # gaia context    — show / scan / get / query / wipe / prune-workspaces project context from gaia.db
@@ -71,6 +72,7 @@ bin/
     ├── memory_story.py        # backs `gaia memory story` (lineage narration); imported by memory.py, no register() of its own
     ├── metrics.py             # gaia metrics    — usage analytics (DB-canonical episodes/anomalies + audit-log tier/commands)
     ├── milestone.py           # gaia milestone  — milestone management for briefs (DB-canonical)
+    ├── notifications.py       # gaia notifications — headless scheduled-task inbox (add/list/show/ack)
     ├── _pack_helpers.py       # shared `npm pack` primitive for dev/release (private, no register())
     ├── paths.py               # Shared path resolution helpers
     ├── plan.py                # gaia plan       — manage plans (one per brief, DB-canonical)
@@ -79,6 +81,7 @@ bin/
     ├── task.py                # gaia task       — manage tasks within plans (DB-canonical)
     ├── workspace.py           # gaia workspace  — workspace identity / consolidate operations
     ├── scan.py                # gaia scan       — project scanner; writes scan results to gaia.db (DB-canonical)
+    ├── schedule.py            # gaia schedule   — desired-state registry for recurring tasks (register/list/show/status/remove/sync)
     ├── status.py              # gaia status     — quick installation snapshot
     ├── uninstall.py           # gaia uninstall  — full or preuninstall removal
     └── update.py              # gaia update     — re-sync after npm install bumped the version

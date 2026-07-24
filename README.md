@@ -37,7 +37,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 - **Indirect execution detection** - Catches `bash -c`, `eval`, `python -c` wrappers that bypass regex patterns
 - **Approval gates** for T3 operations via native `ask` dialog
 - **Git commit validation** with Conventional Commits
-- **32 skills** - Injected procedural knowledge modules for agents (protocol, domain, workflow)
+- **37 skills** - Injected procedural knowledge modules for agents (protocol, domain, workflow)
 - **Curated + episodic memory** - `gaia memory` CLI: FTS5 search, episode inspection, session context orientation, and curated-note curation (`append`/`add`/`edit`/`reclassify`/`delete`/`link`)
 - **Context evals** - pytest-driven agent evaluation (5 graders, 3 backends, 10 scenarios, baseline + drift detection)
 - **Plugin + npm** - Distributable as Claude Code native plugin or npm package
@@ -93,14 +93,15 @@ No `CLAUDE.md` is generated -- orchestrator identity lives in `agents/gaia-orche
 
 ### Settings Architecture
 
-Gaia separates hooks from permissions:
+How Gaia's config reaches the workspace depends on the surface:
 
 | File | Content | Strategy |
 |------|---------|----------|
-| `settings.json` | Hooks only (12 hook types) | Overwritten from template on each update |
-| `settings.local.json` | Permissions (allow + deny rules) | Union merge — never removes user config |
+| `settings.local.json` | Permissions (allow + deny), env vars, agent identity, and — on the npm surface — the 12 hook event entries | Union merge — never removes user config |
+| `settings.json` | Created if missing; Gaia does not overwrite user hooks here | Left to the user |
+| `hooks/hooks.json` | The hook registrations Claude Code loads on the **plugin** surface (generated from `build/gaia.manifest.json` at pack time) | Regenerated at pack time |
 
-This ensures your personal customizations (MCP servers, extra permissions) survive updates.
+On the **npm/pnpm** surface, `gaia install` merges the hook event entries from `hooks.json` into `settings.local.json`. On the **plugin** surface, Claude Code reads hooks directly from the package root's `hooks/hooks.json` — the `settings.local.json` merge is skipped. Either way, the union merge into `settings.local.json` ensures your personal customizations (MCP servers, extra permissions) survive updates. The permission set itself is owned by `hooks/modules/core/plugin_setup.py` (`OPS_PERMISSIONS`), not by a template.
 
 ### Manual Installation
 
@@ -155,8 +156,8 @@ Gaia enforces a 6-layer security pipeline:
 
 ```
 gaia/
-├── agents/              # Agent definitions (8 agents) — specialist identities + tool grants
-├── skills/              # Skill modules (32 skills) — injected procedural knowledge
+├── agents/              # Agent definitions (9 agents) — specialist identities + tool grants
+├── skills/              # Skill modules (37 skills) — injected procedural knowledge
 ├── hooks/               # Claude Code hooks — the event-driven pipeline
 ├── config/              # Configuration — routing, contracts, rules, git standards
 ├── build/               # Plugin manifests — hook + agent registration for Claude Code
@@ -198,8 +199,8 @@ See [CHANGELOG.md](./CHANGELOG.md) for version history.
 ## Requirements
 
 - **Node.js:** >=18.0.0
-- **Python:** >=3.9
-- **Claude Code:** Latest version
+- **Python:** >=3.11
+- **Claude Code:** >=2.1.0
 - **Git:** >=2.30
 
 ## Project Context Management
@@ -214,7 +215,7 @@ gaia context show
 
 - **Issues:** [GitHub Issues](https://github.com/metraton/gaia/issues)
 - **Repository:** [github.com/metraton/gaia](https://github.com/metraton/gaia)
-- **Author:** Jorge Aguilar <jorge.aguilar88@gmail.com>
+- **Author:** Jorge Aguilar <jorge.aguilar87@gmail.com>
 
 ## License
 

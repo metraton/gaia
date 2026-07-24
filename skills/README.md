@@ -82,11 +82,9 @@ skills/
 │   └── examples.md
 ├── memory/                # Read, search, write, and curate Gaia memory (atoms/decisions/negative + legacy)
 │   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
-├── orchestrator-approval/ # DEPRECATED — see orchestrator-present-approval
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
 ├── readme-writing/        # How to write READMEs for Gaia component folders
-├── request-approval/      # DEPRECATED — see subagent-request-approval
 ├── subagent-request-approval/ # T3 approval-request workflow (attempt first, emit APPROVAL_REQUEST)
 │   ├── reference.md
 │   └── examples.md

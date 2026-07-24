@@ -43,25 +43,33 @@ Pre-release pipeline additionally runs Layer 3 against published artifact
 tests/
 ├── conftest.py                      # Shared fixtures and markers
 ├── promptfoo.yaml                   # Promptfoo evaluation config (Layer 2)
-├── test_cross_layer_consistency.py  # Cross-layer consistency validation
-├── test_smoke_hook_pipeline.py      # Smoke check for hook pipeline
+├── test_*.py                        # Top-level cross-cutting suites (cross-layer consistency,
+│                                    #   smoke hook pipeline, state-machine permissions,
+│                                    #   verifier registry/e2e, store writer invariants, …)
 ├── hooks/                           # Layer 1: hook and security module tests
 │   └── modules/
 │       ├── security/                # mutative_verbs, blocked_commands, tiers
 │       ├── tools/                   # bash_validator, shell_parser, task_validator
 │       ├── core/                    # paths, state
 │       └── context/                 # context_writer
-├── integration/                     # Layer 1: E2E tests for context enrichment and subagent lifecycle
+├── unit/                            # Layer 1: focused unit tests (context_provider, helpers, …)
+├── contract/                        # Layer 1: agent_contract_handoff validation + finalize/store tests
+├── integration/                     # Layer 1: context enrichment and subagent lifecycle
+├── orchestrator/                    # Layer 1: orchestrator behavior (sealed-payload relay, …)
+├── project/                         # Layer 1: project-context / workspace identity tests
+├── paths/                           # Layer 1: path resolution and layout tests
+├── snapshots/                       # Layer 1: scanner output snapshot tests
+├── skills/                          # Layer 1: skill-resolution and skill-format tests
+├── evals/                           # Layer 1: grader / trace evaluation tests
 ├── layer1_prompt_regression/        # Layer 1: prompt and skill regression tests
 ├── layer2_llm_evaluation/           # Layer 2: LLM behavior evaluation (manual, uses LLM tokens)
 ├── layer3_e2e/                      # Layer 3: end-to-end with real Claude Code session (pre-release)
+├── ci/                              # CI-only smoke (e.g. windows_smoke.py)
 ├── performance/                     # Performance benchmarks
 ├── system/                          # Layer 1: structure, permissions, agents, configuration, schema
 ├── tools/                           # Layer 1: context_provider, episodic tests
-├── cli/                             # CLI tool tests
-├── bin/                             # bin/ script tests
+├── cli/                             # CLI subcommand tests
 ├── e2e/                             # E2E installation and lifecycle tests
-├── evidence/                        # Evidence/output captures for diagnostic review
 └── fixtures/                        # JSON fixtures (project-context AWS/GCP/full)
 ```
 
