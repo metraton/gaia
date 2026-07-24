@@ -294,6 +294,20 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     turn_role = _VERIFIER_ROLE if is_verifier else None
     kind = _VERIFIER_ROLE if is_verifier else _TASK_EXECUTION_KIND
 
+    # A verifier turn is bound to the PRODUCER it verifies via parent_handoff_id,
+    # NOT to a plan_task_id of its own (see module docstring + the finalize gate
+    # in hooks/adapters/claude_code.py::_blind_verification_required). The verifier
+    # prompt still MENTIONS the task_id it is verifying, so the `task_id=` token
+    # extraction above would otherwise STAMP that plan_task_id onto the verifier's
+    # nascent row -- which the plan_task_id-keyed blind-verification gate would then
+    # read as "this turn is a plan-task-bound producer" and force its COMPLETE to
+    # NEEDS_VERIFICATION. That is a DEADLOCK: the verifier could never promote the
+    # increment because it would itself be sent back for verification forever.
+    # Drop the plan_task_id for a verifier turn so it binds by parent_handoff_id
+    # only and is treated as UNBOUND by the gate (free to self-COMPLETE / promote).
+    if is_verifier:
+        plan_task_id = None
+
     return {
         "plan_id": plan_id,
         "plan_task_id": plan_task_id,

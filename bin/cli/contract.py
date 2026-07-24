@@ -513,6 +513,52 @@ def cmd_finalize(args) -> int:
     agent_state = agent_status.get("agent_state")
     workspace = _resolve_finalize_workspace(getattr(args, "workspace", None))
 
+    # Blind-verification anti-leak at the CLI seam (plan 34 task 8). The
+    # SubagentStop gate already refuses a plan-task-bound self-COMPLETE
+    # (hooks/adapters/claude_code.py::_blind_verification_required), but that gate
+    # is a SEPARATE persistence path -- `gaia contract finalize` was role-blind
+    # AND binding-blind, so a producer could bypass the gate by finalizing a bound
+    # COMPLETE straight through the CLI (the hole that leaked the 31 COMPLETEs).
+    # Close it here with the SAME binding-keyed decision, recovered by contract_id:
+    # if this turn's dispatch binding carries a plan_task_id, it is a plan-task-
+    # bound producer turn and may NOT self-COMPLETE -- refuse and tell it to set
+    # NEEDS_VERIFICATION so an independent verifier confirms the increment. A turn
+    # with NO plan_task_id (investigation / memory / a verifier turn, which binds
+    # by parent_handoff_id) is unbound and may self-COMPLETE -- unchanged.
+    if agent_state == "COMPLETE":
+        try:
+            from gaia.store.writer import (
+                dispatched_binding_plan_task_id_by_contract,
+            )
+
+            bound_plan_task_id = dispatched_binding_plan_task_id_by_contract(
+                draft_id
+            )
+        except Exception:
+            # Binding unresolvable (no born-at-dispatch row / DB read error) ->
+            # treat as UNBOUND, exactly like the live gate's best-effort resolver.
+            bound_plan_task_id = None
+        if bound_plan_task_id is not None:
+            msg = (
+                f"agent_status.agent_state is COMPLETE, but this turn is bound to "
+                f"plan_task_id={bound_plan_task_id}: a plan-task-bound producer "
+                f"turn may not self-COMPLETE via 'gaia contract finalize'. Set "
+                f"agent_state to NEEDS_VERIFICATION and propose "
+                f"evidence_report.verification.result for an independent verifier "
+                f"to confirm, or stay IN_PROGRESS. (A turn with no plan_task_id -- "
+                f"investigation / memory / a verifier turn -- may self-COMPLETE.)"
+            )
+            if as_json:
+                print(json.dumps({
+                    "status": "rejected",
+                    "reason": "blind_verification_required",
+                    "plan_task_id": bound_plan_task_id,
+                    "error": msg,
+                }))
+            else:
+                print(f"Rejected: {msg}", file=sys.stderr)
+            return 1
+
     from gaia.store.writer import finalize_agent_contract_handoff
 
     try:

@@ -6746,6 +6746,51 @@ def dispatched_binding_plan_task_id(
         con.close()
 
 
+def dispatched_binding_plan_task_id_by_contract(
+    contract_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "int | None":
+    """Return the ``plan_task_id`` bound to the row for ``contract_id``, or None.
+
+    The CONTRACT-KEYED sibling of :func:`dispatched_binding_plan_task_id` (which
+    keys by the (session, agent) coordinate pair the live SubagentStop gate has).
+    The ``gaia contract finalize`` CLI, by contrast, holds the draft's
+    ``contract_id`` (== ``draft_id``) and NOT the harness session id, so it needs
+    to recover the binding by that key instead.
+
+    This is what lets the CLI finalize path (plan 34 task 8) close the
+    role-blind self-COMPLETE leak: a turn born at dispatch stamps its
+    ``plan_task_id`` onto the row (task 6), so before the CLI converges a draft to
+    a terminal COMPLETE it can ask "is this turn bound to a plan task?" and refuse
+    the self-COMPLETE when the answer is yes -- the SAME binding-keyed decision the
+    SubagentStop gate already enforces, now applied at the CLI seam too so neither
+    persistence path is a bypass.
+
+    Unlike the session/agent reader, this does NOT restrict to the 'DISPATCHED'
+    ROW state: the binding columns are preserved verbatim when finalize converges
+    the nascent row (the DO UPDATE never touches plan_task_id), so the binding is
+    readable both before convergence (the normal CLI-finalize case) and after (an
+    idempotent re-finalize). Returns None when no row exists for ``contract_id``
+    or its ``plan_task_id`` is NULL (an unbound turn -- investigation / memory / a
+    free-standing verifier turn, all free to self-COMPLETE).
+    """
+    if not contract_id:
+        return None
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT plan_task_id FROM agent_contract_handoffs "
+            "WHERE contract_id = ? LIMIT 1",
+            (contract_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return row["plan_task_id"]
+    finally:
+        con.close()
+
+
 def insert_handoff_approval(
     handoff_id: int,
     approval_id: str,
