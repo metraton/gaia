@@ -56,6 +56,33 @@ After wiring a workspace, these checks catch what `gaia doctor` cannot reach whe
 5. `cat ~/.gaia/last-install-error.json` -- file does **not** exist. `gaia install` writes this marker on any bootstrap or wire-up failure; treat its presence as a hard failure regardless of what `gaia doctor` reports.
 6. `cd <workspace> && gaia doctor` -- `Status: HEALTHY`, checks pass, 0 errors.
 
+## Drift-free surfaces (what doctor validates == what dev/release reconcile)
+
+An install is drift-free when **5 surfaces** agree on one build, plus the DB
+**schema direction** is not reversed. `gaia doctor` REPORTS this skew (it never
+fixes -- the reconcile lives in the install actors); the checklist above and the
+per-surface report `gaia dev` prints after wiring both mirror it. The surfaces
+(inspected read-only by `bin/cli/_converge.py`, classified aligned / stale /
+absent):
+
+1. **PATH `gaia`** -- a bare `gaia` resolves to the expected build (`gaia doctor`
+   check 58, `Global CLI alignment`). A stale `npm install -g` copy earlier on
+   PATH shadowing the workspace shim is the classic drift.
+2. **hooks in `.claude/settings.local.json`** (checklist 3 / doctor `Settings`).
+3. **workspace `node_modules/@jaguilar87/gaia`** (doctor `Install provenance`).
+4. **global npm** (`~/.npm-global`) -- reconciled to the origin by `gaia dev`
+   via `npm link` (`install.reconcile_global_via_npm_link`); doctor warns on a
+   PATH-shadowing global (POSIX + Windows).
+5. **DB schema** (`~/.gaia/gaia.db`) -- `gaia doctor` check `Schema version`
+   reports BOTH directions: code AHEAD of DB (forward migration pending -> run
+   `gaia dev`/`install`/`release`) and code BEHIND DB (the reverse,
+   finalize-breaking drift the bootstrap direction guard REFUSES -- install
+   newer code, never downgrade the DB).
+
+The reconcile is idempotent in all 3 cases (not installed / stale / aligned):
+`gaia dev` (origin = local source) and `gaia release` (origin = artifact) share
+this convergence; there is no `--from` flag -- the command IS the origin.
+
 ## All modes: reporting
 
 Every mode ends with a structured result:
