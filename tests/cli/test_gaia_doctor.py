@@ -783,8 +783,9 @@ class TestCheckSchemaVersion:
         assert f"v{doctor_mod.EXPECTED_SCHEMA_VERSION}" in r["detail"]
 
     def test_db_lower_than_expected_warns(self, monkeypatch, tmp_path):
-        """If the DB schema is older than the CLI expects, warn and tell
-        the user to run `gaia install` to apply migrations."""
+        """Code AHEAD of the DB (forward direction): warn, report-only, and
+        point at the install actors (dev/install/release) -- not at doctor
+        itself, which never fixes."""
         db = tmp_path / "gaia.db"
         # Empty schema_version table -> MAX(version) = NULL -> treated as 0
         self._make_db(db, schema_version_rows=[])
@@ -794,11 +795,14 @@ class TestCheckSchemaVersion:
         assert r["severity"] == "warning"
         assert "schema_version=0" in r["detail"]
         assert "expects 5" in r["detail"]
-        assert "gaia install" in r["fix"]
+        # Points at the install actors, not `gaia install` alone.
+        assert "gaia dev" in r["fix"]
+        assert "gaia release" in r["fix"]
 
     def test_db_higher_than_expected_warns(self, monkeypatch, tmp_path):
-        """If the DB schema is newer than the CLI expects, warn and tell
-        the user to upgrade Gaia (different remedy than the lower case)."""
+        """Code BEHIND the DB (reverse direction -- the finalize-breaking drift):
+        warn, name the direction, and tell the user to install NEWER code, never
+        to downgrade the DB. Mirrors the bootstrap direction guard."""
         db = tmp_path / "gaia.db"
         self._make_db(db, schema_version_rows=[
             (99, "2026-05-20T00:00:00Z", "future"),
@@ -807,7 +811,10 @@ class TestCheckSchemaVersion:
         r = doctor_mod.check_schema_version()
         assert r["severity"] == "warning"
         assert "99" in r["detail"]
-        assert "npm install @jaguilar87/gaia@latest" in r["fix"]
+        assert "BEHIND DB" in r["detail"]
+        # Remedy is newer code via the install actors; never a DB downgrade.
+        assert "gaia dev" in r["fix"]
+        assert "Do NOT downgrade the DB" in r["fix"]
 
     def test_legacy_db_without_table_warns(self, monkeypatch, tmp_path):
         """A DB that predates the schema_version table -> warn, suggest
