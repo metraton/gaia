@@ -17,7 +17,21 @@
 //   validate only validates). This keeps `validate` PURE-READ (no file writes to
 //   the project, no child build process) — a genuinely read-only guardrail.
 //
+// NO FALSE GREEN. Three structural rules make a green verdict mean something:
+//   • A run that measured NOTHING is RED, never green. An undeclared page `form`
+//     used to match no invariant row at all, so the page reported `ALL PASS —
+//     0 checks` with exit 0 (invariant A + the total===0 gate in reportVerdict).
+//   • A page is joined to its manifest entry BY ID (`data-page-id`), never by
+//     index. Position is not identity: a positional join reports a page under a
+//     neighbour's name AND form, and silently empties the authored-span lookup.
+//   • AUTHORED == RENDERED is itself asserted (invariant Z + the STATIC census
+//     pre-flight). Geometry checks cannot see content that is MISSING, and a
+//     `validate` decoupled from `build` cannot see that it is reading stale data.
+//
 // WHAT IT DOES
+//   0. PRE-FLIGHT, before any browser: re-parses data/*.yaml with js-yaml and
+//      censuses it against data/data.generated.js. A mismatch means the generated
+//      data is STALE — it says "run build" and exits 1 (see staticCensus).
 //   1. Reads the EXISTING data/data.generated.js (built by the prior `npm run
 //      build` step) — validate does not regenerate it, so run build first.
 //   2. Launches headless Chromium and renders EVERY page at FIVE viewport
@@ -31,6 +45,22 @@
 //   6. Prints a per-(page,width) PASS/FAIL table and exits non-zero on any fail.
 //
 // INVARIANTS ASSERTED (each measured from the live render):
+//   A  form is declared     — the page's `form` is one of FORMS. Synthetic and
+//                            fail-closed: an undeclared form matches NO row in the
+//                            form-scoped table, so the render measured NOTHING and
+//                            printed `ALL PASS — 0 checks`, exit 0. A is returned
+//                            INSTEAD of that empty set (see runInvariants); the
+//                            `total === 0` gate in reportVerdict is the second,
+//                            independent layer of the same defence.
+//   Z  CENSUS (authored ==  — the deck RENDERED everything the data AUTHORS:
+//      rendered)             `.act` count vs `__DOC__.pages.length`, and per page
+//                            sections / boxes / separators / rails / half-slots /
+//                            leaf-grids vs the authored walk (which mirrors
+//                            engine.js buildGrid). Every other invariant measures
+//                            geometry that IS on screen, so none of them can see
+//                            content that is MISSING — drop a page or a section and
+//                            the remaining geometry is still perfectly valid. Sound
+//                            only because the page join is by id, not by index.
 //   D  DETERMINISM         — N reloads produce byte-identical geometry (cell
 //                            sizes, per-grid column counts, section widths, wrap
 //                            structure). Catches an F5 column/wrap flip.
@@ -41,10 +71,15 @@
 //                            longer scrolls internally, so the -full.png shows
 //                            the WHOLE deck (guards the evidence on tall pages).
 //   U  cells fill (equal)   — within each leaf grid the single-cell .box cells
-//                            are of EQUAL width (equal fr tracks) and every .box
-//                            is EXACTLY --cell-h tall (uniform height). The old
-//                            fixed-232 width rule is gone: cells now STRETCH to
-//                            fill, so width varies by section but is equal within
+//                            are of EQUAL width (equal fr tracks), and every SLOT
+//                            is EXACTLY --cell-h tall. SLOT, not component: the two
+//                            height treatments legitimately differ from it in
+//                            opposite directions — `rowspan` is a MULTIPLE of the
+//                            slot, `half` a FRACTION (two components share one) — so
+//                            both are excluded from the component-height set and the
+//                            `.half-slot` wrapper is asserted at --cell-h directly.
+//                            The old fixed-232 width rule is gone: cells now STRETCH
+//                            to fill, so width varies by section but is equal within
 //                            a grid.
 //   L  cells fill width      — at width ≥ 1200 every leaf-grid row spans the grid
 //                            edge-to-edge: no gap on the right (no hueco a la
@@ -120,7 +155,15 @@
 //                            (the S4 "Orquestac/ión" defect). Independent of M:
 //                            a 136px cell clears M's 120px floor yet is narrower
 //                            than a 12-char monospace title, so N catches what M
-//                            misses. All tiers.
+//                            misses. All tiers. A `vertical`-treatment title is
+//                            EXEMPT (its title runs down the block axis, so
+//                            horizontal token width is not the fit constraint).
+//   K  filter integrity     — the chip/component join CLOSES in both directions:
+//                            every declared chip has >=1 component referencing it,
+//                            and every key a component references is declared by a
+//                            chip. A typo used to be silent both ways (an orphan
+//                            chip dimmed the whole canvas; a dangling reference
+//                            never lit). The reset key 'all' is exempt.
 // ─────────────────────────────────────────────────────────────────────────
 const { chromium } = require('playwright');
 const path = require('path');
@@ -280,9 +323,26 @@ const INVARIANTS = [
     check: (m) => { const bad = m.leafGrids.filter(g => g.cellWSpread > CELLW_TOL);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:cells-differ(spread ${g.cellWSpread}px)`).join(', ')
         : `every leaf grid's cells are equal width (${m.leafGrids.length} grids)` }; } },
-  { id: 'U', name: 'uniform cell height', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+  // U (height) — asserts the SLOT height, not the component's.
+  // A cell is a SLOT of CELL_H. Two treatments legitimately make a COMPONENT's own
+  // height differ from it, in opposite directions: `rowspan` makes it a MULTIPLE of
+  // the slot, `half` makes it a FRACTION (two components share one slot). Neither is
+  // a defect, so both are excluded from the component-height set in measure() — and
+  // in exchange the SLOT is asserted directly: every `.half-slot` (the wrapper that
+  // actually occupies the grid cell) must be exactly CELL_H. That is what proves
+  // `half` DIVIDED a slot instead of shrinking one and leaving a hole.
+  // APPLICABILITY: none — this holds for every form. Only the measured subject moved.
+  { id: 'U', name: 'uniform slot height', cls: 'design', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: null,
-    check: (m) => ({ ok: eq(m.heights, [CELL_H]), detail: `heights=${JSON.stringify(m.heights)} expect [${CELL_H}]` }) },
+    check: (m) => {
+      const slots = m.halfSlots || [];
+      const badSlots = slots.filter(s => Math.abs(s.h - CELL_H) !== 0 || s.n !== 2);
+      const cellsOk = eq(m.heights, [CELL_H]);
+      const ok = cellsOk && badSlots.length === 0;
+      const parts = [`cell heights=${JSON.stringify(m.heights)} expect [${CELL_H}]`];
+      if (slots.length) parts.push(`${slots.length} half-slot(s) @ ${[...new Set(slots.map(s => s.h))].join('/')}px expect ${CELL_H}`);
+      if (badSlots.length) parts.push(`BAD: ${badSlots.map(s => `${s.zone}:h=${s.h}(expect ${CELL_H}),occupants=${s.n}(expect 2)`).join(', ')}`);
+      return { ok, detail: parts.join(' · ') }; } },
   { id: 'L', name: 'cells fill width (no right gap)', cls: 'design', sev: 'dura', forms: GRIDDED,
     when: (c) => c.w >= 1200, superseded: null,
     check: (m) => { const bad = m.leafGrids.filter(g => g.rowRightGapMax > FILL_TOL || g.leftGapMax > FILL_TOL);
@@ -314,12 +374,67 @@ const INVARIANTS = [
   // M's 120px floor yet is narrower than a 12-char monospace title ("Orquestación"
   // ~137px), so N fails exactly where M passes (the S4 defect). Scoped to WORDFIT
   // (flow + dashboard) — the forms whose cells carry human-language titles.
+  // APPLICABILITY CLAUSE (added with the `treatment` axis): a `vertical` leaf is
+  // EXEMPT. N's premise is that a title flows along the INLINE (horizontal) axis, so
+  // a token wider than the cell wraps mid-word. `treatment: [vertical]` rotates the
+  // title onto the BLOCK axis (writing-mode:vertical-rl), where the fit constraint is
+  // the cell's HEIGHT, not its width — the measured horizontal width of a rotated
+  // title is meaningless and would fail every vertical label. The other new
+  // treatments need no clause: `half` keeps the cell's FULL width (only the height is
+  // divided), so N applies to it unchanged and still catches a fractured title;
+  // `centered` only moves the text within the same width; `plain`/`envelope` are
+  // section-level and carry no title token; `ext` only changes border style.
   { id: 'N', name: 'word-fit (title token fits its cell)', cls: 'design', sev: 'dura', forms: WORDFIT,
     when: () => true, superseded: null,
-    check: (m) => { const bad = (m.wordFit || []).filter(b => b.wordW > b.availW + WORDFIT_TOL);
+    check: (m) => { const applicable = (m.wordFit || []).filter(b => !b.vertical);
+      const exempt = (m.wordFit || []).length - applicable.length;
+      const bad = applicable.filter(b => b.wordW > b.availW + WORDFIT_TOL);
       return { ok: bad.length === 0, detail: bad.length
         ? bad.map(b => `${b.zone}>${b.k}:"${b.word}" needs ${b.wordW}px > cell ${b.availW}px (title wraps mid-word; below the longest token — M's ${MIN_LEGIBLE}px floor can pass here)`).join(', ')
-        : `all ${(m.wordFit || []).length} leaf titles fit their cell (longest token <= cell width)` }; } },
+        : `all ${applicable.length} leaf titles fit their cell (longest token <= cell width)${exempt ? `; ${exempt} vertical-treatment title(s) exempt (rotated onto the block axis)` : ''}` }; } },
+  // K — FILTER REFERENTIAL INTEGRITY (the chip/component join).
+  // A chip and the components that claim it live in TWO separate places in the YAML,
+  // joined only by a string key, and nothing checked that the join closed. A typo in
+  // a key was therefore SILENT in both directions: an orphan chip rendered and dimmed
+  // the entire canvas because nothing matched it, and a dangling reference on a
+  // component simply never lit. The strict schema (build-data.mjs) now guarantees a
+  // chip's SHAPE; this asserts the RELATION, on the real render, from both sides.
+  // The reset key 'all' is exempt — it is the engine's reserved "show everything"
+  // chip and legitimately has no members.
+  // APPLICABILITY: every form. A relation is data, not geometry: a chip that traces
+  // nothing is equally broken in a timeline and in a dashboard.
+  { id: 'K', name: 'filter referential integrity', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+    when: () => true, superseded: null,
+    check: (m) => { const f = m.filterRefs || { declared: [], referenced: [], orphanChips: [], danglingRefs: [] };
+      const problems = [
+        ...f.orphanChips.map(k => `chip "${k}" is declared but NO component references it (it would dim the whole canvas)`),
+        ...f.danglingRefs.map(k => `component filter key "${k}" is referenced but NO chip declares it (it can never light)`)];
+      return { ok: problems.length === 0, detail: problems.length ? problems.join(', ')
+        : `${f.declared.length} chip(s) and ${f.referenced.length} referenced key(s) match exactly${f.declared.length ? ` (${f.declared.join(', ')})` : ''}` }; } },
+  // Z — CENSUS: AUTHORED == RENDERED.
+  // Every other invariant asserts something about geometry that IS on screen, so
+  // none of them can see content that is MISSING: drop a page, a section or a
+  // component at render time and what remains is still perfectly valid geometry —
+  // the table stays green while the deck silently lost content. Z closes that by
+  // counting both sides and comparing: pages (`.act` vs `__DOC__.pages`), and per
+  // page the sections, boxes, separators, rails, half-slots and leaf grids the data
+  // authors against the ones the render produced (the authored walk lives in
+  // measure() and mirrors engine.js's buildGrid).
+  // APPLICABILITY: every form, `dura`. A census is arithmetic on the data, not a
+  // judgement about shape — a page that lost a section is equally broken as a
+  // timeline and as a dashboard.
+  // NOTE ON ORDERING: this invariant is only sound BECAUSE the act/page join is by
+  // `data-page-id` and not by index. Under the old positional join a shifted page
+  // was censused against ANOTHER page's authored tree, which would report
+  // mismatches on the wrong page (or, worse, a coincidental match).
+  { id: 'Z', name: 'census (authored == rendered)', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
+    when: () => true, superseded: null,
+    check: (m) => { const c = m.census || { diffs: ['census not measured'], authored: {}, rendered: {} };
+      return { ok: c.diffs.length === 0, detail: c.diffs.length
+        ? `AUTHORED CONTENT IS MISSING FROM THE RENDER — ${c.diffs.join('; ')} ` +
+          `(run \`npm run build\` if data/data.generated.js is stale; otherwise the engine dropped authored content)`
+        : `pages ${c.nActs}/${c.nAuthoredPages}; page "${c.pageId}" sections=${c.rendered.zones} boxes=${c.rendered.boxes} ` +
+          `seps=${c.rendered.seps} rails=${c.rendered.rails} half-slots=${c.rendered.halfSlots} leaf-grids=${c.rendered.leafGrids} — all match the authored census` }; } },
   { id: 'Y', name: 'band content fills band (no dead margin)', cls: 'design', sev: 'dura', forms: ALL_FORMS,
     when: (c) => c.w >= 1200, superseded: null,
     check: (m) => { const FILL_MARGIN_TOL = 48, SYM_TOL = 16; const bands = m.topZones.filter(z => z.band);
@@ -355,7 +470,26 @@ const INVARIANTS = [
 // Evaluate the invariant table for one (form, tier) render. Returns the ordered
 // list of {id, name, cls, sev, ok, detail} for the checks that APPLY — filtered
 // by form membership, tier `when`, and not-retired. A flat filter+map, no tree.
+//
+// FAIL-CLOSED ON AN UNDECLARED FORM (invariant A — layer 1 of 2).
+// The filter is a form-MEMBERSHIP match, so a `form` that is not in ALL_FORMS
+// matches NOTHING — not even the `forms: ALL_FORMS` rows, since ALL_FORMS holds
+// the six declared names and an invalid value is in none of them. That produced
+// the worst possible outcome: `checks` came back EMPTY, `failed` stayed 0, and the
+// report printed `ALL PASS — 0 checks` with exit 0. A single typo in `form:`
+// therefore bought a GREEN VERDICT having measured nothing at all.
+// So an undeclared form is now a SYNTHETIC HARD FAILURE that names the offending
+// value and the valid set. It is returned INSTEAD of the (empty) table result, so
+// the render reports exactly one check and that check is red.
+// Layer 2 is the `total === 0` gate in the report below: two independent
+// defences, because this one only covers the form axis while that one covers ANY
+// path that ends with nothing measured.
 function runInvariants(m, ctx) {
+  if (!ALL_FORMS.has(ctx.form)) {
+    return [{ id: 'A', name: 'page declares a valid form', cls: 'integrity', sev: 'dura', ok: false,
+      detail: `undeclared page form "${ctx.form}" — NO invariant in the table applies to it, so this render measured NOTHING ` +
+        `(this used to report "ALL PASS — 0 checks" with exit 0). valid forms: ${FORMS.join(', ')}` }];
+  }
   return INVARIANTS
     .filter(inv => !inv.superseded && inv.forms.has(ctx.form) && inv.when(ctx))
     .map(inv => { const { ok, detail } = inv.check(m, ctx);
@@ -400,6 +534,124 @@ async function launch() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// STATIC CENSUS (pre-flight): data/*.yaml  vs  data/data.generated.js
+//
+// `validate` is DECOUPLED from `build` ON PURPOSE (it is pure-read), which has one
+// sharp edge: it asserts the LAST BUILT data, and nothing ever told you the build
+// was stale. Edit a YAML, forget `npm run build`, run `npm run validate` — it goes
+// green on the OLD deck and you read that as a verdict on the change you just
+// made. That is a false green with no defect anywhere in the geometry.
+//
+// So before the browser is even launched, re-parse the YAML with the same js-yaml
+// the build uses and compare a CENSUS of it against the generated file (which is
+// JSON literal behind `window.__DOC__ = `). A mismatch does not try to guess which
+// side is right — it says RUN BUILD, and exits non-zero.
+//
+// This stays a CENSUS, not a re-implementation of the build: page identity/order,
+// palette, per-page form/layout/columns, filter keys, and the node counts. It is an
+// INDEPENDENT recount, which is exactly why it catches drift.
+// Runs BEFORE Chromium, so a stale-data run fails fast and needs no browser at all.
+// ─────────────────────────────────────────────────────────────────────────
+function nodeCensus(sections) {
+  const out = { sections: 0, boxes: 0, seps: 0, rails: 0, halves: 0, ids: [] };
+  const isSectionNode = n => !!(n && Array.isArray(n.children));
+  (function walk(list) {
+    for (const n of list || []) {
+      if (n && n.id != null) out.ids.push(String(n.id));
+      if (isSectionNode(n)) { out.sections++; walk(n.children); continue; }
+      if (n && Array.isArray(n.treatment) && n.treatment.includes('half')) out.halves++;
+      if (n && n.type === 'separator') out.seps++;
+      else if (n && n.type === 'rail') out.rails++;
+      else out.boxes++;
+    }
+  })(sections);
+  out.ids.sort();
+  return out;
+}
+
+function pageCensus(p) {
+  const n = nodeCensus(p.sections);
+  return { id: String(p.id), form: p.form ?? null, layout: p.layout ?? null,
+    columns: p.columns ?? null,
+    filters: (p.filters || []).map(f => f && f.key).filter(Boolean).sort(),
+    ...n };
+}
+
+function staticCensus() {
+  const dataDir = path.join(ROOT, 'data');
+  const genPath = path.join(dataDir, 'data.generated.js');
+  const problems = [];
+
+  let yaml;
+  try { yaml = require('js-yaml'); }
+  catch (e) {
+    // Fail CLOSED. A census that cannot run is a hole, not a pass: skipping it
+    // silently would restore the exact stale-data false green it exists to close.
+    return { ok: false, problems: [
+      'js-yaml is not resolvable, so the YAML->generated census could not run. ' +
+      'A guardrail cannot certify data it did not read: install the deck dependencies (`npm install`).'] };
+  }
+  if (!fs.existsSync(genPath))
+    return { ok: false, problems: [`data/data.generated.js does not exist — run \`npm run build\` first (validate never generates it).`] };
+
+  // `data.generated.js` is a JS file whose payload is a JSON literal:
+  //   window.__DOC__ = { ... };
+  // Slice the literal out and JSON.parse it — no eval, no module load.
+  const src = fs.readFileSync(genPath, 'utf8');
+  const MARK = 'window.__DOC__ = ';
+  const at = src.indexOf(MARK);
+  if (at < 0) return { ok: false, problems: [`data/data.generated.js has no \`${MARK}\` assignment — it is not a generated deck file. Run \`npm run build\`.`] };
+  const body = src.slice(at + MARK.length);
+  const end = body.indexOf('\n};');
+  let gen;
+  try { gen = JSON.parse(end >= 0 ? body.slice(0, end + 2) : body.replace(/;\s*$/, '')); }
+  catch (e) { return { ok: false, problems: [`data/data.generated.js payload is not parseable JSON (${e.message}). Run \`npm run build\`.`] }; }
+
+  const manifest = yaml.load(fs.readFileSync(path.join(dataDir, 'document.yaml'), 'utf8'));
+  if (!manifest || !Array.isArray(manifest.pages))
+    return { ok: false, problems: ['data/document.yaml has no top-level `pages` list.'] };
+
+  // Mirror the build's own visible/order resolution so the two page LISTS are
+  // comparable (build-data.mjs: filter visible!==false, sort by order).
+  const wantEntries = manifest.pages.filter(p => p.visible !== false)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+
+  if ((manifest.palette ?? 'neutral') !== (gen.palette ?? 'neutral'))
+    problems.push(`palette: document.yaml "${manifest.palette ?? 'neutral'}" != generated "${gen.palette ?? 'neutral'}"`);
+  if ((manifest.title ?? null) !== (gen.title ?? null))
+    problems.push(`title: document.yaml "${manifest.title}" != generated "${gen.title}"`);
+
+  const genPages = Array.isArray(gen.pages) ? gen.pages : [];
+  const wantIds = wantEntries.map(e => String(e.id));
+  const gotIds = genPages.map(p => String(p && p.id));
+  if (wantIds.join('|') !== gotIds.join('|'))
+    problems.push(`page list: document.yaml [${wantIds.join(', ')}] != generated [${gotIds.join(', ')}]`);
+
+  for (const entry of wantEntries) {
+    const file = path.join(dataDir, entry.file || '');
+    if (!entry.file || !fs.existsSync(file)) { problems.push(`page "${entry.id}": file "${entry.file}" is missing on disk`); continue; }
+    const want = pageCensus(yaml.load(fs.readFileSync(file, 'utf8')));
+    const got = genPages.find(p => p && String(p.id) === String(entry.id));
+    if (!got) { problems.push(`page "${entry.id}" is authored but absent from data.generated.js`); continue; }
+    const gotC = pageCensus(got);
+    for (const k of ['form', 'layout', 'columns', 'sections', 'boxes', 'seps', 'rails', 'halves'])
+      if (String(want[k]) !== String(gotC[k]))
+        problems.push(`page "${entry.id}" ${k}: yaml ${JSON.stringify(want[k])} != generated ${JSON.stringify(gotC[k])}`);
+    if (want.filters.join('|') !== gotC.filters.join('|'))
+      problems.push(`page "${entry.id}" filter keys: yaml [${want.filters.join(', ')}] != generated [${gotC.filters.join(', ')}]`);
+    if (want.ids.join('|') !== gotC.ids.join('|')) {
+      const onlyYaml = want.ids.filter(i => !gotC.ids.includes(i));
+      const onlyGen = gotC.ids.filter(i => !want.ids.includes(i));
+      problems.push(`page "${entry.id}" node ids differ` +
+        (onlyYaml.length ? ` — only in yaml: [${onlyYaml.join(', ')}]` : '') +
+        (onlyGen.length ? ` — only in generated: [${onlyGen.join(', ')}]` : ''));
+    }
+  }
+  return { ok: problems.length === 0, problems,
+    summary: `${wantIds.length} page(s), palette "${gen.palette ?? 'neutral'}"` };
+}
+
 function startServer() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
@@ -430,16 +682,57 @@ function measure() {
       band: b.classList.contains('msp'),      // full-width band (span == columns)
       hspan: b.classList.contains('mspan'),   // partial horizontal merge
       rowspan: b.classList.contains('mrsp'),  // vertical merge (a taller cell)
+      half: b.classList.contains('half'),     // half-height: shares a slot
       clipped: b.scrollHeight > b.clientHeight + 1 };
   });
   // single-COLUMN cells: neither a band nor a partial horizontal span. A row-span
   // cell is still one column wide, so it belongs to this equal-width set.
   const single = boxes.filter(b => !b.band && !b.hspan);
   const singleWidths = [...new Set(single.map(b => b.w))].sort((a,b)=>a-b);
-  // HEIGHT set EXCLUDES row-span (.mrsp) cells: a vertical merge legitimately has
-  // a MULTIPLE height, so it must not break the uniform-cell-height (U) invariant.
-  const heights = [...new Set(boxes.filter(b => !b.rowspan).map(b => b.h))].sort((a,b)=>a-b);
+  // HEIGHT set EXCLUDES row-span (.mrsp) AND half (.half) cells — the two merge
+  // axes of the height dimension, in opposite directions:
+  //   • a row-span cell is legitimately a MULTIPLE of the slot height;
+  //   • a half cell is legitimately a FRACTION of it (two share one slot).
+  // In both cases the component's own height is not the invariant; the SLOT's is.
+  // So U asserts CELL_H over this set AND, separately, over every `.half-slot`
+  // (collected below) — which is the wrapper that actually occupies the grid cell.
+  const heights = [...new Set(boxes.filter(b => !b.rowspan && !b.half).map(b => b.h))].sort((a,b)=>a-b);
   const clipped = boxes.filter(b => b.clipped).length;
+
+  // HALF SLOTS — the wrapper a `half` PAIR renders into. It is the real grid cell,
+  // so it must be exactly one CELL_H tall: that is what proves `half` DIVIDED a
+  // slot rather than shrinking one (which would leave a hole and break the filled
+  // rectangle). Also records how many components share it, so a slot that somehow
+  // ended up with one occupant is visible in the report.
+  const halfSlots = [...act.querySelectorAll('.half-slot')].map(s => {
+    const r = s.getBoundingClientRect();
+    const zoneEl = s.closest('.zone[data-zone]');
+    return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)',
+      h: Math.round(r.height), n: s.querySelectorAll(':scope > .box').length };
+  });
+
+  // FILTER REFERENTIAL INTEGRITY (invariant K). The chips and the components that
+  // claim them are TWO separate places in the YAML, joined only by a string key —
+  // so a typo used to be invisible: the chip rendered, matched nothing, and
+  // dimmed the whole canvas with no error. Read both sides off the real render:
+  // the declared keys from the chip bar, the referenced keys from every
+  // component's data-filters. The reset chip 'all' is EXEMPT — it is the engine's
+  // reserved "show everything" key (synthesized when a page does not declare it),
+  // so it legitimately has no members.
+  const filterRefs = (() => {
+    const RESET_KEY = 'all';
+    const declared = [...act.querySelectorAll('.actbar .chip')]
+      .map(c => c.getAttribute('data-flow'))
+      .filter(k => k && k !== RESET_KEY);
+    const referenced = new Set();
+    act.querySelectorAll('[data-filters]').forEach(n => {
+      (n.getAttribute('data-filters') || '').split(/\s+/).filter(Boolean).forEach(k => referenced.add(k));
+    });
+    const declaredSet = new Set(declared);
+    return { declared, referenced: [...referenced],
+      orphanChips: declared.filter(k => !referenced.has(k)),
+      danglingRefs: [...referenced].filter(k => !declaredSet.has(k)) };
+  })();
 
   // WORD-FIT (invariant N): for every leaf box, measure the RENDERED width of the
   // longest indivisible token in its TITLE and the title's available content
@@ -472,6 +765,11 @@ function measure() {
       const zoneEl = b.closest('.zone[data-zone]');
       out.push({ zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)',
         k: b.getAttribute('data-k') || '?', word,
+        // A `vertical` treatment rotates the title onto the BLOCK axis, so the
+        // horizontal token width is no longer the fit constraint. Flagged here and
+        // filtered by N's applicability clause (the clause belongs in the invariant
+        // table, not hidden in this measurement).
+        vertical: b.classList.contains('vertical'),
         wordW: Math.round(wordW), availW: Math.round(availW) });
     }
     return out;
@@ -548,8 +846,13 @@ function measure() {
     const rowGap = parseFloat(getComputedStyle(g).rowGap) || 0;
     const cellH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--cell-h')) || 130;
     const rowPitch = cellH + rowGap;   // top-to-top distance between grid rows
+    // `.half-slot` counts as a grid cell here — it IS the cell a `half` pair
+    // occupies (the two boxes inside it are NOT direct children of the grid). Omit
+    // it and the slot looks like a dead track to E and a left/right gap to L, even
+    // though it visually fills its cell completely.
     const kidBoxes = [...g.children].filter(e =>
-      e.classList.contains('box') || e.classList.contains('rail') || e.classList.contains('sep'));
+      e.classList.contains('box') || e.classList.contains('rail')
+      || e.classList.contains('sep') || e.classList.contains('half-slot'));
     const rowsByTop = {};    // rounded-top -> [rects] — every cell OCCUPYING that row
     const cellRows = {};     // rounded-top -> count of non-band cells occupying it
     // Rows touched by AT LEAST ONE row-span (.mrsp) cell — whether the cell
@@ -724,8 +1027,12 @@ function measure() {
     for (const kid of g.children) {
       const grow = parseFloat(getComputedStyle(kid).flexGrow) || 0;
       const label = kid.getAttribute('data-zone') || kid.getAttribute('data-k')
-        || (kid.classList.contains('sep') ? 'sep' : kid.classList.contains('rail') ? 'rail' : kid.classList.contains('box') ? 'box' : '?');
-      const isLeaf = kid.classList.contains('box') || kid.classList.contains('sep') || kid.classList.contains('rail');
+        || (kid.classList.contains('sep') ? 'sep' : kid.classList.contains('rail') ? 'rail'
+          : kid.classList.contains('half-slot') ? 'half-slot' : kid.classList.contains('box') ? 'box' : '?');
+      // A `.half-slot` is a LEAF occupant too: it stands in for the single box it
+      // divides, so it must stay content-sized in a compound row exactly like one.
+      const isLeaf = kid.classList.contains('box') || kid.classList.contains('sep')
+        || kid.classList.contains('rail') || kid.classList.contains('half-slot');
       const isZone = kid.classList.contains('zone');
       if (!column && isLeaf) {
         if (grow > 0) balloons.push(`${gid}>${label}:flex-grow=${grow} (leaf grew to an equal slice)`);
@@ -754,8 +1061,17 @@ function measure() {
   // ROW-direction grids (side by side, not the stacked sec-c1 tier) and non-band
   // (.msp) children, on a visual row where >=2 such children sit with DIFFERING
   // authored spans (equal spans => equal widths, nothing weighted to assert).
-  const activeIdx = [...document.querySelectorAll('.act')].indexOf(act);
-  const docPage = (window.__DOC__ && window.__DOC__.pages && window.__DOC__.pages[activeIdx]) || null;
+  // RESOLVED BY ID, NOT BY POSITION. This used to be
+  // `pages[[...document.querySelectorAll('.act')].indexOf(act)]` — a positional
+  // join with the same defect as discovery's: when the rendered set differs from
+  // the authored set, `docPage` is ANOTHER page, so `authoredSpan` fills with
+  // FOREIGN ids, none of the ids in THIS page's grids match, `spanRatios` comes
+  // back empty and invariant Q passes vacuously ("no span-weighted compound rows
+  // to check") while the real ratios go unasserted. The engine stamps
+  // `data-page-id`; join on it.
+  const activePageId = act.getAttribute('data-page-id');
+  const allDocPages = (window.__DOC__ && window.__DOC__.pages) || [];
+  const docPage = allDocPages.find(p => p && String(p.id) === String(activePageId)) || null;
   const authoredSpan = {};
   (function walk(nodes) { (nodes || []).forEach(n => {
     if (n.id != null) authoredSpan[n.id] = Math.max(1, Number(n.span) || 1);
@@ -782,8 +1098,72 @@ function measure() {
     });
   });
 
+  // ── CENSUS: AUTHORED == RENDERED (invariant Z) ────────────────────────────
+  // Every other invariant measures the geometry of what IS on screen. NONE of them
+  // notices something that is NOT on screen: a page, a section, or a component that
+  // was authored and then silently vanished at render time leaves the remaining
+  // geometry perfectly valid, so the whole table stays green while the deck is
+  // missing content. (`nBoxes`, `canvasScrollHeight`, `canvasClientWidth` and
+  // `nSingleRows` were already measured here and no invariant read any of them —
+  // this is what they are for.)
+  //
+  // So COUNT BOTH SIDES and compare. The authored walk below mirrors engine.js's
+  // buildGrid EXACTLY — that mirroring is the point: any divergence between the two
+  // implementations shows up as a census mismatch rather than as silence.
+  //   • a node with a `children` array is a SECTION      -> one `.zone[data-zone]`
+  //   • a leaf's `type` dispatches: separator -> `.sep`, rail -> `.rail`,
+  //     anything else -> `.box`
+  //   • two CONSECUTIVE `half` leaves are ONE `.half-slot` holding two `.box`es
+  //   • a grid with no section child is a LEAF grid      -> one `.sec-grid:not(.sec-compound)`
+  //     (counted for the page root too — the root grid is a leaf grid when the
+  //     page's own children are all components)
+  const census = (() => {
+    const a = { zones: 0, boxes: 0, seps: 0, rails: 0, halfSlots: 0, leafGrids: 0 };
+    const isSectionNode = n => !!(n && Array.isArray(n.children));
+    const orderKids = list => [...(list || [])].map((c, i) => ({ c, i }))
+      .sort((x, y) => { const ox = x.c.order ?? (x.i + 1), oy = y.c.order ?? (y.i + 1);
+        return ox === oy ? x.i - y.i : ox - oy; }).map(x => x.c);
+    const isHalfLeaf = c => c && !isSectionNode(c) &&
+      Array.isArray(c.treatment) && c.treatment.includes('half');
+    // Walk ONE grid's children: count its own shape, then recurse into sections.
+    const walkGrid = (kids) => {
+      const list = kids || [];
+      if (!list.some(isSectionNode)) a.leafGrids++;      // engine: !isCompound
+      const ordered = orderKids(list);
+      for (let i = 0; i < ordered.length; i++) {
+        const c = ordered[i];
+        if (isHalfLeaf(c) && isHalfLeaf(ordered[i + 1])) {   // engine: adjacency pairing
+          a.halfSlots++; a.boxes += 2; i++; continue;
+        }
+        if (isSectionNode(c)) { a.zones++; walkGrid(c.children); continue; }
+        if (c && c.type === 'separator') a.seps++;
+        else if (c && c.type === 'rail') a.rails++;
+        else a.boxes++;
+      }
+    };
+    if (docPage) walkGrid(docPage.sections);
+    const r = {
+      zones: act.querySelectorAll('.zone[data-zone]').length,
+      boxes: allBoxes.length,
+      seps: act.querySelectorAll('.sep').length,
+      rails: act.querySelectorAll('.rail').length,
+      halfSlots: halfSlots.length,
+      leafGrids: leafGrids.length,
+    };
+    const diffs = [];
+    if (!docPage) diffs.push(`page "${activePageId}" resolves to NO window.__DOC__ entry (cannot census)`);
+    else for (const k of Object.keys(a)) if (a[k] !== r[k]) diffs.push(`${k}: authored ${a[k]} != rendered ${r[k]}`);
+    // DECK-LEVEL page census: an authored page that renders no `.act` is invisible
+    // to every per-page check, because a page that is not there is never visited.
+    const nActs = document.querySelectorAll('.act').length;
+    const nAuthoredPages = allDocPages.length;
+    if (nActs !== nAuthoredPages) diffs.push(`pages: authored ${nAuthoredPages} != rendered ${nActs} .act element(s)`);
+    return { authored: a, rendered: r, diffs, nActs, nAuthoredPages, pageId: activePageId };
+  })();
+
   return { singleWidths, heights, clipped, maxRowCount, overflowX,
-    leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, wordFit, nBoxes: boxes.length,
+    leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, wordFit,
+    halfSlots, filterRefs, census, nBoxes: boxes.length,
     canvasScrollHeight: canvas.scrollHeight, canvasClientWidth: cw };
 }
 
@@ -833,7 +1213,22 @@ async function settle(page, tabIndex) {
   await page.evaluate(() => new Promise(res => requestAnimationFrame(() => requestAnimationFrame(res))));
 }
 
-(async () => {
+async function main() {
+  // ── PRE-FLIGHT: the STATIC census (no browser needed). ──
+  // Runs FIRST so a run against stale generated data fails immediately, instead of
+  // spending five widths × five reloads certifying a deck that no longer matches
+  // the YAML on disk. Pure-read; writes nothing.
+  console.log('\n══════════ STATIC CENSUS (data/*.yaml vs data.generated.js) ══════════\n');
+  const sc = staticCensus();
+  if (!sc.ok) {
+    for (const p of sc.problems) console.log(`    [FAIL] ${p}`);
+    console.log('\nSTALE OR DIVERGENT DATA — `validate` asserts data/data.generated.js, which no longer');
+    console.log('matches data/*.yaml. Any verdict here would describe the OLD deck, not your edit.');
+    console.log('Run `npm run build`, then re-run `npm run validate`.\n');
+    process.exit(1);
+  }
+  console.log(`    [PASS] generated data matches the authored YAML — ${sc.summary}\n`);
+
   fs.mkdirSync(OUT, { recursive: true });
   const srv = await startServer();
   const PORT = srv.address().port;
@@ -845,6 +1240,18 @@ async function settle(page, tabIndex) {
   // rendered .pagetab buttons — the tab bar only ever shows a sliding WINDOW
   // of 3 tabs (engine.js), so past 3 pages tabs[i] for the later pages is
   // undefined and would silently fall back to a fake "pageN" label.
+  //
+  // JOINED BY ID, NEVER BY INDEX (the root cause fix behind invariant Z).
+  // This used to read `docPages[i]` for `acts[i]` — a POSITIONAL join. Position is
+  // not identity: if the rendered set ever differs from the authored set (a page
+  // dropped at render time, a page reordered), every later act is reported under
+  // ANOTHER page's name and — far worse — another page's `form`, which then scopes
+  // the WRONG invariant set. The same positional bug in measure() filled
+  // `authoredSpan` from the wrong page's sections, which silently emptied it and
+  // made invariant Q vacuous (no ids matched => no spanRatios => nothing asserted).
+  // The engine now stamps `data-page-id` on every `.act`, so the join is by
+  // identity; an act whose id resolves to NO manifest page is a hard failure
+  // rather than a silent fallback to `pageN` + the default form.
   const discovery = await (async () => {
     const ctx = await browser.newContext({ viewport: { width: 1920, height: 1000 } });
     const page = await ctx.newPage();
@@ -853,15 +1260,43 @@ async function settle(page, tabIndex) {
     const pages = await page.evaluate((defForm) => {
       const acts = [...document.querySelectorAll('.act')];
       const docPages = (window.__DOC__ && window.__DOC__.pages) || [];
-      // FORM comes from the page manifest (window.__DOC__.pages[i].form). It
-      // scopes which invariants apply (see INVARIANTS). Default: dashboard.
-      return acts.map((a, i) => ({
-        name: (docPages[i] && (docPages[i].name || docPages[i].id)) || `page${i}`,
-        form: (docPages[i] && docPages[i].form) || defForm,
-        tabIndex: i }));
+      const byId = new Map(docPages.filter(p => p && p.id != null).map(p => [String(p.id), p]));
+      // FORM comes from the page manifest entry resolved BY ID. It scopes which
+      // invariants apply (see INVARIANTS). Default: dashboard.
+      return acts.map((a, i) => {
+        const pageId = a.getAttribute('data-page-id');
+        const dp = pageId != null ? byId.get(pageId) : null;
+        return { pageId, resolved: !!dp,
+          name: (dp && (dp.name || dp.id)) || pageId || `page${i}`,
+          form: (dp && dp.form) || defForm,
+          tabIndex: i };
+      });
     }, DEFAULT_FORM);
     await ctx.close();
-    return pages.length ? pages : [{ name: 'page0', form: DEFAULT_FORM, tabIndex: 0 }];
+    // An act that cannot be joined to a manifest page means the render and the
+    // data have diverged — the exact condition the positional join used to hide.
+    // Fail loudly instead of validating a page under a foreign identity.
+    const unresolved = pages.filter(p => !p.resolved);
+    if (unresolved.length) {
+      console.error('\n══════════ IDENTITY FAILURE ══════════\n');
+      console.error(`${unresolved.length} rendered .act element(s) carry a data-page-id that matches NO ` +
+        `window.__DOC__.pages entry: ${unresolved.map(p => JSON.stringify(p.pageId)).join(', ')}.`);
+      console.error('The render and the data have diverged; validating by position would report each page ' +
+        'under a foreign name and form. Re-run `npm run build`.\n');
+      await browser.close(); srv.close();
+      process.exit(1);
+    }
+    // A deck that rendered NO page cannot be validated. The old fallback invented a
+    // synthetic `page0` here, which then crashed in measure() (no `.act.active`) or,
+    // worse, produced an empty check set read as a pass. Nothing rendered is red.
+    if (!pages.length) {
+      console.error('\n══════════ NOTHING RENDERED ══════════\n');
+      console.error('No .act element rendered: index.html produced an empty deck. There is no geometry to ' +
+        'assert, so this is a FAILURE, not a pass. Check data/data.generated.js exists and run `npm run build`.\n');
+      await browser.close(); srv.close();
+      process.exit(1);
+    }
+    return pages;
   })();
 
   const results = [];
@@ -972,10 +1407,47 @@ async function settle(page, tabIndex) {
     for (const c of r.checks) console.log(`    [${marker(c)}] ${c.id} ${c.name}: ${c.detail}`);
     console.log('');
   }
-  const total = results.reduce((n, r) => n + r.checks.length, 0);
   console.log('═══════════════════════════════════════');
   console.log(`Screenshots: ${OUT}`);
+  const v = reportVerdict(results, failed, advisories);
+  console.log(v.line + '\n');
+  process.exit(v.code);
+}
+
+// The final verdict, as a PURE function of the run's tallies, so the decision can
+// be exercised without a browser (see the harness note at the bottom of this file).
+//
+// ZERO CHECKS IS RED, NEVER GREEN (layer 2 of 2 — layer 1 is the undeclared-form
+// guard in runInvariants). `failed === 0` is a VACUOUS truth when nothing was
+// measured: no check ran, so no check could fail. The old report read that as
+// success and printed `ALL PASS — 0 checks` with exit 0 — a guardrail declaring
+// green having asserted nothing at all. The total===0 branch is evaluated BEFORE
+// the ALL PASS branch can be reached, so an empty measurement is a failure by
+// construction whatever caused it (an undeclared `form`, a deck that rendered no
+// page, a discovery that produced no act).
+function reportVerdict(results, failed, advisories) {
+  const total = results.reduce((n, r) => n + r.checks.length, 0);
   const adv = advisories ? ` (${advisories} consejo advisories — see [ADVICE] lines, non-failing)` : '';
-  if (failed === 0) { console.log(`ALL PASS — ${total} checks across ${results.length} (page,width) renders, ${PASSES} reloads each${adv}.\n`); process.exit(0); }
-  else { console.log(`FAIL — ${failed}/${total} dura checks failed. See [FAIL] lines above${adv}.\n`); process.exit(1); }
-})();
+  if (total === 0) {
+    return { code: 1, total, line:
+      `FAIL — 0 checks ran across ${results.length} (page,width) render(s). ` +
+      `A guardrail that measured NOTHING is not a pass: an empty check set means the ` +
+      `invariant table matched no row (check each page's \`form\`) or no page rendered at all.` };
+  }
+  if (failed === 0) {
+    return { code: 0, total, line:
+      `ALL PASS — ${total} checks across ${results.length} (page,width) renders, ${PASSES} reloads each${adv}.` };
+  }
+  return { code: 1, total, line: `FAIL — ${failed}/${total} dura checks failed. See [FAIL] lines above${adv}.` };
+}
+
+// ENTRY POINT / TESTABILITY.
+// The guardrail runs only when this file IS the entry point (`npm run validate` →
+// `node tools/validate-layout.cjs`), so `require()`-ing it never launches Chromium.
+// That is what lets a harness exercise the pure decision logic — the invariant
+// table, the undeclared-form guard, the verdict, the static census — in an
+// environment with no browser at all.
+module.exports = { INVARIANTS, FORMS, ALL_FORMS, DEFAULT_FORM, GRIDDED, GRID_DENSE,
+  WORDFIT, runInvariants, reportVerdict, staticCensus, nodeCensus, pageCensus };
+
+if (require.main === module) main();

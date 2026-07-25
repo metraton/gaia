@@ -26,9 +26,9 @@ before cells shrink, the collapse cascade) is told once, canonically, in
 |------|-------|---------|
 | `document` | top level | The whole deck: `title`, `subtitle`, `version`, `filters`, `pages`. |
 | `page` | `document.pages[]` | One act/slide. It IS the root section: owns `columns` (root grid width), `filters`, `sections` (the root's children), and `form` (the layout form the guardrail scopes its invariants by). `layout: grid` selects the engine. |
-| `section` | any node with `children` | A grid zone: `id`, `title`, `subtitle`, `variant`, `order`, `span`, `rowspan`, `columns`, and `children`. Its children auto-flow across `columns` and wrap down. A child may itself be a section — this is how nesting happens (a grid of grids). |
-| `component` | any leaf (no `children`) | The unit inside a grid cell. Chooses a `type`: `box` (default) · `separator` · `rail`. A `box` carries `status`/`title`/`description`/`detail`/`variant`/`filters`; `separator` and `rail` are structural. |
-| `filter` | `document`/`page` `filters[]` | A highlight chip that expresses a **RELATION**: `key`, `label`, `steps`. It **groups** every component that declares its `key` — components that share either a directional **FLOW** (the substitute for an arrow, since a grid cannot draw edges) OR a cross-cutting **CONCEPT / status / theme**. Clicking the chip spotlights that relation's membership across the whole canvas. |
+| `section` | any node with `children` | A grid zone: `id`, `title`, `subtitle`, `variant`, `treatment`, `order`, `span`, `rowspan`, `columns`, and `children`. Its children auto-flow across `columns` and wrap down. A child may itself be a section — this is how nesting happens (a grid of grids). |
+| `component` | any leaf (no `children`) | The unit inside a grid cell. Chooses a `type`: `box` (default) · `separator` · `rail`. A `box` carries `status`/`title`/`description`/`detail`/`variant`/`treatment`/`filters`; `separator` and `rail` are structural. |
+| `filter` | `document`/`page` `filters[]` | A highlight chip that expresses a **RELATION**: `key`, `label`, `steps`. It **groups** every component that declares its `key` — components that share either a directional **FLOW** (the substitute for an arrow, since a grid cannot draw edges) OR a cross-cutting **CONCEPT / status / theme**. Clicking the chip spotlights that relation's membership across the whole canvas. Filter items pass the strict schema like any other node, and invariant **K** asserts the chip↔component join closes in both directions. |
 
 **The root/canvas is itself the invisible base section.** `page.columns` is the
 root section's column count and `page.sections` are its children — the engine
@@ -40,9 +40,15 @@ frame of its own.
 
 | `type` | Renders | Props |
 |--------|---------|-------|
-| `box` (default) | The standard clickable card | `status`, `title`, `description`, `detail`, `note`, `variant`, `variant_extra`, `span`, `rowspan`, `filters`. Omit `type` and you get a box. |
-| `separator` | A thin divider LINE (not a card) | `orientation` (`horizontal` default · `vertical`), `style` (`solid` default · `dotted`), optional `text` (an inline centered label). Honors `span`/`rowspan`. Not clickable. |
-| `rail` | A title-only swimlane LABEL banner | `title`, `orientation` (`horizontal` default · `vertical`, which rotates the text). Honors `span`/`rowspan` (a vertical rail with `rowspan` labels a lane down several rows). Not clickable. |
+| `box` (default) | The standard clickable card | `status`, `title`, `description`, `detail`, `note`, `variant`, `variant_extra`, `treatment`, `span`, `rowspan`, `filters`. Omit `type` and you get a box. |
+| `separator` | A thin divider LINE (not a card) | `treatment: [vertical]` for a vertical rule (horizontal is the default), `style` (`solid` default · `dotted`), optional `text` (an inline centered label). Honors `span`/`rowspan`. Not clickable. |
+| `rail` | A title-only swimlane LABEL banner | `title`, `treatment: [vertical]` (rotates the text). Honors `span`/`rowspan` (a vertical rail with `rowspan` labels a lane down several rows). Not clickable. |
+
+> The former `orientation: horizontal|vertical` field is **gone**: it was the same
+> switch as `treatment: [vertical]` under a second name, and a parallel field is
+> exactly the duplication the two-axis model exists to remove. Absence of the
+> treatment IS horizontal. The treatment also works on a **box**, which
+> `orientation` never did — new capability, not just a rename.
 
 ## Layout terms
 
@@ -69,7 +75,7 @@ per-invariant detail lives in `reference.md`.
 | Family | Ids | Scope · severity |
 |--------|-----|------------------|
 | **INTEGRITY** | **D** determinism · **R** scrollbar-robust · **T** capture · **C** clamp · **O** no h-overflow · **F** collapse cascade · **S** inline fit / band spans block · **B** centered · **H** headers contained · **X** no sibling-section collision · **G** no compound-leaf balloon / no stacked-section overflow | every form, `dura` |
-| **DESIGN** | **U** equal/uniform cells · **E** no empty column · **P** no orphan cell · **L** cells fill width · **M** readable ≥120px · **N** word-fit (title token fits its cell) · **Y** band fill | form-scoped, `dura` |
+| **DESIGN** | **U** equal cells + uniform **slot** height · **E** no empty column · **P** no orphan cell · **L** cells fill width · **M** readable ≥120px · **N** word-fit (title token fits its cell; `vertical` leaves exempt) · **Y** band fill · **Q** compound widths follow authored span · **K** filter referential integrity | form-scoped, `dura` |
 | advisory | **V** horizontal composition (the deck earns its canvas) | grid-dense forms, `consejo` |
 | retired | **W** fixed 232px cell width | `superseded: 'U'`, never evaluated |
 
@@ -97,33 +103,98 @@ kicker words a security-review deck might use — not a canonical default:
 `ENTRY` · `EXPOSED` · `INTERNAL` · `EXTERNAL` · `WEAK` · `NEW` · `HARDENED` ·
 `UNCHANGED` · `RISK`
 
-## The `variant` enums (color/style role)
+## The two orthogonal axes: `variant` and `treatment`
 
-**Component** `variant` (composable with a second via `variant_extra: [ext]`):
+A component's appearance is decided by **two independent fields**, because they
+answer two different questions. Conflating them is what once forced `centered` to
+be smuggled in through `variant_extra`:
 
-| value | role |
-|-------|------|
-| `normal` | neutral box, standard border |
-| `crit` | red — exposed or high risk |
-| `warn` | amber — medium risk / weak config |
-| `ok` | olive/green — hardened / correct |
-| `strong` | marked green 2px border — a highlighted new component |
-| `ext` | dotted border — outside the perimeter |
-| `store` | secondary fill — data stores |
-| `centered` | layout-only, no colour — centers the box's text; authored via `variant_extra: [centered]`, composable with a colour role |
+| axis | question | cardinality |
+|------|----------|-------------|
+| `variant` | **What does this MEAN?** the semantic COLOUR role, in the idea's own language of risk / state / kind | exactly **one** value — a thing is not both "at risk" and "hardened" |
+| `treatment` | **How is this DRAWN?** structural / presentational modifiers, orthogonal to meaning | a **list** — they compose freely, and composing two is normal |
 
-**Section** `variant` (the frame/tint of a zone):
+With one closed single-valued field it was impossible to say *"this is at risk"*
+**and** *"this goes without a frame"* at once. Two axes make that the default
+case. Both enums are **closed** and validated at build time
+(`engine/build-data.mjs`); a structural value written into `variant` is a hard
+build error that names the axis it belongs to, and vice versa.
 
-| value | role |
-|-------|------|
-| `normal` | neutral zone, dashed border |
-| `danger` | red fill/border — high-risk zone |
-| `safe` | green fill/border — hardened zone |
-| `envelope` | no fill, dashed border — a borderless container frame, useful as the wrapper drawn around nested sections |
-| `plain` | no frame at all (no border, no background, no min-height) — a pure structural wrapper that stacks its children with nothing drawn around them |
+### `variant` — the colour role (one value)
+
+**Component:**
+
+| value | role | CSS evidence (`index.html`) |
+|-------|------|------------------------------|
+| `normal` | neutral box, standard border | — (no class) |
+| `crit` | red — exposed or high risk | `background:var(--crit-soft); border-color:var(--crit)` |
+| `warn` | amber — medium risk / weak config | `background:var(--warn-soft); border-color:var(--warn)` |
+| `ok` | olive/green — hardened / correct | `background:var(--olive-soft); border-color:var(--olive)` |
+| `strong` | marked green 2px border — a highlighted new component | `background:var(--strong-soft); border-color:var(--strong); border-width:2px` |
+| `store` | secondary fill — data stores | `background:var(--surface2)` |
+
+**Section:**
+
+| value | role | CSS evidence |
+|-------|------|--------------|
+| `normal` | neutral zone, dashed border | — (no class) |
+| `danger` | red fill/border — high-risk zone | `background:var(--crit-soft); border-color:var(--crit)` |
+| `safe` | green fill/border — hardened zone | `background:var(--olive-soft); border-color:var(--olive)` |
+
+`variant_extra` is a **list** carrying an optional SECOND colour role, for the one
+case a single value cannot express: a box that is both a *kind* and a *state*
+(`variant: crit` + `variant_extra: [store]` — a data store at risk). It is
+validated against the SAME colour enum as `variant`, which is what closes the old
+hole: a structural value can no longer hide in it.
+
+### `treatment` — structural modifiers (a list)
+
+**Component:**
+
+| value | what it does | CSS evidence |
+|-------|--------------|--------------|
+| `centered` | centres the text block | `text-align:center` |
+| `ext` | dashed frame — "outside the perimeter". Border STYLE only, **no colour at all**, which is why it is a treatment and not a colour role | `border-style:dashed` |
+| `half` | occupies HALF a slot; two halves stack inside one full-height cell. **Title-only** | `.half-slot` flex column; `.box.half` 1-line title |
+| `vertical` | runs the text down the block axis (a rotated lane label) | `writing-mode:vertical-rl; transform:rotate(180deg)` |
+
+**Section:**
+
+| value | what it does | CSS evidence |
+|-------|--------------|--------------|
+| `envelope` | no fill, dashed border — a borderless container frame, useful as the wrapper around nested sections | `background:none; border-color:var(--line); border-style:dashed` |
+| `plain` | no frame at all — a pure structural wrapper that stacks its children with nothing drawn around them | `background:none; border:none; padding:0; min-height:0` |
 
 > `envelope` and `plain` are **style values**, not layout modes. Any section can
-> nest other sections regardless of its variant; `envelope`/`plain` only change
-> how (or whether) the wrapper's frame is drawn. Author variant values in
-> **English** (`crit`, `warn`, `ok`, `strong`, `ext`, `store`, `centered`,
-> `danger`, `safe`, `envelope`, `plain`).
+> nest other sections regardless of them. Author every value in **English**.
+
+### Each `treatment` declares its guardrail consequence
+
+A modifier that does not know which invariant it touches is what would break the
+guardrail, so the relation is explicit:
+
+| treatment | invariant it touches | consequence |
+|-----------|----------------------|-------------|
+| `centered` | none | `text-align` only; no geometry, no colour. |
+| `ext` | none | `border-style` only; a dashed border occupies identical space. |
+| `half` | **U** (gains a new subject) | U now asserts the **slot** height, not the component's: half cells are excluded from the component-height set (as row-span cells already were) and every `.half-slot` is asserted at exactly `--cell-h`. **C** is guarded *by construction* — a `description` on a half is a build error, so a 63px box cannot clip. **E/L/P/M** unaffected: the slot is a normal 1-track cell. |
+| `vertical` | **N** (gains an applicability clause) | N's premise is a title flowing along the INLINE axis; `vertical` rotates it onto the BLOCK axis, where the fit constraint is the cell's height. A vertical leaf is therefore **exempt** from N. |
+| `envelope` | none | Border/fill only. |
+| `plain` | **Y** (still asserted, not exempted) | Removes padding and min-height, so a `plain` band's content bounds equal its zone bounds — Y's gaps go to ~0, which passes its tolerances. No clause needed. |
+
+## `palette` — the document skin
+
+`palette` (in `data/document.yaml`) selects the token set. **The semantic roles
+are identical in every palette** — `crit` is always high risk, `muted` always
+secondary text — so switching it changes how the deck LOOKS and never what it
+MEANS.
+
+| value | skin |
+|-------|------|
+| `neutral` | the house palette; the default when the key is omitted, so every pre-existing deck is unaffected |
+| `rose-pine` | Rosé Pine — Dawn on the light theme, Main on the dark |
+| `rose-pine-moon` | the same, with Rosé Pine Moon on the dark theme |
+| `contrast` | high contrast, for projecting in a room |
+
+`npm run contrast` (`tools/contrast-audit.cjs`) parses the token blocks out of
+`index.html` and measures every real foreground/background pair against WCAG 2.1.

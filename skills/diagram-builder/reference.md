@@ -107,9 +107,13 @@ documented readability reference, and the guardrail's retired **W** invariant
 │   └── data.generated.js build output (committed; `window.__DOC__ = {...}`)
 └── tools/
     ├── validate-layout.cjs  the LAYOUT GUARDRAIL — headless render + the
-    │                        FORM-SCOPED invariant table (INTEGRITY D/R/T/C/O/F/S/B/H/X
-    │                        · DESIGN U/E/P/L/M/Y · advisory V · retired W),
+    │                        FORM-SCOPED invariant table (INTEGRITY
+    │                        D/R/T/C/O/F/S/B/H/X/G · DESIGN U/E/P/L/M/N/Y/Q/K
+    │                        · advisory V · retired W),
     │                        PASS/FAIL, exit≠0; pure-read (build first)
+    ├── contrast-audit.cjs   the PALETTE CONTRAST guardrail — parses the palette
+    │                        token blocks out of index.html and measures every real
+    │                        fg/bg pair against WCAG 2.1 (npm run contrast)
     └── verify.mjs           lightweight render QA (collision assertions + shots)
 ```
 
@@ -124,6 +128,10 @@ runtime dependencies.
 title: "Deck title"          # required
 subtitle: "…"                # optional
 version: "0.1.0"             # optional — free-form (semver recommended)
+palette: neutral             # optional — the deck SKIN; omitted == neutral.
+                             #   neutral | rose-pine | rose-pine-moon | contrast
+                             # The semantic roles are identical in every palette, so
+                             # this changes how the deck LOOKS, never what it MEANS.
 pages:
   - id: overview             # required — must match page.id in the file
     name: "Overview"         # required — visible label (rename without breaking refs)
@@ -163,7 +171,8 @@ sections: [ … ]         # required, ≥ 1 — the root section's children
 - id: system            # required, stable slug
   title: "Example system"
   subtitle: "…"         # optional
-  variant: envelope     # normal | danger | safe | envelope | plain
+  variant: normal       # THE COLOUR AXIS — one value: normal | danger | safe
+  treatment: [envelope] # THE STRUCTURAL AXIS — a list: envelope | plain
   order: 3              # position among its siblings + collapse order
   span: 2               # occupy M of the PARENT's columns (default 1)
   rowspan: 1            # accepted by the schema; the vertical merge renders on
@@ -186,8 +195,12 @@ A child of `children` is a **section** if it has its own `children`, otherwise a
     - "handles requests from the web app"
   detail: "Long <b>HTML-allowed</b> text for the click panel."  # falls back to description
   note: "⚠ …"           # optional warning note, shown separately
-  variant: normal       # normal | crit | warn | ok | strong | ext | store
-  variant_extra: [ext]  # optional second class, composed (e.g. box ext)
+  variant: normal        # THE COLOUR AXIS — one value:
+                         #   normal | crit | warn | ok | strong | store
+  variant_extra: [store] # optional SECOND colour role (same enum), for a box that
+                         #   is both a kind and a state (crit + store)
+  treatment: [centered]  # THE STRUCTURAL AXIS — a list, composable:
+                         #   centered | ext | half | vertical
   span: 2               # occupy M of the section's columns (default 1);
                         # 1 < M < columns is a real PARTIAL merge
   rowspan: 2            # occupy K rows (default 1) — a vertical merge, K× the
@@ -201,7 +214,7 @@ A child of `children` is a **section** if it has its own `children`, otherwise a
 - id: sep-1
   type: separator
   span: 2               # usually a full-width band
-  orientation: horizontal   # horizontal (default) | vertical
+  treatment: [vertical]     # omit for a horizontal rule (the default)
   style: dotted             # solid (default) | dotted
   text: "An example system" # optional inline label centered on the line
 ```
@@ -216,7 +229,7 @@ line. Not clickable, no detail.
 - id: lane
   type: rail
   title: "CI/CD"
-  orientation: vertical   # horizontal (default) | vertical (rotates the text)
+  treatment: [vertical]   # rotates the text; omit for a horizontal banner
   span: 1
 ```
 
@@ -341,6 +354,42 @@ has a WHITELIST of exactly the fields the engine consumes (`PAGE_FIELDS`,
 is a hard build error that names the page, the node, and the offending key,
 and suggests the intended field on a near-miss (`colummns` → *did you mean
 "columns"?*). Do not invent fields: authoring an unknown key fails the build.
+
+## Migrating a pre-2.1 deck (the vocabulary split)
+
+Engine 2.1 splits the old single `variant` enum into **two orthogonal axes** —
+`variant` (one semantic COLOUR role) and `treatment` (a composable list of
+STRUCTURAL modifiers). This is a **clean break**: a structural value left in
+`variant` is a hard build error naming the axis it belongs to, not a silent
+translation. A deck vendors its own copy of the engine, so an existing deck keeps
+working until it adopts a newer engine — and when it does, the build tells it
+exactly what to change.
+
+Every legacy spelling and its replacement:
+
+| legacy | becomes | why |
+|--------|---------|-----|
+| `variant: plain` (section) | `treatment: [plain]` | removes frame + padding + min-height — structure, not colour |
+| `variant: envelope` (section) | `treatment: [envelope]` | frame styling, no colour claim |
+| `variant: ext` (component) | `treatment: [ext]` | its CSS is `border-style:dashed` and **nothing else** — zero colour |
+| `variant_extra: [centered]` | `treatment: [centered]` | `text-align` only; this smuggling is the evidence the axis was missing |
+| `variant_extra: [ext]` | `treatment: [ext]` | same as `ext` above |
+| `variant: store` | **unchanged** | its CSS is `background:var(--surface2)` — a fill, so it is a genuine COLOUR role |
+| `variant_extra: [store]` | **unchanged** | a legitimate SECOND colour role (a data store that is also at risk) |
+| `orientation: vertical` (rail/separator) | `treatment: [vertical]` | the same switch under a second name; a parallel field is the duplication the split removes |
+| `orientation: horizontal` | **delete it** | absence of the `vertical` treatment IS horizontal |
+
+Two notes on what did **not** move:
+
+- **`variant_extra` survives, deliberately.** It is the second COLOUR role, and it
+  is validated against the same colour enum as `variant`. It was NOT renamed to
+  `treatment` (nor deleted) because those are different axes: 13 authored uses
+  exist across the reference decks, and of them `[store]`×7 is a genuine second
+  colour role that `treatment` must not absorb without re-conflating exactly what
+  this change separated. Only its structural values (`[centered]`, `[ext]`) moved.
+- **`cell` was never a field.** `GLOSSARY.md` defines it as "(engine behavior)" —
+  the name of the base grid SLOT, not something authorable. So `half` belongs on
+  `treatment`; there was no existing field for it to follow.
 
 ## Engine gotchas
 
@@ -502,12 +551,13 @@ pixels.
    | **H** | integrity | all | dura | section headers/subtitles stay inside their section |
    | **X** | integrity | all | dura | no sibling-section collision — no two sibling sections overlap (catches a column-stack overflowing onto its neighbour) |
    | **G** | integrity | all | dura | no compound-leaf balloon / no stacked-section content overflow — a compound-row leaf never ballons past its content size, and a stacked section keeps its content height (the compound-row leaf balloon / sec-c1 overflow guard) |
-   | **U** | design | all | dura | cells equal width per grid + uniform `--cell-h` height (row-span cells exempt from the height set) |
+   | **U** | design | all | dura | cells equal width per grid + uniform **SLOT** height. SLOT, not component: `rowspan` makes a component a MULTIPLE of the slot and `half` a FRACTION of it, so both are excluded from the component-height set and every `.half-slot` is asserted at `--cell-h` directly |
    | **L** | design | gridded | dura | cells fill the grid edge-to-edge, no right/left gap (≥1200px; rows a row-span touches exempt) |
    | **E** | design | gridded | dura | no empty grid column — every declared track is filled |
    | **P** | design | grid-dense | dura | no orphan cell — no lone cell beside grouped sibling rows (>1000px; row-span rows exempt) |
    | **M** | design | gridded | dura | cells legible — no 1-column cell below `MIN_LEGIBLE` 120px (collapse columns first) |
-   | **N** | design | dashboard, flow | dura | word-fit — a leaf title's longest indivisible token never exceeds its cell's available width (below the M floor's reach: a 136px cell clears `MIN_LEGIBLE` yet can still be narrower than a 12-char title) |
+   | **N** | design | dashboard, flow | dura | word-fit — a leaf title's longest indivisible token never exceeds its cell's available width (below the M floor's reach: a 136px cell clears `MIN_LEGIBLE` yet can still be narrower than a 12-char title). **Applicability clause:** a `treatment: [vertical]` leaf is EXEMPT — its title runs down the BLOCK axis, so horizontal token width is not the fit constraint |
+   | **K** | design | all | dura | filter referential integrity — the chip↔component join closes BOTH ways: every declared chip has ≥1 component referencing it, and every key a component references is declared by a chip. A typo used to be silent in both directions (an orphan chip dimmed the whole canvas; a dangling reference never lit). The reset key `all` is exempt — it is the engine's reserved "show everything" chip and legitimately has no members |
    | **Y** | design | all | dura | band content fills the band — no dead margin (≥1200px) |
    | **Q** | design | all | dura | compound section widths follow authored span — a compound row's sections are proportional to their authored `span` weight, not stretched or shrunk by an inherited parent band (≥1200px) |
    | **V** | design | grid-dense | **consejo** | horizontal composition — the deck earns its canvas (ultra tier; advises, never fails) |

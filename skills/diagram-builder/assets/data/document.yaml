@@ -3,7 +3,19 @@
 # See the diagram-builder dialect reference for the full schema.
 title: "Diagram Deck"
 subtitle: "A portable, data-driven diagram — edit data/ and run npm run build"
-version: "0.1.0"   # optional — shown in the header; bump it when the deck changes meaningfully
+version: "0.2.0"   # optional — shown in the header; bump it when the deck changes meaningfully
+
+# PALETTE — the deck's SKIN. The semantic roles are identical in every palette
+# (crit is always "high risk", ok always "hardened", muted always "secondary
+# text"), so switching this changes how the deck LOOKS and never what it MEANS.
+#   neutral         the house palette (the default when this key is omitted)
+#   rose-pine       Rosé Pine — Dawn on the light theme, Main on the dark
+#   rose-pine-moon  the same, with Rosé Pine Moon on the dark theme
+#   contrast        high contrast, for projecting in a room
+# `npm run contrast` measures every palette against WCAG 2.1 AA.
+# The seed ships rose-pine so a fresh scaffold shows the palette axis working;
+# set it to `neutral` for the house look.
+palette: rose-pine
 
 pages:
   - id: overview

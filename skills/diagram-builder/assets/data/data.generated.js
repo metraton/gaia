@@ -3,7 +3,8 @@
 window.__DOC__ = {
   "title": "Diagram Deck",
   "subtitle": "A portable, data-driven diagram — edit data/ and run npm run build",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "palette": "rose-pine",
   "pages": [
     {
       "id": "overview",
@@ -67,7 +68,10 @@ window.__DOC__ = {
           "id": "section-b",
           "title": "Section B",
           "subtitle": "a section can nest other sections — a grid of grids",
-          "variant": "envelope",
+          "variant": "normal",
+          "treatment": [
+            "envelope"
+          ],
           "order": 2,
           "span": 1,
           "columns": 1,
@@ -97,6 +101,9 @@ window.__DOC__ = {
               "id": "group-2",
               "title": "Group 2",
               "variant": "normal",
+              "treatment": [
+                "plain"
+              ],
               "columns": 1,
               "children": [
                 {
@@ -271,7 +278,9 @@ window.__DOC__ = {
             {
               "id": "rail-f",
               "type": "rail",
-              "orientation": "vertical",
+              "treatment": [
+                "vertical"
+              ],
               "order": 1,
               "title": "Lane"
             },
@@ -319,7 +328,9 @@ window.__DOC__ = {
             {
               "id": "sep-f",
               "type": "separator",
-              "orientation": "vertical",
+              "treatment": [
+                "vertical"
+              ],
               "order": 3
             },
             {
@@ -353,7 +364,10 @@ window.__DOC__ = {
           "id": "section-g",
           "title": "Short stack",
           "subtitle": "columns:1 stack — shorter, so the row stretches it",
-          "variant": "envelope",
+          "variant": "normal",
+          "treatment": [
+            "envelope"
+          ],
           "order": 7,
           "span": 1,
           "columns": 1,
@@ -553,6 +567,89 @@ window.__DOC__ = {
               ]
             }
           ]
+        },
+        {
+          "id": "section-j",
+          "title": "Section J",
+          "subtitle": "the treatment axis — a vertical label, two half-slot pairs, composed treatments",
+          "variant": "normal",
+          "treatment": [
+            "envelope"
+          ],
+          "order": 10,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "j-lane",
+              "order": 1,
+              "status": "LANE",
+              "title": "Lane",
+              "treatment": [
+                "vertical"
+              ],
+              "detail": "A <code>vertical</code> treatment rotates the text onto the block axis, the same reading direction as a <code>rail</code>. Because the title no longer flows horizontally, the word-fit invariant (N) does not apply to it — its applicability clause exempts vertical leaves."
+            },
+            {
+              "id": "j-h1",
+              "order": 2,
+              "status": "TOP",
+              "title": "Half A",
+              "treatment": [
+                "half"
+              ],
+              "detail": "Two <code>half</code> components share ONE grid slot: this is the top half. The slot keeps the full 130px cell height, so the grid's rows, tracks and fill are unchanged — a half pair reads as one full cell from the outside."
+            },
+            {
+              "id": "j-h2",
+              "order": 3,
+              "status": "BOTTOM",
+              "title": "Half B",
+              "treatment": [
+                "half"
+              ],
+              "detail": "The bottom half of the same slot. Invariant U now asserts the height of the SLOT rather than of the component, which is what lets a half legitimately be a fraction of the cell without leaving a hole."
+            },
+            {
+              "id": "j-center",
+              "order": 4,
+              "status": "NEW",
+              "title": "Centered",
+              "description": [
+                "colour and structure compose"
+              ],
+              "variant": "ok",
+              "treatment": [
+                "centered",
+                "ext"
+              ],
+              "detail": "This cell carries a colour role (<code>ok</code>) AND two structural treatments (<code>centered</code>, <code>ext</code>) at once — the composition a single closed <code>variant</code> enum made impossible, and the reason <code>centered</code> once had to be smuggled in through <code>variant_extra</code>."
+            },
+            {
+              "id": "j-h3",
+              "order": 5,
+              "status": "TOP",
+              "title": "Half C",
+              "variant": "store",
+              "treatment": [
+                "half",
+                "centered"
+              ],
+              "detail": "A second half pair, this one composing a colour role (<code>store</code> — a fill, so it stays a variant) with TWO treatments."
+            },
+            {
+              "id": "j-h4",
+              "order": 6,
+              "status": "BOTTOM",
+              "title": "Half D",
+              "variant": "store",
+              "treatment": [
+                "half",
+                "centered"
+              ],
+              "detail": "The bottom half of the second pair. Both members of a pair must declare the same <code>span</code>, since they share one slot."
+            }
+          ]
         }
       ],
       "name": "Overview",
@@ -560,3 +657,5 @@ window.__DOC__ = {
     }
   ]
 };
+if (typeof document !== 'undefined' && document.documentElement)
+  document.documentElement.setAttribute('data-palette', window.__DOC__.palette || 'neutral');

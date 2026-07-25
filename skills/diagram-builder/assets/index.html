@@ -41,6 +41,118 @@
     --strong:#4ECB6B; --strong-soft:rgba(78,203,107,0.18);
     --zone:rgba(250,249,245,0.028); --zone-line:#3D3D3A;
   }
+
+  /* ══════════════ SWAPPABLE PALETTES ══════════════════════════════════════
+     A palette is a SKIN, never a vocabulary. The SEMANTIC ROLES are identical in
+     every palette — `--crit` is always "high risk", `--olive` always
+     "hardened/ok", `--muted` always "secondary text" — so a deck's meaning is
+     palette-independent and switching palettes can never change what the diagram
+     SAYS, only how it looks. That is why the palettes redeclare exactly the same
+     token names and nothing else: no palette adds a token, drops one, or
+     repurposes one.
+
+     Selected by `palette:` in data/document.yaml → `data-palette` on <html>,
+     written by data/data.generated.js BEFORE the deck renders (so there is no
+     flash of the neutral skin). Values: neutral (default, no attribute) ·
+     rose-pine · rose-pine-moon · contrast.
+
+     SPECIFICITY, and why the dark blocks must be spelled `html.dark[...]`:
+     `:root[data-palette="x"]` is (0,2,0) and `html.dark` is (0,1,1), so a LIGHT
+     palette block would otherwise beat the neutral DARK block and strand dark
+     mode on light colours. `html.dark[data-palette="x"]` is (0,2,1) and wins.
+     Each block therefore declares the FULL token set — never a partial overlay
+     — so no token can be silently inherited from the wrong theme.
+
+     CONTRAST IS MACHINE-CHECKED. `npm run contrast` (tools/contrast-audit.cjs)
+     PARSES these blocks and measures every real foreground/background pair
+     (compositing the rgba soft tints over their substrate) against WCAG 2.1. Edit
+     a colour here and the audit re-measures it; the numbers can never drift from
+     the CSS because there is only one copy of them. */
+
+  /* ── Rosé Pine — the upstream palette's own role names, mapped onto the
+     engine's semantic roles. Light theme uses Rosé Pine DAWN, dark uses Rosé
+     Pine MAIN (the two-theme engine has exactly two slots; `rose-pine-moon`
+     below swaps the dark slot to MOON, so all three upstream variants are
+     reachable).
+       base→--bg · surface→--surface · overlay→--surface2 · text→--ink/--body
+       subtle→--muted · highlight-high→--line · highlight-med→--line-soft
+       love→--crit · gold→--warn · pine→--olive · iris→--strong · rose→--clay
+       foam→--blue
+     NOTE on subtle-vs-muted: the engine's `--muted` carries REAL text (box
+     kickers, descriptions, section titles, chips), so it maps to Rosé Pine's
+     `subtle` (secondary text), NOT to its `muted` (comment-dim), which sits far
+     below AA on both bases. Upstream `muted` is used only for decoration. */
+  :root[data-palette="rose-pine"], :root[data-palette="rose-pine-moon"] {
+    --bg:#faf4ed; --surface:#fffaf3; --surface2:#f2e9e1;
+    --ink:#575279; --body:#575279; --muted:#6a6580;
+    --line:#cecacd; --line-soft:#dfdad9;
+    --clay:#8c5b6b; --clay-soft:rgba(140,91,107,0.12);
+    --olive:#286983; --olive-soft:rgba(40,105,131,0.12);
+    --crit:#9c4a5e; --crit-soft:rgba(156,74,94,0.10);
+    --warn:#815c1c; --warn-soft:rgba(129,92,28,0.12);
+    --gold:#815c1c; --blue:#3f7885;
+    --strong:#6d5a86; --strong-soft:rgba(109,90,134,0.14);
+    --zone:rgba(87,82,121,0.030); --zone-line:#cecacd;
+  }
+  html.dark[data-palette="rose-pine"] {
+    --bg:#191724; --surface:#1f1d2e; --surface2:#26233a;
+    --ink:#e0def4; --body:#e0def4; --muted:#908caa;
+    --line:#524f67; --line-soft:#403d52;
+    --clay:#ebbcba; --clay-soft:rgba(235,188,186,0.14);
+    --olive:#9ccfd8; --olive-soft:rgba(156,207,216,0.14);
+    --crit:#eb6f92; --crit-soft:rgba(235,111,146,0.14);
+    --warn:#f6c177; --warn-soft:rgba(246,193,119,0.14);
+    --gold:#f6c177; --blue:#31748f;
+    --strong:#c4a7e7; --strong-soft:rgba(196,167,231,0.16);
+    --zone:rgba(224,222,244,0.030); --zone-line:#524f67;
+  }
+  /* Rosé Pine MOON — the third upstream variant. Same light (DAWN) side, a
+     softer/warmer dark base than MAIN. */
+  html.dark[data-palette="rose-pine-moon"] {
+    --bg:#232136; --surface:#2a273f; --surface2:#393552;
+    /* MOON's bases are lighter than MAIN's, so MAIN's `subtle` (#908caa) and
+       `love` (#eb6f92) drop below AA on them — both are stepped up here. */
+    --ink:#e0def4; --body:#e0def4; --muted:#a5a0c0;
+    --line:#56526e; --line-soft:#44415a;
+    --clay:#ea9a97; --clay-soft:rgba(234,154,151,0.14);
+    --olive:#9ccfd8; --olive-soft:rgba(156,207,216,0.14);
+    --crit:#f2809f; --crit-soft:rgba(242,128,159,0.14);
+    --warn:#f6c177; --warn-soft:rgba(246,193,119,0.14);
+    --gold:#f6c177; --blue:#3e8fb0;
+    --strong:#c4a7e7; --strong-soft:rgba(196,167,231,0.16);
+    --zone:rgba(224,222,244,0.030); --zone-line:#56526e;
+  }
+
+  /* ── contrast — HIGH CONTRAST, for projecting in a room. Every audited pair
+     clears WCAG 2.1 AA (4.5:1 text, 3:1 non-text) with margin, so the deck stays
+     readable through a washed-out projector or on a glare-lit screen. Pure
+     black/white bases, saturated-but-dark accents on light, light accents on
+     dark, and opaque `--line` borders so every cell edge is unambiguous. */
+  :root[data-palette="contrast"] {
+    --bg:#ffffff; --surface:#ffffff; --surface2:#ededed;
+    --ink:#000000; --body:#000000; --muted:#303030;
+    --line:#000000; --line-soft:#595959;
+    --clay:#a03000; --clay-soft:rgba(160,48,0,0.10);
+    --olive:#1a6b1a; --olive-soft:rgba(26,107,26,0.10);
+    --crit:#b00000; --crit-soft:rgba(176,0,0,0.09);
+    --warn:#7a4a00; --warn-soft:rgba(122,74,0,0.10);
+    --gold:#6b4e00; --blue:#00457a;
+    --strong:#006b22; --strong-soft:rgba(0,107,34,0.12);
+    --zone:rgba(0,0,0,0.040); --zone-line:#000000;
+  }
+  html.dark[data-palette="contrast"] {
+    --bg:#000000; --surface:#0a0a0a; --surface2:#202020;
+    --ink:#ffffff; --body:#ffffff; --muted:#d0d0d0;
+    --line:#ffffff; --line-soft:#8a8a8a;
+    --clay:#ffb08a; --clay-soft:rgba(255,176,138,0.16);
+    --olive:#8fe88f; --olive-soft:rgba(143,232,143,0.16);
+    --crit:#ff9b85; --crit-soft:rgba(255,155,133,0.16);
+    --warn:#ffd166; --warn-soft:rgba(255,209,102,0.16);
+    --gold:#ffde7a; --blue:#93d2ff;
+    --strong:#7cf29a; --strong-soft:rgba(124,242,154,0.18);
+    --zone:rgba(255,255,255,0.050); --zone-line:#ffffff;
+  }
+
   * { box-sizing:border-box; margin:0; padding:0; }
   html,body { height:100%; }
   body {
@@ -569,10 +681,56 @@
   .box.ok .k { color:var(--olive); }
   .box.strong { background:var(--strong-soft); border-color:var(--strong); border-width:2px; }
   .box.strong .k { color:var(--strong); }
-  .box.ext { border-style:dashed; }
   .box.store { background:var(--surface2); }
-  /* layout-only role (variant_extra: [centered]): center the box's text. */
+
+  /* ── STRUCTURAL TREATMENTS (the second axis) ──────────────────────────────
+     A `treatment` changes HOW a component is drawn, never WHAT it means. That is
+     why not one rule below touches a colour token: a treatment composes with any
+     `variant` instead of competing with one. (The enums live in
+     engine/build-data.mjs; the guardrail consequence of each is tabled in the
+     skill's reference.md.) */
+
+  /* centered — centre the text block. No colour, no geometry. */
   .box.centered { text-align:center; }
+
+  /* ext — the dashed frame that reads "outside the perimeter". Border STYLE only,
+     no colour whatsoever, which is precisely why it belongs on this axis: it used
+     to sit in the colour enum and had to be smuggled through `variant_extra`
+     whenever a box needed to be both external AND coloured. */
+  .box.ext { border-style:dashed; }
+
+  /* half + .half-slot — SLOT DIVISION, not cell shrinking.
+     The `.half-slot` IS the grid cell: it stretches to the full --cell-h like any
+     other cell, and its two children split that height (flex:1 1 0 each). So the
+     grid's rows, tracks and fill are completely unchanged — from the outside a
+     half pair reads as ONE full cell. That is what keeps the rectangle full (no
+     half-empty cell, no hole) and lets every row/column invariant (E, L, P, M)
+     keep measuring the same geometry as before; only U had to move, from
+     asserting the COMPONENT's height to asserting the SLOT's.
+     --cell-h is untouched at 130px: two halves get (130 - 4)/2 = 63px each.
+     A half box is TITLE-ONLY (build-data.mjs rejects a description on one), so its
+     title clamps to a single line and its padding tightens — at 63px there is room
+     for a kicker plus one title line with nothing clipping (invariant C). */
+  .half-slot { display:flex; flex-direction:column; gap:var(--s-1); min-width:0; min-height:0; }
+  .half-slot > .box { flex:1 1 0; min-height:0; }
+  .box.half { padding:var(--s-1) var(--s-3); justify-content:center; }
+  .box.half .t { -webkit-line-clamp:1; line-clamp:1; margin-bottom:0; }
+  /* In a COMPOUND row a .half-slot must behave exactly like the lone .box it
+     stands in for — content-sized, pinned to the row top, one cell tall — and
+     never grow into an equal flex share. Mirrors the `.sec-grid.sec-compound >
+     .box` rule above; invariant G fails if either ever balloons. */
+  .sec-grid.sec-compound > .half-slot { flex:0 0 auto; align-self:start; height:var(--cell-h); }
+
+  /* vertical — run the text down the block axis: a rotated lane label, the same
+     reading direction as `.rail-v`. Title-only for the same reason as `half`.
+     The clamp is released (a clamp counts LINES along the inline axis, which is
+     now vertical) and replaced by max-height + overflow so a long token clips
+     inside the title instead of growing the box past --cell-h (invariant C). */
+  .box.vertical { flex-direction:row; align-items:stretch; justify-content:center; gap:var(--s-2); }
+  .box.vertical .k, .box.vertical .t {
+    writing-mode:vertical-rl; transform:rotate(180deg);
+    display:block; -webkit-line-clamp:unset; line-clamp:unset;
+    margin-bottom:0; min-height:0; max-height:100%; overflow:hidden; text-align:center; }
 
   /* ── separator (component type: separator) ──
      A minimal divider LINE — NOT a box (no border/padding of a box). Lives in a
