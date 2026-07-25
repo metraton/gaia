@@ -44,3 +44,19 @@ pages:
     order: 4
     visible: true
     file: pages/p3-sequence.yaml
+  # ── How you speak through the canvas (principles 4–6) ──
+  - id: p4-slots
+    name: "4 · Slots"
+    order: 5
+    visible: true
+    file: pages/p4-slots.yaml
+  - id: p5-channels
+    name: "5 · Channels"
+    order: 6
+    visible: true
+    file: pages/p5-channels.yaml
+  - id: p6-relations
+    name: "6 · Relations"
+    order: 7
+    visible: true
+    file: pages/p6-relations.yaml

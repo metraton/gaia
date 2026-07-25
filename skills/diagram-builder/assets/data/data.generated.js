@@ -1385,6 +1385,668 @@ window.__DOC__ = {
       ],
       "name": "3 · Sequence",
       "order": 4
+    },
+    {
+      "id": "p4-slots",
+      "layout": "grid",
+      "form": "planner",
+      "columns": 2,
+      "sections": [
+        {
+          "id": "p4-fields",
+          "title": "Four slots, four characters",
+          "subtitle": "the engine fixes the size and the prominence — never the meaning",
+          "variant": "neutral",
+          "order": 1,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p4-f-kicker",
+              "order": 1,
+              "kicker": "FIELD",
+              "title": "kicker",
+              "description": [
+                "one line, uppercase",
+                "the quietest mark"
+              ],
+              "detail": "The small uppercase mark above the title (<code>.box .k</code>, 10.5px mono, muted). Its character is fixed: one short line, the least prominent text on the card. Its meaning is open — see the row of payloads beside this one. It was renamed from <code>status</code> precisely because the old name asserted a meaning the field does not have.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-f-title",
+              "order": 2,
+              "kicker": "FIELD",
+              "title": "title",
+              "description": [
+                "two lines, bold",
+                "the loudest slot"
+              ],
+              "detail": "The card's heading (<code>.box .t</code>, bold, clamped at 2 lines). It is the most prominent slot on a box, so whatever you put here is what the card is ABOUT. Clamping is what keeps every box exactly one slot tall no matter how long the string is.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-f-desc",
+              "order": 3,
+              "kicker": "FIELD",
+              "title": "description",
+              "description": [
+                "three lines, clamped",
+                "a list of short lines"
+              ],
+              "detail": "A string, or a list where each item is a line. The whole block clamps at 3 VISUAL lines, so a long line costs two of them — which is why the lines on this deck are short by discipline rather than by luck. Anything that does not fit belongs in <code>detail</code>.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-f-detail",
+              "order": 4,
+              "kicker": "FIELD",
+              "title": "detail",
+              "description": [
+                "unbounded, HTML",
+                "lives in the panel"
+              ],
+              "detail": "The only unbounded slot: it renders in the click-through panel, not on the card, so it has no clamp and accepts HTML. This paragraph is one. When a cell has more to say than three short lines, the answer is never a taller cell — it is this field.",
+              "variant": "neutral"
+            }
+          ]
+        },
+        {
+          "id": "p4-payloads",
+          "title": "One kicker, four payloads",
+          "subtitle": "a count, a step, a phase, a class — the field cannot tell them apart",
+          "variant": "neutral",
+          "order": 2,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p4-p-number",
+              "order": 1,
+              "kicker": "3",
+              "title": "A number",
+              "description": [
+                "a bare count",
+                "no words at all"
+              ],
+              "detail": "The mark holds a quantity here — a count of replicas, of owners, of open items. The engine renders the string and makes no claim about it: there is no numeric type, no sort, no scale.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-p-step",
+              "order": 2,
+              "kicker": "STEP 2",
+              "title": "A step",
+              "description": [
+                "a position in a run",
+                "the same slot, again"
+              ],
+              "detail": "Here the same field carries a step index. On a flow page this is what makes a sequence readable at a glance, and it pairs with <code>order</code> — but that pairing is the author's convention, not something the field enforces.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-p-phase",
+              "order": 3,
+              "kicker": "PHASE II",
+              "title": "A phase",
+              "description": [
+                "a span of time",
+                "still just a mark"
+              ],
+              "detail": "A phase label. Read together with the two cells before it, the point is that no reading of the field is privileged: a deck that means phases and a deck that means steps use the identical slot.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-p-class",
+              "order": 4,
+              "kicker": "STORE",
+              "title": "A class",
+              "description": [
+                "what kind of thing",
+                "this card is"
+              ],
+              "detail": "A kind, not a state. This is the payload the old name <code>status</code> made hardest to reach for — and the most common one in an architecture deck, where the mark says <em>database</em>, <em>queue</em>, <em>gateway</em> far more often than it says <em>healthy</em>.",
+              "variant": "neutral"
+            }
+          ]
+        },
+        {
+          "id": "p4-less",
+          "title": "Saying less, on purpose",
+          "subtitle": "an empty field is an authoring choice — the card stays exactly one slot tall",
+          "variant": "neutral",
+          "order": 3,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "p4-l-title",
+              "order": 1,
+              "title": "Title only",
+              "treatment": [
+                "centered"
+              ],
+              "detail": "No kicker, no description — one line of text and nothing else. <code>treatment: [centered]</code> centres the text block (<code>text-align:center</code>, no geometry and no colour), which is what a card with a single short claim usually wants. Emptiness costs nothing: the cell is the same 130px slot as every other.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-l-kicker",
+              "order": 2,
+              "kicker": "KICKER ONLY",
+              "detail": "This card declares a <code>kicker</code> and NOTHING else — no title, no description. The engine renders the mark and an empty title node, so the card reads as a pure label. It is the smallest legible cell in the dialect, and a legitimate way to mark a region without claiming anything about it.",
+              "variant": "muted"
+            },
+            {
+              "id": "p4-l-half-top",
+              "order": 3,
+              "kicker": "TOP",
+              "title": "Half a slot",
+              "treatment": [
+                "half"
+              ],
+              "detail": "<code>half</code> does not shrink a cell — it DIVIDES a slot. Two consecutive halves are wrapped in ONE <code>.half-slot</code> that occupies a single grid cell at the full 130px, so tracks, rows and closure are untouched. Halves pair by ADJACENCY and must come in twos; an odd one is a build error, because half a filled slot is a hole.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-l-half-bottom",
+              "order": 4,
+              "kicker": "BOTTOM",
+              "title": "The other half",
+              "treatment": [
+                "half"
+              ],
+              "detail": "The bottom half of the same slot. <code>half</code> is TITLE-ONLY by construction: a <code>description</code> on a half is a build error, since ~63px cannot hold a title plus three clamped lines without clipping. The long copy goes here, in <code>detail</code>, which is where it belonged anyway.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p4-l-all",
+              "order": 5,
+              "kicker": "EVERYTHING",
+              "title": "Every field at once",
+              "description": [
+                "kicker, title, three lines",
+                "detail, and one note"
+              ],
+              "note": "⚠ <code>note</code> renders ONLY inside the panel, and nothing on the card hints that it exists — so a warning here is invisible until someone clicks.",
+              "detail": "The full card, for comparison with its three neighbours: the same slot, the same 130px, carrying every content field the dialect has. The <code>note</code> is the last of them and the only one in this seed — it renders in the panel in warn colour, below the body. Judge it here: a warning nobody can see from the canvas may be the wrong shape for a warning.",
+              "variant": "neutral"
+            }
+          ]
+        }
+      ],
+      "name": "4 · Slots",
+      "order": 5
+    },
+    {
+      "id": "p5-channels",
+      "layout": "grid",
+      "form": "mindmap",
+      "columns": 2,
+      "sections": [
+        {
+          "id": "p5-core",
+          "title": "Five channels",
+          "subtitle": "independent by construction — changing one never changes another",
+          "variant": "neutral",
+          "order": 1,
+          "span": 2,
+          "columns": 5,
+          "children": [
+            {
+              "id": "p5-c-position",
+              "order": 1,
+              "kicker": "CHANNEL",
+              "title": "Position",
+              "description": [
+                "where it sits",
+                "authored as order"
+              ],
+              "detail": "The strongest channel and the cheapest: a cell placed first reads as first, a band placed last reads as the floor. You do not set coordinates — you set <code>order</code> (principle 3), and position is the consequence.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p5-c-size",
+              "order": 2,
+              "kicker": "CHANNEL",
+              "title": "Size",
+              "description": [
+                "how much space",
+                "span and rowspan"
+              ],
+              "detail": "Two dials, two meanings: <code>span</code> is REACH across the row and <code>rowspan</code> is MAGNITUDE down it. Size is measured in whole slots, so it is a step scale, never continuous.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p5-c-colour",
+              "order": 3,
+              "kicker": "CHANNEL",
+              "title": "Colour",
+              "description": [
+                "the variant role",
+                "one value per cell"
+              ],
+              "detail": "One semantic role from a closed enum (<code>neutral</code>, <code>good</code>, <code>warn</code>, <code>bad</code>, <code>accent</code>, <code>muted</code>). It is the channel most often overloaded, because it is the one readers notice first — which is exactly why the page has to say what it means.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p5-c-border",
+              "order": 4,
+              "kicker": "CHANNEL",
+              "title": "Border",
+              "description": [
+                "solid or dashed",
+                "no colour at all"
+              ],
+              "detail": "<code>treatment: [outside]</code> is <code>border-style:dashed</code> and NOTHING else — no fill, no border colour, no geometry. That is why it is a treatment rather than a variant, and why it is the cleanest proof that a channel need not be colour.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p5-c-kicker",
+              "order": 5,
+              "kicker": "CHANNEL",
+              "title": "Kicker",
+              "description": [
+                "one short word",
+                "the quietest mark"
+              ],
+              "detail": "The mark above the title. It is a WORD, so it can be read exactly; it is small, so it is read last. That pairing makes it the natural partner for colour — either agreeing with it, or dividing the work with it.",
+              "variant": "neutral"
+            }
+          ]
+        },
+        {
+          "id": "p5-double",
+          "title": "Double a channel",
+          "subtitle": "kicker and colour carrying one claim — read either, get the same answer",
+          "variant": "neutral",
+          "order": 2,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p5-d-rule",
+              "order": 1,
+              "kicker": "RULE",
+              "title": "Say it twice",
+              "description": [
+                "one claim, two channels",
+                "nothing new is added"
+              ],
+              "detail": "Doubling adds no information — it adds ROBUSTNESS. A reader who skims colour and a reader who reads words arrive at the same ranking, and a projector that flattens the palette does not destroy the claim. p1's ladder doubles height and colour; this pair doubles kicker and colour, which is the same operation on different channels.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p5-d-bad",
+              "order": 2,
+              "kicker": "AT RISK",
+              "title": "One end",
+              "description": [
+                "the word says risk",
+                "the red says it too"
+              ],
+              "detail": "The mark reads <em>AT RISK</em> and the role is <code>bad</code>. Two channels, one claim — and because they agree, neither is available to say anything else about this cell.",
+              "variant": "bad"
+            },
+            {
+              "id": "p5-d-good",
+              "order": 3,
+              "kicker": "HARDENED",
+              "title": "The other end",
+              "description": [
+                "same pair, other value",
+                "the scale reads twice"
+              ],
+              "detail": "The opposite end of the same two-value scale: mark <em>HARDENED</em>, role <code>good</code>. A doubled channel is only worth the cost when the scale has ends worth telling apart at a glance.",
+              "variant": "good"
+            },
+            {
+              "id": "p5-d-cost",
+              "order": 4,
+              "kicker": "COST",
+              "title": "What it costs",
+              "description": [
+                "a channel is spent",
+                "it cannot say more"
+              ],
+              "detail": "Both channels are now committed to one claim. If a second claim shows up later — a kind, a phase, an owner — it has to find an unspent channel (position, size, border) or the page has to give up the reinforcement. That trade is the whole reason to count channels at all.",
+              "variant": "muted"
+            }
+          ]
+        },
+        {
+          "id": "p5-split",
+          "title": "Separate two channels",
+          "subtitle": "colour says how it is, the dashed border says where it lives",
+          "variant": "neutral",
+          "order": 3,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p5-s-rule",
+              "order": 1,
+              "kicker": "RULE",
+              "title": "Say two things",
+              "description": [
+                "two channels, two claims",
+                "one cell carries both"
+              ],
+              "detail": "Separating is the opposite trade: each channel keeps its own claim, so one cell can assert a state AND a location at once. It only works if the reader is told which channel says which — an undeclared split reads as noise.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p5-s-outside",
+              "order": 2,
+              "kicker": "EDGE",
+              "title": "Outside the wall",
+              "description": [
+                "amber: weak config",
+                "dashed: not ours"
+              ],
+              "detail": "This cell carries <code>variant: warn</code> AND <code>treatment: [outside]</code>. The colour claims a state (weak); the dashed frame claims a location (outside the perimeter — a third-party service, an unmanaged dependency). Two channels, two claims, one 130px cell.",
+              "variant": "warn",
+              "treatment": [
+                "outside"
+              ]
+            },
+            {
+              "id": "p5-s-inside",
+              "order": 3,
+              "kicker": "CORE",
+              "title": "Inside the wall",
+              "description": [
+                "same amber, same state",
+                "solid frame: ours"
+              ],
+              "detail": "The control case: identical colour role, no <code>outside</code>. The two cells are the same on the colour channel and differ on the border channel alone — which is the proof that the channels are independent rather than two names for one effect.",
+              "variant": "warn"
+            },
+            {
+              "id": "p5-s-cost",
+              "order": 4,
+              "kicker": "COST",
+              "title": "What it costs",
+              "description": [
+                "two claims to hold",
+                "declare them, or lose both"
+              ],
+              "detail": "A split doubles what the reader has to keep in mind, and it fails silently: a page that never says what its dashed frames mean has simply drawn two kinds of box. That is why the band below exists, and why it is text rather than a legend of swatches.",
+              "variant": "muted"
+            }
+          ]
+        },
+        {
+          "id": "p5-legend",
+          "title": "What colour means here",
+          "subtitle": "a channel means nothing until the page says so — so this page says so",
+          "variant": "neutral",
+          "order": 4,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "p5-g-good",
+              "order": 1,
+              "kicker": "GOOD",
+              "title": "One end of the scale",
+              "description": [
+                "on this page only",
+                "not a verdict, an end"
+              ],
+              "detail": "On THIS page <code>good</code> is the upper end of the example two-value scale in the DOUBLE branch, and nothing more. On another page the same role legitimately means hardened, done, or approved — the palette guarantees the ROLE is stable, never the reading.",
+              "variant": "good"
+            },
+            {
+              "id": "p5-g-bad",
+              "order": 2,
+              "kicker": "BAD",
+              "title": "The other end",
+              "description": [
+                "the same scale",
+                "no wider claim"
+              ],
+              "detail": "<code>bad</code> here is the lower end of that same scale. Note what it does NOT mean on this page: it makes no claim about the deck, the engine, or any of the cells outside that branch.",
+              "variant": "bad"
+            },
+            {
+              "id": "p5-g-warn",
+              "order": 3,
+              "kicker": "WARN",
+              "title": "Carries two claims",
+              "description": [
+                "the split pair above",
+                "state plus location"
+              ],
+              "detail": "<code>warn</code> is reserved on this page for the two cells in the SEPARATE branch, where colour is one of two channels in play. Reserving a role for one demonstration is itself a declaration — the reader can rule the rest of the canvas out.",
+              "variant": "warn"
+            },
+            {
+              "id": "p5-g-muted",
+              "order": 4,
+              "kicker": "MUTED",
+              "title": "Commentary only",
+              "description": [
+                "a cost note",
+                "never a risk claim"
+              ],
+              "detail": "<code>muted</code> marks the two <em>what it costs</em> cells: they are commentary about the operation, not participants in it. Without this line a reader could reasonably take the grey as <em>deprecated</em> or <em>inactive</em>, which is exactly the ambiguity a declaration removes.",
+              "variant": "muted"
+            }
+          ]
+        }
+      ],
+      "name": "5 · Channels",
+      "order": 6
+    },
+    {
+      "id": "p6-relations",
+      "layout": "grid",
+      "form": "flow",
+      "columns": 2,
+      "filters": [
+        {
+          "key": "packing",
+          "label": "A directional flow",
+          "steps": [
+            "Click the chip to light the three cells of the flow, in the order they are authored.",
+            "There is no arrowhead: the direction is carried by <code>order</code> and by the kickers 1 · 2 · 3.",
+            "The same key is declared on page 3, where it traces the packing order — one slug, two pages."
+          ]
+        },
+        {
+          "key": "crosscut",
+          "label": "A cross-cutting concept",
+          "steps": [
+            "Click the chip to light members in THREE different sections at once.",
+            "A concept chip is not a path: nothing about it reads in an order, and it never leaves a section out.",
+            "One cell belongs to this relation AND to the flow above — membership is a list, not a category."
+          ]
+        }
+      ],
+      "sections": [
+        {
+          "id": "p6-what",
+          "title": "It lights, it does not draw",
+          "subtitle": "a chip is a relation expressed as membership — the grid has no edges",
+          "variant": "neutral",
+          "order": 1,
+          "span": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p6-w-arrow",
+              "order": 1,
+              "kicker": "NO EDGE",
+              "title": "There are no arrows",
+              "description": [
+                "the grid draws cells",
+                "never lines between them"
+              ],
+              "detail": "Nothing in the dialect can draw an edge from one cell to another — a <code>separator</code> is a divider, not a connector, and there is no coordinate space to route a line through. So a relation cannot be DRAWN, and the substitute is not a weaker arrow: it is membership.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p6-w-chip",
+              "order": 2,
+              "kicker": "MEMBERS",
+              "title": "The cell owns its tags",
+              "description": [
+                "a component declares keys",
+                "the chip is the index"
+              ],
+              "detail": "A component lists the keys it belongs to in <code>filters</code>, and the engine builds the inverse index by walking the tree — so there is no central node list to maintain. Lighting a chip adds <code>.lit</code> to every member and to its enclosing section, and dims the rest of the canvas.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p6-w-arity",
+              "order": 3,
+              "kicker": "ARITY",
+              "title": "Two ends or nothing",
+              "description": [
+                "one member is no relation",
+                "and it blacks out the page"
+              ],
+              "detail": "A one-member chip cannot be shown on this page, because <code>npm run check</code> FAILS it (CHIP arity): a relation needs two ends, and since an active chip dims everything it does not name, a chip with a single member switches the whole canvas off to spotlight one box. A chip with ZERO members fails the same check from the other direction. The rule is enforced, so the defect is stated here in words instead of authored.",
+              "variant": "warn"
+            }
+          ]
+        },
+        {
+          "id": "p6-flow",
+          "title": "A flow, read in one direction",
+          "subtitle": "no arrowhead exists — so order and position carry the direction",
+          "variant": "neutral",
+          "order": 2,
+          "span": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p6-f-1",
+              "order": 1,
+              "kicker": "1",
+              "title": "Where it starts",
+              "description": [
+                "first in order",
+                "so leftmost in the row"
+              ],
+              "detail": "This cell is the flow's first end. It reads as first for two independent reasons: it is authored first, and its kicker says so. Neither is an arrow, and together they are enough.",
+              "variant": "neutral",
+              "filters": [
+                "packing"
+              ]
+            },
+            {
+              "id": "p6-f-2",
+              "order": 2,
+              "kicker": "2",
+              "title": "The middle, twice over",
+              "description": [
+                "second in the flow",
+                "and in the concept too"
+              ],
+              "detail": "The only cell on this page in TWO relations: it lists both <code>packing</code> and <code>crosscut</code>. Membership is a list, so a cell can sit on a path and also belong to a theme that cuts across the page — the two chips light overlapping, not exclusive, sets.",
+              "variant": "accent",
+              "filters": [
+                "packing",
+                "crosscut"
+              ]
+            },
+            {
+              "id": "p6-f-3",
+              "order": 3,
+              "kicker": "3",
+              "title": "Where it ends",
+              "description": [
+                "last in order",
+                "so last in the reading"
+              ],
+              "detail": "The far end of the relation. When the chip lights, these three cells are the only lit ones in this section, and the eye reads them left to right because that is where <code>order</code> put them. Change the orders and the flow reverses — there is nothing else to edit.",
+              "variant": "neutral",
+              "filters": [
+                "packing"
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p6-left",
+          "title": "One section",
+          "subtitle": "a member and a non-member, side by side",
+          "variant": "neutral",
+          "order": 3,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p6-l-in",
+              "order": 1,
+              "kicker": "CONCEPT",
+              "title": "Tagged here",
+              "description": [
+                "a member of the chip",
+                "in this section"
+              ],
+              "detail": "One end of the <code>crosscut</code> relation. A concept chip groups by theme, status or ownership — anything true of several cells at once — and it has no direction: there is no first or last member, only membership.",
+              "variant": "neutral",
+              "filters": [
+                "crosscut"
+              ]
+            },
+            {
+              "id": "p6-l-out",
+              "order": 2,
+              "kicker": "DIMMED",
+              "title": "Not tagged",
+              "description": [
+                "declares no key",
+                "so it dims when lit"
+              ],
+              "detail": "A non-member in the same section. When the chip is active this cell dims while its neighbour lights, which is why the section itself also gains <code>.lit</code> — the zone frame tells you the relation reaches in here, and the cells tell you how far.",
+              "variant": "muted"
+            }
+          ]
+        },
+        {
+          "id": "p6-right",
+          "title": "Another section",
+          "subtitle": "the same relation, across a boundary the grid drew",
+          "variant": "neutral",
+          "order": 4,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p6-r-in",
+              "order": 1,
+              "kicker": "CONCEPT",
+              "title": "Tagged there too",
+              "description": [
+                "the other end",
+                "in a different section"
+              ],
+              "detail": "The second end, in a section of its own. Nothing connects the two cells structurally — no span, no nesting, no line. They are related because they name the same key, which is the whole mechanism: a relation is a shared name, not a shared position.",
+              "variant": "neutral",
+              "filters": [
+                "crosscut"
+              ]
+            },
+            {
+              "id": "p6-r-out",
+              "order": 2,
+              "kicker": "DIMMED",
+              "title": "Also not tagged",
+              "description": [
+                "position never implies",
+                "membership"
+              ],
+              "detail": "Its neighbour is a member and it is not, although they sit in the same cell grid — which is the negative case that makes the point: being beside a member is not being related. Only the declared key is.",
+              "variant": "muted"
+            }
+          ]
+        }
+      ],
+      "name": "6 · Relations",
+      "order": 7
     }
   ]
 };

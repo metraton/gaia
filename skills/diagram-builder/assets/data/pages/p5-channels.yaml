@@ -1,0 +1,241 @@
+# PRINCIPLE 5 — "Every visual channel carries one claim."
+#
+# One page, one principle. The page DEMONSTRATES the principle that names it,
+# and the content of every box EXPLAINS the tool that box is demonstrating —
+# so the deck is its own documentation and the guardrail keeps it honest.
+#
+# A CHANNEL is one independent way a cell can differ from its neighbours:
+# position, size, colour, border style, the kicker mark. They are orthogonal —
+# changing one never changes another — so each one can carry a claim on its own,
+# and there are exactly two things to do with them: DOUBLE two channels onto one
+# claim to reinforce it, or SEPARATE two channels to say two different things.
+# A channel's meaning is per PAGE and has to be DECLARED; the bottom band of
+# this page declares its own.
+#
+# FORM: mindmap. Deliberate: the page is one central idea with symmetric
+# branches — the channel inventory as the core band, the two operations as the
+# two branches beside it, the declaration as the base. `mindmap` names exactly
+# that shape, and it drops the orphan-row and verticality checks (a mindmap is
+# legitimately a core plus branches, not a dense board) while keeping the
+# gridded checks that matter here: edge-to-edge fill, no dead track, and the
+# 120px legibility floor the five-track core band comes close to.
+#
+# WHAT IT EXERCISES: five channels named side by side · DOUBLING kicker+colour
+# on one claim (a different pair than p1's height+colour, on purpose) ·
+# SEPARATING colour from border style so one cell carries two claims ·
+# `treatment: [outside]`, the dashed frame that says "outside the perimeter" and
+# is the clearest channel that is not colour · a page that declares its own
+# colour vocabulary in text.
+
+id: p5-channels
+layout: grid
+form: mindmap
+# Two root columns: the core band and the declaration band each take a full
+# row, and the two branch sections share the row between them.
+columns: 2
+
+sections:
+
+  # ── ROW 1 · THE CORE — the five channels, named ────────────────────────────
+  # Five single cells in five tracks. Each names one channel and what it can
+  # carry; together they are the whole vocabulary the two branches operate on.
+  - id: p5-core
+    title: "Five channels"
+    subtitle: "independent by construction — changing one never changes another"
+    variant: neutral
+    order: 1
+    span: 2
+    columns: 5
+    children:
+      - id: p5-c-position
+        order: 1
+        kicker: CHANNEL
+        title: "Position"
+        description:
+          - "where it sits"
+          - "authored as order"
+        detail: "The strongest channel and the cheapest: a cell placed first reads as first, a band placed last reads as the floor. You do not set coordinates — you set <code>order</code> (principle 3), and position is the consequence."
+        variant: neutral
+      - id: p5-c-size
+        order: 2
+        kicker: CHANNEL
+        title: "Size"
+        description:
+          - "how much space"
+          - "span and rowspan"
+        detail: "Two dials, two meanings: <code>span</code> is REACH across the row and <code>rowspan</code> is MAGNITUDE down it. Size is measured in whole slots, so it is a step scale, never continuous."
+        variant: neutral
+      - id: p5-c-colour
+        order: 3
+        kicker: CHANNEL
+        title: "Colour"
+        description:
+          - "the variant role"
+          - "one value per cell"
+        detail: "One semantic role from a closed enum (<code>neutral</code>, <code>good</code>, <code>warn</code>, <code>bad</code>, <code>accent</code>, <code>muted</code>). It is the channel most often overloaded, because it is the one readers notice first — which is exactly why the page has to say what it means."
+        variant: neutral
+      - id: p5-c-border
+        order: 4
+        kicker: CHANNEL
+        title: "Border"
+        description:
+          - "solid or dashed"
+          - "no colour at all"
+        detail: "<code>treatment: [outside]</code> is <code>border-style:dashed</code> and NOTHING else — no fill, no border colour, no geometry. That is why it is a treatment rather than a variant, and why it is the cleanest proof that a channel need not be colour."
+        variant: neutral
+      - id: p5-c-kicker
+        order: 5
+        kicker: CHANNEL
+        title: "Kicker"
+        description:
+          - "one short word"
+          - "the quietest mark"
+        detail: "The mark above the title. It is a WORD, so it can be read exactly; it is small, so it is read last. That pairing makes it the natural partner for colour — either agreeing with it, or dividing the work with it."
+        variant: neutral
+
+  # ── ROW 2, LEFT · DOUBLE — two channels, one claim ────────────────────────
+  # Colour and kicker say the SAME thing on the two cells in the middle, so the
+  # scale is legible twice. p1 already doubles height+colour, so this branch
+  # deliberately doubles a different pair.
+  - id: p5-double
+    title: "Double a channel"
+    subtitle: "kicker and colour carrying one claim — read either, get the same answer"
+    variant: neutral
+    order: 2
+    span: 1
+    columns: 2
+    children:
+      - id: p5-d-rule
+        order: 1
+        kicker: RULE
+        title: "Say it twice"
+        description:
+          - "one claim, two channels"
+          - "nothing new is added"
+        detail: "Doubling adds no information — it adds ROBUSTNESS. A reader who skims colour and a reader who reads words arrive at the same ranking, and a projector that flattens the palette does not destroy the claim. p1's ladder doubles height and colour; this pair doubles kicker and colour, which is the same operation on different channels."
+        variant: neutral
+      - id: p5-d-bad
+        order: 2
+        kicker: "AT RISK"
+        title: "One end"
+        description:
+          - "the word says risk"
+          - "the red says it too"
+        detail: "The mark reads <em>AT RISK</em> and the role is <code>bad</code>. Two channels, one claim — and because they agree, neither is available to say anything else about this cell."
+        variant: bad
+      - id: p5-d-good
+        order: 3
+        kicker: HARDENED
+        title: "The other end"
+        description:
+          - "same pair, other value"
+          - "the scale reads twice"
+        detail: "The opposite end of the same two-value scale: mark <em>HARDENED</em>, role <code>good</code>. A doubled channel is only worth the cost when the scale has ends worth telling apart at a glance."
+        variant: good
+      - id: p5-d-cost
+        order: 4
+        kicker: COST
+        title: "What it costs"
+        description:
+          - "a channel is spent"
+          - "it cannot say more"
+        detail: "Both channels are now committed to one claim. If a second claim shows up later — a kind, a phase, an owner — it has to find an unspent channel (position, size, border) or the page has to give up the reinforcement. That trade is the whole reason to count channels at all."
+        variant: muted
+
+  # ── ROW 2, RIGHT · SEPARATE — two channels, two claims ────────────────────
+  # The two cells in the middle share one colour role and differ ONLY in border
+  # style, which is what proves the two channels are independent.
+  - id: p5-split
+    title: "Separate two channels"
+    subtitle: "colour says how it is, the dashed border says where it lives"
+    variant: neutral
+    order: 3
+    span: 1
+    columns: 2
+    children:
+      - id: p5-s-rule
+        order: 1
+        kicker: RULE
+        title: "Say two things"
+        description:
+          - "two channels, two claims"
+          - "one cell carries both"
+        detail: "Separating is the opposite trade: each channel keeps its own claim, so one cell can assert a state AND a location at once. It only works if the reader is told which channel says which — an undeclared split reads as noise."
+        variant: neutral
+      - id: p5-s-outside
+        order: 2
+        kicker: EDGE
+        title: "Outside the wall"
+        description:
+          - "amber: weak config"
+          - "dashed: not ours"
+        detail: "This cell carries <code>variant: warn</code> AND <code>treatment: [outside]</code>. The colour claims a state (weak); the dashed frame claims a location (outside the perimeter — a third-party service, an unmanaged dependency). Two channels, two claims, one 130px cell."
+        variant: warn
+        treatment: [outside]
+      - id: p5-s-inside
+        order: 3
+        kicker: CORE
+        title: "Inside the wall"
+        description:
+          - "same amber, same state"
+          - "solid frame: ours"
+        detail: "The control case: identical colour role, no <code>outside</code>. The two cells are the same on the colour channel and differ on the border channel alone — which is the proof that the channels are independent rather than two names for one effect."
+        variant: warn
+      - id: p5-s-cost
+        order: 4
+        kicker: COST
+        title: "What it costs"
+        description:
+          - "two claims to hold"
+          - "declare them, or lose both"
+        detail: "A split doubles what the reader has to keep in mind, and it fails silently: a page that never says what its dashed frames mean has simply drawn two kinds of box. That is why the band below exists, and why it is text rather than a legend of swatches."
+        variant: muted
+
+  # ── ROW 3 · THE DECLARATION — what colour means ON THIS PAGE ──────────────
+  # Four single cells in four tracks, one per role this page actually uses. The
+  # roles are identical in every palette, so this declaration survives a skin
+  # change; what it can never survive is being left unsaid.
+  - id: p5-legend
+    title: "What colour means here"
+    subtitle: "a channel means nothing until the page says so — so this page says so"
+    variant: neutral
+    order: 4
+    span: 2
+    columns: 4
+    children:
+      - id: p5-g-good
+        order: 1
+        kicker: GOOD
+        title: "One end of the scale"
+        description:
+          - "on this page only"
+          - "not a verdict, an end"
+        detail: "On THIS page <code>good</code> is the upper end of the example two-value scale in the DOUBLE branch, and nothing more. On another page the same role legitimately means hardened, done, or approved — the palette guarantees the ROLE is stable, never the reading."
+        variant: good
+      - id: p5-g-bad
+        order: 2
+        kicker: BAD
+        title: "The other end"
+        description:
+          - "the same scale"
+          - "no wider claim"
+        detail: "<code>bad</code> here is the lower end of that same scale. Note what it does NOT mean on this page: it makes no claim about the deck, the engine, or any of the cells outside that branch."
+        variant: bad
+      - id: p5-g-warn
+        order: 3
+        kicker: WARN
+        title: "Carries two claims"
+        description:
+          - "the split pair above"
+          - "state plus location"
+        detail: "<code>warn</code> is reserved on this page for the two cells in the SEPARATE branch, where colour is one of two channels in play. Reserving a role for one demonstration is itself a declaration — the reader can rule the rest of the canvas out."
+        variant: warn
+      - id: p5-g-muted
+        order: 4
+        kicker: MUTED
+        title: "Commentary only"
+        description:
+          - "a cost note"
+          - "never a risk claim"
+        detail: "<code>muted</code> marks the two <em>what it costs</em> cells: they are commentary about the operation, not participants in it. Without this line a reader could reasonably take the grey as <em>deprecated</em> or <em>inactive</em>, which is exactly the ambiguity a declaration removes."
+        variant: muted

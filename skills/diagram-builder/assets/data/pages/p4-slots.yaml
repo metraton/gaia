@@ -1,0 +1,180 @@
+# PRINCIPLE 4 — "Every field is a slot with a character, not a meaning."
+#
+# One page, one principle. The page DEMONSTRATES the principle that names it,
+# and the content of every box EXPLAINS the tool that box is demonstrating —
+# so the deck is its own documentation and the guardrail keeps it honest.
+#
+# Each content field has a FIXED CHARACTER — how big it is, how loud it reads,
+# where it lives — and NO fixed meaning. The engine decides the character; the
+# author decides what the slot carries. `kicker` is the clearest case: it was
+# once called `status`, and the name alone made every deck believe the mark had
+# to hold a state. It holds whatever the page needs it to hold.
+#
+# FORM: planner. Deliberate: this page is a BOARD of peer cards where the same
+# mark carries a different payload on each card — which is what a planner board
+# IS (a card, a mark, and a vocabulary the board itself declares). It is also
+# grid-dense, so it keeps the closure identity and the orphan-row check that a
+# board of peer cards should be judged by, while dropping the word-fit floor —
+# correct here, because these titles are FIELD NAMES and payload samples
+# (`kicker`, `PHASE II`), not human sentences.
+#
+# WHAT IT EXERCISES: the four content fields side by side · one kicker carrying
+# four unrelated payloads · saying LESS on purpose (a title-only card, a
+# kicker-only card, a card with everything) · `treatment: [centered]` ·
+# `treatment: [half]` as a paired slot division · `note`, which appears exactly
+# once in the whole seed, here, so it can be judged before it is kept.
+
+id: p4-slots
+layout: grid
+form: planner
+# Two root columns: the two inventories sit side by side on row 1, and the
+# "say less" band takes a full row of its own beneath them.
+columns: 2
+
+sections:
+
+  # ── ROW 1, LEFT · THE FOUR FIELDS AND THE CHARACTER OF EACH ───────────────
+  # Four single cells in two tracks close a 2×2 rectangle. Every cell names one
+  # field and states its CHARACTER — size, prominence, where it renders — which
+  # is the whole of what the engine fixes about it.
+  - id: p4-fields
+    title: "Four slots, four characters"
+    subtitle: "the engine fixes the size and the prominence — never the meaning"
+    variant: neutral
+    order: 1
+    span: 1
+    columns: 2
+    children:
+      - id: p4-f-kicker
+        order: 1
+        kicker: FIELD
+        title: "kicker"
+        description:
+          - "one line, uppercase"
+          - "the quietest mark"
+        detail: "The small uppercase mark above the title (<code>.box .k</code>, 10.5px mono, muted). Its character is fixed: one short line, the least prominent text on the card. Its meaning is open — see the row of payloads beside this one. It was renamed from <code>status</code> precisely because the old name asserted a meaning the field does not have."
+        variant: neutral
+      - id: p4-f-title
+        order: 2
+        kicker: FIELD
+        title: "title"
+        description:
+          - "two lines, bold"
+          - "the loudest slot"
+        detail: "The card's heading (<code>.box .t</code>, bold, clamped at 2 lines). It is the most prominent slot on a box, so whatever you put here is what the card is ABOUT. Clamping is what keeps every box exactly one slot tall no matter how long the string is."
+        variant: neutral
+      - id: p4-f-desc
+        order: 3
+        kicker: FIELD
+        title: "description"
+        description:
+          - "three lines, clamped"
+          - "a list of short lines"
+        detail: "A string, or a list where each item is a line. The whole block clamps at 3 VISUAL lines, so a long line costs two of them — which is why the lines on this deck are short by discipline rather than by luck. Anything that does not fit belongs in <code>detail</code>."
+        variant: neutral
+      - id: p4-f-detail
+        order: 4
+        kicker: FIELD
+        title: "detail"
+        description:
+          - "unbounded, HTML"
+          - "lives in the panel"
+        detail: "The only unbounded slot: it renders in the click-through panel, not on the card, so it has no clamp and accepts HTML. This paragraph is one. When a cell has more to say than three short lines, the answer is never a taller cell — it is this field."
+        variant: neutral
+
+  # ── ROW 1, RIGHT · THE SAME KICKER, FOUR UNRELATED PAYLOADS ───────────────
+  # Four cells, one field, four kinds of content: a count, a step, a phase, a
+  # class label. Nothing in the engine prefers any of them.
+  - id: p4-payloads
+    title: "One kicker, four payloads"
+    subtitle: "a count, a step, a phase, a class — the field cannot tell them apart"
+    variant: neutral
+    order: 2
+    span: 1
+    columns: 2
+    children:
+      - id: p4-p-number
+        order: 1
+        kicker: "3"
+        title: "A number"
+        description:
+          - "a bare count"
+          - "no words at all"
+        detail: "The mark holds a quantity here — a count of replicas, of owners, of open items. The engine renders the string and makes no claim about it: there is no numeric type, no sort, no scale."
+        variant: neutral
+      - id: p4-p-step
+        order: 2
+        kicker: "STEP 2"
+        title: "A step"
+        description:
+          - "a position in a run"
+          - "the same slot, again"
+        detail: "Here the same field carries a step index. On a flow page this is what makes a sequence readable at a glance, and it pairs with <code>order</code> — but that pairing is the author's convention, not something the field enforces."
+        variant: neutral
+      - id: p4-p-phase
+        order: 3
+        kicker: "PHASE II"
+        title: "A phase"
+        description:
+          - "a span of time"
+          - "still just a mark"
+        detail: "A phase label. Read together with the two cells before it, the point is that no reading of the field is privileged: a deck that means phases and a deck that means steps use the identical slot."
+        variant: neutral
+      - id: p4-p-class
+        order: 4
+        kicker: "STORE"
+        title: "A class"
+        description:
+          - "what kind of thing"
+          - "this card is"
+        detail: "A kind, not a state. This is the payload the old name <code>status</code> made hardest to reach for — and the most common one in an architecture deck, where the mark says <em>database</em>, <em>queue</em>, <em>gateway</em> far more often than it says <em>healthy</em>."
+        variant: neutral
+
+  # ── ROW 2 · SAYING LESS, ON PURPOSE ───────────────────────────────────────
+  # Four slots in four tracks. Three of them deliberately leave fields EMPTY,
+  # and the fourth fills every one — including `note`, the only note in the
+  # seed. The half pair is ONE slot: two consecutive halves stack inside a
+  # single full-height cell, so the rectangle still closes.
+  - id: p4-less
+    title: "Saying less, on purpose"
+    subtitle: "an empty field is an authoring choice — the card stays exactly one slot tall"
+    variant: neutral
+    order: 3
+    span: 2
+    columns: 4
+    children:
+      - id: p4-l-title
+        order: 1
+        title: "Title only"
+        treatment: [centered]
+        detail: "No kicker, no description — one line of text and nothing else. <code>treatment: [centered]</code> centres the text block (<code>text-align:center</code>, no geometry and no colour), which is what a card with a single short claim usually wants. Emptiness costs nothing: the cell is the same 130px slot as every other."
+        variant: neutral
+      - id: p4-l-kicker
+        order: 2
+        kicker: "KICKER ONLY"
+        detail: "This card declares a <code>kicker</code> and NOTHING else — no title, no description. The engine renders the mark and an empty title node, so the card reads as a pure label. It is the smallest legible cell in the dialect, and a legitimate way to mark a region without claiming anything about it."
+        variant: muted
+      - id: p4-l-half-top
+        order: 3
+        kicker: TOP
+        title: "Half a slot"
+        treatment: [half]
+        detail: "<code>half</code> does not shrink a cell — it DIVIDES a slot. Two consecutive halves are wrapped in ONE <code>.half-slot</code> that occupies a single grid cell at the full 130px, so tracks, rows and closure are untouched. Halves pair by ADJACENCY and must come in twos; an odd one is a build error, because half a filled slot is a hole."
+        variant: neutral
+      - id: p4-l-half-bottom
+        order: 4
+        kicker: BOTTOM
+        title: "The other half"
+        treatment: [half]
+        detail: "The bottom half of the same slot. <code>half</code> is TITLE-ONLY by construction: a <code>description</code> on a half is a build error, since ~63px cannot hold a title plus three clamped lines without clipping. The long copy goes here, in <code>detail</code>, which is where it belonged anyway."
+        variant: neutral
+      - id: p4-l-all
+        order: 5
+        kicker: EVERYTHING
+        title: "Every field at once"
+        description:
+          - "kicker, title, three lines"
+          - "detail, and one note"
+        note: "⚠ <code>note</code> renders ONLY inside the panel, and nothing on the card hints that it exists — so a warning here is invisible until someone clicks."
+        detail: "The full card, for comparison with its three neighbours: the same slot, the same 130px, carrying every content field the dialect has. The <code>note</code> is the last of them and the only one in this seed — it renders in the panel in warn colour, below the body. Judge it here: a warning nobody can see from the canvas may be the wrong shape for a warning."
+        variant: neutral
