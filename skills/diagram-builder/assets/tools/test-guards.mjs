@@ -58,12 +58,14 @@ function runNode(args) {
 function rmDeck(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } }
 
 // ── 1. RECT — section-e short by exactly 1 cell after removing item-b ─────
-// NOT section-a/item-2 (see cross_layer_impacts): a 2-col, 2-child section
-// reduced to 1 child is absorbed by the documented grow-with-content clamp
-// (effectiveCols shrinks to 1, so 1 cell in 1 track still closes). section-e
-// (4 authored cols, span 1+1+2) already clamps to effectiveCols=2 with all
-// 3 children present; dropping the span-1 "item-b" leaves span 1+2=3 that
-// cannot fit 2-per-row, forcing a genuine 2×2=4 rectangle with a real hole.
+// NOT a section whose child count is what pins its track count: dropping a cell
+// there is absorbed by the documented grow-with-content clamp (effectiveCols
+// shrinks with the content, so the smaller rectangle still closes) and the guard
+// legitimately stays quiet. section-e is the right fixture because its 4 tracks
+// SURVIVE the removal: it authors columns:4 with six span-1 cells + one span-2
+// merge (area 6×1+1×2 = 8 = 4×2, closed), so with "item-b" gone the clamp still
+// sees 5 single cells and keeps 4 tracks — leaving area 7 against a 4×2=8
+// rectangle, i.e. a real hole of exactly one cell in the last row.
 {
   const dir = mkDeck();
   const { p, doc } = loadOverview(dir);

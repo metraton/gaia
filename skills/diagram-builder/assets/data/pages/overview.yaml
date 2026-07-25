@@ -21,11 +21,17 @@
 #     and `sections` is the root's children.
 #   • a component (leaf) chooses its `type`: box (default) | separator | rail.
 #
-# This seed is a tiny, domain-free demo of every capability of the model:
-# two INLINE sections side by side on row 1 (Section A + Section B, with
-# nesting), then three full-width BANDS beneath them — a separator + rail
-# (Section C), a row-span bar chart (Section D), and a partial 2-of-4 merge
-# (Section E). Edit it, then run `npm run build` and `npm run validate`.
+# THIS PAGE'S JOB — COMPOSITIONS AND EDGE CASES. The principle pages (p1–p9)
+# each carry exactly ONE idea, in its cleanest form. This page carries what none
+# of them needs but the engine must keep supporting: the compositions and the
+# borderline cases. Five of them live ONLY here, and three are the only live
+# subjects the G and X invariants have —
+#   • a RESERVED chip with no members (the `all` reset, in `filters` below);
+#   • TWO TREATMENTS composed on one leaf (Section J);
+#   • a LONE BOX sibling of sections inside a row of zones (Section I);
+#   • a VERTICAL rail and separator sitting DIRECTLY in a row of zones (Section F);
+#   • a SIX-COLUMN band whose collapse cascade generalises to any N (Section H).
+# Section A indexes all five, so the page states its own remit.
 
 id: overview
 layout: grid
@@ -35,6 +41,10 @@ layout: grid
 columns: 2
 
 filters:
+  # EDGE CASE 1 — the RESERVED chip. `all` is the reset: it declares no members
+  # and no component ever lists it, which for any OTHER key is an orphan chip and
+  # a hard CHIP failure. It is the only exemption the referential-integrity check
+  # carries, and this page is where that exemption is exercised.
   - key: all
     label: "All"
   - key: flow
@@ -42,14 +52,20 @@ filters:
     steps:
       - "Chips are flows: click one to spotlight every component that declares it and dim the rest."
       - "A component joins a flow by listing the filter key in its own <code>filters</code>."
-      - "Here the flow traces Item 1 → Item 3 → Item 7."
+      - "Here the flow traces Why this page → Item 3 → Item 7."
 
 sections:
 
-  # ── ROW 1, LEFT · an inline leaf section (span 1), 2 uniform cells ──
+  # ── ROW 1, LEFT · THE PAGE'S REMIT — one cell per case that lives only here ──
+  # This section is ALSO the fix for the void this row used to carry: a 1-row leaf
+  # grid (130px) beside Section B's 3-deep nested stack (488px) was stretched by
+  # the row and left ~358px of trailing space nobody authored. The content is now
+  # balanced instead — 6 cells over 3 rows (406px) against Section B's 464px, the
+  # same ~58px of stretch the deck already carries in the Tall block row. The
+  # cells were not invented to fill space: each names one case this page holds.
   - id: section-a
-    title: "Section A"
-    subtitle: "an inline section (span 1) — sits side by side with Section B"
+    title: "Compositions and edge cases"
+    subtitle: "what the principle pages do not need — and the engine must keep supporting"
     variant: neutral
     order: 1
     span: 1
@@ -57,22 +73,58 @@ sections:
     children:
       - id: item-1
         order: 1
-        kicker: NEW
-        title: "Item 1"
+        kicker: REMIT
+        title: "Why this page"
         description:
-          - "a leaf component (a box)"
-          - "click it for its full detail"
-        detail: "The atom of the diagram is a box: a kicker mark, a title, and a short description. The full text always lives in this click-through panel, so the box itself stays a fixed height. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md)."
+          - "p1–p9 carry one idea each"
+          - "the compositions live here"
+        detail: "Each principle page states ONE idea in its cleanest form. The cases that are compositions of several tools, or that sit on the edge of what the model allows, would muddy those pages — but they still have to be rendered, and a regression in them still has to be caught. That is this page's whole job: it is the deck's edge-case fixture, and the five cells beside this one are its inventory."
         variant: accent
         filters: [flow]
       - id: item-2
         order: 2
-        kicker: ENTRY
-        title: "Item 2"
+        kicker: CASE 1
+        title: "Reserved chip"
         description:
-          - "cells in a row are equal width"
-          - "and fill the section edge to edge"
-        detail: "Every leaf cell stretches to an equal share of its section's width, so a row of cells always spans the section with no gap on the right."
+          - "a filter with zero members"
+          - "the reset, not an orphan"
+        detail: "A chip that no component references is an orphan and a hard CHIP failure — except <code>all</code>, the reserved reset key, which declares no members BY DESIGN. This page carries the only instance of it, so the exemption is exercised rather than merely written down."
+        variant: neutral
+      - id: case-two-treatments
+        order: 3
+        kicker: CASE 2
+        title: "Two treatments"
+        description:
+          - "one leaf composing two"
+          - "structural modifiers at once"
+        detail: "Section J's cells carry <code>[centered, outside]</code> and <code>[half, centered]</code> — a colour role AND two structural treatments on the SAME leaf. Composition is the point of making <code>treatment</code> a list, and this is the only page that composes two of them, so it is the only place the composition can regress and be seen."
+        variant: neutral
+      - id: case-lone-box
+        order: 4
+        kicker: CASE 3
+        title: "A lone box"
+        description:
+          - "a leaf sibling of sections"
+          - "inside a row of zones"
+        detail: "Section I's <code>Card</code> is a plain box standing among nested sections in a compound row. It is one of the only two live subjects invariant G has: G fails the moment that box balloons to an equal flex slice instead of staying card-sized. Retire this page and G asserts nothing."
+        variant: neutral
+      - id: case-vertical-in-row
+        order: 5
+        kicker: CASE 4
+        title: "Vertical in a row"
+        description:
+          - "a rail and a separator"
+          - "directly among zones"
+        detail: "Section F puts a <code>vertical</code> rail and a <code>vertical</code> separator DIRECTLY into a compound row beside two sub-sections. They must stay content-sized (<code>flex: 0 0 auto</code>) instead of taking an equal share — the second subject of invariant G, and the geometry invariant X reads for sibling collision."
+        variant: neutral
+      - id: case-cascade
+        order: 6
+        kicker: CASE 5
+        title: "Six columns"
+        description:
+          - "the collapse cascade at any N"
+          - "not an enumerated per-N rule"
+        detail: "Section H is a six-column band. The cascade used to be enumerated per column count, which left a 6+-column grid uncollapsed between ~640 and 1000px where it could overflow. The general …→2→1 rule is asserted here and nowhere else, because no principle page needs more than four columns."
         variant: neutral
 
   # ── ROW 1, RIGHT · an inline NESTED section (span 1): a grid of grids ──
@@ -104,9 +156,11 @@ sections:
             filters: [flow]
       # `treatment: [plain]` = a bare structural wrapper: no frame, no background,
       # no min-height. It stacks its children with nothing drawn around them —
-      # compare Group 1's framed `safe` zone beside it.
+      # compare Group 1's framed `safe` zone beside it. It also carries NO
+      # title/subtitle, which is what "nothing drawn around them" actually means:
+      # the engine only emits a section header when one is authored, so a plain
+      # wrapper with a header would contradict its own treatment.
       - id: group-2
-        title: "Group 2"
         variant: neutral
         treatment: [plain]
         columns: 1
@@ -193,11 +247,17 @@ sections:
         variant: accent
 
   # ── ROW 4 · a full-width BAND — a PARTIAL horizontal merge (2 of 4) ──
-  # A columns:4 leaf grid: two single cells + one cell that spans exactly 2 of
-  # the 4 tracks (NOT the whole row — that would be a band).
+  # A columns:4 leaf grid whose merge is REAL: `span: 2` is only a partial merge
+  # if the grid actually HAS four tracks, and the grow-with-content clamp gives a
+  # grid only as many tracks as its single cells can fill (max(singleCells,
+  # maxSpan), never above the authored count). With two single cells the clamp cut
+  # this grid to 2 tracks, so `span: 2` rendered as a FULL-WIDTH BAND while the
+  # title still promised a 2-of-4 merge. The six single cells below are what earn
+  # the four tracks: row 1 is A + B + the 2-track merge, row 2 is four singles, so
+  # the rectangle closes exactly (6×1 + 1×2 = 8 = 4 tracks × 2 rows).
   - id: section-e
     title: "Section E"
-    subtitle: "a partial merge — Item C spans 2 of 4 columns, not the whole row"
+    subtitle: "a partial merge — Item C spans 2 of 4 real tracks, earned by the six single cells around it"
     variant: neutral
     order: 5
     span: 2
@@ -221,8 +281,33 @@ sections:
         kicker: NEW
         title: "Item C — span 2"
         description: ["occupies exactly 2 of the 4 tracks"]
-        detail: "A partial merge (1 &lt; span &lt; columns) occupies exactly that many tracks and keeps its proportion as the grid collapses; only a span == columns child becomes a full-width band."
+        detail: "A partial merge (1 &lt; span &lt; columns) occupies exactly that many tracks and keeps its proportion as the grid collapses; only a span == columns child becomes a full-width band. It is partial only while the grid has more tracks than the span — which is why the row below it is authored."
         variant: accent
+      - id: item-d
+        order: 4
+        span: 1
+        kicker: TRACK 1
+        title: "Item D"
+        description: ["the second row proves", "the grid has four tracks"]
+        detail: "The grow-with-content clamp counts SINGLE cells: four of them are the minimum that lets a columns:4 grid keep four tracks. Without this row the clamp would fold the grid to 2 tracks and Item C's <code>span: 2</code> would silently become a full-width band."
+      - id: item-e
+        order: 5
+        span: 1
+        kicker: TRACK 2
+        title: "Item E"
+        description: ["a single cell — the unit", "the clamp counts"]
+      - id: item-f
+        order: 6
+        span: 1
+        kicker: TRACK 3
+        title: "Item F"
+        description: ["one cell of four again"]
+      - id: item-g
+        order: 7
+        span: 1
+        kicker: TRACK 4
+        title: "Item G"
+        description: ["and the rectangle closes", "6×1 + 1×2 = 4 × 2"]
 
   # ── ROW 5 · two INLINE sub-decks side by side — the guardrail's fix-1/fix-2 cases ──
   # These two span:1 sections sit side by side on their own root row (like A + B),
