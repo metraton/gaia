@@ -34,10 +34,12 @@
 //      data is STALE — it says "run build" and exits 1 (see staticCensus).
 //   1. Reads the EXISTING data/data.generated.js (built by the prior `npm run
 //      build` step) — validate does not regenerate it, so run build first.
-//   2. Launches headless Chromium and renders EVERY page at FIVE viewport
-//      widths spanning the 3→2→1 collapse cascade and the side-by-side regime.
-//   3. For every (page,width) it renders MULTIPLE TIMES with a real reload (F5)
-//      and ASSERTS the geometry is identical across passes (determinism).
+//   2. Launches headless Chromium and renders EVERY page at ONE viewport width
+//      (2560, the widest tier — see WIDTHS) — the 3→2→1 collapse cascade itself
+//      is now proven arithmetically by tools/check-layout.mjs (TIER), not re-
+//      rendered here at multiple widths.
+//   3. For every page it renders 3 TIMES with a real reload (F5) and ASSERTS
+//      the geometry is identical across passes (determinism).
 //   4. Measures the real geometry of every leaf box, section zone, and header,
 //      and ASSERTS each layout invariant.
 //   5. Writes a FULL-PAGE screenshot per (page,width) to a SYSTEM TEMP DIR
@@ -81,25 +83,23 @@
 //                            The old fixed-232 width rule is gone: cells now STRETCH
 //                            to fill, so width varies by section but is equal within
 //                            a grid.
-//   L  cells fill width      — at width ≥ 1200 every leaf-grid row spans the grid
-//                            edge-to-edge: no gap on the right (no hueco a la
-//                            derecha) and none on the left. A section is a FILLED
-//                            rectangle. Not asserted at min/medium where a short
-//                            last row is the legitimate cascade, NOR on a row a
-//                            row-span (.mrsp) cell touches (FASE 2a) — a
-//                            cell-graph/bar-chart row legitimately tapers, and a
-//                            swimlane rail/sep legitimately fills a column no
-//                            single-row cell reaches.
+//   L  cells fill width      — RETIRED, superseded by RECT/HOLE (npm run check).
+//      (retired -> RECT/HOLE) "Every row spans the grid edge to edge" is the
+//                            rectangle-closure identity Σ(spanCols × rowspanRows)
+//                            === tracks × rowCount, proved on the DATA rather than
+//                            a pixel measurement, and a gap is named by coordinate
+//                            instead of inferred from a right-edge delta.
 //   C  description clamp     — no .box clips its content (desc clamped to 3
 //                            lines keeps every box at CELL_H; clipped == 0).
 //   O  no h-overflow         — canvas horizontal overflow == 0 at the stacked
 //                            tiers (min/medium/large); tolerated only at the
 //                            widest side-by-side tiers.
-//   F  collapse cascade 3→2→1 — at the MINIMUM width every leaf grid renders
-//                            EXACTLY 1 track and the whole page is one vertical
-//                            stack (maxRowCount==1 — the endpoint). At MEDIUM the
-//                            INTERMEDIATE 2-col "two-table" step (a ≥2-col grid
-//                            renders exactly 2 tracks; a 1-col grid stays 1).
+//   F  collapse cascade 3→2→1 — RETIRED, superseded by TIER (npm run check).
+//      (retired -> TIER)      The …→2→1 cascade is a container query, so the
+//                            track count per tier is a pure function of (authored
+//                            columns, container width) — proved arithmetically at
+//                            all five widths this sweep used to render, instead of
+//                            re-rendering a multiplication table in a browser.
 //   S  inline fit / band spans block (ALL tiers) — INLINE sections (span:1) hug
 //                            their own grid (fit-content); BAND sections (span ==
 //                            columns) span the BLOCK width at EVERY tier
@@ -108,19 +108,18 @@
 //                            FAILS — a band must span the block at every width.
 //   B  centered block        — at the widest tiers leftPad ≈ rightPad.
 //   H  header within section  — no section header/subtitle overflows its section.
-//   E  no empty grid column   — every leaf grid fills EVERY track it declares; a
-//                            section authoring more columns than its content can
-//                            fill (a reserved dead track, a "columna vacia") FAILS.
-//                            Guards the engine's grow-with-content column clamp.
-//                            (all tiers)
-//   P  no orphan cell         — within a leaf grid, a lone single-cell box on its
-//                            own row while a sibling row holds 2+ cells breaks the
-//                            group's uniformity and FAILS (the GASTO FIJO /
-//                            FALABELLA dangling-alone defect). Asserted only where
-//                            the authored columns fully show (width > 1000); at the
-//                            collapsed tiers a short last row is the cascade, not
-//                            an orphan. A row a row-span (.mrsp) cell touches is
-//                            also exempted (FASE 2a) — same reasoning as L above.
+//   E  no empty grid column   — RETIRED, superseded by TRACK (npm run check). A
+//      (retired -> TRACK)     dead track is a track no slot's (column, span) ever
+//                            covers, a set operation on the authored data rather
+//                            than a rendered measurement — and it guards the
+//                            engine's grow-with-content clamp more directly.
+//   P  no orphan cell         — RETIRED, superseded by ROW (npm run check). "A
+//      (retired -> ROW)       lone cell on its own row while a sibling row holds
+//                            2+" is a statement about PLACEMENT, and the placement
+//                            is derivable: check-layout.mjs simulates CSS sparse
+//                            auto-placement and counts row starts, carrying over
+//                            P's exact scope (grid-dense forms, >1 track, rowspan-
+//                            touched rows exempt).
 //   V  verticality signal     — at the WIDEST tier the deck must earn its canvas:
 //                            the ROOT places top-level sections side by side
 //                            (rootRowMax ≥ 2, not one band per row) AND some leaf
@@ -158,14 +157,26 @@
 //                            misses. All tiers. A `vertical`-treatment title is
 //                            EXEMPT (its title runs down the block axis, so
 //                            horizontal token width is not the fit constraint).
-//   K  filter integrity     — the chip/component join CLOSES in both directions:
-//                            every declared chip has >=1 component referencing it,
-//                            and every key a component references is declared by a
-//                            chip. A typo used to be silent both ways (an orphan
-//                            chip dimmed the whole canvas; a dangling reference
-//                            never lit). The reset key 'all' is exempt.
+//   K  filter integrity     — RETIRED, superseded by CHIP (npm run check). A
+//      (retired -> CHIP)     chip/component join is a RELATION, not geometry, so
+//                            it needs no render: check-layout.mjs closes the join
+//                            in both directions AND adds ARITY (a one-member chip
+//                            still blacks out the deck to spotlight a single box),
+//                            a half this render-based row could never see.
 // ─────────────────────────────────────────────────────────────────────────
-const { chromium } = require('playwright');
+// PLAYWRIGHT IS RESOLVED LAZILY, AND ITS ABSENCE IS NOT A FAILURE.
+// This used to be a top-level `require('playwright')`, which made the optional
+// gate impossible to even LOAD where the browser is not installed — the process
+// died with MODULE_NOT_FOUND before printing anything, and a harness that only
+// wanted the pure decision logic (the invariant table, the verdict, the census)
+// dragged Chromium's whole dependency in with it. Gaia is installed in places
+// where no browser exists; there, `npm run validate` must SKIP and exit 0, and
+// the mandatory gate is `npm run check` (tools/check-layout.mjs), which needs
+// nothing but js-yaml. See the degradation block in main().
+function loadChromium() {
+  try { return require('playwright').chromium; }
+  catch (e) { return null; }
+}
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -177,17 +188,27 @@ const OUT = process.env.DIAGRAM_SHOTS_DIR || path.join(os.tmpdir(), 'diagram-dec
 // --cell-w is no longer a track width in the fill model (cells stretch to equal
 // fr widths) — kept only as a documented reference for the readability step-down.
 const CELL_W = 232, CELL_H = 130;
-// Five tiers spanning the 3→2→1 cascade and the side-by-side regime:
-//   min=600    — the 3→2→1 ENDPOINT: every leaf grid is 1 column, whole page a
-//                single vertical stack (narrow chrome shrinks so 1 cell fits).
-//   medium=900 — the INTERMEDIATE "two-table" step: leaf grids at 2 columns,
-//                sections stacked, bands spanning the block.
-//   large=1200 — sections STILL stacked (< 1440), leaf grids at full 3 columns.
-//   huge=1920  — sections side by side (> 1440), bands full-width, centered.
-//   ultra=2560 — same regime at high resolution.
-const WIDTHS = { min: 600, medium: 900, large: 1200, huge: 1920, ultra: 2560 };
+// ── ONE WIDTH, THE WIDEST. ────────────────────────────────────────────────
+// This was a FIVE-width sweep (600/900/1200/1920/2560) whose job was to prove the
+// …→2→1 collapse cascade while that cascade was being BUILT. It is stable now, and
+// — more to the point — the cascade is a CONTAINER QUERY: the cuts at 640/1000/1440
+// depend on nothing but the stage container's width, so the track count is a PURE
+// FUNCTION of (authored columns, container width). Arithmetic proves it exactly, at
+// all five of those widths, in tools/check-layout.mjs (`npm run check`, the
+// MANDATORY gate). Re-measuring a multiplication table in a browser five times over
+// is not evidence, it is ceremony.
+// What is LEFT here is what only pixels can answer, and the widest tier is where it
+// is answerable: the side-by-side regime (>1440) is the only one that exercises
+// centering (B), band fill (Y), span-weighted compound widths (Q), the compound
+// flex row (G) and scrollbar robustness (R) at all — at the stacked tiers those
+// checks are either inapplicable or vacuous.
+const WIDTHS = { ultra: 2560 };
 const WIDE_TIERS = new Set(['huge', 'ultra']);   // >1440: side-by-side + centered; h-overflow tolerated
-const PASSES = 5;        // reloads per (page,width) for the determinism check
+// Reloads per (page,width) for the determinism check. Lowered 5 -> 3: three
+// independent renders still catch a nondeterministic wrap/column flip (the failure
+// mode is a coin flip, not a rare tail), and the run is now one width instead of
+// five, so the evidence-per-second is far better spent here.
+const PASSES = 3;
 const CENTER_TOL = 10;   // px tolerance for leftPad ≈ rightPad
 const FIT_TOL = 48;      // px a zone may exceed its grid (padding+border+gap)
 const SB_GUARD = 17;     // widest classic vertical scrollbar to be robust against
@@ -255,7 +276,7 @@ const WORDFIT = new Set(['dashboard', 'flow']);
 
 const INVARIANTS = [
   // ── INTEGRITY — all forms, dura ──────────────────────────────────────────
-  { id: 'D', name: 'determinism (5 reloads)', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
+  { id: 'D', name: `determinism (${PASSES} reloads)`, cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: null,
     check: (m, c) => ({ ok: c.deterministic,
       detail: c.deterministic ? `identical signature across ${c.PASSES} reloads`
@@ -274,14 +295,21 @@ const INVARIANTS = [
     when: () => true, superseded: null,
     check: (m, c) => c.WIDE ? ({ ok: true, detail: `overflowX=${m.overflowX} (tolerated@wide)` })
                             : ({ ok: m.overflowX === 0, detail: `overflowX=${m.overflowX}` }) },
+  // F (both rows) — RETIRED into arithmetic. The …→2→1 cascade is a container
+  // query, so the track count per tier is a pure function of (authored columns,
+  // container width) — `tracksFor` in tools/check-layout.mjs derives it for every
+  // grid at every one of the five widths this sweep used to render, and asserts the
+  // cascade is monotone. Rendering five viewports to re-confirm that arithmetic is
+  // the definition of a redundant check, and it was the entire reason this gate
+  // needed a browser at more than one width.
   { id: 'F', name: '1-col endpoint at min', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.tier === 'min', superseded: null,
+    when: (c) => c.tier === 'min', superseded: 'TIER (npm run check)',
     check: (m) => { const bad = m.leafGrids.filter(g => g.tracks !== 1); const oneCol = bad.length === 0 && m.maxRowCount === 1;
       return { ok: oneCol, detail: bad.length ? `not-1-track: ${bad.map(g => `${g.zone}:auth${g.authored}->${g.tracks}`).join(', ')}`
         : m.maxRowCount !== 1 ? `maxRowCount=${m.maxRowCount} (expected 1 — page not a single column)`
         : `all ${m.leafGrids.length} leaf grids => 1 track; single vertical column (maxRowCount=1)` }; } },
   { id: 'F', name: '2-col intermediate at medium', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.tier === 'medium', superseded: null,
+    when: (c) => c.tier === 'medium', superseded: 'TIER (npm run check)',
     check: (m) => { const bad = m.leafGrids.filter(g => g.authored >= 2 ? g.tracks !== 2 : g.tracks !== 1);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:auth${g.authored}->${g.tracks}`).join(', ')
         : `all leaf grids: >=2col=>2 tracks, 1col=>1 (${m.leafGrids.length} grids)` }; } },
@@ -343,18 +371,32 @@ const INVARIANTS = [
       if (slots.length) parts.push(`${slots.length} half-slot(s) @ ${[...new Set(slots.map(s => s.h))].join('/')}px expect ${CELL_H}`);
       if (badSlots.length) parts.push(`BAD: ${badSlots.map(s => `${s.zone}:h=${s.h}(expect ${CELL_H}),occupants=${s.n}(expect 2)`).join(', ')}`);
       return { ok, detail: parts.join(' · ') }; } },
+  // L — RETIRED into arithmetic. "Every row spans the grid edge to edge" is the
+  // rectangle-closure identity Σ(spanCols × rowspanRows) === tracks × rowCount,
+  // which check-layout.mjs (RECT/HOLE) proves on the DATA and, unlike a pixel
+  // measurement, quantifies: a gap makes the sum short by exactly its own area, and
+  // the hole is named by coordinate rather than inferred from a right-edge delta.
   { id: 'L', name: 'cells fill width (no right gap)', cls: 'design', sev: 'dura', forms: GRIDDED,
-    when: (c) => c.w >= 1200, superseded: null,
+    when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run check)',
     check: (m) => { const bad = m.leafGrids.filter(g => g.rowRightGapMax > FILL_TOL || g.leftGapMax > FILL_TOL);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:gap(right ${g.rowRightGapMax}px,left ${g.leftGapMax}px)`).join(', ')
         : `every leaf grid fills its width edge-to-edge (${m.leafGrids.length} grids)` }; } },
+  // E — RETIRED into arithmetic. A dead track is a track no slot's (column, span)
+  // ever covers, which is a set operation on the authored data, not a rendered
+  // measurement (TRACK in check-layout.mjs). It also guards the same thing more
+  // directly: the engine's grow-with-content clamp, which is arithmetic itself.
   { id: 'E', name: 'no empty grid column', cls: 'design', sev: 'dura', forms: GRIDDED,
-    when: () => true, superseded: null,
+    when: () => true, superseded: 'TRACK (npm run check)',
     check: (m) => { const bad = m.leafGrids.filter(g => g.emptyCols > 0);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:${g.tracks}tracks-${g.emptyCols}empty`).join(', ')
         : `all ${m.leafGrids.length} leaf grids fill every declared track` }; } },
+  // P — RETIRED into arithmetic. "A lone cell on its own row while a sibling row
+  // holds 2+" is a statement about the PLACEMENT, and the placement is derivable:
+  // check-layout.mjs simulates CSS sparse auto-placement and counts the starts per
+  // row (ROW), carrying over P's exact scope — grid-dense forms, >1 track, and rows
+  // a rowspan touches exempt.
   { id: 'P', name: 'no orphan cell', cls: 'design', sev: 'dura', forms: GRID_DENSE,
-    when: (c) => c.w > 1000, superseded: null,
+    when: (c) => c.w > 1000, superseded: 'ROW (npm run check)',
     check: (m) => { const bad = m.leafGrids.filter(g => g.orphan);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:a lone cell sits alone while siblings are grouped (${g.tracks}-col grid)`).join(', ')
         : 'every leaf grid groups its cells uniformly (no lone cell)' }; } },
@@ -403,8 +445,16 @@ const INVARIANTS = [
   // chip and legitimately has no members.
   // APPLICABILITY: every form. A relation is data, not geometry: a chip that traces
   // nothing is equally broken in a timeline and in a dashboard.
+  // RETIRED into arithmetic, and STRENGTHENED there. A relation is data, never
+  // geometry: joining chips to members needs no render at all, and asserting it here
+  // meant the check only existed where a browser did. check-layout.mjs (CHIP) closes
+  // the join in both directions AND adds the half this row could never see — ARITY.
+  // A chip with exactly ONE member closes the join and is still broken: a chip is a
+  // relation, one member is not a relation, and because an active chip dims
+  // everything it does not name, a one-member chip blacks the deck out to spotlight
+  // a single box.
   { id: 'K', name: 'filter referential integrity', cls: 'design', sev: 'dura', forms: ALL_FORMS,
-    when: () => true, superseded: null,
+    when: () => true, superseded: 'CHIP (npm run check)',
     check: (m) => { const f = m.filterRefs || { declared: [], referenced: [], orphanChips: [], danglingRefs: [] };
       const problems = [
         ...f.orphanChips.map(k => `chip "${k}" is declared but NO component references it (it would dim the whole canvas)`),
@@ -524,133 +574,40 @@ function resolveCachedChrome() {
   }
   return null;
 }
-async function launch() {
+// Returns a launched browser, or NULL when no browser can be obtained. Null is a
+// legitimate outcome (see the degradation block in main), never an exception:
+// this gate is the OPTIONAL reinforcement, so "there is no Chromium here" is an
+// environment fact to report, not a defect in the deck.
+async function launch(chromium) {
+  if (!chromium) return null;
   try { return await chromium.launch({ headless: true, args: ['--no-sandbox'] }); }
   catch (e) {
     const exe = resolveCachedChrome();
-    if (!exe) throw e;
+    if (!exe) return null;
     console.log('[validate] default Chromium unavailable; using cached: ' + exe);
-    return await chromium.launch({ headless: true, executablePath: exe, args: ['--no-sandbox'] });
+    try { return await chromium.launch({ headless: true, executablePath: exe, args: ['--no-sandbox'] }); }
+    catch (e2) { return null; }
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
 // STATIC CENSUS (pre-flight): data/*.yaml  vs  data/data.generated.js
 //
-// `validate` is DECOUPLED from `build` ON PURPOSE (it is pure-read), which has one
-// sharp edge: it asserts the LAST BUILT data, and nothing ever told you the build
-// was stale. Edit a YAML, forget `npm run build`, run `npm run validate` — it goes
-// green on the OLD deck and you read that as a verdict on the change you just
-// made. That is a false green with no defect anywhere in the geometry.
+// The census itself now lives in tools/static-census.cjs, because it is shared
+// with tools/check-layout.mjs — the STATIC gate, which must run where NO browser
+// exists. It cannot be reached through THIS file: the first import here is
+// `playwright`, so requiring validate-layout.cjs to get the census would drag the
+// optional dependency into the mandatory gate. One module, two consumers, one
+// parse path — so the two guardrails can never disagree about what the data says.
 //
-// So before the browser is even launched, re-parse the YAML with the same js-yaml
-// the build uses and compare a CENSUS of it against the generated file (which is
-// JSON literal behind `window.__DOC__ = `). A mismatch does not try to guess which
-// side is right — it says RUN BUILD, and exits non-zero.
-//
-// This stays a CENSUS, not a re-implementation of the build: page identity/order,
-// palette, per-page form/layout/columns, filter keys, and the node counts. It is an
-// INDEPENDENT recount, which is exactly why it catches drift.
-// Runs BEFORE Chromium, so a stale-data run fails fast and needs no browser at all.
+// What it does, unchanged: re-parse data/*.yaml with the same js-yaml the build
+// uses and compare a CENSUS of it against the generated file. `validate` is
+// DECOUPLED from `build` on purpose (it is pure-read), which has one sharp edge —
+// it asserts the LAST BUILT data. Edit a YAML, forget `npm run build`, run
+// validate, and it goes green on the OLD deck. The census closes that: a mismatch
+// does not guess which side is right, it says RUN BUILD and exits non-zero.
 // ─────────────────────────────────────────────────────────────────────────
-function nodeCensus(sections) {
-  const out = { sections: 0, boxes: 0, seps: 0, rails: 0, halves: 0, ids: [] };
-  const isSectionNode = n => !!(n && Array.isArray(n.children));
-  (function walk(list) {
-    for (const n of list || []) {
-      if (n && n.id != null) out.ids.push(String(n.id));
-      if (isSectionNode(n)) { out.sections++; walk(n.children); continue; }
-      if (n && Array.isArray(n.treatment) && n.treatment.includes('half')) out.halves++;
-      if (n && n.type === 'separator') out.seps++;
-      else if (n && n.type === 'rail') out.rails++;
-      else out.boxes++;
-    }
-  })(sections);
-  out.ids.sort();
-  return out;
-}
-
-function pageCensus(p) {
-  const n = nodeCensus(p.sections);
-  return { id: String(p.id), form: p.form ?? null, layout: p.layout ?? null,
-    columns: p.columns ?? null,
-    filters: (p.filters || []).map(f => f && f.key).filter(Boolean).sort(),
-    ...n };
-}
-
-function staticCensus() {
-  const dataDir = path.join(ROOT, 'data');
-  const genPath = path.join(dataDir, 'data.generated.js');
-  const problems = [];
-
-  let yaml;
-  try { yaml = require('js-yaml'); }
-  catch (e) {
-    // Fail CLOSED. A census that cannot run is a hole, not a pass: skipping it
-    // silently would restore the exact stale-data false green it exists to close.
-    return { ok: false, problems: [
-      'js-yaml is not resolvable, so the YAML->generated census could not run. ' +
-      'A guardrail cannot certify data it did not read: install the deck dependencies (`npm install`).'] };
-  }
-  if (!fs.existsSync(genPath))
-    return { ok: false, problems: [`data/data.generated.js does not exist — run \`npm run build\` first (validate never generates it).`] };
-
-  // `data.generated.js` is a JS file whose payload is a JSON literal:
-  //   window.__DOC__ = { ... };
-  // Slice the literal out and JSON.parse it — no eval, no module load.
-  const src = fs.readFileSync(genPath, 'utf8');
-  const MARK = 'window.__DOC__ = ';
-  const at = src.indexOf(MARK);
-  if (at < 0) return { ok: false, problems: [`data/data.generated.js has no \`${MARK}\` assignment — it is not a generated deck file. Run \`npm run build\`.`] };
-  const body = src.slice(at + MARK.length);
-  const end = body.indexOf('\n};');
-  let gen;
-  try { gen = JSON.parse(end >= 0 ? body.slice(0, end + 2) : body.replace(/;\s*$/, '')); }
-  catch (e) { return { ok: false, problems: [`data/data.generated.js payload is not parseable JSON (${e.message}). Run \`npm run build\`.`] }; }
-
-  const manifest = yaml.load(fs.readFileSync(path.join(dataDir, 'document.yaml'), 'utf8'));
-  if (!manifest || !Array.isArray(manifest.pages))
-    return { ok: false, problems: ['data/document.yaml has no top-level `pages` list.'] };
-
-  // Mirror the build's own visible/order resolution so the two page LISTS are
-  // comparable (build-data.mjs: filter visible!==false, sort by order).
-  const wantEntries = manifest.pages.filter(p => p.visible !== false)
-    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
-  if ((manifest.palette ?? 'neutral') !== (gen.palette ?? 'neutral'))
-    problems.push(`palette: document.yaml "${manifest.palette ?? 'neutral'}" != generated "${gen.palette ?? 'neutral'}"`);
-  if ((manifest.title ?? null) !== (gen.title ?? null))
-    problems.push(`title: document.yaml "${manifest.title}" != generated "${gen.title}"`);
-
-  const genPages = Array.isArray(gen.pages) ? gen.pages : [];
-  const wantIds = wantEntries.map(e => String(e.id));
-  const gotIds = genPages.map(p => String(p && p.id));
-  if (wantIds.join('|') !== gotIds.join('|'))
-    problems.push(`page list: document.yaml [${wantIds.join(', ')}] != generated [${gotIds.join(', ')}]`);
-
-  for (const entry of wantEntries) {
-    const file = path.join(dataDir, entry.file || '');
-    if (!entry.file || !fs.existsSync(file)) { problems.push(`page "${entry.id}": file "${entry.file}" is missing on disk`); continue; }
-    const want = pageCensus(yaml.load(fs.readFileSync(file, 'utf8')));
-    const got = genPages.find(p => p && String(p.id) === String(entry.id));
-    if (!got) { problems.push(`page "${entry.id}" is authored but absent from data.generated.js`); continue; }
-    const gotC = pageCensus(got);
-    for (const k of ['form', 'layout', 'columns', 'sections', 'boxes', 'seps', 'rails', 'halves'])
-      if (String(want[k]) !== String(gotC[k]))
-        problems.push(`page "${entry.id}" ${k}: yaml ${JSON.stringify(want[k])} != generated ${JSON.stringify(gotC[k])}`);
-    if (want.filters.join('|') !== gotC.filters.join('|'))
-      problems.push(`page "${entry.id}" filter keys: yaml [${want.filters.join(', ')}] != generated [${gotC.filters.join(', ')}]`);
-    if (want.ids.join('|') !== gotC.ids.join('|')) {
-      const onlyYaml = want.ids.filter(i => !gotC.ids.includes(i));
-      const onlyGen = gotC.ids.filter(i => !want.ids.includes(i));
-      problems.push(`page "${entry.id}" node ids differ` +
-        (onlyYaml.length ? ` — only in yaml: [${onlyYaml.join(', ')}]` : '') +
-        (onlyGen.length ? ` — only in generated: [${onlyGen.join(', ')}]` : ''));
-    }
-  }
-  return { ok: problems.length === 0, problems,
-    summary: `${wantIds.length} page(s), palette "${gen.palette ?? 'neutral'}"` };
-}
+const { staticCensus, nodeCensus, pageCensus } = require('./static-census.cjs');
 
 function startServer() {
   return new Promise((resolve) => {
@@ -1229,11 +1186,47 @@ async function main() {
   }
   console.log(`    [PASS] generated data matches the authored YAML — ${sc.summary}\n`);
 
+  // ── DEGRADATION: NO BROWSER IS A SKIP, NOT A FAILURE. ──
+  // This gate is the OPTIONAL REINFORCEMENT. The mandatory one is `npm run check`
+  // (tools/check-layout.mjs): static, arithmetic, js-yaml only — and it has already
+  // run by the time anyone gets here, because it is the gate. So an environment with
+  // no Chromium is not an unverified deck; it is a deck verified by everything that
+  // does not need pixels. Exiting non-zero here would make a correct deck fail for a
+  // reason that has nothing to do with the deck, and would make `validate`
+  // unrunnable in exactly the installs where Gaia most often lives.
+  // The census above STILL ran and still fails hard — a skip never skips that.
+  const chromium = loadChromium();
+  if (!chromium) {
+    console.log('══════════ SKIPPED (no browser) ══════════\n');
+    console.log('Playwright is not installed here, so the RENDER invariants were not asserted.');
+    console.log('This is not a failure: `npm run validate` is the OPTIONAL reinforcement gate.');
+    console.log('The MANDATORY gate is `npm run check` (tools/check-layout.mjs) — static,');
+    console.log('arithmetic, no browser — which proves the layout closes, plus the STATIC CENSUS');
+    console.log('above, which ran and passed.\n');
+    console.log('Skipped (render-only, needs pixels): legibility floor (M), word fit (N), text');
+    console.log('clamping (C), flex wrap points (D/R), rendered span proportions (Q), compound');
+    console.log('balloon/overflow (G), sibling collision (X), centering (B), band fill (Y),');
+    console.log('authored==rendered census (Z), equal cell width / slot height (U).\n');
+    console.log('To enable it: `npm install` in the deck (playwright is a devDependency),');
+    console.log('then `npx playwright install chromium`.\n');
+    process.exit(0);
+  }
+
   fs.mkdirSync(OUT, { recursive: true });
   const srv = await startServer();
   const PORT = srv.address().port;
   const BASE = `http://127.0.0.1:${PORT}/index.html`;
-  const browser = await launch();
+  const browser = await launch(chromium);
+  if (!browser) {
+    srv.close();
+    console.log('══════════ SKIPPED (browser could not launch) ══════════\n');
+    console.log('The `playwright` module resolved but no Chromium could be launched (none');
+    console.log('downloaded, or the sandbox refuses it). Same verdict as an absent browser:');
+    console.log('the RENDER invariants were not asserted, the MANDATORY static gate');
+    console.log('(`npm run check`) and the census above are what stand. Exiting 0.\n');
+    console.log('To enable it: `npx playwright install chromium`.\n');
+    process.exit(0);
+  }
 
   // Discover the deck's pages from the rendered DOM (no hardcoded page names).
   // Name comes from window.__DOC__.pages (the full manifest), NOT from the
@@ -1341,16 +1334,16 @@ async function main() {
         ff = await page.evaluate(measureFull);
         if (ff.scrollH <= ff.clientH + 1) break;
       }
+      // ONE CAPTURE, and it is the FULL-PAGE one. There used to be a second,
+      // viewport-sized screenshot per (page,width) — at five widths that was ten
+      // images per page, nine of which nobody ever opened: the full-page capture at
+      // the widest tier strictly contains what the others showed. Invariant T
+      // asserts THIS capture is not truncated, so the single image is the evidence.
       await page.screenshot({ path: path.join(OUT, `${pg.name}-${w}-full.png`), fullPage: true });
       const captureOk = ff.scrollH <= ff.clientH + 1;
       const captureDetail = captureOk
         ? `canvas fully expanded (scrollH=${ff.scrollH} ≤ clientH=${ff.clientH}); full-page viewport=${capH}px`
         : `TRUNCATION: canvas still scrolls at capture (scrollH=${ff.scrollH} > clientH=${ff.clientH}, viewport=${capH}px${capH >= MAX_FULL_H ? `, hit cap ${MAX_FULL_H}` : ''})`;
-      await page.setViewportSize({ width: w, height: 1000 });
-      await page.reload({ waitUntil: 'networkidle' });
-      await settle(page, pg.tabIndex);
-      await page.screenshot({ path: path.join(OUT, `${pg.name}-${w}.png`) });
-
       // ── R: scrollbar-robustness (wide tiers only). ──
       let robustDetail = 'n/a (only asserted at wide tiers)';
       let robustOk = true;
