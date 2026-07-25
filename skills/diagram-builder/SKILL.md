@@ -133,10 +133,15 @@ rests on green alone has verified the geometry and asserted the meaning.
 
 The form is the LAST decision, not the first. Before it:
 
-1. **Understand the problem.** What is the idea, who reads it, what should they
-   walk away knowing? For a change to an existing deck, `data/` is the source of
-   truth — read the real pages, sections, and components (the knowledge, not
-   just how the engine works) before proposing anything.
+1. **Understand the problem — the kind of input decides your first read.** What
+   is the idea, who reads it, what should they walk away knowing? The two kinds
+   of input below split the first move. An input that already carries its
+   structure — above all an existing deck, whose path the harness usually hands
+   you — is read FIRST: that deck's own `data/` is the source of truth for what
+   it really says rather than what you assume, so read its real pages, sections,
+   and components (the knowledge, not just how the engine works) before
+   proposing anything. An open idea has no deck and no `data/` to read; there the
+   first read is the seed below, and the choice of form comes out of it.
 2. **Help develop it.** A vague idea is not a blocker; developing it is the
    work. Name the entities, ask what is distinct from what, surface the
    relations the user has not named yet.
