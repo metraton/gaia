@@ -1,0 +1,189 @@
+# PRINCIPLE 7 — "Structure is the assertion."
+#
+# One page, one principle. The page DEMONSTRATES the principle that names it,
+# and the content of every box EXPLAINS the tool that box is demonstrating —
+# so the deck is its own documentation and the guardrail keeps it honest.
+#
+# Distinct things are distinct SECTIONS; parts of one thing are COMPONENTS
+# inside its section. That mapping is the whole claim a diagram makes, and it is
+# the one claim NO MACHINE CAN VERIFY: the two blocks on row 1 carry the same
+# information, one folded into a single zone and one split into two, and every
+# gate in this repo passes both. So the page shows the contrast rather than
+# describing it, and the band beneath says what the absence of a check costs.
+#
+# FORM: comparison. Deliberate: the page's entire argument is one body of
+# information side by side with itself, folded wrong and folded right — which is
+# a comparison and nothing else. `comparison` also keeps the orphan-row check
+# (the two blocks must group their cells uniformly, or the contrast is confounded
+# by a ragged row) and drops the word-fit floor, correct for cells whose titles
+# are short structural claims rather than prose.
+#
+# WHAT IT EXERCISES: `variant: bad` and `variant: good` at SECTION level — the
+# colour role on the frame, which is where a verdict about STRUCTURE belongs ·
+# `treatment: [plain]` on a section: the structural wrapper that draws nothing,
+# so the only frames on the good side are the two real distinctions · a nested
+# pair of framed zones against one flat zone holding the same cells.
+
+id: p7-structure
+layout: grid
+form: comparison
+# Two root columns: the folded block and the split block sit side by side on row
+# 1, and the band beneath them carries the consequence.
+columns: 2
+
+sections:
+
+  # ── ROW 1, LEFT · THE FOLD — two things in one zone ───────────────────────
+  # Four single cells in two tracks close a 2×2 rectangle. The cells stay
+  # `neutral` on purpose: the verdict is on the STRUCTURE, so it is carried by
+  # the section's own `variant: bad` — the frame is what made the false claim.
+  - id: p7-folded
+    title: "Folded into one"
+    subtitle: "a queue and a policy sharing one frame — the distinction is erased"
+    variant: bad
+    order: 1
+    span: 1
+    columns: 2
+    children:
+      - id: p7-fd-queue
+        order: 1
+        kicker: THING A
+        title: "A queue"
+        description:
+          - "one of the two things"
+          - "folded in here"
+        detail: "A message queue: a runtime component with parts of its own. It is a DISTINCT thing from the policy beside it — different lifecycle, different owner, different failure mode — and nothing in this zone says so."
+        variant: neutral
+      - id: p7-fd-policy
+        order: 2
+        kicker: THING B
+        title: "A policy"
+        description:
+          - "the other thing"
+          - "same frame, same rank"
+        detail: "An access policy: a rule, not a running component. Sharing a frame with the queue makes the two read as siblings of one kind, which is a claim the idea never made."
+        variant: neutral
+      - id: p7-fd-frame
+        order: 3
+        kicker: THE FRAME
+        title: "The frame asserts"
+        description:
+          - "one zone says these"
+          - "belong to one thing"
+        detail: "A section frame is not decoration — it is a statement that everything inside it is part of ONE thing. Here that statement is false, and the reader has no way to recover the boundary the author dropped: the cells are peers, so any grouping they suggest is inference."
+        variant: neutral
+      - id: p7-fd-green
+        order: 4
+        kicker: STILL GREEN
+        title: "And it passes"
+        description:
+          - "2 tracks, 2 rows"
+          - "the rectangle closes"
+        detail: "This is the uncomfortable half of the principle: <code>npm run check</code> measures 2 tracks × 2 rows = 4 cells and reports a closed rectangle, and <code>npm run validate</code> finds every cell legible and uniform. Both gates are RIGHT — a fold is not a geometry defect. It is a semantic one, and no arithmetic reaches it."
+        variant: neutral
+
+  # ── ROW 1, RIGHT · THE SPLIT — the same cells, two framed zones ────────────
+  # `treatment: [plain]` makes this wrapper a bare structural container: no
+  # frame, no background, no padding (`.zone.plain`). That is exactly what is
+  # wanted here — a wrapper that draws nothing ASSERTS nothing, so the only two
+  # frames on this side are the two real distinctions, and the reader counts
+  # two things rather than three.
+  - id: p7-distinct
+    title: "Split into two"
+    subtitle: "the same information — two things, so two sections"
+    variant: neutral
+    treatment: [plain]
+    order: 2
+    span: 1
+    columns: 2
+    children:
+      - id: p7-d-queue
+        title: "The queue"
+        variant: good
+        order: 1
+        span: 1
+        columns: 1
+        children:
+          - id: p7-q-thing
+            order: 1
+            kicker: THING
+            title: "Its own zone"
+            description:
+              - "a distinct thing gets"
+              - "a frame of its own"
+            detail: "The queue is a section now, and the frame says the true thing: what is inside belongs to the queue. Its <code>variant: good</code> is a colour role on the SECTION — the enum there is narrower than a box's (<code>neutral</code>, <code>good</code>, <code>bad</code>) because a zone tints a whole region and only a few roles survive being read at that size."
+            variant: neutral
+          - id: p7-q-part
+            order: 2
+            kicker: PART
+            title: "Its parts, inside"
+            description:
+              - "a component belongs to"
+              - "the thing above it"
+            detail: "A part of one thing is a COMPONENT in that thing's section — never a section of its own. Promoting a part to a zone claims it is a peer of the whole, which is the same error as the fold, made in the other direction."
+            variant: neutral
+      - id: p7-d-policy
+        title: "The policy"
+        variant: good
+        order: 2
+        span: 1
+        columns: 1
+        children:
+          - id: p7-p-thing
+            order: 1
+            kicker: THING
+            title: "A second zone"
+            description:
+              - "the second thing, named"
+              - "and framed apart"
+            detail: "The policy gets its own frame and its own name. Nothing structural connects it to the queue, which is correct: they are related by rule, not by containment — and a relation that is not containment is a CHIP (principle 6), never a shared frame."
+            variant: neutral
+          - id: p7-p-part
+            order: 2
+            kicker: PART
+            title: "Parts, again"
+            description:
+              - "same rule, other thing"
+              - "parts stay components"
+            detail: "The same mapping applied twice is what makes the page readable: every frame is a thing, every cell inside it is a part of that thing. Once that holds everywhere, the layout can be read as the idea instead of as a picture of it."
+            variant: neutral
+
+  # ── ROW 2 · WHAT THE ABSENCE OF A CHECK COSTS ─────────────────────────────
+  # Three single cells in three tracks. This is the hard consequence: the two
+  # blocks above are indistinguishable to every gate in the repo, so the only
+  # verification that exists for this principle is a person saying WHY.
+  - id: p7-judge
+    title: "No machine can verify this"
+    subtitle: "both blocks above pass every gate — the difference is meaning, not geometry"
+    variant: neutral
+    order: 3
+    span: 2
+    columns: 3
+    children:
+      - id: p7-j-blind
+        order: 1
+        kicker: UNCHECKABLE
+        title: "The gates are blind"
+        description:
+          - "closure, tracks, pixels"
+          - "none of them see this"
+        detail: "<code>npm run check</code> asserts arithmetic (closure, dead tracks, orphan rows, chip arity) and <code>npm run validate</code> asserts pixels (legibility, word fit, real geometry). Neither has any notion of what a section MEANS, so a green run says <em>it is not broken</em> and never <em>it is right</em>."
+        variant: neutral
+      - id: p7-j-why
+        order: 2
+        kicker: THE TEST
+        title: "Say why, element by element"
+        description:
+          - "why a section, why here"
+          - "why this merge"
+        detail: "The substitute for a check is the question asked of every element: why is this a section rather than a cell, why does it sit here, why this column count, why this merge. An element with no answer is decoration, and decoration is what the fold on the left is made of."
+        variant: neutral
+      - id: p7-j-line
+        order: 3
+        kicker: THE LINE
+        title: "Diagram or decoration"
+        description:
+          - "structure is the only"
+          - "thing separating them"
+        detail: "Every other principle can be got wrong and still leave a diagram that says something. Get this one wrong and the boxes are arranged rather than asserted — which is the whole difference between a diagram and an illustration of one."
+        variant: warn

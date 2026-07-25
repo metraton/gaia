@@ -1,0 +1,191 @@
+# PRINCIPLE 8 — "What does not fit does not shrink: it moves."
+#
+# One page, one principle. The page DEMONSTRATES the principle that names it,
+# and the content of every box EXPLAINS the tool that box is demonstrating —
+# so the deck is its own documentation and the guardrail keeps it honest.
+#
+# A cell NEVER grows by content: the slot is a constant and the text clamps
+# inside it. So "it doesn't fit" is never answered by making the text or the cell
+# smaller — it is answered by MOVING something: into the unbounded `detail`, into
+# a merge that reaches further, into a nested grid with fewer columns, or onto a
+# second colour role instead of a second cell. And the last claim of the
+# principle is the one the geometry cannot make for you: an illegible cell is a
+# defect even when the rectangle closes.
+#
+# FORM: dashboard. Deliberate: this page is a board of peer zones, one per move,
+# and `dashboard` is the STRICTEST scope in the invariant table — it is the form
+# that turns ON both floors this page is about, the fixed readable floor (M,
+# 120px) and the word-fit floor (N, a title token never wider than its cell).
+# The page that teaches legibility should be judged by the legibility invariants.
+#
+# WHAT IT EXERCISES: the fixed slot stated against the four moves · a REAL
+# partial merge that IS the move it names (span 2 of 3, with the siblings that
+# create the third track) · `variant_extra`, the second colour role — the move
+# that keeps one thing one cell · `treatment: [vertical]` on a BOX, the rotated
+# label that is the single documented exemption from the word-fit floor.
+
+id: p8-does-not-fit
+layout: grid
+form: dashboard
+# Two root columns: the rule and the moves sit side by side on row 1 (both two
+# cell-rows tall, so the row needs no stretch), and the legibility band takes a
+# full row of its own beneath them.
+columns: 2
+
+sections:
+
+  # ── ROW 1, LEFT · THE RULE — the slot is a constant ───────────────────────
+  # Four single cells in two tracks close a 2×2 rectangle. Each names one half of
+  # why the cell cannot answer a fit problem by itself.
+  - id: p8-never
+    title: "The cell never grows"
+    subtitle: "the slot is a constant — content is clamped into it, never accommodated"
+    variant: neutral
+    order: 1
+    span: 1
+    columns: 2
+    children:
+      - id: p8-n-fixed
+        order: 1
+        kicker: FIXED
+        title: "130px, always"
+        description:
+          - "--cell-h is a constant"
+          - "no content changes it"
+        detail: "The slot height is a CSS variable, not a measurement of the text: every row track resolves to <code>--cell-h</code> (130px) whatever the cells carry. A longer description does not buy a taller box; it buys a hidden remainder."
+        variant: neutral
+      - id: p8-n-clamp
+        order: 2
+        kicker: CLAMP
+        title: "Clamped, not fitted"
+        description:
+          - "title 2 lines, body 3"
+          - "the rest is not shown"
+        detail: "The title clamps at 2 lines and the whole description at 3 VISUAL lines, so a long line costs two of them. Clamping is what keeps the grid uniform — and it is also why an overlong line does not look broken on the canvas: it looks FINISHED, one sentence short of its point."
+        variant: neutral
+      - id: p8-n-equal
+        order: 3
+        kicker: EQUAL
+        title: "Width is the track's"
+        description:
+          - "cells share one width"
+          - "set by the grid, not text"
+        detail: "A cell's width is an equal <code>fr</code> share of its grid, identical for every cell in that grid. Nothing a cell carries can widen it — which is what makes <code>columns</code> the real dial behind legibility: fewer tracks, wider cells."
+        variant: neutral
+      - id: p8-n-squeeze
+        order: 4
+        kicker: NEVER
+        title: "Squeezing is not a move"
+        description:
+          - "no smaller type, no"
+          - "shorter slot, no fifth line"
+        detail: "There is deliberately no dial for a smaller font, a taller cell, or a fourth description line. If one existed, every crowded page would reach for it and the grid's uniformity — the thing that makes the whole canvas readable at a glance — would be spent one cell at a time."
+        variant: bad
+
+  # ── ROW 1, RIGHT · THE FOUR MOVES ─────────────────────────────────────────
+  # Three authored tracks, FOUR single cells, so the grow-with-content clamp
+  # keeps all 3 and the span-2 cell stays a PARTIAL merge instead of being
+  # promoted to a band. Row 1 = MOVE 1 + the merge; row 2 = the three singles
+  # that close the rectangle.
+  - id: p8-moves
+    title: "Four places it moves to"
+    subtitle: "every move relocates the text — none of them resizes the cell"
+    variant: neutral
+    order: 2
+    span: 1
+    columns: 3
+    children:
+      - id: p8-m-detail
+        order: 1
+        kicker: MOVE 1
+        title: "Into the detail"
+        description:
+          - "the unbounded slot"
+          - "behind a click"
+        detail: "The first and best answer: <code>detail</code> has no clamp, accepts HTML, and renders in the bottom-centre panel. This paragraph is one. Most \"it doesn't fit\" problems are really a description carrying a paragraph that belonged here from the start."
+        variant: neutral
+      - id: p8-m-merge
+        order: 2
+        span: 2
+        kicker: MOVE 2
+        title: "Into a merge — this cell"
+        description:
+          - "two of three tracks, so"
+          - "the line has room to read"
+        detail: "This cell IS the move it names: <code>span: 2</code> in a 3-track grid (<code>1 &lt; span &lt; columns</code>) reaches across two tracks and keeps that proportion as the grid collapses. Reach costs the row something — the merge consumes tracks its siblings created, and the three cells below are what close the rectangle it left open."
+        variant: accent
+      - id: p8-m-nest
+        order: 3
+        kicker: MOVE 3
+        title: "One level down"
+        description:
+          - "fewer columns,"
+          - "so wider cells"
+        detail: "A nested section starts its own grid, so a crowded 4-column zone becomes two zones of 2 columns and every cell doubles in width. This is the move for a whole region that reads too tight — the fix is structural, and it is the one place where principle 7 and this one pull in the same direction."
+        variant: neutral
+      - id: p8-m-extra
+        order: 4
+        kicker: MOVE 4
+        title: "A second role"
+        description:
+          - "a second claim"
+          - "on the same cell"
+        detail: "<code>variant_extra</code> is a LIST carrying extra colour roles from the same enum, for a thing that is a KIND and a STATE at once. This cell is <code>variant: bad</code> plus <code>variant_extra: [muted]</code>: the second role takes the fill (<code>.box.muted</code> sets background only, and it is later in the stylesheet), while the first keeps the frame and the mark. Splitting the cell in two to carry the second claim would halve both widths — that is the squeeze, wearing the costume of a structural fix."
+        variant: bad
+        variant_extra: [muted]
+      - id: p8-m-cost
+        order: 5
+        kicker: COST
+        title: "What it costs"
+        description:
+          - "a click, a track,"
+          - "a level, a channel"
+        detail: "The detail hides the text behind a click; the merge spends tracks a sibling needed; nesting adds a level the reader must descend; the second colour role spends a channel that can then say nothing else (principle 5), and it is noise unless the page declares it. Four prices — and all four are cheaper than an unreadable cell."
+        variant: muted
+
+  # ── ROW 2 · THE LAST CLAIM — legible is not the same as closed ─────────────
+  # Four single cells in four tracks. The first says the gates disagree with each
+  # other on purpose; the middle two name the two floors; the last is the one
+  # leaf the word-fit floor exempts, and it says why.
+  - id: p8-illegible
+    title: "An illegible cell is a defect"
+    subtitle: "even when the arithmetic closes — so two floors are measured on the render"
+    variant: neutral
+    order: 3
+    span: 2
+    columns: 4
+    children:
+      - id: p8-i-closed
+        order: 1
+        kicker: GREEN
+        title: "Closed says nothing"
+        description:
+          - "arithmetic proves the"
+          - "rectangle, not the reading"
+        detail: "<code>npm run check</code> proves <code>Σ(spanCols × rowspanRows) == tracks × rows</code> without a browser, and a grid of eight illegible 60px cells satisfies it perfectly. Closure is a claim about the FILL, never about whether anything in it can be read."
+        variant: neutral
+      - id: p8-i-floor
+        order: 2
+        kicker: FLOOR M
+        title: "120px, or collapse"
+        description:
+          - "a fixed readable floor"
+          - "measured on the render"
+        detail: "Invariant M asserts that no single cell renders narrower than 120px: the grid must drop columns before a cell degrades, which is why the collapse cascade exists at all. It is a FIXED floor — it knows nothing about what the cell carries."
+        variant: neutral
+      - id: p8-i-word
+        order: 3
+        kicker: FLOOR N
+        title: "The longest token"
+        description:
+          - "a title must not break"
+          - "in the middle of a word"
+        detail: "Invariant N is the content-relative floor: a cell must be at least as wide as the longest indivisible token of its own title, or the title fractures mid-word under <code>overflow-wrap:break-word</code>. The two floors are independent — a 136px cell clears M and still cannot hold a 12-character monospace title."
+        variant: neutral
+      - id: p8-i-rotated
+        order: 4
+        kicker: EXEMPT
+        title: "Rotated"
+        treatment: [vertical]
+        detail: "<code>treatment: [vertical]</code> turns the title onto the block axis (<code>writing-mode:vertical-rl</code>), the same reading direction as a <code>rail</code>. It is the ONE documented exemption from the word-fit floor, and the exemption is a fact rather than a favour: a rotated title's fit constraint is the cell's HEIGHT, so measuring its horizontal width would fail every vertical label on every deck. Note the shape of the cell — a vertical leaf is title-only, because the rotated axis has no room for a clamped description."
+        variant: neutral

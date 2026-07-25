@@ -2047,6 +2047,634 @@ window.__DOC__ = {
       ],
       "name": "6 · Relations",
       "order": 7
+    },
+    {
+      "id": "p7-structure",
+      "layout": "grid",
+      "form": "comparison",
+      "columns": 2,
+      "sections": [
+        {
+          "id": "p7-folded",
+          "title": "Folded into one",
+          "subtitle": "a queue and a policy sharing one frame — the distinction is erased",
+          "variant": "bad",
+          "order": 1,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p7-fd-queue",
+              "order": 1,
+              "kicker": "THING A",
+              "title": "A queue",
+              "description": [
+                "one of the two things",
+                "folded in here"
+              ],
+              "detail": "A message queue: a runtime component with parts of its own. It is a DISTINCT thing from the policy beside it — different lifecycle, different owner, different failure mode — and nothing in this zone says so.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p7-fd-policy",
+              "order": 2,
+              "kicker": "THING B",
+              "title": "A policy",
+              "description": [
+                "the other thing",
+                "same frame, same rank"
+              ],
+              "detail": "An access policy: a rule, not a running component. Sharing a frame with the queue makes the two read as siblings of one kind, which is a claim the idea never made.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p7-fd-frame",
+              "order": 3,
+              "kicker": "THE FRAME",
+              "title": "The frame asserts",
+              "description": [
+                "one zone says these",
+                "belong to one thing"
+              ],
+              "detail": "A section frame is not decoration — it is a statement that everything inside it is part of ONE thing. Here that statement is false, and the reader has no way to recover the boundary the author dropped: the cells are peers, so any grouping they suggest is inference.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p7-fd-green",
+              "order": 4,
+              "kicker": "STILL GREEN",
+              "title": "And it passes",
+              "description": [
+                "2 tracks, 2 rows",
+                "the rectangle closes"
+              ],
+              "detail": "This is the uncomfortable half of the principle: <code>npm run check</code> measures 2 tracks × 2 rows = 4 cells and reports a closed rectangle, and <code>npm run validate</code> finds every cell legible and uniform. Both gates are RIGHT — a fold is not a geometry defect. It is a semantic one, and no arithmetic reaches it.",
+              "variant": "neutral"
+            }
+          ]
+        },
+        {
+          "id": "p7-distinct",
+          "title": "Split into two",
+          "subtitle": "the same information — two things, so two sections",
+          "variant": "neutral",
+          "treatment": [
+            "plain"
+          ],
+          "order": 2,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p7-d-queue",
+              "title": "The queue",
+              "variant": "good",
+              "order": 1,
+              "span": 1,
+              "columns": 1,
+              "children": [
+                {
+                  "id": "p7-q-thing",
+                  "order": 1,
+                  "kicker": "THING",
+                  "title": "Its own zone",
+                  "description": [
+                    "a distinct thing gets",
+                    "a frame of its own"
+                  ],
+                  "detail": "The queue is a section now, and the frame says the true thing: what is inside belongs to the queue. Its <code>variant: good</code> is a colour role on the SECTION — the enum there is narrower than a box's (<code>neutral</code>, <code>good</code>, <code>bad</code>) because a zone tints a whole region and only a few roles survive being read at that size.",
+                  "variant": "neutral"
+                },
+                {
+                  "id": "p7-q-part",
+                  "order": 2,
+                  "kicker": "PART",
+                  "title": "Its parts, inside",
+                  "description": [
+                    "a component belongs to",
+                    "the thing above it"
+                  ],
+                  "detail": "A part of one thing is a COMPONENT in that thing's section — never a section of its own. Promoting a part to a zone claims it is a peer of the whole, which is the same error as the fold, made in the other direction.",
+                  "variant": "neutral"
+                }
+              ]
+            },
+            {
+              "id": "p7-d-policy",
+              "title": "The policy",
+              "variant": "good",
+              "order": 2,
+              "span": 1,
+              "columns": 1,
+              "children": [
+                {
+                  "id": "p7-p-thing",
+                  "order": 1,
+                  "kicker": "THING",
+                  "title": "A second zone",
+                  "description": [
+                    "the second thing, named",
+                    "and framed apart"
+                  ],
+                  "detail": "The policy gets its own frame and its own name. Nothing structural connects it to the queue, which is correct: they are related by rule, not by containment — and a relation that is not containment is a CHIP (principle 6), never a shared frame.",
+                  "variant": "neutral"
+                },
+                {
+                  "id": "p7-p-part",
+                  "order": 2,
+                  "kicker": "PART",
+                  "title": "Parts, again",
+                  "description": [
+                    "same rule, other thing",
+                    "parts stay components"
+                  ],
+                  "detail": "The same mapping applied twice is what makes the page readable: every frame is a thing, every cell inside it is a part of that thing. Once that holds everywhere, the layout can be read as the idea instead of as a picture of it.",
+                  "variant": "neutral"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "p7-judge",
+          "title": "No machine can verify this",
+          "subtitle": "both blocks above pass every gate — the difference is meaning, not geometry",
+          "variant": "neutral",
+          "order": 3,
+          "span": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p7-j-blind",
+              "order": 1,
+              "kicker": "UNCHECKABLE",
+              "title": "The gates are blind",
+              "description": [
+                "closure, tracks, pixels",
+                "none of them see this"
+              ],
+              "detail": "<code>npm run check</code> asserts arithmetic (closure, dead tracks, orphan rows, chip arity) and <code>npm run validate</code> asserts pixels (legibility, word fit, real geometry). Neither has any notion of what a section MEANS, so a green run says <em>it is not broken</em> and never <em>it is right</em>.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p7-j-why",
+              "order": 2,
+              "kicker": "THE TEST",
+              "title": "Say why, element by element",
+              "description": [
+                "why a section, why here",
+                "why this merge"
+              ],
+              "detail": "The substitute for a check is the question asked of every element: why is this a section rather than a cell, why does it sit here, why this column count, why this merge. An element with no answer is decoration, and decoration is what the fold on the left is made of.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p7-j-line",
+              "order": 3,
+              "kicker": "THE LINE",
+              "title": "Diagram or decoration",
+              "description": [
+                "structure is the only",
+                "thing separating them"
+              ],
+              "detail": "Every other principle can be got wrong and still leave a diagram that says something. Get this one wrong and the boxes are arranged rather than asserted — which is the whole difference between a diagram and an illustration of one.",
+              "variant": "warn"
+            }
+          ]
+        }
+      ],
+      "name": "7 · Structure",
+      "order": 8
+    },
+    {
+      "id": "p8-does-not-fit",
+      "layout": "grid",
+      "form": "dashboard",
+      "columns": 2,
+      "sections": [
+        {
+          "id": "p8-never",
+          "title": "The cell never grows",
+          "subtitle": "the slot is a constant — content is clamped into it, never accommodated",
+          "variant": "neutral",
+          "order": 1,
+          "span": 1,
+          "columns": 2,
+          "children": [
+            {
+              "id": "p8-n-fixed",
+              "order": 1,
+              "kicker": "FIXED",
+              "title": "130px, always",
+              "description": [
+                "--cell-h is a constant",
+                "no content changes it"
+              ],
+              "detail": "The slot height is a CSS variable, not a measurement of the text: every row track resolves to <code>--cell-h</code> (130px) whatever the cells carry. A longer description does not buy a taller box; it buys a hidden remainder.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-n-clamp",
+              "order": 2,
+              "kicker": "CLAMP",
+              "title": "Clamped, not fitted",
+              "description": [
+                "title 2 lines, body 3",
+                "the rest is not shown"
+              ],
+              "detail": "The title clamps at 2 lines and the whole description at 3 VISUAL lines, so a long line costs two of them. Clamping is what keeps the grid uniform — and it is also why an overlong line does not look broken on the canvas: it looks FINISHED, one sentence short of its point.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-n-equal",
+              "order": 3,
+              "kicker": "EQUAL",
+              "title": "Width is the track's",
+              "description": [
+                "cells share one width",
+                "set by the grid, not text"
+              ],
+              "detail": "A cell's width is an equal <code>fr</code> share of its grid, identical for every cell in that grid. Nothing a cell carries can widen it — which is what makes <code>columns</code> the real dial behind legibility: fewer tracks, wider cells.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-n-squeeze",
+              "order": 4,
+              "kicker": "NEVER",
+              "title": "Squeezing is not a move",
+              "description": [
+                "no smaller type, no",
+                "shorter slot, no fifth line"
+              ],
+              "detail": "There is deliberately no dial for a smaller font, a taller cell, or a fourth description line. If one existed, every crowded page would reach for it and the grid's uniformity — the thing that makes the whole canvas readable at a glance — would be spent one cell at a time.",
+              "variant": "bad"
+            }
+          ]
+        },
+        {
+          "id": "p8-moves",
+          "title": "Four places it moves to",
+          "subtitle": "every move relocates the text — none of them resizes the cell",
+          "variant": "neutral",
+          "order": 2,
+          "span": 1,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p8-m-detail",
+              "order": 1,
+              "kicker": "MOVE 1",
+              "title": "Into the detail",
+              "description": [
+                "the unbounded slot",
+                "behind a click"
+              ],
+              "detail": "The first and best answer: <code>detail</code> has no clamp, accepts HTML, and renders in the bottom-centre panel. This paragraph is one. Most \"it doesn't fit\" problems are really a description carrying a paragraph that belonged here from the start.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-m-merge",
+              "order": 2,
+              "span": 2,
+              "kicker": "MOVE 2",
+              "title": "Into a merge — this cell",
+              "description": [
+                "two of three tracks, so",
+                "the line has room to read"
+              ],
+              "detail": "This cell IS the move it names: <code>span: 2</code> in a 3-track grid (<code>1 &lt; span &lt; columns</code>) reaches across two tracks and keeps that proportion as the grid collapses. Reach costs the row something — the merge consumes tracks its siblings created, and the three cells below are what close the rectangle it left open.",
+              "variant": "accent"
+            },
+            {
+              "id": "p8-m-nest",
+              "order": 3,
+              "kicker": "MOVE 3",
+              "title": "One level down",
+              "description": [
+                "fewer columns,",
+                "so wider cells"
+              ],
+              "detail": "A nested section starts its own grid, so a crowded 4-column zone becomes two zones of 2 columns and every cell doubles in width. This is the move for a whole region that reads too tight — the fix is structural, and it is the one place where principle 7 and this one pull in the same direction.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-m-extra",
+              "order": 4,
+              "kicker": "MOVE 4",
+              "title": "A second role",
+              "description": [
+                "a second claim",
+                "on the same cell"
+              ],
+              "detail": "<code>variant_extra</code> is a LIST carrying extra colour roles from the same enum, for a thing that is a KIND and a STATE at once. This cell is <code>variant: bad</code> plus <code>variant_extra: [muted]</code>: the second role takes the fill (<code>.box.muted</code> sets background only, and it is later in the stylesheet), while the first keeps the frame and the mark. Splitting the cell in two to carry the second claim would halve both widths — that is the squeeze, wearing the costume of a structural fix.",
+              "variant": "bad",
+              "variant_extra": [
+                "muted"
+              ]
+            },
+            {
+              "id": "p8-m-cost",
+              "order": 5,
+              "kicker": "COST",
+              "title": "What it costs",
+              "description": [
+                "a click, a track,",
+                "a level, a channel"
+              ],
+              "detail": "The detail hides the text behind a click; the merge spends tracks a sibling needed; nesting adds a level the reader must descend; the second colour role spends a channel that can then say nothing else (principle 5), and it is noise unless the page declares it. Four prices — and all four are cheaper than an unreadable cell.",
+              "variant": "muted"
+            }
+          ]
+        },
+        {
+          "id": "p8-illegible",
+          "title": "An illegible cell is a defect",
+          "subtitle": "even when the arithmetic closes — so two floors are measured on the render",
+          "variant": "neutral",
+          "order": 3,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "p8-i-closed",
+              "order": 1,
+              "kicker": "GREEN",
+              "title": "Closed says nothing",
+              "description": [
+                "arithmetic proves the",
+                "rectangle, not the reading"
+              ],
+              "detail": "<code>npm run check</code> proves <code>Σ(spanCols × rowspanRows) == tracks × rows</code> without a browser, and a grid of eight illegible 60px cells satisfies it perfectly. Closure is a claim about the FILL, never about whether anything in it can be read.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-i-floor",
+              "order": 2,
+              "kicker": "FLOOR M",
+              "title": "120px, or collapse",
+              "description": [
+                "a fixed readable floor",
+                "measured on the render"
+              ],
+              "detail": "Invariant M asserts that no single cell renders narrower than 120px: the grid must drop columns before a cell degrades, which is why the collapse cascade exists at all. It is a FIXED floor — it knows nothing about what the cell carries.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-i-word",
+              "order": 3,
+              "kicker": "FLOOR N",
+              "title": "The longest token",
+              "description": [
+                "a title must not break",
+                "in the middle of a word"
+              ],
+              "detail": "Invariant N is the content-relative floor: a cell must be at least as wide as the longest indivisible token of its own title, or the title fractures mid-word under <code>overflow-wrap:break-word</code>. The two floors are independent — a 136px cell clears M and still cannot hold a 12-character monospace title.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p8-i-rotated",
+              "order": 4,
+              "kicker": "EXEMPT",
+              "title": "Rotated",
+              "treatment": [
+                "vertical"
+              ],
+              "detail": "<code>treatment: [vertical]</code> turns the title onto the block axis (<code>writing-mode:vertical-rl</code>), the same reading direction as a <code>rail</code>. It is the ONE documented exemption from the word-fit floor, and the exemption is a fact rather than a favour: a rotated title's fit constraint is the cell's HEIGHT, so measuring its horizontal width would fail every vertical label on every deck. Note the shape of the cell — a vertical leaf is title-only, because the rotated axis has no room for a clamped description.",
+              "variant": "neutral"
+            }
+          ]
+        }
+      ],
+      "name": "8 · Does not fit",
+      "order": 9
+    },
+    {
+      "id": "p9-the-hole",
+      "layout": "grid",
+      "form": "timeline",
+      "columns": 2,
+      "sections": [
+        {
+          "id": "p9-speaks",
+          "title": "An empty cell asserts something",
+          "subtitle": "it says nothing belongs here — and the reader cannot tell that from an oversight",
+          "variant": "neutral",
+          "order": 1,
+          "span": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p9-s-claim",
+              "order": 1,
+              "kicker": "CLAIM",
+              "title": "A hole is a statement",
+              "description": [
+                "the gap says nothing",
+                "belongs in this place"
+              ],
+              "detail": "Every other cell in a grid carries a claim, so the empty one is read as a claim too: <em>this position is deliberately unoccupied</em>. Nothing distinguishes that from a cell the author forgot, a merge that did not fit, or a column count that was never earned — which is why a hole is treated as a defect until it is declared.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-s-close",
+              "order": 2,
+              "kicker": "CLOSE IT",
+              "title": "If you did not mean it",
+              "description": [
+                "fill the track, merge a",
+                "neighbour, drop a column"
+              ],
+              "detail": "Three ways to close a hole, in ascending order of honesty: author the missing cell, widen a neighbour with <code>span</code> so it consumes the empty track, or lower <code>columns</code> so the track was never declared. The third is usually the right one — a hole is very often a column count the content cannot fill, and the engine's grow-with-content clamp already tries to save you from it.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-s-declare",
+              "order": 3,
+              "kicker": "DECLARE IT",
+              "title": "If you did",
+              "description": [
+                "say so — the taper of a",
+                "chart is the clean case"
+              ],
+              "detail": "One asymmetry is legitimate and the checker knows it by name: the rows a <code>rowspan</code> cell touches are EXEMPT from the closure identity, because a ladder of bars 1·2·3·4 tapers by design — the taper IS the chart (p1). That exemption is the whole of it. Any other gap has to be closed, or explained in the text of the cells around it, because the geometry cannot carry the explanation.",
+              "variant": "warn"
+            }
+          ]
+        },
+        {
+          "id": "p9-lanes",
+          "title": "A shared row needs equal lanes",
+          "subtitle": "two rail-led swimlanes of three steps each — then the row both of them meet in",
+          "variant": "neutral",
+          "order": 2,
+          "span": 2,
+          "columns": 4,
+          "children": [
+            {
+              "id": "p9-l-rail-build",
+              "type": "rail",
+              "order": 1,
+              "title": "Build"
+            },
+            {
+              "id": "p9-l-commit",
+              "order": 2,
+              "kicker": "STEP 1",
+              "title": "Commit",
+              "description": [
+                "the lane's first step"
+              ],
+              "detail": "A horizontal rail is a slim title-only banner (<code>.rail-h</code>) that labels the cells to its right. It is a structural leaf, not a card: no kicker, no description, no click — its whole payload is the lane's name.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-l-package",
+              "order": 3,
+              "kicker": "STEP 2",
+              "title": "Package",
+              "description": [
+                "the second step"
+              ],
+              "detail": "The rail costs one track of the row, so a 4-column lane carries three steps. That is the trade a swimlane makes: the label is a cell like any other, and it is charged like one.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-l-publish",
+              "order": 4,
+              "kicker": "STEP 3",
+              "title": "Publish",
+              "description": [
+                "the third — the lane ends"
+              ],
+              "detail": "With this cell the lane reaches track 4, which is where the row closes. The LANE check records that reach and compares it against the other rail's row.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-l-rail-ship",
+              "type": "rail",
+              "order": 5,
+              "title": "Ship"
+            },
+            {
+              "id": "p9-l-stage",
+              "order": 6,
+              "kicker": "STEP 1",
+              "title": "Stage",
+              "description": [
+                "the second lane starts"
+              ],
+              "detail": "The second rail wraps to a row of its own because the row above is full, and it lands at track 1 — which is what makes this row a lane rather than a continuation of the one above it.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-l-verify",
+              "order": 7,
+              "kicker": "STEP 2",
+              "title": "Verify",
+              "description": [
+                "step 2 of the same lane"
+              ],
+              "detail": "Two lanes in one grid must be of EQUAL length: <code>npm run check</code> fails a grid where one rail-led row reaches track 4 and another stops at 3, and it fails HARD, because unlike a short last row that is a collapse artefact, a ragged lane is authored.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-l-release",
+              "order": 8,
+              "kicker": "STEP 3",
+              "title": "Release",
+              "description": [
+                "and the lanes now match"
+              ],
+              "detail": "Both lanes are three steps long, so the two rows are directly comparable: step 2 of Build sits above step 2 of Ship. That vertical alignment is a claim — and it is only true because the lengths agree.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-l-handoff",
+              "order": 9,
+              "span": 4,
+              "kicker": "HANDOFF",
+              "title": "The row both lanes meet in",
+              "description": [
+                "it means one thing only",
+                "because the lanes match"
+              ],
+              "detail": "The foot of a real timeline: a full-width row (<code>span == columns</code>) that both lanes hand off to. Its meaning depends entirely on the equality above it — if Build were four steps and Ship two, this row would sit under two different points in time and assert a synchronisation that never happens. That is the second half of the principle: a shared row is a claim about SIMULTANEITY, and unequal lanes make it a lie.",
+              "variant": "accent"
+            }
+          ]
+        },
+        {
+          "id": "p9-vlane",
+          "title": "A lane labelled down the rows",
+          "subtitle": "a vertical rail with rowspan: 2 — and the four cells that create the rows it spans",
+          "variant": "neutral",
+          "order": 3,
+          "span": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p9-v-rail",
+              "type": "rail",
+              "treatment": [
+                "vertical"
+              ],
+              "rowspan": 2,
+              "order": 1,
+              "title": "Runtime"
+            },
+            {
+              "id": "p9-v-r1a",
+              "order": 2,
+              "kicker": "ROW 1",
+              "title": "What it labels",
+              "description": [
+                "the cells beside it are",
+                "one lane, two rows deep"
+              ],
+              "detail": "<code>treatment: [vertical]</code> rotates the rail's title onto the block axis (<code>writing-mode:vertical-rl</code>) and <code>align-self:stretch</code> makes it fill the rows it spans — so one label serves a block of cells instead of a single row. This is the rail's best use: the same swimlane idea turned ninety degrees.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-v-r1b",
+              "order": 3,
+              "kicker": "ROW 1",
+              "title": "The first row",
+              "description": [
+                "two tracks wide, beside",
+                "the label's one"
+              ],
+              "detail": "The rail takes track 1 in both rows, so each row of the lane is two cells wide. Nothing about these cells is different from an ordinary box — the lane is drawn entirely by the label's height.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-v-r2a",
+              "order": 4,
+              "kicker": "ROW 2",
+              "title": "The second row",
+              "description": [
+                "the same label still",
+                "reaches down to here"
+              ],
+              "detail": "<code>rowspan: 2</code> on the rail is the vertical merge (<code>grid-row: span 2</code>) applied to a structural leaf. The rows a rowspan touches are exempt from the closure identity — but this band closes anyway, which is the honest way to author it: the exemption is there for a chart that tapers, not as a licence for a gap.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-v-r2b",
+              "order": 5,
+              "kicker": "HOLDS",
+              "title": "What holds it up",
+              "description": [
+                "these four cells create",
+                "the rows the rail spans"
+              ],
+              "detail": "A merge consumes rows that must already exist (principle 1), so a rail spanning two rows needs two rows' worth of siblings beside it. Author the rail alone and there is nothing to span: the grid has one row, the rowspan is silently satisfied by it, and the label reads as a cell rather than a lane.",
+              "variant": "neutral"
+            }
+          ]
+        }
+      ],
+      "name": "9 · The hole",
+      "order": 10
     }
   ]
 };

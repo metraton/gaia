@@ -60,3 +60,19 @@ pages:
     order: 7
     visible: true
     file: pages/p6-relations.yaml
+  # ── What judges it (principles 7–9) ──
+  - id: p7-structure
+    name: "7 · Structure"
+    order: 8
+    visible: true
+    file: pages/p7-structure.yaml
+  - id: p8-does-not-fit
+    name: "8 · Does not fit"
+    order: 9
+    visible: true
+    file: pages/p8-does-not-fit.yaml
+  - id: p9-the-hole
+    name: "9 · The hole"
+    order: 10
+    visible: true
+    file: pages/p9-the-hole.yaml
