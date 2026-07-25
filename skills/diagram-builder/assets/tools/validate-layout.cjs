@@ -80,6 +80,14 @@
 //                            slot, `half` a FRACTION (two components share one) — so
 //                            both are excluded from the component-height set and the
 //                            `.half-slot` wrapper is asserted at --cell-h directly.
+//                            A THIRD family joins them: the SEPARATOR ROW. A row whose
+//                            only occupants are HORIZONTAL separators is --sep-row-h,
+//                            not --cell-h (one pixel of ink no longer costs a 130px
+//                            cell), so U asserts every leaf grid's resolved row TRACK
+//                            against what its occupants entitle it to — thin exactly
+//                            where the ink is thin, both directions. That track pass
+//                            also finally covers `.sep`/`.rail` height, which the
+//                            .box-only height set never saw.
 //                            The old fixed-232 width rule is gone: cells now STRETCH
 //                            to fill, so width varies by section but is equal within
 //                            a grid.
@@ -188,6 +196,11 @@ const OUT = process.env.DIAGRAM_SHOTS_DIR || path.join(os.tmpdir(), 'diagram-dec
 // --cell-w is no longer a track width in the fill model (cells stretch to equal
 // fr widths) — kept only as a documented reference for the readability step-down.
 const CELL_W = 232, CELL_H = 130;
+// --sep-row-h — the ONE row height that is not CELL_H (must match the design
+// token in index.html). A row whose only occupants are HORIZONTAL separators is
+// reduced to it: a 1px rule no longer costs a 130px cell. This is the third
+// height family invariant U recognises (see the U/height row below).
+const SEP_ROW_H = 40;
 // ── ONE WIDTH, THE WIDEST. ────────────────────────────────────────────────
 // This was a FIVE-width sweep (600/900/1200/1920/2560) whose job was to prove the
 // …→2→1 collapse cascade while that cascade was being BUILT. It is stable now, and
@@ -352,24 +365,63 @@ const INVARIANTS = [
       return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:cells-differ(spread ${g.cellWSpread}px)`).join(', ')
         : `every leaf grid's cells are equal width (${m.leafGrids.length} grids)` }; } },
   // U (height) — asserts the SLOT height, not the component's.
-  // A cell is a SLOT of CELL_H. Two treatments legitimately make a COMPONENT's own
-  // height differ from it, in opposite directions: `rowspan` makes it a MULTIPLE of
-  // the slot, `half` makes it a FRACTION (two components share one slot). Neither is
-  // a defect, so both are excluded from the component-height set in measure() — and
-  // in exchange the SLOT is asserted directly: every `.half-slot` (the wrapper that
-  // actually occupies the grid cell) must be exactly CELL_H. That is what proves
-  // `half` DIVIDED a slot instead of shrinking one and leaving a hole.
-  // APPLICABILITY: none — this holds for every form. Only the measured subject moved.
+  // A cell is a SLOT of CELL_H. THREE families legitimately make the height of a
+  // rendered thing differ from that one number, and U recognises each EXPLICITLY —
+  // with its own expected height — rather than exempting it:
+  //   1. `rowspan` — the COMPONENT is a MULTIPLE of the slot. Excluded from the
+  //      component-height set in measure(); the slot it covers is still CELL_H.
+  //   2. `half`    — the COMPONENT is a FRACTION of the slot (two share one), so the
+  //      subject moved from the component to the SLOT: every `.half-slot` (the
+  //      wrapper that actually occupies the grid cell) must be exactly CELL_H and
+  //      hold exactly 2 occupants. That is what proves `half` DIVIDED a slot rather
+  //      than shrinking one and leaving a hole.
+  //   3. THE SEPARATOR ROW — the ROW itself is thinner. A horizontal separator draws
+  //      one pixel of ink and used to be charged a full CELL_H; a row whose ONLY
+  //      occupants are horizontal separators is now SEP_ROW_H. The separator is still
+  //      a cell (principle 1 is untouched), so this family is asserted on the TRACK:
+  //      for every leaf grid, every resolved row track must equal SEP_ROW_H when that
+  //      row's only occupants are horizontal separators and CELL_H otherwise. Both
+  //      directions matter — a separator SHARING its row with boxes must NOT thin it
+  //      (or the boxes clip), and an empty row (a hole, owned by RECT/HOLE in `npm
+  //      run check`) must not be mistaken for a separator row.
+  //      A VERTICAL separator is not in this family: its ink IS the row height, so its
+  //      row stays CELL_H — measure() counts only `.sep:not(.sep-v)` as thin ink.
+  //      The same track measurement finally covers the height of the two leaf types
+  //      the `.box`-only height set never saw: a `.sep`/`.rail` that overflows the
+  //      row(s) it is entitled to is reported here (the --zone-min-h-vs---cell-h
+  //      contradiction was a silent 50px spill with no invariant measuring it).
+  // APPLICABILITY: none — this holds for every form. Only the measured subjects grew.
   { id: 'U', name: 'uniform slot height', cls: 'design', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: null,
     check: (m) => {
       const slots = m.halfSlots || [];
       const badSlots = slots.filter(s => Math.abs(s.h - CELL_H) !== 0 || s.n !== 2);
       const cellsOk = eq(m.heights, [CELL_H]);
-      const ok = cellsOk && badSlots.length === 0;
+      // family 3 — the row TRACKS of every leaf grid.
+      const badTracks = [], thinRows = [], spills = [];
+      for (const g of m.rowTracks || []) {
+        g.tracks.forEach((h, i) => {
+          const row = g.rows[i];
+          const thin = row.n > 0 && row.n === row.sepH;
+          const expect = thin ? SEP_ROW_H : CELL_H;
+          if (h !== expect) {
+            badTracks.push(`${g.zone}:row${i} track=${h}px expect ${expect}px (` +
+              (thin ? 'separator-only row — the thin track was not applied'
+                : `${row.n} occupant(s), ${row.sepH} separator(s) — a row that carries a box must stay ${CELL_H}px`) + ')');
+          } else if (thin) thinRows.push(`${g.zone}:row${i}`);
+        });
+        for (const o of g.overflow) spills.push(`${g.zone}:${o.cls} overflows its row by ${o.over}px`);
+      }
+      const ok = cellsOk && badSlots.length === 0 && badTracks.length === 0 && spills.length === 0;
       const parts = [`cell heights=${JSON.stringify(m.heights)} expect [${CELL_H}]`];
       if (slots.length) parts.push(`${slots.length} half-slot(s) @ ${[...new Set(slots.map(s => s.h))].join('/')}px expect ${CELL_H}`);
+      const nTracks = (m.rowTracks || []).reduce((n, g) => n + g.tracks.length, 0);
+      parts.push(`${nTracks} row track(s) across ${(m.rowTracks || []).length} leaf grid(s): ` +
+        `${thinRows.length} separator-only @ ${SEP_ROW_H}px${thinRows.length ? ` (${thinRows.join(', ')})` : ''}, ` +
+        `${nTracks - thinRows.length} @ ${CELL_H}px; no .sep/.rail overflows its row`);
       if (badSlots.length) parts.push(`BAD: ${badSlots.map(s => `${s.zone}:h=${s.h}(expect ${CELL_H}),occupants=${s.n}(expect 2)`).join(', ')}`);
+      if (badTracks.length) parts.push(`BAD TRACKS: ${badTracks.join(', ')}`);
+      if (spills.length) parts.push(`BAD OVERFLOW: ${spills.join(', ')}`);
       return { ok, detail: parts.join(' · ') }; } },
   // L — RETIRED into arithmetic. "Every row spans the grid edge to edge" is the
   // rectangle-closure identity Σ(spanCols × rowspanRows) === tracks × rowCount,
@@ -666,6 +718,64 @@ function measure() {
     const zoneEl = s.closest('.zone[data-zone]');
     return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)',
       h: Math.round(r.height), n: s.querySelectorAll(':scope > .box').length };
+  });
+
+  // ROW TRACKS — the SEPARATOR ROW, U's third height family, plus the height of
+  // the two leaf types the height set never covered (`.sep`, `.rail`).
+  //
+  // WHY THE TRACK AND NOT THE COMPONENT: a horizontal separator's own height is 0
+  // (or ~17px labeled), so measuring the ELEMENT says nothing about the space it
+  // costs — the cost is the ROW. So read the grid's resolved `grid-template-rows`
+  // (the used size of every track, implicit ones included) and assert each track
+  // against what its occupants entitle it to: SEP_ROW_H for a row whose only
+  // occupants are horizontal separators, CELL_H otherwise. That is what proves
+  // the thin row is thin EXACTLY where the ink is thin — a separator sharing its
+  // row with boxes must NOT thin it, and a hole must not be mistaken for one.
+  //
+  // Occupancy is derived from each child's own start row (the band containing its
+  // top edge — an item is either stretched to the band start or centred inside it)
+  // extended by its declared `--rowspan`, NOT from raw overlap: an item that
+  // OVERFLOWS its row would otherwise be read as legitimately occupying the next
+  // one, which is precisely the defect below.
+  //
+  // OVERFLOW (`.sep` / `.rail`): the height set is built from `.box` only, so the
+  // --zone-min-h (180px) floor on `.sep-v`/`.rail-v` overflowed a CELL_H (130px)
+  // row by 50px with NOTHING measuring it. Its extent is now compared against the
+  // extent of the rows it is entitled to.
+  const rowTracks = [...act.querySelectorAll('.sec-grid:not(.sec-compound)')].map(grid => {
+    const cs = getComputedStyle(grid);
+    const gap = parseFloat(cs.rowGap) || 0;
+    const tracks = (cs.gridTemplateRows || '').split(/\s+/)
+      .filter(v => v && v !== 'none').map(v => Math.round(parseFloat(v)))
+      .filter(v => Number.isFinite(v));
+    const gTop = grid.getBoundingClientRect().top;
+    const bands = []; let y = 0;
+    for (const t of tracks) { bands.push([y, y + t]); y += t + gap; }
+    const rows = bands.map(() => ({ n: 0, sepH: 0 }));
+    const overflow = [];
+    for (const child of grid.children) {
+      const r = child.getBoundingClientRect();
+      const top = r.top - gTop, bot = r.bottom - gTop;
+      // start row: the band CONTAINING the top edge; fall back to the nearest
+      // band start when the child overflows above its own row (a centred item
+      // taller than its track sticks out both ways).
+      let start = bands.findIndex(([a, b]) => top >= a - 0.5 && top <= b + 0.5);
+      if (start < 0) {
+        let best = 0, bd = Infinity;
+        bands.forEach(([a], i) => { const d = Math.abs(top - a); if (d < bd) { bd = d; best = i; } });
+        start = best;
+      }
+      const rowspan = Math.max(1, Math.floor(Number(child.style.getPropertyValue('--rowspan')) || 1));
+      const end = Math.min(bands.length - 1, start + rowspan - 1);
+      const isSepH = child.classList.contains('sep') && !child.classList.contains('sep-v');
+      for (let i = start; i <= end; i++) { rows[i].n++; if (isSepH) rows[i].sepH++; }
+      if (child.classList.contains('sep') || child.classList.contains('rail')) {
+        const over = Math.round(Math.max(0, bot - bands[end][1]) + Math.max(0, bands[start][0] - top));
+        if (over > 1) overflow.push({ cls: child.className, over });
+      }
+    }
+    const zoneEl = grid.closest('.zone[data-zone]');
+    return { zone: zoneEl ? zoneEl.getAttribute('data-zone') : '(root)', tracks, rows, overflow };
   });
 
   // FILTER REFERENTIAL INTEGRITY (invariant K). The chips and the components that
@@ -1120,7 +1230,7 @@ function measure() {
 
   return { singleWidths, heights, clipped, maxRowCount, overflowX,
     leftPad, rightPad, topZones, leafGrids, wrap, rootRowMax, collisions, balloons, stackOverflow, spanRatios, wordFit,
-    halfSlots, filterRefs, census, nBoxes: boxes.length,
+    halfSlots, rowTracks, filterRefs, census, nBoxes: boxes.length,
     canvasScrollHeight: canvas.scrollHeight, canvasClientWidth: cw };
 }
 

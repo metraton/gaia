@@ -35,7 +35,11 @@
 // stacked tiers. The engine tags each grid `sec-c{N}` (authored
 // column count) and `sec-compound` (holds nested sections) so the CSS can step
 // each grid by its real width need; it emits `--cols` + `--span` and never a
-// literal grid-column (the container queries own the collapse).
+// literal grid-column (the container queries own the collapse). The ONE row
+// height that is not --cell-h is the SEPARATOR ROW: a row whose only occupants
+// are horizontal separators is reduced to --sep-row-h, emitted as a per-tier
+// `grid-auto-rows` track list (see applyRowTracks) — the separator stays a cell,
+// only its row shrinks.
 //
 // Stable ids + order are preserved end-to-end so a future edit mode can
 // overlay a localStorage {id: order} map without touching this engine or
@@ -198,6 +202,109 @@
     return node;
   }
 
+  // ── THE SEPARATOR ROW (the third row-height family) ─────────────────────
+  // A `separator` is a leaf COMPONENT, so it occupies a whole cell: it drew one
+  // pixel of ink and was charged the full --cell-h. The fix is NOT to stop it
+  // being a cell (principle 1 — everything visible is a merged cell — stands):
+  // a row whose ONLY occupants are horizontal separators gets a REDUCED TRACK
+  // HEIGHT (--sep-row-h), emitted below as a `grid-auto-rows` track list.
+  //
+  // A VERTICAL separator is EXCLUDED on purpose. Its ink IS the row height (a
+  // `.sep-v` is a line as tall as its row), so thinning its row would shorten
+  // the drawing rather than fit the drawing — the opposite of the intent. Only
+  // a horizontal separator draws across the row and needs none of its height.
+  const isLeafOfType = (c, t) => c && !Array.isArray(c.children) && c.type === t;
+  const isThinRowLeaf = c => isLeafOfType(c, 'separator') && !hasTreatment(c, 'vertical');
+
+  // CSS GRID SPARSE AUTO-PLACEMENT, SIMULATED — the same walk tools/check-layout.mjs
+  // mirrors (`place`), for the same reason: which row a slot lands on is a pure
+  // function of the flow, so it can be derived instead of measured. Returns, per
+  // row, the slot NODES that occupy it (a rowspan slot occupies every row it
+  // covers, so a row a taller cell passes through is never seen as empty).
+  // `grid-auto-flow` is row/SPARSE: the cursor never moves backwards, and a band
+  // carries a definite full-width column position so it cannot share a row.
+  function rowOccupants(items, tracks) {
+    const occ = new Set();
+    const rows = [];
+    const key = (r, c) => r + ',' + c;
+    const free = (r, c, w, h) => {
+      if (c + w > tracks) return false;
+      for (let i = 0; i < h; i++) for (let j = 0; j < w; j++) if (occ.has(key(r + i, c + j))) return false;
+      return true;
+    };
+    const fill = (r, c, w, h, node) => {
+      for (let i = 0; i < h; i++) {
+        if (!rows[r + i]) rows[r + i] = [];
+        rows[r + i].push(node);
+        for (let j = 0; j < w; j++) occ.add(key(r + i, c + j));
+      }
+    };
+    let cr = 0, cc = 0, guard;
+    for (const it of items) {
+      const w = Math.max(1, Math.min(it.w, tracks)), h = Math.max(1, it.h);
+      if (w >= tracks) {                       // a full-width band: its own row
+        let r = cc > 0 ? cr + 1 : cr; guard = 0;
+        while (!free(r, 0, tracks, h) && guard++ < 10000) r++;
+        fill(r, 0, tracks, h, it.node);
+        cr = r; cc = tracks;                   // the row is full: the next wraps
+        continue;
+      }
+      if (cc + w > tracks) { cr++; cc = 0; }
+      guard = 0;
+      while (!free(cr, cc, w, h) && guard++ < 10000) {
+        cc++;
+        if (cc + w > tracks) { cr++; cc = 0; }
+      }
+      fill(cr, cc, w, h, it.node);
+      cc += w;
+    }
+    return rows;
+  }
+
+  // The `grid-auto-rows` TRACK LIST for one track count: one entry per row,
+  // --sep-row-h where the row's only occupants are horizontal separators and
+  // --cell-h everywhere else. Returns null when NO row is separator-only, so a
+  // grid without one is left on the plain fixed-row default (no inline style).
+  // A row with no occupant at all (an interior hole — RECT/HOLE in `npm run
+  // check` owns that defect) keeps --cell-h: a hole is not a thin row.
+  function rowTrackList(items, tracks) {
+    const rows = rowOccupants(items, tracks);
+    let thin = false;
+    const out = [];
+    for (let r = 0; r < rows.length; r++) {
+      const occupants = rows[r] || [];
+      const isThin = occupants.length > 0 && occupants.every(isThinRowLeaf);
+      if (isThin) thin = true;
+      out.push(isThin ? 'var(--sep-row-h)' : 'var(--cell-h)');
+    }
+    return thin ? out.join(' ') : null;
+  }
+
+  // Emit one track list PER COLLAPSE TIER. The placement is a function of the
+  // track count, so the separator-only rows move as the grid cascades …→2→1: at
+  // 2 tracks a partial merge shrinks to --span2 and a band stays full width; at
+  // the 1-track endpoint every slot is alone in its row, so every separator row
+  // is thin there. Each tier is computed independently — a separator that SHARES
+  // its row with boxes at the authored width but ends up alone at 2 tracks is
+  // correctly thin only in that tier's list. Nothing is emitted for a tier with
+  // no separator row, so the CSS var() falls back to --cell-h.
+  function applyRowTracks(grid, slots, cols) {
+    const at = (tracks) => slots.map(slot => {
+      const node = slot.pair ? slot.pair[0] : slot.child;
+      const span = Math.max(1, Math.min(node.span || 1, cols));
+      const w = tracks === cols ? span
+        : span >= cols ? tracks                                   // band: full width
+        : Math.max(1, Math.min(tracks, Math.round(span / cols * tracks)));
+      return { node, w, h: Math.max(1, Math.floor(Number(node.rowspan) || 1)) };
+    });
+    const tiers = [['--row-tracks', cols], ['--row-tracks-2', 2], ['--row-tracks-1', 1]];
+    for (const [prop, tracks] of tiers) {
+      if (tracks > cols) continue;                 // no tier widens a grid
+      const list = rowTrackList(at(tracks), tracks);
+      if (list) grid.style.setProperty(prop, list);
+    }
+  }
+
   function sectionHeader(sec) {
     const h = el('div', 'zone-header');
     const t = el('div', 'ztitle'); t.textContent = sec.title || ''; h.appendChild(t);
@@ -286,6 +393,10 @@
     if (isCompound) classes.push('sec-compound');
     const grid = el('div', classes.join(' '));
     grid.style.setProperty('--cols', String(cols));
+    // THE SEPARATOR ROW. Only a LEAF grid has row tracks to size (a compound
+    // grid is a flex-wrap row of sections), and the clamped `cols` above is the
+    // real track count, so this runs here — after the clamp, before the children.
+    if (!isCompound) applyRowTracks(grid, slots, cols);
 
     for (const slot of slots) {
       // A PAIR renders as a .half-slot wrapper holding the two half boxes; the
