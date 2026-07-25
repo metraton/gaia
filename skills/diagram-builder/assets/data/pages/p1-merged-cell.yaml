@@ -36,7 +36,7 @@ sections:
     children:
       - id: p1-slot
         order: 1
-        status: SLOT
+        kicker: SLOT
         title: "The slot"
         description:
           - "130px tall, an equal share wide"
@@ -45,7 +45,7 @@ sections:
         variant: neutral
       - id: p1-equal
         order: 2
-        status: EQUAL
+        kicker: EQUAL
         title: "Equal by rule"
         description:
           - "cells in one grid share a width"
@@ -54,7 +54,7 @@ sections:
         variant: neutral
       - id: p1-clamp
         order: 3
-        status: CLAMP
+        kicker: CLAMP
         title: "Text clamps"
         description:
           - "title 2 lines, description 3"
@@ -63,7 +63,7 @@ sections:
         variant: neutral
       - id: p1-tracks
         order: 4
-        status: DIAL
+        kicker: DIAL
         title: "columns: 2"
         description:
           - "this grid declares two tracks"
@@ -86,21 +86,21 @@ sections:
     children:
       - id: p1-t1
         order: 1
-        status: TRACK
+        kicker: TRACK
         title: "Track 1"
         description: ["one cell, one track"]
         detail: "Three single cells declare that this grid really has three tracks. Without them the engine's grow-with-content clamp would shrink the grid to what its content can fill, and the merge below would silently become a full-width band."
         variant: neutral
       - id: p1-t2
         order: 2
-        status: TRACK
+        kicker: TRACK
         title: "Track 2"
         description: ["the second of three"]
         detail: "A merge consumes tracks that must ALREADY EXIST. Something has to sit beside it creating them — that is what this row is."
         variant: neutral
       - id: p1-t3
         order: 3
-        status: TRACK
+        kicker: TRACK
         title: "Track 3"
         description: ["the third of three"]
         detail: "With three single cells present the grid keeps three tracks at the authored tier, which is the precondition for a partial merge to read as partial."
@@ -108,7 +108,7 @@ sections:
       - id: p1-merge
         order: 4
         span: 2
-        status: MERGE
+        kicker: MERGE
         title: "span: 2 of 3"
         description:
           - "merges two of three tracks"
@@ -117,7 +117,7 @@ sections:
         variant: accent
       - id: p1-close
         order: 5
-        status: HOLDS
+        kicker: HOLDS
         title: "The third track"
         description:
           - "one track stayed open"
@@ -136,7 +136,7 @@ sections:
     children:
       - id: p1-band-what
         order: 1
-        status: BAND
+        kicker: BAND
         title: "span == columns"
         description:
           - "this section is span 2 of the"
@@ -145,7 +145,7 @@ sections:
         variant: neutral
       - id: p1-band-row
         order: 2
-        status: OWNS
+        kicker: OWNS
         title: "It owns the row"
         description:
           - "no sibling can share it"
@@ -154,7 +154,7 @@ sections:
         variant: neutral
       - id: p1-band-base
         order: 3
-        status: BASE
+        kicker: BASE
         title: "A base layer"
         description:
           - "placed last, it reads as the"
@@ -180,7 +180,7 @@ sections:
       - id: p1-bar-1
         order: 1
         rowspan: 1
-        status: 1 ROW
+        kicker: 1 ROW
         title: "rowspan: 1"
         description:
           - "the base slot, unmerged"
@@ -190,7 +190,7 @@ sections:
       - id: p1-bar-2
         order: 2
         rowspan: 2
-        status: 2 ROWS
+        kicker: 2 ROWS
         title: "rowspan: 2"
         description:
           - "twice the slot height"
@@ -200,7 +200,7 @@ sections:
       - id: p1-bar-3
         order: 3
         rowspan: 3
-        status: 3 ROWS
+        kicker: 3 ROWS
         title: "rowspan: 3"
         description:
           - "three slots tall"
@@ -210,7 +210,7 @@ sections:
       - id: p1-bar-4
         order: 4
         rowspan: 4
-        status: 4 ROWS
+        kicker: 4 ROWS
         title: "rowspan: 4"
         description:
           - "four slots — the tallest bar"

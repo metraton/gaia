@@ -47,7 +47,7 @@ sections:
     children:
       - id: p3-o-1
         order: 1
-        status: "ORDER 1"
+        kicker: "ORDER 1"
         title: "No coordinate"
         description:
           - "there is no row or column"
@@ -57,7 +57,7 @@ sections:
         filters: [packing]
       - id: p3-o-2
         order: 2
-        status: "ORDER 2"
+        kicker: "ORDER 2"
         title: "The packing order"
         description:
           - "children flow in order across"
@@ -67,7 +67,7 @@ sections:
         filters: [packing]
       - id: p3-o-3
         order: 3
-        status: "ORDER 3"
+        kicker: "ORDER 3"
         title: "The stacking order"
         description:
           - "and the same sequence is the"
@@ -92,7 +92,7 @@ sections:
       - id: p3-a-anchor
         order: 1
         rowspan: 2
-        status: ANCHOR
+        kicker: ANCHOR
         title: "The tall cell"
         description:
           - "rowspan: 2, authored FIRST"
@@ -101,7 +101,7 @@ sections:
         variant: accent
       - id: p3-a-beside-1
         order: 2
-        status: PACKS
+        kicker: PACKS
         title: "Beside it"
         description:
           - "authored second, so it lands"
@@ -110,7 +110,7 @@ sections:
         variant: neutral
       - id: p3-a-beside-2
         order: 3
-        status: PACKS
+        kicker: PACKS
         title: "And beside that"
         description:
           - "the row is now full, so the"
@@ -119,7 +119,7 @@ sections:
         variant: neutral
       - id: p3-a-under-1
         order: 4
-        status: FORWARD
+        kicker: FORWARD
         title: "Under, not back"
         description:
           - "the anchor still holds track 1"
@@ -128,7 +128,7 @@ sections:
         variant: neutral
       - id: p3-a-under-2
         order: 5
-        status: FORWARD
+        kicker: FORWARD
         title: "Closing the block"
         description:
           - "fifth in order, and the two"
@@ -144,7 +144,7 @@ sections:
       - id: p3-a-tail
         order: 7
         span: 3
-        status: LATE
+        kicker: LATE
         title: "Authored after the line"
         description:
           - "a full-width row takes the"

@@ -37,7 +37,7 @@ sections:
     children:
       - id: p2-c-columns
         order: 1
-        status: COLUMNS
+        kicker: COLUMNS
         title: "columns: 2"
         description:
           - "declares two real tracks"
@@ -46,7 +46,7 @@ sections:
         variant: neutral
       - id: p2-c-span
         order: 2
-        status: SPAN
+        kicker: SPAN
         title: "span merges"
         description:
           - "span: M takes M of the"
@@ -55,7 +55,7 @@ sections:
         variant: neutral
       - id: p2-c-rowspan
         order: 3
-        status: ROWSPAN
+        kicker: ROWSPAN
         title: "rowspan works"
         description:
           - "a cell can be K rows tall"
@@ -64,7 +64,7 @@ sections:
         variant: neutral
       - id: p2-c-checks
         order: 4
-        status: CHECKS
+        kicker: CHECKS
         title: "The checks apply"
         description:
           - "closure, dead track, slot"
@@ -93,7 +93,7 @@ sections:
         children:
           - id: p2-z-columns
             order: 1
-            status: COLUMNS
+            kicker: COLUMNS
             title: "columns is inert"
             description:
               - "no tracks are created here"
@@ -102,7 +102,7 @@ sections:
             variant: neutral
           - id: p2-z-span
             order: 2
-            status: SPAN
+            kicker: SPAN
             title: "span is a weight"
             description:
               - "a ratio between siblings,"
@@ -117,7 +117,7 @@ sections:
         children:
           - id: p2-z-rowspan
             order: 1
-            status: ROWSPAN
+            kicker: ROWSPAN
             title: "No rowspan"
             description:
               - "there are no rows to merge"
@@ -126,7 +126,7 @@ sections:
             variant: neutral
           - id: p2-z-checks
             order: 2
-            status: CHECKS
+            kicker: CHECKS
             title: "Checks step back"
             description:
               - "no tracks, so no closure"
@@ -155,7 +155,7 @@ sections:
         children:
           - id: p2-w-h1
             order: 1
-            status: WEIGHT
+            kicker: WEIGHT
             title: "span: 2 of a 2+1 row"
             description:
               - "flex-grow 2 beside a 1:"
@@ -164,7 +164,7 @@ sections:
             variant: neutral
           - id: p2-w-h2
             order: 2
-            status: NESTED
+            kicker: NESTED
             title: "Inside, cells again"
             description:
               - "this zone's own children are"
@@ -181,7 +181,7 @@ sections:
         children:
           - id: p2-w-l1
             order: 1
-            status: WEIGHT
+            kicker: WEIGHT
             title: "span: 1 of the same row"
             description:
               - "half of what its sibling gets"
@@ -210,7 +210,7 @@ sections:
         children:
           - id: p2-m-b1
             order: 1
-            status: ZONE
+            kicker: ZONE
             title: "A zone, not a cell"
             description:
               - "each phase is a section, so"
@@ -231,7 +231,7 @@ sections:
         children:
           - id: p2-m-b2
             order: 1
-            status: LEAF
+            kicker: LEAF
             title: "The divider is a leaf"
             description:
               - "a separator sits on the same"
@@ -252,7 +252,7 @@ sections:
         children:
           - id: p2-m-b3
             order: 1
-            status: COST
+            kicker: COST
             title: "Mixed knowingly"
             description:
               - "the price is the dials above"

@@ -38,13 +38,13 @@ window.__DOC__ = {
             {
               "id": "item-1",
               "order": 1,
-              "status": "NEW",
+              "kicker": "NEW",
               "title": "Item 1",
               "description": [
                 "a leaf component (a box)",
                 "click it for its full detail"
               ],
-              "detail": "The atom of the diagram is a box: a status badge, a title, and a short description. The full text always lives in this click-through panel, so the box itself stays a fixed height. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md).",
+              "detail": "The atom of the diagram is a box: a kicker mark, a title, and a short description. The full text always lives in this click-through panel, so the box itself stays a fixed height. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md).",
               "variant": "accent",
               "filters": [
                 "flow"
@@ -53,7 +53,7 @@ window.__DOC__ = {
             {
               "id": "item-2",
               "order": 2,
-              "status": "ENTRY",
+              "kicker": "ENTRY",
               "title": "Item 2",
               "description": [
                 "cells in a row are equal width",
@@ -84,7 +84,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "item-3",
-                  "status": "INTERNAL",
+                  "kicker": "INTERNAL",
                   "title": "Item 3",
                   "description": [
                     "one level of nesting deep"
@@ -108,7 +108,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "item-4",
-                  "status": "INTERNAL",
+                  "kicker": "INTERNAL",
                   "title": "Item 4",
                   "description": [
                     "another nested group"
@@ -118,7 +118,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "item-5",
-                  "status": "INTERNAL",
+                  "kicker": "INTERNAL",
                   "title": "Item 5",
                   "description": [
                     "stacks below Item 4 (columns: 1)"
@@ -156,7 +156,7 @@ window.__DOC__ = {
             {
               "id": "item-6",
               "order": 3,
-              "status": "UNCHANGED",
+              "kicker": "UNCHANGED",
               "title": "Item 6",
               "description": [
                 "the rail labels this row"
@@ -166,7 +166,7 @@ window.__DOC__ = {
             {
               "id": "item-7",
               "order": 4,
-              "status": "NEW",
+              "kicker": "NEW",
               "title": "Item 7",
               "description": [
                 "the last step in the example flow"
@@ -236,7 +236,7 @@ window.__DOC__ = {
               "id": "item-a",
               "order": 1,
               "span": 1,
-              "status": "UNCHANGED",
+              "kicker": "UNCHANGED",
               "title": "Item A",
               "description": [
                 "one cell of four"
@@ -246,7 +246,7 @@ window.__DOC__ = {
               "id": "item-b",
               "order": 2,
               "span": 1,
-              "status": "UNCHANGED",
+              "kicker": "UNCHANGED",
               "title": "Item B",
               "description": [
                 "one cell of four"
@@ -256,7 +256,7 @@ window.__DOC__ = {
               "id": "item-c",
               "order": 3,
               "span": 2,
-              "status": "NEW",
+              "kicker": "NEW",
               "title": "Item C — span 2",
               "description": [
                 "occupies exactly 2 of the 4 tracks"
@@ -293,7 +293,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "l-1",
-                  "status": "STEP",
+                  "kicker": "STEP",
                   "title": "Step 1",
                   "description": [
                     "tall sub-section"
@@ -301,7 +301,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "l-2",
-                  "status": "STEP",
+                  "kicker": "STEP",
                   "title": "Step 2",
                   "description": [
                     "four stacked cells"
@@ -309,7 +309,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "l-3",
-                  "status": "STEP",
+                  "kicker": "STEP",
                   "title": "Step 3",
                   "description": [
                     "makes this block tall"
@@ -317,7 +317,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "l-4",
-                  "status": "STEP",
+                  "kicker": "STEP",
                   "title": "Step 4",
                   "description": [
                     "the taller sibling"
@@ -342,7 +342,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "r-1",
-                  "status": "NOTE",
+                  "kicker": "NOTE",
                   "title": "Note A",
                   "description": [
                     "a shorter sub-section"
@@ -350,7 +350,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "r-2",
-                  "status": "NOTE",
+                  "kicker": "NOTE",
                   "title": "Note B",
                   "description": [
                     "beside the separator"
@@ -380,7 +380,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "gg-1-box-1",
-                  "status": "INTERNAL",
+                  "kicker": "INTERNAL",
                   "title": "One item",
                   "description": [
                     "a stacked sub-section"
@@ -388,7 +388,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "gg-1-box-2",
-                  "status": "INTERNAL",
+                  "kicker": "INTERNAL",
                   "title": "Two item",
                   "description": [
                     "with a second cell"
@@ -396,7 +396,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "gg-1-box-3",
-                  "status": "INTERNAL",
+                  "kicker": "INTERNAL",
                   "title": "Three item",
                   "description": [
                     "a third stacked cell — makes Group A the content-heavy",
@@ -414,7 +414,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "gg-2-box",
-                  "status": "INTERNAL",
+                  "kicker": "INTERNAL",
                   "title": "Another item",
                   "description": [
                     "stretched taller than its content"
@@ -435,7 +435,7 @@ window.__DOC__ = {
           "children": [
             {
               "id": "h-1",
-              "status": "STEP",
+              "kicker": "STEP",
               "title": "One",
               "description": [
                 "cell 1 of 6"
@@ -443,7 +443,7 @@ window.__DOC__ = {
             },
             {
               "id": "h-2",
-              "status": "STEP",
+              "kicker": "STEP",
               "title": "Two",
               "description": [
                 "cell 2 of 6"
@@ -451,7 +451,7 @@ window.__DOC__ = {
             },
             {
               "id": "h-3",
-              "status": "STEP",
+              "kicker": "STEP",
               "title": "Three",
               "description": [
                 "cell 3 of 6"
@@ -459,7 +459,7 @@ window.__DOC__ = {
             },
             {
               "id": "h-4",
-              "status": "STEP",
+              "kicker": "STEP",
               "title": "Four",
               "description": [
                 "cell 4 of 6"
@@ -467,7 +467,7 @@ window.__DOC__ = {
             },
             {
               "id": "h-5",
-              "status": "STEP",
+              "kicker": "STEP",
               "title": "Five",
               "description": [
                 "cell 5 of 6"
@@ -475,7 +475,7 @@ window.__DOC__ = {
             },
             {
               "id": "h-6",
-              "status": "STEP",
+              "kicker": "STEP",
               "title": "Six",
               "description": [
                 "cell 6 of 6"
@@ -503,7 +503,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "heavy-1",
-                  "status": "NEW",
+                  "kicker": "NEW",
                   "title": "Alpha",
                   "description": [
                     "content-heavy section"
@@ -511,7 +511,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "heavy-2",
-                  "status": "NEW",
+                  "kicker": "NEW",
                   "title": "Beta",
                   "description": [
                     "four boxes in two columns"
@@ -519,7 +519,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "heavy-3",
-                  "status": "NEW",
+                  "kicker": "NEW",
                   "title": "Gamma",
                   "description": [
                     "so it earns the width"
@@ -527,7 +527,7 @@ window.__DOC__ = {
                 },
                 {
                   "id": "heavy-4",
-                  "status": "NEW",
+                  "kicker": "NEW",
                   "title": "Delta",
                   "description": [
                     "span:2 → flex-grow 2"
@@ -539,7 +539,7 @@ window.__DOC__ = {
               "id": "card",
               "type": "box",
               "order": 2,
-              "status": "NOTE",
+              "kicker": "NOTE",
               "title": "Card",
               "description": [
                 "a lone box beside sections",
@@ -558,7 +558,7 @@ window.__DOC__ = {
               "children": [
                 {
                   "id": "light-1",
-                  "status": "UNCHANGED",
+                  "kicker": "UNCHANGED",
                   "title": "Solo",
                   "description": [
                     "a lighter section"
@@ -583,7 +583,7 @@ window.__DOC__ = {
             {
               "id": "j-lane",
               "order": 1,
-              "status": "LANE",
+              "kicker": "LANE",
               "title": "Lane",
               "treatment": [
                 "vertical"
@@ -593,7 +593,7 @@ window.__DOC__ = {
             {
               "id": "j-h1",
               "order": 2,
-              "status": "TOP",
+              "kicker": "TOP",
               "title": "Half A",
               "treatment": [
                 "half"
@@ -603,7 +603,7 @@ window.__DOC__ = {
             {
               "id": "j-h2",
               "order": 3,
-              "status": "BOTTOM",
+              "kicker": "BOTTOM",
               "title": "Half B",
               "treatment": [
                 "half"
@@ -613,7 +613,7 @@ window.__DOC__ = {
             {
               "id": "j-center",
               "order": 4,
-              "status": "NEW",
+              "kicker": "NEW",
               "title": "Centered",
               "description": [
                 "colour and structure compose"
@@ -628,7 +628,7 @@ window.__DOC__ = {
             {
               "id": "j-h3",
               "order": 5,
-              "status": "TOP",
+              "kicker": "TOP",
               "title": "Half C",
               "variant": "muted",
               "treatment": [
@@ -640,7 +640,7 @@ window.__DOC__ = {
             {
               "id": "j-h4",
               "order": 6,
-              "status": "BOTTOM",
+              "kicker": "BOTTOM",
               "title": "Half D",
               "variant": "muted",
               "treatment": [
@@ -673,7 +673,7 @@ window.__DOC__ = {
             {
               "id": "p1-slot",
               "order": 1,
-              "status": "SLOT",
+              "kicker": "SLOT",
               "title": "The slot",
               "description": [
                 "130px tall, an equal share wide",
@@ -685,7 +685,7 @@ window.__DOC__ = {
             {
               "id": "p1-equal",
               "order": 2,
-              "status": "EQUAL",
+              "kicker": "EQUAL",
               "title": "Equal by rule",
               "description": [
                 "cells in one grid share a width",
@@ -697,7 +697,7 @@ window.__DOC__ = {
             {
               "id": "p1-clamp",
               "order": 3,
-              "status": "CLAMP",
+              "kicker": "CLAMP",
               "title": "Text clamps",
               "description": [
                 "title 2 lines, description 3",
@@ -709,7 +709,7 @@ window.__DOC__ = {
             {
               "id": "p1-tracks",
               "order": 4,
-              "status": "DIAL",
+              "kicker": "DIAL",
               "title": "columns: 2",
               "description": [
                 "this grid declares two tracks",
@@ -732,7 +732,7 @@ window.__DOC__ = {
             {
               "id": "p1-t1",
               "order": 1,
-              "status": "TRACK",
+              "kicker": "TRACK",
               "title": "Track 1",
               "description": [
                 "one cell, one track"
@@ -743,7 +743,7 @@ window.__DOC__ = {
             {
               "id": "p1-t2",
               "order": 2,
-              "status": "TRACK",
+              "kicker": "TRACK",
               "title": "Track 2",
               "description": [
                 "the second of three"
@@ -754,7 +754,7 @@ window.__DOC__ = {
             {
               "id": "p1-t3",
               "order": 3,
-              "status": "TRACK",
+              "kicker": "TRACK",
               "title": "Track 3",
               "description": [
                 "the third of three"
@@ -766,7 +766,7 @@ window.__DOC__ = {
               "id": "p1-merge",
               "order": 4,
               "span": 2,
-              "status": "MERGE",
+              "kicker": "MERGE",
               "title": "span: 2 of 3",
               "description": [
                 "merges two of three tracks",
@@ -778,7 +778,7 @@ window.__DOC__ = {
             {
               "id": "p1-close",
               "order": 5,
-              "status": "HOLDS",
+              "kicker": "HOLDS",
               "title": "The third track",
               "description": [
                 "one track stayed open",
@@ -801,7 +801,7 @@ window.__DOC__ = {
             {
               "id": "p1-band-what",
               "order": 1,
-              "status": "BAND",
+              "kicker": "BAND",
               "title": "span == columns",
               "description": [
                 "this section is span 2 of the",
@@ -813,7 +813,7 @@ window.__DOC__ = {
             {
               "id": "p1-band-row",
               "order": 2,
-              "status": "OWNS",
+              "kicker": "OWNS",
               "title": "It owns the row",
               "description": [
                 "no sibling can share it",
@@ -825,7 +825,7 @@ window.__DOC__ = {
             {
               "id": "p1-band-base",
               "order": 3,
-              "status": "BASE",
+              "kicker": "BASE",
               "title": "A base layer",
               "description": [
                 "placed last, it reads as the",
@@ -849,7 +849,7 @@ window.__DOC__ = {
               "id": "p1-bar-1",
               "order": 1,
               "rowspan": 1,
-              "status": "1 ROW",
+              "kicker": "1 ROW",
               "title": "rowspan: 1",
               "description": [
                 "the base slot, unmerged",
@@ -862,7 +862,7 @@ window.__DOC__ = {
               "id": "p1-bar-2",
               "order": 2,
               "rowspan": 2,
-              "status": "2 ROWS",
+              "kicker": "2 ROWS",
               "title": "rowspan: 2",
               "description": [
                 "twice the slot height",
@@ -875,7 +875,7 @@ window.__DOC__ = {
               "id": "p1-bar-3",
               "order": 3,
               "rowspan": 3,
-              "status": "3 ROWS",
+              "kicker": "3 ROWS",
               "title": "rowspan: 3",
               "description": [
                 "three slots tall",
@@ -888,7 +888,7 @@ window.__DOC__ = {
               "id": "p1-bar-4",
               "order": 4,
               "rowspan": 4,
-              "status": "4 ROWS",
+              "kicker": "4 ROWS",
               "title": "rowspan: 4",
               "description": [
                 "four slots — the tallest bar",
@@ -921,7 +921,7 @@ window.__DOC__ = {
             {
               "id": "p2-c-columns",
               "order": 1,
-              "status": "COLUMNS",
+              "kicker": "COLUMNS",
               "title": "columns: 2",
               "description": [
                 "declares two real tracks",
@@ -933,7 +933,7 @@ window.__DOC__ = {
             {
               "id": "p2-c-span",
               "order": 2,
-              "status": "SPAN",
+              "kicker": "SPAN",
               "title": "span merges",
               "description": [
                 "span: M takes M of the",
@@ -945,7 +945,7 @@ window.__DOC__ = {
             {
               "id": "p2-c-rowspan",
               "order": 3,
-              "status": "ROWSPAN",
+              "kicker": "ROWSPAN",
               "title": "rowspan works",
               "description": [
                 "a cell can be K rows tall",
@@ -957,7 +957,7 @@ window.__DOC__ = {
             {
               "id": "p2-c-checks",
               "order": 4,
-              "status": "CHECKS",
+              "kicker": "CHECKS",
               "title": "The checks apply",
               "description": [
                 "closure, dead track, slot",
@@ -990,7 +990,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-z-columns",
                   "order": 1,
-                  "status": "COLUMNS",
+                  "kicker": "COLUMNS",
                   "title": "columns is inert",
                   "description": [
                     "no tracks are created here",
@@ -1002,7 +1002,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-z-span",
                   "order": 2,
-                  "status": "SPAN",
+                  "kicker": "SPAN",
                   "title": "span is a weight",
                   "description": [
                     "a ratio between siblings,",
@@ -1023,7 +1023,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-z-rowspan",
                   "order": 1,
-                  "status": "ROWSPAN",
+                  "kicker": "ROWSPAN",
                   "title": "No rowspan",
                   "description": [
                     "there are no rows to merge",
@@ -1035,7 +1035,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-z-checks",
                   "order": 2,
-                  "status": "CHECKS",
+                  "kicker": "CHECKS",
                   "title": "Checks step back",
                   "description": [
                     "no tracks, so no closure",
@@ -1069,7 +1069,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-w-h1",
                   "order": 1,
-                  "status": "WEIGHT",
+                  "kicker": "WEIGHT",
                   "title": "span: 2 of a 2+1 row",
                   "description": [
                     "flex-grow 2 beside a 1:",
@@ -1081,7 +1081,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-w-h2",
                   "order": 2,
-                  "status": "NESTED",
+                  "kicker": "NESTED",
                   "title": "Inside, cells again",
                   "description": [
                     "this zone's own children are",
@@ -1104,7 +1104,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-w-l1",
                   "order": 1,
-                  "status": "WEIGHT",
+                  "kicker": "WEIGHT",
                   "title": "span: 1 of the same row",
                   "description": [
                     "half of what its sibling gets",
@@ -1137,7 +1137,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-m-b1",
                   "order": 1,
-                  "status": "ZONE",
+                  "kicker": "ZONE",
                   "title": "A zone, not a cell",
                   "description": [
                     "each phase is a section, so",
@@ -1168,7 +1168,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-m-b2",
                   "order": 1,
-                  "status": "LEAF",
+                  "kicker": "LEAF",
                   "title": "The divider is a leaf",
                   "description": [
                     "a separator sits on the same",
@@ -1199,7 +1199,7 @@ window.__DOC__ = {
                 {
                   "id": "p2-m-b3",
                   "order": 1,
-                  "status": "COST",
+                  "kicker": "COST",
                   "title": "Mixed knowingly",
                   "description": [
                     "the price is the dials above",
@@ -1245,7 +1245,7 @@ window.__DOC__ = {
             {
               "id": "p3-o-1",
               "order": 1,
-              "status": "ORDER 1",
+              "kicker": "ORDER 1",
               "title": "No coordinate",
               "description": [
                 "there is no row or column",
@@ -1260,7 +1260,7 @@ window.__DOC__ = {
             {
               "id": "p3-o-2",
               "order": 2,
-              "status": "ORDER 2",
+              "kicker": "ORDER 2",
               "title": "The packing order",
               "description": [
                 "children flow in order across",
@@ -1275,7 +1275,7 @@ window.__DOC__ = {
             {
               "id": "p3-o-3",
               "order": 3,
-              "status": "ORDER 3",
+              "kicker": "ORDER 3",
               "title": "The stacking order",
               "description": [
                 "and the same sequence is the",
@@ -1302,7 +1302,7 @@ window.__DOC__ = {
               "id": "p3-a-anchor",
               "order": 1,
               "rowspan": 2,
-              "status": "ANCHOR",
+              "kicker": "ANCHOR",
               "title": "The tall cell",
               "description": [
                 "rowspan: 2, authored FIRST",
@@ -1314,7 +1314,7 @@ window.__DOC__ = {
             {
               "id": "p3-a-beside-1",
               "order": 2,
-              "status": "PACKS",
+              "kicker": "PACKS",
               "title": "Beside it",
               "description": [
                 "authored second, so it lands",
@@ -1326,7 +1326,7 @@ window.__DOC__ = {
             {
               "id": "p3-a-beside-2",
               "order": 3,
-              "status": "PACKS",
+              "kicker": "PACKS",
               "title": "And beside that",
               "description": [
                 "the row is now full, so the",
@@ -1338,7 +1338,7 @@ window.__DOC__ = {
             {
               "id": "p3-a-under-1",
               "order": 4,
-              "status": "FORWARD",
+              "kicker": "FORWARD",
               "title": "Under, not back",
               "description": [
                 "the anchor still holds track 1",
@@ -1350,7 +1350,7 @@ window.__DOC__ = {
             {
               "id": "p3-a-under-2",
               "order": 5,
-              "status": "FORWARD",
+              "kicker": "FORWARD",
               "title": "Closing the block",
               "description": [
                 "fifth in order, and the two",
@@ -1371,7 +1371,7 @@ window.__DOC__ = {
               "id": "p3-a-tail",
               "order": 7,
               "span": 3,
-              "status": "LATE",
+              "kicker": "LATE",
               "title": "Authored after the line",
               "description": [
                 "a full-width row takes the",

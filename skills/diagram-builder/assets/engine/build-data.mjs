@@ -53,7 +53,7 @@ const SECTION_FIELDS = new Set([
   'id', 'title', 'subtitle', 'variant', 'treatment',
   'order', 'span', 'rowspan', 'columns', 'children']);
 const COMPONENT_FIELDS = new Set([
-  'id', 'type', 'variant', 'variant_extra', 'treatment', 'status', 'title',
+  'id', 'type', 'variant', 'variant_extra', 'treatment', 'kicker', 'title',
   'description', 'detail', 'note', 'order', 'span', 'rowspan', 'filters',
   'style', 'text']);
 const FILTER_FIELDS = new Set(['key', 'label', 'steps']);

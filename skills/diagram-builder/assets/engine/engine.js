@@ -135,10 +135,10 @@
 
   // Build one .box for a component (a leaf — no `children`). Also fills the
   // detail registry so the panel can look it up on click by data-k. (`kicker`
-  // is the presentation eyebrow line that renders the component's `status`.)
+  // is the small mark above the title — it names no state, it is just the mark.)
   function buildBox(comp, detailRegistry) {
     const box = el('div', componentClasses(comp), { 'data-k': comp.id });
-    if (comp.status) { const k = el('div', 'k'); k.textContent = comp.status; box.appendChild(k); }
+    if (comp.kicker) { const k = el('div', 'k'); k.textContent = comp.kicker; box.appendChild(k); }
     const t = el('div', 't'); t.textContent = comp.title || ''; box.appendChild(t);
     const rawDesc = comp.description;
     const lines = Array.isArray(rawDesc) ? rawDesc : (rawDesc !== null && rawDesc !== undefined ? [rawDesc] : []);
@@ -158,7 +158,7 @@
     }
 
     detailRegistry[comp.id] = {
-      kicker: comp.status || '',
+      kicker: comp.kicker || '',
       title: comp.title || '',
       facts: lines.join(' · '),
       // detail falls back to joined description when absent
@@ -191,7 +191,7 @@
 
   // Build a `rail` component (a leaf, `type: rail`): a swimlane-style LABEL,
   // styled like a component/box but carrying ONLY a `title` (no
-  // status/description/detail). `orientation: vertical` renders the title
+  // kicker/description/detail). `orientation: vertical` renders the title
   // rotated (vertical text) for swimlane labeling; default horizontal is a slim
   // title-only box. Span is honored by the caller. Not clickable.
   function buildRail(rail) {

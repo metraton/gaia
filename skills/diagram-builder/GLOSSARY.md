@@ -89,8 +89,7 @@ per-invariant detail lives in `reference.md`.
 | `description` | `component.description` | Short text shown in a box: a string, or a list where each item is a line/bullet. |
 | `detail` | `component.detail` | Long, HTML-allowed text for the click-through detail panel. Falls back to `description`. |
 | `note` | `component.note` | A warning-style note (`⚠ …`) shown separately in the panel. |
-| `status` | `component.status` | The kicker badge word (see enum below). |
-| `kicker` | presentation | The small uppercase eyebrow that renders a component's `status`. `status` is the data; `kicker` is the rendered role. |
+| `kicker` | `component.kicker` | The small uppercase mark above the title. It means nothing on its own — it is just the mark, so it holds a step, a number, a phase, or a label equally well (open vocabulary, see below). |
 | `steps` | `filter.steps` | The relation's explanation shown when a filter chip is clicked. |
 | `version` | `document.version` | Optional free-form string on the manifest (semver recommended). Rendered in the header after the subtitle; the node is `:empty`-collapsed when absent, so an older deck degrades with zero visible change. |
 
