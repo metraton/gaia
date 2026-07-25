@@ -44,6 +44,11 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
         "fast-queries",
         "triage",
     ],
+    "coding-standards": [
+        "why-not-what test",
+        "Redundancy is the threshold, not a line count",
+        "No tooling, AI, or plan-system traces",
+    ],
 }
 
 
