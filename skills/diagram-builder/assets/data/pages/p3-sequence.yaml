@@ -1,0 +1,153 @@
+# PRINCIPLE 3 — "You author a sequence, not positions."
+#
+# There is no cell coordinate anywhere in the dialect: the only positional dial
+# is `order`, and it does two jobs at once — the packing order across the row and
+# the stacking order when the deck collapses to one column. Filling runs FORWARD:
+# the placement cursor never moves backwards, so nothing returns to fill the hole
+# a tall cell left. Whatever belongs beside something tall has to be authored
+# around it, before anything that claims a whole row.
+#
+# FORM: flow. Deliberate: the page's subject IS a sequence read in one direction,
+# which is what `flow` names, and the form comes with the chip that makes the
+# sequence traceable (`order` is what makes a chip read directionally, since a
+# grid cannot draw arrows). It also drops the orphan-row and verticality checks,
+# which is correct — a sequence is legitimately a stack of rows, not a dense
+# board, and the two bands here are exactly that.
+#
+# WHAT IT EXERCISES: `order` as the only coordinate · the forward-fill rule
+# demonstrated with a rowspan anchor and the four cells that pack around it · a
+# labelled horizontal separator, which costs a THIN row rather than a full slot ·
+# a filter chip tracing a directional sequence.
+
+id: p3-sequence
+layout: grid
+form: flow
+# Two root columns, so each band is a full-width row: a sequence reads down the
+# page, one row at a time.
+columns: 2
+
+filters:
+  - key: packing
+    label: "The packing order"
+    steps:
+      - "Click the chip to light the three cells that carry an explicit <code>order</code>."
+      - "That one number is the whole positional vocabulary — there is no row or column to set."
+      - "It reads 1 → 2 → 3 here, and it is the same order the page stacks in when it collapses."
+
+sections:
+
+  # ── ROW 1 · ORDER IS THE ONLY COORDINATE, AND IT DOES TWO JOBS ────────────
+  - id: p3-order
+    title: "You author a sequence"
+    subtitle: "one dial, two jobs: how children pack, and how they stack when collapsed"
+    variant: neutral
+    order: 1
+    span: 2
+    columns: 3
+    children:
+      - id: p3-o-1
+        order: 1
+        status: "ORDER 1"
+        title: "No coordinate"
+        description:
+          - "there is no row or column"
+          - "to set — only this number"
+        detail: "Nothing in the dialect names a cell position. To move something you change its <code>order</code>; the grid does the rest. That is why a change is a RECALCULATION — moving one child repacks its whole row — and never a nudge."
+        variant: neutral
+        filters: [packing]
+      - id: p3-o-2
+        order: 2
+        status: "ORDER 2"
+        title: "The packing order"
+        description:
+          - "children flow in order across"
+          - "the tracks, wrapping downward"
+        detail: "Children are sorted by <code>order</code> (falling back to list position, which is why an explicit order on every sibling is worth the keystrokes) and then flow left to right, wrapping to the next row when the tracks run out. A band interrupts the flow by claiming a whole row of its own."
+        variant: neutral
+        filters: [packing]
+      - id: p3-o-3
+        order: 3
+        status: "ORDER 3"
+        title: "The stacking order"
+        description:
+          - "and the same sequence is the"
+          - "collapse order at one column"
+        detail: "At the narrowest tier every grid drops to a single track and the whole page becomes one vertical stack — in exactly this order. So the sequence you author is also the reading order on a narrow screen: one number carries both, and they can never disagree."
+        variant: neutral
+        filters: [packing]
+
+  # ── ROW 2 · FORWARD FILL — the tall cell and what packs around it ─────────
+  # The anchor is authored FIRST and is 2 rows tall; the four cells that follow
+  # pack beside it and under it because the cursor is still in that row. The
+  # labelled separator then claims a whole row, and the cell after it can only
+  # land below — never back up into a track left open above.
+  - id: p3-anchor
+    title: "Filling runs forward"
+    subtitle: "nothing goes back to fill the hole a tall cell left — so sequence is design"
+    variant: neutral
+    order: 2
+    span: 2
+    columns: 3
+    children:
+      - id: p3-a-anchor
+        order: 1
+        rowspan: 2
+        status: ANCHOR
+        title: "The tall cell"
+        description:
+          - "rowspan: 2, authored FIRST"
+          - "so the cursor is still here"
+        detail: "A tall cell claims one track across two rows and leaves the rest of both rows open. Authoring it first is what lets the cells after it pack into that space: the placement cursor is still on this row, so it fills the tracks beside the anchor and then continues on the row below."
+        variant: accent
+      - id: p3-a-beside-1
+        order: 2
+        status: PACKS
+        title: "Beside it"
+        description:
+          - "authored second, so it lands"
+          - "in the next free track"
+        detail: "Nothing about this cell says <em>row 1, track 2</em>. It sits there because it is second in the sequence and that is where the cursor was — the position is a consequence of the order, which is the whole of principle 3."
+        variant: neutral
+      - id: p3-a-beside-2
+        order: 3
+        status: PACKS
+        title: "And beside that"
+        description:
+          - "the row is now full, so the"
+          - "next cell wraps downward"
+        detail: "Three tracks, and the anchor took one of them across two rows. With this cell the first row closes, so the cursor wraps to the row below — where the anchor is still occupying the first track."
+        variant: neutral
+      - id: p3-a-under-1
+        order: 4
+        status: FORWARD
+        title: "Under, not back"
+        description:
+          - "the anchor still holds track 1"
+          - "so this starts at track 2"
+        detail: "The cursor steps over the track the anchor still occupies and starts here. It moved FORWARD to do it — it never searches backwards for a gap it already passed. That asymmetry is the rule the whole principle rests on."
+        variant: neutral
+      - id: p3-a-under-2
+        order: 5
+        status: FORWARD
+        title: "Closing the block"
+        description:
+          - "fifth in order, and the two"
+          - "rows are now a full rectangle"
+        detail: "With this cell the anchor's two rows are completely filled: 3 tracks × 2 rows = 6 cells = 2 (the anchor) + 4. Had any of these four been authored after the divider below, that space could never have been recovered."
+        variant: neutral
+      - id: p3-a-sep
+        type: separator
+        order: 6
+        span: 3
+        style: dotted
+        text: "the cursor never moves backwards"
+      - id: p3-a-tail
+        order: 7
+        span: 3
+        status: LATE
+        title: "Authored after the line"
+        description:
+          - "a full-width row takes the"
+          - "next row, whatever is open"
+        detail: "This cell spans every track, so it can only start on a row where the full width is free — it lands below the divider no matter how much space is open above it. That is the practical rule: whatever belongs beside something tall must come BEFORE whatever claims a whole row. Note the divider's own row is thin (40px, not a full 130px slot): a separator is still a cell, but its footprint matches its ink."
+        variant: muted

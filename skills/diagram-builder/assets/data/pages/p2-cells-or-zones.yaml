@@ -1,0 +1,261 @@
+# PRINCIPLE 2 — "A grid holds cells or zones, and mixing them changes what
+# every dial means."
+#
+# The principle nobody knows and the hardest one to show, so the page shows it
+# by PUTTING THE TWO SIDE BY SIDE: a grid of CELLS on the left, a grid of ZONES
+# on the right, and the text of every box says what happens to one dial on its
+# own side.
+#
+# FORM: comparison. Deliberate: the page's whole argument is "these two levels
+# look alike and behave differently", which is a comparison and nothing else.
+# The form also drops the word-fit floor (scoped to the narrative forms) and
+# keeps the orphan-row check — the right trade for a page whose cells carry
+# dial names rather than prose.
+#
+# WHAT IT EXERCISES: a leaf grid vs a compound grid · a nested section as a zone
+# · `treatment: [envelope]` as the container frame · `span` as a RELATIVE WEIGHT
+# in the legitimate 2:1 split · vertical separators dividing zones on one row —
+# mixing done on purpose, which is legal, not forbidden.
+
+id: p2-cells-or-zones
+layout: grid
+form: comparison
+# Two root columns: the two sides of the comparison sit side by side on row 1,
+# then two bands beneath carry the consequences.
+columns: 2
+
+sections:
+
+  # ── ROW 1, LEFT · a grid of CELLS: every dial means what it says ──────────
+  - id: p2-cells
+    title: "A grid of cells"
+    subtitle: "every child is a leaf — this level is a real grid of tracks and rows"
+    variant: neutral
+    order: 1
+    span: 1
+    columns: 2
+    children:
+      - id: p2-c-columns
+        order: 1
+        status: COLUMNS
+        title: "columns: 2"
+        description:
+          - "declares two real tracks"
+          - "equal fr shares of the width"
+        detail: "In a leaf grid <code>columns: N</code> is literal: the engine emits <code>repeat(N, minmax(--cell-min-w, 1fr))</code> and the cells divide the section edge to edge. This is the only kind of level where the number you write is a track count."
+        variant: neutral
+      - id: p2-c-span
+        order: 2
+        status: SPAN
+        title: "span merges"
+        description:
+          - "span: M takes M of the"
+          - "tracks that already exist"
+        detail: "Here <code>span</code> is an Excel-style merge measured in TRACKS: <code>span: 2</code> in a 3-track grid occupies exactly two of them, and <code>span == columns</code> becomes a full-width band. The number refers to something real that the grid already drew."
+        variant: neutral
+      - id: p2-c-rowspan
+        order: 3
+        status: ROWSPAN
+        title: "rowspan works"
+        description:
+          - "a cell can be K rows tall"
+          - "because rows exist here"
+        detail: "The vertical merge only means something where there are rows to merge. A leaf grid has them — fixed <code>--cell-h</code> tracks — so <code>rowspan: K</code> makes a cell K slots tall and height becomes a channel you can encode magnitude in."
+        variant: neutral
+      - id: p2-c-checks
+        order: 4
+        status: CHECKS
+        title: "The checks apply"
+        description:
+          - "closure, dead track, slot"
+          - "height: all measured here"
+        detail: "The cell-level invariants are asserted at exactly this level: the closure identity <code>Σ(spanCols × rowspanRows) == tracks × rows</code>, the dead-track check, the orphan row, the uniform slot height. A defect on this side is caught by arithmetic."
+        variant: neutral
+
+  # ── ROW 1, RIGHT · a grid of ZONES: the same dials, different meanings ────
+  # ONE nested section is enough to turn a level compound; here there are two, so
+  # this level is a flex row of zones. `treatment: [envelope]` frames it as a
+  # container without making any colour claim — the two axes are independent.
+  - id: p2-zones
+    title: "A grid of zones"
+    subtitle: "one nested section is enough: this level became a flex row of zones"
+    variant: neutral
+    treatment: [envelope]
+    order: 2
+    span: 1
+    columns: 2
+    children:
+      - id: p2-z-changed
+        title: "What changes"
+        variant: neutral
+        order: 1
+        columns: 1
+        children:
+          - id: p2-z-columns
+            order: 1
+            status: COLUMNS
+            title: "columns is inert"
+            description:
+              - "no tracks are created here"
+              - "the row is flex, not a grid"
+            detail: "A compound level is a flex-wrap row of sections, so <code>columns</code> no longer emits tracks. It survives only as the label the CSS steps the collapse by. Writing <code>columns: 6</code> on a level whose children are sections changes nothing at all."
+            variant: neutral
+          - id: p2-z-span
+            order: 2
+            status: SPAN
+            title: "span is a weight"
+            description:
+              - "a ratio between siblings,"
+              - "not a count of tracks"
+            detail: "On this side <code>span</code> becomes <code>flex-grow</code>: <code>span: 2</code> beside <code>span: 1</code> means twice as wide as its sibling, whatever the parent's <code>columns</code> says. It is a proportion, and the band beneath is the legitimate use of it."
+            variant: neutral
+      - id: p2-z-lost
+        title: "What is lost"
+        variant: neutral
+        order: 2
+        columns: 1
+        children:
+          - id: p2-z-rowspan
+            order: 1
+            status: ROWSPAN
+            title: "No rowspan"
+            description:
+              - "there are no rows to merge"
+              - "so the dial has no meaning"
+            detail: "A flex row has no row model, so <code>rowspan</code> on a zone has nothing to consume. The schema accepts the field and the render ignores it — which is exactly why the principle has to be known rather than discovered."
+            variant: neutral
+          - id: p2-z-checks
+            order: 2
+            status: CHECKS
+            title: "Checks step back"
+            description:
+              - "no tracks, so no closure"
+              - "and no dead-track check"
+            detail: "The cell invariants stop measuring a compound level: there is no rectangle to close and no track to declare dead. What is still asserted is the flex behaviour — that a zone's width follows its authored weight, that a lone leaf on the row stays content-sized, that no sibling overflows onto the next."
+            variant: neutral
+
+  # ── ROW 2 · THE LEGITIMATE USE — span as a weight, a 2:1 split ────────────
+  # `columns: 3` here is INERT (the children are sections); what divides the row
+  # is the ratio 2:1 between the authored spans.
+  - id: p2-weight
+    title: "span as weight — a 2:1 split"
+    subtitle: "the honest reason to mix: one row, two zones, one twice the other"
+    variant: neutral
+    order: 3
+    span: 2
+    columns: 3
+    children:
+      - id: p2-w-heavy
+        title: "Two thirds"
+        subtitle: "span: 2"
+        variant: neutral
+        order: 1
+        span: 2
+        columns: 2
+        children:
+          - id: p2-w-h1
+            order: 1
+            status: WEIGHT
+            title: "span: 2 of a 2+1 row"
+            description:
+              - "flex-grow 2 beside a 1:"
+              - "two thirds of the width"
+            detail: "The parent's <code>columns: 3</code> creates no tracks here — the split is the RATIO of the two authored spans, 2 against 1. The guardrail asserts this on the real render: a zone's rendered width must follow its authored span within 15%, which is what catches the classic regression where both siblings inherit the parent band's span and the row silently goes 50/50."
+            variant: neutral
+          - id: p2-w-h2
+            order: 2
+            status: NESTED
+            title: "Inside, cells again"
+            description:
+              - "this zone's own children are"
+              - "leaves, so its grid is a grid"
+            detail: "The two levels alternate freely: a compound level holds zones, and each zone's own level is a leaf grid with real tracks again. Every dial resets to its literal meaning one level down."
+            variant: neutral
+      - id: p2-w-light
+        title: "One third"
+        subtitle: "span: 1"
+        variant: neutral
+        order: 2
+        span: 1
+        columns: 1
+        children:
+          - id: p2-w-l1
+            order: 1
+            status: WEIGHT
+            title: "span: 1 of the same row"
+            description:
+              - "half of what its sibling gets"
+              - "authored, not measured"
+            detail: "The weight is a claim about IMPORTANCE OR VOLUME that you author, and the layout obeys it. A zone that carries less says so by weighing less — the width is the argument, not a leftover."
+            variant: neutral
+
+  # ── ROW 3 · MIXING, DONE WELL — phase zones divided by vertical separators ─
+  # This is what a real timeline does and it is legal: sections for the phases,
+  # separators as the weak dividers between them, on one compound row. The cost
+  # is exactly what the two sides above enumerate — and it is paid knowingly.
+  - id: p2-mix
+    title: "Mixing is legal"
+    subtitle: "phase zones divided by vertical separators — a real timeline row"
+    variant: neutral
+    order: 4
+    span: 2
+    columns: 3
+    children:
+      - id: p2-m-phase-1
+        title: "Phase one"
+        variant: neutral
+        order: 1
+        span: 1
+        columns: 1
+        children:
+          - id: p2-m-b1
+            order: 1
+            status: ZONE
+            title: "A zone, not a cell"
+            description:
+              - "each phase is a section, so"
+              - "this whole row is compound"
+            detail: "A phase is a distinct thing with parts of its own, so it is a section — that is principle 7, structure as the assertion. Making the phases zones is what turns this row compound, and the row's dials change accordingly."
+            variant: neutral
+      - id: p2-m-sep-1
+        type: separator
+        treatment: [vertical]
+        order: 2
+        style: dotted
+      - id: p2-m-phase-2
+        title: "Phase two"
+        variant: neutral
+        order: 3
+        span: 1
+        columns: 1
+        children:
+          - id: p2-m-b2
+            order: 1
+            status: LEAF
+            title: "The divider is a leaf"
+            description:
+              - "a separator sits on the same"
+              - "row, mixed in with the zones"
+            detail: "The vertical separators beside this zone are LEAF components sharing a row with sections — the mix the principle warns about, here on purpose. A separator is a WEAK divider: it separates within one level. If the two sides were genuinely distinct things, they would be sections, not a line."
+            variant: neutral
+      - id: p2-m-sep-2
+        type: separator
+        treatment: [vertical]
+        order: 4
+        style: dotted
+      - id: p2-m-phase-3
+        title: "Phase three"
+        variant: neutral
+        order: 5
+        span: 1
+        columns: 1
+        children:
+          - id: p2-m-b3
+            order: 1
+            status: COST
+            title: "Mixed knowingly"
+            description:
+              - "the price is the dials above"
+              - "paid for a row that reads"
+            detail: "Mixing is not forbidden — it is a trade. Here it buys a timeline whose phases are real zones with their own contents, and the price is the one enumerated on this page: <code>columns</code> goes inert, <code>span</code> becomes a weight, <code>rowspan</code> disappears, and the cell invariants stop measuring this level. Mix when the row is worth it; know what you gave up."
+            variant: neutral
