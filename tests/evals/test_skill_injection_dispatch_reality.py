@@ -40,6 +40,17 @@ Both paths call the SAME production code the hook itself runs
 ``artifact_skill_map`` for the expected-skill judgment) -- nothing here
 re-implements the detection; the point is only to point it at real bytes
 instead of a synthetic audit line.
+
+A second gap remained even with the above: every case, real or live-swept,
+was still anchored to the same two measured incidents (``.js``/``.mjs``).
+None proved the detector catches a NEW hole in a class of artifact it was
+never shown before -- it only proved it still recognizes the two it was
+built from, a museum piece rather than a working alarm. The synthetic
+fixture pair (``dispatch_gap_python_hook_module.jsonl`` /
+``dispatch_closed_python_hook_module.jsonl``), hand-written rather than
+lifted from any incident, writes a ``.py`` module instead -- still governed
+by ``coding-standards`` per ``artifact_skill_map``, but an extension neither
+historical fixture touches -- to measure that capability directly.
 """
 
 from __future__ import annotations
@@ -77,6 +88,19 @@ GAP_FIXTURE = FIXTURES_DIR / "dispatch_gap_diagram_builder.jsonl"
 # real <command-name>coding-standards</command-name> tag with its full
 # SKILL.md body (the fingerprints verify_skill_injection searches for).
 CLOSED_FIXTURE = FIXTURES_DIR / "dispatch_closed_playwright_check.jsonl"
+
+# Synthetic, hand-written transcripts -- NOT lifted from any real incident.
+# Both GAP_FIXTURE and CLOSED_FIXTURE above pin the detector to the two
+# extensions actually measured (.js, .mjs); a detector that only ever passes
+# on those two files could still be re-implementing "does this specific
+# filename appear," not "does the artifact class trigger the skill." These
+# two fixtures write a .py file instead -- an extension neither historical
+# incident touched, still governed by coding-standards per
+# artifact_skill_map.ARTIFACT_SKILL_RULES -- to prove the detector
+# generalizes to a class of artifact/skill pairing it was never measured
+# against, not merely memorizes the two known holes.
+SYNTHETIC_GAP_FIXTURE = FIXTURES_DIR / "dispatch_gap_python_hook_module.jsonl"
+SYNTHETIC_CLOSED_FIXTURE = FIXTURES_DIR / "dispatch_closed_python_hook_module.jsonl"
 
 # The two transcripts named in the incident report -- if present on THIS
 # machine's ~/.claude/projects, the live-sweep test re-measures them directly
@@ -136,6 +160,12 @@ def _measure_dispatch_gap(transcript_path: Path, agent_type: str) -> Optional[Di
 def test_fixtures_exist():
     assert GAP_FIXTURE.exists(), f"missing committed fixture: {GAP_FIXTURE}"
     assert CLOSED_FIXTURE.exists(), f"missing committed fixture: {CLOSED_FIXTURE}"
+    assert SYNTHETIC_GAP_FIXTURE.exists(), (
+        f"missing committed fixture: {SYNTHETIC_GAP_FIXTURE}"
+    )
+    assert SYNTHETIC_CLOSED_FIXTURE.exists(), (
+        f"missing committed fixture: {SYNTHETIC_CLOSED_FIXTURE}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +217,76 @@ def test_closed_fixture_shows_no_gap_when_skill_was_loaded():
     assert "coding-standards" in expected.values()
 
     result = _measure_dispatch_gap(CLOSED_FIXTURE, agent_type="developer")
+
+    assert result is None, (
+        f"expected no anomaly once coding-standards was loaded, got: {result}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generalization case -- a synthetic artifact/skill pairing NEITHER historical
+# incident measured. GAP_FIXTURE and CLOSED_FIXTURE above only prove the
+# detector reproduces the two already-known holes (.js, .mjs); these two
+# tests prove it also catches a THIRD, never-measured artifact class (.py) --
+# the capability this eval exists to check, not a third pinned incident.
+# ---------------------------------------------------------------------------
+
+
+def test_generalizes_to_new_artifact_class_never_measured_before():
+    """A never-before-seen hole: a .py hook module written with no
+    coding-standards fingerprint anywhere in the transcript. Neither
+    GAP_FIXTURE nor CLOSED_FIXTURE ever exercises a .py write, so a detector
+    that merely special-cased ``engine.js`` / ``pw-check.mjs`` would pass
+    this fixture through silently. This must FAIL loud (assert on the
+    anomaly's presence) -- a green run here means the detector generalizes,
+    not that this particular file is exempt.
+    """
+    written = _written_code_paths(SYNTHETIC_GAP_FIXTURE)
+    assert written, "fixture carries no Write/Edit calls -- fixture rotted"
+    assert any(p.endswith(".py") for p in written), (
+        f"expected a .py write among written paths, got: {written}"
+    )
+    assert not any(p.endswith((".js", ".mjs")) for p in written), (
+        "synthetic fixture must not reuse the extensions already covered "
+        "by the historical fixtures, or it proves nothing new"
+    )
+
+    expected = expected_skills_for_paths(written)
+    assert expected, "no written path resolved to a governing skill -- fixture rotted"
+    assert "coding-standards" in expected.values()
+
+    result = _measure_dispatch_gap(SYNTHETIC_GAP_FIXTURE, agent_type="gaia-system")
+
+    assert result is not None, (
+        "expected a skill_injection_gap anomaly for the .py write with no "
+        "coding-standards fingerprint in transcript -- got none, meaning the "
+        "detector did not generalize past the two known incidents"
+    )
+    assert result["type"] == "skill_injection_gap"
+    assert "coding-standards" in result["missing_skills"]
+    triggering = result["triggering_artifacts"]["coding-standards"]
+    assert any(p.endswith(".py") for p in triggering)
+
+
+def test_synthetic_closed_fixture_shows_no_gap_when_skill_was_loaded():
+    """Symmetric negative case, same never-measured artifact class: the SAME
+    .py write, but coding-standards' own fingerprint IS present in the
+    transcript this time. Without this case, test_generalizes_to_new_
+    artifact_class_never_measured_before could be satisfied by a detector
+    that always reports a gap for any .py write regardless of what was
+    loaded -- this proves the detector distinguishes the two, not just
+    alarms unconditionally.
+    """
+    written = _written_code_paths(SYNTHETIC_CLOSED_FIXTURE)
+    assert written, "fixture carries no Write/Edit calls -- fixture rotted"
+    assert any(p.endswith(".py") for p in written), (
+        f"expected a .py write among written paths, got: {written}"
+    )
+
+    expected = expected_skills_for_paths(written)
+    assert "coding-standards" in expected.values()
+
+    result = _measure_dispatch_gap(SYNTHETIC_CLOSED_FIXTURE, agent_type="gaia-system")
 
     assert result is None, (
         f"expected no anomaly once coding-standards was loaded, got: {result}"
