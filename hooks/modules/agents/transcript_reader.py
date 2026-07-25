@@ -3,6 +3,7 @@ Transcript reading and parsing for Claude Code agent transcripts.
 
 Provides:
     - read_transcript(): Read assistant messages from transcript JSONL
+    - read_full_transcript_text(): Read every role's text content from transcript JSONL
     - read_first_user_content_from_transcript(): Read first user message content
     - extract_task_description_from_transcript(): Extract task description
     - extract_injected_context_payload_from_transcript(): Extract auto-injected JSON
@@ -50,6 +51,45 @@ def read_transcript(transcript_path: str) -> str:
 
     except Exception as e:
         logger.debug("Failed to read transcript from %s: %s", transcript_path, e)
+        return ""
+
+
+def read_full_transcript_text(transcript_path: str) -> str:
+    """Read every message's text content from the transcript, all roles.
+
+    Unlike read_transcript() (assistant-only), this walks every role --
+    which matters because the host records a skill load as a
+    ``<command-name>skill-name</command-name>`` tag inside a ``user``-role
+    tool-result entry, not inside anything the assistant itself says. A
+    fingerprint search scoped to the assistant's own words (or worse, only
+    its LAST message, as the SubagentStop caller used to do) never sees
+    that tag or the skill body it wraps -- restricting the window there is
+    what let skill_injection_verifier miss a skill that genuinely loaded
+    earlier in the turn.
+
+    Falls back to empty string on any error so the hook never crashes.
+    """
+    try:
+        text_parts: List[str] = []
+        for _role, content in iter_transcript_entries(transcript_path):
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+
+        result = "\n".join(text_parts)
+        logger.debug(
+            "Extracted %d text parts from full transcript, total length: %d chars",
+            len(text_parts), len(result),
+        )
+        return result
+
+    except Exception as e:
+        logger.debug("Failed to read full transcript from %s: %s", transcript_path, e)
         return ""
 
 

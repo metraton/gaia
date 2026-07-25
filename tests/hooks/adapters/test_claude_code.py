@@ -557,7 +557,10 @@ class TestAdaptSubagentStopSessionId:
         )
         _install_stub(
             "modules.agents.transcript_reader",
-            {"read_transcript": lambda *_a, **_k: ""},
+            {
+                "read_transcript": lambda *_a, **_k: "",
+                "read_full_transcript_text": lambda *_a, **_k: "",
+            },
         )
         _install_stub(
             "modules.audit.workflow_auditor",
@@ -702,7 +705,10 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         )
         _install_stub(
             "modules.agents.transcript_reader",
-            {"read_transcript": lambda *_a, **_k: ""},
+            {
+                "read_transcript": lambda *_a, **_k: "",
+                "read_full_transcript_text": lambda *_a, **_k: "",
+            },
         )
         _install_stub(
             "modules.audit.workflow_auditor",

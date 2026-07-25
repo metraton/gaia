@@ -280,3 +280,70 @@ class TestEdgeCases:
                 f"Skill '{skill_name}' should be verified by its own fingerprint "
                 f"'{fingerprints[0]}' but got anomaly: {result}"
             )
+
+
+# ============================================================================
+# ARTIFACT-DERIVED EXPECTATION -- INDEPENDENT OF FRONTMATTER
+# ============================================================================
+
+class TestArtifactDerivedExpectation:
+    """written_paths routes an expectation through artifact_skill_map,
+    regardless of what declared_skills (the frontmatter) contains."""
+
+    def test_written_python_file_expects_coding_standards_undeclared(self):
+        """A .py file written with no coding-standards fingerprint in the
+        transcript, and no frontmatter declaration at all, still flags."""
+        result = verify_skill_injection(
+            agent_type="developer",
+            transcript_text="The agent wrote a module and moved on.",
+            declared_skills=[],
+            written_paths=["gaia/hooks/modules/agents/some_module.py"],
+        )
+        assert result is not None
+        assert result["type"] == "skill_injection_gap"
+        assert result["severity"] == "advisory"
+        assert "coding-standards" in result["missing_skills"]
+
+    def test_written_python_file_with_fingerprint_present_no_anomaly(self):
+        """Same written file, but the transcript shows the skill's own
+        fingerprint -- no gap."""
+        result = verify_skill_injection(
+            agent_type="developer",
+            transcript_text="Applied the why-not-what test before committing.",
+            declared_skills=[],
+            written_paths=["gaia/hooks/modules/agents/some_module.py"],
+        )
+        assert result is None
+
+    def test_unrecognized_extension_adds_no_expectation(self):
+        """A written path with no registered artifact rule adds nothing --
+        empty declared_skills and an unrecognized path stays a no-op."""
+        result = verify_skill_injection(
+            agent_type="developer",
+            transcript_text="Nothing relevant here.",
+            declared_skills=[],
+            written_paths=["README.md"],
+        )
+        assert result is None
+
+    def test_declared_and_artifact_expectations_both_checked(self):
+        """A declared skill and a file-derived skill are both verified;
+        only the one truly missing from the transcript is reported."""
+        result = verify_skill_injection(
+            agent_type="developer",
+            transcript_text="Using agent_contract_handoff for protocol.",
+            declared_skills=["agent-protocol"],
+            written_paths=["hooks/modules/agents/thing.py"],
+        )
+        assert result is not None
+        assert "coding-standards" in result["missing_skills"]
+        assert "agent-protocol" not in result["missing_skills"]
+
+    def test_no_declared_and_no_written_paths_returns_none(self):
+        """written_paths defaults to None -- behaves exactly as before."""
+        result = verify_skill_injection(
+            agent_type="developer",
+            transcript_text="Some transcript content.",
+            declared_skills=[],
+        )
+        assert result is None

@@ -2155,7 +2155,7 @@ class ClaudeCodeAdapter(HookAdapter):
             resolve_agent_id,
         )
         from modules.agents.task_info_builder import build_task_info_from_hook_data
-        from modules.agents.transcript_reader import read_transcript
+        from modules.agents.transcript_reader import read_transcript, read_full_transcript_text
         from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
         from modules.audit.workflow_recorder import record as record_workflow
         from modules.context.context_writer import process_update_contracts
@@ -2730,9 +2730,28 @@ class ClaudeCodeAdapter(HookAdapter):
                 from modules.audit.workflow_recorder import load_agent_runtime_profile
                 agent_profile = load_agent_runtime_profile(agent_type)
                 declared_skills = agent_profile.get("skills", [])
-                if declared_skills and agent_output:
+                # Files the agent wrote/edited this turn -- routes the
+                # expectation through artifact_skill_map, independent of
+                # what the agent's frontmatter declares.
+                written_paths = [
+                    tc.arguments.get("file_path", "")
+                    for tc in (transcript_analysis.tool_sequence if transcript_analysis else [])
+                    if tc.tool_name in ("Write", "Edit")
+                ]
+                written_paths = [p for p in written_paths if p]
+                # Search the FULL transcript (every role), not just the
+                # agent's last message -- a skill's fingerprint is injected
+                # earlier in the turn, in a tool-result entry last_message
+                # never carries.
+                full_transcript_text = (
+                    read_full_transcript_text(completion.transcript_path)
+                    if completion.transcript_path
+                    else agent_output
+                )
+                if (declared_skills or written_paths) and full_transcript_text:
                     skill_check = verify_skill_injection(
-                        agent_type, agent_output, declared_skills,
+                        agent_type, full_transcript_text, declared_skills,
+                        written_paths=written_paths,
                     )
                     if skill_check:
                         anomalies.append(skill_check)
