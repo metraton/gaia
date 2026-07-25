@@ -1181,12 +1181,14 @@ class ClaudeCodeAdapter(HookAdapter):
                     tool_name, tool_input, session_id=event.session_id,
                 )
             elif tool_name.lower() in ("write", "edit"):
-                is_subagent = bool(hook_data and hook_data.get("agent_id"))
+                agent_id = (hook_data or {}).get("agent_id", "")
+                is_subagent = bool(agent_id)
                 session_id = (hook_data or {}).get("session_id", "")
                 return self._adapt_write_edit(
                     tool_name, tool_input,
                     session_id=session_id,
                     is_subagent=is_subagent,
+                    agent_id=agent_id,
                 )
             else:
                 # Other tools pass through
@@ -1568,8 +1570,10 @@ class ClaudeCodeAdapter(HookAdapter):
         parameters: dict,
         session_id: str = "",
         is_subagent: bool = False,
+        agent_id: str = "",
     ) -> HookResponse:
-        """Handle Write and Edit tool path protection.
+        """Handle Write and Edit tool path protection, plus an advisory
+        artifact-skill reminder.
 
         Blocks modifications to Gaia hooks, settings, and security config
         by requiring user approval for any path that matches protected path
@@ -1589,12 +1593,30 @@ class ClaudeCodeAdapter(HookAdapter):
         Protected paths:
         - Any path that resolves within the gaia hooks directory (Path.resolve().relative_to(hooks_dir)), EXCEPT .md files — documentation does not execute code and is exempt
         - .claude/settings.json and .claude/settings.local.json
+
+        Non-protected subagent writes additionally get a one-shot advisory
+        nudge (see ``modules.agents.artifact_skill_reminder``): when the
+        file's extension maps to a governing skill via ``artifact_skill_map``
+        and that skill has not already been reminded this turn (keyed by
+        session_id + agent_id), the response carries an "allow" decision with
+        a ``permissionDecisionReason`` naming the skill. This never blocks --
+        it is the prevention half of the gap that ``skill_injection_verifier``
+        can only detect after the fact at SubagentStop. Restricted to
+        ``is_subagent=True`` (with a non-empty ``agent_id``): the orchestrator
+        delegates instead of writing code itself, so the foreground path is
+        unaffected and existing foreground callers keep the exact-passthrough
+        contract.
         """
         from modules.security.approval_grants import (
             check_approval_grant_for_file,
             find_pending_for_file,
             generate_nonce,
             write_pending_approval_for_file,
+        )
+        from modules.agents.artifact_skill_map import expected_skill_for_path
+        from modules.agents.artifact_skill_reminder import (
+            build_reminder_reason,
+            should_remind,
         )
 
         file_path = parameters.get("file_path", "")
@@ -1623,6 +1645,21 @@ class ClaudeCodeAdapter(HookAdapter):
             return False
 
         if not _is_protected(file_path):
+            if is_subagent and agent_id:
+                expected_skill = expected_skill_for_path(file_path)
+                if expected_skill and should_remind(session_id, agent_id, expected_skill):
+                    return HookResponse(
+                        output={
+                            "hookSpecificOutput": {
+                                "hookEventName": "PreToolUse",
+                                "permissionDecision": "allow",
+                                "permissionDecisionReason": build_reminder_reason(
+                                    file_path, expected_skill,
+                                ),
+                            }
+                        },
+                        exit_code=0,
+                    )
             return HookResponse(output={}, exit_code=0)
 
         logger.warning(
