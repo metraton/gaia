@@ -781,8 +781,8 @@ window.__DOC__ = {
               "status": "HOLDS",
               "title": "The third track",
               "description": [
-                "the merge left one track open",
-                "this cell is what closes it"
+                "one track stayed open",
+                "this cell closes it"
               ],
               "detail": "A merge that leaves the rest of its row empty is a hole, and a hole asserts something (principle 9). Here the remaining track is filled on purpose, so the section is a full rectangle: 3 tracks × 2 rows = 6 cells = 1+1+1+2+1.",
               "variant": "neutral"
