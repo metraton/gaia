@@ -7,6 +7,7 @@
   "scripts": {
     "build": "node engine/build-data.mjs",
     "check": "node tools/check-layout.mjs",
+    "test": "node tools/test-guards.mjs",
     "validate": "node tools/validate-layout.cjs",
     "contrast": "node tools/contrast-audit.cjs",
     "verify": "node tools/verify.mjs"
