@@ -126,20 +126,20 @@ build error that names the axis it belongs to, and vice versa.
 
 | value | role | CSS evidence (`index.html`) |
 |-------|------|------------------------------|
-| `normal` | neutral box, standard border | — (no class) |
-| `crit` | red — exposed or high risk | `background:var(--crit-soft); border-color:var(--crit)` |
+| `neutral` | neutral box, standard border | — (no class) |
+| `bad` | red — exposed or high risk | `background:var(--crit-soft); border-color:var(--crit)` |
 | `warn` | amber — medium risk / weak config | `background:var(--warn-soft); border-color:var(--warn)` |
-| `ok` | olive/green — hardened / correct | `background:var(--olive-soft); border-color:var(--olive)` |
-| `strong` | marked green 2px border — a highlighted new component | `background:var(--strong-soft); border-color:var(--strong); border-width:2px` |
-| `store` | secondary fill — data stores | `background:var(--surface2)` |
+| `good` | olive/green — hardened / correct | `background:var(--olive-soft); border-color:var(--olive)` |
+| `accent` | marked green 2px border — a highlighted new component | `background:var(--strong-soft); border-color:var(--strong); border-width:2px` |
+| `muted` | secondary fill — background / secondary | `background:var(--surface2)` |
 
 **Section:**
 
 | value | role | CSS evidence |
 |-------|------|--------------|
-| `normal` | neutral zone, dashed border | — (no class) |
-| `danger` | red fill/border — high-risk zone | `background:var(--crit-soft); border-color:var(--crit)` |
-| `safe` | green fill/border — hardened zone | `background:var(--olive-soft); border-color:var(--olive)` |
+| `neutral` | neutral zone, dashed border | — (no class) |
+| `bad` | red fill/border — high-risk zone | `background:var(--crit-soft); border-color:var(--crit)` |
+| `good` | green fill/border — hardened zone | `background:var(--olive-soft); border-color:var(--olive)` |
 
 `variant_extra` is a **list** carrying an optional SECOND colour role, for the one
 case a single value cannot express: a box that is both a *kind* and a *state*

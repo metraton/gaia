@@ -79,9 +79,9 @@ const FILTER_FIELDS = new Set(['key', 'label', 'steps']);
 // a silent translation, so a deck is either on the new vocabulary or it fails
 // loudly at the gate. (The legacy→new mapping is tabled in the skill's
 // reference.md, "Migrating a pre-2.1 deck".)
-const COMPONENT_VARIANTS = new Set(['normal', 'crit', 'warn', 'ok', 'strong', 'store']);
-const SECTION_VARIANTS = new Set(['normal', 'danger', 'safe']);
-const COMPONENT_TREATMENTS = new Set(['centered', 'half', 'vertical', 'ext']);
+const COMPONENT_VARIANTS = new Set(['neutral', 'good', 'warn', 'bad', 'accent', 'muted']);
+const SECTION_VARIANTS = new Set(['neutral', 'good', 'bad']);
+const COMPONENT_TREATMENTS = new Set(['centered', 'half', 'vertical', 'outside']);
 const SECTION_TREATMENTS = new Set(['plain', 'envelope']);
 // Which axis a value belongs to, for the error message. A value that MOVED axes
 // gets a targeted "that is a treatment, not a variant" error instead of a bare
@@ -89,7 +89,7 @@ const SECTION_TREATMENTS = new Set(['plain', 'envelope']);
 // mechanical edit.
 const TREATMENT_OWNER = {
   plain: 'section', envelope: 'section',
-  centered: 'component', half: 'component', vertical: 'component', ext: 'component',
+  centered: 'component', half: 'component', vertical: 'component', outside: 'component',
 };
 
 // Document palettes. A palette is a SKIN — the semantic roles are identical in
@@ -345,7 +345,7 @@ function validateNode(node, pageId, where) {
     // permits it on any component.)
     checkEnumValue(node.style, SEPARATOR_STYLES, 'separator style', pageId, label);
     // `variant_extra` is the narrow escape hatch for a SECOND COLOUR role (e.g. a
-    // `crit` box that is also a data `store`): the risk axis and the kind axis are
+    // `bad` box that is also a `muted` secondary): the risk axis and the kind axis are
     // genuinely different dimensions, and a single-valued `variant` cannot carry
     // both. It is validated against the SAME colour enum as `variant`, which is
     // what closes the old hole — a structural value can no longer hide in here,

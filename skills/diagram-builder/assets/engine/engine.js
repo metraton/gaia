@@ -57,10 +57,10 @@
   // where both enums are validated. The engine only translates; it never decides
   // what is legal.
   const COMPONENT_VARIANT = {
-    normal: '', crit: 'crit', warn: 'warn', ok: 'ok', strong: 'strong', store: 'store'
+    neutral: '', good: 'good', warn: 'warn', bad: 'bad', accent: 'accent', muted: 'muted'
   };
   const SECTION_VARIANT = {
-    normal: '', danger: 'danger', safe: 'safe'
+    neutral: '', good: 'good', bad: 'bad'
   };
   // Component treatments:
   //   centered — centre the text block
@@ -68,12 +68,12 @@
   //   vertical — run the text down the block axis (a rotated lane label). For a
   //              `separator`/`rail` this is what the old `orientation: vertical`
   //              spelled; folding it into `treatment` removes the parallel field.
-  //   ext      — dashed frame ("outside the perimeter"). Its CSS is
+  //   outside  — dashed frame ("outside the perimeter"). Its CSS is
   //              `border-style:dashed` and NOTHING else — no colour at all — so it
   //              is a frame treatment, not a colour role, and it composes with any
   //              variant instead of competing with one.
   const COMPONENT_TREATMENT = {
-    centered: 'centered', half: 'half', vertical: 'vertical', ext: 'ext'
+    centered: 'centered', half: 'half', vertical: 'vertical', outside: 'outside'
   };
   // Section treatments: envelope (borderless dashed container that groups nested
   // sections), plain (a bare, border-free structural wrapper — used to stack

@@ -30,7 +30,7 @@ window.__DOC__ = {
           "id": "section-a",
           "title": "Section A",
           "subtitle": "an inline section (span 1) — sits side by side with Section B",
-          "variant": "normal",
+          "variant": "neutral",
           "order": 1,
           "span": 1,
           "columns": 2,
@@ -45,7 +45,7 @@ window.__DOC__ = {
                 "click it for its full detail"
               ],
               "detail": "The atom of the diagram is a box: a status badge, a title, and a short description. The full text always lives in this click-through panel, so the box itself stays a fixed height. Every field is documented in the diagram-builder dialect reference (GLOSSARY.md and reference.md).",
-              "variant": "strong",
+              "variant": "accent",
               "filters": [
                 "flow"
               ]
@@ -60,7 +60,7 @@ window.__DOC__ = {
                 "and fill the section edge to edge"
               ],
               "detail": "Every leaf cell stretches to an equal share of its section's width, so a row of cells always spans the section with no gap on the right.",
-              "variant": "normal"
+              "variant": "neutral"
             }
           ]
         },
@@ -68,7 +68,7 @@ window.__DOC__ = {
           "id": "section-b",
           "title": "Section B",
           "subtitle": "a section can nest other sections — a grid of grids",
-          "variant": "normal",
+          "variant": "neutral",
           "treatment": [
             "envelope"
           ],
@@ -79,7 +79,7 @@ window.__DOC__ = {
             {
               "id": "group-1",
               "title": "Group 1",
-              "variant": "safe",
+              "variant": "good",
               "columns": 1,
               "children": [
                 {
@@ -89,8 +89,8 @@ window.__DOC__ = {
                   "description": [
                     "one level of nesting deep"
                   ],
-                  "detail": "A nested section is drawn as its own framed zone inside the parent. Its <code>variant</code> (here <code>safe</code>) tints the whole group.",
-                  "variant": "ok",
+                  "detail": "A nested section is drawn as its own framed zone inside the parent. Its <code>variant</code> (here <code>good</code>) tints the whole group.",
+                  "variant": "good",
                   "filters": [
                     "flow"
                   ]
@@ -100,7 +100,7 @@ window.__DOC__ = {
             {
               "id": "group-2",
               "title": "Group 2",
-              "variant": "normal",
+              "variant": "neutral",
               "treatment": [
                 "plain"
               ],
@@ -114,7 +114,7 @@ window.__DOC__ = {
                     "another nested group"
                   ],
                   "detail": "Sections nest as deep as the idea needs — a recursive grid of grids down to the boxes at the leaves.",
-                  "variant": "normal"
+                  "variant": "neutral"
                 },
                 {
                   "id": "item-5",
@@ -123,8 +123,8 @@ window.__DOC__ = {
                   "description": [
                     "stacks below Item 4 (columns: 1)"
                   ],
-                  "detail": "This group is <code>columns: 1</code>, so its two boxes stack. The <code>store</code> variant gives a box its own secondary fill.",
-                  "variant": "store"
+                  "detail": "This group is <code>columns: 1</code>, so its two boxes stack. The <code>muted</code> variant gives a box its own secondary fill.",
+                  "variant": "muted"
                 }
               ]
             }
@@ -134,7 +134,7 @@ window.__DOC__ = {
           "id": "section-c",
           "title": "Section C",
           "subtitle": "span == columns makes this a full-width band on its own row",
-          "variant": "normal",
+          "variant": "neutral",
           "order": 3,
           "span": 2,
           "columns": 3,
@@ -172,7 +172,7 @@ window.__DOC__ = {
                 "the last step in the example flow"
               ],
               "detail": "Click the <b>Example flow</b> chip above to trace Item 1 → Item 3 → Item 7 end to end.",
-              "variant": "strong",
+              "variant": "accent",
               "filters": [
                 "flow"
               ]
@@ -183,7 +183,7 @@ window.__DOC__ = {
           "id": "section-d",
           "title": "Section D",
           "subtitle": "a mini bar chart — rowspan 1, 2, 3: a cell's HEIGHT encodes its magnitude",
-          "variant": "normal",
+          "variant": "neutral",
           "order": 4,
           "span": 2,
           "columns": 3,
@@ -197,7 +197,7 @@ window.__DOC__ = {
                 "rowspan: 1",
                 "height = 1 cell"
               ],
-              "variant": "normal"
+              "variant": "neutral"
             },
             {
               "id": "bar-2",
@@ -208,7 +208,7 @@ window.__DOC__ = {
                 "rowspan: 2",
                 "height = 2 cells"
               ],
-              "variant": "ok"
+              "variant": "good"
             },
             {
               "id": "bar-3",
@@ -219,7 +219,7 @@ window.__DOC__ = {
                 "rowspan: 3",
                 "height = 3 cells"
               ],
-              "variant": "strong"
+              "variant": "accent"
             }
           ]
         },
@@ -227,7 +227,7 @@ window.__DOC__ = {
           "id": "section-e",
           "title": "Section E",
           "subtitle": "a partial merge — Item C spans 2 of 4 columns, not the whole row",
-          "variant": "normal",
+          "variant": "neutral",
           "order": 5,
           "span": 2,
           "columns": 4,
@@ -262,7 +262,7 @@ window.__DOC__ = {
                 "occupies exactly 2 of the 4 tracks"
               ],
               "detail": "A partial merge (1 &lt; span &lt; columns) occupies exactly that many tracks and keeps its proportion as the grid collapses; only a span == columns child becomes a full-width band.",
-              "variant": "strong"
+              "variant": "accent"
             }
           ]
         },
@@ -270,7 +270,7 @@ window.__DOC__ = {
           "id": "section-f",
           "title": "Tall block",
           "subtitle": "a compound row — rail + vertical separator dividing two sub-sections",
-          "variant": "normal",
+          "variant": "neutral",
           "order": 6,
           "span": 1,
           "columns": 2,
@@ -287,7 +287,7 @@ window.__DOC__ = {
             {
               "id": "grp-l",
               "title": "Left group",
-              "variant": "normal",
+              "variant": "neutral",
               "order": 2,
               "columns": 1,
               "children": [
@@ -336,7 +336,7 @@ window.__DOC__ = {
             {
               "id": "grp-r",
               "title": "Right group",
-              "variant": "normal",
+              "variant": "neutral",
               "order": 4,
               "columns": 1,
               "children": [
@@ -364,7 +364,7 @@ window.__DOC__ = {
           "id": "section-g",
           "title": "Short stack",
           "subtitle": "columns:1 stack — shorter, so the row stretches it",
-          "variant": "normal",
+          "variant": "neutral",
           "treatment": [
             "envelope"
           ],
@@ -375,7 +375,7 @@ window.__DOC__ = {
             {
               "id": "gg-1",
               "title": "Group A",
-              "variant": "normal",
+              "variant": "neutral",
               "columns": 1,
               "children": [
                 {
@@ -409,7 +409,7 @@ window.__DOC__ = {
             {
               "id": "gg-2",
               "title": "Group B",
-              "variant": "normal",
+              "variant": "neutral",
               "columns": 1,
               "children": [
                 {
@@ -428,7 +428,7 @@ window.__DOC__ = {
           "id": "section-h",
           "title": "Section H",
           "subtitle": "a six-column band — the collapse cascade now generalises to any N (6 → 2 → 1)",
-          "variant": "normal",
+          "variant": "neutral",
           "order": 8,
           "span": 2,
           "columns": 6,
@@ -487,7 +487,7 @@ window.__DOC__ = {
           "id": "section-i",
           "title": "Section I",
           "subtitle": "a mixed compound — Heavy (span:2) is wider than Light (span:1); the lone Card box stays card-sized",
-          "variant": "normal",
+          "variant": "neutral",
           "order": 9,
           "span": 2,
           "columns": 4,
@@ -496,7 +496,7 @@ window.__DOC__ = {
               "id": "heavy",
               "title": "Heavy",
               "subtitle": "span:2 — grows twice as wide",
-              "variant": "normal",
+              "variant": "neutral",
               "order": 1,
               "span": 2,
               "columns": 2,
@@ -551,7 +551,7 @@ window.__DOC__ = {
               "id": "light",
               "title": "Light",
               "subtitle": "span:1 — grows half as wide",
-              "variant": "normal",
+              "variant": "neutral",
               "order": 3,
               "span": 1,
               "columns": 1,
@@ -572,7 +572,7 @@ window.__DOC__ = {
           "id": "section-j",
           "title": "Section J",
           "subtitle": "the treatment axis — a vertical label, two half-slot pairs, composed treatments",
-          "variant": "normal",
+          "variant": "neutral",
           "treatment": [
             "envelope"
           ],
@@ -618,31 +618,31 @@ window.__DOC__ = {
               "description": [
                 "colour and structure compose"
               ],
-              "variant": "ok",
+              "variant": "good",
               "treatment": [
                 "centered",
-                "ext"
+                "outside"
               ],
-              "detail": "This cell carries a colour role (<code>ok</code>) AND two structural treatments (<code>centered</code>, <code>ext</code>) at once — the composition a single closed <code>variant</code> enum made impossible, and the reason <code>centered</code> once had to be smuggled in through <code>variant_extra</code>."
+              "detail": "This cell carries a colour role (<code>good</code>) AND two structural treatments (<code>centered</code>, <code>outside</code>) at once — the composition a single closed <code>variant</code> enum made impossible, and the reason <code>centered</code> once had to be smuggled in through <code>variant_extra</code>."
             },
             {
               "id": "j-h3",
               "order": 5,
               "status": "TOP",
               "title": "Half C",
-              "variant": "store",
+              "variant": "muted",
               "treatment": [
                 "half",
                 "centered"
               ],
-              "detail": "A second half pair, this one composing a colour role (<code>store</code> — a fill, so it stays a variant) with TWO treatments."
+              "detail": "A second half pair, this one composing a colour role (<code>muted</code> — a fill, so it stays a variant) with TWO treatments."
             },
             {
               "id": "j-h4",
               "order": 6,
               "status": "BOTTOM",
               "title": "Half D",
-              "variant": "store",
+              "variant": "muted",
               "treatment": [
                 "half",
                 "centered"

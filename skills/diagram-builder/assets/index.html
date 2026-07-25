@@ -622,8 +622,8 @@
   .zone { position:relative; min-height:var(--zone-min-h);
     background:var(--zone); border:1px solid var(--zone-line); border-style:dashed; border-radius:16px;
     padding:var(--s-3); display:flex; flex-direction:column; gap:var(--s-2); transition:opacity .2s ease; }
-  .zone.danger { background:var(--crit-soft); border-color:var(--crit); }
-  .zone.safe { background:var(--olive-soft); border-color:var(--olive); }
+  .zone.bad { background:var(--crit-soft); border-color:var(--crit); }
+  .zone.good { background:var(--olive-soft); border-color:var(--olive); }
   .zone.envelope { background:none; border-color:var(--line); border-style:dashed; }
   /* plain: a bare structural wrapper — no frame, no background, no min-height.
      Used to stack sub-sections inside one parent column with no extra border. */
@@ -641,8 +641,8 @@
   .zone-header .zsub { font-family:var(--mono); font-size:12px; color:var(--muted); opacity:0.8;
     overflow-wrap:anywhere; word-break:break-word;
     display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; overflow:hidden; }
-  .zone.danger .ztitle, .zone.danger .zsub { color:var(--crit); }
-  .zone.safe .ztitle, .zone.safe .zsub { color:var(--olive); }
+  .zone.bad .ztitle, .zone.bad .zsub { color:var(--crit); }
+  .zone.good .ztitle, .zone.good .zsub { color:var(--olive); }
   .zone.envelope .ztitle { color:var(--ink); opacity:0.75; }
 
   /* ── boxes ──
@@ -673,15 +673,15 @@
   .box .desc { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3;
     overflow:hidden; min-height:0; }
   .box .m { font-family:var(--mono); font-size:12px; line-height:1.4; color:var(--muted); }
-  .box.crit { background:var(--crit-soft); border-color:var(--crit); }
-  .box.crit .k { color:var(--crit); }
+  .box.bad { background:var(--crit-soft); border-color:var(--crit); }
+  .box.bad .k { color:var(--crit); }
   .box.warn { background:var(--warn-soft); border-color:var(--warn); }
   .box.warn .k { color:var(--warn); }
-  .box.ok { background:var(--olive-soft); border-color:var(--olive); }
-  .box.ok .k { color:var(--olive); }
-  .box.strong { background:var(--strong-soft); border-color:var(--strong); border-width:2px; }
-  .box.strong .k { color:var(--strong); }
-  .box.store { background:var(--surface2); }
+  .box.good { background:var(--olive-soft); border-color:var(--olive); }
+  .box.good .k { color:var(--olive); }
+  .box.accent { background:var(--strong-soft); border-color:var(--strong); border-width:2px; }
+  .box.accent .k { color:var(--strong); }
+  .box.muted { background:var(--surface2); }
 
   /* ── STRUCTURAL TREATMENTS (the second axis) ──────────────────────────────
      A `treatment` changes HOW a component is drawn, never WHAT it means. That is
@@ -693,11 +693,11 @@
   /* centered — centre the text block. No colour, no geometry. */
   .box.centered { text-align:center; }
 
-  /* ext — the dashed frame that reads "outside the perimeter". Border STYLE only,
+  /* outside — the dashed frame that reads "outside the perimeter". Border STYLE only,
      no colour whatsoever, which is precisely why it belongs on this axis: it used
      to sit in the colour enum and had to be smuggled through `variant_extra`
      whenever a box needed to be both external AND coloured. */
-  .box.ext { border-style:dashed; }
+  .box.outside { border-style:dashed; }
 
   /* half + .half-slot — SLOT DIVISION, not cell shrinking.
      The `.half-slot` IS the grid cell: it stretches to the full --cell-h like any

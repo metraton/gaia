@@ -6,7 +6,7 @@ subtitle: "A portable, data-driven diagram — edit data/ and run npm run build"
 version: "0.2.0"   # optional — shown in the header; bump it when the deck changes meaningfully
 
 # PALETTE — the deck's SKIN. The semantic roles are identical in every palette
-# (crit is always "high risk", ok always "hardened", muted always "secondary
+# (`bad` is always "high risk", `good` always "hardened", `muted` always "secondary
 # text"), so switching this changes how the deck LOOKS and never what it MEANS.
 #   neutral         the house palette (the default when this key is omitted)
 #   rose-pine       Rosé Pine — Dawn on the light theme, Main on the dark
