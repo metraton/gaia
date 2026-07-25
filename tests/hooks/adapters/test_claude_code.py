@@ -40,6 +40,7 @@ from adapters.types import (
     ValidationRequest,
     ValidationResult,
 )
+from modules.agents import artifact_skill_reminder
 
 
 # ============================================================================
@@ -1660,6 +1661,130 @@ class TestIsProtected:
         assert self._is_passthrough(resp), (
             "Missing file_path key must not raise or block"
         )
+
+
+# ============================================================================
+# TestArtifactSkillReminder: the advisory once-per-turn reminder added to
+# _adapt_write_edit's non-protected-path branch (artifact_skill_reminder.py).
+# ============================================================================
+
+
+class TestArtifactSkillReminder:
+    """A non-protected subagent Write/Edit of a governed extension (e.g.
+    .py) gets a one-shot 'allow' reminder naming the governing skill. Never
+    blocks; never fires for the foreground path; never repeats within a
+    turn for the same skill."""
+
+    @pytest.fixture(autouse=True)
+    def _isolated_reminder_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            artifact_skill_reminder, "REMINDER_CACHE_DIR", tmp_path / "reminders",
+        )
+
+    @staticmethod
+    def _reminder_reason(response: HookResponse):
+        """The permissionDecisionReason if the response carries one, else None."""
+        return response.output.get("hookSpecificOutput", {}).get(
+            "permissionDecisionReason"
+        )
+
+    def test_subagent_write_of_governed_extension_reminds_once(self, adapter, tmp_path):
+        target = str(tmp_path / "project" / "main.py")
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": target},
+            session_id="sess-1", is_subagent=True, agent_id="aabc123",
+        )
+        reason = self._reminder_reason(resp)
+        assert reason is not None, "first governed write this turn must remind"
+        assert "coding-standards" in reason
+        assert resp.output["hookSpecificOutput"]["permissionDecision"] == "allow"
+        assert resp.exit_code == 0
+
+    def test_second_write_same_turn_same_skill_does_not_repeat(self, adapter, tmp_path):
+        first = str(tmp_path / "project" / "main.py")
+        second = str(tmp_path / "project" / "other.py")
+
+        resp1 = adapter._adapt_write_edit(
+            "Write", {"file_path": first},
+            session_id="sess-1", is_subagent=True, agent_id="aabc123",
+        )
+        resp2 = adapter._adapt_write_edit(
+            "Write", {"file_path": second},
+            session_id="sess-1", is_subagent=True, agent_id="aabc123",
+        )
+
+        assert self._reminder_reason(resp1) is not None, (
+            "first governed write this turn must remind"
+        )
+        assert resp2.output == {} and resp2.exit_code == 0, (
+            "second governed write in the SAME turn must not repeat the "
+            "reminder -- dedup is once per turn, per artifact class"
+        )
+
+    def test_different_agent_id_is_a_fresh_turn_and_reminds_again(self, adapter, tmp_path):
+        first = str(tmp_path / "project" / "main.py")
+        second = str(tmp_path / "project" / "other.py")
+
+        adapter._adapt_write_edit(
+            "Write", {"file_path": first},
+            session_id="sess-1", is_subagent=True, agent_id="aabc123",
+        )
+        resp2 = adapter._adapt_write_edit(
+            "Write", {"file_path": second},
+            session_id="sess-1", is_subagent=True, agent_id="adef456",
+        )
+        assert self._reminder_reason(resp2) is not None, (
+            "a different agent_id is a different turn -- must remind again"
+        )
+
+    def test_foreground_write_never_reminds(self, adapter, tmp_path):
+        """is_subagent=False (the orchestrator / foreground path) must NEVER
+        trigger the reminder, regardless of extension -- exact passthrough,
+        preserving the existing foreground contract other tests rely on."""
+        target = str(tmp_path / "project" / "main.py")
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": target}, is_subagent=False,
+        )
+        assert resp.output == {} and resp.exit_code == 0, (
+            "foreground writes must be an exact passthrough -- no reminder"
+        )
+
+    def test_subagent_write_without_agent_id_never_reminds(self, adapter, tmp_path):
+        """is_subagent=True with an empty agent_id has nothing stable to key
+        the per-turn dedup on, so it must not remind (mirrors should_remind's
+        own missing-id guard)."""
+        target = str(tmp_path / "project" / "main.py")
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": target},
+            session_id="sess-1", is_subagent=True, agent_id="",
+        )
+        assert resp.output == {} and resp.exit_code == 0
+
+    def test_unrecognized_extension_never_reminds(self, adapter, tmp_path):
+        """A .txt file maps to no governing skill in artifact_skill_map --
+        must pass through exactly, never reminding."""
+        target = str(tmp_path / "project" / "notes.txt")
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": target},
+            session_id="sess-1", is_subagent=True, agent_id="aabc123",
+        )
+        assert resp.output == {} and resp.exit_code == 0, (
+            "an extension with no artifact_skill_map rule must never remind"
+        )
+
+    def test_protected_path_takes_priority_over_reminder(self, adapter):
+        """A protected .py file inside hooks/ must still be blocked (ask) --
+        the reminder branch is only reachable for non-protected paths. Uses
+        the foreground path (is_subagent=False), like TestIsProtected above,
+        so this stays a pure _is_protected check with no DB dependency."""
+        protected = _protected_py()
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": protected}, is_subagent=False,
+        )
+        assert (
+            resp.output.get("hookSpecificOutput", {}).get("permissionDecision")
+            != "allow"
+        ), "a protected path must not be silently allowed via the reminder branch"
 
 
 class TestAppendWorkspaceMemory:
