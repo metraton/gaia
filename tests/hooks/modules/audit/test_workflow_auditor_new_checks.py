@@ -61,13 +61,33 @@ def _base_analysis(**overrides) -> TranscriptAnalysis:
 
 
 class TestInvestigationSkip:
-    def test_triggers_when_first_tool_is_bash(self):
-        ta = _base_analysis(first_tool_name="Bash")
+    def test_triggers_when_first_bash_command_is_mutative(self):
+        """Premature execution: first tool is Bash AND the command itself
+        mutates state before anything was read. This must keep firing."""
+        ta = _base_analysis(first_tool_name="Bash", bash_commands=["rm -rf /tmp/scratch"])
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "investigation_skip" in types
         match = next(a for a in anomalies if a["type"] == "investigation_skip")
         assert match["severity"] == "warning"
+
+    def test_no_anomaly_when_first_bash_command_is_read_only(self):
+        """Legitimate investigation via Bash: git status/log, ls, grep, a
+        pytest baseline run are not skipped investigation just because the
+        tool was Bash instead of Read/Glob/Grep. This must NOT fire."""
+        ta = _base_analysis(first_tool_name="Bash", bash_commands=["git status --short"])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "investigation_skip" not in types
+
+    def test_no_anomaly_when_first_bash_command_text_missing(self):
+        """Defensive: first_tool_name is Bash but no command text was
+        captured (e.g. a non-string/empty command argument). Unclassifiable
+        commands do not trigger -- conservative in the no-signal direction."""
+        ta = _base_analysis(first_tool_name="Bash", bash_commands=[])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "investigation_skip" not in types
 
     def test_no_anomaly_when_first_tool_is_read(self):
         ta = _base_analysis(first_tool_name="Read")

@@ -30,17 +30,49 @@ logger = logging.getLogger(__name__)
 def _check_investigation_skip(
     analysis: TranscriptAnalysis,
 ) -> Optional[Dict[str, str]]:
-    """Warning if the agent's first tool call was Bash (skipped investigation)."""
-    if analysis.first_tool_name == "Bash":
-        return {
-            "type": "investigation_skip",
-            "severity": "warning",
-            "message": (
-                "Agent's first tool call was Bash instead of a "
-                "read-only investigation tool (Read/Glob/Grep)"
-            ),
-        }
-    return None
+    """Warning if the agent's first tool call was a state-mutating Bash command.
+
+    A first tool call of Bash is not itself evidence of skipped investigation:
+    ``git status``/``git log``/``git diff``, ``ls``, ``grep``, a ``pytest``
+    baseline run, a ``gcloud``/``gh`` read, or a ``--dry-run``/``plan`` are all
+    legitimate investigation carried out through Bash rather than Read/Glob/
+    Grep. The failure mode worth flagging is narrower: the first command
+    mutates state before anything was read. That distinction is classified
+    with the same tier taxonomy the security layer already uses to gate
+    mutations (T0/T1/T2 read/validate/dry-run vs. T3 state-changing), so a
+    read-only or simulated first command clears this check.
+
+    Known residual bias: a first-Bash T3 command is still flagged even when
+    it is the correct action -- e.g. a re-dispatched turn whose entire job
+    is to execute a mutation the user already approved in a prior turn, or a
+    plan-task continuation whose command was already decided upstream. This
+    module receives only ``TranscriptAnalysis`` (the raw tool-call sequence),
+    which carries no approval-grant or plan-task linkage, and the only proxy
+    available elsewhere (free-text in the episode title/task description) is
+    a prose heuristic -- language- and phrasing-dependent, and sometimes the
+    approval language sits in the command text rather than the title -- so
+    it is not used here as a structural signal. Left as a known, accepted
+    residual rather than adding a heuristic on unstructured text.
+    """
+    if analysis.first_tool_name != "Bash":
+        return None
+    first_command = analysis.bash_commands[0] if analysis.bash_commands else ""
+    if not first_command:
+        return None
+
+    from ..security.tiers import SecurityTier, classify_command_tier
+
+    if classify_command_tier(first_command) != SecurityTier.T3_BLOCKED:
+        return None
+    return {
+        "type": "investigation_skip",
+        "severity": "warning",
+        "message": (
+            "Agent's first tool call was a state-mutating Bash command "
+            "instead of investigation (Read/Glob/Grep, or a read-only/"
+            "validate/dry-run command)"
+        ),
+    }
 
 
 def _check_context_ignored(
@@ -411,7 +443,8 @@ def audit(
     - scope_escalation: rejected_sections exist (agent tried to write outside its scope)
 
     Transcript-analysis checks (only when transcript_analysis is provided):
-    - investigation_skip: first tool was Bash
+    - investigation_skip: first tool was Bash AND that first command
+      classifies as T3 (state-mutating) per classify_command_tier
     - context_ignored: first tool call has no project-context paths
     - context_update_missing: agent owns writable contracts but no update_contracts emitted
     - excessive_tool_calls: tool_call_count > 75
