@@ -161,7 +161,7 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     """
     session_id = parameters.get("session_id", "")
     context_text, _telemetry = build_project_context(
-        parameters, PROJECT_AGENTS, _HOOKS_DIR, session_id=session_id,
+        parameters, PROJECT_AGENTS, _HOOKS_DIR,
     )
     events_text = build_session_events(parameters, PROJECT_AGENTS)
 
