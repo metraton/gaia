@@ -156,6 +156,74 @@ class TestQuotedStrings:
         assert result is None
 
 
+class TestTerragruntRecognized:
+    """terragrunt was absent from CLOUD_CLI_PATTERN -- a live gap, not
+    hypothetical: `terragrunt apply -auto-approve ... | tail` reached
+    episode_anomalies as a command that evaded the gate entirely."""
+
+    def test_terragrunt_pipe_detected(self):
+        """The confirmed live-incident shape: terragrunt output piped to a
+        shell utility instead of terragrunt's own output flags."""
+        result = validate_cloud_pipe("terragrunt apply -auto-approve | tail")
+        assert result is not None
+        assert "pipe" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_terragrunt_redirect_detected(self):
+        result = validate_cloud_pipe("terragrunt apply -auto-approve > out.log")
+        assert result is not None
+        assert "redirect" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+
+class TestStageAnchoredDetection:
+    """The second half of the confirmed gap: CLOUD_CLI_PATTERN anchored on
+    the first token of the WHOLE command string, so a leading `cd x &&` or
+    `;` prefix let a recognized cloud CLI evade the gate even though it was
+    genuinely invoked. The check must apply per decomposed stage."""
+
+    def test_cd_prefix_terragrunt_pipe_detected(self):
+        """The exact structural hole: `cd x && <cli> ... | ...`. This is the
+        shape someone could revert without noticing -- pin it explicitly."""
+        result = validate_cloud_pipe(
+            "cd /infra/env && terragrunt apply -auto-approve -- -input=false | tail"
+        )
+        assert result is not None
+        assert "pipe" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_cd_prefix_known_cli_pipe_detected(self):
+        """A CLI already in the pattern before this fix (kubectl) also
+        evaded the gate behind a `cd x &&` prefix -- not terragrunt-specific."""
+        result = validate_cloud_pipe("cd /repo && kubectl get pods | grep Error")
+        assert result is not None
+        assert "pipe" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_semicolon_prefix_cloud_cli_chaining_detected(self):
+        """A leading `;`-separated command also anchors past the cloud CLI
+        under the old whole-string match; chaining must still be caught."""
+        result = validate_cloud_pipe("echo start; terraform apply -auto-approve")
+        assert result is not None
+        assert "chaining" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_cloud_cli_as_grep_argument_not_blocked(self):
+        """The central risk of a per-stage fix: mistaking the CLI name
+        appearing as an ARGUMENT for an actual invocation. `grep` is the
+        command that runs here, not terragrunt/terraform -- must NOT block."""
+        result = validate_cloud_pipe("grep terragrunt archivo.tf | head")
+        assert result is None
+
+    def test_cloud_cli_as_echo_argument_not_blocked(self):
+        """Same principle with `echo`: the string \"terraform\" is data
+        being echoed, not a command being run."""
+        result = validate_cloud_pipe('echo "terraform" | wc -l')
+        assert result is None
+
+    def test_benign_local_pipe_still_passes(self):
+        """A pipe between two ordinary local commands, with no cloud CLI
+        stage anywhere, remains unblocked -- the fix must not add friction
+        to routine Unix piping."""
+        result = validate_cloud_pipe("cd /tmp && ls -la | grep report")
+        assert result is None
+
+
 class TestCombinedFalsePositives:
     """Test the specific false positive scenario from the bug report."""
 

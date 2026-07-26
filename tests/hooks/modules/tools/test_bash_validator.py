@@ -129,11 +129,21 @@ class TestCompoundCommandValidation:
         assert result.tier == SecurityTier.T3_BLOCKED
 
     def test_t3_in_compound_propagates_block_response(self, validator):
-        """Blocked T3 component should surface its ask response."""
+        """A cloud CLI chained behind another command is caught by
+        cloud_pipe_validator's chaining rule before it ever reaches the
+        per-component tier classifier, so the response is a "deny"
+        correction (run each command separately), not an "ask" approval.
+
+        terraform is a stage invocation here even though it is not the
+        first token of the whole string -- cloud-CLI governance is decided
+        per decomposed stage (see cloud_pipe_validator._command_has_cloud_cli_stage),
+        which is what closes the `cd x && <cli> ...` gap this test used to miss.
+        """
         result = validator.validate("ls -la && terraform apply")
         assert result.allowed is False
         assert result.block_response is not None
-        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "chaining" in result.reason.lower()
 
     def test_multiple_t3_components_return_first_block_response(self, validator):
         """Compound commands should preserve the first blocked component response."""
@@ -153,12 +163,17 @@ class TestCompoundCommandValidation:
         assert result.allowed is False
 
     def test_returns_highest_tier(self, validator):
-        """Test returns highest security tier from compound."""
-        # In simplified pipeline, non-mutative commands are T0 (safe by elimination)
+        """A chained cloud CLI is denied by cloud_pipe_validator regardless
+        of whether the specific subcommand is a dry-run -- the "no chaining
+        for cloud CLIs" policy is unconditional, not gated on mutation. This
+        already held for `terraform plan | grep x` before this fix; the only
+        change is that `cd`/`;`/`&&` no longer let it evade detection by
+        moving the CLI off the first token of the whole string.
+        """
         result = validator.validate("ls -la && terraform plan")
-        assert result.allowed is True
-        # Both components are safe by elimination (not mutative)
-        assert result.tier == SecurityTier.T0_READ_ONLY
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "chaining" in result.reason.lower()
 
 
 class TestClaudeFooterStripping:
