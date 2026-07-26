@@ -165,7 +165,10 @@ not re-author them.
    (the signal is `command_set`). See `reference.md` -> "On batch intents".
 
    You present the batch the subagent's chained command produced; you do not
-   steer it toward chaining. Whether grouping is warranted is the subagent's
+   prescribe the shape of its command in either direction -- neither steering it
+   to chain, nor telling it to split a chain into separate calls. What you hand
+   the subagent is the approval constraint, never the command it should have
+   written. Whether grouping is warranted is the subagent's
    judgment made before it attempts the chain (see `subagent-request-approval`).
    A singular approval arriving where you imagined a batch is not a defect to
    correct: the default is just-in-time, and a batch a subagent would have
