@@ -101,10 +101,16 @@ Retention -- ``collectable_drafts(max_age_days, grace_hours)``:
     The single retention POLICY, returning a decision (with a per-draft
     ``reason``) rather than performing one, so the SessionStart GC hook and the
     ``gaia cleanup`` CLI share one criterion and a dry-run can show precisely
-    what a real sweep would remove. Collectable iff SPENT past a grace window,
-    or aged out entirely. A draft that is neither -- an in-flight turn, or one
-    cut off mid-write -- is structurally outside the selection, which is what
-    keeps a recoverable draft safe by construction rather than by luck.
+    what a real sweep would remove. Both consumers call THIS function; neither
+    re-derives a criterion of its own, and both resolve the two thresholds
+    through ``resolve_max_age_days`` / ``resolve_grace_hours`` here, so the
+    preview and the sweep cannot disagree. Collectable iff SPENT past a grace
+    window, or aged out entirely. A draft that is neither -- an in-flight turn,
+    or one cut off mid-write -- is outside the selection, which keeps a
+    recoverable draft safe by construction rather than by luck WITHIN the age
+    window; the ``aged`` lane is DB-independent and does collect an unfinalized
+    draft past ``max_age_days``. See ``collectable_drafts`` for why that bound
+    is deliberate.
 
 Public surface (stable for T6 resume-read, T7 finalize store-writer, T13
 concurrency-isolation):
@@ -120,6 +126,8 @@ concurrency-isolation):
         # from 2+ distinct agents exist, OR when agent_id names 2+ LIVE drafts
     spent_draft_ids(candidates=None) -> set[str] # terminal-row drafts
     collectable_drafts(max_age_days=None, grace_hours=None) -> list[dict]
+    resolve_max_age_days() -> int                # env-aware threshold, SSOT
+    resolve_grace_hours() -> int                 # env-aware grace, SSOT
     AmbiguousDraftError                          # raised by resolve_draft_id
         # .candidates -- the FULL list; .agents -- distinct agent ids;
         # .agent_id -- the handle asked for (agent-scoped case) or None;
@@ -162,6 +170,14 @@ DEFAULT_SPENT_GRACE_HOURS = 24
 # for drafts that never finalized and never will (a turn cut before finalize,
 # an abandoned init). Mirrors the historical age-only GC threshold.
 DEFAULT_MAX_AGE_DAYS = 7
+
+# Environment overrides for the two thresholds. They live HERE, next to the
+# criterion they parameterize, because a threshold is part of the policy: a
+# second reader of the same variable is a second policy the moment one of them
+# drifts. Every consumer (the SessionStart GC hook, the `gaia cleanup` CLI)
+# resolves them through the helpers below rather than reading os.environ itself.
+MAX_AGE_DAYS_ENV = "GAIA_CONTRACT_DRAFTS_MAX_DAYS"
+GRACE_HOURS_ENV = "GAIA_CONTRACT_DRAFTS_GRACE_HOURS"
 
 # How many candidates an AmbiguousDraftError names in its human-readable
 # message. The full list always remains on ``.candidates`` for programmatic
@@ -284,6 +300,34 @@ def _render_ambiguity_message(
         )
         lines.append(f"  ... and {remaining} more (newest first). {hint}")
     return "\n".join(lines)
+
+
+def _resolve_env_int(name: str, default: int) -> int:
+    """Read a non-negative integer threshold from the environment.
+
+    Read on every call (never cached at import) so a monkeypatched env is
+    honored. A missing, non-integer, or negative value falls back to ``default``
+    -- a malformed override must never widen or disable retention silently.
+    """
+    raw = os.environ.get(name, "")
+    if raw:
+        try:
+            value = int(raw)
+            if value >= 0:
+                return value
+        except ValueError:
+            pass
+    return default
+
+
+def resolve_max_age_days() -> int:
+    """The age threshold in effect, honoring ``GAIA_CONTRACT_DRAFTS_MAX_DAYS``."""
+    return _resolve_env_int(MAX_AGE_DAYS_ENV, DEFAULT_MAX_AGE_DAYS)
+
+
+def resolve_grace_hours() -> int:
+    """The spent grace window in effect, honoring ``GAIA_CONTRACT_DRAFTS_GRACE_HOURS``."""
+    return _resolve_env_int(GRACE_HOURS_ENV, DEFAULT_SPENT_GRACE_HOURS)
 
 
 def _agent_of(draft_id: str) -> str:
@@ -533,15 +577,32 @@ def collectable_drafts(
     The rule that makes this safe by construction is the one that is ABSENT: a
     draft that is not spent and not aged is never returned, whatever its state.
     That is exactly the draft an agent was cut off mid-turn holding -- the case
-    the orchestrator recovers from after a harness cut. Recoverability is not a
-    heuristic here; a live draft is outside the selection entirely.
+    the orchestrator recovers from after a harness cut.
+
+    The protection that grants is TIME-BOUNDED, not absolute, and the bound is
+    deliberate. ``aged`` is evaluated FIRST and WITHOUT consulting the DB, so a
+    draft with no terminal row -- an abandoned init, a turn cut before finalize
+    -- IS collected once it passes ``max_age_days``. Read the two rules as one
+    sentence: inside the age window, the absence of a terminal row is a full
+    veto on collection; past it, nothing is exempt. The alternative (never
+    collecting an unfinalized draft) is not a stronger guarantee but a leak with
+    no reclaim path: nothing will ever finalize a draft whose turn is over, so
+    those files accumulate forever -- 383 files were measured on one machine
+    with 198 of them already unfinalized and past a day old. A 7-day floor sits
+    orders of magnitude beyond any real recovery window, which is measured in
+    minutes-to-hours (hence the 24h grace on the spent lane), so the backstop
+    reclaims only drafts no reader was ever going to come back for.
 
     Because ``spent_draft_ids`` yields an empty set whenever the DB cannot be
     read, an unreadable substrate silently degrades this to the age-only rule.
     It can never widen the selection.
+
+    Thresholds resolve, when not passed explicitly, through
+    ``resolve_max_age_days`` / ``resolve_grace_hours`` -- so an env override
+    reaches every consumer of this policy, not just the one that read it.
     """
-    days = DEFAULT_MAX_AGE_DAYS if max_age_days is None else max_age_days
-    hours = DEFAULT_SPENT_GRACE_HOURS if grace_hours is None else grace_hours
+    days = resolve_max_age_days() if max_age_days is None else max_age_days
+    hours = resolve_grace_hours() if grace_hours is None else grace_hours
     current = time.time() if now is None else now
 
     ids = list_draft_ids(None)

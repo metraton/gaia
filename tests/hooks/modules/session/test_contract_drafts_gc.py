@@ -2,9 +2,16 @@
 """
 Tests for the SessionStart contract-drafts GC: modules.session.contract_drafts_gc.
 
-gc_contract_drafts() prunes ~/.gaia/contract_drafts/*.json files older than
-GAIA_CONTRACT_DRAFTS_MAX_DAYS (default 7), age-only and best-effort: a per-file
-failure never aborts the sweep nor blocks session start.
+gc_contract_drafts() deletes exactly what gaia.contract.drafts.collectable_drafts
+selects, best-effort: a per-file failure never aborts the sweep nor blocks
+session start. The thresholds and the criterion both live in that policy module
+-- this hook owns no retention constant, so the tests below assert its behavior
+against the policy's own values rather than a copy of them.
+
+These cases exercise the AGE lane: the sandbox has no gaia.db, so
+spent_draft_ids() yields an empty set and the DB-aware lane is inert by design.
+The spent lane and hook/CLI agreement are covered in
+tests/contract/test_draft_retention_and_resolution.py.
 
 Isolation: GAIA_DATA_DIR is redirected to a tmp path so drafts_dir() resolves
 inside the test sandbox and the real ~/.gaia is never touched.
@@ -17,16 +24,20 @@ from pathlib import Path
 
 import pytest
 
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # Add hooks to path so `from modules.session...` resolves correctly.
-HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
+HOOKS_DIR = _REPO_ROOT / "hooks"
 if str(HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(HOOKS_DIR))
 
-from modules.session.contract_drafts_gc import (  # noqa: E402
-    gc_contract_drafts,
-    DEFAULT_MAX_DAYS,
-    _resolve_max_days,
+from gaia.contract.drafts import (  # noqa: E402
+    DEFAULT_MAX_AGE_DAYS,
+    resolve_max_age_days,
 )
+from modules.session.contract_drafts_gc import gc_contract_drafts  # noqa: E402
 
 
 @pytest.fixture
@@ -85,7 +96,9 @@ class TestGcPreservesRecent:
 
     def test_boundary_just_under_threshold_is_kept(self, drafts_sandbox):
         """A draft just younger than the threshold survives (cutoff is strict <)."""
-        near = _write_draft(drafts_sandbox, "a444444.near.json", age_days=DEFAULT_MAX_DAYS - 0.5)
+        near = _write_draft(
+            drafts_sandbox, "a444444.near.json", age_days=DEFAULT_MAX_AGE_DAYS - 0.5
+        )
         deleted = gc_contract_drafts()
         assert deleted == 0
         assert near.exists()
@@ -130,20 +143,32 @@ class TestGcBestEffort:
 
 
 class TestThresholdResolution:
-    def test_default_when_env_absent(self, drafts_sandbox):
-        assert _resolve_max_days() == DEFAULT_MAX_DAYS
+    """The hook delegates threshold resolution; these assert the delegation holds.
 
-    def test_env_override(self, drafts_sandbox, monkeypatch):
+    The env var is read by the policy, so the observable claim is that the SWEEP
+    honors it -- not that this module parses it. A hook that re-read the env
+    itself would pass a parse test and still be free to diverge from the policy,
+    which is the failure this delegation removes.
+    """
+
+    def test_default_when_env_absent(self, drafts_sandbox):
+        assert resolve_max_age_days() == DEFAULT_MAX_AGE_DAYS
+
+    def test_env_override_reaches_the_sweep(self, drafts_sandbox, monkeypatch):
         monkeypatch.setenv("GAIA_CONTRACT_DRAFTS_MAX_DAYS", "1")
-        assert _resolve_max_days() == 1
-        # A 3-day-old draft is now prunable under the 1-day threshold.
+        # A 3-day-old draft is prunable under the 1-day threshold, and the hook
+        # passes no threshold of its own for the env to be overridden by.
         old = _write_draft(drafts_sandbox, "a777777.json", age_days=3)
         assert gc_contract_drafts() == 1
         assert not old.exists()
 
     def test_invalid_env_falls_back_to_default(self, drafts_sandbox, monkeypatch):
         monkeypatch.setenv("GAIA_CONTRACT_DRAFTS_MAX_DAYS", "not-a-number")
-        assert _resolve_max_days() == DEFAULT_MAX_DAYS
+        assert resolve_max_age_days() == DEFAULT_MAX_AGE_DAYS
+        # And the sweep behaves as if unset: a 3-day draft survives the default.
+        recent = _write_draft(drafts_sandbox, "a777778.json", age_days=3)
+        assert gc_contract_drafts() == 0
+        assert recent.exists()
 
     def test_explicit_arg_overrides_env(self, drafts_sandbox):
         recent = _write_draft(drafts_sandbox, "a888888.json", age_days=5)

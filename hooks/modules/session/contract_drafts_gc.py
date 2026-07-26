@@ -15,10 +15,14 @@ Design invariants (sibling of ``db_backup.py``):
     in-progress turn is still writing -- a live draft always has a recent
     mtime and is preserved by the age check.
   * Policy lives in ONE place: which drafts are collectable (and why) is
-    decided by ``gaia.contract.drafts.collectable_drafts``, shared with the
-    ``gaia cleanup`` CLI. This module only executes the deletions that policy
-    selects, so the automatic sweep and the manual dry-run can never disagree
-    about what would be removed.
+    decided by ``gaia.contract.drafts.collectable_drafts``, and the two
+    thresholds resolve through that same module. This module holds no retention
+    constant and reads no retention env var, so there is nothing here to drift.
+    ``gaia cleanup``'s ``_prune_contract_drafts`` calls the identical policy
+    function, which is what makes the manual dry-run a true preview of this
+    sweep. It was not always: the CLI once implemented its own age-only cutoff,
+    and on a 383-file corpus the two selected 100 (all ``spent``) against 0 --
+    a preview that showed nothing hours before the sweep removed ~100 files.
   * Best-effort: every per-file failure is swallowed; a failure NEVER blocks
     session start (same posture as ``db_backup`` and
     ``cleanup._prune_old_files``).
@@ -32,77 +36,30 @@ actually reclaims them: a draft whose turn already has a terminal
 remains as the backstop for drafts that never finalized.
 
 Thresholds: ``GAIA_CONTRACT_DRAFTS_MAX_DAYS`` (default 7 days) and
-``GAIA_CONTRACT_DRAFTS_GRACE_HOURS`` (default 24 hours).
+``GAIA_CONTRACT_DRAFTS_GRACE_HOURS`` (default 24 hours) -- both read by the
+policy module, not here.
 """
 
 import logging
-import os
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Default retention: a draft untouched for this many days is prunable.
-DEFAULT_MAX_DAYS = 7
-
-# Environment override for the retention threshold.
-MAX_DAYS_ENV = "GAIA_CONTRACT_DRAFTS_MAX_DAYS"
-
-# Default grace window (hours) a SPENT draft must sit untouched before it is
-# collectable. Keeps a just-finalized draft readable while an orchestrator
-# relays the turn it closed.
-DEFAULT_GRACE_HOURS = 24
-
-# Environment override for the spent-draft grace window.
-GRACE_HOURS_ENV = "GAIA_CONTRACT_DRAFTS_GRACE_HOURS"
-
-
-def _resolve_grace_hours() -> int:
-    """Resolve the spent-draft grace window in hours (env-overridable).
-
-    Same posture as ``_resolve_max_days``: read on every call, and any missing,
-    non-integer, or negative value falls back to the default.
-    """
-    raw = os.environ.get(GRACE_HOURS_ENV, "")
-    if raw:
-        try:
-            value = int(raw)
-            if value >= 0:
-                return value
-        except ValueError:
-            pass
-    return DEFAULT_GRACE_HOURS
-
-
-def _resolve_max_days() -> int:
-    """Resolve the retention threshold in days.
-
-    Reads ``GAIA_CONTRACT_DRAFTS_MAX_DAYS`` on every call (never cached at
-    import) so tests that set the env via monkeypatch are honored. A missing,
-    non-integer, or negative value falls back to ``DEFAULT_MAX_DAYS``.
-    """
-    raw = os.environ.get(MAX_DAYS_ENV, "")
-    if raw:
-        try:
-            value = int(raw)
-            if value >= 0:
-                return value
-        except ValueError:
-            pass
-    return DEFAULT_MAX_DAYS
-
 
 def _load_policy():
-    """Import the shared retention policy, or None when unavailable.
+    """Import the shared retention policy module, or None when unavailable.
 
     Mirrors the historical two-step import: hooks run from a directory where
     the repo root may not be on ``sys.path`` yet, so a first failure retries
-    after inserting it.
+    after inserting it. The MODULE is returned rather than one function so the
+    thresholds come from the same place as the criterion -- this module keeps no
+    retention constants of its own to drift out of step.
     """
     try:
-        from gaia.contract.drafts import collectable_drafts
+        import gaia.contract.drafts as policy
 
-        return collectable_drafts
+        return policy
     except ImportError:
         import pathlib as _pl
         import sys as _sys
@@ -111,9 +68,9 @@ def _load_policy():
         if str(_repo) not in _sys.path:
             _sys.path.insert(0, str(_repo))
         try:
-            from gaia.contract.drafts import collectable_drafts
+            import gaia.contract.drafts as policy
 
-            return collectable_drafts
+            return policy
         except ImportError as exc:
             logger.debug(
                 "contract_drafts_gc: gaia.contract.drafts unavailable "
@@ -130,10 +87,12 @@ def gc_contract_drafts(
     """Delete the contract drafts the shared retention policy selects.
 
     Args:
-        max_days: Override the age threshold (used by tests). When None,
-            resolved from ``GAIA_CONTRACT_DRAFTS_MAX_DAYS`` (default 7).
-        grace_hours: Override the spent-draft grace window. When None,
-            resolved from ``GAIA_CONTRACT_DRAFTS_GRACE_HOURS`` (default 24).
+        max_days: Override the age threshold (used by tests). When None, the
+            policy resolves it from ``GAIA_CONTRACT_DRAFTS_MAX_DAYS``
+            (default 7) -- this module does not read the env itself.
+        grace_hours: Override the spent-draft grace window. When None, the
+            policy resolves it from ``GAIA_CONTRACT_DRAFTS_GRACE_HOURS``
+            (default 24).
         dry_run: Select and count WITHOUT deleting anything. The selection is
             identical to a real sweep, so a dry run reports exactly what a real
             run would remove.
@@ -146,15 +105,14 @@ def gc_contract_drafts(
     Never raises -- every failure path logs at debug and returns so the caller
     (``session_start.py``) is never blocked.
     """
-    collectable_drafts = _load_policy()
-    if collectable_drafts is None:
+    policy = _load_policy()
+    if policy is None:
         return 0
 
-    days = _resolve_max_days() if max_days is None else max_days
-    hours = _resolve_grace_hours() if grace_hours is None else grace_hours
-
     try:
-        selected = collectable_drafts(max_age_days=days, grace_hours=hours)
+        selected = policy.collectable_drafts(
+            max_age_days=max_days, grace_hours=grace_hours
+        )
     except Exception as exc:  # noqa: BLE001 -- must never block session start
         logger.debug("contract_drafts_gc: policy failed (non-fatal): %s", exc)
         return 0
@@ -177,9 +135,16 @@ def gc_contract_drafts(
             continue
 
     if deleted:
+        # Report the policy's own reasons rather than restating the thresholds:
+        # this module no longer knows them, and the reason is what a reader
+        # needs to tell an ordinary spent sweep from the aged backstop firing.
+        reasons: dict = {}
+        for record in selected:
+            key = str(record.get("reason") or "?")
+            reasons[key] = reasons.get(key, 0) + 1
         logger.info(
-            "contract_drafts_gc: pruned %d draft(s) "
-            "(age > %dd, or spent + quiet > %dh)",
-            deleted, days, hours,
+            "contract_drafts_gc: pruned %d draft(s) by reason: %s",
+            deleted,
+            ", ".join(f"{k}={v}" for k, v in sorted(reasons.items())),
         )
     return deleted

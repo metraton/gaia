@@ -25,6 +25,7 @@ from cli.cleanup import (
     _apply_retention_policy,
     _prune_contract_drafts,
     _contract_drafts_max_days,
+    _contract_drafts_grace_hours,
     _truncate_jsonl,
     _clean_settings_local_json,
     _remove_claude_md,
@@ -34,10 +35,18 @@ from cli.cleanup import (
     _remove_symlinks,
     register,
     cmd_cleanup,
-    CONTRACT_DRAFTS_DEFAULT_MAX_DAYS,
     RETENTION_POLICY,
     SYMLINKS_TO_REMOVE,
 )
+
+# The retention thresholds for contract drafts belong to the policy module, not
+# to the CLI -- importing them from anywhere else would re-create the duplicate
+# this suite exists to keep from coming back.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from gaia.contract.drafts import DEFAULT_MAX_AGE_DAYS  # noqa: E402
 
 
 def _make_project(tmp_path: Path) -> Path:
@@ -292,9 +301,19 @@ class TestApplyRetentionPolicy(unittest.TestCase):
 
 
 class TestContractDraftsRetention(unittest.TestCase):
-    """Manual cleanup path (`gaia cleanup --prune`) purges ~/.gaia/contract_drafts
-    by age. Unlike every other rule, these live under data_dir() (absolute),
-    not under the workspace .claude/ tree.
+    """`gaia cleanup --prune` prunes ~/.gaia/contract_drafts through the SHARED policy.
+
+    Two things make this rule unlike every other retention entry. The files live
+    under data_dir() (absolute), not under the workspace .claude/ tree; and the
+    criterion is not age -- it is gaia.contract.drafts.collectable_drafts, the
+    same function the SessionStart GC hook calls.
+
+    That delegation is the regression under test. This command used to implement
+    its own age-only cutoff, so it could not select a draft that was
+    spent-but-not-aged -- the only lane that fires in practice. Measured on a
+    383-file corpus: the policy selected 100 (all `spent`), this command
+    selected 0, and `--dry-run` therefore previewed nothing hours before the
+    automatic sweep removed ~100 files.
     """
 
     def _sandbox(self):
@@ -307,25 +326,53 @@ class TestContractDraftsRetention(unittest.TestCase):
         return patcher, drafts
 
     @staticmethod
-    def _write_old(drafts: Path, name: str, days: int) -> Path:
+    def _write_old(drafts: Path, name: str, days: float) -> Path:
         path = drafts / name
         path.write_text('{"agent_status": {}}')
         old = time.time() - days * 86400
         os.utime(path, (old, old))
         return path
 
+    @staticmethod
+    def _seed_terminal_row(contract_id: str, state: str = "COMPLETE") -> None:
+        """Give a draft the terminal handoff row that makes it SPENT.
+
+        Only the two columns the policy reads are created: the point is to
+        exercise collectable_drafts' DB lane, not to reproduce the real schema.
+        """
+        import sqlite3
+
+        from gaia.paths import db_path
+
+        con = sqlite3.connect(str(db_path()))
+        con.execute(
+            "create table if not exists agent_contract_handoffs "
+            "(id integer primary key, contract_id text, agent_state text)"
+        )
+        con.execute(
+            "insert into agent_contract_handoffs (contract_id, agent_state) "
+            "values (?, ?)",
+            (contract_id, state),
+        )
+        con.commit()
+        con.close()
+
     def test_policy_has_contract_drafts_entry(self):
         entry = next((p for p in RETENTION_POLICY if p["key"] == "contractDrafts"), None)
         self.assertIsNotNone(entry)
         self.assertEqual(entry["type"], "abs-drafts")
 
-    def test_default_max_days_is_seven(self):
-        # env unset -> default threshold
+    def test_retention_table_declares_no_local_threshold(self):
+        """A max_days here would be a second policy -- the shape of the old drift."""
+        entry = next(p for p in RETENTION_POLICY if p["key"] == "contractDrafts")
+        self.assertNotIn("max_days", entry)
+
+    def test_threshold_comes_from_the_policy_module(self):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
-            self.assertEqual(_contract_drafts_max_days(), CONTRACT_DRAFTS_DEFAULT_MAX_DAYS)
+            self.assertEqual(_contract_drafts_max_days(), DEFAULT_MAX_AGE_DAYS)
 
-    def test_prunes_old_draft_via_retention_policy(self):
+    def test_prunes_aged_draft_via_retention_policy(self):
         patcher, drafts = self._sandbox()
         try:
             os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
@@ -337,6 +384,45 @@ class TestContractDraftsRetention(unittest.TestCase):
             self.assertFalse(old.exists())
             # Absolute path reported (lives outside the workspace root).
             self.assertTrue(os.path.isabs(drafted[0]["path"]))
+            self.assertEqual(drafted[0]["reason"], "aged")
+        finally:
+            patcher.stop()
+
+    def test_selects_spent_draft_the_age_only_rule_could_never_see(self):
+        """The measured regression: spent past grace, far inside the age window.
+
+        Under the previous age-only cutoff this returned [] -- the draft is 2
+        days old against a 7-day threshold -- while the SessionStart hook removed
+        it. Selecting it here is what makes the preview honest.
+        """
+        patcher, drafts = self._sandbox()
+        try:
+            os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
+            spent = self._write_old(drafts, "a1234560f1e2d3c4b.spent.json", days=2)
+            self._seed_terminal_row("a1234560f1e2d3c4b.spent")
+
+            actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=True)
+
+            self.assertEqual([a["path"] for a in actions], [str(spent)])
+            self.assertEqual(actions[0]["reason"], "spent")
+            self.assertTrue(spent.exists(), "dry-run must not delete")
+        finally:
+            patcher.stop()
+
+    def test_unfinalized_draft_inside_the_window_is_never_selected(self):
+        """No terminal row and inside the age window -> outside the selection.
+
+        This is the draft an agent was holding when the harness cut it.
+        """
+        patcher, drafts = self._sandbox()
+        try:
+            os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
+            cut = self._write_old(drafts, "a1234560f1e2d3c4b.cut.json", days=6)
+
+            actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=False)
+
+            self.assertEqual(actions, [])
+            self.assertTrue(cut.exists())
         finally:
             patcher.stop()
 
@@ -371,6 +457,18 @@ class TestContractDraftsRetention(unittest.TestCase):
                 actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=False)
                 self.assertTrue(len(actions) >= 1)
                 self.assertFalse(old.exists())
+        finally:
+            patcher.stop()
+
+    def test_grace_window_is_reported_in_the_policy_header(self):
+        """The header must name both lanes; naming only days describes a sweep
+        that does not happen (age alone collected nothing in practice)."""
+        patcher, _ = self._sandbox()
+        try:
+            with patch.dict(
+                os.environ, {"GAIA_CONTRACT_DRAFTS_GRACE_HOURS": "6"}, clear=False
+            ):
+                self.assertEqual(_contract_drafts_grace_hours(), 6)
         finally:
             patcher.stop()
 

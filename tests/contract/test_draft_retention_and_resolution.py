@@ -245,6 +245,31 @@ def test_aged_draft_is_collected_without_any_db_row(drafts):
     assert selected[0]["reason"] == "aged"
 
 
+def test_unfinalized_draft_protection_is_time_bounded_not_absolute(drafts):
+    """Pins the exact scope of "a draft with no terminal row is never swept".
+
+    That guarantee is TRUE inside the age window and FALSE past it, because
+    ``aged`` is evaluated first and without consulting the DB. Both halves are
+    asserted here so the bound is a specified property rather than an accident
+    of rule ordering -- and so nobody re-derives the absolute version from the
+    happy case alone.
+
+    The bound is the intended design: nothing will ever finalize a draft whose
+    turn is over, so without a DB-independent backstop those files have no
+    reclaim path at all and accumulate without limit.
+    """
+    inside = _write(drafts, f"{AGENT_A}.inside", AGENT_A, age_seconds=6 * DAY)
+    past = _write(drafts, f"{AGENT_B}.past", AGENT_B, age_seconds=8 * DAY)
+
+    selected = {
+        r["draft_id"]: r["reason"]
+        for r in drafts.collectable_drafts(max_age_days=7, grace_hours=24)
+    }
+
+    assert inside not in selected, "inside the window, no terminal row is a full veto"
+    assert selected.get(past) == "aged", "past the window, nothing is exempt"
+
+
 def test_unreadable_db_degrades_to_age_only_and_never_widens(drafts, monkeypatch):
     """No evidence must never become evidence of disposability."""
     monkeypatch.setattr(drafts, "_ro_db_connect", lambda: None)
@@ -282,6 +307,60 @@ def test_dry_run_reports_without_deleting(drafts, tmp_path):
     assert would == 1
     assert drafts.draft_exists(spent), "dry run must not delete"
     assert drafts.draft_exists(live)
+
+
+def _cleanup_module():
+    bin_dir = _REPO_ROOT / "bin"
+    if str(bin_dir) not in sys.path:
+        sys.path.insert(0, str(bin_dir))
+    import cli.cleanup as cleanup_mod
+
+    return cleanup_mod
+
+
+def test_manual_dry_run_previews_exactly_the_automatic_sweep(drafts, tmp_path, monkeypatch):
+    """The invariant the docstrings claim, made executable across BOTH consumers.
+
+    `gaia cleanup --dry-run` is only a preview of the SessionStart sweep if the
+    two read one criterion. They did not: the CLI implemented its own age-only
+    cutoff, so on a real 383-file corpus the hook selected 100 drafts (every one
+    of them `spent`, none `aged`) and the CLI selected 0 -- a preview showing
+    nothing while ~100 files were about to be removed at the next session start.
+
+    The corpus below reproduces that asymmetry in miniature: `spent_ready` is
+    2 days old against a 7-day threshold, so no age-based rule can ever see it.
+    Neither consumer is passed a threshold, so each resolves its own -- if one
+    of them re-read the env or kept a local default, this would diverge.
+    """
+    monkeypatch.delenv("GAIA_CONTRACT_DRAFTS_MAX_DAYS", raising=False)
+    monkeypatch.delenv("GAIA_CONTRACT_DRAFTS_GRACE_HOURS", raising=False)
+
+    spent_ready = _write(drafts, f"{AGENT_A}.spentready", AGENT_A, age_seconds=2 * DAY)
+    spent_fresh = _write(drafts, f"{AGENT_A}.spentfresh", AGENT_A, age_seconds=1 * HOUR)
+    aged_unfinalized = _write(drafts, f"{AGENT_B}.aged", AGENT_B, age_seconds=9 * DAY)
+    live = _write(drafts, f"{AGENT_B}.live", AGENT_B, age_seconds=3 * HOUR)
+    _seed_terminal_rows(tmp_path, [spent_ready, spent_fresh])
+
+    policy_paths = {r["path"] for r in drafts.collectable_drafts()}
+    cli_actions = _cleanup_module()._prune_contract_drafts(
+        "*.json", "Contract drafts", dry_run=True
+    )
+    hook_count = _gc_module().gc_contract_drafts(dry_run=True)
+
+    assert policy_paths == {
+        str(drafts.draft_path(spent_ready)),
+        str(drafts.draft_path(aged_unfinalized)),
+    }
+    assert {a["path"] for a in cli_actions} == policy_paths
+    assert hook_count == len(policy_paths) == 2
+
+    # And the preview names WHY, per lane -- the spent lane is the one an
+    # age-only rule structurally cannot report.
+    assert {a["reason"] for a in cli_actions} == {"spent", "aged"}
+
+    # Nothing was deleted by either preview.
+    for draft_id in (spent_ready, spent_fresh, aged_unfinalized, live):
+        assert drafts.draft_exists(draft_id)
 
 
 def test_sweep_deletes_exactly_what_the_dry_run_reported(drafts, tmp_path):

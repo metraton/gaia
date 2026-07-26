@@ -105,12 +105,14 @@ RETENTION_POLICY = [
         "max_hours": 1,
         "label": "Anomaly signal flag",
     },
-    # Contract drafts differ from every rule above: they live under Gaia's own
-    # data substrate (~/.gaia/contract_drafts), NOT under the workspace .claude/
-    # tree. The "abs-drafts" handler resolves the directory to an ABSOLUTE path
-    # via gaia.paths.data_dir() rather than root/dir_rel, and its threshold is
-    # env-overridable (GAIA_CONTRACT_DRAFTS_MAX_DAYS, default 7). This is the
-    # manual mirror of the SessionStart contract_drafts_gc hook.
+    # Contract drafts differ from every rule above twice over. They live under
+    # Gaia's own data substrate (~/.gaia/contract_drafts), NOT under the
+    # workspace .claude/ tree, so the "abs-drafts" handler resolves an ABSOLUTE
+    # path instead of root/dir_rel. And their criterion is not age: it is owned
+    # by gaia.contract.drafts.collectable_drafts, the same function the
+    # SessionStart GC hook calls. No "max_days" key here on purpose -- a
+    # threshold in this table would be a second policy, which is exactly the
+    # drift that made this command's dry-run lie about the sweep.
     {
         "key": "contractDrafts",
         "type": "abs-drafts",
@@ -120,24 +122,31 @@ RETENTION_POLICY = [
 ]
 
 
-# Contract-drafts retention: default threshold, env-overridable. Resolved at
-# apply time (not import) so monkeypatched env is honored in tests. Mirrors
-# hooks/modules/session/contract_drafts_gc.py.
-CONTRACT_DRAFTS_DEFAULT_MAX_DAYS = 7
-CONTRACT_DRAFTS_MAX_DAYS_ENV = "GAIA_CONTRACT_DRAFTS_MAX_DAYS"
+# Contract-drafts retention thresholds are NOT defined here. They belong to the
+# policy (gaia.contract.drafts), which both this CLI and the SessionStart GC
+# hook consume; a local copy of the number is a second policy waiting to drift.
+# These accessors exist only to render the retention header, and they degrade to
+# "unknown" (None) rather than guess when the policy module cannot be imported
+# -- printing a threshold this command would not actually apply is the failure
+# mode being removed, in miniature.
 
 
-def _contract_drafts_max_days() -> int:
-    """Resolve the contract-drafts retention threshold in days (env-overridable)."""
-    raw = os.environ.get(CONTRACT_DRAFTS_MAX_DAYS_ENV, "")
-    if raw:
-        try:
-            value = int(raw)
-            if value >= 0:
-                return value
-        except ValueError:
-            pass
-    return CONTRACT_DRAFTS_DEFAULT_MAX_DAYS
+def _contract_drafts_max_days():
+    """The age threshold the policy will apply, or None if unavailable."""
+    try:
+        from gaia.contract.drafts import resolve_max_age_days
+    except ImportError:
+        return None
+    return resolve_max_age_days()
+
+
+def _contract_drafts_grace_hours():
+    """The spent-draft grace window the policy will apply, or None."""
+    try:
+        from gaia.contract.drafts import resolve_grace_hours
+    except ImportError:
+        return None
+    return resolve_grace_hours()
 
 
 def _matches_pattern(filename: str, pattern: str) -> bool:
@@ -177,45 +186,54 @@ def _prune_old_files(root: Path, dir_rel: str, pattern: str, max_days: int, labe
 
 
 def _prune_contract_drafts(pattern: str, label: str, dry_run: bool) -> list:
-    """Prune contract-draft JSON files under data_dir()/contract_drafts by age.
+    """Prune contract drafts by DELEGATING to the shared retention policy.
 
     Unlike every other retention rule, contract drafts live under Gaia's own
     data substrate (~/.gaia/contract_drafts), NOT under the workspace .claude/
-    tree. So the directory is resolved to an ABSOLUTE path via
-    ``gaia.paths.data_dir()`` (not ``root / dir_rel``) and reported paths are
-    absolute. Age-only, mtime-based, threshold GAIA_CONTRACT_DRAFTS_MAX_DAYS
-    (default 7). Best-effort: a per-file OSError is swallowed.
-    """
-    import time
+    tree -- so paths are reported absolute, and the directory is resolved by the
+    policy rather than from ``root / dir_rel``.
 
+    The selection is NOT made here. ``gaia.contract.drafts.collectable_drafts``
+    is the single criterion, shared with the SessionStart GC hook
+    (``hooks/modules/session/contract_drafts_gc.py``), which is what makes
+    ``--dry-run`` a true preview of the automatic sweep. This function used to
+    implement its own age-only cutoff, and the two disagreed by construction:
+    the CLI could never select a draft that was spent-but-not-aged, which is the
+    only lane that ever fires in practice. Measured on a 383-file corpus, the
+    policy selected 100 drafts (every one of them ``spent``, none ``aged``)
+    while this age-only rule selected 0 -- so ``gaia cleanup --dry-run`` showed
+    an empty preview hours before session start removed ~100 files.
+
+    ``pattern`` is retained for RETENTION_POLICY symmetry but is no longer a
+    filter: the policy enumerates ``*.json`` drafts itself, and re-filtering
+    here would be a second criterion. Best-effort: a per-file OSError is
+    swallowed, matching the hook's posture -- one locked file must not abort the
+    sweep. A policy import failure yields no actions (nothing is deleted).
+    """
     actions = []
     try:
-        from gaia.paths import data_dir
+        from gaia.contract.drafts import collectable_drafts
     except ImportError:
         return actions
 
-    full_dir = data_dir() / "contract_drafts"
-    if not full_dir.exists():
+    try:
+        selected = collectable_drafts()
+    except Exception:  # noqa: BLE001 -- retention must never abort cleanup
         return actions
 
-    cutoff = time.time() - _contract_drafts_max_days() * 86400
-
-    for entry in full_dir.iterdir():
-        if not _matches_pattern(entry.name, pattern):
-            continue
-        if not entry.is_file():
-            continue
-        try:
-            if entry.stat().st_mtime < cutoff:
-                actions.append({
-                    "action": "delete-file",
-                    "path": str(entry),
-                    "label": label,
-                })
-                if not dry_run:
-                    entry.unlink()
-        except OSError:
-            pass
+    for record in selected:
+        path = Path(str(record["path"]))
+        actions.append({
+            "action": "delete-file",
+            "path": str(path),
+            "label": label,
+            "reason": record.get("reason"),
+        })
+        if not dry_run:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     return actions
 
@@ -362,6 +380,18 @@ def _prune_flag_by_ttl(root: Path, file_rel: str, max_hours: int, label: str, dr
                 pass
 
     return actions
+
+
+def _action_note(action: dict) -> str:
+    """Label for a retention action, carrying the policy's reason when it has one.
+
+    Only the contract-drafts rule reports a reason, and it is the one rule whose
+    two lanes ("spent" vs "aged") select very different populations -- a preview
+    that hides which lane fired tells the reader nothing about why 100 files are
+    about to go.
+    """
+    reason = action.get("reason")
+    return f"{action['label']}: {reason}" if reason else str(action["label"])
 
 
 def _apply_retention_policy(root: Path, dry_run: bool) -> list:
@@ -871,6 +901,7 @@ def cmd_cleanup(args) -> int:
         "legacy_logs": "all removed",
         "anomaly_flag_hours": 1,
         "contract_drafts_days": _contract_drafts_max_days(),
+        "contract_drafts_grace_hours": _contract_drafts_grace_hours(),
     }
 
     if prune_only:
@@ -883,7 +914,11 @@ def cmd_cleanup(args) -> int:
             print("  Episodic episodes:   90 days")
             print("  Legacy logs:         all removed")
             print("  Anomaly flag:         1 hour TTL")
-            print(f"  Contract drafts:     {_contract_drafts_max_days()} days")
+            # Both rules are printed because both select: age alone never
+            # collects anything in practice, so a header naming only the day
+            # threshold describes a sweep that does not happen.
+            print(f"  Contract drafts:     {_contract_drafts_max_days()} days,"
+                  f" or spent + quiet {_contract_drafts_grace_hours()}h")
             if dry_run:
                 print("  (dry-run mode -- no files will be modified)\n")
             else:
@@ -899,7 +934,7 @@ def cmd_cleanup(args) -> int:
             if retention_actions:
                 for action in retention_actions:
                     verb = "Would prune" if dry_run else "Pruned"
-                    print(f"  {verb}: {action['path']} ({action['label']})")
+                    print(f"  {verb}: {action['path']} ({_action_note(action)})")
                 status = "Data retention preview complete" if dry_run else "Data retention completed"
             else:
                 status = "All data within retention limits"
@@ -968,7 +1003,7 @@ def cmd_cleanup(args) -> int:
             print(f"  {verb}: {rel}")
         for action in retention_actions:
             verb = "Would prune" if dry_run else "Pruned"
-            print(f"  {verb}: {action['path']} ({action['label']})")
+            print(f"  {verb}: {action['path']} ({_action_note(action)})")
 
         if anything_done:
             status = "Cleanup preview complete" if dry_run else "Cleanup completed"
