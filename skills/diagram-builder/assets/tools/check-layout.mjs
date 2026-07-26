@@ -426,11 +426,16 @@ function wrapLines(text, cap) {
 // M reports its narrowest cell. Each finding carries the number MEASURED, the
 // number AVAILABLE and the exact CELL: a budget whose message is generic advice
 // teaches nothing and gets silenced by writing a structural value at random.
-// A separator and a rail render no `.box` title; a `vertical` box is exempt.
+// A separator, a rail and a spacer render no `.box` title; a `vertical` box is
+// exempt. The spacer is skipped BY TYPE rather than left to fall out of an empty
+// payload: it carries no text by schema, so budgeting it would only ever compare
+// nothing against a capacity — an assertion that cannot fail is counted in
+// `asserted` as if it had been evidence, and a deficit reported against a cell
+// that holds no text at all is a false positive by construction.
 function textBudget(leaf, ctx) {
   const findings = [], margins = [];
   const nil = { asserted: 0, findings, margins };
-  if (!leaf || leaf.type === 'separator' || leaf.type === 'rail') return nil;
+  if (!leaf || leaf.type === 'separator' || leaf.type === 'rail' || leaf.type === 'spacer') return nil;
   if (treatmentsOf(leaf).includes('vertical')) return nil;
 
   const titleCap = capacityFor(ctx.availPx, ctx.fontPx);
@@ -776,6 +781,17 @@ function checkPage(page) {
           info('RECT', `${g.label} @${tier.w}px`,
             `rowspan taper — ${exempt.size}/${rowCount} row(s) exempt, ` +
             `Σ area ${area} of ${rect} (the taper's own area is ${rect - area}).`);
+        else
+          // A taper that CLOSES says so with the number. When every row is exempt
+          // the per-row form has nothing left to assert, so the closure would
+          // otherwise be reported only by the ABSENCE of a deficit — and an absence
+          // is indistinguishable from a check that never ran. The identity holds
+          // here in its global form even though the taper suspended the per-row
+          // one, so state it: that is the difference between evidence and silence.
+          info('RECT', `${g.label} @${tier.w}px`,
+            `rowspan taper CLOSES — Σ(spanCols × rowspanRows) = ${area} === ` +
+            `${tracks} tracks × ${rowCount} rows = ${rect}, with ${exempt.size}/${rowCount} row(s) ` +
+            `exempt from the per-row form. The taper fills its rectangle exactly.`);
       }
 
       // HOLE — enumerate the empty cells and separate the two kinds. A TRAILING

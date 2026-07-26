@@ -339,5 +339,48 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
     `budget=${budgetFlags} N.ok=${nOk} quiet=${quiet} (${SHORT.length} chars vs cap ${cap} @${N_CELL_PX}px)`);
 }
 
+// ── 8. SPACER — the payload rejection, and the bare spacer that must pass ──
+// A `spacer` is the one leaf that reads NO payload, and the whole value of the
+// type is that "a cell held open" and "a card with nothing in it" stay
+// distinguishable. Only the schema can hold that line: an ignored payload key
+// renders identically to an absent one, so a spacer carrying a title would look
+// exactly like a working spacer while the author believed it said something.
+// Each payload slot is therefore probed SEPARATELY and must be refused BY NAME —
+// a single blanket "invalid spacer" would pass this suite while leaving the
+// author to guess which of five keys was the problem. The positive control runs
+// FIRST, on the same fixture and the same spacer: without it, a schema that
+// rejected every spacer would score five out of five here.
+{
+  const dir = mkDeck();
+  fs.mkdirSync(path.join(dir, 'engine'));
+  fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
+  fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
+  const { p, doc } = loadOverview(dir);
+  const probe = { id: 'probe-spacer', type: 'spacer', order: 99 };
+  findNode(doc, 'section-e').children.push(probe);
+
+  // The control: geometry-only, and legal. A bare spacer must BUILD.
+  saveOverview(p, doc);
+  const bare = runNode([buildInDir]);
+  report('SPACER/control: a bare spacer builds', bare.code === 0,
+    `exit=${bare.code} ${bare.out.trim().slice(0, 160)}`);
+
+  const leaked = [];
+  for (const key of ['kicker', 'title', 'description', 'detail', 'note']) {
+    for (const k of ['kicker', 'title', 'description', 'detail', 'note']) delete probe[k];
+    probe[key] = key === 'description' ? ['a line'] : 'not a card';
+    saveOverview(p, doc);
+    const { code, out } = runNode([buildInDir]);
+    const refused = code !== 0 && out.includes('[strict-schema]')
+      && out.includes(`a \`spacer\` carries no "${key}"`)
+      && out.includes('it is a box: drop `type: spacer`');
+    if (!refused) leaked.push(`${key}(exit=${code})`);
+  }
+  report('SPACER: every payload key on a spacer is refused by name',
+    leaked.length === 0, `accepted: ${leaked.join(', ')}`);
+  rmDeck(dir);
+}
+
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);
 process.exit(failures === 0 ? 0 : 1);

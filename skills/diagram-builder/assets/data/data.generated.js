@@ -190,50 +190,26 @@ window.__DOC__ = {
         {
           "id": "p1-ladder",
           "title": "Height is magnitude",
-          "subtitle": "rowspan 1·2·3·4 with the colour scaling in parallel — one claim, two channels",
+          "subtitle": "rowspan 1·2·3·4 resting on a shared base — the colour scaling in parallel, one claim, two channels",
           "variant": "neutral",
           "order": 4,
           "span": 2,
           "columns": 4,
           "children": [
             {
-              "id": "p1-bar-1",
-              "order": 1,
-              "rowspan": 1,
-              "kicker": "1 ROW",
-              "title": "rowspan: 1",
-              "description": [
-                "the base slot, unmerged",
-                "the zero of both scales"
-              ],
-              "detail": "The shortest bar is just a cell: <code>rowspan: 1</code> is the default and merges nothing. It anchors both channels at once — the smallest height AND the quietest colour role (<code>neutral</code>).",
-              "variant": "neutral"
+              "id": "p1-gap-1",
+              "type": "spacer",
+              "order": 1
             },
             {
-              "id": "p1-bar-2",
-              "order": 2,
-              "rowspan": 2,
-              "kicker": "2 ROWS",
-              "title": "rowspan: 2",
-              "description": [
-                "twice the slot height",
-                "colour steps up with it"
-              ],
-              "detail": "<code>rowspan: K</code> is the vertical merge (<code>.mrsp</code>, <code>grid-row: span 2</code>): the cell becomes K slots tall, K× 130px plus the gaps between them. Its column position is untouched — the horizontal cascade never moves it sideways.",
-              "variant": "good"
+              "id": "p1-gap-2",
+              "type": "spacer",
+              "order": 2
             },
             {
-              "id": "p1-bar-3",
-              "order": 3,
-              "rowspan": 3,
-              "kicker": "3 ROWS",
-              "title": "rowspan: 3",
-              "description": [
-                "three slots tall",
-                "warn — the amber step"
-              ],
-              "detail": "Because size and colour both grow, the magnitude is legible twice: read the ladder by height and you get the same ranking you get by colour. That is principle 5 used deliberately — two channels DOUBLED on one claim to reinforce it, rather than split across two claims.",
-              "variant": "warn"
+              "id": "p1-gap-3",
+              "type": "spacer",
+              "order": 3
             },
             {
               "id": "p1-bar-4",
@@ -245,8 +221,62 @@ window.__DOC__ = {
                 "four slots — the tallest bar",
                 "bad — the top of the scale"
               ],
-              "detail": "The tallest bar is also what CREATES the four rows its shorter neighbours merge into: a merge consumes rows that must exist, and here the extreme of the scale is what brings them into being. The rows a <code>rowspan</code> cell touches are exempt from the rectangle-closure check and from the orphan-row check — a tapered ladder is the chart, not a hole.",
+              "detail": "The tallest bar is also what CREATES the four rows its shorter neighbours merge into: a merge consumes rows that must exist, and here the extreme of the scale is what brings them into being. It is authored FIRST because it is the only bar that reaches row 1 — the three cells before it are spacers holding that row open for it.",
               "variant": "bad"
+            },
+            {
+              "id": "p1-gap-4",
+              "type": "spacer",
+              "order": 5
+            },
+            {
+              "id": "p1-gap-5",
+              "type": "spacer",
+              "order": 6
+            },
+            {
+              "id": "p1-bar-3",
+              "order": 7,
+              "rowspan": 3,
+              "kicker": "3 ROWS",
+              "title": "rowspan: 3",
+              "description": [
+                "three slots tall",
+                "warn — the amber step"
+              ],
+              "detail": "Because size and colour both grow, the magnitude is legible twice: read the ladder by height and you get the same ranking you get by colour. That is principle 5 used deliberately — two channels DOUBLED on one claim to reinforce it, rather than split across two claims.",
+              "variant": "warn"
+            },
+            {
+              "id": "p1-gap-6",
+              "type": "spacer",
+              "order": 8
+            },
+            {
+              "id": "p1-bar-2",
+              "order": 9,
+              "rowspan": 2,
+              "kicker": "2 ROWS",
+              "title": "rowspan: 2",
+              "description": [
+                "twice the slot height",
+                "colour steps up with it"
+              ],
+              "detail": "<code>rowspan: K</code> is the vertical merge (<code>.mrsp</code>, <code>grid-row: span 2</code>): the cell becomes K slots tall, K× 130px plus the gaps between them. Its column position is untouched — the horizontal cascade never moves it sideways.",
+              "variant": "good"
+            },
+            {
+              "id": "p1-bar-1",
+              "order": 10,
+              "rowspan": 1,
+              "kicker": "1 ROW",
+              "title": "rowspan: 1",
+              "description": [
+                "the base slot, unmerged",
+                "the zero of both scales"
+              ],
+              "detail": "The shortest bar is just a cell: <code>rowspan: 1</code> is the default and merges nothing. It anchors both channels at once — the smallest height AND the quietest colour role (<code>neutral</code>). Authored LAST, it lands in row 4 — the base row every taller bar also ends in, which is what makes the four heights comparable.",
+              "variant": "neutral"
             }
           ]
         }
@@ -2020,6 +2050,64 @@ window.__DOC__ = {
               ],
               "detail": "A merge consumes rows that must already exist (principle 1), so a rail spanning two rows needs two rows' worth of siblings beside it. Author the rail alone and there is nothing to span: the grid has one row, the rowspan is silently satisfied by it, and the label reads as a cell rather than a lane.",
               "variant": "neutral"
+            }
+          ]
+        },
+        {
+          "id": "p9-spacer",
+          "title": "The hole you meant, spelled out",
+          "subtitle": "type: spacer — a cell that occupies its track and draws nothing, so the rectangle closes without inventing content",
+          "variant": "neutral",
+          "order": 4,
+          "span": 2,
+          "columns": 3,
+          "children": [
+            {
+              "id": "p9-sp-gap-1",
+              "type": "spacer",
+              "order": 1
+            },
+            {
+              "id": "p9-sp-gap-2",
+              "type": "spacer",
+              "order": 2
+            },
+            {
+              "id": "p9-sp-holds",
+              "order": 3,
+              "rowspan": 2,
+              "kicker": "WHAT IT HOLDS",
+              "title": "Two rows, one cell",
+              "description": [
+                "the two empty cells above",
+                "are the tool, not a hole"
+              ],
+              "detail": "This cell is two rows tall, and the two cells above its neighbours are <code>type: spacer</code>. That is the whole demonstration: without them the two boxes to the left would start in row 1 and this band would taper upward from a ragged floor; with them, every cell in the band ends in row 2. A spacer buys ALIGNMENT, and alignment is what makes neighbouring cells comparable.",
+              "variant": "accent"
+            },
+            {
+              "id": "p9-sp-is",
+              "order": 4,
+              "kicker": "WHAT IT IS",
+              "title": "A declared hole",
+              "description": [
+                "it occupies its cell and",
+                "draws nothing at all"
+              ],
+              "detail": "A spacer is a leaf like a box, a rail or a separator: it takes a whole cell, it honours <code>span</code> and <code>rowspan</code>, and it renders no frame, no text and no click. The closure identity counts it, the census counts it, and the guardrail can therefore tell a hole you MEANT from one you forgot — which is the entire difference this principle is about.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p9-sp-is-not",
+              "order": 5,
+              "kicker": "WHAT IT IS NOT",
+              "title": "Not an empty card",
+              "description": [
+                "no title, no colour, no",
+                "filter — rejected by name"
+              ],
+              "detail": "A spacer carries <em>only</em> <code>id</code>, <code>type</code>, <code>order</code>, <code>span</code> and <code>rowspan</code>. Every other field is refused with a message naming it, because each one presupposes ink that is never drawn: a title would make it an empty card, a <code>variant</code> would colour a frame that does not exist, and a <code>filters</code> key would enrol an invisible cell as a member of a relation it can never light.",
+              "variant": "warn"
             }
           ]
         }

@@ -188,7 +188,10 @@
      side — engine.js only ever writes text, never toggles visibility. */
   .bar .ver { font-family:var(--mono); font-size:11px; color:var(--muted); letter-spacing:0.05em; line-height:1.4; margin-top:2px; opacity:0.65; }
   .bar .ver:empty { display:none; }
-  .spacer { flex:1; }
+  /* the header's flex filler. Named `bar-spacer`, not `spacer`: `.spacer` is the
+     grid leaf `type: spacer` (a declared hole — see its own block below), and one
+     class name cannot mean both a growing filler and a cell occupant. */
+  .bar-spacer { flex:1; }
 
   /* page navigator — [ ‹ ] [ TITLE 1 ] [ TITLE 2 ] … [ › ]. Page names are
      VISIBLE tabs in `order`; the current one is highlighted, the rest dimmed
@@ -510,7 +513,8 @@
      child is reset to flex:0 0 auto anyway.) */
   .sec-grid.sec-compound > .box { flex:0 0 auto; align-self:start; height:var(--cell-h); }
   .sec-grid.sec-compound > .sep,
-  .sec-grid.sec-compound > .rail { flex:0 0 auto; }
+  .sec-grid.sec-compound > .rail,
+  .sec-grid.sec-compound > .spacer { flex:0 0 auto; }
   /* A root-level span BAND in a COMPOUND grid takes its OWN full-width row. In
      the default ROW direction (wide tiers) flex-basis:100% forces the band onto
      a line by itself, so consecutive bands STACK vertically instead of floating
@@ -832,6 +836,16 @@
   .sec-grid.sec-compound > .sep-v,
   .sec-grid.sec-compound > .rail-v { min-height:var(--zone-min-h); }
 
+  /* ── spacer (component type: spacer) ──
+     The DECLARED HOLE: a cell occupant that draws nothing. It needs no paint at
+     all — a grid item stretches to its area by default, which is exactly the
+     behaviour wanted — so the rule only releases the intrinsic minimums, the same
+     two `.sep` and `.rail` release, so a spacer can never impose a floor on the
+     track it merely holds open. Its ONE visual claim is that it makes none: a
+     spacer is indistinguishable from an empty cell BY DESIGN, and what tells the
+     reader it was meant is the surrounding content, never a style here. */
+  .spacer { min-width:0; min-height:0; }
+
   /* selection + chip-driven highlight */
   .box.sel { border-color:var(--clay) !important; box-shadow:0 0 0 2px var(--clay); }
   /* zones nest their boxes, so we must NOT dim the container via opacity (that
@@ -918,7 +932,7 @@
     <div class="sub">A portable, data-driven diagram</div>
     <div class="ver"></div>
   </div>
-  <div class="spacer"></div>
+  <div class="bar-spacer"></div>
   <div class="nav-cluster">
     <div class="pagenav" id="pagenav">
       <button class="navbtn" id="prev" title="Previous (←)" aria-label="Previous page">‹</button>

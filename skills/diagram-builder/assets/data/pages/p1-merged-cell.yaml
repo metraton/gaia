@@ -14,7 +14,8 @@
 # partial merge (span 2 of 3, with the siblings that create the third track) · a
 # full-width band (span == columns) · a `rowspan` ladder 1·2·3·4 whose colour
 # scales in parallel with its height, which is where `warn` and `bad` are put to
-# work.
+# work, and which rests on a base of `type: spacer` cells so the four heights are
+# read from a shared floor.
 
 id: p1-merged-cell
 layout: grid
@@ -167,46 +168,38 @@ sections:
   # the colour role escalates with it (neutral -> good -> warn -> bad), so the
   # same claim is carried by two channels at once (principle 5, "double them to
   # reinforce"). The tallest bar is what creates the four rows the others merge
-  # into; the rows a rowspan touches are exempt from the closure identity,
-  # because the taper IS the chart.
+  # into.
+  #
+  # THE BARS REST ON A BASE, AND THE BASE IS AUTHORED. Placement is sparse and
+  # top-down, so four bars written first each start in row 1 and HANG FROM THE
+  # CEILING — the taper opens downward, which reads as four bars of different
+  # heights with no common baseline to compare them against. A bar chart's
+  # magnitudes are only comparable from a shared floor. So each column is opened
+  # with `type: spacer` cells — 3 above bar 4, 2 above bar 3, 1 above bar 2 — and
+  # the interleaved order (sp,sp,sp,bar4 / sp,sp,bar3 / sp,bar2 / bar1) lands
+  # every bar's BOTTOM edge in row 4. The spacers are the declared holes that buy
+  # the alignment: 6 spacers + 10 bar cells = 16 = 4 tracks × 4 rows, so the
+  # taper closes EXACTLY instead of relying on the rowspan exemption for a hole
+  # that was never meant (principle 9 — the hole speaks: close it, or declare it).
   - id: p1-ladder
     title: "Height is magnitude"
-    subtitle: "rowspan 1·2·3·4 with the colour scaling in parallel — one claim, two channels"
+    subtitle: "rowspan 1·2·3·4 resting on a shared base — the colour scaling in parallel, one claim, two channels"
     variant: neutral
     order: 4
     span: 2
     columns: 4
     children:
-      - id: p1-bar-1
+      # The base-alignment spacers. They are read top-down, left to right: this
+      # first run of three opens row 1 so the tallest bar is the only cell in it.
+      - id: p1-gap-1
+        type: spacer
         order: 1
-        rowspan: 1
-        kicker: 1 ROW
-        title: "rowspan: 1"
-        description:
-          - "the base slot, unmerged"
-          - "the zero of both scales"
-        detail: "The shortest bar is just a cell: <code>rowspan: 1</code> is the default and merges nothing. It anchors both channels at once — the smallest height AND the quietest colour role (<code>neutral</code>)."
-        variant: neutral
-      - id: p1-bar-2
+      - id: p1-gap-2
+        type: spacer
         order: 2
-        rowspan: 2
-        kicker: 2 ROWS
-        title: "rowspan: 2"
-        description:
-          - "twice the slot height"
-          - "colour steps up with it"
-        detail: "<code>rowspan: K</code> is the vertical merge (<code>.mrsp</code>, <code>grid-row: span 2</code>): the cell becomes K slots tall, K× 130px plus the gaps between them. Its column position is untouched — the horizontal cascade never moves it sideways."
-        variant: good
-      - id: p1-bar-3
+      - id: p1-gap-3
+        type: spacer
         order: 3
-        rowspan: 3
-        kicker: 3 ROWS
-        title: "rowspan: 3"
-        description:
-          - "three slots tall"
-          - "warn — the amber step"
-        detail: "Because size and colour both grow, the magnitude is legible twice: read the ladder by height and you get the same ranking you get by colour. That is principle 5 used deliberately — two channels DOUBLED on one claim to reinforce it, rather than split across two claims."
-        variant: warn
       - id: p1-bar-4
         order: 4
         rowspan: 4
@@ -215,5 +208,44 @@ sections:
         description:
           - "four slots — the tallest bar"
           - "bad — the top of the scale"
-        detail: "The tallest bar is also what CREATES the four rows its shorter neighbours merge into: a merge consumes rows that must exist, and here the extreme of the scale is what brings them into being. The rows a <code>rowspan</code> cell touches are exempt from the rectangle-closure check and from the orphan-row check — a tapered ladder is the chart, not a hole."
+        detail: "The tallest bar is also what CREATES the four rows its shorter neighbours merge into: a merge consumes rows that must exist, and here the extreme of the scale is what brings them into being. It is authored FIRST because it is the only bar that reaches row 1 — the three cells before it are spacers holding that row open for it."
         variant: bad
+      - id: p1-gap-4
+        type: spacer
+        order: 5
+      - id: p1-gap-5
+        type: spacer
+        order: 6
+      - id: p1-bar-3
+        order: 7
+        rowspan: 3
+        kicker: 3 ROWS
+        title: "rowspan: 3"
+        description:
+          - "three slots tall"
+          - "warn — the amber step"
+        detail: "Because size and colour both grow, the magnitude is legible twice: read the ladder by height and you get the same ranking you get by colour. That is principle 5 used deliberately — two channels DOUBLED on one claim to reinforce it, rather than split across two claims."
+        variant: warn
+      - id: p1-gap-6
+        type: spacer
+        order: 8
+      - id: p1-bar-2
+        order: 9
+        rowspan: 2
+        kicker: 2 ROWS
+        title: "rowspan: 2"
+        description:
+          - "twice the slot height"
+          - "colour steps up with it"
+        detail: "<code>rowspan: K</code> is the vertical merge (<code>.mrsp</code>, <code>grid-row: span 2</code>): the cell becomes K slots tall, K× 130px plus the gaps between them. Its column position is untouched — the horizontal cascade never moves it sideways."
+        variant: good
+      - id: p1-bar-1
+        order: 10
+        rowspan: 1
+        kicker: 1 ROW
+        title: "rowspan: 1"
+        description:
+          - "the base slot, unmerged"
+          - "the zero of both scales"
+        detail: "The shortest bar is just a cell: <code>rowspan: 1</code> is the default and merges nothing. It anchors both channels at once — the smallest height AND the quietest colour role (<code>neutral</code>). Authored LAST, it lands in row 4 — the base row every taller bar also ends in, which is what makes the four heights comparable."
+        variant: neutral

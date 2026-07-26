@@ -203,6 +203,15 @@
     return node;
   }
 
+  // Build a `spacer` component (a leaf, `type: spacer`): the DECLARED HOLE. It
+  // occupies its grid cell exactly like any other leaf — `span` and `rowspan` are
+  // honored by the caller — and draws nothing at all: no frame, no ink, no text,
+  // no click. That is what lets a rectangle close without inventing content for
+  // the cell (principle 9: an unmeant hole is closed, a meant one is declared).
+  // It carries no payload BY SCHEMA (SPACER_FIELDS in build-data.mjs), so there is
+  // nothing here to read off the node.
+  function buildSpacer() { return el('div', 'spacer'); }
+
   // ── THE SEPARATOR ROW (the third row-height family) ─────────────────────
   // A `separator` is a leaf COMPONENT, so it occupies a whole cell: it drew one
   // pixel of ink and was charged the full --cell-h. The fix is NOT to stop it
@@ -429,7 +438,7 @@
       // wrapper is the grid cell, so `span`/`rowspan` below apply to IT, and both
       // halves were validated to declare the same span.
       // A single child renders as before: a nested section, or a leaf dispatched
-      // on its `type` (separator | rail | box, default box).
+      // on its `type` (separator | rail | spacer | box, default box).
       const child = slot.pair ? slot.pair[0] : slot.child;
       let node;
       if (slot.pair) {
@@ -439,6 +448,7 @@
         node = Array.isArray(child.children) ? buildSection(child, reg)
           : child.type === 'separator' ? buildSeparator(child)
           : child.type === 'rail' ? buildRail(child)
+          : child.type === 'spacer' ? buildSpacer()
           : buildBox(child, reg);
       }
       // HORIZONTAL MERGE. `span == cols` is a full-width BAND (.msp,
@@ -528,7 +538,7 @@
     // existed as a key — clicking any OTHER chip then had no way back to a
     // fully unfiltered view.
     const actbar = el('div', 'actbar');
-    actbar.appendChild(el('span', 'spacer'));
+    actbar.appendChild(el('span', 'bar-spacer'));
     const chips = el('div', 'chips');
     if (!filters.some(f => f.key === 'all')) {
       const allChip = el('button', 'chip on');

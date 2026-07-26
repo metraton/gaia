@@ -156,15 +156,19 @@ function loadAuthoredDeck(root = DEFAULT_ROOT) {
 // Runs BEFORE Chromium, so a stale-data run fails fast and needs no browser at all.
 // ─────────────────────────────────────────────────────────────────────────
 function nodeCensus(sections) {
-  const out = { sections: 0, boxes: 0, seps: 0, rails: 0, halves: 0, ids: [] };
+  const out = { sections: 0, boxes: 0, seps: 0, rails: 0, spacers: 0, halves: 0, ids: [] };
   const isSectionNode = n => !!(n && Array.isArray(n.children));
   (function walk(list) {
     for (const n of list || []) {
       if (n && n.id != null) out.ids.push(String(n.id));
       if (isSectionNode(n)) { out.sections++; walk(n.children); continue; }
       if (n && Array.isArray(n.treatment) && n.treatment.includes('half')) out.halves++;
+      // The chain ends in `else out.boxes++`, so every type NOT named here is
+      // counted as a box. A `spacer` therefore needs its own arm or the census
+      // recounts it as content and the drift it exists to catch goes unseen.
       if (n && n.type === 'separator') out.seps++;
       else if (n && n.type === 'rail') out.rails++;
+      else if (n && n.type === 'spacer') out.spacers++;
       else out.boxes++;
     }
   })(sections);
@@ -226,7 +230,7 @@ function staticCensus(root = DEFAULT_ROOT) {
     const got = genPages.find(p => p && String(p.id) === String(entry.id));
     if (!got) { problems.push(`page "${entry.id}" is authored but absent from data.generated.js`); continue; }
     const gotC = pageCensus(got);
-    for (const k of ['form', 'layout', 'columns', 'sections', 'boxes', 'seps', 'rails', 'halves'])
+    for (const k of ['form', 'layout', 'columns', 'sections', 'boxes', 'seps', 'rails', 'spacers', 'halves'])
       if (String(want[k]) !== String(gotC[k]))
         problems.push(`page "${entry.id}" ${k}: yaml ${JSON.stringify(want[k])} != generated ${JSON.stringify(gotC[k])}`);
     if (want.filters.join('|') !== gotC.filters.join('|'))

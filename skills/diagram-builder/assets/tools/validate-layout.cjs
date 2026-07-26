@@ -56,8 +56,8 @@
 //                            independent layer of the same defence.
 //   Z  CENSUS (authored ==  — the deck RENDERED everything the data AUTHORS:
 //      rendered)             `.act` count vs `__DOC__.pages.length`, and per page
-//                            sections / boxes / separators / rails / half-slots /
-//                            leaf-grids vs the authored walk (which mirrors
+//                            sections / boxes / separators / rails / spacers /
+//                            half-slots / leaf-grids vs the authored walk (which mirrors
 //                            engine.js buildGrid). Every other invariant measures
 //                            geometry that IS on screen, so none of them can see
 //                            content that is MISSING — drop a page or a section and
@@ -135,7 +135,7 @@
 //                            horizontal density is low even if the floors pass.
 //                            Catches a deck that collapses to a narrow centered
 //                            single column wasting the horizontal space.
-//   G  no balloon / overflow — (a) a LEAF component (box/sep/rail) sitting
+//   G  no balloon / overflow — (a) a LEAF component (box/sep/rail/spacer) sitting
 //                            DIRECTLY in a compound ROW must be content-sized
 //                            (flex-grow 0) — never grow to an equal slice (a lone
 //                            box or a divider line ballooning); a sep/rail is also
@@ -520,7 +520,8 @@ const INVARIANTS = [
         ? `AUTHORED CONTENT IS MISSING FROM THE RENDER — ${c.diffs.join('; ')} ` +
           `(run \`npm run build\` if data/data.generated.js is stale; otherwise the engine dropped authored content)`
         : `pages ${c.nActs}/${c.nAuthoredPages}; page "${c.pageId}" sections=${c.rendered.zones} boxes=${c.rendered.boxes} ` +
-          `seps=${c.rendered.seps} rails=${c.rendered.rails} half-slots=${c.rendered.halfSlots} leaf-grids=${c.rendered.leafGrids} — all match the authored census` }; } },
+          `seps=${c.rendered.seps} rails=${c.rendered.rails} spacers=${c.rendered.spacers} ` +
+          `half-slots=${c.rendered.halfSlots} leaf-grids=${c.rendered.leafGrids} — all match the authored census` }; } },
   { id: 'Y', name: 'band content fills band (no dead margin)', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: (c) => c.w >= 1200, superseded: null,
     check: (m) => { const FILL_MARGIN_TOL = 48, SYM_TOL = 16; const bands = m.topZones.filter(z => z.band);
@@ -899,9 +900,14 @@ function measure() {
     // occupies (the two boxes inside it are NOT direct children of the grid). Omit
     // it and the slot looks like a dead track to E and a left/right gap to L, even
     // though it visually fills its cell completely.
+    // A `.spacer` counts as a grid cell for the same reason: it OCCUPIES its
+    // cell (it just draws nothing in it), so omitting it makes a declared hole
+    // read as a dead track to E and as an edge gap to L — the opposite of what
+    // the type is for.
     const kidBoxes = [...g.children].filter(e =>
       e.classList.contains('box') || e.classList.contains('rail')
-      || e.classList.contains('sep') || e.classList.contains('half-slot'));
+      || e.classList.contains('sep') || e.classList.contains('half-slot')
+      || e.classList.contains('spacer'));
     const rowsByTop = {};    // rounded-top -> [rects] — every cell OCCUPYING that row
     const cellRows = {};     // rounded-top -> count of non-band cells occupying it
     // Rows touched by AT LEAST ONE row-span (.mrsp) cell — whether the cell
@@ -1077,11 +1083,16 @@ function measure() {
       const grow = parseFloat(getComputedStyle(kid).flexGrow) || 0;
       const label = kid.getAttribute('data-zone') || kid.getAttribute('data-k')
         || (kid.classList.contains('sep') ? 'sep' : kid.classList.contains('rail') ? 'rail'
-          : kid.classList.contains('half-slot') ? 'half-slot' : kid.classList.contains('box') ? 'box' : '?');
+          : kid.classList.contains('half-slot') ? 'half-slot' : kid.classList.contains('spacer') ? 'spacer'
+          : kid.classList.contains('box') ? 'box' : '?');
       // A `.half-slot` is a LEAF occupant too: it stands in for the single box it
       // divides, so it must stay content-sized in a compound row exactly like one.
+      // A `.spacer` is the leaf with the most to gain from being here: it is the one
+      // whose emptiness makes an equal flex slice look intentional, so a stray
+      // flex-grow on it would go unnoticed by eye and only this check would say so.
       const isLeaf = kid.classList.contains('box') || kid.classList.contains('sep')
-        || kid.classList.contains('rail') || kid.classList.contains('half-slot');
+        || kid.classList.contains('rail') || kid.classList.contains('half-slot')
+        || kid.classList.contains('spacer');
       const isZone = kid.classList.contains('zone');
       if (!column && isLeaf) {
         if (grow > 0) balloons.push(`${gid}>${label}:flex-grow=${grow} (leaf grew to an equal slice)`);
@@ -1161,13 +1172,13 @@ function measure() {
   // implementations shows up as a census mismatch rather than as silence.
   //   • a node with a `children` array is a SECTION      -> one `.zone[data-zone]`
   //   • a leaf's `type` dispatches: separator -> `.sep`, rail -> `.rail`,
-  //     anything else -> `.box`
+  //     spacer -> `.spacer`, anything else -> `.box`
   //   • two CONSECUTIVE `half` leaves are ONE `.half-slot` holding two `.box`es
   //   • a grid with no section child is a LEAF grid      -> one `.sec-grid:not(.sec-compound)`
   //     (counted for the page root too — the root grid is a leaf grid when the
   //     page's own children are all components)
   const census = (() => {
-    const a = { zones: 0, boxes: 0, seps: 0, rails: 0, halfSlots: 0, leafGrids: 0 };
+    const a = { zones: 0, boxes: 0, seps: 0, rails: 0, spacers: 0, halfSlots: 0, leafGrids: 0 };
     const isSectionNode = n => !!(n && Array.isArray(n.children));
     const orderKids = list => [...(list || [])].map((c, i) => ({ c, i }))
       .sort((x, y) => { const ox = x.c.order ?? (x.i + 1), oy = y.c.order ?? (y.i + 1);
@@ -1187,6 +1198,7 @@ function measure() {
         if (isSectionNode(c)) { a.zones++; walkGrid(c.children); continue; }
         if (c && c.type === 'separator') a.seps++;
         else if (c && c.type === 'rail') a.rails++;
+        else if (c && c.type === 'spacer') a.spacers++;
         else a.boxes++;
       }
     };
@@ -1196,6 +1208,10 @@ function measure() {
       boxes: allBoxes.length,
       seps: act.querySelectorAll('.sep').length,
       rails: act.querySelectorAll('.rail').length,
+      // `.spacer` is the grid leaf ONLY. The header's flex filler is `.bar-spacer`
+      // and the actbar lives inside `.act`, so sharing one class name would have
+      // made every page census one spacer over.
+      spacers: act.querySelectorAll('.spacer').length,
       halfSlots: halfSlots.length,
       leafGrids: leafGrids.length,
     };

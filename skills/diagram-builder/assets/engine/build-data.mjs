@@ -39,8 +39,10 @@ function readYaml(path) {
 //   • section (a node WITH `children`): buildSection + sectionHeader + the
 //     per-child grid props (order/span/rowspan) + both vocabulary axes
 //     (variant/treatment).
-//   • component (a leaf, no `children`): buildBox / buildSeparator / buildRail
-//     + the per-child grid props + both vocabulary axes.
+//   • component (a leaf, no `children`): buildBox / buildSeparator / buildRail /
+//     buildSpacer + the per-child grid props + both vocabulary axes. A `spacer`
+//     is narrowed further by SPACER_FIELDS below — it is the one leaf that reads
+//     NO payload at all.
 //   • filter (an entry of `filters[]`): the chip's key/label/steps. Filters used
 //     to bypass this gate entirely — a typo in a `key` produced no error, just a
 //     chip that silently dimmed the whole canvas because nothing matched it.
@@ -128,9 +130,27 @@ const PALETTES = new Set(['neutral', 'rose-pine', 'rose-pine-moon', 'contrast'])
 const FORMS = new Set(['dashboard', 'timeline', 'flow', 'comparison', 'mindmap', 'planner']);
 // The engine renders exactly one page layout (engine.js: `(p.layout || 'grid') === 'grid'`).
 const LAYOUTS = new Set(['grid']);
-// The leaf `type` dispatch in engine.js buildGrid: separator | rail | anything
-// else => box. Closed to the three the engine actually builds.
-const COMPONENT_TYPES = new Set(['box', 'separator', 'rail']);
+// The leaf `type` dispatch in engine.js buildGrid: separator | rail | spacer |
+// anything else => box. Closed to the four the engine actually builds.
+const COMPONENT_TYPES = new Set(['box', 'separator', 'rail', 'spacer']);
+// A `spacer` is the DECLARED HOLE: a leaf that occupies its cell and draws
+// nothing, so a rectangle can be closed without inventing content for it
+// (principle 9 — the hole speaks: close it, or declare it). Being an OCCUPANT and
+// not a modifier is the whole of it, which is why the two merge dials are the
+// only fields it keeps: a hole two tracks wide, or three rows tall, is as
+// legitimate a hole as a single cell, and `span`/`rowspan` belong to the CELL
+// rather than to its content.
+//
+// Everything else is rejected BY NAME rather than ignored. Every remaining
+// component field presupposes ink: the payload slots (kicker/title/description/
+// detail/note) are what buildBox renders and buildSpacer never reads, `variant`/
+// `variant_extra` colour a frame that is not drawn, every `treatment` aligns or
+// divides content that does not exist (and `half` would pair it into a slot it
+// cannot share), `style` is the separator's line, and `filters` would make the
+// spacer a MEMBER of a relation it can never light — inflating a chip's arity
+// with an invisible end. A spacer carrying a title is not a spacer; it is an
+// empty card, which is the thing this type exists to stop being authored.
+const SPACER_FIELDS = new Set(['id', 'type', 'order', 'span', 'rowspan']);
 // buildSeparator's line style. Only a `separator` reads it.
 const SEPARATOR_STYLES = new Set(['solid', 'dotted']);
 
@@ -277,6 +297,22 @@ function checkTreatmentCombinations(node, treatments, pageId, label) {
   }
 }
 
+// A `spacer` keeps ONLY the geometry fields (see SPACER_FIELDS). The rejection
+// names the axis the key belongs to and what it would have drawn, because the
+// author's intent is unambiguous in every case: a payload on a spacer means the
+// cell was meant to CARRY something, and then it is a box.
+function checkSpacer(node, pageId, label) {
+  for (const key of Object.keys(node)) {
+    if (SPACER_FIELDS.has(key)) continue;
+    throw new Error(
+      `[strict-schema] page "${pageId}" ${label}: a \`spacer\` carries no "${key}".\n` +
+      `  A spacer is the DECLARED HOLE — it occupies its cell and draws NOTHING, so it reads no payload,\n` +
+      `  no colour role, no treatment and no filter key. It is not an empty card.\n` +
+      `  valid spacer fields: ${[...SPACER_FIELDS].join(', ')}\n` +
+      `  If the cell is meant to carry "${key}", it is a box: drop \`type: spacer\`.`);
+  }
+}
+
 // HALF PAIRING. `half` does not shrink a cell — it DIVIDES a slot: two half
 // components stack inside ONE full-height grid slot, so the rectangle stays full
 // and no hole appears. That only works in PAIRS, and the pair is formed from
@@ -331,6 +367,10 @@ function validateNode(node, pageId, where) {
   const id = (node && node.id) || '(no id)';
   const label = `${where} ${kind} "${id}"`;
   checkFields(node, isSection ? SECTION_FIELDS : COMPONENT_FIELDS, kind, pageId, label);
+  // A spacer's narrow whitelist is applied BEFORE the two vocabulary axes, so a
+  // `variant` written on one is reported as "a spacer carries no variant" rather
+  // than as a near-miss inside a colour enum it has no business reaching.
+  if (!isSection && node.type === 'spacer') { checkSpacer(node, pageId, label); return; }
   checkVariantValue(node.variant, kind, pageId, label);
   const treatments = checkTreatment(node, kind, pageId, label);
   if (!isSection) {

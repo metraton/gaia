@@ -26,13 +26,16 @@
 # leading two swimlanes of equal length (which is what arms the LANE check), and
 # a VERTICAL rail with `rowspan: 2` labelling a lane down two rows, with the four
 # siblings that create the rows it spans · a full-width foot row shared by both
-# lanes · the exempt rowspan taper explained rather than authored.
+# lanes · the exempt rowspan taper explained rather than authored · `type:
+# spacer`, the instrument the DECLARE half of the principle was missing, shown by
+# drawing a band with it.
 
 id: p9-the-hole
 layout: grid
 form: timeline
 # Two root columns, so each of the three bands takes a full row: the claim, the
-# two lanes with the row they share, and the lane labelled down the block axis.
+# two lanes with the row they share, the lane labelled down the block axis, and
+# the band the spacer draws.
 columns: 2
 
 sections:
@@ -207,3 +210,55 @@ sections:
           - "the rows the rail spans"
         detail: "A merge consumes rows that must already exist (principle 1), so a rail spanning two rows needs two rows' worth of siblings beside it. Author the rail alone and there is nothing to span: the grid has one row, the rowspan is silently satisfied by it, and the label reads as a cell rather than a lane."
         variant: neutral
+
+  # ── ROW 4 · THE TOOL THAT DECLARES A HOLE ─────────────────────────────────
+  # The principle's first half finally has an instrument. "Close it, or declare
+  # it" left DECLARE with nothing to declare WITH: the only way to hold a cell
+  # open was to invent a box for it, and an empty card is a worse lie than a gap.
+  # `type: spacer` is that instrument, and this band is drawn BY it — the two
+  # spacers at the top of tracks 1 and 2 are what push their explaining cells
+  # down onto the base row the tall cell also ends in. So the geometry the reader
+  # sees IS the tool: two visibly empty cells that are nonetheless authored, and
+  # the band closes exactly (2 spacers + 1×2 + 2 = 6 = 3 tracks × 2 rows).
+  - id: p9-spacer
+    title: "The hole you meant, spelled out"
+    subtitle: "type: spacer — a cell that occupies its track and draws nothing, so the rectangle closes without inventing content"
+    variant: neutral
+    order: 4
+    span: 2
+    columns: 3
+    children:
+      - id: p9-sp-gap-1
+        type: spacer
+        order: 1
+      - id: p9-sp-gap-2
+        type: spacer
+        order: 2
+      - id: p9-sp-holds
+        order: 3
+        rowspan: 2
+        kicker: WHAT IT HOLDS
+        title: "Two rows, one cell"
+        description:
+          - "the two empty cells above"
+          - "are the tool, not a hole"
+        detail: "This cell is two rows tall, and the two cells above its neighbours are <code>type: spacer</code>. That is the whole demonstration: without them the two boxes to the left would start in row 1 and this band would taper upward from a ragged floor; with them, every cell in the band ends in row 2. A spacer buys ALIGNMENT, and alignment is what makes neighbouring cells comparable."
+        variant: accent
+      - id: p9-sp-is
+        order: 4
+        kicker: WHAT IT IS
+        title: "A declared hole"
+        description:
+          - "it occupies its cell and"
+          - "draws nothing at all"
+        detail: "A spacer is a leaf like a box, a rail or a separator: it takes a whole cell, it honours <code>span</code> and <code>rowspan</code>, and it renders no frame, no text and no click. The closure identity counts it, the census counts it, and the guardrail can therefore tell a hole you MEANT from one you forgot — which is the entire difference this principle is about."
+        variant: neutral
+      - id: p9-sp-is-not
+        order: 5
+        kicker: WHAT IT IS NOT
+        title: "Not an empty card"
+        description:
+          - "no title, no colour, no"
+          - "filter — rejected by name"
+        detail: "A spacer carries <em>only</em> <code>id</code>, <code>type</code>, <code>order</code>, <code>span</code> and <code>rowspan</code>. Every other field is refused with a message naming it, because each one presupposes ink that is never drawn: a title would make it an empty card, a <code>variant</code> would colour a frame that does not exist, and a <code>filters</code> key would enrol an invisible cell as a member of a relation it can never light."
+        variant: warn
