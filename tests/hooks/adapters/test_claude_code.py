@@ -859,6 +859,315 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
 
 
 # ============================================================================
+# Anchor-tracking version of Bug B / P-a11d14e0: adapt_subagent_stop must
+# resolve the SAME session_id that build_project_context used to save
+# anchors (event.session_id), and must persist context_anchor_hit_rate as
+# a genuine measurement -- never a placeholder zero for "we didn't measure".
+#
+# Unlike the other classes in this file, modules.context.anchor_tracker is
+# NOT stubbed here: the real save_anchors/load_anchors/compute_anchor_hits
+# run against a monkeypatched _anchors_dir (tmp_path), so these tests
+# exercise the actual save -> load -> compute transfer end to end.
+# ============================================================================
+
+
+class TestAdaptSubagentStopAnchorHits:
+    """Three distinct states must never collapse into the same persisted
+    value: no anchors saved (unmeasured), anchors saved but no trackable
+    tool calls observed (unmeasured), and anchors saved and genuinely
+    checked against tool calls (a real rate, possibly 0.0)."""
+
+    def _install_module_stubs(self, monkeypatch, captured, parsed_contract):
+        """Same stub set as the Bug-B test, minus modules.context.anchor_tracker
+        (left real) and with a record() stub that captures anchor_hits."""
+        import sys as _sys
+        import types as _types
+
+        def _fake_cleanup_approval(agent_type, session_id=None, preserve_nonces=None):
+            pass
+
+        def _fake_consume_session_grants(session_id):
+            return 0
+
+        def _fake_record(task_info, agent_output, session_context, **kwargs):
+            captured["anchor_hits"] = kwargs.get("anchor_hits")
+            return {}
+
+        def _install_stub(module_name, attrs):
+            module = _types.ModuleType(module_name)
+            for k, v in attrs.items():
+                setattr(module, k, v)
+            monkeypatch.setitem(_sys.modules, module_name, module)
+
+        _install_stub(
+            "modules.agents.contract_validator",
+            {
+                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                "parse_contract": lambda *_a, **_k: parsed_contract,
+                "requires_consolidation_report": lambda *_a, **_k: False,
+                "validate": lambda *_a, **_k: _types.SimpleNamespace(
+                    is_valid=True, error_message=""
+                ),
+                "validate_approval_request": lambda *_a, **_k: None,
+                "validate_verbatim_outputs_consistency": lambda *_a, **_k: None,
+                "_resolve_status": lambda *_a, **_k: "COMPLETE",
+            },
+        )
+        _install_stub(
+            "modules.agents.response_contract",
+            {
+                "save_validation_result": lambda *_a, **_k: None,
+                "validate_response_contract": lambda *_a, **_k: _types.SimpleNamespace(
+                    valid=True, errors=[], warnings=[]
+                ),
+                "resolve_agent_id": lambda *_a, **_k: "agent-id",
+            },
+        )
+        _install_stub(
+            "modules.agents.task_info_builder",
+            {
+                "build_task_info_from_hook_data": lambda hook_data, _agent_output: {
+                    "agent": hook_data.get("agent_type", "unknown"),
+                    "agent_id": hook_data.get("agent_id", "unknown"),
+                    "task_id": "task-id",
+                    "agent_transcript_path": hook_data.get(
+                        "agent_transcript_path", ""
+                    ),
+                },
+            },
+        )
+        _install_stub(
+            "modules.agents.transcript_reader",
+            {
+                "read_transcript": lambda *_a, **_k: "",
+                "read_full_transcript_text": lambda *_a, **_k: "",
+            },
+        )
+        _install_stub(
+            "modules.audit.workflow_auditor",
+            {
+                "audit": lambda *_a, **_k: None,
+                "signal_gaia_analysis": lambda *_a, **_k: None,
+            },
+        )
+        _install_stub(
+            "modules.audit.workflow_recorder",
+            {"record": _fake_record},
+        )
+        _install_stub(
+            "modules.context.context_writer",
+            {
+                "process_context_updates": lambda *_a, **_k: None,
+                # Unlike the sibling test classes above, this class's contract
+                # is always a dict, so adapt_subagent_stop's
+                # isinstance(parsed_contract, dict) branch always calls this
+                # and unconditionally does result.get(...) on it -- must be a
+                # dict, not None.
+                "process_update_contracts": lambda *_a, **_k: {},
+            },
+        )
+        _install_stub(
+            "modules.memory.episode_writer", {"write": lambda *_a, **_k: None}
+        )
+        _install_stub(
+            "modules.security.approval_cleanup",
+            {"cleanup": _fake_cleanup_approval},
+        )
+        _install_stub(
+            "modules.security.approval_grants",
+            {"consume_session_grants": _fake_consume_session_grants},
+        )
+
+    def _build_event(self, subagent_stop_payload):
+        from adapters.types import HookEvent, HookEventType, HostDistribution
+        return HookEvent(
+            event_type=HookEventType.SUBAGENT_STOP,
+            session_id=subagent_stop_payload["session_id"],
+            payload=subagent_stop_payload,
+            distribution=HostDistribution(channel="npm"),
+        )
+
+    def _make_transcript(self, tmp_path, entries):
+        import json as _json
+        path = tmp_path / "transcript.jsonl"
+        with open(path, "w") as f:
+            for entry in entries:
+                f.write(_json.dumps(entry) + "\n")
+        return str(path)
+
+    def test_no_anchors_saved_leaves_rate_unmeasured(
+        self, adapter, subagent_stop_payload, monkeypatch, tmp_path,
+    ):
+        """No anchor file exists at all (nothing saved at PreToolUse time)
+        -> anchor_hits must stay None -> context_anchor_hit_rate persists
+        as None, not a false 0.0."""
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        transcript_path = self._make_transcript(tmp_path, [
+            {"message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/etc/hosts"}},
+            ]}},
+        ])
+        payload = dict(subagent_stop_payload)
+        payload["agent_transcript_path"] = transcript_path
+
+        captured = {}
+        parsed_contract = {
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "approval_request": None,
+        }
+        self._install_module_stubs(monkeypatch, captured, parsed_contract)
+        monkeypatch.setattr(
+            adapter, "_get_gaia_agent_names", lambda: [payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(self._build_event(payload))
+
+        assert captured.get("anchor_hits") is None, (
+            "No anchors were ever saved for this session+agent -- "
+            "load_anchors() must return empty, and anchor_hits must stay "
+            "None (unmeasured), never a computed 0.0."
+        )
+
+    def test_anchors_saved_but_no_trackable_tool_calls_leaves_rate_unmeasured(
+        self, adapter, subagent_stop_payload, monkeypatch, tmp_path,
+    ):
+        """Anchors WERE saved, but the transcript has zero trackable tool
+        calls (e.g. the agent used only non-trackable tools). This must
+        stay unmeasured (None), not collapse to a false 0.0 -- total_checked
+        would be 0, which is not the same claim as 'agent ignored context'.
+        """
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        from modules.context.anchor_tracker import save_anchors
+
+        payload = dict(subagent_stop_payload)
+        transcript_path = self._make_transcript(tmp_path, [
+            {"message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "NotebookEdit", "input": {}},
+            ]}},
+        ])
+        payload["agent_transcript_path"] = transcript_path
+
+        save_anchors(
+            payload["session_id"], payload["agent_type"], {"qxo-monorepo/terraform"},
+        )
+
+        captured = {}
+        parsed_contract = {
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "approval_request": None,
+        }
+        self._install_module_stubs(monkeypatch, captured, parsed_contract)
+        monkeypatch.setattr(
+            adapter, "_get_gaia_agent_names", lambda: [payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(self._build_event(payload))
+
+        assert captured.get("anchor_hits") is None, (
+            "Anchors existed but zero trackable tool calls were observed -- "
+            "there is no observation window to measure against, so the "
+            "rate must stay unmeasured (None), not a false 0.0."
+        )
+
+    def test_anchors_saved_and_touched_yields_nonnull_rate(
+        self, adapter, subagent_stop_payload, monkeypatch, tmp_path,
+    ):
+        """The full, fixed transfer: anchors saved under the real
+        event.session_id, tool calls reference them, and the computed rate
+        reaches record_workflow as a genuine non-null value."""
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        from modules.context.anchor_tracker import save_anchors
+
+        payload = dict(subagent_stop_payload)
+        transcript_path = self._make_transcript(tmp_path, [
+            {"message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "Read", "input": {
+                    "file_path": "/home/user/qxo-monorepo/terraform/main.tf",
+                }},
+            ]}},
+        ])
+        payload["agent_transcript_path"] = transcript_path
+
+        # Saved keyed by the SAME session_id the event carries -- this is
+        # exactly what the fixed build_project_context(..., session_id=...)
+        # now does at PreToolUse time.
+        save_anchors(
+            payload["session_id"], payload["agent_type"], {"qxo-monorepo/terraform"},
+        )
+
+        captured = {}
+        parsed_contract = {
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "approval_request": None,
+        }
+        self._install_module_stubs(monkeypatch, captured, parsed_contract)
+        monkeypatch.setattr(
+            adapter, "_get_gaia_agent_names", lambda: [payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(self._build_event(payload))
+
+        anchor_hits = captured.get("anchor_hits")
+        assert anchor_hits is not None, (
+            "Anchors were saved under the event's session_id and a tool "
+            "call referenced one -- this must produce a real measurement."
+        )
+        assert anchor_hits["hit_rate"] == 1.0
+        assert anchor_hits["total_checked"] == 1
+        assert anchor_hits["hits"] == 1
+
+    def test_anchors_saved_but_not_touched_yields_real_zero(
+        self, adapter, subagent_stop_payload, monkeypatch, tmp_path,
+    ):
+        """Anchors existed AND trackable tool calls were observed, but none
+        referenced an anchor -- this is a genuine 0.0, distinct from the
+        unmeasured None of the two tests above."""
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        from modules.context.anchor_tracker import save_anchors
+
+        payload = dict(subagent_stop_payload)
+        transcript_path = self._make_transcript(tmp_path, [
+            {"message": {"role": "assistant", "content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": "/etc/hosts"}},
+            ]}},
+        ])
+        payload["agent_transcript_path"] = transcript_path
+
+        save_anchors(
+            payload["session_id"], payload["agent_type"], {"qxo-monorepo/terraform"},
+        )
+
+        captured = {}
+        parsed_contract = {
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "approval_request": None,
+        }
+        self._install_module_stubs(monkeypatch, captured, parsed_contract)
+        monkeypatch.setattr(
+            adapter, "_get_gaia_agent_names", lambda: [payload["agent_type"]],
+        )
+
+        adapter.adapt_subagent_stop(self._build_event(payload))
+
+        anchor_hits = captured.get("anchor_hits")
+        assert anchor_hits is not None, (
+            "There WAS an observation window (one trackable tool call) -- "
+            "this must be a measured result, not None."
+        )
+        assert anchor_hits["hit_rate"] == 0.0
+        assert anchor_hits["total_checked"] == 1
+        assert anchor_hits["hits"] == 0
+
+
+# ============================================================================
 # T004: format_validation_response tests
 # ============================================================================
 

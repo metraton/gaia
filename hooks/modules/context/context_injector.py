@@ -295,6 +295,7 @@ def build_project_context(
     parameters: dict,
     project_agents: list,
     hooks_dir: Path = None,
+    session_id: str = "",
 ) -> tuple:
     """
     Build project context string for a project agent without mutating parameters.
@@ -307,6 +308,13 @@ def build_project_context(
         project_agents: List of valid project agent names.
         hooks_dir: Path to the hooks directory (for fallback paths).
             Defaults to Path(__file__).parent.parent.parent if None.
+        session_id: The real host session id (event.session_id from the
+            PreToolUse payload). Anchors are saved under this id so
+            SubagentStop's read side -- which resolves the same
+            event.session_id -- can find them. When omitted, falls back to
+            get_or_create_session_id(), which returns a synthetic id that
+            will not match the real session id read at SubagentStop time
+            (the anchor-tracking version of Bug B / P-a11d14e0).
 
     Returns:
         (context_string, telemetry_snapshot) or (None, {}) if no context to inject.
@@ -352,8 +360,8 @@ def build_project_context(
         try:
             anchors = extract_anchors(context_payload)
             if anchors:
-                session_id = get_or_create_session_id()
-                save_anchors(session_id, subagent_type, anchors)
+                effective_session_id = session_id or get_or_create_session_id()
+                save_anchors(effective_session_id, subagent_type, anchors)
                 logger.debug(
                     "Saved %d context anchors for %s", len(anchors), subagent_type,
                 )

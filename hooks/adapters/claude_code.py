@@ -1341,7 +1341,9 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.context.context_injector import build_project_context
         from modules.session.session_event_injector import build_session_events
 
-        context_text, _telemetry = build_project_context(parameters, project_agents, hooks_dir)
+        context_text, _telemetry = build_project_context(
+            parameters, project_agents, hooks_dir, session_id=session_id,
+        )
         events_text = build_session_events(parameters, project_agents)
 
         # Standard task validation (runs against ORIGINAL prompt -- no workaround needed)
@@ -2496,14 +2498,26 @@ class ClaudeCodeAdapter(HookAdapter):
                 anchors = load_anchors(session_id, agent_type)
                 if anchors and transcript_path:
                     tool_calls = extract_tool_calls_from_transcript(transcript_path)
-                    anchor_hits = compute_anchor_hits(tool_calls, anchors)
-                    logger.info(
-                        "Anchor hits for %s: %d/%d (%.0f%%)",
-                        agent_type,
-                        anchor_hits.get("hits", 0),
-                        anchor_hits.get("total_checked", 0),
-                        anchor_hits.get("hit_rate", 0) * 100,
-                    )
+                    # Only report a rate when there were trackable tool calls to
+                    # check. Zero tool calls means zero observations, not zero
+                    # hits -- compute_anchor_hits([], anchors) would otherwise
+                    # return hit_rate=0.0, indistinguishable downstream from a
+                    # genuine "agent ignored the context" zero.
+                    if tool_calls:
+                        anchor_hits = compute_anchor_hits(tool_calls, anchors)
+                        logger.info(
+                            "Anchor hits for %s: %d/%d (%.0f%%)",
+                            agent_type,
+                            anchor_hits.get("hits", 0),
+                            anchor_hits.get("total_checked", 0),
+                            anchor_hits.get("hit_rate", 0) * 100,
+                        )
+                    else:
+                        logger.debug(
+                            "No trackable tool calls to check anchors against "
+                            "for %s (anchors=%d) -- leaving anchor_hits unmeasured",
+                            agent_type, len(anchors),
+                        )
                     cleanup_anchors(session_id, agent_type)
             except Exception as exc:
                 logger.debug("Anchor hit tracking failed (non-fatal): %s", exc)
@@ -3415,7 +3429,7 @@ class ClaudeCodeAdapter(HookAdapter):
                     }
 
                     context_text, _telemetry = build_project_context(
-                        parameters, project_agents, hooks_dir,
+                        parameters, project_agents, hooks_dir, session_id=session_id,
                     )
                     events_text = build_session_events(parameters, project_agents)
                     additional = "\n".join(filter(None, [context_text, events_text]))

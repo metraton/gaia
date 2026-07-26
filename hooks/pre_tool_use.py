@@ -159,7 +159,10 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     subagent.  PreToolUse no longer returns additionalContext (that would
     inject it into the orchestrator, not the subagent).
     """
-    context_text, _telemetry = build_project_context(parameters, PROJECT_AGENTS, _HOOKS_DIR)
+    session_id = parameters.get("session_id", "")
+    context_text, _telemetry = build_project_context(
+        parameters, PROJECT_AGENTS, _HOOKS_DIR, session_id=session_id,
+    )
     events_text = build_session_events(parameters, PROJECT_AGENTS)
 
     # Standard task validation (runs against ORIGINAL prompt -- no workaround needed)
@@ -202,9 +205,8 @@ def _handle_task(tool_name: str, parameters: dict) -> str | dict | None:
     if additional:
         from adapters.registry import get_adapter
         adapter = get_adapter()
-        session_id = parameters.get("session_id", "") or "unknown"
         agent_type = result.agent_name or "unknown"
-        adapter._cache_context_for_subagent(session_id, agent_type, additional)
+        adapter._cache_context_for_subagent(session_id or "unknown", agent_type, additional)
         logger.info(f"Cached context for SubagentStart: agent={agent_type}")
 
     return None
