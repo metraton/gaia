@@ -118,8 +118,8 @@ def subagent_stop_hook(task_info, agent_output):
 
         parsed_contract = parse_contract(agent_output)
 
-        # Transcript-based anomaly checks (investigation_skip, context_ignored,
-        # duration_outlier, pipe_retroactive) need a TranscriptAnalysis; degrade
+        # Transcript-based anomaly checks (investigation_skip, duration_outlier,
+        # pipe_retroactive) need a TranscriptAnalysis; degrade
         # cleanly, with a recorded reason, when no usable transcript exists
         # instead of silently skipping them (see transcript_checks_skipped below).
         transcript_analysis = None
