@@ -2,15 +2,29 @@
 Command pipe/redirect/chaining validator.
 
 Two-tier validation:
-1. Cloud CLIs (gcloud, kubectl, aws, terraform, helm, flux) — ALL pipes,
-   redirects, and chaining operators are rejected because these CLIs expose
-   native flags for filtering and formatting.
+1. Cloud CLIs (gcloud, kubectl, aws, terraform, terragrunt, helm, flux) — ALL
+   pipes, redirects, and chaining operators are rejected because these CLIs
+   expose native flags for filtering and formatting.
 2. All other commands — redirects (>, >>) and background operator (&) are
    rejected because Claude Code tools (Write, Edit) are the correct way to
    produce file output, and background execution hides exit codes.
 
 This validator runs before tier classification so violations are caught early
 and the agent receives a corrective response rather than a blocked execution.
+
+Cloud-CLI governance is decided PER STAGE, not by anchoring on the first
+token of the whole command string. ``_command_has_cloud_cli_stage`` runs the
+command through ``StageDecomposer`` (the same quote/operator-aware split the
+security layer relies on elsewhere, see ``workflow_auditor._is_infra_cli_pipe``)
+and checks each stage's own executable against ``CLOUD_CLI_PATTERN``. Two
+failure modes motivate this: a `cd repo && terragrunt apply ... | tail` or
+`; terraform apply ...` evades a whole-string anchor because the cloud CLI is
+not the first token of the full string, even though it IS a stage's real
+invocation; conversely, matching against a stage's executable (rather than
+substring-searching the raw text) means a cloud-CLI name appearing only as an
+argument (`grep terragrunt file.tf | head`, `echo "terraform" | wc -l`) is
+never mistaken for an invocation, since neither `grep` nor `echo` is the
+cloud CLI itself.
 """
 
 import logging
@@ -19,12 +33,13 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .hook_response import build_hook_permission_response
+from .stage_decomposer import StageDecomposer
 
 logger = logging.getLogger(__name__)
 
 # Cloud/infra CLIs covered by this policy
 CLOUD_CLI_PATTERN = re.compile(
-    r'^\s*(gcloud|kubectl|aws|terraform|helm|flux)\b',
+    r'^\s*(gcloud|kubectl|aws|terraform|terragrunt|helm|flux)\b',
     re.IGNORECASE
 )
 
@@ -112,6 +127,22 @@ UNIVERSAL_VIOLATIONS = [
 ]
 
 
+def _command_has_cloud_cli_stage(command: str) -> bool:
+    """
+    True when *command* invokes a cloud/infra CLI in any decomposed stage.
+
+    Decomposes *command* via ``StageDecomposer`` and checks each stage's own
+    executable (the command actually run in that stage, not its arguments)
+    against ``CLOUD_CLI_PATTERN``. This is what lets `cd repo && terraform
+    apply | tail` be recognized (terraform is a real stage invocation, even
+    though it is not the first token of the whole string) while `grep
+    terraform file.tf | head` is not (grep is the invoked command; terraform
+    is only an argument).
+    """
+    decomposed = StageDecomposer().decompose(command)
+    return any(CLOUD_CLI_PATTERN.match(stage.executable) for stage in decomposed.stages)
+
+
 def _find_violation(command: str) -> Optional[PipeViolation]:
     """
     Return the first pipe/redirect/chaining violation found in command,
@@ -119,7 +150,10 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
 
     Cloud/infra CLIs are checked against ALL violation rules (pipes, redirects,
     chaining).  Non-cloud commands are checked against universal rules only
-    (redirects and background operator).
+    (redirects and background operator). A command counts as cloud/infra when
+    ANY of its decomposed stages invokes a recognized CLI -- see
+    ``_command_has_cloud_cli_stage`` -- not only when the CLI is the first
+    token of the whole string.
 
     Skips characters inside single or double quoted strings to avoid
     false positives (e.g. --filter='status:RUNNING' contains no violation).
@@ -128,7 +162,7 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
     # This prevents false positives from flag values like --filter='a|b'.
     unquoted = _strip_quoted_sections(command)
 
-    is_cloud = bool(CLOUD_CLI_PATTERN.match(command))
+    is_cloud = _command_has_cloud_cli_stage(command)
 
     if is_cloud:
         # Cloud CLIs: check ALL rules (pipe, redirect, chaining)
