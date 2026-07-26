@@ -212,7 +212,7 @@ def _run_grant_cycle(workspace: Path) -> tuple[bool, str]:
             "session_id": block_session,
             "tool_name": "Bash",
             "tool_input": {"command": command},
-            "agent_id": "a1234567",
+            "agent_id": "a12345670f1e2d3c4",
         },
         cwd=workspace,
     )
@@ -243,7 +243,7 @@ def _run_grant_cycle(workspace: Path) -> tuple[bool, str]:
             "session_id": retry_session,
             "tool_name": "Bash",
             "tool_input": {"command": command},
-            "agent_id": "a1234567",
+            "agent_id": "a12345670f1e2d3c4",
         },
         cwd=workspace,
     )

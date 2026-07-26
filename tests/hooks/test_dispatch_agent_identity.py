@@ -90,7 +90,7 @@ def test_subagent_bash_gets_identity_injected(adapter):
     """A dispatched subagent's command is rewritten to export its identity."""
     hook_data = {
         "session_id": "sess-1",
-        "agent_id": "a1b2c3d",           # presence => subagent
+        "agent_id": "a1b2c3d0f1e2d3c4b",           # presence => subagent
         "agent_type": "developer",
         "tool_name": "Bash",
         "tool_input": {"command": "git status"},

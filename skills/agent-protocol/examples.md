@@ -19,8 +19,8 @@ through here as a CLI-built turn end-to-end, so the two paths are visibly the
 same contract:
 
 ```
-gaia contract init --agent-id af7e4d2
-gaia contract set agent_status.agent_state IN_PROGRESS
+gaia contract init          # prints:  agent_id: <a + 16 hex>   draft_id: <that>.<token>
+gaia contract set agent_status.agent_state IN_PROGRESS --draft-id <the printed draft_id>
 # ... work happens: kubectl get hr -n qxo, etc ...
 gaia contract fill --json '{
   "evidence_report": {

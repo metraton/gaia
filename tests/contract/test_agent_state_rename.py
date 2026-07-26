@@ -48,7 +48,7 @@ def _valid_envelope(state: str = "IN_PROGRESS") -> dict:
     return {
         "agent_status": {
             NEW_KEY: state,
-            "agent_id": "a1b2c3",
+            "agent_id": "a1b2c30f1e2d3c4b5",
             "pending_steps": [],
             "next_action": "continue",
         },

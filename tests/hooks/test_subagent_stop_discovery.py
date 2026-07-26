@@ -71,11 +71,11 @@ class TestExtractExitCode:
     """Test AGENT_STATUS-based exit code extraction via agent_contract_handoff."""
 
     def test_complete_status_returns_zero(self):
-        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a000010f1e2d3c4b5"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_blocked_status_returns_one(self):
-        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a000010f1e2d3c4b5"}}\n```'
         assert _extract_exit_code_from_output(output) == 1
 
     def test_no_status_returns_zero(self):
@@ -84,12 +84,12 @@ class TestExtractExitCode:
 
     def test_last_status_wins(self):
         # Only the first agent_contract_handoff block is parsed, so this tests a single block
-        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a000010f1e2d3c4b5"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
     def test_no_false_positive_on_error_text(self):
         """Text like 'No errors found' should not trigger exit_code=1."""
-        output = 'No errors found.\n```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a00001"}}\n```'
+        output = 'No errors found.\n```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a000010f1e2d3c4b5"}}\n```'
         assert _extract_exit_code_from_output(output) == 0
 
 
@@ -101,19 +101,19 @@ class TestBuildTaskInfoExitCode:
     """Test that _build_task_info_from_hook_data includes exit_code."""
 
     def test_exit_code_from_complete_output(self):
-        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a123"}}\n```'
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a1230f1e2d3c4b5a6"}
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "COMPLETE", "agent_id": "a1230f1e2d3c4b5a6"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 0
 
     def test_exit_code_from_blocked_output(self):
-        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
-        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a123"}}\n```'
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a1230f1e2d3c4b5a6"}
+        output = '```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a1230f1e2d3c4b5a6"}}\n```'
         task_info = _build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1
 
     def test_exit_code_default_without_output(self):
-        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a123"}
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a1230f1e2d3c4b5a6"}
         task_info = _build_task_info_from_hook_data(hook_data)
         assert task_info["exit_code"] == 0
 
@@ -211,14 +211,14 @@ class TestSubagentStopHookPostRemoval:
     @patch("subagent_stop.write_episode", return_value="ep-hook-001")
     def test_invalid_contract_with_agent_id_creates_pending_repair(self, mock_episodic, structural_task_info):
         task_info = dict(structural_task_info)
-        task_info["agent_id"] = "a12345"
-        task_info["task_id"] = "a12345"
+        task_info["agent_id"] = "a123450f1e2d3c4b5"
+        task_info["task_id"] = "a123450f1e2d3c4b5"
         # Contract has agent_status but no evidence_report -> invalid
         output = (
             '## Findings\n\n'
             '```agent_contract_handoff\n'
             '{"agent_status": {"agent_state": "COMPLETE", "pending_steps": "[]", '
-            '"next_action": "Done", "agent_id": "a12345"}}\n'
+            '"next_action": "Done", "agent_id": "a123450f1e2d3c4b5"}}\n'
             '```\n'
         )
         result = subagent_stop_hook(task_info, output)
@@ -252,8 +252,8 @@ class TestSubagentStopHookPostRemoval:
         monkeypatch.setenv("TMPDIR", str(tmp_path))
 
         task_info = dict(structural_task_info)
-        task_info["agent_id"] = "a12345"
-        task_info["task_id"] = "a12345"
+        task_info["agent_id"] = "a123450f1e2d3c4b5"
+        task_info["task_id"] = "a123450f1e2d3c4b5"
         task_info["agent_transcript_path"] = str(transcript_path)
 
         # Has evidence + agent_status but NO consolidation_report
@@ -262,7 +262,7 @@ class TestSubagentStopHookPostRemoval:
                 "agent_state": "COMPLETE",
                 "pending_steps": "[]",
                 "next_action": "Report findings to the orchestrator",
-                "agent_id": "a12345",
+                "agent_id": "a123450f1e2d3c4b5",
             },
             "evidence_report": {
                 "patterns_checked": ["compared existing deployment manifests"],

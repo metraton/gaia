@@ -32,7 +32,7 @@ def _valid_envelope(approval_id: str) -> dict:
     return {
         "agent_status": {
             "agent_state": "APPROVAL_REQUEST",
-            "agent_id": "a1b2c3",
+            "agent_id": "a1b2c30f1e2d3c4b5",
             "pending_steps": ["blocked command"],
             "next_action": "awaiting user approval",
         },
@@ -77,7 +77,7 @@ def _insert_approval(db_path: Path, approval_id: str, status: str) -> None:
         con.execute(
             "INSERT INTO approvals (id, agent_id, session_id, status, "
             "fingerprint, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
-            (approval_id, "a1b2c3", "sess-1", status, "fp", "{}"),
+            (approval_id, "a1b2c30f1e2d3c4b5", "sess-1", status, "fp", "{}"),
         )
         con.commit()
     finally:
@@ -175,7 +175,7 @@ def test_no_approval_id_present_is_a_noop(tmp_path):
     envelope = {
         "agent_status": {
             "agent_state": "IN_PROGRESS",
-            "agent_id": "a1b2c3",
+            "agent_id": "a1b2c30f1e2d3c4b5",
             "pending_steps": [],
             "next_action": "continue",
         },

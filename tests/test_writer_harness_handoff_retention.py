@@ -152,7 +152,7 @@ def _insert_handoff_raw(db_path, contract_id, days_ago, *, status="COMPLETE"):
             "  (contract_id, agent_id, workspace, agent_state, "
             "   raw_handoff_json, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (contract_id, "a1b2c3", "me", status, "{}", _iso_days_ago(days_ago)),
+            (contract_id, "a1b2c30f1e2d3c4b5", "me", status, "{}", _iso_days_ago(days_ago)),
         )
         con.commit()
         return con.execute(
@@ -252,8 +252,8 @@ class TestPruneHandoffs:
         _insert_handoff_raw(db, "stale", days_ago=300)
         monkeypatch.setenv("GAIA_HANDOFF_PRUNE_SAMPLE_RATE", "1")
         outcome = finalize_agent_contract_handoff(
-            contract_id="a1b2c3.freshtoken",
-            agent_id="a1b2c3",
+            contract_id="a1b2c30f1e2d3c4b5.freshtoken",
+            agent_id="a1b2c30f1e2d3c4b5",
             workspace="me",
             agent_state="COMPLETE",
             raw_handoff_json="{}",
@@ -261,4 +261,4 @@ class TestPruneHandoffs:
         )
         assert outcome["status"] == "applied"
         assert outcome["created"] is True
-        assert _handoff_contract_ids(db) == {"a1b2c3.freshtoken"}
+        assert _handoff_contract_ids(db) == {"a1b2c30f1e2d3c4b5.freshtoken"}

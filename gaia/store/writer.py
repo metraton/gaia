@@ -6102,7 +6102,8 @@ def insert_agent_contract_handoff(
     envelope.  Returns the new row's id (handoff_id).
 
     Args:
-        agent_id:         Agent identity string (e.g. "a1b2c3d4e5").
+        agent_id:         Agent identity string, "a" + 16+ hex (see
+                          gaia.contract.validator.AGENT_ID_PATTERN_TEXT).
         workspace:        Workspace name (FK -> workspaces.name).
         agent_state:      Resolved agent_state (turn status) from the contract
                           envelope; maps to the agent_contract_handoffs.agent_state
@@ -6280,7 +6281,8 @@ def finalize_agent_contract_handoff(
     Args:
         contract_id:      The CLI-minted draft/contract id (the idempotency
                           key). Required (raises ValueError if empty).
-        agent_id:         Agent identity string (e.g. "a1b2c3d4e5").
+        agent_id:         Agent identity string, "a" + 16+ hex (see
+                          gaia.contract.validator.AGENT_ID_PATTERN_TEXT).
         workspace:        Workspace name (FK -> workspaces.name).
         agent_state:      Resolved agent_state (turn status) from the contract
                           envelope; maps to the agent_contract_handoffs.agent_state
@@ -6536,7 +6538,8 @@ def insert_dispatched_handoff(
     Args:
         contract_id:       The CLI-minted draft/contract id (idempotency key).
                            Required (raises ValueError if empty).
-        agent_id:          Agent identity string (e.g. "a1b2c3d4e5").
+        agent_id:          Agent identity string, "a" + 16+ hex (see
+                           gaia.contract.validator.AGENT_ID_PATTERN_TEXT).
         workspace:         Workspace name (FK -> workspaces.name).
         plan_task_id:      NULLABLE FK -> tasks.id (the plan task this turn runs).
         plan_id:           NULLABLE FK -> plans.id.
@@ -6769,7 +6772,8 @@ def find_orphaned_dispatched_handoff(
     (``gaia-verifier``, ``platform-architect``): the row is born in PreToolUse:Agent
     BEFORE the agent has minted anything, so no minted id exists yet to stamp.
     Every OTHER writer on this table stamps the agent's MINTED draft id
-    (``^a[0-9a-f]{5,}$``). The two spaces never intersect, so a caller that passes
+    (``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``). The two spaces never
+    intersect, so a caller that passes
     only the minted id matches NOTHING and the orphan is never found -- the defect
     that left every born row stuck in 'DISPATCHED' (zero reaps ever recorded)
     while the reaper's own unit tests passed, because they birthed their fixture

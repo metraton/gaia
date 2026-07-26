@@ -55,12 +55,12 @@ from gaia.contract.view import (  # noqa: E402
 # The FIXED scenario: a realistically-populated, genuinely-VALID COMPLETE
 # contract (validated below so the baseline is a real block, not a strawman).
 # --------------------------------------------------------------------------- #
-DRAFT_ID = "a1b2c3d4e.deadbeefcafe"
+DRAFT_ID = "a1b2c3d4e0f1e2d3c.deadbeefcafe"
 
 FIXED_ENVELOPE = {
     "agent_status": {
         "agent_state": "COMPLETE",
-        "agent_id": "a1b2c3d4e",
+        "agent_id": "a1b2c3d4e0f1e2d3c",
         "pending_steps": [],
         "next_action": "done",
     },
@@ -81,7 +81,7 @@ FIXED_ENVELOPE = {
         "commands_run": [
             "pytest tests/contract/test_token_savings.py -q",
             "pytest tests/contract/test_cache_safe_view.py -q",
-            "gaia contract view --draft-id a1b2c3d4e.deadbeef",
+            "gaia contract view --draft-id a1b2c3d4e0f1e2d3c.deadbeef",
         ],
         "key_outputs": [
             "by-value view is a minimal pointer plus a one-line status summary",
@@ -156,7 +156,7 @@ def test_reduction_grows_as_the_contract_grows():
     lean = {
         "agent_status": {
             "agent_state": "IN_PROGRESS",
-            "agent_id": "a1b2c3d4e",
+            "agent_id": "a1b2c3d4e0f1e2d3c",
             "pending_steps": [],
             "next_action": "starting",
         },

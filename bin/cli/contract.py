@@ -10,7 +10,9 @@ form + layer 2 cross-check), before persisting anything -- so a rejected
 write NEVER lands, NO false-pass.
 
 Subcommands (the 6 verbs + the ``fill --json`` batch mode):
-    init     --agent-id AGENT_ID [--draft-id ID]  Create a new draft
+    init     [--agent-id ID]      [--draft-id ID]  Create a new draft; mints
+                                                   and prints the agent_id
+                                                   when --agent-id is omitted
     set      FIELD VALUE          [--draft-id ID]  Set a scalar field (dotted path)
     add      FIELD VALUE          [--draft-id ID]  Append a value to a list field
     view     [--field DOTTED_PATH][--draft-id ID]  Print the draft envelope, or ONLY a dotted-path subtree
@@ -321,7 +323,8 @@ def _no_draft_error(as_json: bool, draft_id: Optional[str] = None) -> None:
         )
     else:
         _print_error(
-            "No draft found. Run 'contract init --agent-id <id>' first.",
+            "No draft found. Run 'gaia contract init' first (it mints and "
+            "prints the agent_id and draft_id to reuse).",
             as_json,
         )
 
@@ -348,17 +351,32 @@ def _print_ambiguous_draft_error(exc, as_json: bool) -> None:
         print(f"Error: {exc}", file=sys.stderr)
 
 
-def _write_if_valid(envelope: dict, draft_id: str, as_json: bool) -> int:
-    """Validate-on-write core: persist ONLY when the full verdict is ok."""
+def _write_if_valid(
+    envelope: dict,
+    draft_id: str,
+    as_json: bool,
+    extra_json: Optional[dict] = None,
+    extra_lines: Optional[list] = None,
+) -> int:
+    """Validate-on-write core: persist ONLY when the full verdict is ok.
+
+    ``extra_json``/``extra_lines`` let a caller enrich the SUCCESS report
+    without emitting a second record after this one -- a machine consumer
+    reading stdout must still find exactly one JSON object.
+    """
     result = _validate_envelope(envelope)
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
     _save_draft(draft_id, envelope)
     if as_json:
-        print(json.dumps({"status": "ok", "draft_id": draft_id}))
+        payload = {"status": "ok", "draft_id": draft_id}
+        payload.update(extra_json or {})
+        print(json.dumps(payload))
     else:
         print(f"OK: draft {draft_id} updated and validated.")
+        for line in extra_lines or []:
+            print(line)
     return 0
 
 
@@ -403,12 +421,52 @@ def _load_target_draft(
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 
+def _mint_agent_id() -> str:
+    """Mint a fresh, conforming agent handle.
+
+    ``mint_draft_id`` has always minted the ``.{token}`` SUFFIX with
+    ``secrets`` and that suffix has never collided across 6540 rows; the
+    PREFIX -- the part resolution actually keys on -- was the one piece asked
+    of the model, which is where every measured collision came from. Minting
+    both here removes that asymmetry. ``token_hex(8)`` is 16 hex digits,
+    exactly the floor ``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``
+    enforces.
+    """
+    import secrets
+
+    return "a" + secrets.token_hex(8)
+
+
 def cmd_init(args) -> int:
-    """Create a new draft envelope (validate-on-write)."""
+    """Create a new draft envelope (validate-on-write).
+
+    ``--agent-id`` is OPTIONAL: when omitted the substrate mints the handle
+    and echoes it, so the agent reuses a value it never had to invent. An
+    explicit ``--agent-id`` still works unchanged (subject to the same
+    format floor), which is what keeps every existing caller valid.
+    """
     as_json = bool(getattr(args, "json", False))
-    draft_id = getattr(args, "draft_id", None) or _mint_draft_id(args.agent_id)
-    envelope = _initial_envelope(args.agent_id)
-    return _write_if_valid(envelope, draft_id, as_json)
+    agent_id = getattr(args, "agent_id", None)
+    minted = agent_id is None
+    if minted:
+        agent_id = _mint_agent_id()
+    draft_id = getattr(args, "draft_id", None) or _mint_draft_id(agent_id)
+    envelope = _initial_envelope(agent_id)
+    # Echo the identity unambiguously. The draft_id embeds the agent_id, but
+    # asking the agent to slice a prefix off a compound id is another chance
+    # to retype it wrong -- report both, labelled, in both output modes.
+    return _write_if_valid(
+        envelope,
+        draft_id,
+        as_json,
+        extra_json={"agent_id": agent_id, "agent_id_minted": minted},
+        extra_lines=[
+            f"agent_id: {agent_id}",
+            f"draft_id: {draft_id}",
+            "Reuse BOTH verbatim for the rest of this turn: agent_id in "
+            "agent_status.agent_id, draft_id as --draft-id.",
+        ],
+    )
 
 
 def cmd_set(args) -> int:
@@ -538,6 +596,28 @@ def cmd_finalize(args) -> int:
     agent_id = agent_status.get("agent_id")
     agent_state = agent_status.get("agent_state")
     workspace = _resolve_finalize_workspace(getattr(args, "workspace", None))
+
+    # Identity coherence, made VISIBLE at the last seam before the row lands.
+    # A draft id IS ``{agent_id}.{token}`` and resolution globs on that prefix
+    # (gaia.contract.drafts._agent_of / list_draft_ids), so an envelope whose
+    # agent_id disagrees with its own file name is already unaddressable by
+    # --agent-id -- it just fails silently today. Since `gaia contract init`
+    # now mints and prints the handle, the only way to reach this state is to
+    # overwrite agent_status.agent_id after init with a different value, and a
+    # terminal row is immutable once written: refuse now rather than persist a
+    # row nothing can join back to its draft.
+    draft_agent_id = draft_id.split(".", 1)[0]
+    if agent_id and draft_agent_id and agent_id != draft_agent_id:
+        _print_error(
+            f"agent_id mismatch: the draft is keyed to {draft_agent_id!r} but "
+            f"agent_status.agent_id is {agent_id!r}. The draft id is "
+            f"'{{agent_id}}.{{token}}', so these must agree or the finalized "
+            f"row cannot be joined back to its draft. Set "
+            f"agent_status.agent_id to {draft_agent_id!r}, or run "
+            f"'gaia contract init' for a fresh draft under the id you want.",
+            as_json,
+        )
+        return 1
 
     # Blind-verification anti-leak at the CLI seam (plan 34 task 8). The
     # SubagentStop gate already refuses a plan-task-bound self-COMPLETE
@@ -700,9 +780,13 @@ def _build_subcommands(sub) -> None:
     p_init.add_argument(
         "--agent-id",
         dest="agent_id",
-        required=True,
+        default=None,
         metavar="AGENT_ID",
-        help="agent_status.agent_id value; must match ^a[0-9a-f]{5,}$",
+        help=(
+            "agent_status.agent_id value. OPTIONAL -- omit it and the "
+            "substrate mints a conforming handle and prints it. When given "
+            "it must match ^a[0-9a-f]{16,}$"
+        ),
     )
     _add_common_draft_arg(p_init)
     p_init.add_argument("--json", action="store_true", help="JSON output")
@@ -815,7 +899,7 @@ def _build_subcommands(sub) -> None:
 def _contract_default(args) -> int:
     print("Usage: gaia contract SUBCOMMAND [options]")
     print("")
-    print("  init --agent-id AGENT_ID  -- create a new draft (validate-on-write)")
+    print("  init [--agent-id AGENT_ID]  -- create a new draft; mints and prints the agent_id when omitted")
     print("  set FIELD VALUE           -- set a scalar field by dotted path")
     print("  add FIELD VALUE           -- append a value to a list field")
     print("  view [--field PATH]       -- print the draft envelope, or only a dotted-path subtree")

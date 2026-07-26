@@ -107,7 +107,7 @@ class TestBashSemanticGrantCycleNoSessionEnv:
             "session_id": self.BLOCK_SESSION,
             "tool_name": "Bash",
             "tool_input": {"command": self.COMMAND},
-            "agent_id": "a1234567",          # marks subagent context
+            "agent_id": "a12345670f1e2d3c4",          # marks subagent context
         }
         block_result = run_pre_tool_use_event(block_event, cwd=cwd)
 
@@ -143,7 +143,7 @@ class TestBashSemanticGrantCycleNoSessionEnv:
             "session_id": self.RETRY_SESSION,
             "tool_name": "Bash",
             "tool_input": {"command": self.COMMAND},
-            "agent_id": "a1234567",
+            "agent_id": "a12345670f1e2d3c4",
         }
         retry_result = run_pre_tool_use_event(retry_event, cwd=cwd)
 
@@ -189,7 +189,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             "session_id": self.BLOCK_SESSION,
             "tool_name": "Write",
             "tool_input": {"file_path": protected_file, "content": ""},
-            "agent_id": "a7654321",          # subagent context
+            "agent_id": "a76543210f1e2d3c4",          # subagent context
         }
         block_result = run_pre_tool_use_event(block_event, cwd=cwd)
 
@@ -222,7 +222,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             "session_id": self.RETRY_SESSION,
             "tool_name": "Write",
             "tool_input": {"file_path": protected_file, "content": ""},
-            "agent_id": "a7654321",
+            "agent_id": "a76543210f1e2d3c4",
         }
         retry_result = run_pre_tool_use_event(retry_event, cwd=cwd)
 

@@ -86,7 +86,9 @@ Order is short-circuit -- first match wins:
 ### SendMessage Validation (PreToolUse matcher)
 
 ```
-1. Agent ID format check    --> must match /^a[0-9a-f]{5,}$/
+1. Agent ID format check    --> must match /^a[0-9a-f]{16,}$/
+                                (gaia.contract.validator.AGENT_ID_PATTERN_TEXT,
+                                 the single source of truth for every copy)
 2. Message presence check   --> non-empty message required
 3. Nonce approval check     --> detect APPROVE:{nonce}, activate pending grants
 ```

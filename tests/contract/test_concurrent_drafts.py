@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytest
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_CLI = _REPO_ROOT / "bin" / "cli" / "contract.py"
@@ -61,7 +62,7 @@ CONTRACT_CLI = _REPO_ROOT / "bin" / "cli" / "contract.py"
 # gaia.contract.drafts.list_draft_ids(), same workspace, same DB, racing at
 # every step. If cross-contamination were possible anywhere in the stack,
 # sharing the agent_id is what would surface it.
-SHARED_AGENT_ID = "a1234abcd"
+SHARED_AGENT_ID = valid_agent_id("a1234abcd")
 
 
 def _run(args: list, env: dict) -> subprocess.CompletedProcess:

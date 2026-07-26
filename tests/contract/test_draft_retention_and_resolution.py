@@ -29,13 +29,14 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-AGENT_A = "a1c2d3"
-AGENT_B = "a4e5f6"
+AGENT_A = valid_agent_id("a1c2d3")
+AGENT_B = valid_agent_id("a4e5f6")
 DAY = 86400.0
 HOUR = 3600.0
 

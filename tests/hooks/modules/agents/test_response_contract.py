@@ -51,7 +51,7 @@ _BASE_STATUS = {
     "agent_state": "COMPLETE",
     "pending_steps": "[]",
     "next_action": "Report findings to the orchestrator",
-    "agent_id": "a12345",
+    "agent_id": "a123450f1e2d3c4b5",
 }
 
 _VALID_CONTRACT = {
@@ -86,7 +86,7 @@ class TestParseResponseBlocks:
         assert status.marker_present is True
         assert status.agent_state == "COMPLETE"
         assert status.next_action == "Report findings to the orchestrator"
-        assert status.agent_id == "a12345"
+        assert status.agent_id == "a123450f1e2d3c4b5"
 
     def test_parse_evidence_report(self):
         evidence = parse_evidence_report(VALID_OUTPUT)
@@ -97,7 +97,7 @@ class TestParseResponseBlocks:
 
 class TestValidateResponseContract:
     def test_valid_output_passes(self):
-        result = validate_response_contract(VALID_OUTPUT, task_agent_id="a12345")
+        result = validate_response_contract(VALID_OUTPUT, task_agent_id="a123450f1e2d3c4b5")
         assert result.valid is True
         assert result.recommended_action == "none"
         assert result.missing == []
@@ -108,7 +108,7 @@ class TestValidateResponseContract:
             "agent_status": _BASE_STATUS,
         }
         output = _make_contract_output(contract)
-        result = validate_response_contract(output, task_agent_id="a12345")
+        result = validate_response_contract(output, task_agent_id="a123450f1e2d3c4b5")
         assert result.valid is False
         assert result.recommended_action == "resume_same_agent_contract_repair"
         assert "EVIDENCE_REPORT" in result.missing
@@ -121,7 +121,7 @@ class TestValidateResponseContract:
             "evidence_report": evidence_no_verbatim,
         }
         output = _make_contract_output(contract)
-        result = validate_response_contract(output, task_agent_id="a12345")
+        result = validate_response_contract(output, task_agent_id="a123450f1e2d3c4b5")
         assert result.valid is False
         assert "VERBATIM_OUTPUTS" in result.missing
 
@@ -131,7 +131,7 @@ class TestValidateResponseContract:
             "evidence_report": _BASE_EVIDENCE,
         }
         output = _make_contract_output(contract)
-        result = validate_response_contract(output, task_agent_id="a12345")
+        result = validate_response_contract(output, task_agent_id="a123450f1e2d3c4b5")
         assert result.valid is False
         assert "PLAN_STATUS:DONE" in result.invalid
 
@@ -148,7 +148,7 @@ class TestValidateResponseContract:
     def test_multi_surface_output_requires_consolidation_report(self):
         result = validate_response_contract(
             VALID_OUTPUT,
-            task_agent_id="a12345",
+            task_agent_id="a123450f1e2d3c4b5",
             consolidation_required=True,
         )
         assert result.valid is False
@@ -158,7 +158,7 @@ class TestValidateResponseContract:
     def test_multi_surface_output_with_consolidation_report_passes(self):
         result = validate_response_contract(
             VALID_MULTI_SURFACE_OUTPUT,
-            task_agent_id="a12345",
+            task_agent_id="a123450f1e2d3c4b5",
             consolidation_required=True,
         )
         assert result.valid is True
@@ -191,7 +191,7 @@ class TestVerbatimOutputsWithFencedBlocks:
         """Verify VERBATIM_OUTPUTS with fenced code blocks parses correctly."""
         result = validate_response_contract(
             VALID_OUTPUT_WITH_FENCED_VERBATIM,
-            task_agent_id="a12345",
+            task_agent_id="a123450f1e2d3c4b5",
         )
         assert result.valid is True
         verbatim = result.evidence_report.fields.get("VERBATIM_OUTPUTS", [])

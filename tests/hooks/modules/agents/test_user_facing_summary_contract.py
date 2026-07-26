@@ -52,7 +52,7 @@ _BASE_STATUS = {
     "agent_state": "COMPLETE",
     "pending_steps": [],
     "next_action": "done",
-    "agent_id": "a99002",
+    "agent_id": "a990020f1e2d3c4b5",
 }
 
 
@@ -110,20 +110,20 @@ class TestBackwardCompatibility:
     def test_response_contract_validator_accepts_with_summary(self):
         """The deterministic response_contract validator accepts the field too."""
         output = _wrap(_contract(with_summary=True))
-        v = validate_response_contract(output, task_agent_id="a99002")
+        v = validate_response_contract(output, task_agent_id="a990020f1e2d3c4b5")
         assert v.valid, (v.missing, v.invalid)
 
     def test_response_contract_validator_accepts_without_summary(self):
         """And validates identically when the field is absent."""
         output = _wrap(_contract(with_summary=False))
-        v = validate_response_contract(output, task_agent_id="a99002")
+        v = validate_response_contract(output, task_agent_id="a990020f1e2d3c4b5")
         assert v.valid, (v.missing, v.invalid)
 
     def test_validator_does_not_require_the_field(self):
         """The field name never appears in the missing list -- it is not required."""
         output = _wrap(_contract(with_summary=False))
         result = validate(output, task_info={})
-        v = validate_response_contract(output, task_agent_id="a99002")
+        v = validate_response_contract(output, task_agent_id="a990020f1e2d3c4b5")
         joined = " ".join(result.missing + v.missing + v.invalid).lower()
         assert "user_facing_summary" not in joined
         assert "user-facing" not in joined

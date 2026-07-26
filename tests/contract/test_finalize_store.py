@@ -92,7 +92,7 @@ def _envelope(plan_status: str = "COMPLETE") -> str:
     return json.dumps({
         "agent_status": {
             "agent_state": plan_status,
-            "agent_id": "a1234abcd",
+            "agent_id": "a1234abcd0f1e2d3c",
             "pending_steps": [],
             "next_action": "done",
         },
@@ -133,10 +133,10 @@ def _count_rows(db_path: Path, contract_id: str | None = None) -> int:
 
 def test_seeded_agent_finalize_writes_correct_task_status(db, monkeypatch):
     monkeypatch.setenv("GAIA_DISPATCH_AGENT", "gaia-system")
-    cid = "a1234abcd.tok-authz"
+    cid = "a1234abcd0f1e2d3c.tok-authz"
     res = finalize_agent_contract_handoff(
         contract_id=cid,
-        agent_id="a1234abcd",
+        agent_id="a1234abcd0f1e2d3c",
         workspace=WORKSPACE,
         agent_state="COMPLETE",
         raw_handoff_json=_envelope("COMPLETE"),
@@ -156,7 +156,7 @@ def test_seeded_agent_finalize_writes_correct_task_status(db, monkeypatch):
         con.close()
     assert row is not None
     assert row["agent_state"] == "COMPLETE"
-    assert row["agent_id"] == "a1234abcd"
+    assert row["agent_id"] == "a1234abcd0f1e2d3c"
 
 
 def test_unset_dispatch_is_allowed(db):
@@ -164,15 +164,15 @@ def test_unset_dispatch_is_allowed(db):
     the harness-agnostic ``gaia contract finalize`` runs without the env var."""
     assert "GAIA_DISPATCH_AGENT" not in __import__("os").environ
     res = finalize_agent_contract_handoff(
-        contract_id="a1234abcd.tok-unset",
-        agent_id="a1234abcd",
+        contract_id="a1234abcd0f1e2d3c.tok-unset",
+        agent_id="a1234abcd0f1e2d3c",
         workspace=WORKSPACE,
         agent_state="IN_PROGRESS",
         raw_handoff_json=_envelope("IN_PROGRESS"),
         db_path=db,
     )
     assert res["created"] is True
-    assert _count_rows(db, "a1234abcd.tok-unset") == 1
+    assert _count_rows(db, "a1234abcd0f1e2d3c.tok-unset") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +184,8 @@ def test_unseeded_agent_is_rejected(db, monkeypatch):
     assert is_handoff_writer("rogue-agent") is False
     with pytest.raises(HandoffWriteForbidden) as exc:
         finalize_agent_contract_handoff(
-            contract_id="a1234abcd.tok-rogue",
-            agent_id="a1234abcd",
+            contract_id="a1234abcd0f1e2d3c.tok-rogue",
+            agent_id="a1234abcd0f1e2d3c",
             workspace=WORKSPACE,
             agent_state="COMPLETE",
             raw_handoff_json=_envelope("COMPLETE"),
@@ -195,7 +195,7 @@ def test_unseeded_agent_is_rejected(db, monkeypatch):
     assert "rogue-agent" in msg
     assert "not a seeded fleet agent" in msg
     # The guard fires BEFORE any write: no row (and no DB even created).
-    assert _count_rows(db, "a1234abcd.tok-rogue") == 0
+    assert _count_rows(db, "a1234abcd0f1e2d3c.tok-rogue") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +208,8 @@ def test_raw_sqlite_forged_row_blocked_by_schema(db):
     with an out-of-enum status or without its required fields."""
     # First materialize the schema + a workspace row via a legitimate finalize.
     finalize_agent_contract_handoff(
-        contract_id="a1234abcd.tok-seed",
-        agent_id="a1234abcd",
+        contract_id="a1234abcd0f1e2d3c.tok-seed",
+        agent_id="a1234abcd0f1e2d3c",
         workspace=WORKSPACE,
         agent_state="COMPLETE",
         raw_handoff_json=_envelope("COMPLETE"),
@@ -262,10 +262,10 @@ def test_every_seeded_agent_can_finalize(db, monkeypatch):
     names = _agent_names_from_dir()
     for i, name in enumerate(names):
         monkeypatch.setenv("GAIA_DISPATCH_AGENT", name)
-        cid = f"a1234abcd.tok-{i}"
+        cid = f"a1234abcd0f1e2d3c.tok-{i}"
         res = finalize_agent_contract_handoff(
             contract_id=cid,
-            agent_id="a1234abcd",
+            agent_id="a1234abcd0f1e2d3c",
             workspace=WORKSPACE,
             agent_state="COMPLETE",
             raw_handoff_json=_envelope("COMPLETE"),

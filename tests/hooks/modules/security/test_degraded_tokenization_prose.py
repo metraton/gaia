@@ -111,12 +111,12 @@ class TestGatesStayClosed:
         assert "--force" in result.dangerous_flags
 
     def test_destructive_verb_still_gated_in_excepted_group(self):
-        result = detect_mutative_command("gaia contract delete --draft-id a7e4d2")
+        result = detect_mutative_command("gaia contract delete --draft-id a7e4d20f1e2d3c4b5")
         assert result.is_mutative is True
         assert result.verb == "delete"
 
     def test_destructive_verb_gated_when_tokenization_degrades(self):
-        result = detect_mutative_command("gaia contract delete --draft-id 'it's a7e4d2'")
+        result = detect_mutative_command("gaia contract delete --draft-id 'it's a7e4d20f1e2d3c4b5'")
         assert result.is_mutative is True
         assert result.verb == "delete"
 

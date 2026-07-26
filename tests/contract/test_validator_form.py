@@ -4,7 +4,7 @@ AC-1 -- form-layer validator: NAMED error codes + canonical repair message.
 The form layer validates an ``agent_contract_handoff`` envelope by SHAPE only
 and rejects each malformed case with a NAMED code:
 
-    * agent_id not matching ^a[0-9a-f]{5,}$  -> AGENT_ID_FORMAT
+    * agent_id not matching ^a[0-9a-f]{16,}$  -> AGENT_ID_FORMAT
     * plan_status out of the canonical enum  -> PLAN_STATUS
     * COMPLETE without verification.result == "pass" -> VERIFICATION_RESULT
     * a missing required evidence_report key -> MISSING_FIELD
@@ -27,7 +27,7 @@ def _valid_envelope() -> dict:
     return {
         "agent_status": {
             "agent_state": "IN_PROGRESS",
-            "agent_id": "a1b2c3",
+            "agent_id": "a1b2c30f1e2d3c4b5",
             "pending_steps": [],
             "next_action": "continue",
         },

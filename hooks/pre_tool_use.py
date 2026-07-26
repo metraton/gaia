@@ -224,19 +224,22 @@ def _handle_send_message(tool_name: str, parameters: dict) -> str | None:
         None: allowed (no modification)
         str: blocked (error message)
     """
-    import re
+    # The agent_id shape is owned by gaia.contract.validator and re-exported by
+    # response_contract; never re-spell the literal here.
+    from modules.agents.response_contract import _AGENT_ID_PATTERN
 
     agent_id = parameters.get("to", "")
     message = parameters.get("message", "")
 
-    if not agent_id or not re.match(r'^a[0-9a-f]{5,}$', agent_id):
+    if not agent_id or not _AGENT_ID_PATTERN.match(agent_id):
         logger.warning(f"BLOCKED SendMessage: Invalid agentId format '{agent_id}'")
         return (
             f"[ERROR] Invalid agent ID format: '{agent_id}'\n\n"
-            "Agent ID should be 'a' followed by hex characters.\n"
-            "Example: a12345f or a51a0cbbf6afb831d\n\n"
+            "Agent ID must be 'a' followed by 16 or more hex characters.\n"
             "The agent ID is returned at the end of agent responses.\n"
-            "Look for: 'agentId: a...' in the previous agent output."
+            "Look for: 'agentId: a...' in the previous agent output -- copy it "
+            "verbatim; a shortened or invented value will not address the "
+            "running agent."
         )
 
     if not message or not message.strip():
@@ -245,7 +248,7 @@ def _handle_send_message(tool_name: str, parameters: dict) -> str | None:
             "[ERROR] SendMessage requires a message\n\n"
             "When resuming an agent, you must provide a message:\n\n"
             "SendMessage(\n"
-            "    to=\"a12345\",\n"
+            "    to=\"<the agentId from that agent's output>\",\n"
             "    message=\"Continue with the latest user instruction.\"\n"
             ")\n\n"
             "The message tells the agent what to do next."

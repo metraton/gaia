@@ -43,8 +43,9 @@ if str(HOOKS_DIR) not in sys.path:
 
 from adapters.claude_code import ClaudeCodeAdapter  # noqa: E402
 from modules.core.paths import clear_path_cache  # noqa: E402
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
-AGENT_ID = "a1234abcd"
+AGENT_ID = valid_agent_id("a1234abcd")
 
 
 def _run(args: list, env: dict) -> subprocess.CompletedProcess:

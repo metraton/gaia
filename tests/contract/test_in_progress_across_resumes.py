@@ -58,7 +58,7 @@ def _evidence():
     return {k: [] for k in _EVIDENCE_KEYS}
 
 
-def _in_progress_envelope(agent_id="a1b2c3", next_action="continue"):
+def _in_progress_envelope(agent_id="a1b2c30f1e2d3c4b5", next_action="continue"):
     return {
         "agent_status": {
             "agent_state": "IN_PROGRESS",
@@ -72,7 +72,7 @@ def _in_progress_envelope(agent_id="a1b2c3", next_action="continue"):
     }
 
 
-def _complete_envelope(agent_id="a1b2c3"):
+def _complete_envelope(agent_id="a1b2c30f1e2d3c4b5"):
     env = _in_progress_envelope(agent_id, next_action="done")
     env["agent_status"]["agent_state"] = "COMPLETE"
     env["evidence_report"]["verification"] = {
@@ -121,7 +121,7 @@ class TestGateAcceptsInProgress:
 
 class TestDraftHoldsInProgressAcrossResumes:
     def test_non_consuming_resume_keeps_in_progress(self, isolated_data_dir):
-        agent_id = "a1b2c3"
+        agent_id = "a1b2c30f1e2d3c4b5"
         draft_id = drafts_mod.mint_draft_id(agent_id)
         drafts_mod.save_draft(draft_id, _in_progress_envelope(agent_id))
 
@@ -145,19 +145,19 @@ class TestStateMachineHoldsAcrossResumes:
         # A resume is not a retry: N > _MAX_IN_PROGRESS_RETRIES consecutive
         # IN_PROGRESS resumes stay legal and never exceed the baseline count.
         n = _MAX_IN_PROGRESS_RETRIES + 4
-        first = track_transition("a12345", "IN_PROGRESS", is_resume=True)
+        first = track_transition("a123450f1e2d3c4b5", "IN_PROGRESS", is_resume=True)
         assert first.valid is True
         for i in range(n):
-            r = track_transition("a12345", "IN_PROGRESS", is_resume=True)
+            r = track_transition("a123450f1e2d3c4b5", "IN_PROGRESS", is_resume=True)
             assert r.valid is True, f"resume {i} wrongly rejected: {r.error}"
             assert r.error == ""
             assert r.in_progress_count == 1
 
     def test_resume_then_terminal_finalize(self):
         for _ in range(_MAX_IN_PROGRESS_RETRIES + 3):
-            assert track_transition("a12345", "IN_PROGRESS", is_resume=True).valid
+            assert track_transition("a123450f1e2d3c4b5", "IN_PROGRESS", is_resume=True).valid
         # Only a terminal state finalizes -- and it is legal from IN_PROGRESS.
-        r = track_transition("a12345", "COMPLETE")
+        r = track_transition("a123450f1e2d3c4b5", "COMPLETE")
         assert r.valid is True
         assert r.previous_state == "IN_PROGRESS"
 

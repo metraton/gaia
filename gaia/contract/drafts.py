@@ -80,7 +80,7 @@ Liveness, and why it is the axis resolution turns on:
 
 Why ``--agent-id`` REFUSES rather than picks:
     Excluding spent drafts narrows candidacy but does not make an agent handle
-    unique, and it never was: every agent mints its own ``^a[0-9a-f]{5,}$`` id
+    unique, and it never was: at the time, every agent minted its own id
     with no uniqueness mechanism anywhere, so collisions are structural rather
     than accidental (one handle observed on 44 files; ~147 agents against ~244
     live drafts). Two consecutive ``gaia contract fill --agent-id <handle>``
@@ -289,9 +289,9 @@ def _render_ambiguity_message(
 def _agent_of(draft_id: str) -> str:
     """Return the agent-id portion of a draft id (``{agent_id}.{token}``).
 
-    ``agent_id`` itself never contains a ``.`` (format ``^a[0-9a-f]{5,}$``),
-    so splitting on the FIRST dot reliably recovers it regardless of the
-    token's own shape.
+    ``agent_id`` itself never contains a ``.`` (format
+    ``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``), so splitting on the
+    FIRST dot reliably recovers it regardless of the token's own shape.
     """
     return draft_id.split(".", 1)[0]
 

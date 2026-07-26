@@ -85,7 +85,7 @@ _VALID_STATUS = {
     "agent_state": "COMPLETE",
     "pending_steps": "none",
     "next_action": "Report findings to orchestrator",
-    "agent_id": "a1b2c3d4e5",
+    "agent_id": "a1b2c3d4e50f1e2d3",
 }
 
 VALID_AGENT_OUTPUT = _make_contract_output({
@@ -130,7 +130,7 @@ AGENT_OUTPUT_WITH_VERBATIM = _make_contract_output({
         "agent_state": "COMPLETE",
         "pending_steps": "none",
         "next_action": "Report findings",
-        "agent_id": "af097c4abc",
+        "agent_id": "af097c4abc0f1e2d3",
     },
     "evidence_report": _VERBATIM_EVIDENCE,
 })
@@ -183,14 +183,14 @@ class TestValidAgentResponse:
         # Validate the response contract
         validation = validate_response_contract(
             VALID_AGENT_OUTPUT,
-            task_agent_id="a1b2c3d4e5",
+            task_agent_id="a1b2c3d4e50f1e2d3",
         )
 
         assert validation.valid is True
         assert len(validation.missing) == 0
         assert len(validation.invalid) == 0
         assert validation.agent_status.agent_state == "COMPLETE"
-        assert validation.agent_status.agent_id == "a1b2c3d4e5"
+        assert validation.agent_status.agent_id == "a1b2c3d4e50f1e2d3"
 
     def test_valid_response_formatted_as_completion(self):
         """Valid response -> format CompletionResult -> HookResponse."""
@@ -215,7 +215,7 @@ class TestValidAgentResponse:
 
         assert status.marker_present is True
         assert status.agent_state == "COMPLETE"
-        assert status.agent_id == "a1b2c3d4e5"
+        assert status.agent_id == "a1b2c3d4e50f1e2d3"
         assert "none" in status.pending_steps.lower()
 
 
@@ -230,7 +230,7 @@ class TestMissingEvidenceReport:
         """Response without EVIDENCE_REPORT -> validation fails."""
         validation = validate_response_contract(
             MISSING_EVIDENCE_AGENT_OUTPUT,
-            task_agent_id="a1b2c3d4e5",
+            task_agent_id="a1b2c3d4e50f1e2d3",
         )
 
         assert validation.valid is False
@@ -244,7 +244,7 @@ class TestMissingEvidenceReport:
 
         validation = validate_response_contract(
             MISSING_EVIDENCE_AGENT_OUTPUT,
-            task_agent_id="a1b2c3d4e5",
+            task_agent_id="a1b2c3d4e50f1e2d3",
         )
 
         result = CompletionResult(
@@ -293,7 +293,7 @@ class TestVerbatimOutputsExtraction:
         """Full contract validation passes when all fields are present."""
         validation = validate_response_contract(
             AGENT_OUTPUT_WITH_VERBATIM,
-            task_agent_id="af097c4abc",
+            task_agent_id="af097c4abc0f1e2d3",
         )
 
         assert validation.valid is True
@@ -322,7 +322,7 @@ class TestConsolidationRequired:
             "agent_state": "COMPLETE",
             "pending_steps": "none",
             "next_action": "Report to orchestrator",
-            "agent_id": "ab1234cdef",
+            "agent_id": "ab1234cdef0f1e2d3",
         },
         "evidence_report": {
             "patterns_checked": ["Existing deployment patterns"],
@@ -353,7 +353,7 @@ class TestConsolidationRequired:
         """When consolidation_required=True, CONSOLIDATION_REPORT must be present."""
         validation = validate_response_contract(
             self.VALID_WITH_CONSOLIDATION,
-            task_agent_id="ab1234cdef",
+            task_agent_id="ab1234cdef0f1e2d3",
             consolidation_required=True,
         )
 
@@ -364,7 +364,7 @@ class TestConsolidationRequired:
         """Missing CONSOLIDATION_REPORT when required -> validation fails."""
         validation = validate_response_contract(
             VALID_AGENT_OUTPUT,  # Has evidence but no consolidation
-            task_agent_id="a1b2c3d4e5",
+            task_agent_id="a1b2c3d4e50f1e2d3",
             consolidation_required=True,
         )
 
@@ -375,7 +375,7 @@ class TestConsolidationRequired:
         """When consolidation_required=False (default), CONSOLIDATION_REPORT is not checked."""
         validation = validate_response_contract(
             VALID_AGENT_OUTPUT,
-            task_agent_id="a1b2c3d4e5",
+            task_agent_id="a1b2c3d4e50f1e2d3",
             consolidation_required=False,
         )
 
@@ -423,7 +423,7 @@ class TestSubagentEdgeCases:
                 "agent_state": "INVALID_STATUS",
                 "pending_steps": "none",
                 "next_action": "none",
-                "agent_id": "a12345abcde",
+                "agent_id": "a12345abcde0f1e2d",
             },
             "evidence_report": {
                 "patterns_checked": ["test"],
@@ -435,7 +435,7 @@ class TestSubagentEdgeCases:
                 "open_gaps": ["none"],
             },
         })
-        validation = validate_response_contract(bad_output, task_agent_id="a12345abcde")
+        validation = validate_response_contract(bad_output, task_agent_id="a12345abcde0f1e2d")
 
         assert validation.valid is False
         assert any("PLAN_STATUS" in inv for inv in validation.invalid)

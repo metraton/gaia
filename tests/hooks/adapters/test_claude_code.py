@@ -116,9 +116,9 @@ def subagent_stop_payload():
         "hook_event_name": "SubagentStop",
         "session_id": "sess-ghi789",
         "agent_type": "cloud-troubleshooter",
-        "agent_id": "a1b2c3d",
-        "agent_transcript_path": "/tmp/transcripts/a1b2c3d.jsonl",
-        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n```agent_contract_handoff\n{\"agent_state\": \"COMPLETE\", \"agent_id\": \"a1b2c3d\", \"pending_steps\": [], \"next_action\": \"done\"}\n```",
+        "agent_id": "a1b2c3d0f1e2d3c4b",
+        "agent_transcript_path": "/tmp/transcripts/a1b2c3d0f1e2d3c4b.jsonl",
+        "last_assistant_message": "Task complete. Pod was OOMKilled.\n\n```agent_contract_handoff\n{\"agent_state\": \"COMPLETE\", \"agent_id\": \"a1b2c3d0f1e2d3c4b\", \"pending_steps\": [], \"next_action\": \"done\"}\n```",
         "cwd": "/home/user/project",
         "stop_hook_active": True,
         "permission_mode": "default",
@@ -172,7 +172,7 @@ class TestParseEvent:
         assert event.event_type == HookEventType.SUBAGENT_STOP
         assert event.session_id == "sess-ghi789"
         assert event.payload["agent_type"] == "cloud-troubleshooter"
-        assert event.payload["agent_id"] == "a1b2c3d"
+        assert event.payload["agent_id"] == "a1b2c3d0f1e2d3c4b"
 
     def test_parse_event_empty_stdin(self, adapter):
         """Empty stdin raises ValueError."""
@@ -440,8 +440,8 @@ class TestParseAgentCompletion:
 
         assert isinstance(comp, AgentCompletion)
         assert comp.agent_type == "cloud-troubleshooter"
-        assert comp.agent_id == "a1b2c3d"
-        assert comp.transcript_path == "/tmp/transcripts/a1b2c3d.jsonl"
+        assert comp.agent_id == "a1b2c3d0f1e2d3c4b"
+        assert comp.transcript_path == "/tmp/transcripts/a1b2c3d0f1e2d3c4b.jsonl"
         assert '"agent_state": "COMPLETE"' in comp.last_message
         assert comp.session_id == "sess-ghi789"
 
@@ -760,7 +760,7 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         parsed_contract = {
             "agent_status": {
                 "agent_state": "APPROVAL_REQUEST",
-                "agent_id": "a12345abc",
+                "agent_id": "a12345abc0f1e2d3c",
             },
             "approval_request": {
                 "approval_id": "preserved-nonce-deadbeef",
@@ -1014,7 +1014,7 @@ class TestAdaptSubagentStopAnchorHits:
 
         captured = {}
         parsed_contract = {
-            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d0f1e2d3c4b"},
             "approval_request": None,
         }
         self._install_module_stubs(monkeypatch, captured, parsed_contract)
@@ -1058,7 +1058,7 @@ class TestAdaptSubagentStopAnchorHits:
 
         captured = {}
         parsed_contract = {
-            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d0f1e2d3c4b"},
             "approval_request": None,
         }
         self._install_module_stubs(monkeypatch, captured, parsed_contract)
@@ -1105,7 +1105,7 @@ class TestAdaptSubagentStopAnchorHits:
 
         captured = {}
         parsed_contract = {
-            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d0f1e2d3c4b"},
             "approval_request": None,
         }
         self._install_module_stubs(monkeypatch, captured, parsed_contract)
@@ -1150,7 +1150,7 @@ class TestAdaptSubagentStopAnchorHits:
 
         captured = {}
         parsed_contract = {
-            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d"},
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d0f1e2d3c4b"},
             "approval_request": None,
         }
         self._install_module_stubs(monkeypatch, captured, parsed_contract)

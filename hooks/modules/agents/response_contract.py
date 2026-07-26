@@ -88,7 +88,20 @@ VALID_RISK_LEVELS = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
 
 _NONCE_HEX_PATTERN = re.compile(r"^[a-f0-9]{32}$")
 
-_AGENT_ID_PATTERN = re.compile(r"^a[0-9a-f]{5,}$")
+# Single source of truth: gaia.contract.validator.AGENT_ID_PATTERN_TEXT, which
+# carries the measurement behind the 16-hex floor. Re-exported here (same
+# guarded shape as VALID_PLAN_STATUSES above) so the hooks-side SendMessage
+# validators in pre_tool_use.py and adapters/claude_code.py import ONE constant
+# instead of each re-spelling the literal -- the duplication that let the floor
+# drift in the first place.
+try:
+    from gaia.contract.validator import AGENT_ID_PATTERN_TEXT
+except ImportError:
+    # Bare-stdlib subprocess without the gaia package on sys.path. Kept
+    # byte-identical to the canonical text.
+    AGENT_ID_PATTERN_TEXT = r"^a[0-9a-f]{16,}$"
+
+_AGENT_ID_PATTERN = re.compile(AGENT_ID_PATTERN_TEXT)
 
 
 @dataclass(frozen=True)

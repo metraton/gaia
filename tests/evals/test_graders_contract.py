@@ -57,7 +57,7 @@ def _well_formed(agent_state: str = "IN_PROGRESS", **overrides) -> dict:
     contract = {
         "agent_status": {
             "agent_state": agent_state,
-            "agent_id": "a12345",
+            "agent_id": "a123450f1e2d3c4b5",
             "pending_steps": [],
             "next_action": "done",
         },

@@ -55,7 +55,7 @@ def _evidence():
     return {k: [] for k in _EVIDENCE_KEYS}
 
 
-def _memory_complete_envelope(agent_id: str = "a1b2c3", vtype: str = "none"):
+def _memory_complete_envelope(agent_id: str = "a1b2c30f1e2d3c4b5", vtype: str = "none"):
     """A COMPLETE envelope for a memory turn: verification.type 'none' (no
     external oracle) plus the result=='pass' that any COMPLETE requires."""
     return {

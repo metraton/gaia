@@ -535,9 +535,9 @@ class TestSaveLoadCompareFlow:
         assert "oci-pos-dev-cluster" in anchors
 
         # 3. Save with a specific session_id + agent_id (simulating SubagentStart)
-        session_id = "session-143025-a1b2c3d4"
+        session_id = "session-143025-a1b2c3d40f1e2d3c4"
         agent_type = "platform-architect"
-        agent_id = "a1b2c3d4e"
+        agent_id = "a1b2c3d4e0f1e2d3c"
         save_anchors(session_id, agent_type, agent_id, anchors)
 
         # 4. Load with the SAME session_id + agent_id (simulating subagent_stop time)

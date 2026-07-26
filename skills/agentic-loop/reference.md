@@ -218,7 +218,7 @@ again. See the canonical rendering in `agent-protocol/examples.md` #7.
 {
   "agent_status": {
     "agent_state": "IN_PROGRESS",
-    "agent_id": "a1b2c3",
+    "agent_id": "<the a+16-hex id gaia contract init printed>",
     "pending_steps": ["continue iterating"],
     "next_action": "iteration 6"
   },
@@ -251,7 +251,7 @@ exhausted) -- otherwise the runtime blocks it and forces another iteration:
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "a1b2c3",
+    "agent_id": "<the a+16-hex id gaia contract init printed>",
     "pending_steps": [],
     "next_action": "done"
   },

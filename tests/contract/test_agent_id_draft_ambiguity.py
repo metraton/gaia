@@ -5,7 +5,7 @@ The production incident this pins: two consecutive
 drafts -- the recency winner moved between the calls -- and the second wrote a
 COMPLETE plus a verification block onto a draft belonging to another agent's
 turn. The cause is structural, not accidental: every agent mints its own
-``^a[0-9a-f]{5,}$`` handle and nothing enforces uniqueness, so one handle
+``^a[0-9a-f]{16,}$`` handle and nothing enforces uniqueness, so one handle
 routinely spans unrelated turns (44 files were observed under a single one).
 
 Excluding spent drafts from candidacy made ``--agent-id`` usable but not safe:
@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 import pytest
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -41,8 +42,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 CONTRACT_CLI = _REPO_ROOT / "bin" / "cli" / "contract.py"
 
-AGENT_A = "a7f3c1"
-AGENT_B = "a4e5f6"
+AGENT_A = valid_agent_id("a7f3c1")
+AGENT_B = valid_agent_id("a4e5f6")
 HOUR = 3600.0
 
 

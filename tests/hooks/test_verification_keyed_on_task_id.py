@@ -60,7 +60,7 @@ def _evidence():
     return {k: [] for k in _EVIDENCE_KEYS}
 
 
-def _envelope(agent_state: str, agent_id: str = "a1b2c3"):
+def _envelope(agent_state: str, agent_id: str = "a1b2c30f1e2d3c4b5"):
     return {
         "agent_status": {
             "agent_state": agent_state,
@@ -74,7 +74,7 @@ def _envelope(agent_state: str, agent_id: str = "a1b2c3"):
     }
 
 
-def _complete_envelope(agent_id: str = "a1b2c3"):
+def _complete_envelope(agent_id: str = "a1b2c30f1e2d3c4b5"):
     env = _envelope("COMPLETE", agent_id)
     env["evidence_report"]["verification"] = {
         "method": "test", "result": "pass", "details": "suite green",

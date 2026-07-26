@@ -1093,7 +1093,8 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
                      -- rows written before T7 (and any writer that does not carry a contract
                      -- id) have no value here and are exempt from the uniqueness constraint
                      -- (SQLite's UNIQUE index permits any number of NULLs).
-    agent_id         TEXT NOT NULL,               -- e.g. "a1b2c3d4e5"
+    agent_id         TEXT NOT NULL,               -- "a" + 16+ hex; minted by
+                                                 -- `gaia contract init`
     session_id       TEXT,                        -- CLAUDE_SESSION_ID at SubagentStop time
     workspace        TEXT NOT NULL,               -- FK -> workspaces.name
     brief_id         INTEGER,                     -- NULLABLE FK -> briefs.id; EXTENSION_POINT

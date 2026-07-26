@@ -81,7 +81,7 @@ def _valid_envelope():
     return {
         "agent_status": {
             "agent_state": "IN_PROGRESS",
-            "agent_id": "a1b2c3",
+            "agent_id": "a1b2c30f1e2d3c4b5",
             "pending_steps": [],
             "next_action": "continue the increment",
         },
@@ -93,7 +93,7 @@ def _valid_envelope():
 
 def _malformed_agent_id_envelope():
     """agent_status present, plan_status valid, but agent_id does not match
-    ^a[0-9a-f]{5,}$ -- the 3-case gate lets this through (exit 0), the
+    ^a[0-9a-f]{16,}$ -- the 3-case gate lets this through (exit 0), the
     full-verdict gate rejects it (AGENT_ID_FORMAT)."""
     env = _valid_envelope()
     env["agent_status"]["agent_id"] = "BADID"
@@ -347,7 +347,7 @@ class TestRichRepairMessageToStderr:
         stderr_text = buf.getvalue()
         # The repair guidance reached stderr (not just stdout).
         assert "AGENT_ID_FORMAT" in stderr_text
-        assert "^a[0-9a-f]{5,}$" in stderr_text
+        assert "^a[0-9a-f]{16,}$" in stderr_text
 
 
 # ---------------------------------------------------------------------------

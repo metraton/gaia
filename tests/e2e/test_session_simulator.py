@@ -262,7 +262,7 @@ class SessionSimulator:
         APPROVE:<nonce> token after a T3 command was blocked.
 
         Args:
-            agent_id: The agent ID to resume (e.g. "a1f2c3d4e5").
+            agent_id: The agent ID to resume (e.g. "a1f2c3d4e50f1e2d3").
             prompt: The resume message (e.g. "APPROVE:<32-char-hex>").
 
         Returns: dict with exit_code, stdout_json, stdout_raw, stderr.
@@ -414,7 +414,7 @@ class SessionSimulator:
 
 def _build_valid_agent_output(
     agent_state: str = "COMPLETE",
-    agent_id: str = "a1f2c3",
+    agent_id: str = "a1f2c30f1e2d3c4b5",
     summary: str = "Task completed successfully.",
     include_consolidation: bool = True,
 ) -> str:
@@ -568,9 +568,9 @@ class TestScenario1HappyPath:
         agent_output = _build_valid_agent_output(
             agent_state="NEEDS_VERIFICATION",
             summary="El pod crashea por OOMKilled.",
-            agent_id="a1f2c3",
+            agent_id="a1f2c30f1e2d3c4b5",
         )
-        result = sim.agent_responds("cloud-troubleshooter", "a1f2c3", agent_output)
+        result = sim.agent_responds("cloud-troubleshooter", "a1f2c30f1e2d3c4b5", agent_output)
         assert result["exit_code"] == 0, (
             f"SubagentStop failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
@@ -597,9 +597,9 @@ class TestScenario1HappyPath:
         verifier_output = _build_valid_agent_output(
             agent_state="COMPLETE",
             summary="Verificado: el pod crashea por OOMKilled.",
-            agent_id="a9f9f9",
+            agent_id="a9f9f90f1e2d3c4b5",
         )
-        result = sim.agent_responds("gaia-verifier", "a9f9f9", verifier_output)
+        result = sim.agent_responds("gaia-verifier", "a9f9f90f1e2d3c4b5", verifier_output)
         assert result["exit_code"] == 0, (
             f"gaia-verifier SubagentStop failed: exit={result['exit_code']}, "
             f"stderr={result['stderr']}"
@@ -708,7 +708,7 @@ class TestScenario4IncompleteContract:
         # Agent responds WITHOUT a contract block
         # Missing contract triggers exit_code=2 (selective enforcement)
         agent_output = "Listo, refactorice todo."
-        result = sim.agent_responds("developer", "a9b8c7", agent_output)
+        result = sim.agent_responds("developer", "a9b8c70f1e2d3c4b5", agent_output)
         assert result["exit_code"] == 2, (
             f"Missing contract should trigger rejection (exit=2): exit={result['exit_code']}, "
             f"stderr: {result['stderr']}"
@@ -753,10 +753,10 @@ class TestScenario5InvalidPlanStatus:
         # Agent responds with an agent_contract_handoff block but INVALID plan_status
         agent_output = _build_valid_agent_output(
             agent_state="RANDOM_STATUS",
-            agent_id="a5e6f7",
+            agent_id="a5e6f70f1e2d3c4b5",
             summary="Refactoring done.",
         )
-        result = sim.agent_responds("developer", "a5e6f7", agent_output)
+        result = sim.agent_responds("developer", "a5e6f70f1e2d3c4b5", agent_output)
         assert result["exit_code"] == 2, (
             f"Invalid plan_status should trigger rejection (exit=2): exit={result['exit_code']}, "
             f"stderr: {result['stderr']}"
@@ -822,7 +822,7 @@ class TestScenario6EmptyEvidenceAdvisory:
             {
                 "agent_status": {
                     "agent_state": "COMPLETE",
-                    "agent_id": "ab12cd",
+                    "agent_id": "ab12cd0f1e2d3c4b5",
                     "pending_steps": [],
                     "next_action": "done",
                 },
@@ -852,7 +852,7 @@ class TestScenario6EmptyEvidenceAdvisory:
             f"{bt}{bt}{bt}\n\n"
         )
 
-        result = sim.agent_responds("gaia-verifier", "ab12cd", agent_output)
+        result = sim.agent_responds("gaia-verifier", "ab12cd0f1e2d3c4b5", agent_output)
         assert result["exit_code"] == 0, (
             f"Empty evidence with valid plan_status should be advisory (exit=0): "
             f"exit={result['exit_code']}, stderr: {result['stderr']}"

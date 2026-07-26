@@ -56,7 +56,7 @@ _BASE_STATUS = {
     "agent_state": "COMPLETE",
     "pending_steps": "[]",
     "next_action": "done",
-    "agent_id": "a99001",
+    "agent_id": "a990010f1e2d3c4b5",
 }
 
 
@@ -143,7 +143,7 @@ class TestMemorializeSuggestionsParser:
         )
 
         # The malformed suggestion does NOT invalidate the surrounding contract.
-        result = validate_response_contract(output, task_agent_id="a99001")
+        result = validate_response_contract(output, task_agent_id="a990010f1e2d3c4b5")
         assert result.valid is True, (
             f"memorialize_suggestions warnings must not fail contract validation; "
             f"missing={result.missing}, invalid={result.invalid}"
@@ -234,7 +234,7 @@ class TestMemorializeSuggestionsFixture:
     def test_sample_fixture_does_not_break_contract_validation(self):
         contract_dict = json.loads(FIXTURE_PATH.read_text())
         output = _wrap(contract_dict)
-        result = validate_response_contract(output, task_agent_id="a7c3f9")
+        result = validate_response_contract(output, task_agent_id="a7c3f90f1e2d3c4b5")
         assert result.valid is True, (
             f"sample fixture must be a valid contract; "
             f"missing={result.missing}, invalid={result.invalid}"

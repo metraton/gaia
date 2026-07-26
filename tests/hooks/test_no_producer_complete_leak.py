@@ -60,11 +60,12 @@ from gaia.store.writer import (  # noqa: E402
 )
 from modules.agents.dispatch_binding import extract_dispatch_binding  # noqa: E402
 from modules.agents.handoff_persister import persist_handoff  # noqa: E402
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 CONTRACT_CLI = _REPO_ROOT / "bin" / "cli" / "contract.py"
 
 WORKSPACE = "me"
-AGENT_ID = "a1234abcd"
+AGENT_ID = valid_agent_id("a1234abcd")
 PLAN_ID = 34
 TASK_ID = 42
 
@@ -183,7 +184,7 @@ class TestPathAFenceGate:
         parent_handoff_id), so the gate treats it as unbound and lets it
         self-COMPLETE -- the increment is promoted, no deadlock."""
         gate = evaluate_contract_gate(
-            _complete_envelope(agent_id="a9f00d1"), agent_type="gaia-verifier",
+            _complete_envelope(agent_id="a9f00d10f1e2d3c4b"), agent_type="gaia-verifier",
             plan_task_id=None, ramp_enabled=ramp,
         )
         assert gate.rejected is False, (
@@ -239,7 +240,7 @@ def _seed_binding_targets(db_path: Path) -> int:
     """Materialize schema + seed briefs->plans->tasks so a plan_task_id binding
     satisfies the runtime FKs. Returns a real parent handoff id."""
     parent = finalize_agent_contract_handoff(
-        contract_id="a1234abcd.parent-seed", agent_id=AGENT_ID, workspace=WORKSPACE,
+        contract_id=f"{AGENT_ID}.parent-seed", agent_id=AGENT_ID, workspace=WORKSPACE,
         agent_state="COMPLETE",
         raw_handoff_json=json.dumps(_complete_envelope()), db_path=db_path,
     )
@@ -329,13 +330,13 @@ def test_path_b_verifier_unbound_finalize_promotes_to_complete(cli_env):
     db = _db_path(cli_env)
     parent_id = _seed_binding_targets(db)
 
-    init = _run_cli(["init", "--agent-id", "a9f00d1", "--json"], cli_env)
+    init = _run_cli(["init", "--agent-id", "a9f00d10f1e2d3c4b", "--json"], cli_env)
     assert init.returncode == 0, init.stderr
     draft_id = json.loads(init.stdout)["draft_id"]
 
     # Verifier turn: bound by parent_handoff_id, plan_task_id is None.
     insert_dispatched_handoff(
-        contract_id=draft_id, agent_id="a9f00d1", workspace=WORKSPACE,
+        contract_id=draft_id, agent_id="a9f00d10f1e2d3c4b", workspace=WORKSPACE,
         plan_task_id=None, parent_handoff_id=parent_id, kind="verifier",
         session_id="sess-verif", db_path=db,
     )

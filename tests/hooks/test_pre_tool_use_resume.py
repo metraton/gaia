@@ -64,7 +64,7 @@ class TestHandleSendMessageApproval:
         nonce = "deadbeef" * 4
         result = pre_tool_use._handle_send_message(
             "SendMessage",
-            {"to": "a12345", "message": f"APPROVE:{nonce}"},
+            {"to": "a123450f1e2d3c4b5", "message": f"APPROVE:{nonce}"},
         )
 
         # No longer blocked or intercepted -- passes through as normal resume
@@ -75,7 +75,7 @@ class TestHandleSendMessageApproval:
         """Malformed APPROVE: tokens are no longer intercepted in SendMessage."""
         result = pre_tool_use._handle_send_message(
             "SendMessage",
-            {"to": "a12345", "message": "APPROVE:commit\n\nRetry the git commit."},
+            {"to": "a123450f1e2d3c4b5", "message": "APPROVE:commit\n\nRetry the git commit."},
         )
 
         # No longer blocked -- passes through
@@ -86,7 +86,7 @@ class TestHandleSendMessageApproval:
         """Deprecated approval phrases are no longer intercepted in SendMessage."""
         result = pre_tool_use._handle_send_message(
             "SendMessage",
-            {"to": "a12345", "message": "User approved: terraform apply prod/vpc"},
+            {"to": "a123450f1e2d3c4b5", "message": "User approved: terraform apply prod/vpc"},
         )
 
         # No longer blocked -- passes through
@@ -96,7 +96,7 @@ class TestHandleSendMessageApproval:
     def test_documentary_nonce_text_passes_through(self, saved_states):
         result = pre_tool_use._handle_send_message(
             "SendMessage",
-            {"to": "a12345", "message": "Use APPROVE:<nonce> in the docs and continue."},
+            {"to": "a123450f1e2d3c4b5", "message": "Use APPROVE:<nonce> in the docs and continue."},
         )
 
         assert result is None
@@ -106,7 +106,7 @@ class TestHandleSendMessageApproval:
     def test_resume_without_approval_token_allows_and_marks_false(self, saved_states):
         result = pre_tool_use._handle_send_message(
             "SendMessage",
-            {"to": "a12345", "message": "Continue with the investigation."},
+            {"to": "a123450f1e2d3c4b5", "message": "Continue with the investigation."},
         )
 
         assert result is None
@@ -126,7 +126,7 @@ class TestHandleSendMessageApproval:
     def test_empty_message_blocked(self, saved_states):
         result = pre_tool_use._handle_send_message(
             "SendMessage",
-            {"to": "a12345", "message": ""},
+            {"to": "a123450f1e2d3c4b5", "message": ""},
         )
 
         assert isinstance(result, str)

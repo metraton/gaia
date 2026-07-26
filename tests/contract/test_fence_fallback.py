@@ -49,7 +49,7 @@ def _valid_complete_body() -> str:
     return """{
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "a1b2c3",
+    "agent_id": "a1b2c30f1e2d3c4b5",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -70,7 +70,7 @@ def _valid_complete_body() -> str:
 #    extracts cleanly; only the downstream validate() call rejects it.
 # ---------------------------------------------------------------------------
 def test_parse_contract_extracts_even_a_shape_invalid_envelope():
-    body = _valid_complete_body().replace('"agent_id": "a1b2c3"', '"agent_id": "not-a-valid-id"')
+    body = _valid_complete_body().replace('"agent_id": "a1b2c30f1e2d3c4b5"', '"agent_id": "not-a-valid-id"')
     output = _fence(body)
 
     parsed = parse_contract(output)
@@ -145,7 +145,7 @@ def test_legacy_validate_verdict_is_entirely_driven_by_the_core(monkeypatch):
 @pytest.mark.parametrize(
     "mutate,expected_code",
     [
-        (lambda b: b.replace('"agent_id": "a1b2c3"', '"agent_id": "nope"'), FormErrorCode.AGENT_ID_FORMAT),
+        (lambda b: b.replace('"agent_id": "a1b2c30f1e2d3c4b5"', '"agent_id": "nope"'), FormErrorCode.AGENT_ID_FORMAT),
         (lambda b: b.replace('"agent_state": "COMPLETE"', '"agent_state": "BOGUS"'), FormErrorCode.PLAN_STATUS),
         (lambda b: b.replace('"result": "pass"', '"result": "fail"'), FormErrorCode.VERIFICATION_RESULT),
         (lambda b: b.replace('"files_checked": [], "commands_run": [],', '"files_checked": [],'), FormErrorCode.MISSING_FIELD),
@@ -182,7 +182,7 @@ def test_fence_path_positive_agrees_with_core():
 # independently maintained copy of the same text.
 # ---------------------------------------------------------------------------
 def test_fence_path_repair_message_reuses_canonical_repair_message():
-    body = _valid_complete_body().replace('"agent_id": "a1b2c3"', '"agent_id": "nope"')
+    body = _valid_complete_body().replace('"agent_id": "a1b2c30f1e2d3c4b5"', '"agent_id": "nope"')
     output = _fence(body)
 
     result = validate(output, {})
@@ -197,7 +197,7 @@ def test_fence_path_repair_message_reuses_canonical_repair_message():
 # not relaxed or re-implemented for it.
 # ---------------------------------------------------------------------------
 def test_json_fence_fallback_also_routes_through_the_core():
-    body = _valid_complete_body().replace('"agent_id": "a1b2c3"', '"agent_id": "nope"')
+    body = _valid_complete_body().replace('"agent_id": "a1b2c30f1e2d3c4b5"', '"agent_id": "nope"')
     output = _fence(body, tag="json")
 
     result = validate(output, {})

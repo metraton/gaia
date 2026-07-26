@@ -728,7 +728,7 @@ class TestBuildTaskInfoFromHookData:
 
     def test_exit_code_from_agent_output(self):
         mod = _import_subagent_stop()
-        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a789"}
-        output = 'Checking...\n```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a789"}}\n```\nCannot reach cluster'
+        hook_data = {"agent_type": "cloud-troubleshooter", "agent_id": "a7890f1e2d3c4b5a6"}
+        output = 'Checking...\n```agent_contract_handoff\n{"agent_status": {"agent_state": "BLOCKED", "agent_id": "a7890f1e2d3c4b5a6"}}\n```\nCannot reach cluster'
         task_info = mod._build_task_info_from_hook_data(hook_data, output)
         assert task_info["exit_code"] == 1

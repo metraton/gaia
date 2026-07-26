@@ -85,7 +85,7 @@ def _make_complete_output(
 {{
   "agent_status": {{
     "{status_field}": "COMPLETE",
-    "agent_id": "a1b2c3d4e5",
+    "agent_id": "a1b2c3d4e50f1e2d3",
     "pending_steps": [],
     "next_action": "done"
   }},
@@ -126,7 +126,7 @@ def _make_approval_request_output(
 {{
   "agent_status": {{
     "agent_state": "APPROVAL_REQUEST",
-    "agent_id": "a1b2c3d4e5",
+    "agent_id": "a1b2c3d4e50f1e2d3",
     "pending_steps": ["apply"],
     "next_action": "wait for approval"
   }},
@@ -183,7 +183,7 @@ class TestBlockingPromotions:
 {
   "agent_status": {
     "agent_state": "IN_PROGRESS",
-    "agent_id": "a1b2c3d4e5",
+    "agent_id": "a1b2c3d4e50f1e2d3",
     "pending_steps": ["s"],
     "next_action": "continue"
   },
@@ -289,7 +289,7 @@ class TestJsonFenceFallback:
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "a1b2c3d4e5",
+    "agent_id": "a1b2c3d4e50f1e2d3",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -367,7 +367,7 @@ def _contract_with_verbatim_code_fence() -> dict:
     return {
         "agent_status": {
             "agent_state": "COMPLETE",
-            "agent_id": "a1b2c3d4e5",
+            "agent_id": "a1b2c3d4e50f1e2d3",
             "pending_steps": [],
             "next_action": "done",
         },
@@ -441,7 +441,7 @@ class TestTripleBacktickBodyNotTruncated:
         fail to parse -- tolerating inline fences must not mean accepting an
         unterminated block."""
         contract = {
-            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d4e5"},
+            "agent_status": {"agent_state": "COMPLETE", "agent_id": "a1b2c3d4e50f1e2d3"},
             "evidence_report": {"patterns_checked": []},
         }
         output = f"```agent_contract_handoff\n{json.dumps(contract)}\n"  # no closing fence
@@ -690,7 +690,7 @@ class TestLoopStateBlockingCheck:
 {{
   "agent_status": {{
     "agent_state": "COMPLETE",
-    "agent_id": "a1b2c3d4e5",
+    "agent_id": "a1b2c3d4e50f1e2d3",
     "pending_steps": [],
     "next_action": "done"
   }},

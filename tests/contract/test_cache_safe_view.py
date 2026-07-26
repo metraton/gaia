@@ -49,7 +49,7 @@ from gaia.contract.view import (  # noqa: E402
     split_resume_hint,
 )
 
-DRAFT_ID = "a1b2c3d4e.deadbeefcafe"
+DRAFT_ID = "a1b2c3d4e0f1e2d3c.deadbeefcafe"
 IDENTITY_FILE = _REPO_ROOT / "agents" / "gaia-system.md"
 
 
@@ -59,7 +59,7 @@ def _envelope(agent_state="IN_PROGRESS", next_action="starting", n_pending=0, bu
     return {
         "agent_status": {
             "agent_state": agent_state,
-            "agent_id": "a1b2c3d4e",
+            "agent_id": "a1b2c3d4e0f1e2d3c",
             "pending_steps": [f"step-{i}" for i in range(n_pending)],
             "next_action": next_action,
         },
@@ -204,7 +204,7 @@ def test_hook_injection_path_uses_the_same_renderer(tmp_path, monkeypatch):
     clear_path_cache()
     monkeypatch.setattr(ClaudeCodeAdapter, "RESUME_MAP_CACHE_DIR", tmp_path / "resume_map")
 
-    agent_id = "a1b2c3d4e"
+    agent_id = "a1b2c3d4e0f1e2d3c"
     draft_id = f"{agent_id}.cafefeed0001"
     env = _envelope(agent_state="IN_PROGRESS", next_action="mid-flight", n_pending=2, bulk=50)
     save_draft(draft_id, env)

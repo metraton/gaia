@@ -23,7 +23,7 @@ def _valid_envelope() -> dict:
     return {
         "agent_status": {
             "agent_state": "IN_PROGRESS",
-            "agent_id": "a1b2c3",
+            "agent_id": "a1b2c30f1e2d3c4b5",
             "pending_steps": [],
             "next_action": "continue",
         },

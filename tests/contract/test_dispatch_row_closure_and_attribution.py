@@ -48,11 +48,12 @@ from gaia.store.writer import (
     insert_dispatched_handoff,
 )
 from modules.agents.handoff_persister import persist_handoff
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 WORKSPACE = "me"
 
 # The two identity spaces, kept deliberately distinct in every fixture below.
-MINTED_AGENT_ID = "a1234abcd"      # what the agent mints for its own draft
+MINTED_AGENT_ID = valid_agent_id("a1234abcd")      # what the agent mints for its own draft
 DISPATCH_AGENT_NAME = "developer"  # what the DISPATCH stamps on the born row
 
 PLAN_ID = 34

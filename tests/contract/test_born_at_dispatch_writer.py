@@ -36,9 +36,10 @@ from gaia.store.writer import (
     finalize_agent_contract_handoff,
     insert_dispatched_handoff,
 )
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 WORKSPACE = "me"
-AGENT_ID = "a1234abcd"
+AGENT_ID = valid_agent_id("a1234abcd")
 
 # Mirror the real plan/task ids from the brief (plan 34 / task 42).
 PLAN_ID = 34

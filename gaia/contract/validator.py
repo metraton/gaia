@@ -28,7 +28,8 @@ The named codes (AC-1; VERIFICATION_SHAPE added additively in R3 per a
 plan-level decision -- brief contract-type-conditional-validation-harness-r3;
 APPROVAL_REQUEST_SHAPE and COMPLETE_SHAPE added additively in R4, closing the
 two pure-shape cross-field conditionals the form layer previously missed):
-    AGENT_ID_FORMAT     -- agent_id is present but does not match ^a[0-9a-f]{5,}$
+    AGENT_ID_FORMAT     -- agent_id is present but does not match
+                           ``AGENT_ID_PATTERN_TEXT`` (^a[0-9a-f]{16,}$)
     PLAN_STATUS         -- agent_state is present but outside the canonical enum
                            (the error CODE keeps the name PLAN_STATUS -- a stable
                            public-surface identifier -- while the FIELD it guards
@@ -169,9 +170,29 @@ ENVELOPE_VERIFICATION_TYPES: Tuple[str, ...] = (
 # EVIDENCE_REQUIRED_PLAN_STATUSES in response_contract.py.
 _EVIDENCE_REQUIRING_STATUSES = frozenset(VALID_PLAN_STATUSES)
 
-# Canonical agent_id shape (revives the previously-dead regex from
-# response_contract._AGENT_ID_PATTERN and the brief spec).
-_AGENT_ID_PATTERN = re.compile(r"^a[0-9a-f]{5,}$")
+# Canonical agent_id shape -- the SINGLE source of truth for every executable
+# copy of this rule. ``hooks.modules.agents.response_contract`` re-exports it
+# (with a stdlib fallback for a bare subprocess), and the two SendMessage
+# validators import it from there rather than re-spelling the literal: four
+# independent copies of this regex are exactly what let the floor drift.
+#
+# The 16-hex floor is measured, not conventional. Cross-session handle
+# collisions fall off a cliff with length, because a biased model only
+# collides where it can compress the digits it has to invent:
+#   6 hex  -> 27 of 82 handles collided   (32.9%)
+#   7 hex  -> 12 of 103 handles collided  (11.7%)
+#   17 hex -> 0 of 2658 handles collided  ( 0.0%)
+# 16 is the smallest floor comfortably inside the zero-collision regime and is
+# exactly ``secrets.token_hex(8)``, which is what ``gaia contract init`` mints
+# when no --agent-id is supplied.
+#
+# Raising the floor is deliberately NOT retroactive: this pattern gates what an
+# agent may MINT for a new turn. Historical rows and drafts keyed by a shorter
+# handle are read back by exact string, never re-validated against this regex,
+# so no grandfathering window is required for them.
+AGENT_ID_MIN_HEX = 16
+AGENT_ID_PATTERN_TEXT = r"^a[0-9a-f]{%d,}$" % AGENT_ID_MIN_HEX
+_AGENT_ID_PATTERN = re.compile(AGENT_ID_PATTERN_TEXT)
 
 # Required evidence_report keys (canonical lower-case JSON form). Upper-case
 # variants are also accepted for backward compatibility, matching both existing
@@ -307,7 +328,7 @@ CANONICAL_REPAIR_MESSAGE = (
     "{\n"
     '  "agent_status": {\n'
     '    "agent_state": "<IN_PROGRESS|APPROVAL_REQUEST|COMPLETE|BLOCKED|NEEDS_INPUT|NEEDS_VERIFICATION>",\n'
-    '    "agent_id": "<a + 5+ hex chars, e.g. a1b2c3>",\n'
+    '    "agent_id": "<the id `gaia contract init` printed for THIS turn>",\n'
     '    "pending_steps": [],\n'
     '    "next_action": "<done or the next concrete step>"\n'
     "  },\n"
@@ -327,7 +348,9 @@ CANONICAL_REPAIR_MESSAGE = (
     "```\n"
     "\n"
     "Required: agent_status (agent_state in the enum above; agent_id matching "
-    "^a[0-9a-f]{5,}$; pending_steps; next_action) and evidence_report with keys "
+    + AGENT_ID_PATTERN_TEXT + " -- run `gaia contract init` with no --agent-id "
+    "and reuse the id it prints, do not invent one; pending_steps; next_action) "
+    "and evidence_report with keys "
     "patterns_checked, files_checked, commands_run, key_outputs, "
     "verbatim_outputs, cross_layer_impacts, open_gaps. "
     "When agent_state is COMPLETE, evidence_report.verification.result must be "
@@ -524,7 +547,9 @@ def validate_form(envelope: Any) -> FormValidationResult:
                     code=FormErrorCode.AGENT_ID_FORMAT,
                     field="agent_status.agent_id",
                     detail=(
-                        f"{raw_agent_id!r} does not match ^a[0-9a-f]{{5,}}$"
+                        f"{raw_agent_id!r} does not match "
+                        f"{AGENT_ID_PATTERN_TEXT} -- run `gaia contract init` "
+                        f"with no --agent-id and reuse the id it prints"
                     ),
                 )
             )

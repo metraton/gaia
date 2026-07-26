@@ -5,8 +5,10 @@ Two INDEPENDENT checks, run as real subprocesses against
 ``bin/cli/contract.py`` (its standalone shim, not ``bin/gaia`` -- per the T4
 hard constraint, this avoids the ``gaia dev`` / DB-bootstrap path entirely):
 
-    1. "gaia contract init --agent-id a1234abcd" -> exit 0
-       (a genuinely SHAPE-VALID envelope is produced and persisted).
+    1. "gaia contract init --agent-id <conforming handle>" -> exit 0
+       (a genuinely SHAPE-VALID envelope is produced and persisted). The handle
+       is minted by ``tests.fixtures.agent_ids`` so it satisfies whatever
+       ``AGENT_ID_MIN_HEX`` currently is; a hand-written short one is rejected.
     2. "gaia contract set agent_status.agent_state BOGUS" -> exit != 0,
        and the rejection carries the enum text (not a crash).
 
@@ -24,10 +26,11 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 CONTRACT_CLI = Path(__file__).resolve().parents[2] / "bin" / "cli" / "contract.py"
 
-VALID_AGENT_ID = "a1234abcd"
+VALID_AGENT_ID = valid_agent_id("a1234abcd")
 
 
 def _run(args: list, env: dict) -> subprocess.CompletedProcess:

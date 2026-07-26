@@ -1514,7 +1514,8 @@ class ClaudeCodeAdapter(HookAdapter):
         the adapter learns, with certainty, which agent_id a CC session is
         resuming (SendMessage's own ``to`` parameter). ``agent_id`` is the
         SAME identifier space ``gaia.contract.drafts`` keys a draft by (see
-        the ``^a[0-9a-f]{5,}$`` format shared with AC-1's form validator),
+        the ``gaia.contract.validator.AGENT_ID_PATTERN_TEXT`` format shared
+        with AC-1's form validator),
         so recording session_id -> agent_id here is enough for
         ``adapt_subagent_start``'s resume path to recover the resumed
         agent's own in-progress draft -- SubagentStart's payload carries
@@ -1523,19 +1524,23 @@ class ClaudeCodeAdapter(HookAdapter):
         gaia.contract.*, reads SendMessage's ``to`` field or a session_id.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
+        # The agent_id shape is owned by gaia.contract.validator and re-exported
+        # by response_contract; never re-spell the literal here.
+        from modules.agents.response_contract import _AGENT_ID_PATTERN
 
         agent_id = parameters.get("to", "")
         message = parameters.get("message", "")
 
         # Validate agentId format
-        if not agent_id or not re.match(r'^a[0-9a-f]{5,}$', agent_id):
+        if not agent_id or not _AGENT_ID_PATTERN.match(agent_id):
             logger.warning("BLOCKED SendMessage: Invalid agentId format '%s'", agent_id)
             msg = (
                 f"[ERROR] Invalid agent ID format: '{agent_id}'\n\n"
-                "Agent ID should be 'a' followed by hex characters.\n"
-                "Example: a12345f or a51a0cbbf6afb831d\n\n"
+                "Agent ID must be 'a' followed by 16 or more hex characters.\n"
                 "The agent ID is returned at the end of agent responses.\n"
-                "Look for: 'agentId: a...' in the previous agent output."
+                "Look for: 'agentId: a...' in the previous agent output -- copy "
+                "it verbatim; a shortened or invented value will not address "
+                "the running agent."
             )
             return HookResponse(output=msg, exit_code=2)
 
@@ -1545,7 +1550,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 "[ERROR] SendMessage requires a message\n\n"
                 "When resuming an agent, you must provide a message:\n\n"
                 "SendMessage(\n"
-                "    to=\"a12345\",\n"
+                "    to=\"<the agentId from that agent's output>\",\n"
                 "    message=\"Continue with the latest user instruction.\"\n"
                 ")\n\n"
                 "The message tells the agent what to do next."

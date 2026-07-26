@@ -119,13 +119,14 @@ _VALID_TASK_STATUSES = frozenset(
 
 
 def resolve_minted_agent_id(parsed_contract, task_info: dict):
-    """Best available minted agent id (``^a[0-9a-f]{5,}$``) used to key drafts.
+    """Best available minted agent id (``gaia.contract.validator.
+    AGENT_ID_PATTERN_TEXT``) used to key drafts.
 
     Prefers the authoritative ``agent_status.agent_id`` from the parsed
     envelope (the exact value the CLI minted the draft with), falling back to
     ``task_info['agent_id']`` -- which on SubagentStop is the Claude-Code
     hook's ``agent_id``, the SAME identifier space drafts are keyed by (the
-    ``^a[0-9a-f]{5,}$`` format, see ``_adapt_send_message``). This is why the
+    ``AGENT_ID_PATTERN_TEXT`` format, see ``_adapt_send_message``). This is why the
     fallback still locates the right draft when the fence is MISSING (no
     parsed envelope) -- the exact case the M4 reconstruction path relies on.
     Returns None when nothing usable is present.

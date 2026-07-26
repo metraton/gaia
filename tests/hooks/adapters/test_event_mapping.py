@@ -200,7 +200,7 @@ class TestAdapterHandlesP0Events:
             "hook_event_name": "SubagentStop",
             "session_id": "test-003",
             "agent_type": "cloud-troubleshooter",
-            "agent_id": "a123456",
+            "agent_id": "a1234560f1e2d3c4b",
             "agent_transcript_path": "/tmp/transcript.jsonl",
             "last_assistant_message": "Done.",
         })

@@ -48,8 +48,9 @@ from gaia.store.writer import (
     finalize_agent_contract_handoff,
 )
 from modules.agents.handoff_persister import persist_handoff
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
-VALID_AGENT_ID = "a1234abcd"
+VALID_AGENT_ID = valid_agent_id("a1234abcd")
 WORKSPACE = "me"
 
 

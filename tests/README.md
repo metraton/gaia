@@ -67,10 +67,12 @@ tests/
 ├── ci/                              # CI-only smoke (e.g. windows_smoke.py)
 ├── performance/                     # Performance benchmarks
 ├── system/                          # Layer 1: structure, permissions, agents, configuration, schema
-├── tools/                           # Layer 1: context_provider, episodic tests
+├── tools/                           # Layer 1: context_provider, episodic tests +
+│                                    #   route_agent_id_constants.py (codemod, not collected)
 ├── cli/                             # CLI subcommand tests
 ├── e2e/                             # E2E installation and lifecycle tests
-└── fixtures/                        # JSON fixtures (project-context AWS/GCP/full)
+└── fixtures/                        # JSON fixtures (project-context AWS/GCP/full) +
+                                     #   agent_ids.py (minted conforming agent_id handles)
 ```
 
 ## Convenciones
@@ -98,7 +100,9 @@ python3 -m pytest tests/ --cov=hooks --cov=tools --cov-report=term
 
 **Markers:** Layer 2 tests use `@pytest.mark.llm`, Layer 3 tests use `@pytest.mark.e2e`. The default pytest run ignores both — you must opt in with `-m` or by pointing pytest directly at the layer directory.
 
-**Fixtures:** Shared fixtures live in `conftest.py`. JSON test data (project-context variants) lives in `fixtures/`.
+**Fixtures:** Shared fixtures live in `conftest.py`. JSON test data (project-context variants) lives in `fixtures/`. Any test that needs a valid `agent_id` must mint it with `valid_agent_id()` from [`fixtures/agent_ids.py`](./fixtures/agent_ids.py) instead of hand-writing a literal — the helper reads `AGENT_ID_MIN_HEX` from the validator, so handles keep conforming when the floor is raised. Tests that assert REJECTION of a malformed handle keep their invalid literal inline: there, the bad value is the subject of the assertion.
+
+**Codemods:** [`tools/route_agent_id_constants.py`](./tools/route_agent_id_constants.py) is a rewriter, not a test — pytest does not collect it (the name does not match `test_*.py`). It rewrites a module-level `AGENT_ID = "a1234abcd"` constant into `valid_agent_id("a1234abcd")` and reports every short handle it left alone, so a raised floor can be applied across the suite without the residual being guessed. It lives here rather than in `scripts/` because its blast radius is the test tree only, mirroring `ci/windows_smoke.py` as a non-collected helper that lives beside what it operates on.
 
 **New tests:** Place in the directory matching the component under test (`hooks/modules/security/`, `tools/`, `system/`, etc.). If the test calls an LLM, it belongs in `layer2_llm_evaluation/`. If it spawns a Claude Code session, it belongs in `layer3_e2e/`.
 

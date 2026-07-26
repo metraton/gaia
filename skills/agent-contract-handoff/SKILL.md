@@ -35,7 +35,7 @@ A still-emitted fenced `agent_contract_handoff` block is a supported migration f
 |-------|--------|-----------------------|
 | `agent_status` | Required | always; container for the four status fields below; absent -> named code `MISSING_FIELD` (field `agent_status`) |
 | `agent_status.agent_state` | Required | always; enum (see state machine); absent -> `MISSING_FIELD`; present but out-of-enum -> named code `PLAN_STATUS` |
-| `agent_status.agent_id` | Required | always; must match `^a[0-9a-f]{5,}$`; absent -> `MISSING_FIELD`; present but malformed -> named code `AGENT_ID_FORMAT` -- so contract-repair can route back to you |
+| `agent_status.agent_id` | Required | always; must match `^a[0-9a-f]{16,}$` -- the value `gaia contract init` minted and printed for this turn, not one you invent; absent -> `MISSING_FIELD`; present but malformed or shorter than 16 hex -> named code `AGENT_ID_FORMAT` -- so contract-repair can route back to you |
 | `agent_status.pending_steps` | Required | presence-only check (`[]` is valid); missing -> `MISSING_FIELD` (field `agent_status.pending_steps`); on `COMPLETE`, a PRESENT but non-empty value -> named code `COMPLETE_SHAPE` (R4) |
 | `agent_status.next_action` | Required | must be present and non-empty; missing -> `MISSING_FIELD` (field `agent_status.next_action`); on `COMPLETE`, a PRESENT value other than exactly `"done"` -> named code `COMPLETE_SHAPE` (R4) |
 | `evidence_report` | Required | always present for every valid `agent_state`; see sub-field table |
@@ -55,7 +55,7 @@ Seven stable, named codes (`FormErrorCode` in `gaia/contract/validator.py`) are 
 
 | Code | Fires when |
 |------|------------|
-| `AGENT_ID_FORMAT` | `agent_status.agent_id` is present but does not match `^a[0-9a-f]{5,}$` |
+| `AGENT_ID_FORMAT` | `agent_status.agent_id` is present but does not match `^a[0-9a-f]{16,}$` (including a handle you invented that is shorter than 16 hex) |
 | `PLAN_STATUS` | `agent_status.agent_state` is present but outside the canonical enum |
 | `VERIFICATION_RESULT` | `agent_state` is `COMPLETE` and `evidence_report.verification.result` is missing or not `"pass"` |
 | `VERIFICATION_SHAPE` | `evidence_report.verification.type` declares a known type (SSOT: `gaia.state.VALID_VERIFICATION_TYPES`) but the field that type requires is missing/empty -- a by-TYPE SHAPE check, independent of `agent_state` and DISTINCT from `VERIFICATION_RESULT` (see the `verification` sub-field note below). Absent `type` == no check. |

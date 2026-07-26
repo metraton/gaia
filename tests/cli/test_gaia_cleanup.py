@@ -329,7 +329,7 @@ class TestContractDraftsRetention(unittest.TestCase):
         patcher, drafts = self._sandbox()
         try:
             os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
-            old = self._write_old(drafts, "a123456.old.json", days=30)
+            old = self._write_old(drafts, "a1234560f1e2d3c4b.old.json", days=30)
             # root is irrelevant here: the handler resolves data_dir() itself.
             actions = _apply_retention_policy(Path(tempfile.gettempdir()), dry_run=False)
             drafted = [a for a in actions if a["label"] == "Contract drafts"]
@@ -344,7 +344,7 @@ class TestContractDraftsRetention(unittest.TestCase):
         patcher, drafts = self._sandbox()
         try:
             os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
-            recent = self._write_old(drafts, "a123456.recent.json", days=1)
+            recent = self._write_old(drafts, "a1234560f1e2d3c4b.recent.json", days=1)
             actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=False)
             self.assertEqual(actions, [])
             self.assertTrue(recent.exists())
@@ -355,7 +355,7 @@ class TestContractDraftsRetention(unittest.TestCase):
         patcher, drafts = self._sandbox()
         try:
             os.environ.pop("GAIA_CONTRACT_DRAFTS_MAX_DAYS", None)
-            old = self._write_old(drafts, "a123456.old.json", days=30)
+            old = self._write_old(drafts, "a1234560f1e2d3c4b.old.json", days=30)
             actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=True)
             self.assertTrue(len(actions) >= 1)
             self.assertTrue(old.exists())  # not deleted in dry-run
@@ -367,7 +367,7 @@ class TestContractDraftsRetention(unittest.TestCase):
         try:
             with patch.dict(os.environ, {"GAIA_CONTRACT_DRAFTS_MAX_DAYS": "1"}, clear=False):
                 self.assertEqual(_contract_drafts_max_days(), 1)
-                old = self._write_old(drafts, "a123456.json", days=3)
+                old = self._write_old(drafts, "a1234560f1e2d3c4b.json", days=3)
                 actions = _prune_contract_drafts("*.json", "Contract drafts", dry_run=False)
                 self.assertTrue(len(actions) >= 1)
                 self.assertFalse(old.exists())

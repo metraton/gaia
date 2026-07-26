@@ -29,12 +29,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_CLI = _REPO_ROOT / "bin" / "cli" / "contract.py"
 
-VALID_AGENT_ID = "a1234abcd"
-OTHER_AGENT_ID = "a99ff00"
+VALID_AGENT_ID = valid_agent_id("a1234abcd")
+OTHER_AGENT_ID = valid_agent_id("a99ff00")
 
 # A distinctive sentinel we plant in CLAUDE_SESSION_ID; the minted contract id
 # must NEVER embed it (that would prove the CLI read the harness env var).

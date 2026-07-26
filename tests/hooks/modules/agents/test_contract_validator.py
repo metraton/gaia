@@ -31,7 +31,7 @@ class TestEvidenceRequiredFields:
         contract = {
             "agent_status": {
                 "agent_state": "COMPLETE",
-                "agent_id": "a1f2c3d4",
+                "agent_id": "a1f2c3d40f1e2d3c4",
                 "pending_steps": [],
                 "next_action": "done",
             },
@@ -57,7 +57,7 @@ class TestEvidenceRequiredFields:
         contract = {
             "agent_status": {
                 "agent_state": "COMPLETE",
-                "agent_id": "a1f2c3d4",
+                "agent_id": "a1f2c3d40f1e2d3c4",
                 "pending_steps": [],
                 "next_action": "done",
             },

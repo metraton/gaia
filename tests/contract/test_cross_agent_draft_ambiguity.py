@@ -38,12 +38,13 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_CLI = _REPO_ROOT / "bin" / "cli" / "contract.py"
 
-AGENT_A = "a1111aaaa"
-AGENT_B = "a2222bbbb"
+AGENT_A = valid_agent_id("a1111aaaa")
+AGENT_B = valid_agent_id("a2222bbbb")
 
 
 def _run(args: list, env: dict) -> subprocess.CompletedProcess:

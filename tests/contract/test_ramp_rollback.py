@@ -61,7 +61,7 @@ def _evidence():
 
 def _malformed_agent_id_envelope():
     """agent_status present, plan_status valid, but agent_id does not match
-    ^a[0-9a-f]{5,}$ -- the 3-case gate lets this through, the full-verdict gate
+    ^a[0-9a-f]{16,}$ -- the 3-case gate lets this through, the full-verdict gate
     rejects it (AGENT_ID_FORMAT)."""
     return {
         "agent_status": {
@@ -117,7 +117,7 @@ class TestRampToggleRestoresThreeCase:
 class TestRollbackPreservesDrafts:
     def test_draft_survives_on_off_toggle_untouched(self, isolated_data_dir):
         # A draft written before the toggle (as finalize/backstop would).
-        agent_id = "a1b2c3"
+        agent_id = "a1b2c30f1e2d3c4b5"
         draft_id = drafts_mod.mint_draft_id(agent_id)
         original = {
             "agent_status": {

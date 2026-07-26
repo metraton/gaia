@@ -61,7 +61,7 @@ def _minimal_envelope(agent_state: str = "COMPLETE") -> dict:
     return {
         "agent_status": {
             "agent_state": agent_state,
-            "agent_id": "a7e5123456",
+            "agent_id": "a7e51234560f1e2d3",
             "pending_steps": [],
             "next_action": "done",
         },
@@ -119,7 +119,7 @@ def test_hook_inserts_handoff_row(tmp_db):
     task_info = {
         "task_id": "T001",
         "agent": "test-agent",
-        "agent_id": "a7e5123456",
+        "agent_id": "a7e51234560f1e2d3",
         "workspace": "test-ws",
         "db_path": str(tmp_db),
     }
@@ -135,7 +135,7 @@ def test_hook_inserts_handoff_row(tmp_db):
 
     assert len(rows) >= 1, "Expected at least one handoff row"
     row = rows[0]
-    assert row["agent_id"] in ("a7e5123456", "test-agent", "unknown")
+    assert row["agent_id"] in ("a7e51234560f1e2d3", "test-agent", "unknown")
     assert row["workspace"] == "test-ws"
     assert row["agent_state"] in ("COMPLETE", "IN_PROGRESS", "APPROVAL_REQUEST", "BLOCKED", "NEEDS_INPUT")
     assert row["raw_handoff_json"]  # non-empty JSON blob
@@ -157,7 +157,7 @@ def test_hook_inserts_approval_row_when_approval_request_present(tmp_db):
         "INSERT OR IGNORE INTO approval_grants "
         "(approval_id, agent_id, session_id, command_set_json, status) "
         "VALUES (?, ?, ?, ?, ?)",
-        (approval_id, "a7e5123456", "sess-001",
+        (approval_id, "a7e51234560f1e2d3", "sess-001",
          json.dumps([{"command": "echo hello", "rationale": "test"}]),
          "CONSUMED"),
     )
@@ -175,7 +175,7 @@ def test_hook_inserts_approval_row_when_approval_request_present(tmp_db):
     task_info = {
         "task_id": "T002",
         "agent": "test-agent",
-        "agent_id": "a7e5123456",
+        "agent_id": "a7e51234560f1e2d3",
         "workspace": "test-ws",
         "db_path": str(tmp_db),
     }
@@ -221,7 +221,7 @@ def test_db_write_failure_does_not_crash_hook(tmp_db):
     task_info = {
         "task_id": "T003",
         "agent": "test-agent",
-        "agent_id": "a7e5123456",
+        "agent_id": "a7e51234560f1e2d3",
         "workspace": "test-ws",
         "db_path": str(tmp_db),
     }

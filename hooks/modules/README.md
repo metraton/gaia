@@ -134,7 +134,7 @@ This enforces the principle: "Orchestrator delegates, agents execute."
 
 ### SendMessage Validation (PreToolUse matcher)
 SendMessage is validated as a PreToolUse event (not a separate hook event):
-- Agent ID format check (must match `/^a[0-9a-f]{5,}$/`)
+- Agent ID format check (must match `/^a[0-9a-f]{16,}$/`, imported from `gaia.contract.validator.AGENT_ID_PATTERN_TEXT` via `agents/response_contract.py` -- never re-spelled inline)
 - Non-empty message required
 - Grant activation is handled by ElicitationResult hook (user approval via AskUserQuestion)
 
