@@ -240,6 +240,11 @@ earned. Build, then run the engine's own guardrail (the loop, the commands, and
 the invariant table are in `reference.md`), and never declare done on red. On top
 of that:
 
+- **The engine and the bundle move together.** `index.html`, `engine/engine.js`
+  and `data/data.generated.js` are one coupled trio: swapping the engine or
+  rewriting the YAML without re-running the build pairs a new engine with the old
+  bundle, which does not fail — it renders the stale deck silently (the coupling
+  is in `reference.md`, the serving-side cache-busting in `assets/README.md`).
 - **Every verdict declares its evidence class.** **Class A** — the guardrail
   suffices: the topology is intact and the change's intention is fully covered by
   existing invariants (a copy edit, a colour change, an `order` swap inside a

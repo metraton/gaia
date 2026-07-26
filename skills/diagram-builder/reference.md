@@ -447,6 +447,20 @@ Two notes on what did **not** move:
   **U** measures). So `half` belongs on `treatment`; there was no existing field
   for it to follow.
 
+### A migration touches THREE coupled files, not two
+
+`index.html`, `engine/engine.js` and `data/data.generated.js` are a **coupled
+contract** — they change together, always. `data.generated.js` is a COMMITTED
+build output (the `window.__DOC__` assignment that is the ONLY thing `engine.js`
+reads), so a migration planned as two steps — drop in the new engine, rewrite
+the fields — leaves a NEW engine paired with the bundle the OLD one generated.
+That does not fail: the browser renders the stale deck silently. `npm run build`
+is the third step, not a formality, and `check`'s CENSUS line (`data/*.yaml` vs
+`data/data.generated.js`) is what catches you when you skip it. The serving-side
+half of the same coupling — the `{{DIAGRAM_DECK_VERSION}}` cache-busting
+placeholder on both `<script>` tags and the no-cache safety net that stop a
+BROWSER from pairing them stale — is in `assets/README.md`.
+
 ## Engine gotchas
 
 Behaviors that bite if you author against intuition instead of the engine:

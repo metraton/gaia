@@ -41,15 +41,26 @@ assets/
 │                         the STRICT SCHEMA — unknown fields are a loud build
 │                         error (with a did-you-mean suggestion), never a no-op
 ├── tools/
-│   ├── validate-layout.cjs  the LAYOUT GUARDRAIL — renders every page at five
-│   │                        widths (5 reloads each) and asserts the FORM-SCOPED
-│   │                        invariant table (INTEGRITY D/R/T/C/O/F/S/B/H ·
-│   │                        DESIGN U/E/P/L/M/Y · advisory V · retired W) against
-│   │                        the real geometry; PASS/FAIL, exit≠0; PURE-READ
-│   │                        (build first); shots to a system temp dir
-│   └── verify.mjs        lighter render QA (root grid renders, no top-level cell
-│                         collisions, screenshots widths × themes)
-├── package.json          build / validate / verify scripts + js-yaml + playwright devDeps
+│   ├── check-layout.mjs     the MANDATORY gate (`npm run check`) — proves the grid
+│   │                        CLOSES arithmetically over the authored YAML; NO
+│   │                        browser, js-yaml only, exit≠0 on any [FAIL]
+│   ├── static-census.cjs    the browser-free authored-data reader BOTH gates
+│   │                        import — one parse path, so they cannot disagree
+│   ├── test-guards.mjs      the negative-test suite (`npm test`) — fabricates one
+│   │                        broken deck per case in a temp dir and asserts the
+│   │                        guard FAILS as claimed
+│   ├── validate-layout.cjs  OPTIONAL REINFORCEMENT (`npm run validate`) — renders
+│   │                        in Chromium at ONE width (3 reloads) and asserts only
+│   │                        what genuinely needs PIXELS; PURE-READ (build first);
+│   │                        shots to a system temp dir; SKIPS and exits 0 where
+│   │                        Playwright is absent
+│   ├── contrast-audit.cjs   WCAG 2.1 contrast audit of the swappable palettes
+│   │                        (`npm run contrast`), reading the tokens out of
+│   │                        index.html so a palette edit is audited by construction
+│   └── verify.mjs           lighter render QA (root grid renders, no top-level cell
+│                            collisions, screenshots widths × themes)
+├── package.json          the six scripts (build · check · test · validate ·
+│                         contrast · verify) + js-yaml + playwright devDeps
 └── data/                 ── the only part you edit ──
     ├── document.yaml     manifest: title/subtitle/version + which pages, in order
     ├── pages/overview.yaml   one starter page: two inline sections side by side
@@ -64,11 +75,18 @@ assets/
   `data/data.generated.js` means it renders with no tooling.
 - **Author:** edit the YAML under `data/`, then `npm install` once and
   `npm run build` to regenerate `data/data.generated.js` (the build also
-  enforces the strict field schema). Then `npm run validate` — the layout
-  guardrail; it is decoupled from build (pure-read: it asserts the EXISTING
-  generated data, so build first). `npm run verify` is the lighter headless QA.
-  All screenshots go to a **system temp dir** (`os.tmpdir()`, override with
-  `DIAGRAM_SHOTS_DIR`), not into the project — the repo stays clean.
+  enforces the strict field schema). Then **`npm run check` — the MANDATORY
+  static gate**: arithmetic over the authored YAML, no browser, nothing beyond
+  the `js-yaml` the build already needs. Never declare a layout change done
+  until it is green. `npm run validate` is OPTIONAL REINFORCEMENT: it renders in
+  Chromium and asserts only what genuinely needs pixels, is decoupled from build
+  (pure-read: it asserts the EXISTING generated data, so build first), and where
+  Playwright is absent it prints `SKIPPED (no browser)` and **exits 0** — so its
+  absence never blocks a deck. `npm test` runs the negative-test suite over the
+  guards themselves, `npm run contrast` audits the palettes against WCAG 2.1,
+  and `npm run verify` is the lighter headless QA. All screenshots go to a
+  **system temp dir** (`os.tmpdir()`, override with `DIAGRAM_SHOTS_DIR`), not
+  into the project — the repo stays clean.
 - **The dialect** (every field + the `status`/`variant` enums) is documented in
   the diagram-builder skill: `../GLOSSARY.md` and `../reference.md`.
 - **`document.yaml`'s optional `version`** renders in the header — bump it on a
