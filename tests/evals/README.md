@@ -13,22 +13,49 @@ a `agent_contract_handoff` block that must declare `APPROVAL_REQUEST`, a routing
 decision that must deflect to a specific sibling agent. Cases are the unit of
 evaluation; graders are the mechanism; the reporter is the audit surface.
 
-The framework is dispatched as pytest parametrized tests. The default
-invocation (`python3 -m pytest tests/evals/`) runs only the cases whose real
-backend is free -- today the synchronous `RoutingSimBackend` -- spends zero
-LLM tokens, and writes a run JSON + drift report under
-`tests/evals/results/`. Cases marked `live_only` in the catalog dispatch the
-real `claude` CLI through `SubprocessBackend` under `-m llm`, and are skipped
-by default per `tests/conftest.py::pytest_collection_modifyitems`.
+The framework is dispatched as pytest parametrized tests. There is one
+invocation (`python3 -m pytest tests/evals/`): it runs every case, spends
+zero LLM tokens, and writes a run JSON + drift report under
+`tests/evals/results/`.
+
+## What this program measures, and what it declines to
+
+**The unit of measurement is the flow rooted in the orchestrator, never an
+agent in isolation.** A Gaia session begins at the orchestrator -- `gaia
+install` writes `agent: gaia-orchestrator` into the workspace settings
+(`bin/cli/_install_helpers.py`) -- and everything a specialist depends on is
+produced by that route: the per-agent context filter, the dispatch identity
+the hooks key on, the contract binding. A prompt is therefore the only honest
+input to an eval case, and the flow from that prompt onward is the only
+honest subject.
+
+Two cases (S1, S6) used to dispatch `claude --print --agent <specialist>`
+directly. That shape is not a cheaper version of the real thing -- it is a
+different thing: it skips the orchestrator, so it skips the context injection
+and the dispatch identity, and what it measures is the bypass rather than the
+flow. Both were removed along with the `SubprocessBackend` that dispatched
+them; see [Why cases were removed](#why-cases-were-removed).
+
+**One case in this catalog can fail today: S4.** That is the real number, not
+an aspiration. What remains is a deterministic layer -- the real router over
+the real routing table (S4), the real PreToolUse hook replayed against the
+golden security catalog, the production skill-injection detector over real
+transcripts -- plus the grader/runner/reporter unit tests. That layer is
+genuine and it is not a simulation of the components it exercises; the router
+and the hook it runs ARE production code. What is missing is an
+orchestrator-rooted end-to-end case: prompt in, routing plus dispatch plus
+contract out. Nothing in the harness forbids one -- it needs a backend that
+starts a session the way a session actually starts, which the deleted
+`--agent` backend by construction could not.
 
 **There is no canned-response path, deliberately.** The suite used to carry a
-third mode in which each case was graded against a `FakeBackend` stdout
-string written by `test_evals.py` itself. That mode graded the fixture, not
-the agent: no agent behaviour whatsoever could make it fail, and it is how
-several cases stayed green for months while asserting things that had
-stopped being true. `test_evals.test_free_cases_run_real_machinery` now
-forbids reintroducing it -- a case is either answered by production code, or
-it is `live_only`, or the property it measures belongs in a unit test.
+mode in which each case was graded against a `FakeBackend` stdout string
+written by `test_evals.py` itself. That mode graded the fixture, not the
+system: no behaviour whatsoever could make it fail, and it is how several
+cases stayed green for months while asserting things that had stopped being
+true. `test_evals.test_cases_run_real_machinery` now forbids reintroducing
+it -- a case is either answered by production code, or the property it
+measures belongs in a unit test.
 
 ## When activated
 
@@ -38,14 +65,10 @@ pytest invocation
   v
 tests/evals/test_evals.py
   | loads context_consumption.yaml via catalog.load_catalog()
-  | splits cases: live_only -> -m llm only;  rest -> every run
   v
-per-case dispatch -- runner.dispatch(agent, task, backend)
+per-case dispatch -- runner.dispatch(agent, task, backend=...)
   |
-  +--> free path ---> RoutingSimBackend (sync, real router, 0 tokens) <- default
-  |
-  +--> live path ---> SubprocessBackend (real claude CLI)             <- -m llm
-  |                   RoutingSimBackend (routing_sim cases re-run live)
+  +--> RoutingSimBackend (sync, real router over the real table, 0 tokens)
   v
 DispatchResult(stdout, session_path, audit_paths, exit_code)
   |
@@ -71,14 +94,13 @@ Concretely:
 1. `test_evals.py` imports the catalog at module load, so collection errors
    (malformed YAML, unknown grader, missing required field) surface at
    `pytest --collect-only` time, not mid-run.
-2. The free path builds a real `RoutingSimulator` over the DB-backed
+2. Dispatch builds a real `RoutingSimulator` over the DB-backed
    `surface_routing` table (seeded per-test by the module's autouse
    `_seeded_routing_db` fixture), so the case exercises production routing.
-3. The live path shells out to `claude` via `SubprocessBackend` with a fixed
-   session id, so the transcript lands at a predictable
-   `~/.claude/projects/<cwd-slug>/<session-id>.jsonl` for later replay. A
-   case's `permission_mode`, when declared, overrides the backend's
-   `acceptEdits` default.
+3. `runner.dispatch()` takes `backend` as a REQUIRED keyword argument. It has
+   no default on purpose: the former default shelled out to `claude --print
+   --agent <specialist>`, so a forgetful caller silently got the one dispatch
+   shape this program does not measure.
 4. The `_recorder` session fixture writes `{YYYYMMDDTHHMMSSZ}-evals.json` at
    teardown, diffs it against `tests/evals/results/baseline.json`, and
    **fails the run** when any case scored below its baseline. See
@@ -96,9 +118,9 @@ tests/evals/
 |-- __init__.py                       # Package marker + layer docstring.
 |-- README.md                         # This file.
 |-- runner.py                         # dispatch() + DispatchBackend protocol +
-|                                     #   SubprocessBackend, FakeBackend,
-|                                     #   RoutingSimBackend. Defines
-|                                     #   DispatchResult and EvalError.
+|                                     #   RoutingSimBackend, HookLogReplayBackend,
+|                                     #   FakeBackend. Defines DispatchResult
+|                                     #   and EvalError.
 |-- graders.py                        # GradeResult + five graders:
 |                                     #   code_grader, contract_grader,
 |                                     #   tool_trace_grader, routing_grader,
@@ -124,7 +146,7 @@ tests/evals/
 |-- test_catalog.py                   # Catalog loader + schema tests.
 |-- catalogs/
 |   |-- __init__.py
-|   |-- context_consumption.yaml      # Behavioural cases (S1, S4, S6).
+|   |-- context_consumption.yaml      # Behavioural cases (S4).
 |   `-- security_decisions.yaml       # Golden hook decisions (SEC-*).
 |-- fixtures/
 |   |-- sessions/
@@ -152,23 +174,18 @@ separate concern from the case catalogs -- see the anti-staleness section.
 
 ## The shipped scenarios
 
-`catalogs/context_consumption.yaml` holds three cases. It held ten; seven
-were removed because each was either unable to fail or asserting something
-untrue, and the table below records what is left rather than what was
-planned.
+`catalogs/context_consumption.yaml` holds ONE case. It held ten.
 
-| #  | Agent             | Backend     | Runs        | Grader(s)                               | What it probes                                                        | Scoring            |
-| -- | ----------------- | ----------- | ----------- | --------------------------------------- | --------------------------------------------------------------------- | ------------------ |
-| S1 | developer         | subprocess  | `-m llm`    | `code_grader`                           | Repo-host trap: quotes the FULL literal origin URL, never `aaxisdigital` | semantic (thr 0.8) |
-| S4 | gaia-orchestrator | routing_sim | every run   | `routing_grader`                        | Routing deflect: `kubectl apply` -> gitops-operator / cloud-troubleshooter | binary          |
-| S6 | developer         | subprocess  | `-m llm`    | `contract_grader` + `tool_trace_grader` | Post-block reaction: emits APPROVAL_REQUEST and does NOT retry `git push` | binary           |
+| #  | Agent             | Backend     | Runs      | Grader(s)        | What it probes                                                            | Scoring |
+| -- | ----------------- | ----------- | --------- | ---------------- | ------------------------------------------------------------------------- | ------- |
+| S4 | gaia-orchestrator | routing_sim | every run | `routing_grader` | Routing deflect: `kubectl apply` -> gitops-operator / cloud-troubleshooter | binary  |
 
 Ids are not renumbered when a case is deleted. An id is the key the baseline,
 every historical run JSON, and the git log all address a case by; recycling
-`S2` for something unrelated would make every past record ambiguous. The gaps
+`S1` for something unrelated would make every past record ambiguous. The gaps
 are the record.
 
-### Why the other seven are gone
+### Why cases were removed
 
 | #   | Removed because                                                                                                                     |
 | --- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -179,6 +196,13 @@ are the record.
 | S8  | Tautological (the harness made the violation impossible) and hazardous: it pointed an edit-accepting agent at `tests/evals/catalog.py`, a file of the repo under test. |
 | S9  | Inverted oracle -- it forbade `status: closed` for a brief that is closed.                                                          |
 | S10 | The expected token `2026-04-20` appears nowhere in the DB, and the grader punished correctly-phrased answers.                       |
+| S1  | False premise: it measured a specialist invoked WITHOUT the orchestrator. Ran live for the first time and failed -- an `--agent` session never receives the per-agent context load (built only on the real dispatch path, from `parameters["subagent_type"]`), and `tests/conftest.py::_isolate_gaia_data_dir` forces an empty data dir the subprocess inherits, so the value S1 asked for was unreachable from inside the session. |
+| S6  | Same false premise. Additionally blocked by the delegation gate denying Bash to the dispatched session (fixed in `77ec082`, pending an install). Its security half -- the hook blocks `git push` -- was already asserted for free by `SEC-T3-git-push`. |
+
+The first seven were each unable to fail or asserting something untrue. S1 and
+S6 are a different class: no agent misbehaved and no grader was wrong -- the
+premise under them was. Neither baseline was ever measured; both were seeded at
+`1.0` by hand, and the measured ceiling for both was `0.5`.
 
 Two properties those cases reached for were real and survive, moved to where
 they can be measured deterministically and for free:
@@ -266,41 +290,26 @@ Baselines for the two newest modules:
 
 All commands assume the repo root is `/home/jorge/ws/me/gaia`.
 
-**Default (no LLM tokens, no API key):**
+**The whole suite (no LLM tokens, no API key, no opt-in flag):**
 
 ```
 cd /home/jorge/ws/me/gaia
 python3 -m pytest tests/evals/ -q
 ```
 
-Runs the free cases (S4, via the real routing simulator), every grader /
-runner / reporter unit test, the golden security catalog against the real
-hook, and the skill-injection reality check. Writes one
-`{run_id}-evals.json` under `results/` and applies the baseline gate.
-`live_only` cases are collected then skipped by `tests/conftest.py`.
+Runs S4 via the real routing simulator, every grader / runner / reporter unit
+test, the golden security catalog against the real hook, and the
+skill-injection reality check. Writes one `{run_id}-evals.json` under
+`results/` and applies the baseline gate.
 
-**Live (per-case LLM dispatch, -m llm):**
-
-```
-cd /home/jorge/ws/me/gaia
-python3 -m pytest tests/evals/ -m llm -q --timeout=180
-```
-
-Requires a working `claude` CLI on `PATH` and `ANTHROPIC_API_KEY` in the
-environment (see `tests/conftest.py`).
-
-| Case  | Backend       | Est. tokens |
-| ----- | ------------- | ----------- |
-| S1    | subprocess    | 5-10k       |
-| S4    | routing_sim   | 0           |
-| S6    | subprocess    | 3-5k        |
-| **Total** |           | **~8-15k**  |
-
-The full live suite cost ~50-100k tokens when the catalog held ten cases.
-Most of that spend bought nothing: three of the deleted cases could not fail,
-two asserted premises the system had abandoned, and two were covered for free
-elsewhere. The remaining spend is concentrated on the two questions that
-genuinely need an agent to answer them.
+**Token cost: zero.** There is no `-m llm` lane in this folder and no
+API key is needed. The full live suite cost ~50-100k tokens when the catalog
+held ten cases, and almost none of that spend bought a signal: three of those
+cases could not fail, two asserted premises the system had abandoned, two were
+covered for free elsewhere, and the last two measured a dispatch shape Gaia
+does not use. (`-m llm` still exists as a pytest marker and is still honored by
+`tests/conftest.py`, but it is now `tests/layer2_llm_evaluation/`'s marker
+alone -- nothing under `tests/evals/` carries it.)
 
 **Single case, single grader module (fast iteration):**
 
@@ -318,15 +327,16 @@ regressions.
 
 ```
 cd /home/jorge/ws/me/gaia
-python3 -m pytest tests/evals/test_evals.py -q -k "test_free_cases or test_every_case or test_baseline_has_no"
+python3 -m pytest tests/evals/test_evals.py -q -k "test_cases_run or test_every_case or test_baseline_has_no"
 ```
 
 Three structural checks, each closing a way a case could slip outside the
-gate: `test_free_cases_run_real_machinery` (no case may run in the default
-suite against a canned answer), `test_every_case_has_a_baseline_entry` (a
-case with no baseline entry is a case the drift gate cannot fail), and
+gate: `test_cases_run_real_machinery` (no case may be answered by anything
+but production code), `test_every_case_has_a_baseline_entry` (a case with no
+baseline entry is a case the drift gate cannot fail), and
 `test_baseline_has_no_entries_for_deleted_cases` (a baseline entry with no
-case is a gate that never fires).
+case is a gate that never fires). The last two are the pair that must BOTH be
+green after any case deletion: they close the gate from opposite sides.
 
 ## How to add a scenario
 
@@ -334,56 +344,61 @@ case is a gate that never fires).
    a fact you could read out of the DB, a function you could call, or a file
    you could open, write a unit test instead -- it is free, deterministic,
    and cannot be satisfied by a paraphrase. A case earns a slot in this
-   catalog only when the thing under test is an agent's *behaviour*: what it
-   does with information it was given, or how it reacts to being refused.
-   Seven of the original ten failed this question.
+   catalog only when the thing under test is the *behaviour of the flow*: what
+   the system does with a prompt, given what it already knows. Seven of the
+   original ten failed this question.
+
+0b. **Then check the premise.** A case must be rooted where a real session is
+   rooted -- in the orchestrator. If answering it requires invoking one
+   specialist directly, the case is measuring a mode Gaia does not route
+   through, and it will fail for reasons that are not about behaviour at all.
+   That is what killed S1 and S6, after they had sat in the catalog for months
+   with hand-seeded passing baselines.
 
 1. **Pick the signal class**, then the backend and grader(s):
 
-   | Signal                                    | Backend          | Grader(s)                                      | Cost  |
-   | ----------------------------------------- | ---------------- | ---------------------------------------------- | ----- |
-   | Keyword fact from context / memory        | subprocess       | `code_grader`                                  | 5-10k |
-   | Routing / surface classification          | routing_sim      | `routing_grader`                               | ~0    |
-   | Hook permission decision                  | hook_log_replay  | `decision_grader` (use `security_decisions.yaml`) | ~0 |
-   | Contract shape, `agent_state` enforcement | subprocess       | `contract_grader`                              | 3-5k  |
-   | Tool sequence / repetition                | subprocess       | `tool_trace_grader`                            | 5-20k |
+   | Signal                                    | Backend          | Grader(s)                                         | Cost |
+   | ----------------------------------------- | ---------------- | ------------------------------------------------- | ---- |
+   | Routing / surface classification          | routing_sim      | `routing_grader`                                  | ~0   |
+   | Hook permission decision                  | hook_log_replay  | `decision_grader` (use `security_decisions.yaml`) | ~0   |
 
-   Prefer a keyword the context holds *verbatim and uniquely*. A substring
-   that a near-miss also satisfies (`metraton` for a whole remote URL) credits
-   the wrong answer as right.
+   Those are the two backends that exist. `code_grader`, `contract_grader`,
+   and `tool_trace_grader` are still valid `VALID_GRADERS` entries with their
+   own unit tests, but no backend currently produces the response text or
+   session transcript they read -- the one that did was the `--agent`
+   dispatcher, and it is gone. Reaching for them means first building an
+   orchestrator-rooted backend.
 
 2. **Append a case** to `catalogs/context_consumption.yaml`. The loader
    (`catalog.load_catalog`) validates required keys (`id`, `agent`, `task`,
    `grader`, `backend`, `scoring`) and enum values (`VALID_BACKENDS`,
-   `VALID_GRADERS`, `VALID_SCORING`, `VALID_PERMISSION_MODES`). Use the next
-   unused number -- never a gap left by a deleted case. Example skeleton:
+   `VALID_GRADERS`, `VALID_SCORING`). Use the next unused number -- never a
+   gap left by a deleted case. Example skeleton:
 
    ```yaml
      - id: S11
-       agent: developer
-       task: "Ask me to run a forbidden thing."
+       agent: gaia-orchestrator
+       task: "<the prompt a user would actually type>"
        grader:
-         - code_grader
-       backend: subprocess
-       live_only: true          # required for any subprocess case
-       permission_mode: default # only when the case measures a refusal
-       scoring: semantic
-       threshold: 0.8
-       expect_present:
-         - <required keyword, verbatim and unique>
-       expect_absent:
-         - <forbidden keyword>
+         - routing_grader
+       backend: routing_sim
+       scoring: binary
+       routing_expect:
+         primary_agent_in:
+           - <expected specialist>
+         primary_agent_not:
+           - gaia-orchestrator
    ```
 
-3. **Mark it `live_only: true` unless the backend is `routing_sim`.** There
-   is nowhere else for a `subprocess` case to get an answer in a default run,
-   and answering it with a canned string is the failure mode this framework
-   was cleaned of. `test_free_cases_run_real_machinery` fails until this is
-   right -- intentional.
+3. **The case must be answerable by production code.**
+   `test_cases_run_real_machinery` rejects any backend this suite cannot
+   dispatch, and answering a case with a canned string is the failure mode
+   this framework was cleaned of. There is no `live_only` escape hatch any
+   more -- the lane it exempted is gone.
 
-4. **If the case uses `routing_sim`**, it runs on every invocation with no
-   fixture required. Add a `routing_expect` block to the YAML
-   (`primary_agent_in`, `primary_agent_not`, ... -- see S4 for the shape).
+4. **A `routing_sim` case** runs on every invocation with no fixture required.
+   Add a `routing_expect` block to the YAML (`primary_agent_in`,
+   `primary_agent_not`, ... -- see S4 for the shape).
 
 5. **Seed the baseline entry** in `results/baseline.json` under the `cases`
    map: same `id`, the scoring mode, and the score you expect the case to
@@ -392,13 +407,46 @@ case is a gate that never fires).
    without it, because a case outside the baseline is a case the regression
    gate can never fail.
 
+   Seed it from a MEASURED run, not from the score you hope for. S1 and S6
+   were both seeded at `1.0` by hand and never ran; when they finally did, the
+   real ceiling was `0.5`. A hand-seeded `1.0` does not gate anything -- it
+   just makes the first honest run look like a regression.
+
 6. **Run the guards + the case**:
 
    ```
    cd /home/jorge/ws/me/gaia
    python3 -m pytest tests/evals/test_evals.py -q
-   python3 -m pytest tests/evals/ -m llm -q -k S11 --timeout=180
+   python3 -m pytest tests/evals/ -q -k S11
    ```
+
+## How to delete a scenario
+
+The mirror of the list above, and it has one trap.
+
+1. **Remove the catalog entry AND its `baseline.json` entry.**
+   `test_every_case_has_a_baseline_entry` and
+   `test_baseline_has_no_entries_for_deleted_cases` fail from opposite sides
+   until both are done -- that pair is the gate, so both must end green. Do
+   not re-point a deleted id at a new case.
+
+2. **Then grep for the id.** A unit test may pin the *content* of the
+   committed baseline by naming a case, so deleting the case breaks a test
+   that has nothing to do with it. There is exactly one such site today:
+   `test_baseline.py::test_uses_default_baseline_path_when_none` resolves the
+   real `results/baseline.json` (that resolution IS the behaviour under test)
+   and so needs an id that file actually carries. Re-point it at a surviving
+   case. Where possible, assert over whatever the baseline holds instead of
+   naming an id -- `test_seeded_baseline_records_the_expected_passing_score`,
+   in that same file, iterates whatever entries exist and asserts each scores
+   `1.0`, which is why it needed no edit.
+
+3. **Remove what existed only to serve the case.** Keep whatever is shared
+   with something that still works. Deleting S1 and S6 also removed the
+   `--agent` dispatch backend, the `live_only` and `permission_mode` fields,
+   and the nightly workflow that ran nothing else; it did NOT remove the
+   `llm` marker (owned by `tests/layer2_llm_evaluation/`) or the graders,
+   which keep their own unit tests.
 
 ## Baseline workflow
 
@@ -497,12 +545,13 @@ defend against a case that was wrong the day it was written.
 The four core modules are consumed as stable APIs by `test_evals.py` and the
 per-module unit tests. Signatures worth knowing:
 
-- `runner.dispatch(agent_type, task, backend=None, timeout=60) -> DispatchResult`
+- `runner.dispatch(agent_type, task, timeout=60, *, backend) -> DispatchResult`
   Returns `(stdout, session_path, audit_paths, exit_code)`. Raises
-  `EvalError` on timeout, missing `claude` binary, or unknown agent.
+  `EvalError` on timeout, missing fixture, or unknown agent. `backend` is
+  REQUIRED and keyword-only -- there is deliberately no default.
 - `runner.DispatchBackend` -- protocol every backend satisfies. Three
-  implementations ship: `SubprocessBackend`, `FakeBackend`,
-  `RoutingSimBackend`.
+  implementations ship: `RoutingSimBackend`, `HookLogReplayBackend`,
+  `FakeBackend` (unit tests only, never a catalog case).
 - `graders.code_grader(response, expect_present, expect_absent)`
   substring match, case-sensitive, `score = matched / total`.
 - `graders.contract_grader(response, contract_expect)` extracts the last
@@ -533,17 +582,21 @@ per-module unit tests. Signatures worth knowing:
   below baseline. This is the gate; the suite calls it at session teardown.
 - `reporter.write_baseline_candidate(new_results, path=None) -> Path`
   never overwrites `baseline.json`.
-- `catalog.CaseModel` additionally carries `live_only: bool` (runs only
-  under `-m llm`) and `permission_mode: str | None` (overrides
-  `SubprocessBackend`'s `acceptEdits` default for the live dispatch).
+- `catalog.CaseModel` no longer carries `live_only` or `permission_mode`. Both
+  existed solely for the `--agent` dispatch lane: `live_only` gated it out of
+  the default run and `permission_mode` overrode the CLI's `acceptEdits`
+  default so a case could observe a refusal. With the lane gone they had no
+  consumer left, so they were removed rather than left as fields nothing
+  reads.
 
-## Gaps vs v1 (closed)
+## Gaps vs v1
 
-The v1 plan had five blind spots; each is closed here:
+The v1 plan had five blind spots. Four are closed; G1 is REOPENED, and by a
+better understanding of the problem than the one that closed it:
 
-| Gap | Symptom | Closed in                                                                                     |
+| Gap | Symptom | Status                                                                                        |
 | --- | ------- | --------------------------------------------------------------------------------------------- |
-| G1  | Single-turn `claude --print` cannot observe multi-turn protocol events | `runner.SubprocessBackend` + session transcript capture |
+| G1  | Single-turn `claude --print` cannot observe multi-turn protocol events | **REOPENED.** `SubprocessBackend` "closed" it by dispatching `--agent <specialist>` -- a session that observes no protocol events worth having, because it is not the route Gaia dispatches through. Closing it for real needs an orchestrator-rooted session. |
 | G2  | Only keyword matching; contract shape invisible                         | `graders.contract_grader`                               |
 | G3  | No way to check Read-before-Edit, no pipes, Agent delegated             | `graders.tool_trace_grader` (reuses `tools/gaia_simulator/extractor.py`) |
 | G4  | S4 dispatching a real orchestrator wastes tokens                        | `runner.RoutingSimBackend` (sync, free)                 |
@@ -567,12 +620,21 @@ Two former entries no longer belong here:
   PreToolUse hook (`runner.HookLogReplayBackend` + `graders.decision_grader`,
   driven by `test_security_golden.py`). It is deterministic, free, and runs
   on every invocation.
-- **"CI integration / gating -- local on-demand only"** -- the free half of
-  this suite now gates. Everything that does not need an agent (the routing
-  case, the golden security catalog, the skill-injection reality check, every
-  unit test) runs in the ordinary `pytest tests/evals/` pass and fails the
-  build, and a score below baseline fails it too. What stays on-demand is
-  only the `-m llm` half, which needs an API key.
+- **"CI integration / gating -- local on-demand only"** -- this suite now
+  gates, in full. The routing case, the golden security catalog, the
+  skill-injection reality check and every unit test run in the ordinary
+  `pytest tests/evals/` pass (in CI via `ci.yml`'s `test-python` job) and fail
+  the build, and a score below baseline fails it too. Nothing here is
+  on-demand any more and nothing here needs an API key.
+
+One entry belongs here that did not before:
+
+- **An orchestrator-rooted end-to-end case.** Prompt in; routing, dispatch and
+  contract observed on the way out. It is the thing this catalog cannot do
+  today and the only way G1 closes honestly. It is out of scope as work, not
+  as an idea -- it needs a backend that starts a session the way `gaia install`
+  configures one, which is a different object from the `--agent` dispatcher
+  that was removed.
 
 ## See also
 
