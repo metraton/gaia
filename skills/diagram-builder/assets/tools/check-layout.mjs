@@ -256,7 +256,7 @@ function discoverGrids(page) {
     const children = isRoot ? (node.sections || []) : (node.children || []);
     const slots = slotsOf(children);
     const compound = children.some(isSection);
-    const authored = isRoot ? node.columns : node.columns;
+    const authored = node.columns;
     const cols = effectiveCols(authored, slots, compound);
     const hasBand = slots.some(s => Math.max(1, Math.min(s.node.span || 1, cols)) >= cols);
     grids.push({
@@ -427,7 +427,6 @@ function checkPage(page) {
           w: widthAtTier(span, g.cols, tracks),
           h: rowspanOf(s.node),
           band: span >= g.cols,
-          rowspanned: rowspanOf(s.node) > 1,
         };
       });
       if (!items.length) continue;

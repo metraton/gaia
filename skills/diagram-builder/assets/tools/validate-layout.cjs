@@ -216,7 +216,7 @@ const SEP_ROW_H = 40;
 // flex row (G) and scrollbar robustness (R) at all — at the stacked tiers those
 // checks are either inapplicable or vacuous.
 const WIDTHS = { ultra: 2560 };
-const WIDE_TIERS = new Set(['huge', 'ultra']);   // >1440: side-by-side + centered; h-overflow tolerated
+const WIDE_TIERS = new Set(['ultra']);   // >1440: side-by-side + centered; h-overflow tolerated
 // Reloads per (page,width) for the determinism check. Lowered 5 -> 3: three
 // independent renders still catch a nondeterministic wrap/column flip (the failure
 // mode is a coin flip, not a rare tail), and the run is now one width instead of
@@ -228,7 +228,6 @@ const SB_GUARD = 17;     // widest classic vertical scrollbar to be robust again
 const MAX_FULL_H = 12000; // hard cap on the grown full-page viewport height (px)
 const FULL_MARGIN = 160;  // px slack below the last content row in the full-page capture
 const CELLW_TOL = 2;      // px spread allowed among a grid's equal fr cells (U)
-const FILL_TOL = 6;       // px a row's right/left edge may miss the grid edge (L)
 const MIN_LEGIBLE = 120;  // px — the readable floor for a leaf cell (M). Kept in
                           // sync with --cell-min-w in index.html. Below this a
                           // short title can only show ~1 char per line.
@@ -316,16 +315,9 @@ const INVARIANTS = [
   // the definition of a redundant check, and it was the entire reason this gate
   // needed a browser at more than one width.
   { id: 'F', name: '1-col endpoint at min', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.tier === 'min', superseded: 'TIER (npm run check)',
-    check: (m) => { const bad = m.leafGrids.filter(g => g.tracks !== 1); const oneCol = bad.length === 0 && m.maxRowCount === 1;
-      return { ok: oneCol, detail: bad.length ? `not-1-track: ${bad.map(g => `${g.zone}:auth${g.authored}->${g.tracks}`).join(', ')}`
-        : m.maxRowCount !== 1 ? `maxRowCount=${m.maxRowCount} (expected 1 — page not a single column)`
-        : `all ${m.leafGrids.length} leaf grids => 1 track; single vertical column (maxRowCount=1)` }; } },
+    when: (c) => c.tier === 'min', superseded: 'TIER (npm run check)' },
   { id: 'F', name: '2-col intermediate at medium', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.tier === 'medium', superseded: 'TIER (npm run check)',
-    check: (m) => { const bad = m.leafGrids.filter(g => g.authored >= 2 ? g.tracks !== 2 : g.tracks !== 1);
-      return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:auth${g.authored}->${g.tracks}`).join(', ')
-        : `all leaf grids: >=2col=>2 tracks, 1col=>1 (${m.leafGrids.length} grids)` }; } },
+    when: (c) => c.tier === 'medium', superseded: 'TIER (npm run check)' },
   { id: 'S', name: 'inline fit / band spans block (all tiers)', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: null,
     check: (m) => {
@@ -429,29 +421,20 @@ const INVARIANTS = [
   // measurement, quantifies: a gap makes the sum short by exactly its own area, and
   // the hole is named by coordinate rather than inferred from a right-edge delta.
   { id: 'L', name: 'cells fill width (no right gap)', cls: 'design', sev: 'dura', forms: GRIDDED,
-    when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run check)',
-    check: (m) => { const bad = m.leafGrids.filter(g => g.rowRightGapMax > FILL_TOL || g.leftGapMax > FILL_TOL);
-      return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:gap(right ${g.rowRightGapMax}px,left ${g.leftGapMax}px)`).join(', ')
-        : `every leaf grid fills its width edge-to-edge (${m.leafGrids.length} grids)` }; } },
+    when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run check)' },
   // E — RETIRED into arithmetic. A dead track is a track no slot's (column, span)
   // ever covers, which is a set operation on the authored data, not a rendered
   // measurement (TRACK in check-layout.mjs). It also guards the same thing more
   // directly: the engine's grow-with-content clamp, which is arithmetic itself.
   { id: 'E', name: 'no empty grid column', cls: 'design', sev: 'dura', forms: GRIDDED,
-    when: () => true, superseded: 'TRACK (npm run check)',
-    check: (m) => { const bad = m.leafGrids.filter(g => g.emptyCols > 0);
-      return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:${g.tracks}tracks-${g.emptyCols}empty`).join(', ')
-        : `all ${m.leafGrids.length} leaf grids fill every declared track` }; } },
+    when: () => true, superseded: 'TRACK (npm run check)' },
   // P — RETIRED into arithmetic. "A lone cell on its own row while a sibling row
   // holds 2+" is a statement about the PLACEMENT, and the placement is derivable:
   // check-layout.mjs simulates CSS sparse auto-placement and counts the starts per
   // row (ROW), carrying over P's exact scope — grid-dense forms, >1 track, and rows
   // a rowspan touches exempt.
   { id: 'P', name: 'no orphan cell', cls: 'design', sev: 'dura', forms: GRID_DENSE,
-    when: (c) => c.w > 1000, superseded: 'ROW (npm run check)',
-    check: (m) => { const bad = m.leafGrids.filter(g => g.orphan);
-      return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:a lone cell sits alone while siblings are grouped (${g.tracks}-col grid)`).join(', ')
-        : 'every leaf grid groups its cells uniformly (no lone cell)' }; } },
+    when: (c) => c.w > 1000, superseded: 'ROW (npm run check)' },
   { id: 'M', name: 'cells legible (min readable width)', cls: 'design', sev: 'dura', forms: GRIDDED,
     when: () => true, superseded: null,
     check: (m) => {
@@ -506,13 +489,7 @@ const INVARIANTS = [
   // everything it does not name, a one-member chip blacks the deck out to spotlight
   // a single box.
   { id: 'K', name: 'filter referential integrity', cls: 'design', sev: 'dura', forms: ALL_FORMS,
-    when: () => true, superseded: 'CHIP (npm run check)',
-    check: (m) => { const f = m.filterRefs || { declared: [], referenced: [], orphanChips: [], danglingRefs: [] };
-      const problems = [
-        ...f.orphanChips.map(k => `chip "${k}" is declared but NO component references it (it would dim the whole canvas)`),
-        ...f.danglingRefs.map(k => `component filter key "${k}" is referenced but NO chip declares it (it can never light)`)];
-      return { ok: problems.length === 0, detail: problems.length ? problems.join(', ')
-        : `${f.declared.length} chip(s) and ${f.referenced.length} referenced key(s) match exactly${f.declared.length ? ` (${f.declared.join(', ')})` : ''}` }; } },
+    when: () => true, superseded: 'CHIP (npm run check)' },
   // Z — CENSUS: AUTHORED == RENDERED.
   // Every other invariant asserts something about geometry that IS on screen, so
   // none of them can see content that is MISSING: drop a page, a section or a
@@ -566,7 +543,7 @@ const INVARIANTS = [
   // is no longer a truth to hold. The row demonstrates the retirement clause:
   // `superseded` points at the invariant that took over its job.
   { id: 'W', name: 'fixed 232px cell width', cls: 'design', sev: 'dura', forms: ALL_FORMS,
-    when: () => true, superseded: 'U', check: () => ({ ok: true, detail: '' }) },
+    when: () => true, superseded: 'U' },
 ];
 
 // Evaluate the invariant table for one (form, tier) render. Returns the ordered
