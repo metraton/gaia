@@ -37,6 +37,13 @@ Persistence mirrors the existing PreToolUse -> SubagentStart bridges in
 project's own ``.claude/`` state directory, because this marker carries no
 audit value once the turn ends -- it exists only to suppress a repeat
 reminder within one subagent's lifetime.
+
+The caller (``ClaudeCodeAdapter._adapt_write_edit``) carries the text this
+module builds in ``hookSpecificOutput.additionalContext``, never in
+``permissionDecisionReason``: with ``permissionDecision: "allow"``, Claude
+Code documents the reason string as visible only in logs and the debug
+transcript, not to the model, so a reminder placed there never reaches the
+agent it is meant for.
 """
 
 import json
@@ -133,16 +140,27 @@ def cleanup_stale_markers(now: Optional[float] = None) -> None:
             entry.unlink(missing_ok=True)
 
 
-def build_reminder_reason(file_path: str, skill: str) -> str:
-    """Build the advisory ``permissionDecisionReason`` text for ``skill``.
+def build_reminder_context(file_path: str, skill: str) -> str:
+    """Build the advisory ``additionalContext`` text for ``skill``.
 
-    Deliberately phrased as a reminder, not an accusation: this fires before
+    Carried in ``additionalContext``, not ``permissionDecisionReason``: with
+    ``permissionDecision: "allow"``, Claude Code's own hook contract states
+    the reason string is surfaced only in logs and the debug transcript, never
+    to the model -- so a reminder placed there is inert by construction and
+    ``additionalContext`` is the documented channel for text Claude should
+    read (see ``code.claude.com/docs/en/hooks.md``, "PreToolUse decision
+    control").
+
+    Phrased as a factual observation, not an instruction: this fires before
     the agent's own skill choices for the turn are knowable from here (see
     module docstring), so it cannot claim the skill is missing -- only that
-    this artifact class is governed by it.
+    this artifact class is governed by it. The wording also avoids anything
+    shaped like an out-of-band system directive, which prompt-injection
+    defenses could otherwise flag and surface to the user instead of folding
+    quietly into context.
     """
     return (
-        f"[SKILL_REMINDER] '{file_path}' belongs to an artifact class "
-        f"governed by the '{skill}' skill. If it has not been loaded this "
-        f"turn, load it (Skill('{skill}')) before finishing this artifact."
+        f"[SKILL_REMINDER] '{file_path}' falls under an artifact class "
+        f"governed by the '{skill}' skill, describing the conventions that "
+        f"apply to it. That skill is loadable as Skill('{skill}')."
     )

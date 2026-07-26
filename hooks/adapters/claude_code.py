@@ -1598,14 +1598,21 @@ class ClaudeCodeAdapter(HookAdapter):
         nudge (see ``modules.agents.artifact_skill_reminder``): when the
         file's extension maps to a governing skill via ``artifact_skill_map``
         and that skill has not already been reminded this turn (keyed by
-        session_id + agent_id), the response carries an "allow" decision with
-        a ``permissionDecisionReason`` naming the skill. This never blocks --
-        it is the prevention half of the gap that ``skill_injection_verifier``
-        can only detect after the fact at SubagentStop. Restricted to
-        ``is_subagent=True`` (with a non-empty ``agent_id``): the orchestrator
-        delegates instead of writing code itself, so the foreground path is
-        unaffected and existing foreground callers keep the exact-passthrough
-        contract.
+        session_id + agent_id), the response carries an "allow" decision
+        whose ``additionalContext`` names the governing skill. It travels in
+        ``additionalContext``, not ``permissionDecisionReason`` -- with
+        ``permissionDecision: "allow"``, Claude Code's own hook contract
+        surfaces the reason only in logs and the debug transcript, never to
+        the model, so a reminder placed there would never reach the agent
+        (``code.claude.com/docs/en/hooks.md``, "PreToolUse decision
+        control"). A short ``permissionDecisionReason`` is still set for the
+        audit log, but it is not the channel the agent reads. This never
+        blocks -- it is the prevention half of the gap that
+        ``skill_injection_verifier`` can only detect after the fact at
+        SubagentStop. Restricted to ``is_subagent=True`` (with a non-empty
+        ``agent_id``): the orchestrator delegates instead of writing code
+        itself, so the foreground path is unaffected and existing foreground
+        callers keep the exact-passthrough contract.
         """
         from modules.security.approval_grants import (
             check_approval_grant_for_file,
@@ -1615,7 +1622,7 @@ class ClaudeCodeAdapter(HookAdapter):
         )
         from modules.agents.artifact_skill_map import expected_skill_for_path
         from modules.agents.artifact_skill_reminder import (
-            build_reminder_reason,
+            build_reminder_context,
             should_remind,
         )
 
@@ -1653,7 +1660,11 @@ class ClaudeCodeAdapter(HookAdapter):
                             "hookSpecificOutput": {
                                 "hookEventName": "PreToolUse",
                                 "permissionDecision": "allow",
-                                "permissionDecisionReason": build_reminder_reason(
+                                "permissionDecisionReason": (
+                                    f"artifact-skill reminder logged for "
+                                    f"'{expected_skill}'"
+                                ),
+                                "additionalContext": build_reminder_context(
                                     file_path, expected_skill,
                                 ),
                             }
