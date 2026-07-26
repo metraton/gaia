@@ -194,10 +194,12 @@ mapping is never stylistic — it is the meaning:
 
 ## The conversational cycle and the handoff to the builder
 
-The cycle is generic: whoever HOLDS the idea drives it, person or agent.
+The cycle is generic: whoever HOLDS the idea drives it, person or agent, and it
+opens by two doors — the same two kinds of input as above:
 
-**vague idea → develop → propose → sketch → iterate → build → validate → adjust
-by recalculating.**
+**open idea → develop · existing deck (the usual case) → read what it says and
+name the DELTA, its form already chosen** → **propose → sketch → iterate →
+build → validate → adjust by recalculating.**
 
 - **Propose; do not wait to be told.** From a vague idea — a suggestion or a
   direct mandate — naming the entities, how they group, and which form teaches
