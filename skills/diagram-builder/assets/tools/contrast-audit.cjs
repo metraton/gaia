@@ -140,6 +140,11 @@ function ratio(a, b) {
 //
 // Every pair below is a place the stylesheet really puts that foreground on that
 // background — see the cited selector. Nothing hypothetical is audited.
+//
+// The TOKEN names kept a vocabulary the CLASS names dropped: `--crit` paints
+// `.box.bad` / `.zone.bad`, `--olive` paints `.box.good` / `.zone.good`, and
+// `--strong` paints `.box.accent`. So a pair's `fg` names the token while its
+// `what` names the selector, and the two read differently on purpose.
 const PAIRS = [
   // primary reading load
   { id: 'body-on-bg',       what: 'body copy on the canvas',                          fg: '--body',  bg: ['--bg'],                  min: 4.5, kind: 'AA text',     load: 'primary' },
@@ -147,19 +152,19 @@ const PAIRS = [
   { id: 'muted-on-bg',      what: 'deck subtitle / chip label (.sub, .chip)',         fg: '--muted', bg: ['--bg'],                  min: 4.5, kind: 'AA text',     load: 'primary' },
   { id: 'ink-on-surface',   what: 'box title (.box .t)',                              fg: '--ink',   bg: ['--surface'],             min: 4.5, kind: 'AA text',     load: 'primary' },
   { id: 'muted-on-surface', what: 'box kicker + description (.box .k, .box .m)',      fg: '--muted', bg: ['--surface'],             min: 4.5, kind: 'AA text',     load: 'primary' },
-  { id: 'muted-on-surf2',   what: 'rail label / store box text (.rail-title, .store)',fg: '--muted', bg: ['--surface2'],            min: 4.5, kind: 'AA text',     load: 'primary' },
+  { id: 'muted-on-surf2',   what: 'rail label / muted box (.rail-title, .box.muted)', fg: '--muted', bg: ['--surface2'],            min: 4.5, kind: 'AA text',     load: 'primary' },
   { id: 'ztitle-on-zone',   what: 'section title on the zone fill (.ztitle)',         fg: '--muted', bg: ['--bg', '--zone'],        min: 4.5, kind: 'AA text',     load: 'primary' },
   { id: 'body-on-surface',  what: 'detail panel copy (.p-summary)',                   fg: '--body',  bg: ['--surface'],             min: 4.5, kind: 'AA text',     load: 'primary' },
 
   // accent text on its own tinted substrate (the kicker inside a coloured box)
-  { id: 'crit-kicker',   what: 'crit kicker on a crit box (.box.crit .k)',        fg: '--crit',   bg: ['--surface', '--crit-soft'],   min: 4.5, kind: 'AA text', load: 'accent' },
-  { id: 'warn-kicker',   what: 'warn kicker on a warn box (.box.warn .k)',        fg: '--warn',   bg: ['--surface', '--warn-soft'],   min: 4.5, kind: 'AA text', load: 'accent' },
-  { id: 'ok-kicker',     what: 'ok kicker on an ok box (.box.ok .k)',             fg: '--olive',  bg: ['--surface', '--olive-soft'],  min: 4.5, kind: 'AA text', load: 'accent' },
-  { id: 'strong-kicker', what: 'strong kicker on a strong box (.box.strong .k)',  fg: '--strong', bg: ['--surface', '--strong-soft'], min: 4.5, kind: 'AA text', load: 'accent' },
-  { id: 'danger-ztitle', what: 'danger zone title (.zone.danger .ztitle)',        fg: '--crit',   bg: ['--bg', '--crit-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
-  { id: 'safe-ztitle',   what: 'safe zone title (.zone.safe .ztitle)',            fg: '--olive',  bg: ['--bg', '--olive-soft'],       min: 4.5, kind: 'AA text', load: 'accent' },
-  { id: 'clay-kicker',   what: 'panel kicker / inline code (.p-kicker, code)',    fg: '--clay',   bg: ['--surface'],                  min: 4.5, kind: 'AA text', load: 'accent' },
-  { id: 'chip-on-text',  what: 'active chip label (.chip.on)',                    fg: '--ink',    bg: ['--bg', '--clay-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'bad-kicker',    what: 'bad kicker on a bad box (.box.bad .k)',              fg: '--crit',   bg: ['--surface', '--crit-soft'],   min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'warn-kicker',   what: 'warn kicker on a warn box (.box.warn .k)',           fg: '--warn',   bg: ['--surface', '--warn-soft'],   min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'good-kicker',   what: 'good kicker on a good box (.box.good .k)',           fg: '--olive',  bg: ['--surface', '--olive-soft'],  min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'accent-kicker', what: 'accent kicker on an accent box (.box.accent .k)',    fg: '--strong', bg: ['--surface', '--strong-soft'], min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'bad-ztitle',    what: 'bad section title (.zone.bad .ztitle)',              fg: '--crit',   bg: ['--bg', '--crit-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'good-ztitle',   what: 'good section title (.zone.good .ztitle)',            fg: '--olive',  bg: ['--bg', '--olive-soft'],       min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'clay-kicker',   what: 'panel kicker / inline code (.p-kicker, code)',       fg: '--clay',   bg: ['--surface'],                  min: 4.5, kind: 'AA text', load: 'accent' },
+  { id: 'chip-on-text',  what: 'active chip label (.chip.on)',                       fg: '--ink',    bg: ['--bg', '--clay-soft'],        min: 4.5, kind: 'AA text', load: 'accent' },
 
   // non-text: component boundaries must be discernible (WCAG 1.4.11)
   { id: 'line-on-bg',      what: 'box / control border against the canvas (--line)', fg: '--line',      bg: ['--bg'],      min: 3.0, kind: 'AA non-text', load: 'nontext' },

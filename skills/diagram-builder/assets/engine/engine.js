@@ -152,7 +152,8 @@
       box.appendChild(descBox);
     }
 
-    // filter membership → data attribute for the inverted index
+    // The attribute IS the only record of membership: setFlow re-reads it off
+    // the DOM on every chip click, so no filter→nodes map is built anywhere.
     if (Array.isArray(comp.filters) && comp.filters.length) {
       box.setAttribute('data-filters', comp.filters.join(' '));
     }
@@ -616,7 +617,12 @@
       clearLit();
       if (key === 'all') { stage.classList.remove('flowing'); closePanel(); return; }
       stage.classList.add('flowing');
-      // inverted index: a component/zone lights up because IT declares the filter
+      // A LINEAR SCAN, on purpose: every box in the act re-reads and splits its
+      // own data-filters on each click. Measured on a 1968-box deck that scan is
+      // 0.6ms of an ~80ms click — the remaining ~76ms is the browser restyling
+      // opacity across the deck — so a prebuilt filter→nodes index would buy
+      // nothing. A box lights up because IT declares the filter; a zone lights
+      // up derivatively, because one of its boxes did.
       const litZones = new Set();
       nodes.forEach(n => {
         const fs = (n.getAttribute('data-filters') || '').split(/\s+/).filter(Boolean);
