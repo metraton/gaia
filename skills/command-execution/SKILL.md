@@ -10,7 +10,7 @@ ONE COMMAND. ONE RESULT. ONE EXIT CODE.
 Reach for the native flag before the pipe; the file tool before the shell.
 ```
 
-The runtime hard-blocks pipes, redirects, and chaining for cloud CLIs (gcloud kubectl aws terraform helm flux) and blocks redirects and background `&` for every command — but the discipline applies to everything you run, not only what the hook catches.
+The runtime hard-blocks pipes, redirects, and chaining for cloud/infra CLIs (gcloud, kubectl, terraform, and others across the cloud/k8s/iac families -- the authoritative, current set is `NATIVE_OUTPUT_FLAG_CLIS` in `hooks/modules/security/mutative_verbs.py`, not reproduced here since a hand-copied enumeration is exactly what went stale before) and blocks redirects and background `&` for every command — but the discipline applies to everything you run, not only what the hook catches.
 
 ## Mental Model
 
