@@ -83,6 +83,8 @@ Triggering conditions only -- describing the process causes the agent to follow 
 
 Size is not the only criterion. The canonical contract/schema that IS the skill's purpose belongs in SKILL.md even when large; `reference.md` holds the *deep mechanics* (internals, walkthroughs, edge cases) that a reader needs only occasionally. Ask "is this the primary thing the skill exists to state?" before "is this big?".
 
+The deciding criterion is the READER. What someone holding the idea needs in order to reason with it belongs in SKILL.md; what only an implementer needs -- field-by-field schemas, build cycles, invariant tables -- belongs in `reference.md`. Serving both readers from one file is what makes a skill fail to teach: one that mixed them produced authors using 10% of its vocabulary, and splitting them cut it from 404 to 274 lines while an eval showed it taught more.
+
 Heavy reference material -> `reference.md` (on-demand). Concrete examples -> `examples.md`. Executable tools -> `scripts/`.
 
 ```
@@ -92,6 +94,14 @@ skill-name/
 ├── examples.md       <- concrete examples (on-demand)
 └── scripts/          <- executable tools
 ```
+
+## Step 6: Verify it teaches
+
+Every step above tests the writing; none tests whether a reader learns. Fix the rubric BEFORE seeing any answer -- written afterwards it only rationalizes what you got. Then hand a fresh agent a vague prompt in the real reader's voice, naming neither the skill nor any tool: if it finds the skill unprompted the trigger works, and if it reaches the result without being handed a tool, the skill taught. Where a previous version exists, measure against its readers -- the question is not "did it answer well?" but "does it beat the baseline?".
+
+The rubric must be able to fail in both directions, and both directions pay: one eval exposed a section no reader ever opened (fixed by branching the first read), and another falsified the author's own hypothesis -- a "missing mode" a fresh agent derived unaided, which would otherwise have shipped as an invented section.
+
+For a Domain skill describing a real system, add the coverage test: extract what the system actually does from the code, then check that each mechanic is a consequence of some stated principle. A mechanic no principle explains means a principle is missing, not a row -- that test took one skill from 7 principles to 9. See `reference.md` for how to build the prompt, the baseline, and the coverage extraction.
 
 ## When to create vs update
 
@@ -112,4 +122,5 @@ skill-name/
 - **Single responsibility violated** -- if a skill covers two distinct behaviors, split it.
 - **Opening by negation** -- defining the skill by what it is not ("this is NOT agent-protocol"). The reader must already hold the other concept to parse yours. State what it IS first; disambiguate after.
 - **Phantom / unanchored reference** -- naming a field, tag, or module that does not exist by that name in code, OR anchoring to line numbers that drift on every edit. Anchor to symbols (`activate_db_pending_by_prefix`), not line ranges (`approval_grants.py:1679-1955`) -- a symbol survives edits, a line number does not. For Reference skills especially, every named artifact must be verifiable -- cite the file and symbol. Verify before you assert.
+- **Single-case instruction presented as universal** -- an instruction written from one case reads as covering every case, so the reader of the other case obeys a wrong instruction correctly. One skill paid for this three times: "read `data/` first" (right when modifying, false when creating, where no `data/` exists yet), a cycle that started at "vague idea" with no door for the most frequent entry, and a crucial warning that lived in only one of its documents. If the process has more than one entry, the first instruction branches by case -- name the doors.
 - **Inflated prose** -- restates the heading or hedges without adding a decision the reader can act on. If removing the sentence does not change what the agent does, cut it.
