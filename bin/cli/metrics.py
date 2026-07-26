@@ -773,7 +773,7 @@ _ANOMALY_TYPE_GLOSSARY = {
     "empty_evidence": "an evidence sub-section (e.g. files_checked) came back empty",
     "skipped_verification": "declared COMPLETE without a verification record",
     "scope_escalation": "agent touched resources outside its declared scope",
-    "pipe_retroactive": "a pipe was detected in the executed command (post-hoc)",
+    "pipe_retroactive": "a cloud/infra CLI's output was piped to a shell utility (post-hoc)",
     "excessive_tool_calls": "tool-call count far above the normal range",
     "token_budget": "token usage approaching or exceeding the expected budget",
     "token_explosion": "unusually large token output for a single turn",

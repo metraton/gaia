@@ -26,10 +26,11 @@ Two constraints shape the design:
   "no."
 - **Noise is the real failure mode.** Reminding on every Write of every file
   in a governed class (e.g. every ``.py`` write in a hook module plus its
-  test) would be as invisible as the ``pipe_retroactive`` false-positive
-  flood. The reminder fires at most once per (session, agent, skill) triple
-  -- once per turn, per artifact CLASS, never per file -- by checking and
-  marking a small on-disk marker before returning the advisory.
+  test) would be as invisible as ``pipe_retroactive`` firing on every pipe
+  used to be, before it was narrowed to cloud/infra CLI pipes. The reminder
+  fires at most once per (session, agent, skill) triple -- once per turn,
+  per artifact CLASS, never per file -- by checking and marking a small
+  on-disk marker before returning the advisory.
 
 Persistence mirrors the existing PreToolUse -> SubagentStart bridges in
 ``hooks/adapters/claude_code.py`` (``_cache_context_for_subagent`` /
