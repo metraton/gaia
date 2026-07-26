@@ -1171,21 +1171,25 @@ class TestDetectMutativeEarlyBranches:
     # --- L1227: inline-code-CLI gate `in ... and ... & ...` (AndWithOr) ------
     def test_inline_cli_without_inline_flag_is_not_inline_analyzed(self):
         # `base_cmd in _INLINE_CODE_CLIS and cli_flags & set(flag_tokens)`.
-        # `python3 -m flask deploy`: python3 IS an inline CLI but the `-c`
-        # inline flag is ABSENT, so cli_flags ({-c}) & flag tokens is empty ->
-        # the guard is False and detection falls through to the verb scanner,
-        # which flags the mutative verb "deploy".  The AndWithOr mutant turns
-        # the guard into `in ... or (empty & ...)` = True, routing the whole
-        # string through _check_inline_code, which finds no dangerous pattern
-        # and returns READ_ONLY -- silently un-gating the mutative verb.
+        # `lua deploy`: lua IS an inline CLI but the `-e` inline flag is ABSENT,
+        # so cli_flags ({-e}) & flag tokens is empty -> the guard is False and
+        # detection falls through to the verb scanner, which flags the mutative
+        # verb "deploy".  The AndWithOr mutant turns the guard into
+        # `in ... or (empty & ...)` = True, routing the whole string through
+        # _check_inline_code, which finds no dangerous pattern and returns
+        # READ_ONLY -- silently un-gating the mutative verb.
         #
-        # NOTE: this used to use `python3 -m pip install requests`, but Brief 91
-        # AC-7 added a `-m <pkg-mgr>` re-dispatch (Step 1c-py) that intercepts
-        # pip/poetry/uv module invocations BEFORE the inline gate.  `flask` is
-        # not a package manager, so it still reaches the inline gate and keeps
-        # this mutant covered.  The dedicated re-dispatch path is pinned in
+        # NOTE: the vehicle has now been re-pointed twice, each time because a
+        # new lane began intercepting the previous one BEFORE the inline gate.
+        # It was `python3 -m pip install requests` until Brief 91 AC-7 added the
+        # `-m <pkg-mgr>` re-dispatch; it was then `python3 -m flask deploy` until
+        # that re-dispatch was widened to escalate ANY `-m <module>` whose
+        # rewrite is mutative, which now claims `flask deploy` too.  `lua` is an
+        # inline CLI that is NOT a script-file interpreter and takes no `-m`, so
+        # it reaches the inline gate directly.  The re-dispatch paths are pinned
+        # separately in TestCheckPythonModuleRunner and
         # test_mutative_verbs.py::TestPythonModulePipReDispatch.
-        r = detect_mutative_command("python3 -m flask deploy")
+        r = detect_mutative_command("lua deploy")
         assert r.is_mutative is True
         assert r.category == "MUTATIVE"
         assert r.verb == "deploy"
@@ -1198,19 +1202,27 @@ class TestDetectMutativeEarlyBranches:
         #   and "<<" in command            (C2)
         #   and semantics.non_flag_tokens  (C3)
         #   and non_flag_tokens[0] == "-"  (C4)
-        # `python3 - os.system('rm -rf /')` reaches the guard (stdin "-" is not a
-        # script file, no -c flag) with C1=True, C2=False (no "<<"), C3=True,
-        # C4=True.  The original guard is False -> detection falls through to the
-        # verb scanner, which finds no subcommand verb and returns UNKNOWN /
-        # non-mutative.  Each of the three AndWithOr mutants on the `and` chain
-        # re-associates so that C1 (or C4) alone forces the guard True, routing
-        # the string through _check_inline_code(skip_length_check=True), which
-        # detects the embedded `rm -rf /` and returns MUTATIVE -- a False->True
-        # flip the original never makes for this input.
-        r = detect_mutative_command("python3 - os.system('rm -rf /')")
+        # `lua os.remove('/tmp/x')` reaches the guard (lua is an inline CLI but
+        # not a script-file interpreter, and the token is not a readable path)
+        # with C1=True, C2=False (no "<<"), C3=True, C4=False.  The original
+        # guard is False -> detection falls through to the verb scanner, which
+        # finds no subcommand verb and returns UNKNOWN / non-mutative.  Each of
+        # the three AndWithOr mutants on the `and` chain re-associates so that C1
+        # alone forces the guard True, routing the string through
+        # _check_inline_code, which detects `os.remove` and returns MUTATIVE --
+        # a False->True flip the original never makes for this input.
+        #
+        # NOTE: the vehicle used to be `python3 - os.system('rm -rf /')`, chosen
+        # for C4=True.  A stdin-payload lane now classifies `<interpreter> -`
+        # (a program read from stdin, which has no path to inspect) as
+        # conservatively mutative BEFORE Step 3c, so no `-` form can reach this
+        # guard with a non-mutative original any more.  The `lua` vehicle keeps
+        # the same C1-only-forces-True observation without depending on the
+        # sentinel, so the three AndWithOr mutants stay killed.
+        r = detect_mutative_command("lua os.remove('/tmp/x')")
         assert r.is_mutative is False
         assert r.category == "UNKNOWN"
-        assert r.verb == "-"
+        assert r.verb == "os.remove(/tmp/x)"
 
     # --- L1242: heredoc routes with skip_length_check=True (TrueWithFalse) ---
     def test_long_safe_heredoc_not_length_flagged(self):

@@ -365,6 +365,285 @@ def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# ============================================================================
+# Consent surface -- render it whole, then persist what the user saw
+# ============================================================================
+# The consent surface is the AskUserQuestion text the user reads before
+# deciding: the labeled sealed fields plus EVERY command the approval covers.
+# Two defects lived here and are closed by this section:
+#
+#   1. A COMMAND_SET payload carries N commands, but ``exact_content`` holds
+#      only command [0]. A presentation built from that single field asks for
+#      consent to one command and activates a grant for N.
+#      ``render_consent_surface`` renders the whole set, indexed, and
+#      ``verify_consent_surface_completeness`` rejects any surface that shows
+#      fewer commands than the payload covers.
+#   2. The SHOWN event was written with no payload, so after the fact there was
+#      no way to establish what text the user was shown -- neither to prove nor
+#      to disprove that something was hidden. ``build_shown_event_payload``
+#      makes the SHOWN event carry the full question text.
+#
+# The completeness verdict is RECORDED, never enforced at activation. The user
+# has already consented by the time activation runs; refusing there would leave
+# them unable to approve anything while the presentation side is being fixed.
+# Prevention belongs to the template (``skills/orchestrator-present-approval``);
+# this layer makes a violation visible in the append-only chain.
+
+# Provenance of the persisted consent surface. ``captured`` is the verbatim
+# question text the presentation layer passed in -- the probative record.
+# ``reconstructed`` is rendered here from the fingerprint-verified sealed
+# payload when the caller passed nothing: weaker (it proves what the canonical
+# surface for this payload IS, not what was typed) but never absent.
+CONSENT_SURFACE_CAPTURED = "captured"
+CONSENT_SURFACE_RECONSTRUCTED = "reconstructed"
+
+_CONSENT_SURFACE_HEADER = "APPROVAL REQUIRED"
+
+
+def payload_commands(payload: Dict[str, Any]) -> List[str]:
+    """Return every command the user must be shown for this payload, in order.
+
+    A ``command_set`` of more than one item is authoritative: those N commands
+    are what one consent covers, and ``exact_content`` is merely the singular
+    stand-in for the first of them (see ``activate_db_pending_by_prefix``).
+    Falls back to ``commands``, then to the single ``exact_content`` -- which
+    for a SCOPE_FILE_PATH pending is the blocked file path, not a command.
+    """
+    raw_set = payload.get("command_set")
+    if isinstance(raw_set, list):
+        from_set = [
+            item["command"]
+            for item in raw_set
+            if isinstance(item, dict) and item.get("command")
+        ]
+        if len(from_set) > 1:
+            return from_set
+
+    raw_commands = payload.get("commands")
+    from_list = (
+        [c for c in raw_commands if isinstance(c, str) and c]
+        if isinstance(raw_commands, list)
+        else []
+    )
+    if len(from_list) > 1:
+        return from_list
+
+    single = payload.get("exact_content") or ""
+    if single:
+        return [single]
+    return from_list
+
+
+def render_consent_surface(
+    payload: Dict[str, Any],
+    approval_id: str = "",
+) -> str:
+    """Render the canonical AskUserQuestion question body for a sealed payload.
+
+    This is the executable counterpart of
+    ``skills/orchestrator-present-approval/template.md``: the same 5 labeled
+    fields, and for a multi-command payload the same indexed ``COMANDOS (N)``
+    block instead of a singular ``COMANDO``. Keeping one renderer means the
+    reconstructed audit record and the text the orchestrator is told to show
+    have the same shape.
+
+    ``rollback_hint`` is the sealed-payload key; ``rollback`` is the key the
+    subagent's relayed ``approval_request`` uses. Both map to ROLLBACK.
+    """
+    commands = payload_commands(payload)
+    operation = payload.get("operation", "") or ""
+    scope = payload.get("scope", "") or ""
+    risk = payload.get("risk_level", "") or ""
+    rationale = payload.get("rationale", "") or ""
+    rollback = payload.get("rollback_hint") or payload.get("rollback") or "NOT REVERSIBLE"
+
+    lines = [_CONSENT_SURFACE_HEADER, "", f"OPERACION:  {operation}"]
+    if len(commands) > 1:
+        lines.append(f"COMANDOS ({len(commands)}):")
+        for index, command in enumerate(commands, start=1):
+            lines.append(f"  [{index}] {command}")
+    else:
+        lines.append(f"COMANDO:    {commands[0] if commands else ''}")
+    lines.append(f"SCOPE:      {scope}")
+    lines.append(f"RIESGO:     {risk} -- {rationale}")
+    lines.append(f"ROLLBACK:   {rollback}")
+    return "\n".join(lines)
+
+
+def render_approve_label(payload: Dict[str, Any], approval_id: str) -> str:
+    """Render the Approve option label, nonce suffix included.
+
+    The suffix is what ``extract_nonce_from_label`` reads to activate the right
+    pending row, so the label MUST keep the leading ``Approve`` and the
+    ``[P-<nonce8>]`` tag. A batch label names the command count so the label
+    surface does not imply a single command either.
+    """
+    nonce8 = approval_id[len("P-"):len("P-") + 8] if approval_id.startswith("P-") else approval_id[:8]
+    action = payload.get("operation", "") or "approve operation"
+    count = len(payload_commands(payload))
+    if count > 1:
+        action = f"{action} ({count} commands)"
+    return f"Approve -- {action} [P-{nonce8}]"
+
+
+def verify_consent_surface_completeness(
+    surface: str,
+    payload: Dict[str, Any],
+) -> tuple[bool, List[str]]:
+    """Check that a consent surface shows every command the payload covers.
+
+    Returns ``(complete, missing_commands)``. A surface is complete only when
+    each command appears verbatim in the text -- the property that makes a
+    COMMAND_SET impossible to present as one command. Only presence is
+    checked, not layout: an orchestrator may wrap or reorder the block, but it
+    cannot omit a command the consent will cover.
+    """
+    commands = payload_commands(payload)
+    text = surface or ""
+    missing = [command for command in commands if command not in text]
+    return (not missing, missing)
+
+
+def build_shown_event_payload(
+    payload: Dict[str, Any],
+    approval_id: str,
+    presented_question: Optional[str] = None,
+    presented_label: Optional[str] = None,
+) -> str:
+    """Build the canonical-JSON payload for a SHOWN event.
+
+    The point of the record is the FULL question text, not a summary of it: a
+    summary cannot settle afterwards whether a command was hidden from the
+    user. When ``presented_question`` is supplied it is stored verbatim and
+    marked ``captured``; otherwise the surface is rendered from the sealed
+    payload and marked ``reconstructed``.
+
+    ``complete``/``missing_commands`` carry the completeness verdict for the
+    stored surface, so an under-showing presentation is detectable in the
+    chain rather than silently accepted.
+    """
+    if presented_question:
+        surface = presented_question
+        source = CONSENT_SURFACE_CAPTURED
+    else:
+        surface = render_consent_surface(payload, approval_id)
+        source = CONSENT_SURFACE_RECONSTRUCTED
+
+    complete, missing = verify_consent_surface_completeness(surface, payload)
+    commands = payload_commands(payload)
+
+    record: Dict[str, Any] = {
+        "approval_id": approval_id,
+        "approve_label": presented_label or render_approve_label(payload, approval_id),
+        "command_count": len(commands),
+        "commands_shown": commands,
+        "complete": complete,
+        "consent_surface": surface,
+        "consent_surface_source": source,
+        "missing_commands": missing,
+        "scope": payload.get("scope", ""),
+    }
+
+    try:
+        from gaia.approvals.chain import canonical_payload
+        return canonical_payload(record)
+    except Exception:
+        return json.dumps(record, sort_keys=True, separators=(",", ":"))
+
+
+def consent_surface_from_shown_event(event: Dict[str, Any]) -> Optional[str]:
+    """Extract the persisted consent surface from a SHOWN event row.
+
+    Returns None when the event carries no payload or no surface text -- the
+    signal that this approval's consent surface was never recorded (every
+    SHOWN event written before this layer existed).
+    """
+    if (event or {}).get("event_type") != "SHOWN":
+        return None
+    raw = event.get("payload_json")
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    surface = parsed.get("consent_surface")
+    return surface if isinstance(surface, str) and surface.strip() else None
+
+
+@dataclass(frozen=True)
+class ConsentSurfaceAudit:
+    """What can be established after the fact about one approval's surface.
+
+    ``auditable`` False is the detectable defect: either no SHOWN event exists
+    or the event stored no surface text, so what the user saw cannot be
+    reconstructed from the chain.
+    """
+
+    approval_id: str
+    auditable: bool
+    reason: str
+    consent_surface: Optional[str] = None
+    source: Optional[str] = None
+    complete: Optional[bool] = None
+    missing_commands: List[str] = field(default_factory=list)
+    command_count: Optional[int] = None
+
+
+def audit_consent_surface(approval_id: str) -> ConsentSurfaceAudit:
+    """Report whether an approval's consent surface is recoverable from the chain.
+
+    Reads the approval's events and inspects the LAST SHOWN event (the surface
+    the decision was taken on). Non-fatal by construction: a DB error is
+    reported as not-auditable rather than raised, because this is an audit
+    reader, never part of the activation path.
+    """
+    try:
+        from gaia.approvals.store import replay_for_approval
+        events = replay_for_approval(approval_id)
+    except Exception as exc:
+        return ConsentSurfaceAudit(
+            approval_id=approval_id,
+            auditable=False,
+            reason=f"could not read approval events: {exc}",
+        )
+
+    shown = [e for e in events if e.get("event_type") == "SHOWN"]
+    if not shown:
+        return ConsentSurfaceAudit(
+            approval_id=approval_id,
+            auditable=False,
+            reason="no SHOWN event recorded for this approval",
+        )
+
+    last = shown[-1]
+    surface = consent_surface_from_shown_event(last)
+    if surface is None:
+        return ConsentSurfaceAudit(
+            approval_id=approval_id,
+            auditable=False,
+            reason="SHOWN event carries no consent_surface text",
+        )
+
+    try:
+        parsed = json.loads(last.get("payload_json") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        parsed = {}
+
+    return ConsentSurfaceAudit(
+        approval_id=approval_id,
+        auditable=True,
+        reason="consent surface recorded",
+        consent_surface=surface,
+        source=parsed.get("consent_surface_source"),
+        complete=parsed.get("complete"),
+        missing_commands=list(parsed.get("missing_commands") or []),
+        command_count=parsed.get("command_count"),
+    )
+
+
 # ------------------------------------------------------------------ #
 # Environment snapshot capture
 # ------------------------------------------------------------------ #
@@ -980,6 +1259,8 @@ def activate_db_pending_by_prefix(
     nonce_prefix: str,
     current_session_id: Optional[str] = None,
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+    presented_question: Optional[str] = None,
+    presented_label: Optional[str] = None,
 ) -> ApprovalActivationResult:
     """Activate a DB-stored pending approval by its nonce prefix.
 
@@ -998,7 +1279,9 @@ def activate_db_pending_by_prefix(
           This is the enforcement point for the presentation-role guarantee:
           the command the orchestrator shows the user MUST equal what the
           subagent generated.
-      3. Writes SHOWN + APPROVED events via ``gaia.approvals.store``.
+      3. Writes SHOWN + APPROVED events via ``gaia.approvals.store``.  The
+         SHOWN event carries the consent surface -- the full question text the
+         user decided on -- so the surface is auditable afterwards.
       4. Creates a filesystem grant file so that ``check_approval_grant()``
          (which still reads the filesystem) can find it on the subagent retry.
 
@@ -1013,6 +1296,12 @@ def activate_db_pending_by_prefix(
         current_session_id: Session doing the activation (orchestrator or
             resumed subagent).  Defaults to ``_get_session_id()``.
         ttl_minutes: TTL for the created filesystem grant.
+        presented_question: The verbatim AskUserQuestion question text the user
+            was shown, when the calling surface has it (the AskUserQuestion
+            ``tool_input`` carries it).  Recorded in the SHOWN event as the
+            ``captured`` consent surface.  When omitted, the surface is
+            reconstructed from the sealed payload instead -- never left empty.
+        presented_label: The verbatim Approve option label the user selected.
 
     Returns:
         ``ApprovalActivationResult`` with success=True and a grant_path when
@@ -1180,12 +1469,29 @@ def activate_db_pending_by_prefix(
             )
 
         # Step 3: Write SHOWN + APPROVED events and flip status in DB.
+        #
+        # The SHOWN event carries the consent surface -- the full question text
+        # the decision was taken on (see build_shown_event_payload). Without it
+        # the chain records THAT the user was shown something but not WHAT, so a
+        # dispute about a hidden command cannot be settled either way.
+        #
+        # No ``fingerprint`` is passed: this_hash is SHA-256(prev_hash ||
+        # fingerprint), so leaving it NULL keeps every hash in the chain
+        # byte-identical to what it was before this payload existed, and the
+        # sealed-payload fingerprint activation verifies belongs to REQUESTED,
+        # not to SHOWN.
         try:
             record_event(
                 approval_id,
                 "SHOWN",
                 agent_id=agent_id,
                 session_id=current_session_id,
+                payload_json=build_shown_event_payload(
+                    payload,
+                    approval_id,
+                    presented_question=presented_question,
+                    presented_label=presented_label,
+                ),
             )
             approve(
                 approval_id,

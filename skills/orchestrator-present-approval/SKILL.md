@@ -98,6 +98,13 @@ RIESGO:     {sealed_payload.risk_level} -- {sealed_payload.rationale}
 ROLLBACK:   {sealed_payload.rollback_hint or "NOT REVERSIBLE"}
 ```
 
+The COMANDO line above is the **single-command** form. `exact_content` is a
+singular field -- for a `COMMAND_SET` it holds command **[0]** only -- so when
+the payload covers N >= 2 commands that one line is replaced by the indexed
+`COMANDOS (N)` block from `template.md`, listing **all N**. The other four
+fields are identical either way. Rule 4 below and `template.md` are the same
+requirement stated twice: N commands covered means N commands shown.
+
 The Approve option label MUST follow `"Approve -- {specific_action} [P-{nonce8}]"`,
 where `nonce8` is the first 8 hex chars of `approval_id` after `P-`. The label
 regex in `extract_nonce_from_label` (`hooks/modules/security/approval_grants.py`)
@@ -147,8 +154,11 @@ not re-author them.
    `command_set` fields the hook built -- in the same `approval_request` it
    would use for one command; there is no separate no-`approval_id` shape to
    wait for. You present a single approval: list **all N commands** in the
-   question body, but use **one** Approve label with **one** `[P-{nonce8}]`
-   suffix -- one consent covers the whole batch. On approval,
+   question body -- the indexed `COMANDOS (N)` block in `template.md`, never
+   the singular `exact_content`, which is only command [0] -- but use **one**
+   Approve label with **one** `[P-{nonce8}]` suffix (the `({N} commands)` text
+   in the label sits before the `[P-...]` tag, so nonce extraction is
+   unaffected) -- one consent covers the whole batch. On approval,
    `activate_db_pending_by_prefix` Step 3b creates a single `COMMAND_SET` grant
    (5-minute TTL, aligned to the singular grant); each command is consumed
    byte-for-byte at its match, before it executes. `batch_scope` is still ignored
@@ -180,6 +190,7 @@ wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
 | If you're thinking... | The reality is... |
 |---|---|
 | **Show specifics on both surfaces** -- "I can summarize / the label is enough" | The COMANDO field in the question body must be the verbatim command (not a summary, not "the above"); the option label must name the specific action (not just "Approve"). The user sees both surfaces; missing specificity on either is a blind-consent failure. |
+| **"The payload has `exact_content`, so I'll render that"** | For a `COMMAND_SET` `exact_content` is command **[0]** only. Rendering it alone shows 1 command while the grant activates N -- consent obtained for a surface the user never saw. Count the covered commands first (`command_set`, else `commands`); N >= 2 means the indexed `COMANDOS (N)` block from `template.md`. |
 | "I'll skip the [P-...] suffix, it's cosmetic" | The hook extracts the nonce from the label to find the right pending row; without it, targeted activation fails and no grant is created. |
 | "Similar command, slightly different path -- I'll reuse / wrap it" | Grants match the statement signature byte-for-byte. Any wrapper, redirect, flag, or path drift is a different signature and a fresh re-block. |
 | "The same command emitted a new approval_id" | Grants are single-use, consumed at match (before execution). A second run -- or a retry after the command executed and failed -- is a new APPROVAL_REQUEST. Approve again. |

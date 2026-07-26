@@ -637,6 +637,29 @@ _SHEBANG_EXT_LANES: Dict[str, str] = {
     ".php": "code",
 }
 
+# Canonical interpreter for a script EXTENSION, used when a script path is
+# reached through a wrapper that hides the interpreter (``uv run deploy.py``,
+# ``npx ./tool.js``).  Rewriting the invocation as ``<interpreter> <script>``
+# routes it into the SAME ``_check_script_file`` lane the direct form uses, so
+# the resolved script is classified by its real content (Python AST, JS lexer,
+# shell regex) instead of by the wrapper's own verb.  Prepending the
+# interpreter -- rather than re-dispatching the bare path -- is what makes the
+# rewrite independent of path SHAPE: the direct ``./script`` branch of
+# ``_resolve_script_argument`` requires a ``/`` in the token, so a bare
+# ``uv run c.py`` would otherwise resolve to nothing.
+_SCRIPT_EXT_INTERPRETERS: Dict[str, str] = {
+    ".py": "python3",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "zsh",
+    ".js": "node",
+    ".mjs": "node",
+    ".cjs": "node",
+    ".rb": "ruby",
+    ".pl": "perl",
+    ".php": "php",
+}
+
 # Cap on bytes read from a script file during classification.  A script larger
 # than this is unusual for the inline-evasion case and reading it in full would
 # add latency to every hook invocation; we read a bounded prefix, which is
@@ -727,6 +750,69 @@ _INTERP_SYNTAX_CHECK_FLAGS: Dict[str, FrozenSet[str]] = {
 _PY_MODULE_PACKAGE_MANAGERS: FrozenSet[str] = frozenset({
     "pip", "pip3", "pipenv", "poetry", "uv",
 })
+
+# ---------------------------------------------------------------------------
+# Prefix-runner re-dispatch (Step 1c-run)
+# ---------------------------------------------------------------------------
+# A prefix runner executes ANOTHER command in an environment it prepares:
+# ``uv run deploy.py``, ``poetry run alembic upgrade head``, ``npx prisma
+# migrate deploy``.  Its own base token is not an interpreter, so
+# ``_check_script_file`` returns None and the wrapped command is never
+# inspected -- the invocation falls to safe-by-elimination (T0) even when the
+# wrapped script mutates.  Measured consequence: ``uv run script.py`` whose body
+# calls ``shutil.copy`` classified T0 while the identical ``python3 script.py``
+# classified T3, so the wrapper DISABLED the whole content-inspection layer.
+#
+# The fix re-dispatches the wrapped command, mirroring the two re-dispatch
+# precedents in this module (``_check_python_module_runner`` for ``python -m
+# pip``, ``_check_gaia_cli_dispatcher`` for ``bin/gaia``): rewrite the
+# invocation as the command the runner would actually execute and re-run
+# ``detect_mutative_command`` on it, so the result is IDENTICAL to the
+# unwrapped form -- including the Python AST lane's dangerous-call table, which
+# is invoked through the existing lane rather than duplicated here.
+#
+# Each entry maps the runner to the subcommand token that must follow it
+# (``uv run``, ``poetry run``, ``pipx run``) or ``None`` when the runner takes
+# the wrapped command directly (``npx <pkg> <args>``).  ``value_flags`` are the
+# runner's OWN options that consume the following token as their value; without
+# them the value would be mistaken for the wrapped command.  This table is
+# inherently OPEN: a runner nobody listed still bypasses the lane (see the
+# fallback rationale in ``_check_prefix_runner``).
+_PREFIX_RUNNER_SUBCOMMANDS: Dict[str, "Optional[str]"] = {
+    "uv": "run",
+    "uvx": None,
+    "poetry": "run",
+    "pipx": "run",
+    "npx": None,
+}
+
+_PREFIX_RUNNER_VALUE_FLAGS: Dict[str, FrozenSet[str]] = {
+    "uv": frozenset({
+        "--with", "--with-editable", "--with-requirements", "--python", "-p",
+        "--directory", "--project", "--extra", "--index", "--index-url",
+        "--refresh-package", "--isolated-package",
+    }),
+    "uvx": frozenset({
+        "--with", "--from", "--python", "-p", "--index", "--index-url",
+    }),
+    "poetry": frozenset({"--directory", "-C", "--project", "-P"}),
+    "pipx": frozenset({"--spec", "--python", "--pip-args", "--index-url"}),
+    "npx": frozenset({"--package", "-p", "--node-options", "--userconfig"}),
+}
+
+# ``npx`` runs an arbitrary SHELL command when given ``--call``/``-c``, so the
+# flag's value is a command string to re-classify, not a package name.
+_NPX_SHELL_CALL_FLAGS: FrozenSet[str] = frozenset({"--call", "-c"})
+
+# The stdin sentinel: ``python3 -`` / ``node -`` / ``bash -`` read their PROGRAM
+# from standard input.  Unlike a script file the payload has no path to open, so
+# it cannot be inspected at classification time -- ``cat payload.py | python3``
+# is caught only because the composition layer sees the ``file_to_exec`` pipe,
+# while ``python3 - < payload.py`` reached the interpreter with no verb to match
+# and classified T0 through the FULL validator.  Treated like an unreadable
+# script file: conservative mutative.  A HEREDOC payload is excluded (the body
+# IS in the command string, and Step 3c already analyzes it).
+_STDIN_SCRIPT_SENTINEL = "-"
 
 # ---------------------------------------------------------------------------
 # PowerShell lane (Step 1c-ps): Windows/.NET interpreter introspection
@@ -1016,6 +1102,96 @@ _UNIVERSAL_DANGEROUS_PATTERNS: Tuple[Tuple[_re.Pattern, str, str], ...] = (
     (_re.compile(r"\bos\.chmod\s*\("), "os-chmod", "PERMISSION_MOD"),
     (_re.compile(r"\bfs\.chmod(Sync)?\s*\("), "fs-chmod", "PERMISSION_MOD"),
 )
+
+# ---------------------------------------------------------------------------
+# Direct filesystem mutation in lexed source (script-file "code" lane)
+# ---------------------------------------------------------------------------
+# The lexer lane used to run ONLY the exec-sink detector, on the premise that a
+# real mutation in a source language always reaches the shell through an exec
+# sink.  That premise is false for the filesystem API: ``fs.rmSync(p, {recursive:
+# true})`` deletes without spawning anything, so ``node -e "require('fs').
+# rmSync(...)"`` classified T3 (the inline path runs the universal pattern set)
+# while the SAME call inside ``node script.js`` classified T0.  These patterns
+# close that divergence for the calls that mutate directly.
+#
+# They are run on the ``verb_view`` projection -- comments blanked and string
+# CONTENTS blanked -- which is what makes them safe to add: the false positives
+# the exec-sink-only design avoided came from matching text inside a comment or
+# a string literal, and that text no longer exists in this view.
+#
+# Two deliberate exclusions keep the lane consistent with how the shell lane
+# treats the same effects: directory CREATION (``fs.mkdirSync``) is omitted
+# because ``mkdir`` into the working tree is explicitly classified T0 by
+# ``_mkdir_targets_sensitive_path``, and stream/handle OPENING
+# (``createWriteStream``, ``fs.open``) is omitted because opening is not yet a
+# write and the write itself is matched by its own method.
+#
+# The receiver requirement is the second false-positive gate: a match needs an
+# fs-ish receiver (``fs.``, ``fsp.``, ``fsPromises.``, an inline
+# ``require('fs').``, or a ``.promises.`` chain on either), OR a bare call whose
+# name carries the ``Sync`` suffix of the exact Node API.  A destructured
+# non-Sync import (``import { rm } from 'node:fs/promises'; await rm(p)``) is
+# therefore NOT matched -- a bare ``rm(`` is indistinguishable from any local
+# helper of that name in this projection, and matching it would cost more than
+# it catches.  That is a stated residual, not a closed case.
+_JS_FS_DELETE_METHODS = ("rmdirSync", "unlinkSync", "rmdir", "unlink", "rmSync", "rm")
+_JS_FS_WRITE_METHODS = (
+    "writeFileSync", "appendFileSync", "ftruncateSync", "truncateSync",
+    "writevSync", "writeSync", "writeFile", "appendFile", "ftruncate",
+    "truncate", "writev", "write",
+)
+_JS_FS_MUTATE_METHODS = (
+    "copyFileSync", "symlinkSync", "renameSync", "linkSync", "copyFile",
+    "symlink", "rename", "cpSync", "link", "cp",
+)
+_JS_FS_PERM_METHODS = (
+    "lchmodSync", "lchownSync", "chmodSync", "chownSync", "lchmod", "lchown",
+    "chmod", "chown",
+)
+
+_JS_FS_RECEIVER = r"(?:(?:^|[^\w$.])(?:fs|fsp|fsPromises)|require\s*\([^)]*\))"
+
+
+def _js_fs_mutation_pattern(methods: Tuple[str, ...]) -> "_re.Pattern":
+    """Compile the receiver-qualified + bare-``Sync`` matcher for *methods*."""
+    alternation = "|".join(methods)
+    sync_methods = [m for m in methods if m.endswith("Sync")]
+    sync_alternation = "|".join(sync_methods)
+    return _re.compile(
+        rf"{_JS_FS_RECEIVER}\s*\.\s*(?:promises\s*\.\s*)?(?:{alternation})\s*\("
+        rf"|(?:^|[^\w$.])(?:{sync_alternation})\s*\("
+    )
+
+
+_JS_DIRECT_MUTATION_PATTERNS: Tuple[Tuple["_re.Pattern", str, str], ...] = (
+    (_js_fs_mutation_pattern(_JS_FS_DELETE_METHODS), "fs-delete", "FILE_DELETION"),
+    (_js_fs_mutation_pattern(_JS_FS_WRITE_METHODS), "fs-write", "FILE_WRITE"),
+    (_js_fs_mutation_pattern(_JS_FS_MUTATE_METHODS), "fs-mutate", "FILE_MUTATION"),
+    (_js_fs_mutation_pattern(_JS_FS_PERM_METHODS), "fs-chmod", "PERMISSION_MOD"),
+)
+
+# Keyed by ``LanguageSpec.name`` so a language with no entry is unaffected.
+# Only the JS family is registered: ruby/perl/php carry the SAME divergence
+# (``FileUtils.rm_rf``, ``File.delete``, ``unlink``) and are deliberately left
+# open here rather than closed untested, since each additional grammar widens
+# the false-positive surface on a shared code path.
+_DIRECT_MUTATION_PATTERNS_BY_LANGUAGE: Dict[str, Tuple[Tuple["_re.Pattern", str, str], ...]] = {
+    "javascript": _JS_DIRECT_MUTATION_PATTERNS,
+}
+
+
+def _scan_direct_mutation(code: str, language: str) -> "Optional[Tuple[str, str]]":
+    """Return ``(label, category)`` for a direct filesystem mutation, or None.
+
+    *code* must be a ``verb_view`` line (comments and string contents blanked);
+    passing raw source would reintroduce the comment/string false positives this
+    detector depends on the projection to remove.
+    """
+    for pattern, label, category in _DIRECT_MUTATION_PATTERNS_BY_LANGUAGE.get(language, ()):
+        if pattern.search(code):
+            return (label, category)
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Exec-sink string-argument extraction (SHARED: inline code path + script-file
@@ -2123,6 +2299,20 @@ def detect_mutative_command(
     if py_module_result is not None:
         return py_module_result
 
+    # --- Step 1c-run: prefix-runner re-dispatch (uv run, poetry run, npx) ---
+    # A runner's own base token is not an interpreter, so the script-file lane
+    # below never opens the wrapped script and the whole content-inspection
+    # layer is skipped: ``uv run deploy.py`` classified T0 while the identical
+    # ``python3 deploy.py`` classified T3.  Resolve the wrapped command and
+    # re-classify it so both spellings agree.  Returns None for any other form
+    # of these CLIs (``uv pip install``, ``poetry add``), which ordinary verb
+    # detection already owns.
+    runner_result = _check_prefix_runner(
+        base_cmd, family, semantics, cwd=cwd, _depth=_depth,
+    )
+    if runner_result is not None:
+        return runner_result
+
     # --- Step 1c-ps: PowerShell command / script introspection ---
     # ``powershell.exe -Command "<script>"`` collapses its payload into a single
     # opaque token, so the POSIX verb scanner never sees the cmdlets inside it --
@@ -2821,8 +3011,6 @@ def _check_python_module_runner(
 
     if module is None or module_idx is None:
         return None
-    if module.lower() not in _PY_MODULE_PACKAGE_MANAGERS:
-        return None
 
     # Rewrite ``python3 [flags] -m <pkg-mgr> <rest...>`` -> ``<pkg-mgr> <rest...>``
     # and re-classify.  ``shlex.quote`` keeps argument boundaries intact so a
@@ -2831,6 +3019,19 @@ def _check_python_module_runner(
     rest = raw_tokens[module_idx + 1:]
     rewritten = " ".join(shlex.quote(t) for t in (module, *rest))
     inner = detect_mutative_command(rewritten)
+
+    # Beyond the package managers, ANY module invoked through ``-m`` is the CLI
+    # of that module (``python3 -m twine upload``, ``python3 -m alembic upgrade
+    # head``), and the ``-m`` spelling must not classify lower than the direct
+    # one.  But a module is NOT a resolvable file here -- widening the rewrite
+    # unconditionally would also relabel every benign ``python3 -m pytest`` /
+    # ``-m http.server``, replacing their ordinary classification with a
+    # re-dispatched one for no security gain.  So the widening is ESCALATE-ONLY,
+    # the same false-positive gate ``_scan_exec_sink_string_args`` applies to an
+    # extracted inner command: adopt the rewrite when it is mutative, otherwise
+    # return None and let ordinary detection classify the command untouched.
+    if module.lower() not in _PY_MODULE_PACKAGE_MANAGERS and not inner.is_mutative:
+        return None
     # Re-wrap the reason so the audit trail shows the re-dispatch explicitly,
     # but preserve the inner classification verbatim (category, verb, flags).
     return MutativeResult(
@@ -2842,6 +3043,135 @@ def _check_python_module_runner(
         confidence=inner.confidence,
         reason=(
             f"'{base_cmd} -m {module}' re-dispatched as '{module}': {inner.reason}"
+        ),
+    )
+
+
+def _resolve_prefix_runner_payload(
+    base_cmd: str, semantics: "CommandSemantics",
+) -> "Optional[Tuple[str, Tuple[str, ...]]]":
+    """Return ``(wrapped_command_token, remaining_args)`` for a prefix runner.
+
+    Walks the runner's own options -- skipping boolean flags, consuming the
+    value of a ``value_flags`` option, and accepting the self-contained
+    ``--flag=value`` form -- until the first true positional, which is the
+    command the runner will execute.  For a runner that requires a subcommand
+    (``uv run``) the subcommand must appear before that positional, otherwise
+    this is a DIFFERENT operation of the same CLI (``uv pip install``, ``poetry
+    add``) that ordinary verb detection already owns.
+
+    Returns ``None`` whenever the command is not a runner invocation with a
+    resolvable payload, so the caller leaves classification unchanged.
+    """
+    if base_cmd not in _PREFIX_RUNNER_SUBCOMMANDS:
+        return None
+
+    required_subcommand = _PREFIX_RUNNER_SUBCOMMANDS[base_cmd]
+    value_flags = _PREFIX_RUNNER_VALUE_FLAGS.get(base_cmd, frozenset())
+    raw_tokens = semantics.tokens
+
+    subcommand_seen = required_subcommand is None
+    i = 1
+    while i < len(raw_tokens):
+        token = raw_tokens[i]
+        if token == "--":
+            i += 1
+            continue
+        if token.startswith("-"):
+            if base_cmd == "npx" and token in _NPX_SHELL_CALL_FLAGS:
+                # ``npx --call "<shell command>"``: the value is a command
+                # string, not a package -- hand it back as the payload with no
+                # remaining args so the caller re-classifies it as a command.
+                if i + 1 < len(raw_tokens):
+                    return (raw_tokens[i + 1], ())
+                return None
+            if token in value_flags:
+                i += 2
+                continue
+            i += 1
+            continue
+        if not subcommand_seen:
+            if token.lower() != required_subcommand:
+                return None
+            subcommand_seen = True
+            i += 1
+            continue
+        return (token, tuple(raw_tokens[i + 1:]))
+
+    return None
+
+
+def _check_prefix_runner(
+    base_cmd: str, family: str, semantics: "CommandSemantics",
+    cwd: "Optional[str]" = None, _depth: int = 0,
+) -> "Optional[MutativeResult]":
+    """Re-dispatch ``uv run`` / ``poetry run`` / ``pipx run`` / ``npx`` payloads.
+
+    A prefix runner's base token is not an interpreter, so the script-file lane
+    never opens the wrapped script and the invocation classifies by the runner's
+    own verb (``run``, which is deliberately absent from ``MUTATIVE_VERBS``) --
+    i.e. T0 regardless of what the payload does.  This resolves the wrapped
+    command and re-runs ``detect_mutative_command`` on it, so ``uv run x.py``
+    classifies exactly as ``python3 x.py`` does, ``npx prisma migrate deploy``
+    as ``prisma migrate deploy``, and the Python AST / JS lexer / shell regex
+    lanes reach the payload through their existing entry point.
+
+    When the payload is a script PATH its canonical interpreter is prepended
+    (``_SCRIPT_EXT_INTERPRETERS``); otherwise the payload is itself a command
+    and is re-classified as written.
+
+    Fallback choice, stated explicitly because the reachable behavior and the
+    documented one disagree: an UNRECOGNIZED runner still falls to T0, and this
+    change narrows that class rather than closing it.  The conservative-T3
+    default documented for "an unrecognized interpreter" is real only INSIDE
+    ``_check_script_file`` -- once a token is known to be an interpreter, an
+    un-inspectable payload cannot be proven safe and the population of such
+    commands is small.  Inverting the DEFAULT instead (unknown base command, or
+    any command carrying a script-shaped positional, -> T3) would put the entire
+    long tail of ordinary tooling (``make``, ``cargo``, ``go``, ``just``,
+    ``task``, every project-local wrapper) behind a consent prompt on every
+    read-only invocation.  That trades a narrow false negative for a broad false
+    positive that breaks legitimate work on every surface and trains blind
+    approval, and it contradicts the module's stated model -- safe by
+    elimination, never by an allow-list.  So T0 remains the fallback for an
+    unrecognized runner, and the honest scope of this lane is: the four named
+    shapes are inspected; a fifth runner, a project-local wrapper script, or an
+    interpreter reached by a path whose basename is not a known interpreter name
+    still passes as T0.
+
+    Returns ``None`` when the command is not a resolvable runner invocation.
+    """
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return None
+
+    resolved = _resolve_prefix_runner_payload(base_cmd, semantics)
+    if resolved is None:
+        return None
+
+    payload, rest = resolved
+
+    import shlex
+
+    interpreter = None
+    lowered = payload.lower()
+    for ext, ext_interpreter in _SCRIPT_EXT_INTERPRETERS.items():
+        if lowered.endswith(ext):
+            interpreter = ext_interpreter
+            break
+
+    tokens = (payload, *rest) if interpreter is None else (interpreter, payload, *rest)
+    rewritten = " ".join(shlex.quote(t) for t in tokens)
+
+    inner = detect_mutative_command(rewritten, cwd=cwd, _depth=_depth + 1)
+    return MutativeResult(
+        is_mutative=inner.is_mutative,
+        category=inner.category,
+        verb=inner.verb,
+        dangerous_flags=inner.dangerous_flags,
+        cli_family=inner.cli_family,
+        confidence=inner.confidence,
+        reason=(
+            f"Runner '{base_cmd}' re-dispatched as '{rewritten}': {inner.reason}"
         ),
     )
 
@@ -3598,6 +3928,59 @@ def _read_script_content(
         return None
 
 
+def _check_stdin_script_payload(
+    command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
+) -> "Optional[MutativeResult]":
+    """Classify ``<interpreter> -`` (program read from stdin) conservatively.
+
+    The stdin sentinel makes the interpreter execute a program that has no path
+    to open, so its content cannot be inspected the way a script file's is.
+    That is the same epistemic position as the ``script-file-unreadable``
+    default -- an executable payload we cannot verify -- and it gets the same
+    answer: mutative, requiring consent.  It also removes a spelling asymmetry,
+    since ``cat payload.py | python3`` is already T3 via the composition layer's
+    ``file_to_exec`` rule while ``python3 - < payload.py`` passed the full
+    validator as T0.
+
+    Three guards keep it off the inspectable paths: a HEREDOC payload is left to
+    Step 3c (the body is in the command string and IS analyzed), an inline-code
+    or module flag means the payload is not stdin at all, and a syntax-check
+    flag means nothing executes.  The sentinel must also be the FIRST positional
+    -- a later ``-`` is an argument to the script, not the program source.
+
+    Returns ``None`` for every other shape, so ordinary detection continues.
+    """
+    if base_cmd not in _SCRIPT_FILE_INTERPRETERS and base_cmd not in _INLINE_CODE_CLIS:
+        return None
+    if not semantics.non_flag_tokens:
+        return None
+    if semantics.non_flag_tokens[0] != _STDIN_SCRIPT_SENTINEL:
+        return None
+    if "<<" in command:
+        return None
+
+    flag_set = set(semantics.flag_tokens)
+    if _INTERP_NON_SCRIPT_VALUE_FLAGS.get(base_cmd, frozenset()) & flag_set:
+        return None
+    if _INLINE_CODE_MAP.get(base_cmd, frozenset()) & flag_set:
+        return None
+    if _INTERP_SYNTAX_CHECK_FLAGS.get(base_cmd, frozenset()) & flag_set:
+        return None
+
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="script-stdin-payload",
+        cli_family=family,
+        confidence="medium",
+        reason=(
+            f"Interpreter '{base_cmd}' reads its program from stdin ('-') -- "
+            f"the payload has no path to inspect, so it cannot be verified, "
+            f"requiring approval (conservative default)"
+        ),
+    )
+
+
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -3627,7 +4010,10 @@ def _check_script_file(
 
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
-        return None
+        # No script FILE to open -- the payload may still be a program the
+        # interpreter reads from stdin, which is un-inspectable rather than
+        # absent.  Every other shape returns None and classifies normally.
+        return _check_stdin_script_payload(command, base_cmd, family, semantics)
 
     script_path, lane = resolved
 
@@ -3759,13 +4145,19 @@ def _classify_source_with_lexer(
        destructive pattern is denied even in the (invalid-JS) event it appears
        as bare code.  It cannot false-positive here -- the shell syntax it
        matches only survives blanking if it is executable code, which JS is not.
-    2. ``_scan_exec_sink_string_args`` on the ``exec_view`` (string contents
+    2. ``_scan_direct_mutation`` on the ``verb_view``: the filesystem API mutates
+       WITHOUT reaching the shell (``fs.rmSync(p, {recursive: true})`` spawns
+       nothing), so an exec-sink-only lane classified it T0 while the identical
+       call under ``node -e`` classified T3.  Running these patterns on the
+       projection with comments and string contents blanked is what keeps them
+       from re-introducing the false positives that lane was protecting against.
+    3. ``_scan_exec_sink_string_args`` on the ``exec_view`` (string contents
        KEPT), with ``shell_backticks=spec.backticks_are_exec`` so a JS template
        literal is not mistaken for a shell command -- this extracts the command
        handed to a subprocess sink as a string literal and escalates ONLY when
-       that inner command is itself mutative/blocked.  This is the REAL mutation
-       vector for a source language: shell effects go through an exec sink whose
-       argument is a string, which the exec view preserves.  ``cwd`` is
+       that inner command is itself mutative/blocked.  This is the mutation
+       vector for effects that DO go through the shell, whose command is a
+       string the exec view preserves.  ``cwd`` is
        forwarded to this call so a relative script/npm-run command embedded in
        an exec-sink string (``execSync('node engine/build.mjs')``) resolves
        against the directory THIS script was read from, not the hook's own
@@ -3780,7 +4172,7 @@ def _classify_source_with_lexer(
     identifier, not a CLI subcommand -- ``const label = ...``, ``const set =
     ...``, ``let close = ...`` are variable declarations, not the collaboration
     verbs ``label``/``set``/``close``.  The scan caught NO real JS mutation
-    (those go through exec sinks, handled by step 2) and produced only these
+    (those go through the fs API or an exec sink, steps 2 and 3) and produced only these
     identifier collisions, so removing it strictly reduces false positives
     without opening a hole.  This extends to whole tokens the same "source
     identifier is not a verb" discipline the ``from_source_code`` camelCase
@@ -3806,6 +4198,22 @@ def _classify_source_with_lexer(
                     reason=(
                         f"Script '{script_path}' contains blocked command: "
                         f"{blocked.category}"
+                    ),
+                )
+
+        if code_line:
+            direct = _scan_direct_mutation(code_line, spec.name)
+            if direct is not None:
+                label, category = direct
+                return MutativeResult(
+                    is_mutative=True,
+                    category=CATEGORY_MUTATIVE,
+                    verb=label,
+                    cli_family=family,
+                    confidence="high",
+                    reason=(
+                        f"Script '{script_path}' invokes {label} ({category}) -- "
+                        f"direct filesystem mutation, no exec sink involved"
                     ),
                 )
 
