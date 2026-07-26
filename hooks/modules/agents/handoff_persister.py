@@ -65,6 +65,23 @@ _VALID_TASK_STATUSES = frozenset(
     }
 )
 
+# NOTE on this module's relationship to gaia.state.TERMINAL_PLAN_STATUSES:
+# the writer's own guard (finalize_agent_contract_handoff) is the AUTHORITATIVE
+# convergence gate -- it now blocks a write ONLY when the row is already
+# COMPLETE, and CONVERGES from every other (non-terminal) state, including a
+# resumed draft's later, truer verdict. This module's pre-check below is
+# DELIBERATELY more conservative than that: it stays passive whenever ANY row
+# already exists (not only a COMPLETE one), because its job here is dedup
+# between TWO hook-side capture mechanisms racing for the SAME turn (T11
+# salvage vs. this T9 backstop -- see adapters/claude_code.py
+# ``_salvage_truncated_draft``, "salvage wins, backstop stays passive"), not
+# resuming a draft across separate turns. Broadening this pre-check to mirror
+# the writer's guard 1:1 would let the backstop clobber a salvage-marked row
+# with an equivalent, less-informative capture of the identical crashed turn --
+# a provenance regression, not a correctness fix. The writer's own guard is
+# what actually closes the "frozen non-terminal row" defect for the agent's
+# OWN resumed ``gaia contract finalize`` calls, which this module never blocks.
+
 
 def resolve_minted_agent_id(parsed_contract, task_info: dict):
     """Best available minted agent id (``^a[0-9a-f]{5,}$``) used to key drafts.
@@ -230,13 +247,17 @@ def persist_handoff(
         # --- 2. CONDITIONAL: inspect the current row state -------------------
         # v37 born-at-dispatch (plan 34 task 5): a row for this contract_id may
         # already exist in one of two ways --
-        #   * TERMINAL (agent_state != 'DISPATCHED') -> the agent already
-        #     finalized (or a prior backstop captured it) -> stay PASSIVE.
+        #   * TERMINAL (agent_state != 'DISPATCHED') -> some capture already
+        #     ran for this turn (the agent's own finalize, T11 salvage, or a
+        #     prior backstop) -> stay PASSIVE. See the module-level NOTE above
+        #     for why this pre-check deliberately does not narrow to "only
+        #     COMPLETE blocks" the way the writer's own guard does.
         #   * NASCENT 'DISPATCHED' -> the row was BORN at dispatch but the agent
         #     crashed / was truncated before finalize -> an ORPHAN the backstop
         #     must REAP: converge it to a degraded NON-COMPLETE verdict (never a
         #     false COMPLETE) through the same idempotent convergent writer
-        #     (finalize's DO UPDATE ... WHERE agent_state='DISPATCHED').
+        #     (finalize's DO UPDATE ... WHERE agent_state NOT IN
+        #     TERMINAL_PLAN_STATUSES).
         #   * None -> no row at all -> the pre-born-at-dispatch backstop path:
         #     finalize a degraded row (possibly COMPLETE-degraded from the draft).
         existing_state = _writer.agent_contract_handoff_state(
