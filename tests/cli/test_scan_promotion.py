@@ -303,7 +303,6 @@ def test_flat_contract_with_multiple_projects_is_converted_to_map(tmp_db):
     # The flat multi-project contract is auto-converted, not deferred.
     assert rep["shape"] == "flat"
     assert rep["applied"] is True
-    assert rep["deferred"] == []
     assert rep["added_entries"] == 2
 
     payload = _read_contract(tmp_db, ws)
@@ -404,6 +403,163 @@ def test_classify_identity_shape_scanner_is_not_flat():
     scanner = {"name": "w", "workspace_repos": []}
     assert classify_identity_shape(scanner) == "scanner"
     assert classify_identity_shape(scanner) != "flat"
+
+
+# ---------------------------------------------------------------------------
+# Vanished propagation: a repo gone from disk is MARKED in the contract,
+# never deleted and never hidden
+# ---------------------------------------------------------------------------
+
+def _mark_gone(tmp_db, ws, *surviving_names):
+    """Soft-delete every project of ``ws`` except ``surviving_names``, through
+    the same writer the scan's own reconciliation uses."""
+    from gaia.store.writer import mark_missing_in
+    return mark_missing_in(
+        "projects", ws, [(n,) for n in surviving_names], db_path=tmp_db
+    )
+
+
+def test_gate_returns_missing_rows_separately_from_promotable(tmp_db):
+    from tools.scan.promote import validate_promotion
+    ws = "ws-gate-missing"
+    _seed_project(tmp_db, ws, "alive", path="/abs/alive", identity="/abs/alive/.git")
+    _seed_project(tmp_db, ws, "ghost", path="/abs/ghost", identity="/abs/ghost/.git")
+    _mark_gone(tmp_db, ws, "alive")
+
+    gate = validate_promotion(ws, db_path=tmp_db)
+    assert [p["name"] for p in gate["promotable"]] == ["alive"]
+    assert [m["name"] for m in gate["missing"]] == ["ghost"]
+    # A vanished row is neither promoted nor rejected -- it is its own lane.
+    assert gate["rejected"] == []
+
+
+def test_vanished_project_is_marked_missing_in_the_contract(tmp_db):
+    """The defect this closes: a repo deleted from disk used to stay in the
+    contract, indistinguishable from a live one."""
+    from tools.scan.promote import promote_workspace
+    ws = "ws-vanish"
+    _seed_project(tmp_db, ws, "alive", path="/abs/alive", identity="/abs/alive/.git")
+    _seed_project(tmp_db, ws, "ghost", path="/abs/ghost", identity="/abs/ghost/.git")
+    promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert "ghost" in _read_contract(tmp_db, ws)
+
+    # The repo disappears; the scan's reconciliation soft-deletes its row.
+    _mark_gone(tmp_db, ws, "alive")
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["applied"] is True
+    assert rep["outcome"] == "applied"
+    assert rep["marked_missing_entries"] == 1
+
+    payload = _read_contract(tmp_db, ws)
+    # Marked and still visible -- never deleted, never hidden.
+    assert "ghost" in payload
+    assert payload["ghost"]["missing_since"]
+    assert payload["ghost"]["local_path"] == "/abs/ghost"
+    assert "missing_since" not in payload["alive"]
+
+
+def test_marking_missing_preserves_agent_owned_description_and_structure(tmp_db):
+    """The merge is where curated content is protected -- marking a vanished
+    entry must not cost the agent-authored keys."""
+    from tools.scan.promote import promote_workspace
+    ws = "ws-vanish-curated"
+    _write_contract(tmp_db, ws, {
+        "ghost": {
+            "name": "Ghost Service",
+            "type": "application",
+            "local_path": "/abs/ghost",
+            "remote_url": "git@github.com:o/ghost.git",
+            "description": "Curated by an agent: the billing edge service",
+            "apps": ["api", "worker"],
+            "package_manager": "pnpm",
+        },
+    })
+    _seed_project(tmp_db, ws, "ghost", path="/abs/ghost", identity="/abs/ghost/.git")
+    _mark_gone(tmp_db, ws)  # nothing survives
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["marked_missing_entries"] == 1
+
+    entry = _read_contract(tmp_db, ws)["ghost"]
+    assert entry["missing_since"]
+    assert entry["description"] == "Curated by an agent: the billing edge service"
+    assert entry["name"] == "Ghost Service"
+    assert entry["type"] == "application"
+    assert entry["apps"] == ["api", "worker"]
+    assert entry["package_manager"] == "pnpm"
+    assert entry["local_path"] == "/abs/ghost"
+
+
+def test_reappearing_project_clears_its_missing_mark(tmp_db):
+    from tools.scan.promote import promote_workspace
+    ws = "ws-reappear"
+    _write_contract(tmp_db, ws, {
+        "back": {
+            "name": "back",
+            "local_path": "/abs/back",
+            "description": "curated",
+            "missing_since": "2020-01-01T00:00:00+00:00",
+        },
+    })
+    _seed_project(tmp_db, ws, "back", path="/abs/back", identity="/abs/back/.git")
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["applied"] is True
+    entry = _read_contract(tmp_db, ws)["back"]
+    assert "missing_since" not in entry
+    assert entry["description"] == "curated"
+
+
+def test_second_scan_over_a_still_missing_repo_is_a_no_op(tmp_db):
+    """The mark is idempotent: a still-vanished repo does not re-write the
+    contract on every scan."""
+    from tools.scan.promote import promote_workspace
+    ws = "ws-vanish-idem"
+    _seed_project(tmp_db, ws, "ghost", path="/abs/ghost", identity="/abs/ghost/.git")
+    promote_workspace(ws, db_path=tmp_db, apply=True)
+    _mark_gone(tmp_db, ws)
+    first = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert first["marked_missing_entries"] == 1
+
+    second = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert second["marked_missing_entries"] == 0
+    assert second["applied"] is False
+    assert second["outcome"] == "no-op"
+
+
+# ---------------------------------------------------------------------------
+# Observability: `outcome` distinguishes the three applied=False situations
+# ---------------------------------------------------------------------------
+
+def test_outcome_distinguishes_no_op_from_nothing_promotable(tmp_db):
+    from tools.scan.promote import promote_workspace
+    ws_empty = "ws-outcome-empty"
+    nothing = promote_workspace(ws_empty, db_path=tmp_db, apply=True)
+    assert nothing["applied"] is False
+    assert nothing["outcome"] == "nothing-promotable"
+    assert nothing["shape"] is None  # the merge never ran
+
+    ws = "ws-outcome-noop"
+    _seed_project(tmp_db, ws, "svc", path="/abs/svc", identity="/abs/svc/.git")
+    first = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert first["outcome"] == "applied"
+
+    again = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert again["applied"] is False
+    assert again["outcome"] == "no-op"      # the merge ran; nothing changed
+    assert again["shape"] == "map"
+
+
+def test_outcome_dry_run_is_distinct_from_no_op(tmp_db):
+    from tools.scan.promote import promote_workspace
+    ws = "ws-outcome-dry"
+    _seed_project(tmp_db, ws, "svc", path="/abs/svc", identity="/abs/svc/.git")
+    rep = promote_workspace(ws, db_path=tmp_db, apply=False)
+    assert rep["applied"] is False
+    assert rep["outcome"] == "dry-run"
+    assert rep["added_entries"] == 1
+    assert _read_contract(tmp_db, ws) is None
 
 
 # ---------------------------------------------------------------------------

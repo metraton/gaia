@@ -47,6 +47,14 @@ from typing import Optional
 # marks it (and any other `_`-prefixed key) as a non-project reserved slot.
 WORKSPACE_META_KEY = "_workspace"
 
+# Entry key stamped by promotion (tools/scan/promote.py) when the repo behind a
+# project entry is gone from disk, and read by the SessionStart projects block
+# (hooks/modules/session/session_manifest.py) to render the mark. Shared here
+# because writer and reader must agree on the spelling; the entry itself is
+# never deleted, so a vanished repo stays visible instead of disappearing
+# silently. NOT a reserved slug -- it is a key INSIDE a project entry.
+MISSING_MARK_KEY = "missing_since"
+
 
 def is_reserved_slug(slug: str) -> bool:
     """True when a map key is a reserved slot, not a project entry."""

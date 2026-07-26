@@ -155,12 +155,22 @@ def _render_human(report, *, dry_run: bool) -> None:
         if promo.get("error"):
             print(f"{prefix}promotion          : ERROR {promo['error']}")
         else:
-            verb = "promoted" if promo.get("applied") else "would-promote"
+            # The verb reports the OUTCOME, not just the applied flag: three
+            # different situations leave applied=False, and calling all of them
+            # "would-promote" reads, in apply mode, as a promotion that was due
+            # and silently skipped.
+            verb = {
+                "applied": "promoted",
+                "dry-run": "would-promote",
+                "no-op": "already-current",
+                "nothing-promotable": "nothing-promotable",
+            }.get(promo.get("outcome"), "promoted" if promo.get("applied") else "no-change")
             print(
                 f"{prefix}promotion          : {verb} "
                 f"contract=project_identity shape={promo.get('shape')} "
                 f"added={promo.get('added_entries', 0)} "
-                f"refreshed={promo.get('refreshed_entries', 0)}"
+                f"refreshed={promo.get('refreshed_entries', 0)} "
+                f"marked_missing={promo.get('marked_missing_entries', 0)}"
             )
             for rej in promo.get("rejected", []):
                 print(

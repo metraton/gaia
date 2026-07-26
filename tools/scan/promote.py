@@ -19,11 +19,24 @@ Three properties this module guarantees:
      pure indexer; it does not import or call this module.
 
   2. GATE. :func:`validate_promotion` is the point where completeness/coherence
-     is enforced BEFORE any write. A project row missing its resolvable
-     identity (``project_identity``) or its on-disk ``path``, or not currently
-     ``status='active'``, is rejected -- partial/corrupt rows never promote.
-     This function is the extension seam: as scan gains intelligence, new gate
-     rules are added HERE (see :data:`_HARD_RULES` / ``REQUIRE_REMOTE``).
+     is enforced BEFORE any write. An ``status='active'`` project row missing
+     its resolvable identity (``project_identity``) or its on-disk ``path`` is
+     rejected -- partial/corrupt rows never promote. This function is the
+     extension seam: as scan gains intelligence, new gate rules are added HERE
+     (see :data:`_HARD_RULES` / ``REQUIRE_REMOTE``). Rows the scan soft-deleted
+     (``status='missing'``) are returned SEPARATELY, in ``missing``: they are
+     not promotion candidates (the gate rules ask "is this row complete enough
+     to write scan-owned facts FROM?", which a vanished repo cannot be), but
+     their physical identity is what lets promotion find and mark the contract
+     entry that outlived them.
+
+  2b. VANISHED PROPAGATION. A repo that disappeared from disk is information,
+     not noise: its contract entry is MARKED (``missing_since``) and stays
+     visible rather than being deleted or hidden. The mark is cleared again the
+     moment the repo reappears as promotable, mirroring the reactivation rule
+     the store writer applies to the ``projects`` row itself
+     (``mark_missing_in`` sets ``status='missing'`` + ``missing_since``; an
+     upsert with ``missing_since=None`` reactivates).
 
   3. OWNERSHIP BOUNDARY. Promotion writes ONLY scan-owned keys
      (:data:`_ENTRY_SCAN_REFRESH`: local_path, remote_url, platform, language)
@@ -132,16 +145,23 @@ def validate_promotion(workspace: str, *, db_path: Optional[Path] = None) -> dic
           "promotable": [ {name, path, remote_url, platform, primary_language,
                            role, project_identity, warnings: [...]}, ... ],
           "rejected":   [ {name, path, reasons: [...]}, ... ],
+          "missing":    [ {name, path, remote_url, missing_since}, ... ],
           "db_present": bool,
         }
 
-    Only ``status='active'`` rows are considered -- a soft-deleted (missing)
-    project is not re-promoted. Never raises; never creates the DB file.
+    Only ``status='active'`` rows are promotion candidates. Soft-deleted rows
+    (``status='missing'``, written by ``mark_missing_in`` during the scan's own
+    reconciliation) are returned in ``missing`` WITHOUT passing through
+    :data:`_HARD_RULES` -- they are not being promoted, so completeness rules
+    that gate a write do not apply; only their physical identity (path/remote)
+    is used, to find the contract entry to mark. Never raises; never creates
+    the DB file.
     """
     result: dict = {
         "workspace": workspace,
         "promotable": [],
         "rejected": [],
+        "missing": [],
         "db_present": False,
     }
     if not workspace or not _db_file_exists(db_path):
@@ -157,8 +177,15 @@ def validate_promotion(workspace: str, *, db_path: Optional[Path] = None) -> dic
             "WHERE workspace = ? AND status = 'active' ORDER BY name",
             (workspace,),
         ).fetchall()
+        missing_rows = con.execute(
+            "SELECT name, path, remote_url, missing_since FROM projects "
+            "WHERE workspace = ? AND status = 'missing' ORDER BY name",
+            (workspace,),
+        ).fetchall()
     finally:
         con.close()
+
+    result["missing"] = [dict(r) for r in missing_rows]
 
     for row in rows:
         r = dict(row)
@@ -230,11 +257,17 @@ def _match_slug(existing_map: dict, proj: dict) -> Optional[str]:
     Match by absolute ``local_path`` first (strongest on-disk signal), then by
     normalized git remote. Returns None when no entry corresponds -- the caller
     then creates a new slug rather than risk merging two distinct repos.
+
+    Reserved slugs are skipped: the ``_``-prefixed slot holds workspace-level
+    metadata (see :func:`_auto_convert_to_map`), which can legitimately carry a
+    ``local_path`` of its own and must never be mistaken for a project entry.
     """
+    from gaia.identity_shape import is_reserved_slug
+
     proj_path = proj.get("path")
     proj_remote = _normalize(proj.get("remote_url"))
     for slug, entry in existing_map.items():
-        if not isinstance(entry, dict):
+        if is_reserved_slug(slug) or not isinstance(entry, dict):
             continue
         e_path = entry.get("local_path")
         if e_path and proj_path and os.path.normpath(e_path) == os.path.normpath(proj_path):
@@ -249,19 +282,54 @@ def _apply_scan_owned(entry: dict, proj: dict) -> bool:
     """Refresh scan-owned keys on ``entry`` in place; seed name/type if absent.
 
     Preserves every agent-owned key (description and any curated structure).
+    A promotable project is on disk again, so any ``missing_since`` mark left
+    by a previous scan is dropped -- the reappearance side of requirement 2b.
     Returns True when the entry changed.
     """
+    from gaia.identity_shape import MISSING_MARK_KEY
+
     before = copy.deepcopy(entry)
     entry.update(_scan_entry(proj))  # _ENTRY_SCAN_REFRESH (non-null only)
     if not entry.get("name") and proj.get("name"):
         entry["name"] = proj["name"]
     if not entry.get("type") and proj.get("role"):
         entry["type"] = proj["role"]
+    entry.pop(MISSING_MARK_KEY, None)
     return entry != before
 
 
-def _merge_map(existing_map: dict, promotable: list) -> tuple[dict, dict]:
-    """Merge scan-owned facts into a map-shape payload. Returns (payload, stats)."""
+def _mark_missing(result_map: dict, missing: list) -> int:
+    """Stamp :data:`MISSING_MARK_KEY` on the entries whose repo vanished.
+
+    The entry is kept, with every other key untouched -- a vanished repo is
+    information, and hiding it would repeat the silence this propagation
+    exists to end. Only entries that ACTUALLY change are counted, so a second
+    scan over a still-missing repo is a no-op rather than a phantom write.
+    """
+    from gaia.identity_shape import MISSING_MARK_KEY
+
+    marked = 0
+    for row in missing:
+        slug = _match_slug(result_map, row)
+        if slug is None:
+            continue
+        entry = result_map[slug]
+        stamp = row.get("missing_since") or _now_iso()
+        if entry.get(MISSING_MARK_KEY) == stamp:
+            continue
+        entry[MISSING_MARK_KEY] = stamp
+        marked += 1
+    return marked
+
+
+def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tuple[dict, dict]:
+    """Merge scan-owned facts into a map-shape payload. Returns (payload, stats).
+
+    Three branches, in order: create an entry for a newly-seen project, refresh
+    the scan-owned keys of one already there, and mark the entries whose repo
+    vanished. Marking runs LAST so a project that both reappeared and is stale
+    in ``missing`` resolves to present.
+    """
     result = copy.deepcopy(existing_map)
     used = set(result.keys())
     added = refreshed = 0
@@ -277,17 +345,33 @@ def _merge_map(existing_map: dict, promotable: list) -> tuple[dict, dict]:
         else:
             if _apply_scan_owned(result[slug], proj):
                 refreshed += 1
-    return result, {"added_entries": added, "refreshed_entries": refreshed}
+    marked = _mark_missing(result, list(missing))
+    return result, {
+        "added_entries": added,
+        "refreshed_entries": refreshed,
+        "marked_missing_entries": marked,
+    }
 
 
 def _merge_flat(existing: dict, proj: dict) -> tuple[dict, dict]:
-    """Refresh scan-owned TOP-LEVEL keys on a flat single-project payload."""
+    """Refresh scan-owned TOP-LEVEL keys on a flat single-project payload.
+
+    A flat payload has no per-project entry to mark, so vanished propagation
+    does not apply on this branch (it is reached only with exactly one
+    promotable project -- i.e. one that is present on disk).
+    """
     result = copy.deepcopy(existing)
     refreshed = 1 if _apply_scan_owned(result, proj) else 0
-    return result, {"added_entries": 0, "refreshed_entries": refreshed}
+    return result, {
+        "added_entries": 0,
+        "refreshed_entries": refreshed,
+        "marked_missing_entries": 0,
+    }
 
 
-def _auto_convert_to_map(existing: Optional[dict], promotable: list) -> tuple[dict, dict]:
+def _auto_convert_to_map(
+    existing: Optional[dict], promotable: list, missing: list = ()
+) -> tuple[dict, dict]:
     """Convert a non-map (flat multi / scanner) payload into a map, losslessly.
 
     Builds a fresh map from ``promotable`` via :func:`_merge_map`. The old
@@ -301,7 +385,7 @@ def _auto_convert_to_map(existing: Optional[dict], promotable: list) -> tuple[di
     seed: dict = {}
     if existing:
         seed[WORKSPACE_META_KEY] = copy.deepcopy(existing)
-    return _merge_map(seed, promotable)
+    return _merge_map(seed, promotable, missing)
 
 
 # ---------------------------------------------------------------------------
@@ -377,16 +461,28 @@ def promote_workspace(
 
     Returns a structured, non-crashing report dict (see keys below). Never
     raises for a workspace with no promotable projects; returns a no-op report.
+
+    ``outcome`` disambiguates the three distinct situations that all leave
+    ``applied=False``, which the flag alone cannot tell apart:
+
+      * ``"applied"``           -- the contract was written.
+      * ``"dry-run"``           -- there WAS a change to make; nothing written
+                                   because ``apply=False``.
+      * ``"nothing-promotable"``-- the gate yielded no candidate and no
+                                   vanished entry; the merge never ran.
+      * ``"no-op"``             -- the merge ran and the contract already
+                                   matched; idempotent, nothing to write.
     """
     report: dict = {
         "workspace": workspace,
         "mode": "apply" if apply else "dry-run",
         "applied": False,
+        "outcome": "nothing-promotable",
         "shape": None,
         "added_entries": 0,
         "refreshed_entries": 0,
+        "marked_missing_entries": 0,
         "rejected": [],
-        "deferred": [],
         "warnings": [],
         "preview": None,
     }
@@ -394,11 +490,12 @@ def promote_workspace(
     gate = validate_promotion(workspace, db_path=db_path)
     report["rejected"] = gate["rejected"]
     promotable = gate["promotable"]
+    missing = gate["missing"]
     for p in promotable:
         for w in p.get("warnings", []):
             report["warnings"].append({"project": p.get("name"), "warning": w})
 
-    if not promotable:
+    if not promotable and not missing:
         return report
 
     from gaia.identity_shape import classify_identity_shape
@@ -408,7 +505,12 @@ def promote_workspace(
     report["shape"] = shape
 
     if shape in ("map", "empty"):
-        new_payload, stats = _merge_map(existing or {}, promotable)
+        new_payload, stats = _merge_map(existing or {}, promotable, missing)
+    elif not promotable:
+        # Flat / scanner shape with nothing on disk to promote: converting it
+        # on the strength of vanished rows alone would rewrite a hand-authored
+        # payload with no project entry to show for it.
+        return report
     elif shape == "flat" and len(promotable) == 1:
         # P2 (parked): a single-project flat / workspace-identity contract keeps
         # its top-level shape -- refresh scan-owned keys in place, no conversion.
@@ -420,15 +522,25 @@ def promote_workspace(
         # is routed here (never through _merge_flat) precisely so its structured
         # payload is preserved intact instead of being clobbered with top-level
         # scan-owned keys.
-        new_payload, stats = _auto_convert_to_map(existing, promotable)
+        new_payload, stats = _auto_convert_to_map(existing, promotable, missing)
 
     report["added_entries"] = stats["added_entries"]
     report["refreshed_entries"] = stats["refreshed_entries"]
+    report["marked_missing_entries"] = stats["marked_missing_entries"]
     report["preview"] = new_payload
 
-    changed = stats["added_entries"] > 0 or stats["refreshed_entries"] > 0
-    if apply and changed:
+    changed = (
+        stats["added_entries"] > 0
+        or stats["refreshed_entries"] > 0
+        or stats["marked_missing_entries"] > 0
+    )
+    if not changed:
+        report["outcome"] = "no-op"
+    elif apply:
         _write_identity_contract(workspace, new_payload, db_path)
         report["applied"] = True
+        report["outcome"] = "applied"
+    else:
+        report["outcome"] = "dry-run"
 
     return report
