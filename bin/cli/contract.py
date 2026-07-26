@@ -539,6 +539,88 @@ def cmd_validate(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# list: read-only query over the PERSISTED agent_contract_handoffs rows.
+#
+# `view` reads a DRAFT on disk; nothing in the CLI exposed the finalized rows,
+# so recovering a handoff_id meant reaching for the internal writer API through
+# an interpreter. This verb closes that gap with a plain SELECT: no draft
+# resolution, no mutation, T0.
+# ---------------------------------------------------------------------------
+
+# Columns rendered by the default table view, in order. The full row is
+# available via --json; the table keeps the coordinates needed to identify a
+# turn and walk the plan-task -> producer -> verifier chain.
+_LIST_TABLE_COLUMNS = (
+    "id",
+    "created_at",
+    "agent_id",
+    "agent_state",
+    "kind",
+    "session_id",
+    "plan_task_id",
+    "parent_handoff_id",
+)
+
+
+def _row_in_date_range(row: dict, since: Optional[str], until: Optional[str]) -> bool:
+    """Whether ``created_at`` falls inside the requested range.
+
+    The column stores ISO-8601 UTC (``strftime('%Y-%m-%dT%H:%M:%SZ')``), which
+    sorts lexicographically, so a plain string comparison is a correct range
+    test for any ISO prefix the user passes (``2026-07-26`` or a full stamp).
+    ``--until`` is inclusive of the whole day when given as a bare date, hence
+    the prefix-aware upper bound.
+    """
+    created = row.get("created_at") or ""
+    if since and created < since:
+        return False
+    if until and created[: len(until)] > until:
+        return False
+    return True
+
+
+def cmd_list(args) -> int:
+    """List persisted agent_contract_handoffs rows (read-only, SELECT only)."""
+    from gaia.store.writer import list_agent_contract_handoffs
+
+    rows = list_agent_contract_handoffs(
+        workspace=args.workspace,
+        agent_id=args.agent_id,
+        session_id=args.session_id,
+        agent_state=args.state,
+        contract_id=args.contract_id,
+        limit=args.limit,
+    )
+    if args.since or args.until:
+        rows = [r for r in rows if _row_in_date_range(r, args.since, args.until)]
+
+    if args.json:
+        print(json.dumps({"count": len(rows), "handoffs": rows}, indent=2, default=str))
+        return 0
+
+    if not rows:
+        print("No handoffs matched.")
+        return 0
+
+    widths = {
+        col: max(len(col), *(len(str(r.get(col) or "-")) for r in rows))
+        for col in _LIST_TABLE_COLUMNS
+    }
+    header = "  ".join(col.ljust(widths[col]) for col in _LIST_TABLE_COLUMNS)
+    print(header)
+    print("  ".join("-" * widths[col] for col in _LIST_TABLE_COLUMNS))
+    for row in rows:
+        print(
+            "  ".join(
+                str(row.get(col) if row.get(col) is not None else "-").ljust(widths[col])
+                for col in _LIST_TABLE_COLUMNS
+            )
+        )
+    print(f"\n{len(rows)} handoff(s).")
+    return 0
+
+
 def _resolve_finalize_workspace(explicit: Optional[str]) -> str:
     """Resolve the workspace to record this finalize's row under.
 
@@ -833,6 +915,45 @@ def _build_subcommands(sub) -> None:
     _add_common_draft_arg(p_view)
     _add_agent_scope_arg(p_view)
     p_view.set_defaults(func=cmd_view)
+
+    p_list = sub.add_parser(
+        "list",
+        help="List persisted agent_contract_handoffs rows (read-only)",
+    )
+    p_list.add_argument(
+        "--agent", dest="agent_id", metavar="AGENT_ID", default=None,
+        help="Filter by agent_id (the minted a<hex> handle, or the dispatch agent name)",
+    )
+    p_list.add_argument(
+        "--state", dest="state", metavar="AGENT_STATE", default=None,
+        help="Filter by agent_state (COMPLETE, DISPATCHED, BLOCKED, ...)",
+    )
+    p_list.add_argument(
+        "--session", dest="session_id", metavar="SESSION_ID", default=None,
+        help="Filter by session_id",
+    )
+    p_list.add_argument(
+        "--contract-id", dest="contract_id", metavar="CONTRACT_ID", default=None,
+        help="Filter by contract_id (the draft/dispatch idempotency key)",
+    )
+    p_list.add_argument(
+        "--workspace", dest="workspace", metavar="NAME", default=None,
+        help="Filter by workspace (default: all workspaces)",
+    )
+    p_list.add_argument(
+        "--since", dest="since", metavar="ISO_DATE", default=None,
+        help="Only rows created at or after this ISO date/timestamp",
+    )
+    p_list.add_argument(
+        "--until", dest="until", metavar="ISO_DATE", default=None,
+        help="Only rows created at or before this ISO date/timestamp (inclusive)",
+    )
+    p_list.add_argument(
+        "--limit", dest="limit", type=int, default=20, metavar="N",
+        help="Maximum rows to return (default: 20)",
+    )
+    p_list.add_argument("--json", action="store_true", help="JSON output")
+    p_list.set_defaults(func=cmd_list)
 
     p_validate = sub.add_parser("validate", help="Validate the draft WITHOUT mutating it")
     _add_common_draft_arg(p_validate)

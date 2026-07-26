@@ -23,6 +23,7 @@ sys.path.insert(0, str(_hooks_dir))
 _pkg_root = str(_hooks_dir.parent)
 if _pkg_root not in sys.path:
     sys.path.insert(0, _pkg_root)
+from modules.core.hook_trace import record_hook_invocation
 from modules.core.logging_setup import configure_hook_logging
 
 # Adapter layer -- get_adapter() is the single construction point (registry),
@@ -378,6 +379,24 @@ if __name__ == "__main__":
                 sys.exit(1)
 
             response = adapter.adapt_pre_tool_use(event)
+
+            # Always-on invocation trace. This entry point does not go through
+            # modules.core.hook_entry.run_hook, so it records its own line --
+            # and it is the one hook whose rejection is carried by the
+            # permissionDecision rather than by the exit code, hence the
+            # explicit `blocked` flag instead of the exit-code default.
+            _decision = None
+            if isinstance(response.output, dict):
+                _decision = response.output.get("hookSpecificOutput", {}).get(
+                    "permissionDecision"
+                )
+            record_hook_invocation(
+                "pre_tool_use",
+                payload=getattr(event, "payload", None),
+                exit_code=response.exit_code,
+                blocked=_decision in ("block", "deny") or response.exit_code == 2,
+                extra={"decision": _decision} if _decision else None,
+            )
 
             if isinstance(response.output, dict) and response.output:
                 hook_output = response.output.get("hookSpecificOutput", {})

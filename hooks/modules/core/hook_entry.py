@@ -27,6 +27,7 @@ import logging
 import sys
 from typing import Callable
 
+from .hook_trace import record_hook_invocation
 from .stdin import has_stdin_data
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,23 @@ def run_hook(
         adapter = get_adapter()
         stdin_data = sys.stdin.read()
         event = adapter.parse_event(stdin_data)
-        handler(event)
+        # Always-on invocation trace: the handler exits via sys.exit(), so the
+        # exit code is only observable by catching SystemExit here. Recording in
+        # `finally` covers the normal exit, the blocking exit, and a crash --
+        # the three cases a "did this hook run?" question needs to tell apart.
+        _exit_code = 0
+        try:
+            handler(event)
+        except SystemExit as se:
+            _exit_code = se.code if isinstance(se.code, int) else 1
+            raise
+        except BaseException:
+            _exit_code = 1
+            raise
+        finally:
+            record_hook_invocation(
+                hook_name, payload=getattr(event, "payload", None), exit_code=_exit_code
+            )
     except ValueError as e:
         logger.error("Adapter parse failed in %s: %s", hook_name, e)
         sys.exit(1)
