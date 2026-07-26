@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,12 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "hooks"))
 
 from modules.context.anchor_tracker import (
+    ANCHOR_TTL_SECONDS,
     MAX_TOOL_CALLS_TO_CHECK,
     TRACKABLE_TOOLS,
     _extract_searchable_text,
     cleanup_anchors,
+    cleanup_stale_anchor_files,
     compute_anchor_hits,
     extract_anchors,
     extract_tool_calls_from_transcript,
@@ -576,3 +579,89 @@ class TestSaveLoadCompareFlow:
         result = compute_anchor_hits(tool_calls, loaded)
         assert result["hits"] == 0
         assert result["hit_rate"] == 0.0
+
+
+# ============================================================================
+# cleanup_stale_anchor_files
+# ============================================================================
+
+
+class TestCleanupStaleAnchorFiles:
+    """Age-based sweep of orphaned anchor files, mirroring
+    artifact_skill_reminder.cleanup_stale_markers."""
+
+    def test_removes_files_older_than_ttl(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        stale = tmp_path / "old-session-agent-a111111.json"
+        stale.write_text('["some-anchor"]')
+        now = 1_000_000.0
+        old_time = now - ANCHOR_TTL_SECONDS - 1
+        import os
+        os.utime(stale, (old_time, old_time))
+
+        cleanup_stale_anchor_files(now=now)
+
+        assert not stale.exists()
+
+    def test_keeps_files_within_ttl(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        fresh = tmp_path / "recent-session-agent-a222222.json"
+        fresh.write_text('["some-anchor"]')
+        now = 1_000_000.0
+        recent_time = now - (ANCHOR_TTL_SECONDS - 60)
+        import os
+        os.utime(fresh, (recent_time, recent_time))
+
+        cleanup_stale_anchor_files(now=now)
+
+        assert fresh.exists()
+
+    def test_ages_by_mtime_not_by_name_shape(self, tmp_path, monkeypatch):
+        """The sweep must reclaim BOTH the old two-part naming scheme and the
+        current three-part scheme purely by age -- name shape is irrelevant."""
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        old_two_part = tmp_path / "old-session-old-agent.json"
+        old_two_part.write_text('["legacy-anchor"]')
+        old_three_part = tmp_path / "sess-agent-a333333.json"
+        old_three_part.write_text('["current-anchor"]')
+
+        now = 1_000_000.0
+        old_time = now - ANCHOR_TTL_SECONDS - 1
+        import os
+        os.utime(old_two_part, (old_time, old_time))
+        os.utime(old_three_part, (old_time, old_time))
+
+        cleanup_stale_anchor_files(now=now)
+
+        assert not old_two_part.exists()
+        assert not old_three_part.exists()
+
+    def test_missing_dir_is_a_noop(self, tmp_path, monkeypatch):
+        missing = tmp_path / "does-not-exist"
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: missing,
+        )
+        cleanup_stale_anchor_files()  # must not raise
+
+    def test_load_anchors_triggers_the_sweep(self, tmp_path, monkeypatch):
+        """The sweep is wired into the read path (load_anchors), unlike the
+        unwired cleanup_stale_markers precedent -- it must actually run, not
+        just exist."""
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        stale = tmp_path / "stale-agent-a444444.json"
+        stale.write_text('["stale-anchor"]')
+        import os
+        old_time = time.time() - ANCHOR_TTL_SECONDS - 60
+        os.utime(stale, (old_time, old_time))
+
+        load_anchors("some-session", "some-agent", "a555555")
+
+        assert not stale.exists()

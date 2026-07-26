@@ -20,11 +20,13 @@ Provides:
     - load_anchors(): Load persisted anchors for a session+agent+instance
     - extract_tool_calls_from_transcript(): Parse early tool calls from JSONL transcript
     - compute_anchor_hits(): Compare tool call args against anchors
+    - cleanup_stale_anchor_files(): Age-based sweep of orphaned anchor files
 """
 
 import json
 import logging
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -38,6 +40,13 @@ TRACKABLE_TOOLS = {"Glob", "Grep", "Read", "Bash"}
 
 # Minimum anchor length to avoid false-positive matches on short strings
 MIN_ANCHOR_LENGTH = 4
+
+# Age-based cleanup for orphaned anchor files (mirrors REMINDER_TTL_SECONDS in
+# artifact_skill_reminder.py -- the established sibling pattern for this class
+# of /tmp temp-file cache). A subagent dispatch is expected to complete well
+# within this window; anything older is either an orphan (SubagentStop never
+# fired) or already-consumed and forgotten.
+ANCHOR_TTL_SECONDS = 6 * 60 * 60
 
 
 def _anchors_dir() -> Path:
@@ -179,14 +188,22 @@ def load_anchors(session_id: str, agent_type: str, agent_id: str) -> Set[str]:
     """
     try:
         anchor_file = _anchor_file_path(session_id, agent_type, agent_id)
-        if anchor_file is None or not anchor_file.exists():
-            return set()
-
-        data = json.loads(anchor_file.read_text())
-        return set(data) if isinstance(data, list) else set()
+        result: Set[str] = set()
+        if anchor_file is not None and anchor_file.exists():
+            data = json.loads(anchor_file.read_text())
+            result = set(data) if isinstance(data, list) else set()
     except Exception as e:
         logger.debug("Failed to load anchors: %s", e)
-        return set()
+        result = set()
+
+    # Background hygiene, tied to the read side so it runs once per subagent
+    # completion rather than on every dispatch (see cleanup_stale_anchor_files).
+    try:
+        cleanup_stale_anchor_files()
+    except Exception as e:
+        logger.debug("Stale anchor sweep failed (non-fatal): %s", e)
+
+    return result
 
 
 def extract_tool_calls_from_transcript(
@@ -361,3 +378,26 @@ def cleanup_anchors(session_id: str, agent_type: str, agent_id: str) -> None:
             logger.debug("Cleaned up anchor file: %s", anchor_file)
     except Exception as e:
         logger.debug("Failed to cleanup anchors: %s", e)
+
+
+def cleanup_stale_anchor_files(now: Optional[float] = None) -> None:
+    """Remove anchor files older than ``ANCHOR_TTL_SECONDS``.
+
+    Best-effort background hygiene, mirroring
+    ``artifact_skill_reminder.cleanup_stale_markers``. Ages by filesystem
+    mtime rather than an embedded timestamp (anchor files store a bare JSON
+    list, no wrapper metadata), which is also what lets this sweep reclaim
+    BOTH the current three-part naming scheme and any leftover two-part
+    files from before this key changed -- age, not name shape, decides
+    removal. Never raises: a failed sweep must not affect the caller.
+    """
+    anchor_dir = _anchors_dir()
+    if not anchor_dir.exists():
+        return
+    now = now if now is not None else time.time()
+    for entry in anchor_dir.glob("*.json"):
+        try:
+            if now - entry.stat().st_mtime > ANCHOR_TTL_SECONDS:
+                entry.unlink(missing_ok=True)
+        except OSError:
+            entry.unlink(missing_ok=True)
