@@ -18,7 +18,7 @@ panel, a chip spotlights a relation.
 
 ```
 idea
- └─ document        the deck: title, subtitle, version, filters, pages
+ └─ document        the deck: title, subtitle, version, palette, pages
      └─ page        one act/view (also the ROOT section: its columns + sections)
          └─ section     a grid zone; nests other sections freely (a grid of grids)
              └─ component   a leaf that carries: a card, a divider, a lane label
@@ -88,7 +88,9 @@ and distorts the grid — a section that needs a heading has one.
 **5 · Every visual channel carries one claim.** Position, size, colour, border
 style, kicker — independent of each other. Double them to reinforce (a bar that
 grows and turns red says magnitude twice) or split them to say two things. A
-channel's meaning is PER PAGE, and it has to be declared.
+channel's meaning is PER PAGE and declaring it is obligatory — but no schema
+field holds it: you declare it in the CONTENT, as a legend band, a section
+heading, or a box that spells the code out. An undeclared channel is decoration.
 
 **6 · The grid does not draw relations: it lights them.** There are no arrows.
 Every relation is shared membership in a chip — a directed path, which `order`
@@ -277,5 +279,8 @@ grew a claim nothing renders. Check the pair whenever either side changes.
 - `reference.md` — the field-by-field schema, the fill geometry, the per-form
   skeletons, the positioning recipes, the engine gotchas, the authoring modes,
   and the build → validate loop with the form-scoped invariant table.
-- `assets/` — the portable engine, ready to scaffold into any repo, plus the
-  seed `data/` above.
+- `assets/` — the portable engine, ready to scaffold into any repo: `index.html`,
+  `engine/`, the seed `data/` above, and `tools/`, where the verification lives —
+  `check-layout.mjs` (the MANDATORY gate) over `static-census.cjs`, plus
+  `validate-layout.cjs`, `test-guards.mjs`, `contrast-audit.cjs`, `verify.mjs`.
+  Scaffold without `tools/` and the deck has no way to earn a verdict.
