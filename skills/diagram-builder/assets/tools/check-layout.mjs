@@ -78,6 +78,7 @@
 //     FIXTURE outside the repo and be SHOWN to fail. A guardrail only ever run
 //     against the deck that is supposed to pass has never been shown to work.
 // ─────────────────────────────────────────────────────────────────────────
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import censusLib from './static-census.cjs';
@@ -215,6 +216,277 @@ function effectiveCols(authored, slots, compound) {
 
 const rowspanOf = n => Math.max(1, Math.floor(Number(n && n.rowspan) || 1));
 
+// ── THE TEXT BUDGET: CHARACTERS, NOT PIXELS ───────────────────────────────
+// Everything above is geometry, and geometry is where arithmetic is EXACT. TEXT
+// is the one irreducible thing left — the defect the eye kept catching with all
+// three gates green: a description cut mid-sentence, a title wrapped past its
+// clamp, a rotated label clipped with no ellipsis. So this is the one
+// APPROXIMATE check in the file, and it is declared as such:
+//
+//        IT MARKS WHAT IS RISKY. IT NEVER BLESSES WHAT IS GOOD.
+//
+// The direction is chosen, not incidental. The DEMAND is over-estimated (the
+// monospace advance below is the CEILING of the families the CSS names) and the
+// CELL is derived from the stylesheet's own chrome, so a text flagged here is
+// genuinely near its limit, and a text that fails the render gate's N is
+// necessarily flagged here first. The converse does not hold — which is exactly
+// why every finding is an ADVISORY ([INFO], never a failure). `validate`'s N
+// measures the real font with real font metrics and is the VERDICT. The two
+// COMPOSE: this is the fast warning where no browser exists, N is the ruling.
+// This file never claims an authority the arithmetic does not have.
+//
+// WHY CHARACTERS AND NOT PIXELS. Both text roles are MONOSPACE (`--mono`), so a
+// token's width is its LENGTH times one advance — which means the cell can be
+// expressed as "how many characters fit". That is the author's own unit, and it
+// is what lets every finding name the number MEASURED, the number AVAILABLE and
+// the exact CELL instead of offering generic advice.
+//
+// WHAT IT DOES NOT SEE. A `vertical` treatment rotates the title onto the block
+// axis, where the constraint is the cell's HEIGHT, not its width — exempt here
+// for the same reason N exempts it. A box sitting DIRECTLY in a nested compound
+// grid is content-sized (`.sec-grid.sec-compound > .box { flex:0 0 auto }`), so
+// it has no track to be budgeted against and is not visited: only grids with a
+// real track model are.
+
+// Mirrored from index.html and ASSERTED against it by the CSS check in main(),
+// exactly as BREAKPOINTS is — computing with a mirror the stylesheet has moved
+// past would be green and wrong.
+const CSS_TEXT = {
+  planeMax: 1280,        // .sec-plane max-width — the content block's cap
+  frameH: 40,            // --frame-h, the canvas's lateral inset
+  canvasPad: 16,         // .canvas padding (--s-3)
+  frameHNarrow: 8,       // .canvas left/right inside @container stage (max-width:640px)
+  canvasPadNarrow: 8,    // .canvas padding at that same endpoint
+  gap: 8,                // --s-2 — every .sec-grid's gap
+  zonePad: 16,           // .zone padding (--s-3)
+  zoneBorder: 1,         // .zone border-width
+  boxPad: 16,            // .box lateral padding (--s-3)
+  boxBorder: 1.5,        // .box border-width
+  titleMinPx: 15,        // .box .t font-size: clamp(15px, 1vw, 17px)
+  titleMaxPx: 17,
+  descPx: 12,            // .box .m font-size — one description line
+  titleLines: 2,         // .box .t line-clamp
+  descLines: 3,          // .box .desc line-clamp (the WHOLE description)
+  halfTitleLines: 1,     // .box.half .t line-clamp
+};
+
+// THE ONE ASSUMED CONSTANT. The stylesheet gives every width and every font
+// size; what it cannot give is how wide a CHARACTER is. Every family `--mono`
+// names (ui-monospace, SF Mono, Menlo, Consolas, and the metric-compatible Linux
+// defaults DejaVu/Liberation Mono) has a fixed advance between 0.55em (Consolas)
+// and 0.6023em (Menlo). 0.6 is the CEILING of that range, so a character is
+// never assumed NARROWER than it renders and the estimated demand stays an upper
+// bound — which is what keeps this check on the "marks the risky" side. That
+// ceiling also carries the slack for what the width chain below deliberately
+// omits: the `scrollbar-gutter:stable` reserve at the tiers below the plane cap,
+// and the extra 0.5px per side an `.accent` box's 2px border costs.
+const MONO_ADVANCE_EM = 0.6;
+
+// The mirror above, read back out of the real stylesheet. Same contract as
+// cssBreakpoints: { ok, tokens, problem } — a deck with no index.html (a
+// data-only fixture) is reported, never guessed at.
+const CSS_TEXT_PROBES = [
+  ['planeMax', /\.sec-plane\s*\{[^}]*?max-width:\s*(\d+(?:\.\d+)?)px/],
+  ['frameH', /--frame-h:\s*(\d+(?:\.\d+)?)px/],
+  ['canvasPad', /--s-3:\s*(\d+(?:\.\d+)?)px/],
+  ['gap', /--s-2:\s*(\d+(?:\.\d+)?)px/],
+  ['zoneBorder', /\.zone\s*\{[^}]*?border:\s*(\d+(?:\.\d+)?)px/],
+  ['boxBorder', /\.box\s*\{[^}]*?border:\s*(\d+(?:\.\d+)?)px/],
+  ['titleMinPx', /\.box \.t\s*\{[^}]*?font-size:\s*clamp\(\s*(\d+(?:\.\d+)?)px/],
+  ['titleMaxPx', /\.box \.t\s*\{[^}]*?font-size:\s*clamp\([^)]*?,\s*(\d+(?:\.\d+)?)px\s*\)/],
+  ['descPx', /\.box \.m\s*\{[^}]*?font-size:\s*(\d+(?:\.\d+)?)px/],
+  ['titleLines', /\.box \.t\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
+  ['descLines', /\.box \.desc\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
+  ['halfTitleLines', /\.box\.half \.t\s*\{[^}]*?-webkit-line-clamp:\s*(\d+)/],
+  ['frameHNarrow', /@container stage \(max-width: 640px\)[\s\S]*?\.canvas\s*\{[^}]*?left:\s*(\d+(?:\.\d+)?)px/],
+  ['canvasPadNarrow', /@container stage \(max-width: 640px\)[\s\S]*?\.canvas\s*\{[^}]*?padding:\s*(\d+(?:\.\d+)?)px/],
+];
+// The two tokens no single declaration carries a number for: `.zone` and `.box`
+// spend --s-3 through a var(), so the value is asserted at --s-3 (canvasPad
+// above) and these assert that the RULE still spends it there.
+const CSS_TEXT_SHAPES = [
+  ['.zone padding is var(--s-3)', /\.zone\s*\{[^}]*?padding:\s*var\(--s-3\)/],
+  ['.box lateral padding is var(--s-3)', /\.box\s*\{[^}]*?padding:\s*var\(--s-2\)\s+var\(--s-3\)/],
+  ['leaf grid gap is var(--s-2)', /\.sec-grid:not\(\.sec-compound\)\s*\{[^}]*?gap:\s*var\(--s-2\)/],
+];
+
+function cssTextTokens(root) {
+  const file = path.join(root, 'index.html');
+  if (!fs.existsSync(file))
+    return { ok: false, tokens: {}, problem: `index.html does not exist under "${root}"` };
+  const src = fs.readFileSync(file, 'utf8');
+  const tokens = {}, missing = [];
+  for (const [key, re] of CSS_TEXT_PROBES) {
+    const m = src.match(re);
+    if (m) tokens[key] = Number(m[1]); else missing.push(key);
+  }
+  for (const [name, re] of CSS_TEXT_SHAPES) if (!re.test(src)) missing.push(name);
+  if (missing.length)
+    return { ok: false, tokens, problem: `index.html declares no readable [${missing.join(', ')}]` };
+  // .zone and .box both pay --s-3 laterally (asserted by CSS_TEXT_SHAPES).
+  tokens.zonePad = tokens.canvasPad;
+  tokens.boxPad = tokens.canvasPad;
+  return { ok: true, tokens };
+}
+
+// ── THE WIDTH CHAIN, MIRRORED FROM THE STYLESHEET ──────────────────────────
+// container width -> canvas insets+padding -> the plane's cap -> (per nesting
+// level) a section's share of its parent, minus its own zone frame -> the leaf
+// grid's tracks and gaps -> the box's border and padding. Every subtraction is a
+// declaration in index.html, which is why the numbers above are mirrored and
+// asserted rather than tuned: the chain reproduces `.zone` 636px -> grid 602px
+// and a 6-track band cell of 201px, the widths the render gate reports.
+
+// What the canvas leaves for the content plane at a container width.
+function planeWidth(cw) {
+  const narrow = cw <= BP_ONE;
+  const inset = narrow ? CSS_TEXT.frameHNarrow : CSS_TEXT.frameH;
+  const pad = narrow ? CSS_TEXT.canvasPadNarrow : CSS_TEXT.canvasPad;
+  return Math.min(CSS_TEXT.planeMax, cw - 2 * (inset + pad));
+}
+
+// The OUTER width of a section child of grid `g`. Below the stack breakpoint
+// every compound grid is a full-width column (`flex-direction:column` +
+// align-items:stretch), so a section takes the whole parent. Above it the root
+// with bands is a real fr grid (track-proportional) and a nested compound is a
+// flex row where ONLY a nested section grows: `.sec-grid.sec-compound > .zone`
+// carries `flex: var(--span,1) 1 0`, while a `.box` / `.sep` / `.rail` sibling is
+// `flex:0 0 auto` — content-sized. So the row's width is divided among the
+// SECTION children by their spans, and every child still costs a gap.
+// ACCEPTED LIMITATION: a content-sized sibling's own width is not knowable
+// without a render, so it is counted as zero. That over-states its section
+// siblings' width, which can only make this budget quieter — never a false alarm.
+function sectionOuterWidth(g, child, cw) {
+  const gw = g.widthAt(cw);
+  if (cw <= BP_STACK) return gw;
+  const spanOf = n => Math.max(1, Math.min(Number(n && n.span) || 1, g.cols));
+  const span = spanOf(child);
+  if (span >= g.cols) return gw;                        // a band owns its row
+  if (g.isRoot)
+    return (gw - (g.cols - 1) * CSS_TEXT.gap) * span / g.cols + (span - 1) * CSS_TEXT.gap;
+  const kids = (g.children || []).filter(n => spanOf(n) < g.cols);
+  const growers = kids.filter(isSection);
+  const total = growers.reduce((n, x) => n + spanOf(x), 0) || 1;
+  return (gw - Math.max(0, kids.length - 1) * CSS_TEXT.gap) * span / total;
+}
+
+// The TRACK AREA of a nested section's own grid: its outer width less its zone
+// frame. A `plain` zone is a bare wrapper (`padding:0; border:none`), so it
+// costs nothing.
+function nestedTrackArea(g, child, cw) {
+  const outer = sectionOuterWidth(g, child, cw);
+  if (treatmentsOf(child).includes('plain')) return outer;
+  return outer - 2 * (CSS_TEXT.zonePad + CSS_TEXT.zoneBorder);
+}
+
+// The width a box's TEXT gets: its cell (w of the grid's tracks, plus the gaps
+// it swallows) less the box's own border and lateral padding. `.t` carries no
+// padding of its own, so this is what the render gate measures as availW.
+function cellTextWidth(gridW, tracks, w) {
+  const track = (gridW - (tracks - 1) * CSS_TEXT.gap) / tracks;
+  return track * w + (w - 1) * CSS_TEXT.gap - 2 * (CSS_TEXT.boxBorder + CSS_TEXT.boxPad);
+}
+
+// `.box .t` is `clamp(15px, 1vw, 17px)`. 1vw is the VIEWPORT, and the stage is
+// full-width (`width:100%`), so the tier width is that viewport.
+const titlePx = cw => Math.min(CSS_TEXT.titleMaxPx, Math.max(CSS_TEXT.titleMinPx, cw / 100));
+
+// How many monospace characters fit in `px` at `fontPx`. Floor, never round: a
+// partial character is not a character.
+const capacityFor = (px, fontPx) => Math.floor(px / (fontPx * MONO_ADVANCE_EM));
+
+const tokensOf = text => String(text ?? '').trim().split(/\s+/).filter(Boolean);
+const longestToken = text => tokensOf(text).reduce((a, w) => (w.length > a.length ? w : a), '');
+
+// Greedy wrap into lines of `cap` characters, mirroring `.box`'s
+// `overflow-wrap:break-word; word-break:normal`: lines break between words, and
+// a token too long for a whole line FRACTURES mid-word (which is the defect N
+// names). Returns the visual line count.
+function wrapLines(text, cap) {
+  const words = tokensOf(text);
+  if (!words.length) return 0;
+  if (cap < 1) return Infinity;
+  let lines = 1, used = 0;
+  for (const word of words) {
+    let w = word.length;
+    if (used > 0) {
+      if (used + 1 + w <= cap) { used += 1 + w; continue; }
+      lines++; used = 0;
+    }
+    while (w > cap) { lines++; w -= cap; }
+    used = w;
+  }
+  return lines;
+}
+
+// One box's budget: the longest TITLE TOKEN against the cell, the TITLE against
+// its clamp, and the DESCRIPTION against its own. Returns how many assertions ran,
+// any advisory findings, and every MARGIN it measured — so a passing run can
+// report its tightest margin instead of a bare "holds", the way the render gate's
+// M reports its narrowest cell. Each finding carries the number MEASURED, the
+// number AVAILABLE and the exact CELL: a budget whose message is generic advice
+// teaches nothing and gets silenced by writing a structural value at random.
+// A separator and a rail render no `.box` title; a `vertical` box is exempt.
+function textBudget(leaf, ctx) {
+  const findings = [], margins = [];
+  const nil = { asserted: 0, findings, margins };
+  if (!leaf || leaf.type === 'separator' || leaf.type === 'rail') return nil;
+  if (treatmentsOf(leaf).includes('vertical')) return nil;
+
+  const titleCap = capacityFor(ctx.availPx, ctx.fontPx);
+  const descCap = capacityFor(ctx.availPx, CSS_TEXT.descPx);
+  const measure = (kind, measured, available, detail) => {
+    margins.push({ kind, measured, available, slack: available - measured });
+    if (measured > available) findings.push({ kind, deficit: measured - available, detail });
+  };
+
+  const title = String(leaf.title ?? '').trim();
+  if (title) {
+    const token = longestToken(title);
+    measure('token', token.length, titleCap,
+      `title token "${token}" is ${token.length} char(s) and the cell holds ${titleCap} ` +
+      `at ${ctx.fontPx}px mono — it fractures mid-word. ${ctx.cell}. ` +
+      `Shorten the token or widen the cell.`);
+
+    const clamp = ctx.half ? CSS_TEXT.halfTitleLines : CSS_TEXT.titleLines;
+    const lines = wrapLines(title, titleCap);
+    measure('title-lines', lines, clamp,
+      `title wraps to ${lines} line(s) of ${titleCap} char(s) and ` +
+      `${ctx.half ? '.box.half .t' : '.box .t'} clamps to ${clamp} — ${lines - clamp} line(s) cut. ` +
+      `${ctx.cell}. Shorten the title or widen the cell.`);
+  }
+
+  const raw = leaf.description;
+  const authored = Array.isArray(raw) ? raw : (raw === null || raw === undefined ? [] : [raw]);
+  if (authored.length) {
+    // Each authored line is its own `.m` block, so it costs AT LEAST one visual
+    // line and more when it wraps; the clamp counts the visual lines of the whole
+    // `.desc`. That is the arithmetic behind "three lines of few words".
+    const per = authored.map(l => wrapLines(l, descCap));
+    const total = per.reduce((n, x) => n + x, 0);
+    const wrapped = per.map((n, i) => ({ n, i })).filter(x => x.n > 1)
+      .map(x => `line ${x.i + 1} ("${String(authored[x.i]).slice(0, 24)}…") wraps to ${x.n}`);
+    measure('desc-lines', total, CSS_TEXT.descLines,
+      `description needs ${total} visual line(s) of ${descCap} char(s) across ` +
+      `${authored.length} authored line(s) and .box .desc clamps to ${CSS_TEXT.descLines} — ` +
+      `the last ${total - CSS_TEXT.descLines} is cut mid-sentence` +
+      (wrapped.length ? ` (${wrapped.join('; ')})` : '') + `. ${ctx.cell}. ` +
+      `Three lines of FEW WORDS, not a paragraph — or widen the cell.`);
+  }
+  return { asserted: margins.length, findings, margins };
+}
+
+// The tightest margin the TEXT budget measured, per kind, across the whole run —
+// the number the check reports when it passes. A gate that prints only "holds"
+// cannot be told apart from a gate that measured nothing.
+const textTightest = new Map();
+const TEXT_KIND = { token: 'title token', 'title-lines': 'title line(s)', 'desc-lines': 'description line(s)' };
+function textHeadline() {
+  if (!textTightest.size) return 'no leaf carried a title or a description to budget';
+  return 'tightest margin — ' + [...textTightest.entries()].map(([kind, m]) =>
+    `${TEXT_KIND[kind]} ${m.measured} of ${m.available} (${m.where} @${m.cw}px)`).join('; ');
+}
+
 // ── CSS GRID SPARSE AUTO-PLACEMENT, SIMULATED ─────────────────────────────
 // `grid-auto-flow` is the default (row, SPARSE), so the placement cursor never
 // moves backwards: an item that does not fit in the tracks left on the current
@@ -272,27 +544,33 @@ function place(items, tracks) {
 // A NESTED compound grid is a flex-wrap row of sections: it has no tracks, so no
 // rectangle to close. It is still walked into (its children may be leaf grids)
 // and still checked for sibling-level defects (ORDER, LANE).
+// `widthAt(containerWidth)` is threaded down the walk: the root's track area is
+// the content plane, and each nested section's is its share of its parent minus
+// its own zone frame (see THE WIDTH CHAIN). It is a FUNCTION, not a number,
+// because the same grid is a different width at every tier.
 function discoverGrids(page) {
   const grids = [];
-  const walk = (node, label, isRoot) => {
+  const walk = (node, label, isRoot, widthAt) => {
     const children = isRoot ? (node.sections || []) : (node.children || []);
     const slots = slotsOf(children);
     const compound = children.some(isSection);
     const authored = node.columns;
     const cols = effectiveCols(authored, slots, compound);
     const hasBand = slots.some(s => isBandClass(Math.max(1, Math.min(s.node.span || 1, cols)), cols));
-    grids.push({
-      label, isRoot, compound, children, slots,
+    const grid = {
+      label, isRoot, compound, children, slots, widthAt,
       authoredCols: Math.max(1, Number.isInteger(authored) && authored > 0 ? authored : DEFAULT_SECTION_COLUMNS),
       cols, hasBand,
       // Placeable = it is laid out as a CSS grid with tracks.
       placeable: !compound || (isRoot && hasBand),
       // The root-with-bands grid only exists above the stack breakpoint.
       minWidth: (isRoot && compound) ? BP_STACK + 1 : 0,
-    });
-    for (const c of children) if (isSection(c)) walk(c, `${label} > ${c.id ?? '(no id)'}`, false);
+    };
+    grids.push(grid);
+    for (const c of children) if (isSection(c))
+      walk(c, `${label} > ${c.id ?? '(no id)'}`, false, cw => nestedTrackArea(grid, c, cw));
   };
-  walk(page, page.id != null ? `${page.id}:root` : 'root', true);
+  walk(page, page.id != null ? `${page.id}:root` : 'root', true, planeWidth);
   return grids;
 }
 
@@ -323,6 +601,8 @@ function checkPage(page) {
   const form = page.form ?? DEFAULT_FORM;
   const grids = discoverGrids(page);
   const trackTable = [];
+  // The TEXT budget's worst finding per (box, kind) across the tier sweep.
+  const textWorst = new Map();
 
   // ── data-level checks (tier-independent) ────────────────────────────────
 
@@ -521,6 +801,33 @@ function checkPage(page) {
           `— content follows them, so a merge did not fit in the tracks left on its row and dropped down, ` +
           `abandoning the rest. Hole area: ${interior.length} cell(s).`);
 
+      // TEXT — the CHARACTER BUDGET. Run at EVERY tier: the authored tier gives
+      // the narrowest cells and the collapsed ones the largest font, so neither
+      // dominates. Findings are DEDUPED to the worst tier per (box, kind) rather
+      // than emitted five times — the advisory is about the text, not the sweep.
+      const gridW = g.widthAt(tier.w);
+      const fontPx = titlePx(tier.w);
+      for (const p of placed) {
+        const slot = g.slots.find(s => (s.node.id ?? '(no id)') === p.id);
+        if (!slot) continue;
+        const availPx = cellTextWidth(gridW, tracks, p.w);
+        const cell = `cell ${Math.round(availPx)}px = ${p.w} of ${tracks} track(s) in a ` +
+          `${Math.round(gridW)}px grid, worst at the ${tier.w}px tier`;
+        for (const leaf of (slot.half ? slot.pair : [slot.node])) {
+          const budget = textBudget(leaf, { availPx, fontPx, half: !!slot.half, cell });
+          asserted += budget.asserted;
+          const where = `${g.label} > ${leaf && leaf.id != null ? leaf.id : '(no id)'}`;
+          for (const f of budget.findings) {
+            const prev = textWorst.get(`${where}|${f.kind}`);
+            if (!prev || f.deficit > prev.deficit) textWorst.set(`${where}|${f.kind}`, { ...f, where });
+          }
+          for (const m of budget.margins) {
+            const prev = textTightest.get(m.kind);
+            if (!prev || m.slack < prev.slack) textTightest.set(m.kind, { ...m, where, cw: tier.w });
+          }
+        }
+      }
+
       if (!authoredTier) continue;   // the checks below are authored-tier truths
 
       // TRACK — a dead track: a column no slot ever occupies. The engine's clamp
@@ -615,6 +922,8 @@ function checkPage(page) {
         `Deliberate in a tall-beside-short composition; a defect if they were meant to be lanes.`);
   }
 
+  for (const f of textWorst.values()) info('TEXT', f.where, f.detail);
+
   return { pageId, form, grids, trackTable, leaves: leavesOf(page).length };
 }
 
@@ -654,6 +963,26 @@ function main() {
     else console.log(`    [PASS] ${bp.widths.join(' / ')}px — the mirror matches the stylesheet`);
   }
 
+  // The TEXT BUDGET's mirror, asserted the same way and for the same reason: the
+  // budget is arithmetic over the stylesheet's own chrome, font sizes and clamps,
+  // so a moved declaration turns every character number below into a measurement
+  // of a deck the browser no longer draws.
+  const ct = cssTextTokens(ROOT);
+  console.log('\nCSS  (mirrored text metrics vs the .box / .zone / .canvas declarations in index.html)');
+  if (!ct.ok) {
+    console.log(`    [INFO] not asserted — ${ct.problem}. The TEXT budget below uses the mirror.`);
+  } else {
+    const drift = Object.entries(ct.tokens).filter(([k, v]) => CSS_TEXT[k] !== v);
+    asserted++;
+    if (drift.length)
+      fail('CSS', 'index.html', `text metrics drifted — ${drift.map(([k, v]) =>
+        `${k}: stylesheet ${v} vs gate ${CSS_TEXT[k]}`).join(', ')}. Every TEXT ` +
+        `character number is derived from these, so the budget describes a deck the browser does not draw.`);
+    else console.log(`    [PASS] title ${CSS_TEXT.titleMinPx}-${CSS_TEXT.titleMaxPx}px/` +
+      `${CSS_TEXT.titleLines}ln (half ${CSS_TEXT.halfTitleLines}ln), desc ${CSS_TEXT.descPx}px/` +
+      `${CSS_TEXT.descLines}ln, plane ${CSS_TEXT.planeMax}px — the mirror matches the stylesheet`);
+  }
+
   const deck = loadAuthoredDeck(ROOT);
   if (!deck.manifest) {
     console.log('\n══════════════════════════════════════════════════════════════');
@@ -691,14 +1020,18 @@ function main() {
     ['TIER', 'collapse cascade is monotone across the container tiers'],
     ['CHIP', 'filter referential integrity (both directions) + chip arity'],
     ['ORDER', 'no duplicate effective `order` among siblings'],
-    ['CSS', 'the mirrored breakpoints match the container queries in index.html'],
+    // A third entry is an optional PASS DETAIL: what the check MEASURED when it
+    // holds, so a pass reports a number instead of a bare "holds everywhere".
+    ['TEXT', 'character budget: title token, title clamp, description clamp ' +
+      '(ADVISORY — conservative arithmetic; `validate` N is the verdict)', textHeadline],
+    ['CSS', 'the mirrored breakpoints and text metrics match index.html'],
   ];
   console.log('\n  ── CHECKS ─────────────────────────────────────────────────────');
-  for (const [id, name] of CHECKS) {
+  for (const [id, name, passDetail] of CHECKS) {
     const fails = findings.filter(f => f.check === id && f.sev === 'fail');
     const infos = findings.filter(f => f.check === id && f.sev === 'info');
     console.log(`\n  ${id}  ${name}`);
-    if (!fails.length) console.log(`    [PASS] holds everywhere it applies`);
+    if (!fails.length) console.log(`    [PASS] ${passDetail ? passDetail() : 'holds everywhere it applies'}`);
     for (const f of fails) console.log(`    [FAIL] ${f.where}: ${f.detail}`);
     for (const f of infos) console.log(`    [INFO] ${f.where}: ${f.detail}`);
   }
@@ -733,4 +1066,6 @@ function main() {
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
 
 export { widthAtTier, isBandAtTier, isBandClass, place, tracksFor,
-  orderedChildren, slotsOf, effectiveCols, DEFAULT_SECTION_COLUMNS };
+  orderedChildren, slotsOf, effectiveCols, DEFAULT_SECTION_COLUMNS,
+  planeWidth, cellTextWidth, titlePx, capacityFor, wrapLines, longestToken,
+  textBudget, cssTextTokens, CSS_TEXT, MONO_ADVANCE_EM };
