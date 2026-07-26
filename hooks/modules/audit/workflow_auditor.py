@@ -134,12 +134,48 @@ def _check_token_budget(
     return None
 
 
+def _is_infra_cli_pipe(command: str) -> bool:
+    """True when *command* pipes the output of a cloud/infra CLI invocation.
+
+    ``analysis.pipe_commands`` (transcript_analyzer.py, ``_has_unquoted_pipe``)
+    flags ANY unquoted pipe, including routine read-only shell filtering
+    (``grep ... | head``, ``find ... | sort``, ``ps aux | grep``) that carries
+    no real risk and dominates the anomaly volume. The genuine problem this
+    check exists to catch is narrower: a cloud/infra CLI (gcloud, kubectl,
+    aws, terraform, helm, flux) whose output was piped to a shell utility
+    instead of the CLI's own native ``--format``/``--filter``/``-o`` flags --
+    exactly the case ``cloud_pipe_validator.CLOUD_CLI_PATTERN`` blocks live,
+    except when a leading ``cd``, ``;``, or ``&&`` keeps the CLI from being
+    the first token of the whole string, which slips the live gate entirely.
+    Reuses ``StageDecomposer`` so the same quote/operator-aware split the
+    security layer relies on classifies this audit-time check too.
+    """
+    from ..tools.cloud_pipe_validator import CLOUD_CLI_PATTERN
+    from ..tools.stage_decomposer import StageDecomposer
+
+    decomposed = StageDecomposer().decompose(command)
+    return any(
+        stage.operator == "|" and CLOUD_CLI_PATTERN.match(stage.executable)
+        for stage in decomposed.stages
+    )
+
+
 def _check_pipe_retroactive(
     analysis: TranscriptAnalysis,
 ) -> List[Dict[str, str]]:
-    """Warning per pipe command detected in transcript."""
+    """Warning per cloud/infra CLI command whose output was piped.
+
+    Narrowed to commands that invoke a cloud/infra CLI (gcloud, kubectl, aws,
+    terraform, helm, flux) and pipe its output -- the case
+    ``cloud_pipe_validator`` blocks live but can miss when the CLI is not the
+    first token of the whole command string. Ordinary read-only piping
+    (``grep | head``, ``find | sort``) is standard Unix idiom, not a policy
+    violation, and is excluded -- see ``_is_infra_cli_pipe``.
+    """
     results: List[Dict[str, str]] = []
     for cmd in analysis.pipe_commands:
+        if not _is_infra_cli_pipe(cmd):
+            continue
         # Truncate long commands for readability
         display_cmd = cmd[:120] + "..." if len(cmd) > 120 else cmd
         results.append({
@@ -385,7 +421,8 @@ def audit(
     - duplicate_write_storm: Write/Edit tool with 3+ identical calls
     - duration_outlier: duration_ms > 600,000 (10 min)
     - tool_call_velocity: > 20 tool calls per minute
-    - pipe_retroactive: pipe commands found in transcript
+    - pipe_retroactive: cloud/infra CLI (gcloud/kubectl/aws/terraform/helm/flux)
+      output piped to a shell utility, evading the live cloud_pipe_validator gate
     - model_mismatch: transcript model != agent definition model
     - skill_order: skills injected in unexpected order
     - duplicate_tools: duplicate tool calls detected
