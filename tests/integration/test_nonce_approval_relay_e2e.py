@@ -205,11 +205,21 @@ class TestNonceApprovalRelayE2E:
         assert push_block["hookSpecificOutput"]["permissionDecision"] == "ask"
 
     def test_compound_command_reuses_component_nonce_on_retry(self, isolated_nonce_env):
-        """Compound with T3 component returns 'ask'; grant passthrough works after activation."""
+        """Compound with T3 component returns 'ask'; grant passthrough works after activation.
+
+        The T3 component must NOT be a cloud/infra CLI. `chaining` is a
+        cloud-scoped rule in cloud_pipe_validator.VIOLATIONS, so any `&&`
+        alongside a NATIVE_OUTPUT_FLAG_CLIS stage (terraform, kubectl, ...) is
+        refused categorically with a non-approvable `deny` before tier
+        classification ever offers an approvable `ask`. `git` is outside that
+        set, so `git push` is a T3 component that reaches the approval flow
+        this test exists to measure.
+        """
         pre_tool_use = isolated_nonce_env["pre_tool_use"]
         approval_grants = isolated_nonce_env["approval_grants"]
 
-        compound = "ls -la && terraform apply"
+        component = "git push origin feat/compound"
+        compound = f"ls -la && {component}"
 
         # Compound T3 command returns "ask"
         block = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
@@ -220,9 +230,9 @@ class TestNonceApprovalRelayE2E:
         from tests.fixtures.db_helpers import seed_db_pending
         nonce = approval_grants.generate_nonce()
         seed_db_pending(
-            command="terraform apply",
+            command=component,
             session_id="e2e-relay-session",
-            danger_verb="apply",
+            danger_verb="push",
             danger_category="MUTATIVE",
             nonce=nonce,
         )
