@@ -82,7 +82,14 @@ probe-*.md
 # Evidence dir (repo-root scratch, prevent re-accumulation).
 # Anchored with leading slash so tests/evals/evidence/ (the permanent
 # AC-evidence store) is NOT excluded by this rule.
-/evidence/
+/evidence/*
+
+# Incident evidence is a permanent, tracked exception to the scratch rule
+# above (same carve-out shape as the briefs evidence/INDEX.md rule below):
+# an incident artifact proves something that cannot be regenerated, so it
+# must survive re-accumulation cleanup instead of being swept with scratch.
+!/evidence/incidents/
+!/evidence/incidents/**
 
 # Stray root-level Gaia DB (0-byte connect-then-abort leak / relative --db-path).
 # The canonical DB lives at ~/.gaia/gaia.db (GAIA_DATA_DIR); a gaia.db at the
