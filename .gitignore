@@ -65,8 +65,12 @@ specs/
 .claude/project-context/briefs/*/evidence/*
 !.claude/project-context/briefs/*/evidence/INDEX.md
 
-# Transient eval smoke run artifacts (baseline.json is tracked)
+# Transient eval run artifacts (baseline.json is tracked). Two suffixes:
+# `-evals` is what runs emit now, `-smoke` is the historical name kept so
+# older run files on a long-lived checkout stay ignored.
+tests/evals/results/*-evals.json
 tests/evals/results/*-smoke.json
+tests/evals/results/baseline.candidate.json
 
 # Temporary probe/test artifacts
 tmp-*
