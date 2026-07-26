@@ -1,0 +1,55 @@
+{
+  "agent_status": {
+    "agent_state": "NEEDS_VERIFICATION",
+    "agent_id": "a9f31e2",
+    "pending_steps": [],
+    "next_action": "done"
+  },
+  "evidence_report": {
+    "patterns_checked": [
+      "byte-identical retry discipline for an already-approved COMMAND_SET (command-execution rule 7 / security-tiers no-elusion rule)",
+      "prior draft a1f3e9c2.355c0f95a1b9 held the exact chained command and full commit message from the earlier blocked attempt"
+    ],
+    "files_checked": [
+      "installer/evidence/AC-1.txt",
+      "installer/evidence/AC-2.txt",
+      "installer/evidence/AC-3.txt",
+      "installer/evidence/AC-82.txt",
+      "installer/evidence/AC-83.txt",
+      "installer/evidence/AC-84.txt"
+    ],
+    "commands_run": [
+      "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac status --short",
+      "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac log --oneline -5",
+      "gaia approvals show P-23de2d02aa68af594a559f05bee70913 --json",
+      "gaia contract view --draft-id a1f3e9c2.355c0f95a1b9",
+      "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac rm AC-82/83/84 && git add AC-1/2/3 && git commit -m <full message> && git push",
+      "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac ls-files installer/evidence/",
+      "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac log --oneline -1",
+      "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac log --oneline -1 origin/main",
+      "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac status --short"
+    ],
+    "key_outputs": [
+      "recovered the exact byte-identical chained command and full commit message from prior draft a1f3e9c2.355c0f95a1b9 (approval_request.exact_content), matching the P-23de2d02aa68af594a559f05bee70913 grant signature",
+      "re-executed the single chained Bash call: git rm AC-82/83/84 && git add AC-1/2/3 && git commit -m <full message> && git push -- ran with no re-block, hook honored the existing grant",
+      "commit b4d59ce landed on main: 5 files changed (AC-82 renamed to AC-1, AC-2 and AC-3 created, AC-83 and AC-84 deleted)",
+      "push succeeded: origin/main advanced 1fe0d54..b4d59ce",
+      "verified installer/evidence/ now contains only AC-1.txt, AC-2.txt, AC-3.txt (git ls-files)",
+      "verified local main and origin/main both point to b4d59ce (git log -1 on each)",
+      "working tree clean after push (git status --short empty)"
+    ],
+    "verbatim_outputs": [
+      "[main b4d59ce] docs(evidence): rename gate evidence to brief 118 AC names\n 5 files changed, 452 insertions(+), 143 deletions(-)\n rename installer/evidence/{AC-82.txt => AC-1.txt} (83%)\n create mode 100644 installer/evidence/AC-2.txt\n create mode 100644 installer/evidence/AC-3.txt\n delete mode 100644 installer/evidence/AC-83.txt\n delete mode 100644 installer/evidence/AC-84.txt\nTo https://github.com/century-inc/branchkinect-aaxis-iac.git\n   1fe0d54..b4d59ce  main -> main"
+    ],
+    "cross_layer_impacts": [],
+    "open_gaps": [],
+    "verification": {
+      "result": "pass",
+      "type": "command",
+      "command": "git -C /home/jorge/ws/century-inc/branchkinect-aaxis-iac ls-files installer/evidence/",
+      "observed": "AC-1.txt, AC-2.txt, AC-3.txt only; origin/main at b4d59ce matching local; working tree clean"
+    }
+  },
+  "consolidation_report": null,
+  "approval_request": null
+}
