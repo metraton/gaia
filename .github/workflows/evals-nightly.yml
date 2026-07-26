@@ -1,0 +1,161 @@
+name: Evals Nightly (live agent dispatch)
+
+# Dedicated workflow, deliberately NOT folded into ci.yml. ci.yml's `on:` block
+# fires every one of its jobs on push/PR; adding a `schedule:` trigger there
+# would re-run the ENTIRE matrix (test-python x2, lint-js x3, build-plugins x2,
+# validate-manifests, windows-compat) every night, not just the two live eval
+# cases this workflow exists for. A separate file keeps the nightly blast
+# radius to exactly what it is meant to cover.
+#
+# What this covers: S1 and S6 in tests/evals/catalogs/context_consumption.yaml
+# are the only two cases marked `live_only: true` with `backend: subprocess` --
+# the only cases that dispatch a REAL Gaia agent through the real `claude` CLI
+# (tests/evals/runner.py::SubprocessBackend, --print mode) rather than the free
+# in-process RoutingSimBackend (S4) or a unit test. Per
+# tests/conftest.py::pytest_collection_modifyitems they only run when `-m llm`
+# is passed by hand, so until now they were exercised only when a person
+# remembered to run them locally -- a protection that existed on paper and was
+# rarely spent.
+#
+# Why nightly instead of on every push: sampling cheap on push (the free half
+# of tests/evals/, already gated into ci.yml's test-python job as of
+# 356cbaa) / full run nightly is the standard eval-suite pattern -- the
+# property S1/S6 protect (does the agent read its injected context back
+# instead of guessing; does it stop and report APPROVAL_REQUEST instead of
+# retrying a blocked `git push`) does not regress push-to-push, only when the
+# agent identity, a skill, a hook, or the eval harness itself changes. Paying
+# ~8-15k tokens on every commit buys nothing over paying it once a day; a
+# nightly run still bounds detection to under 24h with zero human
+# intervention, which is the property asked for.
+#
+# Verified before this file was written (see tests/evals/README.md +
+# tests/evals/runner.py):
+#   - SubprocessBackend invokes `claude --print --agent <agent> ... <task>`
+#     (headless/non-interactive mode), which IS documented by Anthropic to
+#     authenticate via ANTHROPIC_API_KEY with no OAuth/login step -- unlike an
+#     INTERACTIVE session, print mode honors the env var directly. This is a
+#     different claim from l2-ci-subset's promptfoo job (which calls the
+#     Messages API directly); both are real, verified paths.
+#   - `.claude/` is fully gitignored, so a bare checkout has no
+#     `.claude/agents/`. Gaia's own `gaia install --workspace <dir>` wires
+#     `.claude/agents` (+ hooks, skills, config, settings.json) via symlinks
+#     back to this same source tree, idempotently -- the same mechanism
+#     ci.yml's windows-compat job already relies on. This job installs INTO
+#     the checkout itself (workspace == plugin source) because
+#     SubprocessBackend dispatches with cwd = the pytest invocation directory
+#     (this checkout's root); without this step `claude --agent developer`
+#     has no `.claude/agents/developer.md` to resolve and fails on every run,
+#     regardless of ANTHROPIC_API_KEY.
+#
+# NOT verified without spending a real dispatch (would need `-m llm` to run):
+#   - That the self-install-into-checkout wiring above resolves `--agent
+#     developer` in an actual runner (confirmed only by reading the plugin
+#     detection code path + observing the equivalent symlink wiring on a
+#     dev machine, not by a live run here).
+#   - The live pass/fail outcome for S1 and S6 themselves, and the exact
+#     per-run token spend (tests/evals/README.md estimates ~8-15k total).
+#   - Whether Gaia's own hooks (context injection, contract validation)
+#     degrade gracefully inside the dispatched session given the isolated,
+#     unbootstrapped GAIA_DATA_DIR that tests/conftest.py's autouse
+#     `_isolate_gaia_data_dir` fixture forces for every pytest test (this is
+#     pre-existing behavior of the live-eval framework itself, not something
+#     this workflow changes).
+
+on:
+  schedule:
+    # 06:17 UTC daily. Off the top of the hour (GitHub documents queueing
+    # delays for jobs scheduled at popular :00/:15/:30/:45 marks); early
+    # morning UTC sits outside typical US/EU working hours for this project.
+    - cron: "17 6 * * *"
+  # Manual lever for verifying or re-running the job on demand, without
+  # waiting for the next scheduled tick or touching the push/PR path.
+  workflow_dispatch: {}
+
+concurrency:
+  group: evals-nightly
+  cancel-in-progress: false
+
+jobs:
+  live-evals:
+    name: S1 + S6 (real claude CLI dispatch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+
+      # pyyaml: tests/evals/catalog.py loads context_consumption.yaml via
+      # PyYAML, not the no-dependency frontmatter parser tests/conftest.py
+      # uses elsewhere. Installed explicitly here rather than assumed present
+      # on the runner image.
+      - name: Install test dependencies
+        run: pip install pytest==8.3.5 pyyaml
+
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      # Wire .claude/agents (+ hooks, skills, config, settings.json) into this
+      # SAME checkout via Gaia's own installer, self-targeted: SubprocessBackend
+      # dispatches with cwd = wherever pytest was invoked from (this checkout's
+      # root), so the `.claude/` a real `claude --agent developer` session reads
+      # must live right here, not in a separate scratch workspace. Idempotent;
+      # --no-path skips the POSIX ~/.local/bin launcher (irrelevant in CI),
+      # mirroring windows-compat's own non-interactive install invocation.
+      - name: Install Gaia into this checkout (wires .claude/agents for dispatch)
+        env:
+          GAIA_DB: ${{ runner.temp }}/gaia-nightly/gaia.db
+        run: >-
+          python bin/gaia install
+          --workspace "${{ github.workspace }}"
+          --db-path "${{ runner.temp }}/gaia-nightly/gaia.db"
+          --no-path
+
+      # S1 + S6 only, real claude CLI dispatch, budget-bounded (~8-15k tokens
+      # total per tests/evals/README.md). A missing secret FAILS the job --
+      # deliberately different from l2-ci-subset's push-time no-op above: that
+      # job's silent skip is tolerable because the free half of tests/evals/
+      # already gates every push regardless. This job's entire reason to exist
+      # is exercising S1/S6 without a human remembering to; a green run that
+      # secretly never dispatched an agent is the exact "declared protection,
+      # never exercised" shape this workflow replaces.
+      - name: Run S1 + S6 (real claude CLI dispatch)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY is not configured -- FAILING." 1>&2
+            echo "S1 and S6 need a real agent dispatch; a missing secret is not a pass." 1>&2
+            echo "### evals-nightly: FAILED -- ANTHROPIC_API_KEY not configured" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          # `-k "S1 or S6"` narrows the `-m llm` selection (which also includes
+          # S4, re-run live for free since its backend is RoutingSimBackend) to
+          # exactly the two subprocess-dispatch cases. Verified by
+          # `--collect-only`: `-m llm` alone collects
+          # test_live_case[S1, S4, S6]; adding `-k "S1 or S6"` narrows that to
+          # exactly test_live_case[S1] and test_live_case[S6].
+          python -m pytest tests/evals/test_evals.py -m llm -k "S1 or S6" -q --tb=short
+
+      # Visibility: a red job is already visible in the Actions tab and (per
+      # GitHub's documented default for scheduled workflows) emails the user
+      # who last edited the cron schedule when a scheduled run fails. These two
+      # steps add a plain-language line at the TOP of the run's summary page so
+      # the outcome reads immediately, without opening the step log above.
+      - name: Record PASS in the run summary
+        if: success()
+        run: |
+          echo "### evals-nightly: PASSED (S1 + S6, real claude CLI dispatch)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Record FAIL in the run summary
+        if: failure()
+        run: |
+          echo "### evals-nightly: FAILED -- see \"Run S1 + S6\" above" >> "$GITHUB_STEP_SUMMARY"
