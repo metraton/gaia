@@ -574,6 +574,7 @@ class TestComplianceScore:
     def test_zero_score(self):
         analysis = self._default_analysis()
         analysis.first_tool_name = "Bash"
+        analysis.bash_commands = ["git push origin main"]
         analysis.pipe_commands = ["a | b"] * 6
         analysis.duplicate_tool_calls = [
             DuplicateCall(tool_name="X", arguments_hash="h", indices=[1, 2])
@@ -644,6 +645,7 @@ class TestComplianceScore:
         """50 total => grade C."""
         analysis = self._default_analysis()
         analysis.first_tool_name = "Bash"
+        analysis.bash_commands = ["git push origin main"]
         score = compute_compliance_score(
             analysis=analysis,
             contract_valid=True,
@@ -657,6 +659,7 @@ class TestComplianceScore:
         """49 total => grade F."""
         analysis = self._default_analysis()
         analysis.first_tool_name = "Bash"
+        analysis.bash_commands = ["git push origin main"]
         analysis.pipe_commands = ["a | b"]
         score = compute_compliance_score(
             analysis=analysis,
@@ -691,3 +694,93 @@ class TestComplianceScore:
             assert score.factors["investigation_discipline"] == 20, (
                 f"first_tool_name={tool_name} should get 20 investigation_discipline points"
             )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git status",
+            "git log --oneline -5",
+            "git diff HEAD~1",
+            "pytest tests/hooks/ -q",
+            "ls -la",
+            "grep -rn foo .",
+            "terraform plan",
+        ],
+    )
+    def test_legitimate_bash_investigation_gets_full_points(self, command):
+        """A first Bash command that is T0/T1/T2 is legitimate investigation,
+        not a skipped one -- it must not dock investigation_discipline."""
+        analysis = self._default_analysis()
+        analysis.first_tool_name = "Bash"
+        analysis.bash_commands = [command]
+        score = compute_compliance_score(
+            analysis=analysis,
+            contract_valid=True,
+            has_scope_escalation=False,
+            anchor_hit_rate=1.0,
+        )
+        assert score.factors["investigation_discipline"] == 20, (
+            f"first Bash command {command!r} should not be penalized"
+        )
+        assert not any(
+            d.startswith("investigation_discipline") for d in score.deductions
+        )
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "git push origin main",
+            "rm -rf /tmp/x",
+            "terraform apply",
+            "kubectl delete pod x",
+        ],
+    )
+    def test_mutating_first_bash_command_still_penalized(self, command):
+        """A first Bash command that classifies as T3 is a genuine skipped-
+        investigation signal and must still dock investigation_discipline."""
+        analysis = self._default_analysis()
+        analysis.first_tool_name = "Bash"
+        analysis.bash_commands = [command]
+        score = compute_compliance_score(
+            analysis=analysis,
+            contract_valid=True,
+            has_scope_escalation=False,
+            anchor_hit_rate=1.0,
+        )
+        assert score.factors["investigation_discipline"] == 0, (
+            f"first Bash command {command!r} should still be penalized"
+        )
+        assert any(
+            d.startswith("investigation_discipline") for d in score.deductions
+        )
+
+    def test_bash_first_tool_no_recorded_command_not_penalized(self):
+        """first_tool_name is Bash but bash_commands is empty (e.g. an
+        incomplete extraction) -- benefit of the doubt, same as the
+        investigation_skip anomaly check."""
+        analysis = self._default_analysis()
+        analysis.first_tool_name = "Bash"
+        score = compute_compliance_score(
+            analysis=analysis,
+            contract_valid=True,
+            has_scope_escalation=False,
+            anchor_hit_rate=1.0,
+        )
+        assert score.factors["investigation_discipline"] == 20
+
+    def test_non_bash_non_read_first_tool_still_penalized(self):
+        """A first tool that is neither a read tool nor Bash (e.g. Write,
+        Task) is unaffected by the Bash-specific narrowing and keeps the
+        existing deduction."""
+        analysis = self._default_analysis()
+        analysis.first_tool_name = "Write"
+        score = compute_compliance_score(
+            analysis=analysis,
+            contract_valid=True,
+            has_scope_escalation=False,
+            anchor_hit_rate=1.0,
+        )
+        assert score.factors["investigation_discipline"] == 0
+        assert any(
+            "first tool was Write" in d for d in score.deductions
+        )

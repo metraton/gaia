@@ -361,6 +361,26 @@ class ComplianceScore:
 _DISCIPLINED_FIRST_TOOLS = {"Read", "Glob", "Grep"}
 
 
+def _first_bash_command_mutates(analysis: TranscriptAnalysis) -> bool:
+    """True when the first Bash command classifies as T3 (state-mutating).
+
+    Mirrors ``workflow_auditor._check_investigation_skip``'s criterion,
+    reusing the same tier classifier so both consumers agree on what
+    "skipped investigation via Bash" means: ``git status``, ``git log``,
+    ``ls``, a ``pytest`` baseline, or a ``--dry-run``/``plan`` are all
+    legitimate investigation and do not count, regardless of Bash being
+    the first tool. A missing or empty first command is not penalized
+    (benefit of the doubt, same as the anomaly check).
+    """
+    first_command = analysis.bash_commands[0] if analysis.bash_commands else ""
+    if not first_command:
+        return False
+
+    from ..security.tiers import SecurityTier, classify_command_tier
+
+    return classify_command_tier(first_command) == SecurityTier.T3_BLOCKED
+
+
 def _grade_from_total(total: int) -> str:
     """Map a numeric score to a letter grade."""
     if total >= 90:
@@ -382,7 +402,8 @@ def compute_compliance_score(
 
     Factors (100 points total):
         - contract_valid: 25 pts (binary)
-        - investigation_discipline: 20 pts (first tool is Read/Glob/Grep/None)
+        - investigation_discipline: 20 pts (first tool is Read/Glob/Grep/None,
+          or Bash whose first command does not classify as T3)
         - context_utilization: 15 pts (proportional to anchor_hit_rate)
         - no_pipe_violations: 15 pts (minus 3 per pipe command, floor 0)
         - no_duplicate_calls: 10 pts (minus 2 per duplicate group, floor 0)
@@ -412,6 +433,14 @@ def compute_compliance_score(
     first_tool = analysis.first_tool_name
     if first_tool is None or first_tool in _DISCIPLINED_FIRST_TOOLS:
         factors["investigation_discipline"] = 20
+    elif first_tool == "Bash" and not _first_bash_command_mutates(analysis):
+        factors["investigation_discipline"] = 20
+    elif first_tool == "Bash":
+        factors["investigation_discipline"] = 0
+        deductions.append(
+            "investigation_discipline: first command was state-mutating "
+            "(T3) with no prior investigation (-20)"
+        )
     else:
         factors["investigation_discipline"] = 0
         deductions.append(
