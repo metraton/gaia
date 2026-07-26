@@ -61,10 +61,68 @@ def tokenize_command(command: str) -> Tuple[str, ...]:
     try:
         raw = list(shlex.split(command.strip()))
     except ValueError:
-        # Fall back to a simple split for malformed quoting. This keeps the
-        # security layer best-effort instead of crashing on parse errors.
-        raw = command.strip().split()
+        raw = list(_degraded_tokenize(command.strip()))
     return strip_redirect_tokens(raw)
+
+
+_QUOTE_CHARS: Tuple[str, ...] = ("'", '"')
+
+
+def _degraded_tokenize(command: str) -> Tuple[str, ...]:
+    """Tokenize a command whose quoting ``shlex`` could not resolve.
+
+    ``shlex.split`` raises only on unresolvable quoting/escaping ("No closing
+    quotation", "No escaped character").  The historical fallback -- a naive
+    whitespace split of the WHOLE command -- keeps the security layer
+    best-effort instead of crashing, and that property is preserved here; what
+    it must NOT keep doing is promote the contents of a data payload to
+    command syntax.  An apostrophe inside an argument (``it's``) is enough to
+    make shlex give up, and the naive split then exposes every word of that
+    argument as a standalone token: a ``--force`` merely QUOTED in a report
+    registers as a real flag, and any prose word that happens to be in
+    MUTATIVE_VERBS registers as a real verb.  That taxes precisely the agents
+    that report a blocked command verbatim -- the more faithful the report,
+    the likelier the spurious T3.
+
+    The split this uses instead rests on what is still knowable after shlex
+    gives up: text BEFORE the first quote character contains no quoting at
+    all, so shlex, bash and a whitespace split all read it identically -- it
+    is unambiguous syntax.  From that quote onward the token boundaries are
+    exactly what could not be resolved, so the remainder is emitted as ONE
+    opaque datum rather than as N invented words.  A real command's verb and
+    flags precede its quoted arguments, so the head that drives classification
+    survives (``kubectl delete ns prod --now 'it's`` still yields the
+    ``delete`` verb), while payload contents stop being scanned as syntax.
+    The remainder is kept VERBATIM (never dropped) so the approval signature
+    still binds the full command text and two different payloads never collapse
+    onto one grant.
+
+    Accepted narrowing, deliberate: a mutative verb reachable ONLY from inside
+    the unresolved region -- a heredoc body fed to an interpreter, or text
+    after an unterminated quote -- is no longer surfaced by the verb scanner.
+    Three layers still cover it: ``is_blocked_command`` regexes the raw command
+    string (tokenization-independent), the compound splitter classifies each
+    ``&&``/``;``/``|`` component on its own, and the inline-code and
+    script-file lanes re-classify an interpreter's payload as a command.  When
+    no unambiguous head can be established (the command opens on a quote, or
+    carries no quote at all), this returns the naive whole-command split so the
+    conservative posture is kept exactly where nothing better is known.
+    """
+    quote_positions = [pos for pos in (command.find(q) for q in _QUOTE_CHARS) if pos != -1]
+    if not quote_positions:
+        return tuple(command.split())
+
+    # Rewind to the start of the WORD carrying the quote: `--json='{...}'` must
+    # stay one token so the flag keeps its normal shape instead of being cut
+    # into a bare `--json=` plus a payload.
+    boundary = min(quote_positions)
+    while boundary > 0 and not command[boundary - 1].isspace():
+        boundary -= 1
+
+    head = command[:boundary].split()
+    if not head:
+        return tuple(command.split())
+    return (*head, command[boundary:])
 
 
 # An OUTPUT redirect operator token carrying an attached target or fd-duplication:
