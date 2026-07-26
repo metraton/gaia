@@ -289,9 +289,15 @@ def test_second_finalize_after_convergence_is_noop(db):
 def test_finalize_vs_degraded_race_converges_to_one_row(db):
     """Two convergent writers on the SAME born nascent row -- the agent's
     COMPLETE finalize and a degraded IN_PROGRESS finalize -- released together
-    by a barrier. Exactly one converges the DISPATCHED row (created=True); the
-    other finds it terminal and is a no-op (created=False). Exactly ONE row, no
-    deadlock, in either arrival order (repeated across rounds)."""
+    by a barrier. IN_PROGRESS is NOT terminal (only COMPLETE blocks further
+    convergence), so the genuine COMPLETE verdict always wins regardless of
+    arrival order: if COMPLETE lands first, the later IN_PROGRESS finds the row
+    already COMPLETE and is a no-op (created=False); if IN_PROGRESS lands first,
+    it converges the nascent row (created=True) and the later COMPLETE STILL
+    converges past it (created=True too) rather than being frozen behind a
+    non-terminal state -- the exact defect this guard exists to prevent. Either
+    way exactly ONE row exists, its final state is always COMPLETE, and neither
+    writer deadlocks (repeated across rounds to exercise both orderings)."""
     for round_i in range(12):
         cid = f"a1234abcd.race-{round_i}"
         # Fresh binding targets are shared across rounds (seed once).
@@ -331,9 +337,14 @@ def test_finalize_vs_degraded_race_converges_to_one_row(db):
         assert not errors, f"convergent finalize raced into an error: {errors!r}"
         assert set(results) == {"complete", "degraded"}
 
-        created_flags = sorted(v["created"] for v in results.values())
-        assert created_flags == [False, True], (
-            f"exactly one writer converges the nascent row; got {created_flags}"
+        # At least the COMPLETE writer must have converged the row; the
+        # degraded IN_PROGRESS writer may ALSO report created=True (it landed
+        # first and converged DISPATCHED -> IN_PROGRESS before COMPLETE
+        # converged past it) -- both orderings are legal now that IN_PROGRESS
+        # is non-terminal.
+        assert results["complete"]["created"] is True, (
+            "the genuine COMPLETE verdict must always converge, regardless of "
+            f"arrival order; got {results['complete']}"
         )
         ids = {v["handoff_id"] for v in results.values()}
         assert len(ids) == 1 and None not in ids, (
@@ -342,6 +353,6 @@ def test_finalize_vs_degraded_race_converges_to_one_row(db):
 
         rows = _row(db, cid)
         assert len(rows) == 1, "the race must converge to exactly one row"
-        # Whoever won, the row is terminal -- never left DISPATCHED.
-        assert rows[0]["agent_state"] in {"COMPLETE", "IN_PROGRESS"}
-        assert rows[0]["agent_state"] != "DISPATCHED"
+        # The genuine verdict always wins in the end, regardless of arrival
+        # order -- COMPLETE is never left behind a stale degraded IN_PROGRESS.
+        assert rows[0]["agent_state"] == "COMPLETE"

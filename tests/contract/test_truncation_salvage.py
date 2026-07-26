@@ -308,8 +308,14 @@ def test_salvage_then_backstop_one_row(db):
 
 
 def test_backstop_then_salvage_one_row(db):
-    """If the T9 backstop finalized first, the salvage fast-path sees the row
-    exists and is a passive no-op -> still exactly one row, no duplicate."""
+    """If the T9 backstop finalized first (an IN_PROGRESS degraded capture,
+    not COMPLETE), the salvage fast-path calls the writer directly and
+    CONVERGES past it -- IN_PROGRESS is not terminal, so only a COMPLETE row
+    would have blocked salvage here. This is the writer's own convergence
+    guard (finalize_agent_contract_handoff) doing its job: the more
+    informative salvage marker ends up surviving rather than being frozen out
+    by whichever capture happened to land first. Still exactly one row, no
+    duplicate."""
     draft_id = mint_draft_id(VALID_AGENT_ID)
     envelope = _partial_envelope("IN_PROGRESS")
     save_draft(draft_id, envelope)
@@ -327,15 +333,17 @@ def test_backstop_then_salvage_one_row(db):
         task_info=_task_info(db),
         session_id="sess-conv-2",
     )
-    # The salvage still resolves the same draft, but the writer's UPSERT makes
-    # it a no-op (created=False) -- the backstop already owns the row.
+    # The prior row was IN_PROGRESS (non-terminal), so the writer's guard lets
+    # salvage converge past it -- created=True, not a no-op.
     assert out is not None
     assert out["contract_id"] == draft_id
-    assert out["created"] is False
+    assert out["created"] is True
 
     rows = _rows(db)
     assert len(rows) == 1, "backstop + salvage must converge to one row"
-    assert _payload(rows[0]["raw_handoff_json"]).get("degraded") is True
+    payload = _payload(rows[0]["raw_handoff_json"])
+    assert payload.get("degraded") is True
+    assert payload.get("salvaged") == "truncation"
 
 
 # ---------------------------------------------------------------------------
