@@ -19,6 +19,10 @@ from modules.security.mutative_verbs import (
     GIT_LOCAL_SAFE_SUBCOMMANDS,
     MKDIR_SENSITIVE_PATH_PREFIXES,
     MAX_NORMAL_INLINE_LENGTH,
+    CLI_FAMILY_LOOKUP,
+    PIPE_POLICY_RELEVANT_FAMILIES,
+    NATIVE_OUTPUT_FLAG_CLIS,
+    PIPE_POLICY_EXCLUDED_CLIS,
 )
 
 
@@ -4322,3 +4326,67 @@ class TestBareWindowsCommandLane:
             assert _check_windows_native_command(
                 cmd, s.base_cmd, "unknown", s,
             ) is None
+
+
+class TestPipePolicyRegistryCompleteness:
+    """Every CLI_FAMILY_LOOKUP name in a PIPE_POLICY_RELEVANT_FAMILIES family
+    must be explicitly classified -- included in NATIVE_OUTPUT_FLAG_CLIS or
+    excluded (with a reason) in PIPE_POLICY_EXCLUDED_CLIS. This is a
+    COMPLETENESS property, not set equality: an excluded CLI (stern is
+    designed to be piped/tailed) is a correct, deliberate decision and must
+    never fail this test. The only failure mode is a CLI present in a
+    relevant family but absent from BOTH sets -- present in neither is the
+    "nobody decided" state this test exists to catch, e.g. a new CLI added to
+    CLI_FAMILY_LOOKUP without a matching decision in the pipe-policy sets.
+    """
+
+    def test_every_relevant_cli_is_classified_included_or_excluded(self):
+        relevant = {
+            name for name, family in CLI_FAMILY_LOOKUP.items()
+            if family in PIPE_POLICY_RELEVANT_FAMILIES
+        }
+        classified = NATIVE_OUTPUT_FLAG_CLIS | PIPE_POLICY_EXCLUDED_CLIS.keys()
+        unclassified = relevant - classified
+        assert not unclassified, (
+            f"CLI(s) in a pipe-policy-relevant family with no explicit "
+            f"decision (neither included nor excluded): {sorted(unclassified)}. "
+            f"Add each to NATIVE_OUTPUT_FLAG_CLIS or to "
+            f"PIPE_POLICY_EXCLUDED_CLIS with a reason."
+        )
+
+    def test_included_and_excluded_sets_do_not_overlap(self):
+        overlap = NATIVE_OUTPUT_FLAG_CLIS & PIPE_POLICY_EXCLUDED_CLIS.keys()
+        assert not overlap, f"CLI(s) both included and excluded: {sorted(overlap)}"
+
+    def test_excluded_cli_does_not_fail_the_completeness_check(self):
+        """A deliberate exclusion (stern) must pass, proving the property is
+        completeness-of-classification, not membership-in-the-included-set."""
+        assert "stern" in PIPE_POLICY_EXCLUDED_CLIS
+        assert "stern" not in NATIVE_OUTPUT_FLAG_CLIS
+        relevant = {
+            name for name, family in CLI_FAMILY_LOOKUP.items()
+            if family in PIPE_POLICY_RELEVANT_FAMILIES
+        }
+        classified = NATIVE_OUTPUT_FLAG_CLIS | PIPE_POLICY_EXCLUDED_CLIS.keys()
+        assert "stern" in relevant - (relevant - classified)
+
+    def test_unclassified_cli_fails_the_completeness_check(self):
+        """Demonstration case: a CLI present in a relevant family but absent
+        from both sets must make the completeness check fail. Simulated
+        locally (not by mutating the real registry) so this test is itself
+        immune to the very gap it demonstrates."""
+        simulated_lookup = dict(CLI_FAMILY_LOOKUP)
+        simulated_lookup["opentofu-newcli"] = "iac"  # never classified below
+        relevant = {
+            name for name, family in simulated_lookup.items()
+            if family in PIPE_POLICY_RELEVANT_FAMILIES
+        }
+        classified = NATIVE_OUTPUT_FLAG_CLIS | PIPE_POLICY_EXCLUDED_CLIS.keys()
+        unclassified = relevant - classified
+        assert unclassified == {"opentofu-newcli"}
+
+    def test_tofu_and_cdk_are_recognized_and_classified(self):
+        assert CLI_FAMILY_LOOKUP.get("tofu") == "iac"
+        assert CLI_FAMILY_LOOKUP.get("cdk") == "iac"
+        assert "tofu" in NATIVE_OUTPUT_FLAG_CLIS
+        assert "cdk" in NATIVE_OUTPUT_FLAG_CLIS
