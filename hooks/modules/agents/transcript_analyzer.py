@@ -78,13 +78,16 @@ def _has_unquoted_pipe(command: str) -> bool:
     """Detect unquoted pipe characters in a bash command string.
 
     Uses a character-walk approach to track quote state, which is more
-    reliable than regex for nested quotes.
+    reliable than regex for nested quotes. A `|` that is part of the `||`
+    logical-OR operator is not a pipe: mirrors the negative-lookaround
+    criterion in ``cloud_pipe_validator.VIOLATIONS`` (`(?<!\\|)\\|(?!\\|)`)
+    by checking the adjacent raw characters before counting a hit.
     """
     in_single = False
     in_double = False
     escaped = False
 
-    for ch in command:
+    for i, ch in enumerate(command):
         if escaped:
             escaped = False
             continue
@@ -98,6 +101,10 @@ def _has_unquoted_pipe(command: str) -> bool:
             in_double = not in_double
             continue
         if ch == "|" and not in_single and not in_double:
+            prev_char = command[i - 1] if i > 0 else ""
+            next_char = command[i + 1] if i + 1 < len(command) else ""
+            if prev_char == "|" or next_char == "|":
+                continue
             return True
 
     return False

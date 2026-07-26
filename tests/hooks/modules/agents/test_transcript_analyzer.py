@@ -379,6 +379,62 @@ class TestPipeDetection:
         result = analyze(str(p))
         assert result.pipe_commands == []
 
+    def test_double_pipe_logical_or_not_detected(self, tmp_path):
+        entries = [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": {"command": "test -f a || test -f b"},
+                        },
+                    ],
+                },
+                "usage": {},
+                "model": "m",
+                "stop_reason": "tool_use",
+            },
+        ]
+        p = tmp_path / "transcript.jsonl"
+        _write_jsonl(p, entries)
+
+        result = analyze(str(p))
+        assert result.pipe_commands == []
+
+    def test_double_pipe_and_real_pipe_mixed(self, tmp_path):
+        entries = [
+            {
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Bash",
+                            "input": {
+                                "command": "test -f a || kubectl get pods | grep Error"
+                            },
+                        },
+                    ],
+                },
+                "usage": {},
+                "model": "m",
+                "stop_reason": "tool_use",
+            },
+        ]
+        p = tmp_path / "transcript.jsonl"
+        _write_jsonl(p, entries)
+
+        result = analyze(str(p))
+        assert len(result.pipe_commands) == 1
+        assert (
+            result.pipe_commands[0]
+            == "test -f a || kubectl get pods | grep Error"
+        )
+
 
 # ============================================================================
 # Skills injected
