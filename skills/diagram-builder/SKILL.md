@@ -21,7 +21,7 @@ idea
  └─ document        the deck: title, subtitle, version, palette, pages
      └─ page        one act/view (also the ROOT section: its columns + sections)
          └─ section     a grid zone; nests other sections freely (a grid of grids)
-             └─ component   a leaf that carries: a card, a divider, a lane label
+             └─ component   a leaf: a card, a divider, a lane label, a declared hole
    filters (page-level only) light a relation across components
 ```
 
@@ -110,7 +110,14 @@ merging, or by collapsing columns through nesting — never by squeezing. An
 unreadable cell is a defect even when the geometry closes.
 
 **9 · The hole speaks.** An empty cell asserts something. If you did not mean to
-say it, close it; if you did, declare it. And a shared row only means something
+say it, close it; if you did, declare it — `type: spacer` is the leaf that
+declares it, occupying its cell and drawing nothing. Reach for it whenever
+placement has to rest on a BASE instead of hanging from the ceiling: filling runs
+forward and top-down (principle 3), so bars written first all start in row 1 and
+taper downward, and magnitudes are only comparable from a shared floor. Open each
+short column with spacers above its bar and every bottom edge lands in the same
+row — the alignment is bought with holes you MEANT, and the rectangle closes
+exactly instead of leaning on an exemption. And a shared row only means something
 when every lane is the same length.
 
 ## What the guardrail can and cannot see

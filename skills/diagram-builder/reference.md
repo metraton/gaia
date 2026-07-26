@@ -18,7 +18,7 @@ seed `data/`. Scaffold from there.
 There are exactly **two primitives**. A **section** is a node with a `children`
 array; it renders as a CSS-Grid `columns` wide, and its children auto-flow
 left→right and wrap down. A **component** is a leaf (no `children`); it renders
-by its `type` — `box` (default), `separator`, or `rail`. Merges run on **two
+by its `type` — `box` (default), `separator`, `rail`, or `spacer`. Merges run on **two
 axes**: any child may set `span: M` to merge across M of the parent's columns,
 and a leaf cell may set `rowspan: K` to merge down K rows. The page/root is
 itself a section (`page.columns` = its grid width, `page.sections` = its
@@ -258,6 +258,25 @@ title). `treatment: [vertical]` rotates it for labeling a vertical lane — the
 former `orientation` field is gone and is now rejected by the strict schema. Not
 clickable.
 
+### component — spacer (`type: spacer`)
+
+```yaml
+- id: gap-1
+  type: spacer
+  order: 1
+  span: 1               # the two merge dials are the ONLY payload-free fields it
+  rowspan: 1            # keeps — they belong to the CELL, not to its content
+```
+
+The declared hole: it occupies its cell and renders an empty `.spacer`
+(`buildSpacer`), so a rectangle closes without inventing content. `SPACER_FIELDS`
+is the entire whitelist and `checkSpacer` runs BEFORE the two vocabulary axes, so
+a `variant`/`treatment`/`filters`/payload key is reported as "a `spacer` carries
+no X" instead of as a near-miss inside an enum it cannot reach. Two consequences
+downstream: `nodeCensus` counts `spacers` on its own arm, and `textBudget` skips
+it BY TYPE — budgeting a cell that carries no text by schema would compare
+nothing against a capacity and count as evidence.
+
 ### filter
 
 ```yaml
@@ -486,8 +505,9 @@ Behaviors that bite if you author against intuition instead of the engine:
   structural wrapper and `treatment: [envelope]` for a borderless dashed
   container — both are TREATMENTS; writing either into `variant` is a hard build
   error that names the axis.
-- **`separator` and `rail` are structural leaves.** They occupy a grid cell and
-  honor `span` like any component, but carry no detail and are not clickable. A
+- **`separator`, `rail` and `spacer` are structural leaves.** They occupy a grid
+  cell and honor `span` like any component, but carry no detail and are not
+  clickable. A
   row whose ONLY occupants are HORIZONTAL separators is the one row that is not
   `--cell-h` — see "The separator row" below.
 - **`data.generated.js` is generated and committed.** A plain
@@ -641,7 +661,7 @@ live* and write there — never assume a path.
 ### Mode 5 — Add / edit components
 
 1. Add component entries to a section's `children`. Default `type` is `box`; set
-   `type: separator` or `type: rail` for structural leaves.
+   `type: separator`, `type: rail` or `type: spacer` for structural leaves.
 2. Give each box a stable `id`, `kicker`, `title`, `description`, and `variant`;
    set `span` only to widen it, `filters` to tie it to a relation.
 3. Build → check.

@@ -39,7 +39,7 @@ and WCAG QA, not layout gates.
 | `document` | top level (`data/document.yaml`) | The whole deck: `title`, `subtitle`, `version`, `palette`, `pages` (`MANIFEST_FIELDS`). There is **no** document-level `filters` — chips are page-scoped. Each `pages[]` entry carries `id`/`name`/`order`/`visible`/`file` (`MANIFEST_PAGE_FIELDS`). |
 | `page` | `document.pages[]` | One act/slide. It IS the root section: owns `columns` (root grid width), `filters`, `sections` (the root's children), and `form` (the layout form the guardrail scopes its invariants by) — plus the manifest-owned `name`/`order`/`visible` (`PAGE_FIELDS`). `layout: grid` is the only value the engine renders (`LAYOUTS`). |
 | `section` | any node with `children` | A grid zone: `id`, `title`, `subtitle`, `variant`, `treatment`, `order`, `span`, `rowspan`, `columns`, and `children` (`SECTION_FIELDS`). Its children auto-flow across `columns` and wrap down. A child may itself be a section — this is how nesting happens (a grid of grids). |
-| `component` | any leaf (no `children`) | The unit inside a grid cell. Chooses a `type`: `box` (default) · `separator` · `rail`. Whitelist (`COMPONENT_FIELDS`): `id`, `type`, `variant`, `variant_extra`, `treatment`, `kicker`, `title`, `description`, `detail`, `note`, `order`, `span`, `rowspan`, `filters`, `style`, `text`. |
+| `component` | any leaf (no `children`) | The unit inside a grid cell. Chooses a `type`: `box` (default) · `separator` · `rail` · `spacer` (`COMPONENT_TYPES`). Whitelist (`COMPONENT_FIELDS`): `id`, `type`, `variant`, `variant_extra`, `treatment`, `kicker`, `title`, `description`, `detail`, `note`, `order`, `span`, `rowspan`, `filters`, `style`, `text`. A `spacer` is narrower: `SPACER_FIELDS` admits only `id`, `type`, `order`, `span`, `rowspan`. |
 | `filter` | `page.filters[]` | A highlight chip that expresses a **RELATION**: `key`, `label`, `steps` (`FILTER_FIELDS`). It **groups** every component that declares its `key` — components that share either a directional **FLOW** (the substitute for an arrow, since a grid cannot draw edges) OR a cross-cutting **CONCEPT / state / theme**. Clicking the chip spotlights that relation's membership across the whole canvas. `validateFilters` guarantees the SHAPE at build time; the chip↔component join (both directions) plus ARITY is asserted by **CHIP** in `npm run check` — the render-time invariant **K** that only closed the join is retired. |
 
 **The root/canvas is itself the invisible base section.** `page.columns` is the
@@ -55,6 +55,7 @@ frame of its own.
 | `box` (default) | The standard clickable card | `kicker`, `title`, `description`, `detail`, `note`, `variant`, `variant_extra`, `treatment`, `span`, `rowspan`, `filters`. Omit `type` and you get a box. |
 | `separator` | A thin divider LINE (not a card) | `treatment: [vertical]` for a vertical rule (horizontal is the default), `style` (`solid` default · `dotted`), optional `text` (an inline centered label). Honors `span`/`rowspan`. Not clickable. |
 | `rail` | A title-only swimlane LABEL banner | `title`, `treatment: [vertical]` (rotates the text). Honors `span`/`rowspan` (a vertical rail with `rowspan` labels a lane down several rows). Not clickable. |
+| `spacer` | Nothing at all — the **declared hole**: it occupies its cell and draws no frame, no ink, no text (`buildSpacer` → `.spacer`) | `span`/`rowspan` only (plus `id`/`type`/`order`) — `SPACER_FIELDS`. Every other field is refused BY NAME by `checkSpacer`, ahead of the colour/treatment enums: a payload key means the cell was meant to CARRY something, and then it is a box. It is not an empty card. Not clickable. |
 
 > The former `orientation: horizontal|vertical` field is **gone**: it was the same
 > switch as `treatment: [vertical]` under a second name, and a parallel field is
@@ -107,14 +108,20 @@ because it was a statement about the DATA, not about pixels:
 | **W** | fixed 232px cell width | `U` (cells now stretch to equal `fr`) |
 
 **The static layer** (`npm run check`, arithmetic, browser-free): `RECT` closure
-identity · `HOLE` interior holes by coordinate · `TRACK` dead track · `ROW`
+identity — where a `rowspan` taper exempts rows from the per-row form, a taper
+that nonetheless closes states it with the number as an `[INFO]` ("rowspan taper
+CLOSES"), because an absence of deficit is indistinguishable from a check that
+never ran · `HOLE` interior holes by coordinate · `TRACK` dead track · `ROW`
 orphan row · `LANE` unequal rail-led swimlanes (hard) + unequal parallel stacks
 (advisory) · `BAND` band placement / span never exceeds its columns · `TIER`
 tracks-per-tier table + cascade monotonicity · `CHIP` filter integrity both
 directions + arity · `ORDER` duplicate effective `order` among siblings · `CSS`
 the mirrored breakpoints (640/1000/1440) match the `@container stage` queries in
 `index.html` · `CENSUS` (pre-flight) `data/*.yaml` vs `data/data.generated.js`,
-the stale-build detector shared with `validate` via `tools/static-census.cjs`.
+the stale-build detector shared with `validate` via `tools/static-census.cjs` —
+its node counts are `sections` · `boxes` · `seps` · `rails` · `spacers` ·
+`halves` (`nodeCensus`), a spacer counted on its own arm so it is never recounted
+as content.
 
 ## Content terms
 
