@@ -134,27 +134,41 @@ def test_marker_file_with_wrong_shape_is_treated_as_empty(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# build_reminder_reason
+# build_reminder_context
 # ---------------------------------------------------------------------------
 
 
-def test_build_reminder_reason_names_file_and_skill():
-    reason = reminder.build_reminder_reason("/repo/hooks/foo.py", "coding-standards")
-    assert "/repo/hooks/foo.py" in reason
-    assert "coding-standards" in reason
+def test_build_reminder_context_names_file_and_skill():
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
+    assert "/repo/hooks/foo.py" in text
+    assert "coding-standards" in text
 
 
-def test_build_reminder_reason_is_a_reminder_not_an_accusation():
-    """It cannot claim the skill is missing (unknowable from PreToolUse) --
-    only that the artifact class is governed by it."""
-    reason = reminder.build_reminder_reason("/repo/hooks/foo.py", "coding-standards")
-    assert "governed by" in reason
-    assert "Skill('coding-standards')" in reason
+def test_build_reminder_context_is_factual_not_imperative():
+    """The wording states a fact about which skill governs the artifact class
+    -- it must not read as a command ("load the skill", "you must") or any
+    other system-directive phrasing that prompt-injection defenses could
+    flag and surface to the user instead of folding into context."""
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
+    assert "governed by" in text
+    lowered = text.lower()
+    for imperative in ("load it", "you must", "before finishing"):
+        assert imperative not in lowered, (
+            f"reminder text reads as an instruction ({imperative!r}), not a "
+            "factual observation"
+        )
 
 
-def test_build_reminder_reason_tagged_for_easy_grepping():
-    reason = reminder.build_reminder_reason("/repo/hooks/foo.py", "coding-standards")
-    assert reason.startswith("[SKILL_REMINDER]")
+def test_build_reminder_context_names_the_loadable_skill():
+    """The skill must be named in its loadable form so the agent can act on
+    the observation without further lookup."""
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
+    assert "Skill('coding-standards')" in text
+
+
+def test_build_reminder_context_tagged_for_easy_grepping():
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
+    assert text.startswith("[SKILL_REMINDER]")
 
 
 # ---------------------------------------------------------------------------

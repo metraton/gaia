@@ -1673,7 +1673,18 @@ class TestArtifactSkillReminder:
     """A non-protected subagent Write/Edit of a governed extension (e.g.
     .py) gets a one-shot 'allow' reminder naming the governing skill. Never
     blocks; never fires for the foreground path; never repeats within a
-    turn for the same skill."""
+    turn for the same skill.
+
+    The reminder text must travel in ``additionalContext`` -- with
+    ``permissionDecision: "allow"``, Claude Code's own hook contract
+    surfaces ``permissionDecisionReason`` only in logs and the debug
+    transcript, never to the model (``code.claude.com/docs/en/hooks.md``,
+    "PreToolUse decision control"), so a reminder placed only there is
+    inert: the agent never sees it. ``additionalContext`` is the documented
+    channel for text Claude should read, and it can coexist with
+    ``permissionDecision``/``permissionDecisionReason`` in the same
+    ``hookSpecificOutput``.
+    """
 
     @pytest.fixture(autouse=True)
     def _isolated_reminder_cache(self, tmp_path, monkeypatch):
@@ -1682,10 +1693,14 @@ class TestArtifactSkillReminder:
         )
 
     @staticmethod
-    def _reminder_reason(response: HookResponse):
-        """The permissionDecisionReason if the response carries one, else None."""
+    def _reminder_context(response: HookResponse):
+        """The additionalContext if the response carries one, else None.
+
+        This is the channel the agent actually reads -- see the class
+        docstring on why permissionDecisionReason is not a substitute.
+        """
         return response.output.get("hookSpecificOutput", {}).get(
-            "permissionDecisionReason"
+            "additionalContext"
         )
 
     def test_subagent_write_of_governed_extension_reminds_once(self, adapter, tmp_path):
@@ -1694,11 +1709,39 @@ class TestArtifactSkillReminder:
             "Write", {"file_path": target},
             session_id="sess-1", is_subagent=True, agent_id="aabc123",
         )
-        reason = self._reminder_reason(resp)
-        assert reason is not None, "first governed write this turn must remind"
-        assert "coding-standards" in reason
+        context = self._reminder_context(resp)
+        assert context is not None, "first governed write this turn must remind"
+        assert "coding-standards" in context
         assert resp.output["hookSpecificOutput"]["permissionDecision"] == "allow"
         assert resp.exit_code == 0
+
+    def test_reminder_does_not_rely_on_permissionDecisionReason_as_the_channel(
+        self, adapter, tmp_path,
+    ):
+        """Documents WHY the reminder cannot travel in
+        permissionDecisionReason: with permissionDecision "allow", Claude
+        Code's hook contract surfaces that field only in logs and the debug
+        transcript, never to the model. A permissionDecisionReason may still
+        be present (e.g. for the audit log), but it must not be the sole or
+        primary carrier of the reminder text -- additionalContext must carry
+        it independently of whatever permissionDecisionReason says. This
+        guards against a future edit reverting the fix because
+        permissionDecisionReason "looks redundant" with additionalContext."""
+        target = str(tmp_path / "project" / "main.py")
+        resp = adapter._adapt_write_edit(
+            "Write", {"file_path": target},
+            session_id="sess-1", is_subagent=True, agent_id="aabc123",
+        )
+        hook_specific = resp.output["hookSpecificOutput"]
+        assert hook_specific["permissionDecision"] == "allow", (
+            "the decision must stay 'allow' -- this is what guarantees the "
+            "reminder never blocks or prompts the user"
+        )
+        assert "coding-standards" in hook_specific.get("additionalContext", ""), (
+            "the skill name must reach the agent via additionalContext -- "
+            "the only field Claude Code delivers to the model when the "
+            "decision is 'allow'"
+        )
 
     def test_second_write_same_turn_same_skill_does_not_repeat(self, adapter, tmp_path):
         first = str(tmp_path / "project" / "main.py")
@@ -1713,7 +1756,7 @@ class TestArtifactSkillReminder:
             session_id="sess-1", is_subagent=True, agent_id="aabc123",
         )
 
-        assert self._reminder_reason(resp1) is not None, (
+        assert self._reminder_context(resp1) is not None, (
             "first governed write this turn must remind"
         )
         assert resp2.output == {} and resp2.exit_code == 0, (
@@ -1733,7 +1776,7 @@ class TestArtifactSkillReminder:
             "Write", {"file_path": second},
             session_id="sess-1", is_subagent=True, agent_id="adef456",
         )
-        assert self._reminder_reason(resp2) is not None, (
+        assert self._reminder_context(resp2) is not None, (
             "a different agent_id is a different turn -- must remind again"
         )
 
