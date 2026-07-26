@@ -44,8 +44,8 @@ jobs:
       # Bringing tests/evals into this job's collection (below) makes that
       # import run on every push; without it, collection of those two modules
       # (plus test_evals.py, which imports catalog.py) fails outright.
-      # Installed explicitly, matching evals-nightly.yml's own declaration of
-      # the same dependency, rather than assumed present on the runner image.
+      # Installed explicitly here, rather than assumed present on the
+      # runner image -- ubuntu-latest does not ship pyyaml by default.
       - name: Install test dependencies
         run: pip install pytest==8.3.5 pyyaml
 
@@ -54,9 +54,11 @@ jobs:
       # session teardown) fires on every push instead of only when invoked by
       # hand. This also reconciles the two test surfaces: package.json's
       # `test` / `test:layer1` scripts never excluded tests/evals, so CI was
-      # the only surface skipping it. The `-m llm` live cases (real token
-      # spend) stay skipped by default via tests/conftest.py -- no -m flag is
-      # passed here, matching the manual/package.json invocation.
+      # the only surface skipping it. tests/evals itself carries no live,
+      # token-spending cases (the last ones, S1/S6, were dropped along with
+      # the subprocess dispatch lane they needed); the only remaining
+      # `@pytest.mark.llm` tests live in tests/layer2_llm_evaluation, already
+      # excluded above via --ignore, so no -m flag is needed here.
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
 
