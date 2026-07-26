@@ -37,8 +37,17 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      # pyyaml: tests/evals/catalog.py and tests/evals/test_security_golden.py
+      # both `import yaml` unconditionally at module level to load the eval
+      # catalogs (tests/evals/catalogs/*.yaml) -- a different loader from the
+      # no-dependency frontmatter parser tests/conftest.py uses elsewhere.
+      # Bringing tests/evals into this job's collection (below) makes that
+      # import run on every push; without it, collection of those two modules
+      # (plus test_evals.py, which imports catalog.py) fails outright.
+      # Installed explicitly, matching evals-nightly.yml's own declaration of
+      # the same dependency, rather than assumed present on the runner image.
       - name: Install test dependencies
-        run: pip install pytest==8.3.5
+        run: pip install pytest==8.3.5 pyyaml
 
       # tests/evals runs in-scope here (no --ignore) so the drift gate
       # (compare_to_baseline / enforce_no_regression, tests/evals/test_evals.py
