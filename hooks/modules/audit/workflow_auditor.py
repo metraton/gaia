@@ -445,8 +445,13 @@ def audit(
     unflagged episodes showed only ~4% coincidental matches, unrelated to
     real context usage. No working structural signal was available to
     replace it with: ``anchor_tracker.py``'s ``context_anchor_hit_rate`` is
-    wired but always null in production (a separate, unrelated defect), and
-    ``contract_validator.check_context_usage`` has no production call site.
+    wired but always null in production (a separate, unrelated defect).
+    ``contract_validator.check_context_usage`` -- a self-reported variant
+    that compared anchors against the agent's own ``evidence_report``
+    instead of the real transcript -- was later removed as dead code
+    (implemented, tested, never wired to a production call site), since a
+    self-reported comparison is manipulable and false-negatives when an
+    agent used the context but phrased it differently.
     The historical ``episode_anomalies`` rows of this type are left in place
     as audit trace; the glossary entry in ``bin/cli/metrics.py`` documents
     the type as retired rather than being deleted.
