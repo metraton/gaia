@@ -289,11 +289,13 @@ class TestCompareToBaselineInputShapes:
         assert len(report.entries) == 1
 
     def test_uses_default_baseline_path_when_none(self, tmp_path: Path):
-        # When ``baseline_path`` is None we point at the real results dir,
-        # whose S1 entry is the passing score 1.0. A run that scored 0.0 is
-        # a full-drop regression against it.
+        # When ``baseline_path`` is None we point at the real results dir, so
+        # the case id has to be one the COMMITTED baseline actually carries --
+        # S4, whose entry is the passing score 1.0. A run that scored 0.0 is a
+        # full-drop regression against it. Any other id would be scored as a
+        # new case and this test would assert nothing.
         new = _run_payload(
-            [{"id": "S1", "score": 0.0, "scoring": "semantic"}]
+            [{"id": "S4", "score": 0.0, "scoring": "binary"}]
         )
         report = compare_to_baseline(new)
         assert report.missing_baseline is False

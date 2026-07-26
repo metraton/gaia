@@ -8,25 +8,19 @@ results are written to ``tests/evals/results/{run_id}.json`` at session
 teardown and diffed against the committed baseline; a case that scored
 BELOW its baseline fails the run (see :func:`reporter.enforce_no_regression`).
 
-Two dispatch strategies coexist:
+One dispatch strategy: a case whose backend is ``routing_sim`` runs the
+real :class:`tests.evals.runner.RoutingSimBackend` on every ``pytest``
+invocation. The simulator is synchronous and spends no tokens, so the case
+measures the real router for free.
 
-1. **Free (default)** -- a case whose backend is ``routing_sim`` runs the
-   real :class:`tests.evals.runner.RoutingSimBackend` on every ``pytest``
-   invocation. The simulator is synchronous and spends no tokens, so the
-   case measures the real router for free.
-
-2. **Live (``-m llm``)** -- cases marked ``live_only`` in the catalog
-   dispatch through the real :class:`tests.evals.runner.SubprocessBackend`.
-   Skipped by default per ``tests/conftest.py`` so
-   ``python3 -m pytest tests/evals/`` exits 0 without an LLM.
-
-There is deliberately no third strategy. The suite used to carry a
-``FakeBackend`` "smoke" path in which each case was graded against a canned
-response written by this very module -- an arrangement that grades the
-fixture, not the agent, and that cannot fail for any agent behaviour
-whatsoever. Every case it covered was either tautological or silently
-rotten; :func:`test_free_cases_run_real_machinery` now forbids
-reintroducing it.
+Two strategies this module used to carry are gone, for opposite reasons.
+A ``FakeBackend`` "smoke" path graded each case against a canned response
+written by this very module -- it grades the fixture, not the system, and
+cannot fail for any behaviour whatsoever;
+:func:`test_cases_run_real_machinery` now forbids reintroducing it. A live
+``-m llm`` path dispatched ``claude --print --agent <specialist>``, which
+skips the orchestrator every real session is rooted in and therefore
+measured the bypass of Gaia's flow rather than the flow.
 
 Routing of grader DSL by catalog ``grader`` list entry:
 
@@ -69,7 +63,6 @@ from tests.evals.reporter import (
 from tests.evals.runner import (
     DispatchResult,
     RoutingSimBackend,
-    SubprocessBackend,
     dispatch,
 )
 
@@ -129,9 +122,9 @@ def _seeded_routing_db(tmp_path, monkeypatch):
 def _combine_results(graders_results: list[GradeResult]) -> GradeResult:
     """Merge multiple grader outcomes into a single :class:`GradeResult`.
 
-    For a case with multiple graders (e.g. S6: contract + trace) we require
-    EVERY grader to pass. The merged score is the arithmetic mean so
-    semantic + binary combinations degrade gracefully.
+    For a case declaring multiple graders we require EVERY grader to pass.
+    The merged score is the arithmetic mean so semantic + binary
+    combinations degrade gracefully.
     """
     if not graders_results:
         return GradeResult(passed=True, score=1.0, reasons=["no graders declared"])
@@ -202,19 +195,19 @@ def _grade_case(
 def _dispatch_case(case: CaseModel) -> DispatchResult:
     """Dispatch ``case`` through the backend its catalog entry declares.
 
-    ``routing_sim`` runs the real simulator in-process (synchronous, free).
-    Everything else shells out to the real ``claude`` CLI. A case's
-    ``permission_mode``, when set, overrides ``SubprocessBackend``'s
-    ``acceptEdits`` default -- required by any case measuring how the agent
-    reacts to a refusal, since ``acceptEdits`` prevents the refusal.
+    ``routing_sim`` is the only backend this suite dispatches: it runs the
+    real simulator in-process, synchronously and for free. A case declaring
+    anything else is rejected by :func:`test_cases_run_real_machinery`
+    rather than silently reaching a backend that cannot answer it.
     """
-    if case.backend == "routing_sim":
-        return dispatch(agent_type=case.agent, task=case.task, backend=RoutingSimBackend())
-
-    backend = SubprocessBackend()
-    if case.permission_mode is not None:
-        backend.permission_mode = case.permission_mode
-    return dispatch(agent_type=case.agent, task=case.task, backend=backend)
+    if case.backend != "routing_sim":
+        pytest.fail(
+            f"case {case.id} declares backend {case.backend!r}, which this "
+            "suite cannot dispatch"
+        )
+    return dispatch(
+        agent_type=case.agent, task=case.task, backend=RoutingSimBackend()
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,13 +216,6 @@ def _dispatch_case(case: CaseModel) -> DispatchResult:
 
 
 _ALL_CASES = load_catalog(_CATALOG_PATH)
-
-# Cases that run on every pytest invocation: real machinery, zero tokens.
-_FREE_CASES = [c for c in _ALL_CASES if not c.live_only]
-
-# Cases that need a real agent. Includes the free ones: re-running the
-# router live costs nothing and catches routing drift in the same pass.
-_LIVE_CASES = list(_ALL_CASES)
 
 
 def _case_ids(cases: list[CaseModel]) -> list[str]:
@@ -333,17 +319,17 @@ def _recorder() -> "_RunRecorder":
 
 
 # ---------------------------------------------------------------------------
-# Free parametrization -- runs on every pytest invocation
+# Case parametrization -- every case runs on every pytest invocation
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "case",
-    _FREE_CASES,
-    ids=_case_ids(_FREE_CASES),
+    _ALL_CASES,
+    ids=_case_ids(_ALL_CASES),
 )
-def test_free_case(case: CaseModel, _recorder: _RunRecorder) -> None:
-    """Run the cases whose real backend costs nothing.
+def test_catalog_case(case: CaseModel, _recorder: _RunRecorder) -> None:
+    """Run every catalog case; all of them cost nothing.
 
     Today that is the routing simulator: a synchronous, in-process
     classifier reading the same DB-backed ``surface_routing`` table the
@@ -359,39 +345,12 @@ def test_free_case(case: CaseModel, _recorder: _RunRecorder) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Live parametrization -- skipped by default (``tests/conftest.py``)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.llm
-@pytest.mark.parametrize(
-    "case",
-    _LIVE_CASES,
-    ids=_case_ids(_LIVE_CASES),
-)
-def test_live_case(case: CaseModel, _recorder: _RunRecorder) -> None:
-    """Live run: real ``claude`` CLI dispatch through ``SubprocessBackend``.
-
-    Collected only when the operator passes ``-m llm``. Skipped in every
-    other invocation per ``tests/conftest.py::pytest_collection_modifyitems``.
-    Each case is graded with the same :func:`_grade_case` routing as the
-    free variant so the two runs are comparable.
-    """
-    result = _dispatch_case(case)
-    grade = _grade_case(case, result)
-    _recorder.record(case, grade, result.stdout or "")
-    assert grade.passed, (
-        f"live case {case.id} ({case.agent}) failed: {grade.reasons}"
-    )
-
-
-# ---------------------------------------------------------------------------
 # Structural guards on the catalog itself
 # ---------------------------------------------------------------------------
 
 
-def test_free_cases_run_real_machinery() -> None:
-    """No case may run in the default suite against a canned response.
+def test_cases_run_real_machinery() -> None:
+    """No case may be answered by anything other than production code.
 
     This is the guard that replaces ``test_every_catalog_case_has_smoke_
     envelope``, and it inverts that test's premise. The old guard demanded
@@ -400,21 +359,20 @@ def test_free_cases_run_real_machinery() -> None:
     suite wrote for itself -- which is why cases survived for months
     asserting things that had stopped being true of the system.
 
-    A case that is not ``live_only`` must therefore reach a backend that
-    produces its answer from production code. ``routing_sim`` qualifies:
-    it runs the real ``RoutingSimulator`` over the real routing table.
-    ``subprocess`` in a default (no ``-m llm``) run does not, since there
-    is no agent to answer -- such a case must declare ``live_only``.
+    Every case must therefore reach a backend that produces its answer from
+    production code. ``routing_sim`` qualifies: it runs the real
+    ``RoutingSimulator`` over the real routing table. The guard no longer
+    carries a ``live_only`` escape hatch, because the lane it exempted --
+    ``claude --print --agent <specialist>`` -- bypassed the orchestrator
+    every real session is rooted in, and so measured a mode Gaia does not
+    route through.
     """
-    offenders = [
-        c.id for c in _ALL_CASES
-        if not c.live_only and c.backend != "routing_sim"
-    ]
+    offenders = [c.id for c in _ALL_CASES if c.backend != "routing_sim"]
     assert not offenders, (
-        f"cases {offenders} would run in the default suite on backend(s) that "
-        "need a real agent. Mark them `live_only: true`, or move the property "
-        "they measure into a unit test against the production function. Do "
-        "not answer them with a canned fixture."
+        f"cases {offenders} declare a backend this suite cannot dispatch. Use "
+        "`routing_sim`, or move the property they measure into a unit test "
+        "against the production function. Do not answer them with a canned "
+        "fixture."
     )
 
 

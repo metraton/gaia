@@ -1,17 +1,26 @@
 """Runner for the eval framework (T2).
 
-Dispatches a task to an agent and captures the multi-turn session
-transcript plus any ``audit-*.jsonl`` slices produced during the
-dispatch window.
+Dispatches a case to the production machinery that answers it and returns
+a uniform :class:`DispatchResult` the graders consume.
 
-Two backends implement :class:`DispatchBackend`:
+Three backends implement :class:`DispatchBackend`:
 
-- :class:`SubprocessBackend` shells out to the real ``claude`` CLI with
-  a fixed session id, so the transcript lands at a predictable path
-  under ``~/.claude/projects/<cwd-slug>/<session-id>.jsonl``.
+- :class:`RoutingSimBackend` runs the real ``RoutingSimulator`` in-process
+  over the DB-backed ``surface_routing`` table.
+- :class:`HookLogReplayBackend` replays a command through the real
+  ``pre_tool_use.py`` entry point as a subprocess.
 - :class:`FakeBackend` replays canned session JSONL from
   ``tests/evals/fixtures/sessions/`` without any subprocess or network
-  I/O. Used in unit tests; also consumed by T7's smoke runs.
+  I/O. Used by this layer's own unit tests -- never to answer a catalog
+  case, which would grade the fixture instead of the system.
+
+There is deliberately NO single-agent dispatch backend. A Gaia session is
+rooted in the orchestrator (``gaia install`` writes
+``agent: gaia-orchestrator`` into the workspace settings), so a
+``claude --print --agent <specialist>`` dispatch measures a mode Gaia does
+not route through: it skips the orchestrator, and with it the per-agent
+context injection and the dispatch identity the hooks key on. The backend
+that shelled out that way was removed with the two cases that used it.
 
 The module MUST NOT import from ``hooks/`` or parse ``project-context``
 data directly -- it only reads and writes files the agent already
@@ -24,11 +33,8 @@ import contextlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
-import time
-import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,172 +105,6 @@ class DispatchBackend(Protocol):
         timeout: int = 60,
     ) -> DispatchResult:  # pragma: no cover - protocol definition
         ...
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _cwd_slug(cwd: Path) -> str:
-    """Return the CC project-slug for ``cwd``.
-
-    Claude Code stores transcripts at
-    ``~/.claude/projects/<slug>/<session-id>.jsonl`` where ``<slug>`` is
-    the absolute cwd with path separators replaced by ``-``. For
-    ``/home/jorge/ws/me`` the slug is ``-home-jorge-ws-me``.
-    """
-
-    return str(cwd.resolve()).replace("/", "-")
-
-
-def _projects_dir() -> Path:
-    """Return the CC transcripts root (``~/.claude/projects``)."""
-
-    return Path.home() / ".claude" / "projects"
-
-
-def _collect_audit_slices(
-    logs_dir: Path,
-    window_start: float,
-    window_end: float,
-) -> list[Path]:
-    """Return audit-*.jsonl files whose mtime overlaps the window.
-
-    We don't try to surgically slice by timestamp here -- graders
-    downstream filter by dispatch start/end using line timestamps. The
-    runner just hands over the candidate files produced during the
-    dispatch window.
-    """
-
-    if not logs_dir.is_dir():
-        return []
-
-    candidates: list[Path] = []
-    for path in sorted(logs_dir.glob("audit-*.jsonl")):
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            continue
-        # A file counts if its mtime is within (or just after) the window.
-        # Using a generous 5 s margin absorbs filesystem clock jitter
-        # without letting unrelated days leak in.
-        if mtime >= window_start - 5 and mtime <= window_end + 5:
-            candidates.append(path)
-    return candidates
-
-
-# ---------------------------------------------------------------------------
-# Subprocess backend (real claude CLI)
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class SubprocessBackend:
-    """Dispatch via the real ``claude`` CLI.
-
-    The backend pins a deterministic ``--session-id`` so the transcript
-    path is predictable: ``~/.claude/projects/<cwd-slug>/<uuid>.jsonl``.
-    ``audit_paths`` comes from ``<cwd>/.claude/logs/audit-YYYY-MM-DD.jsonl``
-    files whose mtime falls within the dispatch window.
-
-    Attributes:
-        cwd: Working directory used as the CC project root. Defaults to
-            the current working directory at backend construction time.
-        claude_bin: Path or name of the ``claude`` binary. Defaults to
-            whichever ``claude`` is on ``$PATH``; ``EvalError`` is raised
-            at dispatch time if it cannot be found.
-        output_format: Passed to ``--output-format``. ``"json"`` returns
-            a single-shot JSON result; ``"text"`` returns raw text.
-        permission_mode: Passed to ``--permission-mode``. Defaults to
-            ``"acceptEdits"`` so Edit/Write on declarative files do not
-            block the non-interactive dispatch. Callers that need strict
-            behaviour (e.g. S6 approval flow) can override.
-        extra_args: Additional CLI args appended verbatim to the
-            ``claude`` invocation. Useful for ``--add-dir`` or
-            ``--settings``.
-    """
-
-    cwd: Path = field(default_factory=Path.cwd)
-    claude_bin: Optional[str] = None
-    output_format: str = "json"
-    permission_mode: str = "acceptEdits"
-    extra_args: list[str] = field(default_factory=list)
-
-    def dispatch(
-        self,
-        agent_type: str,
-        task: str,
-        timeout: int = 60,
-    ) -> DispatchResult:
-        binary = self.claude_bin or shutil.which("claude")
-        if not binary:
-            raise EvalError(
-                "claude CLI not found on PATH; set SubprocessBackend.claude_bin"
-            )
-
-        if not agent_type or not isinstance(agent_type, str):
-            raise EvalError(f"invalid agent_type: {agent_type!r}")
-
-        session_id = str(uuid.uuid4())
-        cwd = self.cwd.resolve()
-        logs_dir = cwd / ".claude" / "logs"
-
-        cmd = [
-            binary,
-            "--print",
-            "--agent",
-            agent_type,
-            "--session-id",
-            session_id,
-            "--output-format",
-            self.output_format,
-            "--permission-mode",
-            self.permission_mode,
-            *self.extra_args,
-            task,
-        ]
-
-        window_start = time.time()
-        try:
-            completed = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(cwd),
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise EvalError(
-                f"claude dispatch timed out after {timeout}s (agent={agent_type})"
-            ) from exc
-        except FileNotFoundError as exc:
-            raise EvalError(f"failed to exec claude binary: {exc}") from exc
-        window_end = time.time()
-
-        # Unknown agent: CC currently exits non-zero with an error on stderr.
-        # We surface that as EvalError so callers get a clean signal instead
-        # of having to inspect exit codes.
-        if completed.returncode != 0 and "agent" in (completed.stderr or "").lower():
-            raise EvalError(
-                f"claude rejected agent {agent_type!r}: "
-                f"{completed.stderr.strip() or 'no stderr'}"
-            )
-
-        transcript_path = _projects_dir() / _cwd_slug(cwd) / f"{session_id}.jsonl"
-        session_path: Optional[Path] = (
-            transcript_path if transcript_path.exists() else None
-        )
-
-        audit_paths = _collect_audit_slices(logs_dir, window_start, window_end)
-
-        return DispatchResult(
-            stdout=completed.stdout or "",
-            session_path=session_path,
-            audit_paths=audit_paths,
-            exit_code=completed.returncode,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -738,24 +578,13 @@ class HookLogReplayBackend:
 # ---------------------------------------------------------------------------
 
 
-# Default backend is constructed lazily so importing this module in test
-# environments without a `claude` CLI does not fail.
-_default_backend: Optional[DispatchBackend] = None
-
-
-def _get_default_backend() -> DispatchBackend:
-    global _default_backend
-    if _default_backend is None:
-        _default_backend = SubprocessBackend()
-    return _default_backend
-
-
 def dispatch(
     agent_type: str,
     task: str,
     timeout: int = 60,
     capture_session: bool = False,
-    backend: Optional[DispatchBackend] = None,
+    *,
+    backend: DispatchBackend,
 ) -> DispatchResult:
     """Dispatch ``task`` to the agent identified by ``agent_type``.
 
@@ -770,22 +599,24 @@ def dispatch(
             because CC writes it unconditionally. Kept for API
             symmetry with v1 callers and future backends that might
             need to explicitly opt in.
-        backend: Backend implementation. Defaults to a lazy
-            :class:`SubprocessBackend`. Tests inject
-            :class:`FakeBackend`.
+        backend: Backend implementation. Required, and keyword-only:
+            there is no default. The former default shelled out to
+            ``claude --print --agent <specialist>``, a dispatch shape Gaia
+            does not route through (see the module docstring); leaving a
+            default in place would make that shape the one a forgetful
+            caller silently gets.
 
     Returns:
         :class:`DispatchResult` with the agent's response and captured
         telemetry.
 
     Raises:
-        EvalError: On timeout, missing CLI, unknown agent, missing
-            fixture, or any other terminal backend failure.
+        EvalError: On timeout, unknown agent, missing fixture, or any
+            other terminal backend failure.
     """
 
     _ = capture_session  # reserved for future use; see docstring
-    impl = backend or _get_default_backend()
-    return impl.dispatch(agent_type=agent_type, task=task, timeout=timeout)
+    return backend.dispatch(agent_type=agent_type, task=task, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +637,6 @@ __all__ = [
     "FakeBackend",
     "HookLogReplayBackend",
     "RoutingSimBackend",
-    "SubprocessBackend",
     "dispatch",
     "iso_now",
 ]

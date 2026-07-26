@@ -1,14 +1,6 @@
 {
   "cases": {
-    "S1": {
-      "score": 1.0,
-      "scoring": "semantic"
-    },
     "S4": {
-      "score": 1.0,
-      "scoring": "binary"
-    },
-    "S6": {
       "score": 1.0,
       "scoring": "binary"
     }

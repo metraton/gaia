@@ -3,8 +3,8 @@
 Coverage:
 
 - ``load_catalog`` on the shipped ``context_consumption.yaml``: succeeds,
-  returns 10 cases, every case has required fields, every ``grader``
-  entry is valid, every ``backend`` entry is valid.
+  returns exactly the surviving case set, every case has required fields,
+  every ``grader`` entry is valid, every ``backend`` entry is valid.
 - ``load_catalog`` error paths: missing file, invalid YAML, missing
   top-level keys, unknown grader / backend / scoring, duplicate case id.
 - ``CaseModel`` default factories produce independent lists/dicts
@@ -52,14 +52,15 @@ class TestShippedCatalog:
     def test_carries_the_surviving_case_set(self):
         """The catalog holds exactly the cases that can still fail honestly.
 
-        Ids are deliberately NOT renumbered after a deletion: an id is the
-        key the baseline, the run JSONs, and the git history all address a
-        case by, so recycling S2 for a future unrelated case would make
-        every historical record ambiguous. Gaps in the sequence are the
-        cheapest possible record that something was removed.
+        One, today: S4. Ids are deliberately NOT renumbered after a
+        deletion -- an id is the key the baseline, the run JSONs, and the
+        git history all address a case by, so recycling S1 for a future
+        unrelated case would make every historical record ambiguous. Gaps in
+        the sequence are the cheapest possible record that something was
+        removed.
         """
         cases = load_catalog(SHIPPED_CATALOG)
-        assert {c.id for c in cases} == {"S1", "S4", "S6"}
+        assert {c.id for c in cases} == {"S4"}
 
     def test_every_case_has_required_fields(self):
         cases = load_catalog(SHIPPED_CATALOG)
@@ -94,17 +95,12 @@ class TestShippedCatalog:
             )
 
     def test_routing_sim_case_has_routing_expect(self):
-        """S4 is the only routing_sim case; it must declare routing_expect."""
-        cases = {c.id: c for c in load_catalog(SHIPPED_CATALOG)}
-        s4 = cases["S4"]
-        assert s4.backend == "routing_sim"
-        assert s4.routing_expect, "S4 must declare routing_expect"
-
-    def test_approval_case_expects_approval_request(self):
-        """S6 is the T3 approval flow -- must expect APPROVAL_REQUEST."""
-        cases = {c.id: c for c in load_catalog(SHIPPED_CATALOG)}
-        s6 = cases["S6"]
-        assert s6.contract_expect.get("plan_status") == "APPROVAL_REQUEST"
+        """Every routing_sim case must declare routing_expect."""
+        for case in load_catalog(SHIPPED_CATALOG):
+            if case.backend == "routing_sim":
+                assert case.routing_expect, (
+                    f"{case.id} must declare routing_expect"
+                )
 
     def test_every_named_agent_exists(self):
         """A case may only target an agent that actually ships.
@@ -115,8 +111,8 @@ class TestShippedCatalog:
         to reach an agent that had nothing falsifiable to measure is how
         three of the deleted cases got written. What IS worth defending is
         that a case names a real agent: a typo here surfaces at dispatch
-        time as an ``EvalError`` mid-run, and only under ``-m llm``, which is
-        the slowest and most expensive place to learn it.
+        time as an ``EvalError`` mid-run, which is a slower and noisier
+        place to learn it than collection.
         """
         agents_dir = Path(__file__).resolve().parents[2] / "agents"
         shipped = {p.stem for p in agents_dir.glob("*.md")}
@@ -149,7 +145,7 @@ cases:
     task: "say hi"
     grader:
       - code_grader
-    backend: subprocess
+    backend: routing_sim
     scoring: binary
     expect_present:
       - hi
@@ -215,7 +211,7 @@ class TestLoaderFailure:
             load_catalog(cat)
 
     def test_invalid_backend(self, tmp_path):
-        body = MINIMAL_VALID.replace("backend: subprocess", "backend: ssh_dispatch")
+        body = MINIMAL_VALID.replace("backend: routing_sim", "backend: ssh_dispatch")
         cat = _write(tmp_path / "bad.yaml", body)
         with pytest.raises(CatalogError, match="invalid backend"):
             load_catalog(cat)
@@ -235,7 +231,7 @@ class TestLoaderFailure:
           - id: T1
             agent: developer
             grader: [code_grader]
-            backend: subprocess
+            backend: routing_sim
             scoring: binary
         """
         cat = _write(tmp_path / "bad.yaml", body)
@@ -252,13 +248,13 @@ class TestLoaderFailure:
             agent: developer
             task: first
             grader: [code_grader]
-            backend: subprocess
+            backend: routing_sim
             scoring: binary
           - id: T1
             agent: developer
             task: second
             grader: [code_grader]
-            backend: subprocess
+            backend: routing_sim
             scoring: binary
         """
         cat = _write(tmp_path / "bad.yaml", body)
@@ -275,7 +271,7 @@ class TestCaseModel:
             agent="developer",
             task="t",
             grader=["code_grader"],
-            backend="subprocess",
+            backend="routing_sim",
             scoring="binary",
         )
         b = CaseModel(
@@ -283,7 +279,7 @@ class TestCaseModel:
             agent="developer",
             task="t",
             grader=["code_grader"],
-            backend="subprocess",
+            backend="routing_sim",
             scoring="binary",
         )
         # Dataclass default_factory must not share state between instances.
