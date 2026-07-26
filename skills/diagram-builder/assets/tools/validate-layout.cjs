@@ -189,6 +189,13 @@ const path = require('path');
 const http = require('http');
 const fs = require('fs');
 const os = require('os');
+// The browser-free foundation shared with the static gate: the authored-data
+// census (used at the pre-flight below) plus the form taxonomy both gates would
+// otherwise keep two copies of. See tools/static-census.cjs for why they live
+// there — it also mirrors the collapse breakpoints, which this file only refers
+// to by name (the widths it renders at are its own).
+const { staticCensus, nodeCensus, pageCensus,
+  DEFAULT_FORM, GRID_DENSE } = require('./static-census.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = process.env.DIAGRAM_SHOTS_DIR || path.join(os.tmpdir(), 'diagram-deck-layout');
@@ -204,19 +211,22 @@ const SEP_ROW_H = 40;
 // ── ONE WIDTH, THE WIDEST. ────────────────────────────────────────────────
 // This was a FIVE-width sweep (600/900/1200/1920/2560) whose job was to prove the
 // …→2→1 collapse cascade while that cascade was being BUILT. It is stable now, and
-// — more to the point — the cascade is a CONTAINER QUERY: the cuts at 640/1000/1440
-// depend on nothing but the stage container's width, so the track count is a PURE
-// FUNCTION of (authored columns, container width). Arithmetic proves it exactly, at
-// all five of those widths, in tools/check-layout.mjs (`npm run check`, the
-// MANDATORY gate). Re-measuring a multiplication table in a browser five times over
-// is not evidence, it is ceremony.
+// — more to the point — the cascade is a CONTAINER QUERY: its cuts (BREAKPOINTS,
+// from static-census.cjs, which mirrors the `@container stage` queries in
+// index.html) depend on nothing but the stage container's width, so the track
+// count is a PURE FUNCTION of (authored columns, container width). Arithmetic
+// proves it exactly, at all five of those widths, in tools/check-layout.mjs
+// (`npm run check`, the MANDATORY gate). Re-measuring a multiplication table in a
+// browser five times over is not evidence, it is ceremony.
 // What is LEFT here is what only pixels can answer, and the widest tier is where it
-// is answerable: the side-by-side regime (>1440) is the only one that exercises
-// centering (B), band fill (Y), span-weighted compound widths (Q), the compound
-// flex row (G) and scrollbar robustness (R) at all — at the stacked tiers those
-// checks are either inapplicable or vacuous.
+// is answerable: the side-by-side regime (above the STACK breakpoint) is the only
+// one that exercises centering (B), band fill (Y), span-weighted compound widths
+// (Q), the compound flex row (G) and scrollbar robustness (R) at all — at the
+// stacked tiers those checks are either inapplicable or vacuous.
 const WIDTHS = { ultra: 2560 };
-const WIDE_TIERS = new Set(['ultra']);   // >1440: side-by-side + centered; h-overflow tolerated
+// The one tier, and it is above BREAKPOINTS.stack: side by side + centered, with
+// horizontal overflow tolerated.
+const WIDE_TIERS = new Set(['ultra']);
 // Reloads per (page,width) for the determinism check. Lowered 5 -> 3: three
 // independent renders still catch a nondeterministic wrap/column flip (the failure
 // mode is a coin flip, not a rare tail), and the run is now one width instead of
@@ -268,17 +278,14 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 //     does apply (the grid-dense forms), it only ADVISES, never fails.
 // ─────────────────────────────────────────────────────────────────────────
 const FORMS = ['dashboard', 'timeline', 'flow', 'comparison', 'mindmap', 'planner'];
-const DEFAULT_FORM = 'dashboard';
 const ALL_FORMS = new Set(FORMS);
 // GRIDDED — every form whose cells sit in a real grid of rows AND columns (so a
 // dead track, a lopsided row, or an illegibly narrow cell is a defect). Excludes
 // `timeline`, whose content is legitimately ONE long row.
 const GRIDDED = new Set(['dashboard', 'comparison', 'flow', 'mindmap', 'planner']);
-// GRID_DENSE — the forms that should EARN a wide canvas by composing sections
-// side by side and grouping cells (so an orphan cell or a collapse-to-one-column
-// stack is worth flagging). A `timeline`/`flow`/`mindmap` may legitimately be
-// sparse or linear, so P/V do not judge them.
-const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
+// GRID_DENSE (P/V) and DEFAULT_FORM come from static-census.cjs — the static
+// gate scopes its own ROW check by the same set, and one definition is the only
+// way the two gates cannot drift apart on which forms they judge.
 // WORDFIT — the narrative forms whose cells carry a real, human-language TITLE
 // that must not fracture mid-word. Scoped to flow + dashboard (the forms in this
 // deck); a token wider than its cell breaks under .box overflow-wrap:break-word,
@@ -636,8 +643,6 @@ async function launch(chromium) {
 // validate, and it goes green on the OLD deck. The census closes that: a mismatch
 // does not guess which side is right, it says RUN BUILD and exits non-zero.
 // ─────────────────────────────────────────────────────────────────────────
-const { staticCensus, nodeCensus, pageCensus } = require('./static-census.cjs');
-
 function startServer() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {

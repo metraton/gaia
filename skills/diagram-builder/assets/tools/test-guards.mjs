@@ -15,6 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
+import { widthAtTier, isBandAtTier, isBandClass, place } from './check-layout.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -124,6 +125,135 @@ function rmDeck(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); }
   const { code, out } = runNode([CHECK, ROOT]);
   const ok = code === 0 && out.includes('ALL PASS');
   report('control: intact seed passes', ok, `exit=${code}`);
+}
+
+// ── 5. PLACEMENT AGREEMENT — the engine's model vs the gate's mirror ───────
+// engine.js and check-layout.mjs each implement the same CSS-grid placement, and
+// they must: the engine is a plain browser script under `file://`, where an ES
+// module is CORS-blocked (origin 'null'), so there is no module system to share
+// one through and the deck's contract is that it opens with a double click.
+// What CAN be shared is the PROOF. These cases extract the engine's own
+// functions from its real source and assert they agree with the gate's copy over
+// a corpus of grid shapes — so "keep in sync" is a test, not a comment.
+const ENGINE_SRC = fs.readFileSync(path.join(ROOT, 'engine', 'engine.js'), 'utf8');
+
+// Lift named functions out of the engine by brace matching from their
+// declarations, evaluated together so they can call each other. Reads the REAL
+// source, so an engine edit either still agrees or is caught; a rename makes the
+// extraction throw, which fails the case rather than skipping it.
+function liftFromEngine(...names) {
+  const decls = names.map(name => {
+    const at = ENGINE_SRC.indexOf(`function ${name}(`);
+    if (at < 0) throw new Error(`engine.js declares no \`function ${name}(\` — the agreement test cannot see it`);
+    let depth = 0, end = -1;
+    for (let i = ENGINE_SRC.indexOf('{', at); i < ENGINE_SRC.length; i++) {
+      if (ENGINE_SRC[i] === '{') depth++;
+      else if (ENGINE_SRC[i] === '}' && --depth === 0) { end = i + 1; break; }
+    }
+    if (end < 0) throw new Error(`\`function ${name}\` in engine.js has unbalanced braces`);
+    return ENGINE_SRC.slice(at, end);
+  });
+  return new Function(`${decls.join('\n')}\nreturn { ${names.join(', ')} };`)();
+}
+
+// Every (span, cols, tracks) the cascade can reach: tracks is the authored count,
+// the 2-track intermediate, or the 1-track endpoint, and never widens the grid.
+function widthCorpus() {
+  const out = [];
+  for (let cols = 1; cols <= 6; cols++)
+    for (let span = 1; span <= cols; span++)
+      for (const tracks of [cols, 2, 1])
+        if (tracks <= cols) out.push({ span, cols, tracks });
+  return out;
+}
+
+// The grid shapes: every ordering of up to four slots drawn from a set that mixes
+// single cells, partial merges, bands and rowspans — enough for a merge to fail to
+// fit and drop a row, which is where two placement models drift apart.
+function shapeCorpus() {
+  const spans = [1, 2, 3, 4];
+  const rowspans = [1, 2];
+  const slots = [];
+  for (const span of spans) for (const rowspan of rowspans) slots.push({ span, rowspan });
+  const shapes = [];
+  for (let cols = 1; cols <= 5; cols++) {
+    for (const a of slots) for (const b of slots) for (const c of slots) {
+      const trio = [a, b, c].filter(s => s.span <= cols);
+      if (trio.length) shapes.push({ cols, slots: trio });
+    }
+  }
+  return shapes;
+}
+
+{
+  let mismatch = null;
+  try {
+    const { widthAtTier: engineWidth } = liftFromEngine('widthAtTier');
+    for (const { span, cols, tracks } of widthCorpus()) {
+      const mine = widthAtTier(span, cols, tracks), theirs = engineWidth(span, cols, tracks);
+      if (mine !== theirs) { mismatch = `span ${span} of ${cols} at ${tracks} track(s): gate ${mine} vs engine ${theirs}`; break; }
+    }
+  } catch (e) { mismatch = e.message; }
+  report('AGREE/width: gate widthAtTier == engine widthAtTier', mismatch === null, mismatch);
+}
+
+{
+  let mismatch = null;
+  try {
+    const { widthAtTier: engineWidth, rowOccupants: engineRows } =
+      liftFromEngine('widthAtTier', 'isBandAtTier', 'rowOccupants');
+    for (const shape of shapeCorpus()) {
+      for (const tracks of [shape.cols, 2, 1]) {
+        if (tracks > shape.cols) continue;
+        const items = shape.slots.map((s, i) => ({
+          node: `s${i}`, id: `s${i}`,
+          w: engineWidth(Math.min(s.span, shape.cols), shape.cols, tracks), h: s.rowspan,
+        }));
+        // The engine returns occupants PER ROW; the gate returns coordinates. Both
+        // answer the same question — which row each slot lands on — so compare that.
+        const engineByRow = engineRows(items, tracks)
+          .map((occ, r) => (occ || []).map(n => `${n}@${r}`)).flat().sort();
+        const gateByRow = place(items, tracks).placed
+          .map(p => Array.from({ length: p.h }, (_, i) => `${p.id}@${p.r + i}`)).flat().sort();
+        if (engineByRow.join('|') !== gateByRow.join('|')) {
+          mismatch = `cols ${shape.cols} @${tracks} tracks, spans [${shape.slots.map(s => `${s.span}x${s.rowspan}`).join(' ')}]: ` +
+            `engine [${engineByRow.join(' ')}] vs gate [${gateByRow.join(' ')}]`;
+          break;
+        }
+      }
+      if (mismatch) break;
+    }
+  } catch (e) { mismatch = e.message; }
+  report('AGREE/placement: gate place == engine rowOccupants over the shape corpus', mismatch === null, mismatch);
+}
+
+// The band rule is where the two ACTUALLY diverged: the engine asks `w >= tracks`
+// (tier-relative, which is what the CSS does — at the 640px endpoint a .mspan
+// becomes grid-column:1/-1) while the gate asked a precomputed `span >= cols`.
+// A span-3-of-4 at the 2-track tier is the case that split them. This asserts the
+// gate now answers it the engine's way, and that the .msp CLASS question — the one
+// the root's `:has(> .msp)` rule keys on — still gets the authored answer.
+{
+  const w = widthAtTier(3, 4, 2);
+  const ok = w === 2 && isBandAtTier(w, 2) === true && isBandClass(3, 4) === false
+    && isBandAtTier(widthAtTier(1, 4, 1), 1) === true;
+  report('AGREE/band: span 3-of-4 at 2 tracks is a band by tier, not by class', ok,
+    `w=${w} bandAtTier=${isBandAtTier(w, 2)} bandClass=${isBandClass(3, 4)}`);
+}
+
+// The agreement cases above are only worth their line if they would SPEAK UP. Feed
+// the comparator the pre-fix rule (band decided by the authored span) and it must
+// report a mismatch — otherwise it is a test that cannot fail.
+{
+  const divergentWidth = (span, cols, tracks) => (tracks === 1 ? 1
+    : span >= cols ? tracks
+    : tracks === cols ? span
+    : Math.max(1, Math.min(2, Math.round(span / cols * 2) + 1)));   // over-wide at the 2-track tier
+  let caught = false;
+  for (const { span, cols, tracks } of widthCorpus())
+    if (widthAtTier(span, cols, tracks) !== divergentWidth(span, cols, tracks)) { caught = true; break; }
+  report('AGREE/teeth: the comparator reports a seeded divergence', caught,
+    'a deliberately wrong width function was accepted as equal');
 }
 
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);

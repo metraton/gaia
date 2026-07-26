@@ -1,6 +1,8 @@
 // ─────────────────────────────────────────────────────────────────────────
-// static-census.cjs — the AUTHORED-DATA reader, shared by both guardrails.
-// @version 1.0.0  (part of the diagram-builder skill; keep in sync with
+// static-census.cjs — the browser-free FOUNDATION both guardrails read: the
+// authored-data reader, the form taxonomy they share, and the collapse
+// breakpoints as the CSS declares them.
+// @version 1.1.0  (part of the diagram-builder skill; keep in sync with
 //                  engine/build-data.mjs — this module MIRRORS its
 //                  visible/order resolution, it does not re-implement it)
 //
@@ -19,6 +21,13 @@
 // of the optional one — the two tools now share ONE parse path (so a divergence
 // between them is impossible) and neither pulls the other's dependencies in.
 //
+// The same reasoning governs everything else here: this file holds what BOTH
+// gates need and NEITHER owns. A constant one gate alone consumes belongs in
+// that gate, not here — only a value the two would otherwise keep two copies of
+// is promoted, because two copies is the drift this module exists to prevent.
+// It is deliberately CommonJS and dependency-free (js-yaml is lazy) so the ESM
+// static gate and the CJS render gate can both consume it.
+//
 // EVERY ENTRY POINT TAKES A ROOT. The deck root defaults to the parent of this
 // tools/ directory (the normal case), but both functions accept an explicit one
 // so a NEGATIVE TEST can point them at a broken fixture in a temp directory
@@ -30,6 +39,46 @@ const fs = require('fs');
 
 // The deck root: tools/ lives directly under it.
 const DEFAULT_ROOT = path.join(__dirname, '..');
+
+// ── THE SHARED FORM TAXONOMY ───────────────────────────────────────────────
+// A page declares its FORM (page YAML `form:`). Both gates scope checks by it,
+// so the default and the grid-dense subset are defined once here rather than
+// once per gate. The remaining sets (GRIDDED, WORDFIT) are consumed by the
+// render gate alone and stay there.
+const DEFAULT_FORM = 'dashboard';
+// The forms that should EARN a wide canvas by composing sections side by side
+// and grouping cells, so a lone cell stranded on its own row is worth failing
+// (render invariants P/V, static ROW). A timeline/flow/mindmap may legitimately
+// be sparse or linear, so those checks do not judge them.
+const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
+
+// ── THE COLLAPSE BREAKPOINTS ───────────────────────────────────────────────
+// index.html declares three container queries on the `stage` container:
+//   stack  sections STOP sitting side by side (the root leaves its authored grid
+//          and becomes a vertical flex stack)
+//   two    every MULTI-column leaf grid steps down to the 2-track intermediate
+//   one    the ENDPOINT: every leaf grid collapses to ONE track
+// The CSS is the ONLY thing the browser obeys, so it is the source of truth and
+// these are its MIRROR, kept here because a data-only fixture (no index.html)
+// must still be checkable. `cssBreakpoints` reads the real declarations back out
+// so the mirror can be ASSERTED against them instead of trusted — see the CSS
+// line in check-layout.mjs.
+const BREAKPOINTS = { stack: 1440, two: 1000, one: 640 };
+
+// The `max-width` of every `@container stage (…)` block in index.html, descending.
+// Returns { ok, widths, problem }: a deck with no index.html (a data-only
+// fixture) is reported as `ok:false` with a problem, never guessed at.
+function cssBreakpoints(root = DEFAULT_ROOT) {
+  const file = path.join(root, 'index.html');
+  if (!fs.existsSync(file))
+    return { ok: false, widths: [], problem: `index.html does not exist under "${root}"` };
+  const src = fs.readFileSync(file, 'utf8');
+  const widths = [...src.matchAll(/@container\s+stage\s*\(\s*max-width:\s*(\d+)px\s*\)/g)]
+    .map(m => Number(m[1]));
+  if (!widths.length)
+    return { ok: false, widths: [], problem: 'index.html declares no `@container stage (max-width: …)` query' };
+  return { ok: true, widths: [...new Set(widths)].sort((a, b) => b - a) };
+}
 
 // js-yaml is resolved LAZILY and its absence is reported as a PROBLEM, never
 // thrown and never silently skipped. A census that cannot run is a hole, not a
@@ -194,4 +243,5 @@ function staticCensus(root = DEFAULT_ROOT) {
     summary: `${wantIds.length} page(s), palette "${gen.palette ?? 'neutral'}"` };
 }
 
-module.exports = { DEFAULT_ROOT, loadAuthoredDeck, nodeCensus, pageCensus, staticCensus };
+module.exports = { DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, BREAKPOINTS, cssBreakpoints,
+  loadAuthoredDeck, nodeCensus, pageCensus, staticCensus };

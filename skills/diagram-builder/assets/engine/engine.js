@@ -217,10 +217,39 @@
   const isLeafOfType = (c, t) => c && !Array.isArray(c.children) && c.type === t;
   const isThinRowLeaf = c => isLeafOfType(c, 'separator') && !hasTreatment(c, 'vertical');
 
-  // CSS GRID SPARSE AUTO-PLACEMENT, SIMULATED — the same walk tools/check-layout.mjs
-  // mirrors (`place`), for the same reason: which row a slot lands on is a pure
-  // function of the flow, so it can be derived instead of measured. Returns, per
-  // row, the slot NODES that occupy it (a rowspan slot occupies every row it
+  // ── THE PLACEMENT MODEL ─────────────────────────────────────────────────
+  // Three pieces — widthAtTier, isBandAtTier, rowOccupants — and they are the
+  // ONE thing this engine shares with tools/check-layout.mjs (`place`), which
+  // mirrors them because a Node gate cannot import a browser script: an ES
+  // module is CORS-blocked from `file://` (origin 'null'), and the deck's
+  // contract is that it opens with a double click. The mirror is not trusted, it
+  // is TESTED — tools/test-guards.mjs extracts these functions from this file's
+  // real source and asserts they agree with the gate's copy over a corpus of
+  // grid shapes. Change the model here and that test tells you the gate drifted.
+
+  // How many TRACKS a slot occupies at a given tier, mirroring the CSS in
+  // index.html: `.msp` (span == cols) is grid-column:1/-1 at every tier, while
+  // `.mspan` keeps its PROPORTION — span var(--span) at the authored tier,
+  // var(--span2) = round(span/cols·2) at the 2-track tier, and 1/-1 at the
+  // 1-track endpoint.
+  function widthAtTier(span, cols, tracks) {
+    if (tracks === cols) return span;
+    if (span >= cols) return tracks;
+    return Math.max(1, Math.min(tracks, Math.round(span / cols * tracks)));
+  }
+
+  // Whether a slot OWNS ITS ROW at this tier. The test is the width it resolves
+  // to, never the authored span, because band-ness is TIER-RELATIVE in the CSS:
+  // at the 640px endpoint `.sec-grid:not(.sec-compound) > .mspan` becomes
+  // grid-column:1/-1, so a partial merge IS a band there; and a span that fills
+  // both tracks of the 2-track tier already spans the whole row (the reason the
+  // engine emits --span2 at all). `span >= cols` describes the .msp CLASS, which
+  // is the authored tier's answer to a tier-relative question.
+  function isBandAtTier(w, tracks) { return w >= tracks; }
+
+  // CSS GRID SPARSE AUTO-PLACEMENT, SIMULATED — which row a slot lands on is a
+  // pure function of the flow, so it can be derived instead of measured. Returns,
+  // per row, the slot NODES that occupy it (a rowspan slot occupies every row it
   // covers, so a row a taller cell passes through is never seen as empty).
   // `grid-auto-flow` is row/SPARSE: the cursor never moves backwards, and a band
   // carries a definite full-width column position so it cannot share a row.
@@ -243,7 +272,7 @@
     let cr = 0, cc = 0, guard;
     for (const it of items) {
       const w = Math.max(1, Math.min(it.w, tracks)), h = Math.max(1, it.h);
-      if (w >= tracks) {                       // a full-width band: its own row
+      if (isBandAtTier(w, tracks)) {
         let r = cc > 0 ? cr + 1 : cr; guard = 0;
         while (!free(r, 0, tracks, h) && guard++ < 10000) r++;
         fill(r, 0, tracks, h, it.node);
@@ -282,10 +311,8 @@
   }
 
   // Emit one track list PER COLLAPSE TIER. The placement is a function of the
-  // track count, so the separator-only rows move as the grid cascades …→2→1: at
-  // 2 tracks a partial merge shrinks to --span2 and a band stays full width; at
-  // the 1-track endpoint every slot is alone in its row, so every separator row
-  // is thin there. Each tier is computed independently — a separator that SHARES
+  // track count (widthAtTier above), so the separator-only rows move as the grid
+  // cascades …→2→1. Each tier is computed independently — a separator that SHARES
   // its row with boxes at the authored width but ends up alone at 2 tracks is
   // correctly thin only in that tier's list. Nothing is emitted for a tier with
   // no separator row, so the CSS var() falls back to --cell-h.
@@ -293,10 +320,8 @@
     const at = (tracks) => slots.map(slot => {
       const node = slot.pair ? slot.pair[0] : slot.child;
       const span = Math.max(1, Math.min(node.span || 1, cols));
-      const w = tracks === cols ? span
-        : span >= cols ? tracks                                   // band: full width
-        : Math.max(1, Math.min(tracks, Math.round(span / cols * tracks)));
-      return { node, w, h: Math.max(1, Math.floor(Number(node.rowspan) || 1)) };
+      return { node, w: widthAtTier(span, cols, tracks),
+        h: Math.max(1, Math.floor(Number(node.rowspan) || 1)) };
     });
     const tiers = [['--row-tracks', cols], ['--row-tracks-2', 2], ['--row-tracks-1', 1]];
     for (const [prop, tracks] of tiers) {

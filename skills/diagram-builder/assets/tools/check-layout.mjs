@@ -82,7 +82,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import censusLib from './static-census.cjs';
 
-const { loadAuthoredDeck, staticCensus, DEFAULT_ROOT } = censusLib;
+const { loadAuthoredDeck, staticCensus, cssBreakpoints,
+  DEFAULT_ROOT, DEFAULT_FORM, GRID_DENSE, BREAKPOINTS } = censusLib;
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 // The deck root: argv wins, then the env override, then the normal location.
@@ -92,17 +93,15 @@ const ROOT = process.argv[2] ? path.resolve(process.argv[2])
   : (DEFAULT_ROOT || path.join(HERE, '..'));
 
 // ── THE COLLAPSE CASCADE, AS ARITHMETIC ───────────────────────────────────
-// index.html declares three container-query breakpoints on the `stage` container:
-//   1440  sections STOP sitting side by side and stack (the root leaves its
-//         authored grid and becomes a vertical flex stack)
-//   1000  every MULTI-column leaf grid steps down to the 2-track "two-table"
-//         intermediate (.sec-grid:not(.sec-compound):not(.sec-c1))
-//    640  the ENDPOINT: every leaf grid collapses to ONE track
+// The three breakpoints come from static-census.cjs, which mirrors the
+// `@container stage` queries in index.html and can read the real declarations
+// back out — the CSS line below ASSERTS the mirror against them, so this gate
+// cannot quietly drift from the stylesheet the browser actually obeys.
 // They are CONTAINER queries, not media queries, and the container is `.stage`
 // (`width:100%` of the deck) — so ONE width governs EVERY grid at EVERY nesting
 // depth. That is what makes the track count a pure function instead of a layout
 // negotiation, and therefore what makes the browser sweep redundant.
-const BP_STACK = 1440, BP_TWO = 1000, BP_ONE = 640;
+const { stack: BP_STACK, two: BP_TWO, one: BP_ONE } = BREAKPOINTS;
 
 // The five widths the retired browser sweep used, kept EXACTLY so this gate
 // covers the same span it replaced: the 1-track endpoint, the 2-track
@@ -112,13 +111,11 @@ const TIERS = [
   { name: 'huge', w: 1920 }, { name: 'ultra', w: 2560 },
 ];
 
-// engine.js: `const DEFAULT_SECTION_COLUMNS = 2`.
+// engine.js: `const DEFAULT_SECTION_COLUMNS = 2`. It cannot be imported from
+// there (see THE PLACEMENT MODEL below), so it is mirrored and pinned by the
+// agreement test in tools/test-guards.mjs. GRID_DENSE and DEFAULT_FORM are NOT
+// mirrored — both gates take them from static-census.cjs.
 const DEFAULT_SECTION_COLUMNS = 2;
-// Mirrors GRID_DENSE in tools/validate-layout.cjs: the forms that should EARN a
-// wide canvas, so a lone cell stranded on its own row is worth failing. A
-// timeline/flow/mindmap may legitimately be sparse or linear.
-const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
-const DEFAULT_FORM = 'dashboard';
 // The engine's reserved "show everything" chip: legitimately has no members.
 const RESET_CHIP = 'all';
 
@@ -131,20 +128,43 @@ function tracksFor(cols, cw) {
   return cols;                                // fully authored
 }
 
-// How many TRACKS one slot occupies at a tier. Mirrors the three CSS rules that
-// govern a merge as the grid collapses:
-//   .msp   (span >= cols)      grid-column: 1 / -1  — a band is full width at EVERY tier
+// ── THE PLACEMENT MODEL, MIRRORED FROM engine.js ───────────────────────────
+// widthAtTier + isBandAtTier + place mirror the engine's widthAtTier /
+// isBandAtTier / rowOccupants. They are a MIRROR and not an import because the
+// engine is a plain browser script under `file://`, where an ES module is
+// CORS-blocked (origin 'null') — the deck's contract is that it opens with a
+// double click, so it has no module system to share one through.
+// The mirror is not trusted on a comment: tools/test-guards.mjs extracts the
+// engine's own functions from its real source and asserts they agree with these
+// over a corpus of grid shapes, including a span-3-of-4 at the 2-track tier.
+
+// How many TRACKS one slot occupies at a tier. Mirrors the CSS rules that govern
+// a merge as the grid collapses:
+//   .msp   (span >= cols)      grid-column: 1 / -1  — full width at EVERY tier
 //   .mspan (1 < span < cols)   grid-column: span var(--span)  at the authored tier,
 //                              span var(--span2) at the 2-track tier (--span2 =
 //                              round(span/cols·2) clamped [1,2], emitted by the
 //                              engine so a partial merge keeps its PROPORTION),
 //                              and 1 / -1 at the 1-track endpoint.
 function widthAtTier(span, cols, tracks) {
-  if (tracks === 1) return 1;
-  if (span >= cols) return tracks;                 // band: 1 / -1
   if (tracks === cols) return span;                // authored tier: exact tracks
-  return Math.max(1, Math.min(2, Math.round(span / cols * 2)));  // --span2
+  if (span >= cols) return tracks;                 // band: 1 / -1
+  return Math.max(1, Math.min(tracks, Math.round(span / cols * tracks)));  // --span2
 }
+
+// Whether a slot OWNS ITS ROW at this tier — the width it resolves to, never the
+// authored span, because band-ness is TIER-RELATIVE in the CSS: at the 640px
+// endpoint `.sec-grid:not(.sec-compound) > .mspan` becomes grid-column:1/-1, so a
+// partial merge IS a band there, and a merge that fills both tracks of the
+// 2-track tier already spans its whole row.
+const isBandAtTier = (w, tracks) => w >= tracks;
+
+// Whether a slot carries the .msp CLASS. This is the AUTHORED declaration —
+// `span == columns` — and it is a different question from isBandAtTier: it is
+// what makes the engine emit .msp (and therefore what the root's
+// `:has(> .msp)` grid rule keys on), so it is answered at the authored tier
+// only. Both are needed; conflating them is the divergence this pair replaces.
+const isBandClass = (span, cols) => span >= cols;
 
 // ── THE DATA MODEL, MIRRORED FROM engine.js ───────────────────────────────
 const isSection = n => !!(n && Array.isArray(n.children));
@@ -202,7 +222,9 @@ const rowspanOf = n => Math.max(1, Math.floor(Number(n && n.rowspan) || 1));
 // how an interior hole is born, and simulating it is what lets the hole be found
 // in the data instead of in a screenshot.
 // A band carries a DEFINITE column position (grid-column: 1 / -1), so it cannot
-// share a row: it takes the first row where the full width is free.
+// share a row: it takes the first row where the full width is free. Band-ness is
+// decided HERE, per tier, by isBandAtTier — the caller supplies widths, not a
+// verdict, because the same slot is a band at one tier and not at another.
 function place(items, tracks) {
   const occ = new Set();
   const key = (r, c) => `${r},${c}`;
@@ -217,12 +239,12 @@ function place(items, tracks) {
   const placed = [];
   for (const it of items) {
     const w = Math.max(1, Math.min(it.w, tracks)), h = Math.max(1, it.h);
-    if (it.band) {
+    if (isBandAtTier(w, tracks)) {
       let r = cc > 0 ? cr + 1 : cr;   // a partially filled row cannot host a band
       let guard = 0;
       while (!free(r, 0, tracks, h) && guard++ < 10000) r++;
       fill(r, 0, tracks, h);
-      placed.push({ ...it, r, c: 0, w: tracks, h });
+      placed.push({ ...it, r, c: 0, w: tracks, h, band: true });
       cr = r; cc = tracks;            // the row is full: the next item wraps
       continue;
     }
@@ -233,7 +255,7 @@ function place(items, tracks) {
       if (cc + w > tracks) { cr++; cc = 0; }
     }
     fill(cr, cc, w, h);
-    placed.push({ ...it, r: cr, c: cc, w, h });
+    placed.push({ ...it, r: cr, c: cc, w, h, band: false });
     cc += w;
   }
   const rowCount = placed.reduce((n, p) => Math.max(n, p.r + p.h), 0);
@@ -258,7 +280,7 @@ function discoverGrids(page) {
     const compound = children.some(isSection);
     const authored = node.columns;
     const cols = effectiveCols(authored, slots, compound);
-    const hasBand = slots.some(s => Math.max(1, Math.min(s.node.span || 1, cols)) >= cols);
+    const hasBand = slots.some(s => isBandClass(Math.max(1, Math.min(s.node.span || 1, cols)), cols));
     grids.push({
       label, isRoot, compound, children, slots,
       authoredCols: Math.max(1, Number.isInteger(authored) && authored > 0 ? authored : DEFAULT_SECTION_COLUMNS),
@@ -426,7 +448,6 @@ function checkPage(page) {
           id: s.node.id ?? '(no id)',
           w: widthAtTier(span, g.cols, tracks),
           h: rowspanOf(s.node),
-          band: span >= g.cols,
         };
       });
       if (!items.length) continue;
@@ -537,7 +558,10 @@ function checkPage(page) {
 
       // BAND placement — a band owns its row. Structurally guaranteed by the
       // placement model, so a failure here means the model and the data disagree
-      // about what a band is, which would invalidate every closure above.
+      // about what a band is, which would invalidate every closure above. Only
+      // reached at the authored tier (the `continue` above), which is the one tier
+      // where isBandAtTier and the .msp class agree — so this asserts exactly the
+      // authored `span == columns` bands it always did.
       for (const p of placed.filter(p => p.band)) {
         asserted++;
         const sharers = placed.filter(q => q !== p && q.r < p.r + p.h && q.r + q.h > p.r);
@@ -610,6 +634,26 @@ function main() {
     for (const p of sc.problems) console.log(`    [FAIL] ${p}`);
   }
 
+  // CSS — the breakpoints this gate computes with, against the ones index.html
+  // actually declares. Every tracks-per-tier number below is derived from them, so
+  // a stylesheet edit that moved a cut would otherwise leave this gate asserting a
+  // cascade the browser no longer renders — green, and wrong. A deck with no
+  // index.html (a data-only fixture) cannot be checked and says so rather than
+  // claiming a pass it did not earn.
+  const bp = cssBreakpoints(ROOT);
+  const mirrored = [...new Set(Object.values(BREAKPOINTS))].sort((a, b) => b - a);
+  console.log('\nCSS  (mirrored breakpoints vs the `@container stage` queries in index.html)');
+  if (!bp.ok) {
+    console.log(`    [INFO] not asserted — ${bp.problem}. The cascade below uses the mirror: ${mirrored.join(' / ')}px.`);
+  } else {
+    asserted++;
+    if (bp.widths.join('|') !== mirrored.join('|'))
+      fail('CSS', 'index.html', `container queries declare [${bp.widths.join(', ')}]px but the gate ` +
+        `computes with [${mirrored.join(', ')}]px — the stylesheet moved and static-census.cjs BREAKPOINTS did not, ` +
+        `so every tracks-per-tier number below describes a cascade the browser does not render.`);
+    else console.log(`    [PASS] ${bp.widths.join(' / ')}px — the mirror matches the stylesheet`);
+  }
+
   const deck = loadAuthoredDeck(ROOT);
   if (!deck.manifest) {
     console.log('\n══════════════════════════════════════════════════════════════');
@@ -647,6 +691,7 @@ function main() {
     ['TIER', 'collapse cascade is monotone across the container tiers'],
     ['CHIP', 'filter referential integrity (both directions) + chip arity'],
     ['ORDER', 'no duplicate effective `order` among siblings'],
+    ['CSS', 'the mirrored breakpoints match the container queries in index.html'],
   ];
   console.log('\n  ── CHECKS ─────────────────────────────────────────────────────');
   for (const [id, name] of CHECKS) {
@@ -681,4 +726,11 @@ function main() {
   process.exit(1);
 }
 
-main();
+// Run ONLY when invoked as the gate. Imported (by the agreement test in
+// tools/test-guards.mjs, which asserts this placement model still matches the
+// engine's) the module must expose its functions without running a gate or
+// calling process.exit.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+
+export { widthAtTier, isBandAtTier, isBandClass, place, tracksFor,
+  orderedChildren, slotsOf, effectiveCols, DEFAULT_SECTION_COLUMNS };
