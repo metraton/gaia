@@ -34,6 +34,9 @@ Orchestrator dispatches agent (Task/Agent tool call)
         |  Write/Edit calls: protected path validation (_is_protected())
         |  NOTE: .claude/ tree is protected on BOTH surfaces -- _is_protected() for Write/Edit
         |        file_path, protected_path_guard.py for Bash command strings (categorical deny)
+        |  Write/Edit calls, subagent-only, non-protected path: advisory
+        |        artifact-skill reminder (artifact_skill_map + artifact_skill_reminder) --
+        |        always "allow", never blocks
         v
     ALLOWED / BLOCKED / ask dialog (T3)
         |
@@ -60,7 +63,7 @@ hooks/pre_tool_use.py              <- Entry point: stdin/stdout glue only
   -> adapters/claude_code.py       <- Adapter: parses event, dispatches to modules
     -> modules/security/           <- blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard
     -> modules/context/            <- context_injector, contracts_loader
-    -> modules/agents/             <- contract_validator, skill_injection
+    -> modules/agents/             <- contract_validator, skill_injection, artifact_skill_map, artifact_skill_reminder
     -> modules/validation/         <- commit_validator
     -> modules/audit/              <- logger, metrics
 ```
@@ -107,6 +110,8 @@ Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additio
 **Protected paths** (blocked regardless of permissionMode):
 - `.claude/hooks/` — hooks cannot be modified by any agent
 - `.claude/settings.json` and `.claude/settings.local.json` — settings cannot be modified by any agent
+
+**Artifact-skill reminder (advisory, never blocking):** on a subagent's Write/Edit to a non-protected path, `pre_tool_use.py` resolves the file's extension to a governing skill via `modules/agents/artifact_skill_map.py` (`expected_skill_for_path`), and — if that skill has not already been reminded this turn — returns `permissionDecision: "allow"` with the reminder text in `hookSpecificOutput.additionalContext`. It is restricted to subagents (`is_subagent=True` with a non-empty `agent_id`); the orchestrator's own foreground writes never trigger it. The reminder always travels in `additionalContext`, never in `permissionDecisionReason`: with `permissionDecision: "allow"`, Claude Code's own hook contract surfaces `permissionDecisionReason` only in logs and the debug transcript, not to the model, so a reminder placed there would never reach the agent it is meant for (see `code.claude.com/docs/en/hooks.md`, "PreToolUse decision control"). Noise is bounded by `modules/agents/artifact_skill_reminder.py` (`should_remind`, `cleanup_stale_markers`): it fires at most once per (session, agent, skill) — once per turn, per artifact class, never per file — via a marker file under `/tmp/gaia-artifact-skill-reminders/`. This per-turn dedup is not something Claude Code's hooks provide natively; Gaia implements it itself. The reminder cannot verify whether the agent actually loaded the skill: a subagent's Write/Edit payload carries no `transcript_path` (only `SubagentStop` gets `agent_transcript_path`), and the `Skill` tool is not wired into any `PreToolUse` matcher in `hooks.json`, so a `Skill(...)` call never reaches this hook. That real gap-detection — did the transcript actually show the skill's fingerprint — still lives at `SubagentStop`, in `modules/agents/skill_injection_verifier.py`; this PreToolUse reminder only reminds, it never accuses.
 
 ## Ver también
 
