@@ -40,8 +40,16 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest==8.3.5
 
+      # tests/evals runs in-scope here (no --ignore) so the drift gate
+      # (compare_to_baseline / enforce_no_regression, tests/evals/test_evals.py
+      # session teardown) fires on every push instead of only when invoked by
+      # hand. This also reconciles the two test surfaces: package.json's
+      # `test` / `test:layer1` scripts never excluded tests/evals, so CI was
+      # the only surface skipping it. The `-m llm` live cases (real token
+      # spend) stay skipped by default via tests/conftest.py -- no -m flag is
+      # passed here, matching the manual/package.json invocation.
       - name: Run tests
-        run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e --ignore=tests/evals
+        run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
 
   l2-ci-subset:
     name: L2 ci_subset (budget-bounded LLM)
