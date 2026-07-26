@@ -56,15 +56,17 @@ Draft identity (T5 -- decisions #1, #3, #8):
     each concurrent cycle carries, and the seam the hook adapter (T6) uses to
     re-address a resumed agent's draft); otherwise a subcommand resolves the
     most-recently-modified draft, optionally scoped to a single agent via
-    ``--agent-id``. When BOTH are omitted AND drafts from 2+ DISTINCT agents
-    currently exist, resolution refuses to guess: it raises
-    ``gaia.contract.drafts.AmbiguousDraftError`` rather than silently picking
-    the system-wide most-recently-modified draft (which could belong to a
-    different agent than the one invoking the CLI). The CLI catches this and
-    prints the candidate draft ids, exiting 1 -- the caller must then pass
-    ``--draft-id`` or ``--agent-id``. A single draft system-wide, or several
-    drafts all belonging to the SAME agent, still resolves via the
-    latest-mtime fallback unchanged (no ambiguity, no cross-agent risk). All
+    ``--agent-id``. Resolution refuses to guess in two situations, both raising
+    ``gaia.contract.drafts.AmbiguousDraftError``, which the CLI catches to
+    print a bounded candidate list and exit 1: when BOTH flags are omitted AND
+    drafts from 2+ DISTINCT agents exist (the picked draft could belong to
+    another agent), and when ``--agent-id`` is given but 2+ LIVE drafts carry
+    that handle (agent ids are minted per turn with no uniqueness mechanism, so
+    the handle is shared and the recency winner moves between calls -- that is
+    how a COMPLETE once landed on another agent's draft). Only ``--draft-id``
+    identifies one draft in that second case. A single draft system-wide, or
+    several drafts all belonging to the SAME agent, still resolves via the
+    latest-mtime fallback unchanged when no ``--agent-id`` is given. All
     addressing/persistence lives in
     ``gaia.contract.drafts`` (atomic writes, no shared mutable pointer), which
     T6 (resume-read), T7 (finalize store-writer), and T13 (concurrency) build
@@ -325,15 +327,20 @@ def _no_draft_error(as_json: bool, draft_id: Optional[str] = None) -> None:
 
 
 def _print_ambiguous_draft_error(exc, as_json: bool) -> None:
-    """Report an ``AmbiguousDraftError`` -- 2+ distinct agents have active
-    drafts and neither ``--draft-id`` nor ``--agent-id`` was given, so
-    resolution refuses to guess (see gaia.contract.drafts.resolve_draft_id).
+    """Report an ``AmbiguousDraftError`` -- resolution found several candidate
+    drafts and refuses to guess (see gaia.contract.drafts.resolve_draft_id).
+
+    Two cases share this reporter and are distinguished by the exception's own
+    ``code``: ``ambiguous_draft`` (no flags given, 2+ agents have drafts) and
+    ``ambiguous_agent_draft`` (``--agent-id`` given, but that handle is carried
+    by 2+ live drafts). A machine consumer needs them apart because only the
+    first is fixable by adding ``--agent-id``.
     """
     candidates = list(getattr(exc, "candidates", []) or [])
     if as_json:
         print(json.dumps({
             "status": "error",
-            "error": "ambiguous_draft",
+            "error": getattr(exc, "code", "ambiguous_draft"),
             "message": str(exc),
             "candidates": candidates,
         }))
@@ -669,17 +676,22 @@ def _add_common_draft_arg(parser: argparse.ArgumentParser) -> None:
 def _add_agent_scope_arg(parser: argparse.ArgumentParser) -> None:
     """Optional per-agent resolution scope for the mutating verbs.
 
-    When ``--draft-id`` is omitted, ``--agent-id`` narrows the
-    most-recently-touched fallback to a single agent's own drafts -- the
-    per-agent, resume-aware addressing (decision #8) that lets a resumed
-    agent find its latest draft without any harness session concept.
+    When ``--draft-id`` is omitted, ``--agent-id`` narrows resolution to a
+    single agent's own drafts -- the per-agent, resume-aware addressing
+    (decision #8) that lets a resumed agent find its draft without any harness
+    session concept. It resolves only when that scope names exactly one live
+    draft: agent ids are not unique, so a handle shared by several live drafts
+    is reported as ambiguous rather than decided by recency.
     """
     parser.add_argument(
         "--agent-id",
         dest="agent_id",
         metavar="AGENT_ID",
         default=None,
-        help="Scope draft resolution to this agent's drafts (used only when --draft-id is omitted)",
+        help=(
+            "Scope draft resolution to this agent's drafts (used only when "
+            "--draft-id is omitted; errors if the handle has several live drafts)"
+        ),
     )
 
 

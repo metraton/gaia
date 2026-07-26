@@ -205,7 +205,12 @@ def test_salvage_finalizes_partial_draft_as_degraded(db):
 # 2. Salvaged row is DISTINGUISHABLE from an agent-verified COMPLETE
 # ---------------------------------------------------------------------------
 
-def test_salvaged_row_distinguishable_from_verified_complete(db):
+def test_salvaged_row_distinguishable_from_verified_complete(default_db):
+    # Both rows land in the DB that GAIA_DATA_DIR resolves, not a side path:
+    # draft liveness reads THAT database to decide which drafts are already
+    # finalized, and resolution by agent_id refuses to guess between two live
+    # drafts. A finalized row written to a DB the resolver never opens would
+    # leave its draft looking live and make this scenario ambiguous.
     # (a) An agent-verified COMPLETE row -- the PRIMARY finalize path.
     complete_draft = mint_draft_id(VALID_AGENT_ID)
     complete_env = _verified_complete_envelope()
@@ -216,22 +221,22 @@ def test_salvaged_row_distinguishable_from_verified_complete(db):
         workspace=WORKSPACE,
         agent_state="COMPLETE",
         raw_handoff_json=json.dumps(complete_env),
-        db_path=db,
+        db_path=default_db,
     )
 
-    # (b) A salvaged truncated row on a DIFFERENT draft.
+    # (b) A salvaged truncated row on a DIFFERENT draft. It is the only LIVE
+    # draft for the handle -- the finalized one is spent -- so salvage targets
+    # it unambiguously.
     trunc_draft = mint_draft_id(VALID_AGENT_ID)
     save_draft(trunc_draft, _partial_envelope("IN_PROGRESS"))
-    # resolve_draft_id(agent_id=...) returns the most-recent draft -> the
-    # truncated one (just written). Salvage targets it.
     out = _adapter()._salvage_truncated_draft(
         parsed_contract=None,
-        task_info=_task_info(db),
+        task_info=_task_info(default_db),
         session_id="sess-distinct",
     )
     assert out["contract_id"] == trunc_draft
 
-    by_id = {r["contract_id"]: _payload(r["raw_handoff_json"]) for r in _rows(db)}
+    by_id = {r["contract_id"]: _payload(r["raw_handoff_json"]) for r in _rows(default_db)}
     assert set(by_id) == {complete_draft, trunc_draft}
     # The verified COMPLETE carries NO degraded flag; the salvaged row does.
     assert by_id[complete_draft].get("degraded") is None

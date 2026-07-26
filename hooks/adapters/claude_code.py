@@ -3395,7 +3395,14 @@ class ClaudeCodeAdapter(HookAdapter):
             from gaia.contract.view import render_resume_hint
         except Exception:
             return None
-        draft_id = resolve_draft_id(explicit=None, agent_id=agent_id)
+        try:
+            draft_id = resolve_draft_id(explicit=None, agent_id=agent_id)
+        except Exception:
+            # Several live drafts share this handle -- resolution refuses to
+            # guess. Injecting a hint pointing at someone else's draft would
+            # aim the resumed turn at the wrong contract, so the hint is simply
+            # omitted; the agent still addresses its own draft by --draft-id.
+            return None
         if not draft_id:
             return None
         envelope = load_draft(draft_id)

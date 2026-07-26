@@ -51,9 +51,13 @@ Resolution / addressing -- ``resolve_draft_id(explicit, agent_id)``:
       concurrency-safe primary key each concurrent cycle carries, and the
       seam the hook adapter (T6) uses to re-address a resumed agent's draft.
     * ``agent_id`` (an explicit ``--agent-id``), when ``explicit`` is absent,
-      scopes resolution to that agent's own drafts and returns its
-      most-recently-modified LIVE one -- the per-agent "resume to my latest
-      draft" convenience. Returns ``None`` when that agent has no draft.
+      scopes resolution to that agent's own drafts. It resolves ONLY when that
+      scope names exactly ONE live draft. Returns ``None`` when the agent has
+      no draft at all, and raises ``AmbiguousDraftError`` when 2+ live drafts
+      carry the handle -- an agent id is minted per turn with no uniqueness
+      mechanism, so the handle is shared, and picking the most recent of
+      several is a coin flip between unrelated turns (see "Why --agent-id
+      refuses" below).
     * When BOTH are omitted, resolution falls back to the most-recently-
       modified LIVE draft SYSTEM-WIDE -- but only when that is unambiguous.
       If the live candidates all belong to the SAME agent (including the
@@ -73,6 +77,25 @@ Liveness, and why it is the axis resolution turns on:
     ``agent_contract_handoffs`` row is SPENT -- its outcome is already durable
     in the DB -- and is therefore excluded from candidacy (``_prefer_live``).
     Identity minting is untouched; only what resolution considers changed.
+
+Why ``--agent-id`` REFUSES rather than picks:
+    Excluding spent drafts narrows candidacy but does not make an agent handle
+    unique, and it never was: every agent mints its own ``^a[0-9a-f]{5,}$`` id
+    with no uniqueness mechanism anywhere, so collisions are structural rather
+    than accidental (one handle observed on 44 files; ~147 agents against ~244
+    live drafts). Two consecutive ``gaia contract fill --agent-id <handle>``
+    calls therefore resolved to two DIFFERENT drafts -- the recency winner moved
+    between the calls -- and the second wrote a COMPLETE plus a verification
+    block onto a draft belonging to another agent's turn. Before liveness
+    filtering ``--agent-id`` failed outright; after it, it succeeded by
+    guessing. Making an unsafe operation usable is not an improvement, so
+    resolution now refuses the guess: 2+ LIVE candidates under one handle raise
+    ``AmbiguousDraftError`` naming ``--draft-id``, the only stable handle today.
+    The refusal lives HERE, at the single resolution seam, so every caller that
+    resolves by agent_id inherits it instead of each command re-deriving the
+    rule. Deliberately NOT covered: minting (a separate surface), and the bare
+    no-flags fallback, which still picks by recency among several live drafts
+    of one agent.
 
 Retention -- ``collectable_drafts(max_age_days, grace_hours)``:
     The single retention POLICY, returning a decision (with a per-draft
@@ -94,11 +117,13 @@ concurrency-isolation):
     list_draft_ids(agent_id=None) -> list[str]   # most-recent first
     resolve_draft_id(explicit=None, agent_id=None) -> str | None
         # raises AmbiguousDraftError when both are omitted and LIVE drafts
-        # from 2+ distinct agents exist
+        # from 2+ distinct agents exist, OR when agent_id names 2+ LIVE drafts
     spent_draft_ids(candidates=None) -> set[str] # terminal-row drafts
     collectable_drafts(max_age_days=None, grace_hours=None) -> list[dict]
     AmbiguousDraftError                          # raised by resolve_draft_id
-        # .candidates -- the FULL list; .agents -- distinct agent ids.
+        # .candidates -- the FULL list; .agents -- distinct agent ids;
+        # .agent_id -- the handle asked for (agent-scoped case) or None;
+        # .code -- "ambiguous_agent_draft" vs "ambiguous_draft".
         # str() is BOUNDED (a short, copy-pasteable preview), never the full
         # enumeration: naming all 481 candidates produced a ~13 KB message.
 """
@@ -146,23 +171,33 @@ _AMBIGUITY_PREVIEW_LIMIT = 5
 
 
 class AmbiguousDraftError(Exception):
-    """Raised by ``resolve_draft_id`` when neither ``explicit`` nor
-    ``agent_id`` is given AND drafts from 2+ DISTINCT agents currently exist.
+    """Raised by ``resolve_draft_id`` when the candidates it was given do not
+    identify ONE draft, in either of two distinct situations.
 
-    This guards the exact security/UX bug the fallback used to have:
-    ``list_draft_ids(agent_id=None)`` globs EVERY agent's drafts and the
-    most-recently-modified one wins -- so a subcommand invoked with no
-    ``--draft-id``/``--agent-id`` could silently operate on a DIFFERENT
-    agent's draft, with no warning. When every candidate belongs to the SAME
-    agent (including the common single-draft-system-wide case), resolution
-    stays unambiguous and the latest-mtime fallback is preserved unchanged --
-    this only fires on a genuine multi-agent tie, and it refuses to guess.
+    CROSS-AGENT (``agent_id`` is None) -- neither flag was given and live
+    drafts from 2+ DISTINCT agents exist. ``list_draft_ids(agent_id=None)``
+    globs EVERY agent's drafts and the most-recently-modified one wins, so a
+    subcommand invoked bare could silently operate on a different agent's
+    draft. When every candidate belongs to the same agent (including the
+    single-draft-system-wide case), the latest-mtime fallback is preserved.
+
+    AGENT-SCOPED (``agent_id`` is set) -- ``--agent-id`` was given and 2+ LIVE
+    drafts carry that handle. Agent ids are minted per turn with no uniqueness
+    mechanism, so one handle routinely spans unrelated turns; the recency
+    winner moves between calls, which is how a COMPLETE was once written onto
+    another agent's draft. The two situations get different messages because
+    they have different remedies: the cross-agent one can be resolved by
+    scoping with ``--agent-id``, the agent-scoped one only by ``--draft-id``.
     """
 
-    def __init__(self, candidates: List[str]):
+    def __init__(self, candidates: List[str], agent_id: Optional[str] = None):
         self.candidates = list(candidates)
         self.agents = sorted({_agent_of(c) for c in self.candidates})
-        super().__init__(_render_ambiguity_message(self.candidates, self.agents))
+        self.agent_id = agent_id
+        self.code = "ambiguous_agent_draft" if agent_id else "ambiguous_draft"
+        super().__init__(
+            _render_ambiguity_message(self.candidates, self.agents, agent_id)
+        )
 
 
 def _draft_state(draft_id: str) -> str:
@@ -193,37 +228,61 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _render_ambiguity_message(candidates: List[str], agents: List[str]) -> str:
+def _render_ambiguity_message(
+    candidates: List[str], agents: List[str], agent_id: Optional[str] = None
+) -> str:
     """Render a BOUNDED, copy-pasteable disambiguation message.
 
     An error a reader cannot finish reading does not inform. Naming all 481
     candidates produced a ~13 KB wall; this names at most
     ``_AMBIGUITY_PREVIEW_LIMIT`` of them -- newest first, each rendered as the
-    exact ``--draft-id`` argument that resolves it, with its agent, timestamp,
-    and state so the caller can recognize its own. The remainder is summarized
-    as a count, and the complete list stays on ``.candidates`` for programmatic
-    consumers, so bounding the text loses no data.
+    exact ``--draft-id`` argument that resolves it, with its timestamp and
+    state (plus its agent in the cross-agent case) so the caller can recognize
+    its own. The remainder is summarized as a count, and the complete list
+    stays on ``.candidates`` for programmatic consumers, so bounding the text
+    loses no data.
+
+    ``agent_id`` selects the AGENT-SCOPED wording. The remedy differs by case
+    and the message must not misdirect: telling a caller who already passed
+    ``--agent-id`` to pass ``--agent-id`` sends them back through the flag that
+    just failed, so that branch names ``--draft-id`` as the only handle that
+    identifies one draft, and says why the handle they used cannot.
     """
     preview = candidates[:_AMBIGUITY_PREVIEW_LIMIT]
-    lines = [
-        f"Ambiguous contract draft: {len(candidates)} live draft(s) across "
-        f"{len(agents)} agents ({', '.join(agents[:6])}"
-        f"{', ...' if len(agents) > 6 else ''}); refusing to guess which one "
-        f"to operate on.",
-        "Pass --draft-id <id> (copy one below), or --agent-id <agent_id> to "
-        "scope to your own drafts.",
-    ]
+    if agent_id:
+        lines = [
+            f"Ambiguous contract draft: --agent-id {agent_id} matches "
+            f"{len(candidates)} live drafts; refusing to guess which one is "
+            f"yours.",
+            "An agent_id is minted per turn and is NOT unique -- unrelated "
+            "turns share the same handle, and the most-recent one changes "
+            "between calls -- so --draft-id is the only stable handle today.",
+            "Pass --draft-id <id>: the id 'gaia contract init' printed for "
+            "THIS turn. Copy one below only if you recognize it as yours.",
+        ]
+    else:
+        lines = [
+            f"Ambiguous contract draft: {len(candidates)} live draft(s) across "
+            f"{len(agents)} agents ({', '.join(agents[:6])}"
+            f"{', ...' if len(agents) > 6 else ''}); refusing to guess which one "
+            f"to operate on.",
+            "Pass --draft-id <id> (copy one below), or --agent-id <agent_id> to "
+            "scope to your own drafts.",
+        ]
     for draft_id in preview:
+        agent_col = "" if agent_id else f"agent={_agent_of(draft_id)}  "
         lines.append(
-            f"  --draft-id {draft_id}   agent={_agent_of(draft_id)}  "
+            f"  --draft-id {draft_id}   {agent_col}"
             f"{_iso(_draft_mtime(draft_id))}  {_draft_state(draft_id)}"
         )
     remaining = len(candidates) - len(preview)
     if remaining > 0:
-        lines.append(
-            f"  ... and {remaining} more (newest first). Run "
-            f"'gaia contract view --agent-id <agent_id>' to find yours."
+        hint = (
+            "Only the draft id you minted identifies yours."
+            if agent_id
+            else "Run 'gaia contract view --agent-id <agent_id>' to find yours."
         )
+        lines.append(f"  ... and {remaining} more (newest first). {hint}")
     return "\n".join(lines)
 
 
@@ -394,10 +453,18 @@ def resolve_draft_id(
 ) -> Optional[str]:
     """Resolve which draft a subcommand should operate on.
 
-    ``explicit`` (an explicit ``--draft-id``) always wins. Otherwise, when
-    ``agent_id`` is given, resolution is scoped to that agent's own drafts
-    (the per-agent "resume to my latest draft" convenience) and returns its
-    most-recently-modified one, or ``None`` if it has none.
+    ``explicit`` (an explicit ``--draft-id``) always wins.
+
+    When ``agent_id`` is given, resolution is scoped to that agent's drafts and
+    resolves ONLY if that scope is unambiguous. Three outcomes, deliberately
+    distinct because they are different diagnoses: no draft at all -> ``None``
+    (the caller reports "no draft, run init"); exactly one live draft -> that
+    draft, the pre-existing behavior an uncolliding agent never sees change;
+    2+ live drafts -> ``AmbiguousDraftError``, because an agent id is minted
+    per turn without any uniqueness mechanism, so several unrelated turns share
+    one handle and the recency winner moves between calls. Failing loudly is
+    the safe direction here: the alternative is what actually happened once --
+    a COMPLETE written onto another agent's draft.
 
     When BOTH are omitted, resolution falls back to the most-recently-
     modified draft SYSTEM-WIDE -- but only when unambiguous. If every
@@ -416,7 +483,15 @@ def resolve_draft_id(
         ids = list_draft_ids(agent_id)
         if not ids:
             return None
-        return _prefer_live(ids)[0]
+        live = _prefer_live(ids, drop_spent=True)
+        if len(live) > 1:
+            raise AmbiguousDraftError(live, agent_id=agent_id)
+        # No live candidate left: every draft under this handle is spent, so
+        # its outcome is already a terminal row and the DB writer refuses to
+        # amend it. Preserving the latest-spent fallback keeps the read paths
+        # that address a FINISHED draft (the M4 reconstruction of a lost fence)
+        # working, and is the pool ``_prefer_live`` already ordered.
+        return (live or ids)[0]
 
     ids = list_draft_ids(None)
     if not ids:
