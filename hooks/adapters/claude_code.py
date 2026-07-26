@@ -2893,6 +2893,12 @@ class ClaudeCodeAdapter(HookAdapter):
                 # salvaged draft via --draft-id instead of re-emitting the block.
                 result["salvage_resume_hint"] = _salvage.get("resume_hint")
 
+            # The verdict is recorded BEFORE the relay runs. exit_code=2 is
+            # driven by result['contract_rejected'] alone, and the outer except
+            # below rebuilds `result` without that key -- so anything that can
+            # raise between here and the return would downgrade a rejection to
+            # exit 0. The relay is an enrichment of the rejection, never a
+            # precondition for it, and is isolated accordingly.
             if contract_rejected:
                 result["contract_rejected"] = True
                 result["contract_rejection_reason"] = contract_rejection_reason
@@ -2900,6 +2906,35 @@ class ClaudeCodeAdapter(HookAdapter):
                     "Contract rejected for %s: %s",
                     agent_type, contract_rejection_reason.split("\n")[0],
                 )
+
+            # A rejection sends the turn back to the SUBAGENT, whose repair
+            # message then REPLACES the rejected one in everything the
+            # orchestrator receives -- so the substantive work of the rejected
+            # turn is lost in the relay unless it is preserved and handed back.
+            # The gate stays as strict as before; only the cost of a rejection
+            # changes. See modules/agents/rejected_turn_relay.py.
+            try:
+                from modules.agents import rejected_turn_relay
+                _relay_key = rejected_turn_relay.preservation_key(session_id, task_info)
+                if contract_rejected:
+                    _relay = rejected_turn_relay.on_rejection(
+                        agent_output,
+                        key=_relay_key,
+                        rejection_reason=contract_rejection_reason,
+                    )
+                    contract_rejection_reason = _relay["reason"]
+                    if _relay["chars"]:
+                        result["preserved_output_path"] = _relay["path"]
+                        result["preserved_output_chars"] = _relay["chars"]
+                        result["preserved_output_carried_forward"] = _relay["carried_forward"]
+                    result["contract_rejection_reason"] = contract_rejection_reason
+                else:
+                    _closed = rejected_turn_relay.on_accepted(agent_output, key=_relay_key)
+                    if _closed:
+                        result["preserved_output_relayed"] = _closed["relayed"]
+                        result["preserved_output_chars"] = _closed["chars"]
+            except Exception as exc:
+                logger.warning("Rejected-turn relay failed (non-fatal): %s", exc)
 
         except Exception as e:
             logger.error("Error in adapt_subagent_stop: %s", e, exc_info=True)
@@ -2933,10 +2968,19 @@ class ClaudeCodeAdapter(HookAdapter):
         did all its work via the ``gaia contract`` CLI and ran ``gaia contract
         finalize`` (writing a valid terminal row) but never echoed the fence in
         its last message is hard-rejected by the full-verdict gate, and has to
-        be resumed by hand. This closes that hole: when the fence is missing but
-        the agent's OWN draft was already finalized (a row exists keyed on its
-        draft_id), reconstruct the envelope FROM that draft so the gate parses a
-        valid contract instead of rejecting completed, persisted work.
+        be resumed by hand. This addresses that hole: when the fence is missing
+        but the agent's OWN draft was already finalized (a row exists keyed on
+        its draft_id), reconstruct the envelope FROM that draft so the gate
+        parses a valid contract instead of rejecting completed, persisted work.
+
+        It closes the hole only as far as the draft is FINDABLE, and finding it
+        is the fragile half. With no fence there is no envelope to read the
+        minted agent id from, so the draft is located through
+        ``resolve_minted_agent_id``, which must recover that id from the turn's
+        transcript -- the harness ``agent_id`` is a DIFFERENT identifier space
+        and resolves nothing (see that resolver's docstring). A turn with no
+        readable transcript, or one that never ran ``gaia contract init``, still
+        gets no reconstruction and is rejected as before.
 
         Fires ONLY when ``parsed_contract`` lacks a usable ``agent_status`` (no
         fence). "Finalized" is discriminated by the EXISTENCE of the terminal
@@ -2961,8 +3005,9 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.debug("M4 reconstruction: core import failed (non-fatal): %s", exc)
             return None
 
-        # Fence absent -> resolve the minted id from task_info (on SubagentStop
-        # that is the Claude-Code hook agent_id, the SAME id space drafts use).
+        # Fence absent -> the minted id comes from the turn's transcript (the
+        # only place it survives without an envelope); the harness agent_id is
+        # a different id space and would resolve no draft.
         minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
         if not minted_agent_id:
             return None

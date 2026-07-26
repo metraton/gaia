@@ -118,17 +118,54 @@ _VALID_TASK_STATUSES = frozenset(
 # OWN resumed ``gaia contract finalize`` calls, which this module never blocks.
 
 
+def _minted_agent_id_from_transcript(task_info: dict):
+    """Recover the CLI-minted agent id from the turn's own transcript.
+
+    Imported lazily and fully guarded: this module is also loaded from the
+    harness-free test entry path, and a missing/unreadable transcript must
+    degrade to "unknown", never raise inside a stop hook.
+    """
+    path = task_info.get("agent_transcript_path")
+    if not path:
+        return None
+    try:
+        from .transcript_reader import extract_minted_agent_id_from_transcript
+        return extract_minted_agent_id_from_transcript(str(path))
+    except Exception as exc:
+        logger.debug("Minted-id recovery from transcript failed: %s", exc)
+        return None
+
+
 def resolve_minted_agent_id(parsed_contract, task_info: dict):
     """Best available minted agent id (``gaia.contract.validator.
     AGENT_ID_PATTERN_TEXT``) used to key drafts.
 
-    Prefers the authoritative ``agent_status.agent_id`` from the parsed
-    envelope (the exact value the CLI minted the draft with), falling back to
-    ``task_info['agent_id']`` -- which on SubagentStop is the Claude-Code
-    hook's ``agent_id``, the SAME identifier space drafts are keyed by (the
-    ``AGENT_ID_PATTERN_TEXT`` format, see ``_adapt_send_message``). This is why the
-    fallback still locates the right draft when the fence is MISSING (no
-    parsed envelope) -- the exact case the M4 reconstruction path relies on.
+    TWO IDENTIFIER SPACES, and only one of them keys drafts. The CLI mints its
+    OWN agent id in ``gaia contract init`` and keys the on-disk draft by
+    ``{minted-agent-id}.{token}``; the harness independently stamps
+    ``hook_data['agent_id']`` (``task_info['agent_id']``). Both match
+    ``^a[0-9a-f]{16,}$``, so they are indistinguishable by shape and nothing
+    fails loudly when they are confused -- ``resolve_draft_id`` just globs
+    ``{harness-id}.*``, matches no file, and returns None. That silent miss is
+    what disabled BOTH draft rescues at once (the M4 reconstruction and the T9
+    backstop's step 1a). The harness id is therefore NOT the draft key space,
+    and this resolver never treats it as one.
+
+    Resolution order, most authoritative first:
+      1. ``agent_status.agent_id`` from the parsed envelope -- the exact value
+         the CLI minted, when a fence was emitted.
+      2. ``task_info['minted_agent_id']`` -- precomputed once per turn by
+         ``task_info_builder`` from the transcript.
+      3. The transcript itself (``agent_transcript_path``), scanned for the
+         turn's own ``gaia contract init`` mint report -- the one appearance of
+         a draft id that proves the turn OWNS it, rather than merely mentions
+         another agent's. This is the case the rescues depend on: the fence is
+         MISSING, so there is no envelope to read the minted id from, and the
+         transcript is the only place where the two spaces meet.
+      4. The harness ``agent_id`` / agent name -- a last-resort LABEL only. It
+         will not resolve a draft (see above); it exists so the backstop still
+         has a non-empty identity to stamp a degraded row with.
+
     Returns None when nothing usable is present.
 
     SHARED helper: the SINGLE resolver reused by the T9 backstop
@@ -144,6 +181,12 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict):
             aid = agent_status.get("agent_id")
             if aid:
                 return str(aid)
+    precomputed = task_info.get("minted_agent_id")
+    if precomputed:
+        return str(precomputed)
+    recovered = _minted_agent_id_from_transcript(task_info)
+    if recovered:
+        return str(recovered)
     return task_info.get("agent_id") or task_info.get("agent") or None
 
 

@@ -12,6 +12,7 @@ from typing import Any, Dict
 from .contract_validator import extract_exit_code_from_output, extract_plan_status_from_output
 from .transcript_reader import (
     extract_injected_context_payload_from_transcript,
+    extract_minted_agent_id_from_transcript,
     extract_task_description_from_transcript,
 )
 
@@ -67,9 +68,16 @@ def build_task_info_from_hook_data(
     if not task_description:
         task_description = f"SubagentStop for {agent_type}"
 
+    # The harness agent_id below and the agent id the `gaia contract` CLI
+    # minted for its draft are DIFFERENT identifier spaces of the same shape
+    # ('a' + hex). Drafts are keyed by the minted one, so it is recovered here,
+    # once per turn, and carried alongside -- never conflated with agent_id.
+    minted_agent_id = extract_minted_agent_id_from_transcript(transcript_path)
+
     return {
         "task_id": hook_data.get("agent_id", "unknown"),
         "agent_id": hook_data.get("agent_id", "unknown"),
+        "minted_agent_id": minted_agent_id,
         "agent_transcript_path": transcript_path,
         "description": task_description,
         "agent": agent_type,

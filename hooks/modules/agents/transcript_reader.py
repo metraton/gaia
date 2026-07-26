@@ -6,12 +6,15 @@ Provides:
     - read_full_transcript_text(): Read every role's text content from transcript JSONL
     - read_first_user_content_from_transcript(): Read first user message content
     - extract_task_description_from_transcript(): Extract task description
+    - extract_minted_agent_id_from_transcript(): Recover the CLI-minted agent id
     - extract_injected_context_payload_from_transcript(): Extract auto-injected JSON
 """
 
 import json
 import logging
 import os
+import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -132,6 +135,84 @@ def extract_task_description_from_transcript(transcript_path: str) -> str:
         return ""
 
     return content.strip()[:500]
+
+
+# A draft id is minted by the CLI as f"{agent_id}.{secrets.token_hex(6)}"
+# (gaia.contract.drafts.mint_draft_id), where agent_id is 'a' + >=16 hex
+# (gaia.contract.validator.AGENT_ID_PATTERN_TEXT).
+#
+# Only ONE appearance of that shape proves the id belongs to the turn being
+# scanned: the report `gaia contract init` prints when it MINTS the draft
+# (bin/cli/contract.py::cmd_init -> _write_if_valid). Every other appearance --
+# a `--draft-id` argument, a `gaia contract view` payload, an id quoted in the
+# task prompt -- can just as easily carry ANOTHER agent's draft, which a turn
+# routinely handles (an operator asked to recover a peer's contract). The two
+# patterns below therefore match the init report specifically, in its text and
+# --json forms, and nothing else. Both tolerate JSON escaping, because the
+# report reaches the transcript re-encoded as a JSON string: its line breaks
+# arrive as a literal backslash-n, and its quotes as backslash-quote. Requiring
+# the text label to open a line is what keeps it off the JSON spelling
+# (``"draft_id": "..."``, where the quote follows the colon) and off any
+# incidental ``..._draft_id:`` key.
+_INIT_REPORT_TEXT_RE = re.compile(
+    r"(?:^|\\n|[\n\r])draft_id:\s*(a[0-9a-f]{16,})\.[0-9a-f]{8,}\b",
+    re.MULTILINE,
+)
+_INIT_REPORT_JSON_RE = re.compile(
+    r"\\?\"draft_id\\?\"\s*:\s*\\?\"(a[0-9a-f]{16,})\.[0-9a-f]{8,}\\?\""
+    r"(?=.{0,200}?agent_id_minted)",
+    re.DOTALL,
+)
+
+
+@lru_cache(maxsize=8)
+def extract_minted_agent_id_from_transcript(transcript_path: str) -> Optional[str]:
+    """Recover the CLI-MINTED agent id THIS turn built its own draft under.
+
+    Two identifier spaces coexist on a SubagentStop and are NOT interchangeable:
+    the harness stamps ``hook_data['agent_id']`` (e.g. ``aac5be534edc91e44``),
+    while ``gaia contract init`` mints its own id and keys the on-disk draft by
+    ``{minted-agent-id}.{token}``. Both match ``^a[0-9a-f]{16,}$``, so resolving
+    a draft under the harness id fails SILENTLY -- no draft matches the glob and
+    ``resolve_draft_id`` simply returns None, which is what left the M4
+    missing-fence reconstruction and the T9 backstop's draft lookup inoperative.
+
+    The turn's own transcript is where the two spaces meet, but MENTIONING a
+    draft id is not OWNING it: a turn that runs ``gaia contract view --draft-id
+    <peer>`` after its own ``init`` mentions the peer's id last, and handing that
+    id to the reconstruction path would seal ANOTHER agent's envelope as this
+    turn's -- a silent misattribution strictly worse than the silent miss it
+    replaced, since ``_reconstruct_contract_from_finalized_draft`` checks only
+    that a terminal row exists, never who owns it. So this scans for the ``gaia
+    contract init`` MINT REPORT alone, which no other agent's id can appear in,
+    and fails CLOSED: zero reports, or two reports naming different ids
+    (a re-``init``, or a mint report quoted into the prompt), both yield None.
+    A None is the pre-existing "no draft found" path -- the caller falls back to
+    the harness id, the reconstruction declines, and the turn is rejected as it
+    was before. That is the cost of a miss, and it is the one worth paying.
+
+    Read RAW rather than through ``iter_transcript_entries`` on purpose: the id
+    lives inside tool_use inputs and tool_result payloads, which the normalized
+    text projections (assistant text blocks) do not surface.
+    """
+    if not transcript_path:
+        return None
+    try:
+        raw = Path(transcript_path).expanduser().read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError as exc:
+        logger.debug("Minted-id scan: unreadable transcript %s: %s", transcript_path, exc)
+        return None
+    minted = set(_INIT_REPORT_TEXT_RE.findall(raw))
+    minted.update(_INIT_REPORT_JSON_RE.findall(raw))
+    if len(minted) != 1:
+        logger.debug(
+            "Minted-id scan: %d distinct mint reports in %s -- declining to resolve",
+            len(minted), transcript_path,
+        )
+        return None
+    return minted.pop()
 
 
 def extract_injected_context_payload_from_transcript(
