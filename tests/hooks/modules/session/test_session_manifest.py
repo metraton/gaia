@@ -416,8 +416,9 @@ class TestBuildWorkspaceMemoryBlock:
 # ---------------------------------------------------------------------------
 
 class TestExtractProjectsCarriesTypeAndDescription:
-    """The extractor returns (name, path, type, description) 4-tuples so the
-    Projects block can label each entry with its type and a short description."""
+    """The extractor returns (name, path, type, description, missing_since)
+    5-tuples so the Projects block can label each entry with its type, a short
+    description, and the vanished mark when the repo left the disk."""
 
     _LOOKUP = {"by_name": {}, "by_ws": {}}
 
@@ -435,7 +436,7 @@ class TestExtractProjectsCarriesTypeAndDescription:
         )
         assert out == [
             ("aos-iac", "/home/x/aos-iac", "terraform",
-             "Terraform IaC for AOS GCP infra"),
+             "Terraform IaC for AOS GCP infra", ""),
         ]
 
     def test_scanner_shape_carries_type_and_description(self):
@@ -447,14 +448,29 @@ class TestExtractProjectsCarriesTypeAndDescription:
         out = session_manifest._extract_projects_from_identity(
             payload, "nfi", {"by_name": {}, "by_ws": {"nfi": ["/home/x/nfi"]}}
         )
-        assert out == [("nfi", "/home/x/nfi", "application", "NFI app")]
+        assert out == [("nfi", "/home/x/nfi", "application", "NFI app", "")]
 
     def test_missing_type_and_description_are_empty_strings(self):
         payload = {"proj": {"name": "p", "local_path": "/p"}}
         out = session_manifest._extract_projects_from_identity(
             payload, "ws", self._LOOKUP
         )
-        assert out == [("p", "/p", "", "")]
+        assert out == [("p", "/p", "", "", "")]
+
+    def test_vanished_entry_is_returned_with_its_mark_not_filtered(self):
+        """A repo gone from disk stays in the index, carrying its mark: the
+        block shows it rather than hiding it."""
+        payload = {
+            "ghost": {
+                "name": "ghost",
+                "local_path": "/x/ghost",
+                "missing_since": "2026-07-01T00:00:00+00:00",
+            },
+        }
+        out = session_manifest._extract_projects_from_identity(
+            payload, "ws", self._LOOKUP
+        )
+        assert out == [("ghost", "/x/ghost", "", "", "2026-07-01T00:00:00+00:00")]
 
 
 class TestBuildProjectsBlockRendersTypeAndDescription:
@@ -505,6 +521,23 @@ class TestBuildProjectsBlockRendersTypeAndDescription:
         block = self._run_with_rows(monkeypatch, payload)
         assert "- plainproj: /p" in block
         assert "(" not in block.split("plainproj")[1].split("\n")[0]
+
+    def test_vanished_entry_is_shown_with_its_mark(self, monkeypatch):
+        """The block marks a vanished repo instead of dropping it -- hiding it
+        would repeat the silence the propagation exists to end."""
+        payload = {
+            "ghost": {
+                "name": "ghost",
+                "local_path": "/x/ghost",
+                "type": "application",
+                "description": "curated blurb",
+                "missing_since": "2026-07-01T00:00:00+00:00",
+            },
+        }
+        block = self._run_with_rows(monkeypatch, payload)
+        assert "ghost" in block
+        assert "[MISSING since 2026-07-01T00:00:00+00:00]" in block
+        assert "curated blurb" in block
 
 
 # ---------------------------------------------------------------------------

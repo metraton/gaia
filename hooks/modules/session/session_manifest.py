@@ -303,8 +303,8 @@ def build_workspace_memory_block(
 
 def _extract_projects_from_identity(
     payload: dict, workspace: str, path_lookup: dict
-) -> list[tuple[str, str, str, str]]:
-    """Pull ``(name, path, type, description)`` tuples out of one payload.
+) -> list[tuple[str, str, str, str, str]]:
+    """Pull ``(name, path, type, description, missing_since)`` tuples out of one payload.
 
     The contract stores two distinct shapes, and this normalizes both:
 
@@ -327,8 +327,13 @@ def _extract_projects_from_identity(
     payload holds them (both shapes expose these fields), so the rendered
     Projects block can label each entry (e.g. "aos-iac (terraform) — Terraform
     IaC for AOS GCP infra"). Either may be an empty string when absent.
+
+    ``missing_since`` carries the vanished mark that promotion stamps on an
+    entry whose repo left the disk (``tools/scan/promote.py``). The entry is
+    still returned -- a repo that vanished is signal, so the block SHOWS the
+    mark rather than filtering the entry out. Empty string when absent.
     """
-    out: list[tuple[str, str, str, str]] = []
+    out: list[tuple[str, str, str, str, str]] = []
     by_name: dict = path_lookup.get("by_name", {})
     by_ws: dict = path_lookup.get("by_ws", {})
 
@@ -342,7 +347,11 @@ def _extract_projects_from_identity(
             return ws_paths[0]
         return ""
 
-    from gaia.identity_shape import classify_identity_shape, is_reserved_slug
+    from gaia.identity_shape import (
+        MISSING_MARK_KEY,
+        classify_identity_shape,
+        is_reserved_slug,
+    )
 
     if classify_identity_shape(payload) == "map":
         for slug, v in payload.items():
@@ -352,7 +361,8 @@ def _extract_projects_from_identity(
             path = v.get("local_path") or _resolve(slug) or _resolve(name)
             ptype = (v.get("type") or "").strip()
             desc = (v.get("description") or "").strip()
-            out.append((name, path, ptype, desc))
+            gone = (v.get(MISSING_MARK_KEY) or "").strip()
+            out.append((name, path, ptype, desc, gone))
         return out
 
     repos = payload.get("workspace_repos")
@@ -365,13 +375,15 @@ def _extract_projects_from_identity(
                 continue
             ptype = (r.get("type") or "").strip()
             desc = (r.get("description") or "").strip()
-            out.append((name, _resolve(name), ptype, desc))
+            gone = (r.get(MISSING_MARK_KEY) or "").strip()
+            out.append((name, _resolve(name), ptype, desc, gone))
         return out
 
     name = payload.get("name") or workspace
     ptype = (payload.get("type") or "").strip()
     desc = (payload.get("description") or "").strip()
-    out.append((name, _resolve(name), ptype, desc))
+    gone = (payload.get(MISSING_MARK_KEY) or "").strip()
+    out.append((name, _resolve(name), ptype, desc, gone))
     return out
 
 
@@ -458,7 +470,7 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
         by_ws.setdefault(d["workspace"], []).append(p)
     path_lookup = {"by_name": by_name, "by_ws": by_ws}
 
-    entries: list[tuple[str, str, str, str]] = []
+    entries: list[tuple[str, str, str, str, str]] = []
     seen: set = set()
     for r in identity_rows:
         d = dict(r)
@@ -469,14 +481,12 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
             continue
         if not isinstance(payload, dict):
             continue
-        for name, path, ptype, desc in _extract_projects_from_identity(
-            payload, ws, path_lookup
-        ):
-            key = (name, path)
+        for entry in _extract_projects_from_identity(payload, ws, path_lookup):
+            key = (entry[0], entry[1])
             if key in seen:
                 continue
             seen.add(key)
-            entries.append((name, path, ptype, desc))
+            entries.append(entry)
 
     if not entries:
         return ""
@@ -484,14 +494,19 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     total_available = len(entries)
     header = "## Project Context — Projects"
 
-    def _render(items: list[tuple[str, str, str, str]]) -> str:
+    def _render(items: list[tuple[str, str, str, str, str]]) -> str:
         lines = [header, ""]
-        for name, path, ptype, desc in items:
+        for name, path, ptype, desc, gone in items:
             # Name + optional "(type)", then " — description" when present.
             # Kept on one line per project so the block stays scannable and
             # bounded; description is not truncated here (the char budget below
             # trims whole entries from the tail if the block overflows).
             label = f"{name} ({ptype})" if ptype else name
+            if gone:
+                # Marked, never dropped: a repo the scanner no longer finds on
+                # disk is signal the reader needs, and it rides next to the
+                # label so it cannot be missed at the tail of a long line.
+                label += f" [MISSING since {gone}]"
             line = f"- {label}: {path}" if path else f"- {label}"
             if desc:
                 line += f" — {desc}"
