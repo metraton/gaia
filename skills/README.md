@@ -107,15 +107,25 @@ skills/
 
 **Skill assignment matrix:**
 
-| Agent | Core Skills | Domain Skills |
-|-------|-------------|---------------|
-| cloud-troubleshooter | agent-protocol, security-tiers, investigation, command-execution | fast-queries |
+The two columns are structurally different, not just two lists: **Frontmatter**
+is the literal `skills:` array in the agent's `.md` file — injected at dispatch
+(Route 1 above), present in every session regardless of what the task turns out
+to need. **On-demand** is a skill the agent's own text names loading via
+`Skill('name')` when the matching moment arrives (Route 2) — it is never in
+that agent's frontmatter, and because on-demand loading is discretionary, this
+column lists only what the agent's file documents itself as loading, not every
+skill that could theoretically apply.
+
+| Agent | Frontmatter (always loaded) | On-demand (loaded via `Skill(...)`) |
+|-------|------------------------------|--------------------------------------|
+| cloud-troubleshooter | agent-protocol, security-tiers, command-execution, investigation, fast-queries | — |
 | platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | — |
-| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | fast-queries |
-| developer | agent-protocol, security-tiers, investigation, command-execution | git-conventions, coding-standards |
-| gaia-system | agent-protocol, security-tiers, investigation, command-execution, gaia-patterns | gaia-audit (on-demand: agent-creation, skill-creation, gaia-release, gaia-verify) |
-| gaia-planner | agent-protocol, security-tiers | gaia-planner |
-| gaia-operator | agent-protocol, security-tiers, command-execution, memory, gmail-triage, gws-setup | blog-writing |
+| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | — |
+| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | — |
+| gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, coding-standards | agent-creation, skill-creation, gaia-release, gaia-verify |
+| gaia-verifier | agent-protocol, security-tiers, command-execution, verification-oracle, verification-rubric | — |
+| gaia-planner | agent-protocol, security-tiers, investigation, command-execution, gaia-planner | — |
+| gaia-operator | agent-protocol, security-tiers, investigation, command-execution | memory, gmail-triage, gmail-policy, gws-setup, blog-writing, brief-spec |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation

@@ -25,6 +25,16 @@ refactor: simplify context provider logic
 chore(deps): update terraform to v1.6.0
 ```
 
+## Multi-Line Body (No Heredoc, No Temp File)
+
+Repeat `-m` once per paragraph -- `git -C /abs commit -m "type: subject" -m
+"First paragraph." -m "Second paragraph."` -- no heredoc, no temp file. For
+exact wraps, use `git commit -m "$(cat <<'EOF' ... EOF)"` instead
+(`command-execution` Rule 7). Never attach a bare, unquoted heredoc
+directly to git (`git commit -F - <<EOF ... EOF`) -- measured, the
+classifier misreads a prose line as a command and blocks with a spurious
+T3 (`Verb: 'rm' (MUTATIVE)` on text that only *mentions* `rm -rf`).
+
 ## Git Path Flags
 
 Target the repo with `git -C /absolute/path <verb>` -- this is the canonical
