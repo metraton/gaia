@@ -4390,3 +4390,12 @@ class TestPipePolicyRegistryCompleteness:
         assert CLI_FAMILY_LOOKUP.get("cdk") == "iac"
         assert "tofu" in NATIVE_OUTPUT_FLAG_CLIS
         assert "cdk" in NATIVE_OUTPUT_FLAG_CLIS
+
+    def test_pending_clis_now_explicitly_included(self):
+        """pulumi/cdktf/gsutil/az/eksctl were left EXCLUDED pending an
+        explicit decision; the user approved including them as the same
+        class as terraform/aws/gcloud. Pin the decision both ways: present
+        in NATIVE_OUTPUT_FLAG_CLIS, absent from PIPE_POLICY_EXCLUDED_CLIS."""
+        for name in ("pulumi", "cdktf", "gsutil", "az", "eksctl"):
+            assert name in NATIVE_OUTPUT_FLAG_CLIS, name
+            assert name not in PIPE_POLICY_EXCLUDED_CLIS, name

@@ -176,6 +176,68 @@ class TestCompoundCommandValidation:
         assert "chaining" in result.reason.lower()
 
 
+class TestPipeDestinationFallsThroughToAsk:
+    """A cloud CLI as pipe DESTINATION is not the same risk as ORIGIN (see
+    cloud_pipe_validator._command_has_cloud_pipe_origin): the content
+    flowing in cannot be inspected, but there is no native output flag to
+    substitute for a CLI that isn't producing the piped output. Security
+    must not relax -- the command still requires consent -- only the VEHICLE
+    changes: the normal per-component T3/mutative-verb "ask" instead of
+    cloud_pipe_validator's categorical, non-approvable "deny". Three fronts,
+    each required: destination resolves to ask (not deny); origin is
+    unchanged (still deny); and no case among these resolves to allow --
+    the third is what would catch a fix that went too far and let a real
+    mutation through silently.
+    """
+
+    def test_destination_apply_resolves_to_ask_not_deny(self, validator):
+        """The exact case that motivated the redesign."""
+        result = validator.validate("kustomize build overlay | kubectl apply -f -")
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert result.block_response is not None
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+    def test_destination_apply_via_echo_manifest_resolves_to_ask(self, validator):
+        """Security must not relax: arbitrary piped-in content reaching a
+        mutative destination CLI still requires consent."""
+        result = validator.validate('echo "<manifest>" | kubectl apply -f -')
+        assert result.allowed is False
+        assert result.block_response is not None
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+    def test_origin_case_unchanged_still_deny(self, validator):
+        """The origin direction (kubectl get | grep) is NOT touched by this
+        redesign -- the native-flag correction genuinely applies there, so
+        it must remain the categorical, non-approvable deny."""
+        result = validator.validate("kubectl get pods | grep Error")
+        assert result.allowed is False
+        assert result.block_response is not None
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+    def test_no_destination_case_resolves_to_allow(self, validator):
+        """The third, protective front: none of the mutative-destination
+        shapes above may end up allowed. Verified together so a regression
+        that widens the fall-through too far cannot silently slip past a
+        single-case assertion."""
+        for cmd in (
+            "kustomize build overlay | kubectl apply -f -",
+            'echo "<manifest>" | kubectl apply -f -',
+            "cat manifest.yaml | kubectl apply -f -",
+        ):
+            result = validator.validate(cmd)
+            assert result.allowed is False, f"{cmd!r} must not be allowed"
+
+    def test_benign_readonly_destination_is_allowed(self, validator):
+        """Contrast case: a NON-mutative destination verb (kubectl get, T0)
+        genuinely carries no risk from this policy's perspective and may be
+        allowed -- confirming the fall-through defers to real classification
+        rather than blanket-allowing every destination shape."""
+        result = validator.validate("cat file.json | kubectl get pods -o json")
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+
 class TestClaudeFooterStripping:
     """Test auto-stripping of Claude-generated commit footers via updatedInput.
 

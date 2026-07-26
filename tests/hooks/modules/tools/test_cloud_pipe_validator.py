@@ -224,6 +224,58 @@ class TestStageAnchoredDetection:
         assert result is None
 
 
+class TestPipeOriginVsDestination:
+    """A cloud CLI as pipe ORIGIN (its own output piped away) is a real
+    policy violation with a native-flag substitute -- this validator still
+    denies it categorically, unchanged. A cloud CLI as pipe DESTINATION
+    (receiving piped-in content it did not produce) is NOT the same risk:
+    there is no native output flag to substitute, because the CLI is not
+    producing the piped output. This validator defers the destination case
+    to the normal per-stage T3/mutative-verb classification instead of
+    denying it outright -- see test_bash_validator.py for the end-to-end
+    confirmation that the deferred case still requires consent (ask), never
+    passes silently (allow).
+    """
+
+    def test_origin_pipe_still_denied_by_this_validator(self):
+        """kubectl piping its OWN output -- origin -- unchanged behavior."""
+        result = validate_cloud_pipe("kubectl get pods | grep Error")
+        assert result is not None
+        assert "pipe" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_destination_pipe_not_flagged_by_this_validator(self):
+        """kubectl RECEIVING piped-in content -- destination -- this
+        validator must NOT flag it; the command falls through so the
+        per-component T3 classifier (which independently catches `apply`
+        as a mutative verb) can run instead of a categorical deny."""
+        result = validate_cloud_pipe("kustomize build overlay | kubectl apply -f -")
+        assert result is None
+
+    def test_destination_pipe_with_echo_manifest_not_flagged(self):
+        result = validate_cloud_pipe('echo "<manifest>" | kubectl apply -f -')
+        assert result is None
+
+    def test_origin_and_destination_both_cloud_still_denied(self):
+        """When the SAME command is both -- a cloud CLI pipes its own
+        output into another cloud CLI -- the origin half is still a real
+        violation and must deny (gcloud's own output should use --format,
+        regardless of what receives it)."""
+        result = validate_cloud_pipe("gcloud compute instances list | kubectl apply -f -")
+        assert result is not None
+        assert "pipe" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+    def test_destination_redirect_on_same_stage_still_denied(self):
+        """The direction split applies ONLY to the pipe rule. A redirect on
+        the destination CLI's OWN output is still that CLI's origin-type
+        violation (there is no "destination" reading for `>`) and must
+        still deny."""
+        result = validate_cloud_pipe(
+            "cat manifest.yaml | kubectl apply -f - > apply.log"
+        )
+        assert result is not None
+        assert "redirect" in result["hookSpecificOutput"]["permissionDecisionReason"].lower()
+
+
 class TestCombinedFalsePositives:
     """Test the specific false positive scenario from the bug report."""
 
