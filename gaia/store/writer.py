@@ -6266,6 +6266,7 @@ def finalize_agent_contract_handoff(
     raw_handoff_json: str,
     *,
     session_id: str | None = None,
+    plan_task_id: int | None = None,
     brief_id: int | None = None,
     db_path: "Path | None" = None,
 ) -> dict:
@@ -6285,10 +6286,17 @@ def finalize_agent_contract_handoff(
                           envelope; maps to the agent_contract_handoffs.agent_state
                           column.
         raw_handoff_json: Full contract envelope serialized as JSON string.
-        session_id:       CLAUDE_SESSION_ID at write time (optional; the
-                          harness-agnostic CLI path leaves this None -- only
-                          the hook adapter, which IS Claude-Code-specific,
-                          ever supplies it).
+        session_id:       Session identifier to attribute the row to (optional).
+                          The core never READS a harness variable for this; the
+                          value is always SUPPLIED by the caller -- the hook
+                          adapter from the event payload, or the CLI from its
+                          explicit ``--session-id`` flag.
+        plan_task_id:     tasks.id this turn executes (optional), so a finalized
+                          contract is attributable to its plan task by query.
+                          Supplied the same way as session_id -- by the caller,
+                          never read from the environment. A None here NEVER
+                          clears a binding already stamped on the row at birth
+                          (see the COALESCE in the UPSERT below).
         brief_id:         briefs.id FK (optional -- EXTENSION_POINT).
         db_path:          Optional explicit DB path (used by tests).
 
@@ -6377,14 +6385,28 @@ def finalize_agent_contract_handoff(
                     -- converge to EXACTLY ONE row under a race, in either
                     -- arrival order, while a COMPLETE row is still never edited
                     -- in place.
+                    --
+                    -- ATTRIBUTION COLUMNS ARE MERGED, NOT OVERWRITTEN: both
+                    -- session_id and plan_task_id go through COALESCE(excluded,
+                    -- existing) so a caller that does not carry a coordinate
+                    -- (the CLI finalize of an unbound turn, a backstop capture)
+                    -- can never CLEAR one that is already on the row -- most
+                    -- importantly the plan_task_id/session_id a born-at-dispatch
+                    -- row was stamped with. A caller that DOES carry a value
+                    -- still wins, so a later, truer attribution converges
+                    -- normally. The other columns keep last-write-wins: they
+                    -- describe the turn's outcome, which the newest verdict owns.
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
-                         agent_state, raw_handoff_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                         plan_task_id, agent_state, raw_handoff_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(contract_id) DO UPDATE SET
                         agent_id         = excluded.agent_id,
-                        session_id       = excluded.session_id,
+                        session_id       = COALESCE(excluded.session_id,
+                                                    agent_contract_handoffs.session_id),
                         brief_id         = excluded.brief_id,
+                        plan_task_id     = COALESCE(excluded.plan_task_id,
+                                                    agent_contract_handoffs.plan_task_id),
                         agent_state      = excluded.agent_state,
                         raw_handoff_json = excluded.raw_handoff_json
                     WHERE agent_contract_handoffs.agent_state NOT IN ({_terminal_placeholders})
@@ -6396,6 +6418,7 @@ def finalize_agent_contract_handoff(
                         session_id,
                         workspace,
                         brief_id,
+                        plan_task_id,
                         agent_state,
                         raw_handoff_json,
                         _now_iso(),
@@ -6459,17 +6482,31 @@ def finalize_agent_contract_handoff(
 # dispatch time -- before the agent produces any contract envelope -- carrying
 # agent_state='DISPATCHED' and the four binding coordinates (plan_task_id,
 # plan_id, parent_handoff_id, kind) that bind the turn to the plan/task it
-# executes. The SECOND half is finalize_agent_contract_handoff, which CONVERGES
-# this nascent row to a terminal verdict (DO UPDATE ... WHERE
-# agent_state='DISPATCHED'), so exactly ONE row exists per turn.
+# executes.
+#
+# WHO CLOSES THIS ROW (do not assume finalize does). finalize_agent_contract_handoff
+# converges a nascent row ONLY when it is called with the SAME contract_id the row
+# was born under -- and in production it never is: birth mints a SYNTHETIC dispatch
+# key (``dispatch.{session}.{agent-name}.{task-or-parent}``, built in the hook
+# adapter) while the agent's own finalize keys on the draft id it minted for itself
+# (``{minted-agent-id}.{token}``). Those are two disjoint key spaces, so a normal,
+# healthy turn writes its verdict to a DIFFERENT row and leaves this one behind.
+# Closing the born row is therefore NOT the finalize path's job: it is done at the
+# END of the dispatch lifecycle by the SubagentStop hook
+# (hooks/modules/agents/handoff_persister.py), which is the only layer that holds
+# BOTH identities. It closes the row in one of two ways -- superseded (the turn did
+# produce its own terminal contract row; this scaffold points at it) or reaped
+# (the turn never finalized at all; an honest degraded non-COMPLETE verdict).
+# 'DISPATCHED' is thus a transient ROW state whose exit is owned by the stop hook,
+# and a row left in it means that hook never ran for the turn.
 #
 # Idempotent by construction (INSERT ... ON CONFLICT(contract_id) DO NOTHING):
 # a re-dispatch / re-fire for the SAME contract_id never births a second row
 # and never clobbers a row that has already converged to a terminal verdict.
 # 'DISPATCHED' is a ROW state only -- never an envelope agent_state value (plan
-# 34 F9); it exists solely to mark "born but not yet finalized" so the backstop
-# can reap an orphan (an agent that crashed before finalize) without producing a
-# false COMPLETE.
+# 34 F9); it exists solely to mark "born, not yet closed" so the stop hook can
+# tell a turn that produced its own contract from one that never finalized, and
+# close each accordingly without ever producing a false COMPLETE.
 #
 # Same permission gate as finalize (_assert_dispatch_can_write_handoff): only a
 # seeded fleet agent (or the gate-less CLI/hook context) may birth a row.
@@ -6714,46 +6751,75 @@ def agent_contract_handoff_finalized(
 
 def find_orphaned_dispatched_handoff(
     session_id: "str | None",
-    agent_id: "str | None",
+    agent_id: "str | Iterable[str] | None",
     *,
     db_path: "Path | None" = None,
 ) -> "dict | None":
     """Locate a nascent DISPATCHED row for ``(session_id, agent_id)``, or None.
 
-    v37 born-at-dispatch (plan 34 task 5) -- the REAPER's orphan-discovery
-    query. A row born at dispatch is keyed by its ``contract_id`` (the minted
-    draft id), but a turn that crashed BEFORE the agent ever created a draft
-    leaves the SubagentStop backstop with no draft to resolve that id from. The
-    born row DOES carry the ``session_id`` + ``agent_id`` stamped at dispatch,
-    so the backstop can still find the orphan by that coordinate pair and reap
-    it by its own ``contract_id`` -- never leaving a second, un-converged row.
+    v37 born-at-dispatch (plan 34 task 5) -- the reaper's orphan-discovery
+    query. A row born at dispatch is keyed by its ``contract_id``, which the
+    SubagentStop backstop cannot reconstruct (it is a synthetic dispatch key, NOT
+    the agent's minted draft id -- see the two-identity-space warning below), so
+    the orphan is found by the coordinate pair the birth DOES stamp:
+    ``session_id`` + ``agent_id``.
+
+    TWO IDENTITY SPACES -- pass the DISPATCH-side one. The ``agent_id`` column of
+    a born row holds the identity the DISPATCH knew, which is the agent's NAME
+    (``gaia-verifier``, ``platform-architect``): the row is born in PreToolUse:Agent
+    BEFORE the agent has minted anything, so no minted id exists yet to stamp.
+    Every OTHER writer on this table stamps the agent's MINTED draft id
+    (``^a[0-9a-f]{5,}$``). The two spaces never intersect, so a caller that passes
+    only the minted id matches NOTHING and the orphan is never found -- the defect
+    that left every born row stuck in 'DISPATCHED' (zero reaps ever recorded)
+    while the reaper's own unit tests passed, because they birthed their fixture
+    rows under the minted id instead of the dispatch identity production uses.
+    Accordingly ``agent_id`` accepts EITHER a single identity OR an iterable of
+    candidate identities, matched with IN (...): a caller that does not know which
+    space the row was born under passes both (the harness agent name first, since
+    that is what production births under).
 
     Only rows still in the 'DISPATCHED' ROW state are returned: a row that has
     already converged to a terminal verdict is not an orphan and is skipped. The
-    most-recent (highest id) match is returned when several exist.
+    most-recent (highest id) match is returned when several exist -- so a stale
+    orphan from an earlier session is never reaped in place of the live turn's.
 
     Args:
         session_id: The dispatch session id (falsy -> None: nothing to match).
-        agent_id:   The minted agent id stamped at dispatch (falsy -> None).
+        agent_id:   The agent identity stamped at dispatch, or an iterable of
+                    candidate identities to match against (falsy -> None).
         db_path:    Optional explicit DB path (used by tests).
 
     Returns:
-        ``{"id": int, "contract_id": str}`` of the orphaned nascent row, or None
-        when no DISPATCHED row exists for that (session, agent) pair.
+        ``{"id": int, "contract_id": str, "plan_task_id": int | None}`` of the
+        orphaned nascent row, or None when no DISPATCHED row exists for that
+        (session, agent) pair.
     """
     if not session_id or not agent_id:
         return None
+    if isinstance(agent_id, str):
+        candidates = [agent_id]
+    else:
+        candidates = [str(a) for a in agent_id if a]
+    if not candidates:
+        return None
     con = _connect(db_path)
     try:
+        placeholders = ", ".join("?" for _ in candidates)
         row = con.execute(
-            "SELECT id, contract_id FROM agent_contract_handoffs "
-            "WHERE agent_state = 'DISPATCHED' AND session_id = ? AND agent_id = ? "
-            "ORDER BY id DESC LIMIT 1",
-            (session_id, agent_id),
+            f"SELECT id, contract_id, plan_task_id FROM agent_contract_handoffs "
+            f"WHERE agent_state = 'DISPATCHED' AND session_id = ? "
+            f"AND agent_id IN ({placeholders}) "
+            f"ORDER BY id DESC LIMIT 1",
+            (session_id, *candidates),
         ).fetchone()
         if row is None:
             return None
-        return {"id": row["id"], "contract_id": row["contract_id"]}
+        return {
+            "id": row["id"],
+            "contract_id": row["contract_id"],
+            "plan_task_id": row["plan_task_id"],
+        }
     finally:
         con.close()
 

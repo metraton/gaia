@@ -72,6 +72,22 @@ Design notes:
       status cannot be classified as evidence-requiring), so a single defect
       does not fan out into multiple codes. This matches AC-9's "one anomaly per
       invalidity".
+    - ORDER-AWARE DETAIL, not relaxed validation: the CLI (``bin/cli/contract.py``)
+      lets a caller build the envelope incrementally across several small
+      ``gaia contract set``/``add``/``fill`` calls, and validates the FULL
+      resulting envelope on every write. A cross-field code (VERIFICATION_RESULT,
+      COMPLETE_SHAPE, APPROVAL_REQUEST_SHAPE, and the per-type branches of
+      VERIFICATION_SHAPE) can therefore fire not because the caller misunderstood
+      the requirement, but because it set the terminal ``agent_state`` before
+      filling the field that state depends on -- a build-ORDER mistake, not a
+      content mistake. Because a terminal row is immutable once
+      ``gaia contract finalize`` persists it (the writer's guard refuses to
+      rewrite it), there is no correcting the order after the fact -- the
+      ``detail`` on these four codes therefore names not just what is missing,
+      but the concrete order to build in (dependency field first, agent_state
+      last), so a single corrected write can succeed. This teaches the caller
+      the ordering rule; it does not loosen what the resulting envelope must
+      satisfy -- an invalid envelope is rejected exactly as before.
 """
 
 from __future__ import annotations
@@ -315,7 +331,18 @@ CANONICAL_REPAIR_MESSAGE = (
     "patterns_checked, files_checked, commands_run, key_outputs, "
     "verbatim_outputs, cross_layer_impacts, open_gaps. "
     "When agent_state is COMPLETE, evidence_report.verification.result must be "
-    '"pass".'
+    '"pass".\n'
+    "\n"
+    "Build order for a terminal state (when building the draft incrementally "
+    "via `gaia contract set`/`add`/`fill`): fill the fields the terminal state "
+    "depends on FIRST -- evidence_report.verification (result == 'pass') and "
+    "agent_status.next_action/pending_steps for COMPLETE; approval_request."
+    "exact_content for APPROVAL_REQUEST -- and set agent_status.agent_state to "
+    "the terminal value LAST, only once those dependencies already hold. A "
+    "rejected write leaves the draft at its last-known-good state, but a "
+    "terminal row is immutable once `gaia contract finalize` persists it, so "
+    "there is no fixing the order after that point -- get it right on this "
+    "write, not the next one."
 )
 
 
@@ -358,7 +385,12 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
         was performed; demands NO field (falls through to the ``(None, "")``
         return below).
 
-    A ``(None, "")`` return means the type-required field is satisfied.
+    A ``(None, "")`` return means the type-required field is satisfied. Every
+    non-empty detail below is order-aware (per the same rationale as
+    VERIFICATION_RESULT/COMPLETE_SHAPE/APPROVAL_REQUEST_SHAPE below): declaring
+    ``verification.type`` before the field that type requires is the identical
+    build-order trap, just scoped to one sub-field instead of the whole
+    envelope.
     """
     if vtype == "none":
         # No external oracle was required (a turn with no plan_task_id). Nothing
@@ -370,7 +402,11 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
                 "evidence_report.verification.command",
                 (
                     f"verification.type {vtype!r} (deterministic) requires a "
-                    "non-empty 'command' naming the command/oracle to run"
+                    "non-empty 'command' naming the command/oracle to run, "
+                    "but it is missing. Order matters: set "
+                    "evidence_report.verification.command together with (or "
+                    "before) verification.type -- declaring the type alone is "
+                    "not enough."
                 ),
             )
     elif vtype == "semantic":
@@ -380,7 +416,9 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
                 (
                     "verification.type 'semantic' requires a truthy "
                     "'requires_human' marker (needs human/rubric validation; "
-                    "contract stays open)"
+                    "contract stays open), but it is missing/falsy. Order "
+                    "matters: set requires_human together with (or before) "
+                    "verification.type."
                 ),
             )
     elif vtype == "self_review":
@@ -389,7 +427,10 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
                 "evidence_report.verification.reviewed",
                 (
                     "verification.type 'self_review' requires a non-empty "
-                    "'reviewed' statement of what was checked"
+                    "'reviewed' statement of what was checked, but it is "
+                    "missing. Order matters: set "
+                    "evidence_report.verification.reviewed together with (or "
+                    "before) verification.type."
                 ),
             )
     return (None, "")
@@ -525,7 +566,12 @@ def validate_form(envelope: Any) -> FormValidationResult:
                             field="agent_status.next_action",
                             detail=(
                                 "COMPLETE requires next_action == 'done', got "
-                                f"{raw_next!r}"
+                                f"{raw_next!r}. Order matters: set "
+                                "agent_status.next_action to 'done' together "
+                                "with (or before) setting agent_state to "
+                                "COMPLETE -- setting agent_state last, once "
+                                "next_action already reads 'done', avoids this "
+                                "rejection."
                             ),
                         )
                     )
@@ -538,7 +584,12 @@ def validate_form(envelope: Any) -> FormValidationResult:
                             field="agent_status.pending_steps",
                             detail=(
                                 "COMPLETE requires pending_steps == [], got "
-                                f"{raw_pending!r}"
+                                f"{raw_pending!r}. Order matters: clear "
+                                "agent_status.pending_steps to [] (a leftover "
+                                "entry from an earlier IN_PROGRESS turn) "
+                                "before -- or together with -- setting "
+                                "agent_state to COMPLETE; agent_state is the "
+                                "last field to set, not the first."
                             ),
                         )
                     )
@@ -604,7 +655,22 @@ def validate_form(envelope: Any) -> FormValidationResult:
                     FormError(
                         code=FormErrorCode.VERIFICATION_RESULT,
                         field="evidence_report.verification",
-                        detail="COMPLETE requires a verification object with result == 'pass'",
+                        detail=(
+                            "COMPLETE requires evidence_report.verification to "
+                            "be an object with result == 'pass', but it is "
+                            "missing. This is a BUILD-ORDER defect, not a "
+                            "content defect: fill "
+                            "evidence_report.verification (e.g. `gaia contract "
+                            "fill --json '{\"evidence_report\": {\"verification\": "
+                            "{\"method\": \"<how you checked>\", \"result\": "
+                            "\"pass\", \"details\": \"<what you observed>\"}}}'`) "
+                            "BEFORE -- or in the same write as -- setting "
+                            "agent_status.agent_state to COMPLETE. Set "
+                            "agent_state last, once verification.result already "
+                            "reads 'pass': a terminal COMPLETE row is immutable "
+                            "once finalized, so this order cannot be fixed "
+                            "after the fact."
+                        ),
                     )
                 )
             else:
@@ -615,8 +681,15 @@ def validate_form(envelope: Any) -> FormValidationResult:
                             code=FormErrorCode.VERIFICATION_RESULT,
                             field="evidence_report.verification.result",
                             detail=(
-                                f"COMPLETE requires verification.result == 'pass', "
-                                f"got {verification.get('result')!r}"
+                                "COMPLETE requires verification.result == "
+                                f"'pass', got {verification.get('result')!r}. "
+                                "Order matters: only set agent_state to "
+                                "COMPLETE once verification has genuinely "
+                                "concluded with result == 'pass' -- if the "
+                                "check has not run yet, keep agent_state at "
+                                "IN_PROGRESS (or NEEDS_VERIFICATION) and set "
+                                "verification.result = 'pass' first, "
+                                "agent_state last."
                             ),
                         )
                     )
@@ -640,7 +713,13 @@ def validate_form(envelope: Any) -> FormValidationResult:
                     field="approval_request",
                     detail=(
                         "APPROVAL_REQUEST requires a non-null approval_request "
-                        "object"
+                        "object, but it is missing. Order matters: fill "
+                        "approval_request (exact_content at minimum, e.g. "
+                        "`gaia contract fill --json '{\"approval_request\": "
+                        "{\"exact_content\": \"<verbatim command>\"}}'`) BEFORE "
+                        "-- or in the same write as -- setting agent_state to "
+                        "APPROVAL_REQUEST; agent_state is the last field to "
+                        "set, not the first."
                     ),
                 )
             )
@@ -651,7 +730,11 @@ def validate_form(envelope: Any) -> FormValidationResult:
                     field="approval_request.exact_content",
                     detail=(
                         "APPROVAL_REQUEST requires a non-empty 'exact_content' "
-                        "(the verbatim command/content the user must see)"
+                        "(the verbatim command/content the user must see), but "
+                        "it is blank/missing. Order matters: set "
+                        "approval_request.exact_content before -- or in the "
+                        "same write as -- setting agent_state to "
+                        "APPROVAL_REQUEST."
                     ),
                 )
             )

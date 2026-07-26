@@ -30,6 +30,18 @@ Validate-on-write, no false-pass (AC-4):
     printed to stderr, and the process exits non-zero -- never a crash.
     ``validate`` and ``finalize`` never mutate; they only report the verdict.
 
+Attribution vs. harness-agnosticism (they are not in conflict):
+    The purity rule below is about what this CLI READS, not about what it may
+    RECORD. It never reads ``CLAUDE_SESSION_ID`` (or any other harness value)
+    from the environment -- but ``finalize`` does accept ``--session-id`` and
+    ``--plan-task-id`` as EXPLICIT flags, supplied by the caller from its own
+    dispatch envelope, and stamps them on the row. The value arrives as an
+    argument the caller is answerable for; the core still knows nothing about
+    any harness. Without those flags every CLI-finalized contract landed with
+    ``session_id`` and ``plan_task_id`` NULL and could not be attributed to the
+    session or plan task that produced it -- purity was being paid for with
+    unattributable history, which was never the point of the rule.
+
 Draft identity (T5 -- decisions #1, #3, #8):
     This CLI mints its OWN contract id and NEVER reads ``CLAUDE_SESSION_ID``
     or any other Claude-Code-specific environment variable -- decision #1
@@ -499,6 +511,13 @@ def cmd_finalize(args) -> int:
     read-only verdict plus one DB write; see gaia.store.writer for the exact
     idempotency-key contract T8 (write-guard/permissions) and T9 (hook
     backstop) build on.
+
+    Attribution: ``--session-id`` and ``--plan-task-id`` are stamped on the row
+    when supplied, making the finalized contract findable by that coordinate
+    pair. They are arguments, never environment reads -- see the module
+    docstring. This write does NOT close the nascent born-at-dispatch row: that
+    row lives in a different key space and is closed at SubagentStop (again, see
+    gaia.store.writer's born-at-dispatch module comment).
     """
     draft_id, envelope, as_json = _load_target_draft(args)
     if envelope is None:
@@ -525,19 +544,30 @@ def cmd_finalize(args) -> int:
     # NEEDS_VERIFICATION so an independent verifier confirms the increment. A turn
     # with NO plan_task_id (investigation / memory / a verifier turn, which binds
     # by parent_handoff_id) is unbound and may self-COMPLETE -- unchanged.
+    #
+    # BINDING SOURCE, in priority order. An EXPLICIT ``--plan-task-id`` flag wins:
+    # in production the contract-keyed lookup below can never resolve, because a
+    # born-at-dispatch row is keyed by a synthetic dispatch id and NOT by the
+    # agent's draft id (see gaia.store.writer's born-at-dispatch module comment) --
+    # so with no flag this gate silently treated EVERY turn as unbound and the leak
+    # it was written to close stayed open. The flag is the coordinate the caller's
+    # own dispatch envelope carries, so a producer that declares its binding is
+    # held to it here, at the same seam it is held to by the SubagentStop gate.
     if agent_state == "COMPLETE":
-        try:
-            from gaia.store.writer import (
-                dispatched_binding_plan_task_id_by_contract,
-            )
+        bound_plan_task_id = getattr(args, "plan_task_id", None)
+        if bound_plan_task_id is None:
+            try:
+                from gaia.store.writer import (
+                    dispatched_binding_plan_task_id_by_contract,
+                )
 
-            bound_plan_task_id = dispatched_binding_plan_task_id_by_contract(
-                draft_id
-            )
-        except Exception:
-            # Binding unresolvable (no born-at-dispatch row / DB read error) ->
-            # treat as UNBOUND, exactly like the live gate's best-effort resolver.
-            bound_plan_task_id = None
+                bound_plan_task_id = dispatched_binding_plan_task_id_by_contract(
+                    draft_id
+                )
+            except Exception:
+                # Binding unresolvable (no born-at-dispatch row / DB read error) ->
+                # treat as UNBOUND, exactly like the live gate's best-effort resolver.
+                bound_plan_task_id = None
         if bound_plan_task_id is not None:
             msg = (
                 f"agent_status.agent_state is COMPLETE, but this turn is bound to "
@@ -568,10 +598,13 @@ def cmd_finalize(args) -> int:
             workspace=workspace,
             agent_state=agent_state,
             raw_handoff_json=json.dumps(envelope),
-            # session_id is deliberately omitted: the CLI/core never reads
-            # CLAUDE_SESSION_ID or any harness-specific value (decisions #1,
-            # #3) -- only the hook adapter (Claude-Code-specific) may supply
-            # a session_id on its own write path.
+            # Attribution, from the EXPLICIT flags only. The CLI still never
+            # READS a harness value (decisions #1, #3) -- these arrive as
+            # arguments the caller supplies from its own dispatch envelope. Both
+            # default to None, and the writer merges them with COALESCE, so
+            # omitting them records nothing and clears nothing.
+            session_id=getattr(args, "session_id", None),
+            plan_task_id=getattr(args, "plan_task_id", None),
         )
     except Exception as exc:
         _print_error(f"finalize store write failed: {exc}", as_json)
@@ -723,6 +756,33 @@ def _build_subcommands(sub) -> None:
         metavar="WORKSPACE",
         default=None,
         help="Workspace to record the row under (default: gaia.project.current() or 'me')",
+    )
+    # Attribution flags -- SUPPLIED by the caller from its dispatch envelope,
+    # never read from the environment (see the module docstring's "Attribution
+    # vs. harness-agnosticism"). Omitting them records nothing and clears
+    # nothing; the writer merges both with COALESCE.
+    p_finalize.add_argument(
+        "--session-id",
+        dest="session_id",
+        metavar="SESSION_ID",
+        default=None,
+        help=(
+            "Session this turn belongs to, so the finalized contract is "
+            "attributable to it by query (supplied by the caller, not read "
+            "from the environment)"
+        ),
+    )
+    p_finalize.add_argument(
+        "--plan-task-id",
+        dest="plan_task_id",
+        metavar="TASK_ID",
+        type=int,
+        default=None,
+        help=(
+            "Plan task (tasks.id) this turn executes, so the finalized contract "
+            "is attributable to it by query. Declaring it also binds the turn: a "
+            "plan-task-bound producer may not self-COMPLETE"
+        ),
     )
     p_finalize.add_argument("--json", action="store_true", help="JSON output")
     p_finalize.set_defaults(func=cmd_finalize)

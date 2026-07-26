@@ -33,11 +33,13 @@ gaia contract fill --json '{
     "open_gaps": []
   }
 }'
-gaia contract set agent_status.agent_state COMPLETE
 gaia contract fill --json '{"evidence_report": {"verification": {"method": "test", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}'
+gaia contract set agent_status.agent_state COMPLETE
 gaia contract validate   # confirm the verdict before finalizing
-gaia contract finalize   # writes the sole, idempotent agent_contract_handoffs row
+gaia contract finalize --session-id af7e4d2-session --plan-task-id 4821   # writes the sole, idempotent agent_contract_handoffs row
 ```
+
+Order matters here: `verification` is filled in BEFORE `agent_state` is set to `COMPLETE` (`SKILL.md`, "Build order matters"). Reversing those two calls rejects with `VERIFICATION_RESULT` on the `set agent_state COMPLETE` step, because validate-on-write checks the FULL envelope at that point, not just the field being set.
 
 The draft this produces is byte-for-byte the same envelope as example 1
 below. `finalize` writing the DB row does not end the turn's obligation: the

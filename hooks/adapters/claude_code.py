@@ -2673,6 +2673,7 @@ class ClaudeCodeAdapter(HookAdapter):
                     parsed_contract=parsed_contract,
                     task_info=task_info,
                     session_id=session_id,
+                    plan_task_id=_bound_plan_task_id,
                 )
 
             # ----------------------------------------------------------
@@ -2687,6 +2688,13 @@ class ClaudeCodeAdapter(HookAdapter):
                     agent_output=agent_output,
                     task_info=task_info,
                     session_id=session_id,
+                    # The dispatch binding this adapter already resolved above.
+                    # Attribution belongs on the row, and THIS layer is where
+                    # reading a harness coordinate is legitimate -- the CLI
+                    # finalize path can only receive it as an explicit flag, so a
+                    # turn that does not pass one would otherwise persist an
+                    # unattributable contract.
+                    plan_task_id=_bound_plan_task_id,
                 )
             except Exception as _handoff_exc:
                 logger.warning(
@@ -2996,6 +3004,7 @@ class ClaudeCodeAdapter(HookAdapter):
         parsed_contract,
         task_info: dict,
         session_id: str,
+        plan_task_id: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """Fast-path rescue of a TRUNCATED turn's partial contract draft.
 
@@ -3079,6 +3088,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 agent_state=agent_state,
                 raw_handoff_json=json.dumps(salvaged),
                 session_id=session_id,
+                plan_task_id=plan_task_id,
                 brief_id=None,
                 db_path=db_path,
             )
