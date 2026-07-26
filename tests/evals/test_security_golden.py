@@ -26,7 +26,11 @@ What runs GREEN now that the replay backend landed (brief #89 AC-2 close):
   ``expected_decision`` is now a field on ``catalog.CaseModel``. The backend
   shells out to ``hooks/pre_tool_use.py`` (subprocess, never an import -- the
   runner's "MUST NOT import from hooks/" contract holds) and reports the
-  literal allow/ask/deny decision for each case.
+  literal allow/ask/deny decision for each case. Grading goes through
+  :func:`tests.evals.graders.decision_grader`, the catalog's declared grader
+  (each case lists ``decision_grader``, not ``contract_grader`` -- a
+  hook_log_replay case never produces a fenced ``agent_contract_handoff``
+  block, so ``contract_grader`` would never actually match its payload).
 """
 
 from __future__ import annotations
@@ -109,11 +113,15 @@ class TestGoldenLiveReplay:
         """Replay each curated case through ``pre_tool_use.py`` and assert
         the observed allow/ask/deny matches the human oracle.
 
-        The ``contract_grader`` validates response *shape* and is exercised
-        by the broader eval suite; here the load-bearing assertion is the
-        decision comparison itself -- a single mismatch is a real security
-        defect (the core enforced something other than the curated policy).
+        Grading goes through :func:`tests.evals.graders.decision_grader` --
+        the catalog's declared grader (``contract_grader`` does not apply
+        here: a hook_log_replay case never produces a fenced
+        ``agent_contract_handoff`` block, only a hook decision payload,
+        which is exactly what ``decision_grader`` parses). A single
+        mismatch is a real security defect: the core enforced something
+        other than the curated policy.
         """
+        from tests.evals.graders import decision_grader
         from tests.evals.runner import HookLogReplayBackend, dispatch
 
         cases = load_catalog(GOLDEN_CATALOG)
@@ -125,6 +133,10 @@ class TestGoldenLiveReplay:
             assert case.backend == "hook_log_replay", (
                 f"{case.id}: golden catalog must use hook_log_replay backend"
             )
+            assert case.grader == ["decision_grader"], (
+                f"{case.id}: golden catalog cases must declare decision_grader, "
+                f"got {case.grader}"
+            )
             assert case.expected_decision in VALID_DECISIONS, (
                 f"{case.id}: expected_decision not loaded onto CaseModel"
             )
@@ -134,14 +146,11 @@ class TestGoldenLiveReplay:
                 backend=backend,
             )
             payload = json.loads(result.stdout)
-            decision = payload.get("decision")
-            observed[case.id] = decision
-            if decision != case.expected_decision:
-                mismatches.append(
-                    f"{case.id}: expected {case.expected_decision!r}, "
-                    f"observed {decision!r} (raw={payload.get('raw_decision')!r}, "
-                    f"reason={payload.get('reason', '')[:80]!r})"
-                )
+            observed[case.id] = payload.get("decision")
+
+            grade = decision_grader(result.stdout, expected_decision=case.expected_decision)
+            if not grade.passed:
+                mismatches.append(f"{case.id}: {'; '.join(grade.reasons)}")
 
         assert not mismatches, (
             "live security decisions diverge from the curated oracle:\n"

@@ -30,14 +30,17 @@ VALID_DECISIONS = ("allow", "ask", "deny")
 
 # Allowed grader names. ``routing_grader`` is used by the routing-sim
 # backend (T3d); ``skill_injection_consumer`` is the S7 hook-log path
-# (T4). Every grader listed in a case's ``grader`` field must be in
-# this tuple.
+# (T4); ``decision_grader`` is the hook_log_replay backend's paired
+# grader (brief #89 AC-2 -- compares the observed permissionDecision to
+# the catalog's curated ``expected_decision``). Every grader listed in
+# a case's ``grader`` field must be in this tuple.
 VALID_GRADERS = (
     "code_grader",
     "contract_grader",
     "tool_trace_grader",
     "routing_grader",
     "skill_injection_consumer",
+    "decision_grader",
 )
 
 # Required top-level keys in the catalog YAML file.

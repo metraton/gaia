@@ -6,7 +6,14 @@ Covers the five fixture classes called out in the plan:
 (b) well-formed ``APPROVAL_REQUEST`` with a valid ``approval_request`` shape
 (c) malformed JSON in the fenced block
 (d) missing required top-level keys
-(e) wrong plan_status for the expected scenario
+(e) wrong agent_state for the expected scenario
+
+Fixtures build ``agent_status.agent_state`` -- the envelope field production
+reads (``gaia/contract/validator.py``; the field was renamed from the former
+``plan_status``). ``contract_expect``'s own key stays named ``plan_status``
+deliberately: it is the catalog-facing DSL name, a stable external label the
+rename did not touch (mirrors how the validator kept its ``PLAN_STATUS``
+error code name after the same rename).
 """
 
 from __future__ import annotations
@@ -45,11 +52,11 @@ def _wrap(contract_obj_or_str) -> str:
     )
 
 
-def _well_formed(plan_status: str = "IN_PROGRESS", **overrides) -> dict:
+def _well_formed(agent_state: str = "IN_PROGRESS", **overrides) -> dict:
     """Build a minimally valid contract dict. Overrides merged at top level."""
     contract = {
         "agent_status": {
-            "plan_status": plan_status,
+            "agent_state": agent_state,
             "agent_id": "a12345",
             "pending_steps": [],
             "next_action": "done",
@@ -76,7 +83,7 @@ def _well_formed(plan_status: str = "IN_PROGRESS", **overrides) -> dict:
 # ---------------------------------------------------------------------------
 
 def test_well_formed_in_progress_passes():
-    response = _wrap(_well_formed(plan_status="IN_PROGRESS"))
+    response = _wrap(_well_formed(agent_state="IN_PROGRESS"))
     result = contract_grader(response, contract_expect={})
     assert isinstance(result, GradeResult)
     assert result.passed is True
@@ -84,20 +91,20 @@ def test_well_formed_in_progress_passes():
 
 
 def test_well_formed_complete_passes():
-    response = _wrap(_well_formed(plan_status="COMPLETE"))
+    response = _wrap(_well_formed(agent_state="COMPLETE"))
     result = contract_grader(response, contract_expect=None)
     assert result.passed is True
     assert result.score == 1.0
 
 
 def test_well_formed_blocked_passes():
-    response = _wrap(_well_formed(plan_status="BLOCKED"))
+    response = _wrap(_well_formed(agent_state="BLOCKED"))
     result = contract_grader(response, contract_expect={})
     assert result.passed is True
 
 
 def test_well_formed_needs_input_passes():
-    response = _wrap(_well_formed(plan_status="NEEDS_INPUT"))
+    response = _wrap(_well_formed(agent_state="NEEDS_INPUT"))
     result = contract_grader(response, contract_expect={})
     assert result.passed is True
 
@@ -108,7 +115,7 @@ def test_well_formed_needs_input_passes():
 
 def _approval_contract() -> dict:
     return _well_formed(
-        plan_status="APPROVAL_REQUEST",
+        agent_state="APPROVAL_REQUEST",
         approval_request={
             "operation": "git push",
             "exact_content": "git push origin feature/foo",
@@ -158,7 +165,7 @@ def test_approval_request_not_an_object_fails():
 # ---------------------------------------------------------------------------
 
 def test_malformed_json_fails():
-    response = _wrap('{"agent_status": { "plan_status": "IN_PROGRESS", }')  # trailing comma + unclosed
+    response = _wrap('{"agent_status": { "agent_state": "IN_PROGRESS", }')  # trailing comma + unclosed
     result = contract_grader(response, contract_expect={})
     assert result.passed is False
     assert result.score == 0.0
@@ -181,7 +188,7 @@ def test_last_contract_block_is_used():
     the result is pass.
     """
     early = "```agent_contract_handoff\n{ malformed\n```"
-    late = _wrap(_well_formed(plan_status="COMPLETE"))
+    late = _wrap(_well_formed(agent_state="COMPLETE"))
     response = f"Here is an example:\n{early}\n\nAnd here is my real contract:\n{late}"
     result = contract_grader(response, contract_expect={})
     assert result.passed is True
@@ -196,7 +203,7 @@ def test_last_contract_block_is_used():
     ["agent_status", "evidence_report", "consolidation_report", "approval_request"],
 )
 def test_missing_top_level_key_fails(missing_key):
-    contract = _well_formed(plan_status="IN_PROGRESS")
+    contract = _well_formed(agent_state="IN_PROGRESS")
     contract.pop(missing_key)
     response = _wrap(contract)
     result = contract_grader(response, contract_expect={})
@@ -215,35 +222,49 @@ def test_agent_status_not_an_object_fails():
 
 
 # ---------------------------------------------------------------------------
-# (e) Wrong plan_status for the expected scenario
+# (e) Wrong agent_state for the expected scenario
 # ---------------------------------------------------------------------------
 
-def test_plan_status_mismatch_fails():
+def test_agent_state_mismatch_fails():
     """S6 expects APPROVAL_REQUEST but the agent shipped COMPLETE."""
-    response = _wrap(_well_formed(plan_status="COMPLETE"))
+    response = _wrap(_well_formed(agent_state="COMPLETE"))
     result = contract_grader(
         response,
         contract_expect={"plan_status": "APPROVAL_REQUEST"},
     )
     assert result.passed is False
-    assert any("plan_status mismatch" in r for r in result.reasons)
+    assert any("agent_state mismatch" in r for r in result.reasons)
 
 
-def test_invalid_plan_status_enum_fails():
+def test_invalid_agent_state_enum_fails():
     contract = _well_formed()
-    contract["agent_status"]["plan_status"] = "DONE"  # not in canonical enum
+    contract["agent_status"]["agent_state"] = "DONE"  # not in canonical enum
     response = _wrap(contract)
     result = contract_grader(response, contract_expect={})
     assert result.passed is False
     assert any("not in" in r for r in result.reasons)
 
 
-def test_plan_status_missing_fails():
+def test_agent_state_missing_fails():
     contract = _well_formed()
-    contract["agent_status"].pop("plan_status")
+    contract["agent_status"].pop("agent_state")
     response = _wrap(contract)
     result = contract_grader(response, contract_expect={})
     assert result.passed is False
+
+
+def test_legacy_plan_status_key_is_rejected():
+    """An envelope still using the OLD ``plan_status`` key (instead of
+    ``agent_state``) must fail -- exactly the schema drift this grader was
+    fixed to catch (it silently scored 0.0 against a correct agent when it
+    still read ``plan_status``, but only fixtures encoding the SAME old key
+    ever exercised it, masking the bug)."""
+    contract = _well_formed(agent_state="COMPLETE")
+    contract["agent_status"]["plan_status"] = contract["agent_status"].pop("agent_state")
+    response = _wrap(contract)
+    result = contract_grader(response, contract_expect={})
+    assert result.passed is False
+    assert any("not in" in r for r in result.reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +281,7 @@ def test_s5_any_valid_status_passes_when_expect_empty(status):
     if status == "APPROVAL_REQUEST":
         contract = _approval_contract()
     else:
-        contract = _well_formed(plan_status=status)
+        contract = _well_formed(agent_state=status)
     response = _wrap(contract)
     result = contract_grader(response, contract_expect={})
     assert result.passed is True
