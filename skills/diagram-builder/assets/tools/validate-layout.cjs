@@ -259,8 +259,8 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 //
 // A PAGE declares its FORM (page YAML `form:`; default `dashboard`). Each
 // invariant is a declarative row that names WHICH FORMS it applies to, its
-// CLASS (integrity vs design), its SEVERITY (`dura` = a failure, `consejo` = an
-// advisory that never fails the build), the TIERS it runs at (`when`), an
+// CLASS (integrity vs geometry), its SEVERITY (`dura` = a failure, `consejo` =
+// an advisory that never fails the build), the TIERS it runs at (`when`), an
 // optional RETIREMENT clause (`superseded` → the id that replaced it; a retired
 // row is skipped, never evaluated), and a pure `check(m, ctx) → {ok, detail}`.
 // The main loop just filters this table by (form, tier, not-retired) and runs
@@ -269,7 +269,7 @@ const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 //   INTEGRITY (D R T C O F S B H) — the layout "adds up": determinism, capture,
 //     no clipping/overflow, the collapse cascade, band/inline fit, centering,
 //     headers contained. TRUE FOR EVERY FORM, always `dura`.
-//   DESIGN (E P U L Y + M + N) — how the deck reads: no dead track, no orphan
+//   GEOMETRY (E P U L Y + M + N) — how the deck reads: no dead track, no orphan
 //     cell, equal/uniform cells, filled bands, the readable-cell floor (M), and
 //     the word-fit floor (N — a title token never wider than its cell). SCOPED to
 //     the forms where the concern is real.
@@ -357,8 +357,8 @@ const INVARIANTS = [
       return { ok: bad.length === 0, detail: bad.length ? `legibility/overflow: ${bad.join(', ')}`
         : 'compound leaves stay content-sized; stacked sections keep their content height' }; } },
 
-  // ── DESIGN — scoped, dura (except V) ─────────────────────────────────────
-  { id: 'U', name: 'cells equal width (per grid)', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+  // ── GEOMETRY — scoped, dura (except V) ───────────────────────────────────
+  { id: 'U', name: 'cells equal width (per grid)', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: null,
     check: (m) => { const bad = m.leafGrids.filter(g => g.cellWSpread > CELLW_TOL);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(g => `${g.zone}:cells-differ(spread ${g.cellWSpread}px)`).join(', ')
@@ -390,7 +390,7 @@ const INVARIANTS = [
   //      row(s) it is entitled to is reported here (the --zone-min-h-vs---cell-h
   //      contradiction was a silent 50px spill with no invariant measuring it).
   // APPLICABILITY: none — this holds for every form. Only the measured subjects grew.
-  { id: 'U', name: 'uniform slot height', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+  { id: 'U', name: 'uniform slot height', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: null,
     check: (m) => {
       const slots = m.halfSlots || [];
@@ -427,22 +427,22 @@ const INVARIANTS = [
   // which check-layout.mjs (RECT/HOLE) proves on the DATA and, unlike a pixel
   // measurement, quantifies: a gap makes the sum short by exactly its own area, and
   // the hole is named by coordinate rather than inferred from a right-edge delta.
-  { id: 'L', name: 'cells fill width (no right gap)', cls: 'design', sev: 'dura', forms: GRIDDED,
+  { id: 'L', name: 'cells fill width (no right gap)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
     when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run check)' },
   // E — RETIRED into arithmetic. A dead track is a track no slot's (column, span)
   // ever covers, which is a set operation on the authored data, not a rendered
   // measurement (TRACK in check-layout.mjs). It also guards the same thing more
   // directly: the engine's grow-with-content clamp, which is arithmetic itself.
-  { id: 'E', name: 'no empty grid column', cls: 'design', sev: 'dura', forms: GRIDDED,
+  { id: 'E', name: 'no empty grid column', cls: 'geometry', sev: 'dura', forms: GRIDDED,
     when: () => true, superseded: 'TRACK (npm run check)' },
   // P — RETIRED into arithmetic. "A lone cell on its own row while a sibling row
   // holds 2+" is a statement about the PLACEMENT, and the placement is derivable:
   // check-layout.mjs simulates CSS sparse auto-placement and counts the starts per
   // row (ROW), carrying over P's exact scope — grid-dense forms, >1 track, and rows
   // a rowspan touches exempt.
-  { id: 'P', name: 'no orphan cell', cls: 'design', sev: 'dura', forms: GRID_DENSE,
+  { id: 'P', name: 'no orphan cell', cls: 'geometry', sev: 'dura', forms: GRID_DENSE,
     when: (c) => c.w > 1000, superseded: 'ROW (npm run check)' },
-  { id: 'M', name: 'cells legible (min readable width)', cls: 'design', sev: 'dura', forms: GRIDDED,
+  { id: 'M', name: 'cells legible (min readable width)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
     when: () => true, superseded: null,
     check: (m) => {
       const grids = m.leafGrids.filter(g => g.minSingleW != null);
@@ -468,7 +468,7 @@ const INVARIANTS = [
   // divided), so N applies to it unchanged and still catches a fractured title;
   // `centered` only moves the text within the same width; `plain`/`envelope` are
   // section-level and carry no title token; `ext` only changes border style.
-  { id: 'N', name: 'word-fit (title token fits its cell)', cls: 'design', sev: 'dura', forms: WORDFIT,
+  { id: 'N', name: 'word-fit (title token fits its cell)', cls: 'geometry', sev: 'dura', forms: WORDFIT,
     when: () => true, superseded: null,
     check: (m) => { const applicable = (m.wordFit || []).filter(b => !b.vertical);
       const exempt = (m.wordFit || []).length - applicable.length;
@@ -495,7 +495,7 @@ const INVARIANTS = [
   // relation, one member is not a relation, and because an active chip dims
   // everything it does not name, a one-member chip blacks the deck out to spotlight
   // a single box.
-  { id: 'K', name: 'filter referential integrity', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+  { id: 'K', name: 'filter referential integrity', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: 'CHIP (npm run check)' },
   // Z — CENSUS: AUTHORED == RENDERED.
   // Every other invariant asserts something about geometry that IS on screen, so
@@ -521,13 +521,13 @@ const INVARIANTS = [
           `(run \`npm run build\` if data/data.generated.js is stale; otherwise the engine dropped authored content)`
         : `pages ${c.nActs}/${c.nAuthoredPages}; page "${c.pageId}" sections=${c.rendered.zones} boxes=${c.rendered.boxes} ` +
           `seps=${c.rendered.seps} rails=${c.rendered.rails} half-slots=${c.rendered.halfSlots} leaf-grids=${c.rendered.leafGrids} — all match the authored census` }; } },
-  { id: 'Y', name: 'band content fills band (no dead margin)', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+  { id: 'Y', name: 'band content fills band (no dead margin)', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: (c) => c.w >= 1200, superseded: null,
     check: (m) => { const FILL_MARGIN_TOL = 48, SYM_TOL = 16; const bands = m.topZones.filter(z => z.band);
       const bad = bands.filter(z => z.leftGap > FILL_MARGIN_TOL || z.rightGap > FILL_MARGIN_TOL || Math.abs(z.leftGap - z.rightGap) > SYM_TOL);
       return { ok: bad.length === 0, detail: bad.length ? bad.map(z => `${z.zone}:not-filled(L${z.leftGap}/R${z.rightGap})`).join(', ')
         : bands.map(z => `${z.zone}(L${z.leftGap}/R${z.rightGap})`).join(' ') }; } },
-  { id: 'Q', name: 'compound section widths follow authored span', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+  { id: 'Q', name: 'compound section widths follow authored span', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: (c) => c.w >= 1200, superseded: null,
     check: (m) => { const items = m.spanRatios || [];
       const bad = items.filter(it => it.errPct > SPAN_TOL_PCT);
@@ -535,7 +535,7 @@ const INVARIANTS = [
         ? bad.map(it => `${it.grid}>${it.id}:span${it.span} width ${it.w}px vs expected ${it.expected}px (${it.errPct}% off, tol ${SPAN_TOL_PCT}% — span-weight not applied; a span:1 child likely inherited a parent band's --span)`).join(', ')
         : items.length ? `span-weighted compound widths proportional to authored span (${items.map(it => `${it.id}:s${it.span}@${it.w}px`).join(', ')})`
         : 'no span-weighted compound rows to check' }; } },
-  { id: 'V', name: 'horizontal composition (verticality)', cls: 'design', sev: 'consejo', forms: GRID_DENSE,
+  { id: 'V', name: 'horizontal composition (verticality)', cls: 'geometry', sev: 'consejo', forms: GRID_DENSE,
     when: (c) => c.tier === 'ultra', superseded: null,
     check: (m) => { const multiCol = m.leafGrids.filter(g => g.tracks >= 2).length; const singleCol = m.leafGrids.filter(g => g.tracks === 1).length;
       const total = m.leafGrids.length || 1; const frac = multiCol / total; const ok = m.rootRowMax >= 2 && multiCol > 0;
@@ -549,7 +549,7 @@ const INVARIANTS = [
   // now STRETCH to equal fr widths (asserted by U + M), so a fixed pixel width
   // is no longer a truth to hold. The row demonstrates the retirement clause:
   // `superseded` points at the invariant that took over its job.
-  { id: 'W', name: 'fixed 232px cell width', cls: 'design', sev: 'dura', forms: ALL_FORMS,
+  { id: 'W', name: 'fixed 232px cell width', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: 'U' },
 ];
 

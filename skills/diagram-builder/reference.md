@@ -111,7 +111,7 @@ documented readability reference, and the guardrail's retired **W** invariant
 │   ├── engine.js         render engine — knows only the dialect (@version 2.0.0)
 │   └── build-data.mjs    build step: YAML → data/data.generated.js
 ├── data/
-│   ├── document.yaml     manifest: title/subtitle/version + which pages, in order
+│   ├── document.yaml     manifest: title/subtitle/version/palette + pages, in order
 │   ├── pages/            one YAML per page
 │   └── data.generated.js build output (committed; `window.__DOC__ = {...}`)
 └── tools/
@@ -728,8 +728,8 @@ names:
 
 A **FORM-SCOPED flat table** (`INVARIANTS` in `tools/validate-layout.cjs`): the
 page declares its `form` (default `dashboard`); each row names the forms it
-applies to, its class (`integrity` / `design` — `design` measures rendered
-geometry, not visual taste), its severity (`dura` fails the build, `consejo` only
+applies to, its class (`integrity` / `geometry` — `geometry` is measured pixels,
+not visual taste), its severity (`dura` fails the build, `consejo` only
 advises), the tiers it runs at (`when`), and an optional retirement clause
 (`superseded`). The scopes: **all** = every form; **gridded** = every form but
 `timeline`; **grid-dense** = `dashboard` / `comparison` / `planner`; **wordfit** =
@@ -750,12 +750,12 @@ title).
 | **H** | integrity | all | dura | section headers/subtitles stay inside their section |
 | **X** | integrity | all | dura | no sibling-section collision — catches a column-stack overflowing onto its neighbour |
 | **G** | integrity | all | dura | no compound-leaf balloon / no stacked-section content overflow — a compound-row leaf never balloons past its content size, and a stacked (`sec-c1`) section keeps its content height |
-| **U** | design | all | dura | TWO rows: cells equal width per grid, and uniform **SLOT** height. SLOT, not component: `rowspan` makes a component a MULTIPLE of the slot and `half` a FRACTION of it, so both are excluded from the component-height set and every `.half-slot` is asserted at `--cell-h` directly |
-| **M** | design | gridded | dura | cells legible — no cell below `MIN_LEGIBLE` (kept in sync with `--cell-min-w`); collapse columns first |
-| **N** | design | wordfit | dura | word-fit — a leaf title's longest indivisible token never exceeds its cell's available width. This is BELOW the M floor's reach: a cell can clear `MIN_LEGIBLE` and still be narrower than a 12-char title. **Applicability clause:** a `treatment: [vertical]` leaf is EXEMPT — its title runs down the BLOCK axis, so horizontal token width is not the fit constraint |
-| **Y** | design | all | dura | band content fills the band — no dead margin (≥1200px) |
-| **Q** | design | all | dura | compound section widths follow authored span — a compound row's sections stay proportional to their authored `span` weight (`SPAN_TOL_PCT` 15%), not stretched or shrunk by an inherited parent band (≥1200px) |
-| **V** | design | grid-dense | **consejo** | horizontal composition — the deck earns its canvas (ultra tier; advises, never fails) |
+| **U** | geometry | all | dura | TWO rows: cells equal width per grid, and uniform **SLOT** height. SLOT, not component: `rowspan` makes a component a MULTIPLE of the slot and `half` a FRACTION of it, so both are excluded from the component-height set and every `.half-slot` is asserted at `--cell-h` directly |
+| **M** | geometry | gridded | dura | cells legible — no cell below `MIN_LEGIBLE` (kept in sync with `--cell-min-w`); collapse columns first |
+| **N** | geometry | wordfit | dura | word-fit — a leaf title's longest indivisible token never exceeds its cell's available width. This is BELOW the M floor's reach: a cell can clear `MIN_LEGIBLE` and still be narrower than a 12-char title. **Applicability clause:** a `treatment: [vertical]` leaf is EXEMPT — its title runs down the BLOCK axis, so horizontal token width is not the fit constraint |
+| **Y** | geometry | all | dura | band content fills the band — no dead margin (≥1200px) |
+| **Q** | geometry | all | dura | compound section widths follow authored span — a compound row's sections stay proportional to their authored `span` weight (`SPAN_TOL_PCT` 15%), not stretched or shrunk by an inherited parent band (≥1200px) |
+| **V** | geometry | grid-dense | **consejo** | horizontal composition — the deck earns its canvas (ultra tier; advises, never fails) |
 
 **Retired rows** carry `superseded` and are printed once in a `[RETIRED]` list,
 never evaluated. Each moved to the static gate because it was a statement about

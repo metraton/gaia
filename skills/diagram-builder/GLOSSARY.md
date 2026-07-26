@@ -91,7 +91,7 @@ checks on the authored data. Full per-invariant detail lives in `reference.md`.
 | Family | Ids | Scope · severity |
 |--------|-----|------------------|
 | **INTEGRITY** (the layout adds up) | **A** page declares a valid form (synthetic, fail-closed: returned INSTEAD of an empty set) · **Z** census (authored == rendered) · **D** determinism (3 reloads) · **R** scrollbar-robust · **T** capture not truncated · **C** no box clipping · **O** no h-overflow · **S** inline fit / band spans block · **B** centered block · **H** header within section · **X** no sibling-section collision · **G** no compound-leaf balloon / no stacked-section overflow | every form, `dura` |
-| **GEOMETRY** (`cls: 'design'` in code — it measures rendered geometry, not visual design) | **U** cells equal width per grid **+** uniform **slot** height (two rows) · **M** readable ≥120px (`MIN_LEGIBLE`) · **N** word-fit, title token fits its cell (`WORDFIT` = dashboard+flow; `vertical` leaves exempt) · **Y** band fill (≥1200px) · **Q** compound widths follow authored span (≥1200px) | form-scoped, `dura` |
+| **GEOMETRY** (`cls: 'geometry'` in code — it measures rendered geometry, not visual design) | **U** cells equal width per grid **+** uniform **slot** height (two rows) · **M** readable ≥120px (`MIN_LEGIBLE`) · **N** word-fit, title token fits its cell (`WORDFIT` = dashboard+flow; `vertical` leaves exempt) · **Y** band fill (≥1200px) · **Q** compound widths follow authored span (≥1200px) | form-scoped, `dura` |
 | advisory | **V** horizontal composition (the deck earns its canvas) | `GRID_DENSE`, ultra tier, `consejo` |
 
 **Retired rows** (`superseded`, never evaluated) — each moved to the static gate
