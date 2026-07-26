@@ -361,14 +361,28 @@ def _check_duplicate_write_storm(
 def _check_duration_outlier(
     analysis: TranscriptAnalysis,
 ) -> Optional[Dict[str, str]]:
-    """Warning if agent execution exceeded 10 minutes."""
-    if analysis.duration_ms is not None and analysis.duration_ms > 600_000:
-        minutes = analysis.duration_ms / 60_000
+    """Warning if the agent's longest continuous work segment exceeded 10 minutes.
+
+    Claude Code shares one transcript file across a subagent's resumed
+    segments (see ``transcript_analyzer._is_resume_boundary``): a turn cut
+    by an early harness relay or a rejected contract is resumed via
+    SendMessage, and the wall-clock gap while the agent sat idle waiting
+    for that resume is recorded in the same file as the work before and
+    after it. Checking the longest entry in ``duration_segments_ms`` (each
+    a genuinely continuous stretch of work) rather than the raw sum keeps
+    a resumed agent from being penalized for that idle gap, while still
+    catching a single sitting that itself ran long.
+    """
+    if not analysis.duration_segments_ms:
+        return None
+    longest_ms = max(analysis.duration_segments_ms)
+    if longest_ms > 600_000:
+        minutes = longest_ms / 60_000
         return {
             "type": "duration_outlier",
             "severity": "warning",
             "message": (
-                f"Agent execution took {minutes:.1f} minutes "
+                f"Agent's longest continuous work segment took {minutes:.1f} minutes "
                 f"(threshold: 10 min) — may indicate stalled or inefficient work"
             ),
         }
@@ -423,7 +437,7 @@ def audit(
     - token_explosion: total tokens (input+cache_creation+output) > 10M
     - cache_efficiency: cache read ratio < 60% with significant volume
     - duplicate_write_storm: Write/Edit tool with 3+ identical calls
-    - duration_outlier: duration_ms > 600,000 (10 min)
+    - duration_outlier: longest entry in duration_segments_ms > 600,000 (10 min)
     - tool_call_velocity: > 20 tool calls per minute
     - pipe_retroactive: cloud/infra CLI (gcloud/kubectl/aws/terraform/helm/flux)
       output piped to a shell utility, evading the live cloud_pipe_validator gate

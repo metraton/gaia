@@ -245,6 +245,56 @@ class TestTokenBudget:
 
 
 # ===========================================================================
+# duration_outlier -- longest segment, not raw sum
+# ===========================================================================
+
+
+class TestDurationOutlier:
+    """A resumed agent shares one transcript across segments split by a
+    coordinator resume boundary (transcript_analyzer._is_resume_boundary).
+    The check must key off the longest single continuous segment, not the
+    sum across segments -- otherwise a resumed agent whose real segments
+    are each short still trips the anomaly once their sum crosses 10 min,
+    exactly reintroducing the idle-wait penalty the fix removes.
+    """
+
+    def test_single_segment_over_threshold_fires(self):
+        ta = _base_analysis(duration_segments_ms=[600_001])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "duration_outlier" in types
+        match = next(a for a in anomalies if a["type"] == "duration_outlier")
+        assert match["severity"] == "warning"
+        assert "10.0 minutes" in match["message"]
+
+    def test_single_segment_at_boundary_does_not_fire(self):
+        ta = _base_analysis(duration_segments_ms=[600_000])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "duration_outlier" not in types
+
+    def test_resumed_short_segments_do_not_fire_even_when_sum_exceeds_threshold(self):
+        """Two short segments (5 min each) whose SUM (10+ min) would trip a
+        sum-based check, but neither segment alone is an outlier."""
+        ta = _base_analysis(duration_segments_ms=[300_000, 350_000])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "duration_outlier" not in types
+
+    def test_one_long_segment_among_short_ones_fires(self):
+        ta = _base_analysis(duration_segments_ms=[100_000, 700_000, 50_000])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "duration_outlier" in types
+
+    def test_empty_segments_no_anomaly(self):
+        ta = _base_analysis(duration_segments_ms=[])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "duration_outlier" not in types
+
+
+# ===========================================================================
 # 6. pipe_retroactive
 # ===========================================================================
 

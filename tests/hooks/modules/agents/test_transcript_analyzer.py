@@ -199,6 +199,182 @@ class TestDuration:
         result = analyze(str(p))
         assert result.duration_ms == 0
 
+    def test_no_resume_boundary_single_segment(self, tmp_path):
+        """Without a coordinator-relayed resume, the whole span is one
+        segment -- duration_segments_ms mirrors the pre-fix duration_ms."""
+        entries = [
+            {
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {"role": "assistant", "content": "start"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+            {
+                "timestamp": "2026-01-01T00:15:00.000Z",
+                "message": {"role": "assistant", "content": "end"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+        ]
+        p = tmp_path / "transcript.jsonl"
+        _write_jsonl(p, entries)
+
+        result = analyze(str(p))
+        assert result.duration_segments_ms == [900_000]
+        assert result.duration_ms == 900_000
+
+
+# ============================================================================
+# Resume segmentation -- coordinator-relayed cut/resume boundary
+# ============================================================================
+
+
+class TestResumeSegmentation:
+    """Claude Code shares one transcript file across a subagent's resumed
+    segments: a cut turn is resumed via SendMessage, and the runtime injects
+    the follow-up as a ``user`` entry carrying
+    ``origin: {"kind": "coordinator"}``. The wall-clock gap between the last
+    entry before that marker and the marker's own timestamp is the agent
+    sitting idle waiting to be resumed, not working, and must not inflate
+    duration_ms -- but the segments either side of it are real work and
+    must each be preserved so a genuinely long single segment still shows.
+    """
+
+    def _resume_entry(self, timestamp):
+        return {
+            "timestamp": timestamp,
+            "message": {
+                "role": "user",
+                "content": "The coordinator sent a message while you were working:\nkeep going",
+            },
+            "origin": {"kind": "coordinator"},
+            "isMeta": True,
+        }
+
+    def test_idle_gap_excluded_from_both_duration_ms_and_segments(self, tmp_path):
+        entries = [
+            {
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {"role": "assistant", "content": "before the cut"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+            # last real content before the cut
+            {
+                "timestamp": "2026-01-01T00:08:18.510Z",
+                "message": {"role": "user", "content": [{"type": "text", "text": "tool result"}]},
+            },
+            # idle wait: 20.121s the agent sat waiting to be resumed
+            self._resume_entry("2026-01-01T00:08:38.631Z"),
+            {
+                "timestamp": "2026-01-01T00:11:31.585Z",
+                "message": {"role": "assistant", "content": "after the resume"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+        ]
+        p = tmp_path / "transcript.jsonl"
+        _write_jsonl(p, entries)
+
+        result = analyze(str(p))
+        # segment 1: 00:00:00.000 -> 00:08:18.510 = 498510 ms
+        # segment 2: 00:08:38.631 -> 00:11:31.585 = 172954 ms
+        # the 20121 ms gap between them is excluded entirely
+        assert result.duration_segments_ms == [498510, 172954]
+        assert result.duration_ms == 498510 + 172954
+
+    def test_no_boundary_no_segmentation(self, tmp_path):
+        """A user message with no coordinator origin is ordinary
+        conversation, not a resume -- it must not split the segment."""
+        entries = [
+            {
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {"role": "assistant", "content": "start"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "tool_use",
+            },
+            {
+                "timestamp": "2026-01-01T00:05:00.000Z",
+                "message": {"role": "user", "content": "ordinary tool result, no origin"},
+            },
+            {
+                "timestamp": "2026-01-01T00:10:00.000Z",
+                "message": {"role": "assistant", "content": "end"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+        ]
+        p = tmp_path / "transcript.jsonl"
+        _write_jsonl(p, entries)
+
+        result = analyze(str(p))
+        assert result.duration_segments_ms == [600_000]
+        assert result.duration_ms == 600_000
+
+    def test_two_resume_boundaries_produce_three_segments(self, tmp_path):
+        entries = [
+            {
+                "timestamp": "2026-01-01T00:00:00.000Z",
+                "message": {"role": "assistant", "content": "segment 1"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+            self._resume_entry("2026-01-01T00:05:00.000Z"),
+            {
+                "timestamp": "2026-01-01T00:07:00.000Z",
+                "message": {"role": "assistant", "content": "segment 2"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+            self._resume_entry("2026-01-01T00:20:00.000Z"),
+            {
+                "timestamp": "2026-01-01T00:21:00.000Z",
+                "message": {"role": "assistant", "content": "segment 3"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+        ]
+        p = tmp_path / "transcript.jsonl"
+        _write_jsonl(p, entries)
+
+        result = analyze(str(p))
+        # segment 1: 0 -> 0 (single point, first entry only)
+        # segment 2: 00:05:00 -> 00:07:00 = 120_000 ms
+        # segment 3: 00:20:00 -> 00:21:00 = 60_000 ms
+        assert result.duration_segments_ms == [0, 120_000, 60_000]
+        assert result.duration_ms == 180_000
+
+    def test_resume_boundary_as_first_entry_is_not_a_boundary(self, tmp_path):
+        """A coordinator-origin entry can only close a PRIOR segment; as the
+        very first entry in the file there is nothing before it to close,
+        so it simply opens segment one (mirrors _is_resume_boundary's
+        `last_ts_dt is not None` guard)."""
+        entries = [
+            self._resume_entry("2026-01-01T00:00:00.000Z"),
+            {
+                "timestamp": "2026-01-01T00:03:00.000Z",
+                "message": {"role": "assistant", "content": "reply"},
+                "usage": {},
+                "model": "m",
+                "stop_reason": "end_turn",
+            },
+        ]
+        p = tmp_path / "transcript.jsonl"
+        _write_jsonl(p, entries)
+
+        result = analyze(str(p))
+        assert result.duration_segments_ms == [180_000]
+        assert result.duration_ms == 180_000
+
 
 # ============================================================================
 # Tool sequence

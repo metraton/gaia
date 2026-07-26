@@ -51,7 +51,15 @@ class TranscriptAnalysis:
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
     output_tokens: int = 0
+    # duration_ms is the sum of duration_segments_ms: total time spent
+    # actively working, excluding the wall-clock gap(s) spent idle while
+    # waiting to be resumed after a coordinator-relayed cut (see
+    # _is_resume_boundary). duration_segments_ms holds each continuous
+    # segment separately so a caller that specifically needs "the longest
+    # single uninterrupted stretch" (e.g. a stalled-agent check) is not
+    # forced to read that off a sum that a resume can dilute.
     duration_ms: Optional[int] = None
+    duration_segments_ms: List[int] = field(default_factory=list)
     first_timestamp: Optional[str] = None
     last_timestamp: Optional[str] = None
     model: str = ""
@@ -135,6 +143,21 @@ def _parse_timestamp(ts_str: str) -> Optional[datetime]:
         except ValueError:
             continue
     return None
+
+
+def _is_resume_boundary(entry: Dict[str, Any]) -> bool:
+    """True when *entry* is a coordinator-relayed resume of a cut turn.
+
+    A subagent's resumed segments share one transcript file: after a
+    premature stop (an early harness relay, or a hook rejecting an
+    incomplete contract), the orchestrator resumes the SAME agent via
+    SendMessage, and the runtime injects that follow-up as a ``user``
+    entry carrying ``origin: {"kind": "coordinator"}``. That entry's own
+    timestamp is when work resumed; the wall-clock gap since the prior
+    entry is the agent sitting idle waiting to be resumed, not working.
+    """
+    origin = entry.get("origin")
+    return isinstance(origin, dict) and origin.get("kind") == "coordinator"
 
 
 def _extract_tool_calls_from_content(
@@ -252,6 +275,8 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
 
     first_ts_dt: Optional[datetime] = None
     last_ts_dt: Optional[datetime] = None
+    segment_start_dt: Optional[datetime] = None
+    segment_durations_ms: List[int] = []
 
     for line in lines:
         line = line.strip()
@@ -275,6 +300,22 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
                 if result.first_timestamp is None:
                     result.first_timestamp = timestamp
                     first_ts_dt = parsed_ts
+                    segment_start_dt = parsed_ts
+
+                # A resume boundary closes the segment in progress (using
+                # the last timestamp seen BEFORE this entry) and opens a
+                # new one starting at this entry's own timestamp -- the
+                # gap between the two is idle resume-wait, not work.
+                if (
+                    _is_resume_boundary(entry)
+                    and last_ts_dt is not None
+                    and segment_start_dt is not None
+                ):
+                    segment_durations_ms.append(
+                        int((last_ts_dt - segment_start_dt).total_seconds() * 1000)
+                    )
+                    segment_start_dt = parsed_ts
+
                 result.last_timestamp = timestamp
                 last_ts_dt = parsed_ts
 
@@ -324,9 +365,12 @@ def analyze(transcript_path: str) -> TranscriptAnalysis:
             _extract_skills_from_content(content, result)
 
     # --- Duration computation ---
-    if first_ts_dt is not None and last_ts_dt is not None:
-        delta = last_ts_dt - first_ts_dt
-        result.duration_ms = int(delta.total_seconds() * 1000)
+    if first_ts_dt is not None and last_ts_dt is not None and segment_start_dt is not None:
+        segment_durations_ms.append(
+            int((last_ts_dt - segment_start_dt).total_seconds() * 1000)
+        )
+        result.duration_segments_ms = segment_durations_ms
+        result.duration_ms = sum(segment_durations_ms)
 
     # --- Duplicate detection finalization ---
     for h, info in hash_map.items():
