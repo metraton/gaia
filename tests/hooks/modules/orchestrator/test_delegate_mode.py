@@ -9,9 +9,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "hooks"))
 
 from modules.orchestrator.delegate_mode import (
+    ORCHESTRATOR_AGENT_TYPES,
     ORCHESTRATOR_ALLOWED_TOOLS,
     DelegateModeResult,
+    SessionRole,
     check_delegate_mode,
+    classify_session_role,
     is_orchestrator_context,
 )
 
@@ -44,10 +47,80 @@ class TestIsOrchestratorContext(unittest.TestCase):
             "session_id": "abc123",
             "tool_name": "Bash",
             "tool_input": {"command": "ls"},
-            "agent_id": "a12345f",
+            "agent_id": "a12345f0f1e2d3c4b",
             "agent_type": "platform-architect",
         }
         self.assertFalse(is_orchestrator_context(payload))
+
+
+class TestClassifySessionRole(unittest.TestCase):
+    """The (agent_id, agent_type) taxonomy behind is_orchestrator_context().
+
+    The harness documents that agent_id is "absent for the main thread, even in
+    --agent sessions", so its absence alone cannot mean "orchestrator". These
+    cases pin the whole cross product, including the two that must never
+    collapse into each other: a named specialist's main thread and the
+    orchestrator's own (also named) main thread.
+    """
+
+    @staticmethod
+    def _payload(**identity) -> dict:
+        return {
+            "session_id": "abc123",
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+            **identity,
+        }
+
+    def test_dispatched_subagent(self):
+        role = classify_session_role(
+            self._payload(agent_id="a12345f0f1e2d3c4b", agent_type="developer")
+        )
+        self.assertIs(role, SessionRole.SUBAGENT)
+
+    def test_unnamed_main_thread_is_orchestrator(self):
+        """No agent_id and no agent_type: a plain main session."""
+        self.assertIs(classify_session_role(self._payload()), SessionRole.ORCHESTRATOR)
+
+    def test_empty_identity_strings_are_orchestrator(self):
+        """Empty strings are absence, not identity."""
+        role = classify_session_role(self._payload(agent_id="", agent_type=""))
+        self.assertIs(role, SessionRole.ORCHESTRATOR)
+
+    def test_named_orchestrator_main_thread_is_orchestrator(self):
+        """`agent: gaia-orchestrator` in settings makes the orchestrator's own
+        main thread carry an agent_type. It is still the orchestrator."""
+        role = classify_session_role(self._payload(agent_type="gaia-orchestrator"))
+        self.assertIs(role, SessionRole.ORCHESTRATOR)
+
+    def test_named_orchestrator_bare_spelling(self):
+        role = classify_session_role(self._payload(agent_type="orchestrator"))
+        self.assertIs(role, SessionRole.ORCHESTRATOR)
+
+    def test_named_orchestrator_case_and_padding_insensitive(self):
+        role = classify_session_role(self._payload(agent_type="  Gaia-Orchestrator "))
+        self.assertIs(role, SessionRole.ORCHESTRATOR)
+
+    def test_named_specialist_main_thread(self):
+        """`claude --agent developer`: main thread, no agent_id, not the
+        orchestrator. This is the case the old `not agent_id` proxy got wrong."""
+        role = classify_session_role(self._payload(agent_type="developer"))
+        self.assertIs(role, SessionRole.NAMED_SPECIALIST)
+
+    def test_named_operator_is_a_specialist_not_a_curator(self):
+        """gaia-operator is a curator for DB writes but a specialist here: the
+        orchestrator identity set must not be widened into the curator set."""
+        role = classify_session_role(self._payload(agent_type="gaia-operator"))
+        self.assertIs(role, SessionRole.NAMED_SPECIALIST)
+
+    def test_unknown_agent_type_is_not_the_orchestrator(self):
+        """The orchestrator is known by name, so an unrecognized name is not it."""
+        role = classify_session_role(self._payload(agent_type="general-purpose"))
+        self.assertIs(role, SessionRole.NAMED_SPECIALIST)
+
+    def test_orchestrator_identities_exclude_specialists(self):
+        for name in ("developer", "gaia-operator", "gaia-system", "general-purpose"):
+            self.assertNotIn(name, ORCHESTRATOR_AGENT_TYPES)
 
 
 class TestCheckDelegateMode(unittest.TestCase):
@@ -70,7 +143,7 @@ class TestCheckDelegateMode(unittest.TestCase):
             "session_id": "abc123",
             "tool_name": tool_name,
             "tool_input": {},
-            "agent_id": "a12345f",
+            "agent_id": "a12345f0f1e2d3c4b",
             "agent_type": "platform-architect",
         }
 
