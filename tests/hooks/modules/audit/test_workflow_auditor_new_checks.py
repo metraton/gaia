@@ -239,12 +239,29 @@ class TestTokenBudget:
 
 
 class TestPipeRetroactive:
-    def test_triggers_per_pipe_command(self):
-        ta = _base_analysis(pipe_commands=["ls | grep foo", "cat x | wc -l"])
+    def test_triggers_on_infra_cli_pipe(self):
+        """A cloud/infra CLI whose output is piped is the genuine signal.
+
+        Includes the ``cd ... &&`` prefix form, which is exactly the shape
+        that slips the live ``cloud_pipe_validator`` gate (its CLOUD_CLI_PATTERN
+        only matches when the CLI is the first token of the whole string).
+        """
+        ta = _base_analysis(pipe_commands=[
+            "gcloud auth application-default print-access-token 2>&1 | head -c 20",
+            "cd /repo/infra && terraform validate -json 2>&1 | tail -60",
+        ])
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         pipe_anomalies = [a for a in anomalies if a["type"] == "pipe_retroactive"]
         assert len(pipe_anomalies) == 2
         assert all(a["severity"] == "warning" for a in pipe_anomalies)
+
+    def test_no_anomaly_for_benign_local_pipe(self):
+        """Routine read-only shell filtering is standard Unix idiom, not a
+        policy violation -- neither ``ls`` nor ``cat`` is a cloud/infra CLI."""
+        ta = _base_analysis(pipe_commands=["ls | grep foo", "cat x | wc -l"])
+        anomalies = audit(_base_metrics(), transcript_analysis=ta)
+        types = [a["type"] for a in anomalies]
+        assert "pipe_retroactive" not in types
 
     def test_no_anomaly_when_no_pipes(self):
         ta = _base_analysis(pipe_commands=[])
@@ -253,7 +270,7 @@ class TestPipeRetroactive:
         assert "pipe_retroactive" not in types
 
     def test_long_command_truncated_in_message(self):
-        long_cmd = "x" * 200
+        long_cmd = "gcloud describe " + ("x" * 200) + " | head -5"
         ta = _base_analysis(pipe_commands=[long_cmd])
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         match = next(a for a in anomalies if a["type"] == "pipe_retroactive")
