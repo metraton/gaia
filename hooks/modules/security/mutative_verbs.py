@@ -1552,6 +1552,7 @@ CLI_FAMILY_LOOKUP: Dict[str, str] = {
     "kubectl": "k8s", "helm": "k8s", "flux": "k8s", "kustomize": "k8s",
     "k9s": "k8s", "kubectx": "k8s", "kubens": "k8s", "stern": "k8s",
     "terraform": "iac", "terragrunt": "iac", "pulumi": "iac", "cdktf": "iac",
+    "tofu": "iac", "cdk": "iac",
     "git": "git",
     "docker": "docker", "podman": "docker",
     "docker-compose": "docker", "podman-compose": "docker",
@@ -1572,6 +1573,87 @@ CLI_FAMILY_LOOKUP: Dict[str, str] = {
     "pytest": "linter", "mypy": "linter", "black": "linter",
     "ruff": "linter", "flake8": "linter", "pylint": "linter",
     "systemctl": "system", "service": "system", "supervisorctl": "system",
+}
+
+
+# ============================================================================
+# Pipe/Redirect/Chaining Policy Registry (consumed by cloud_pipe_validator)
+# ============================================================================
+#
+# This classifies CLIs on an axis DIFFERENT from MUTATIVE_VERBS/tiers.py.
+# Those answer "does the invoked VERB mutate live state" (T0-T3). This
+# registry answers "does this CLI expose its OWN native structured-output
+# flags (--format, --filter, -o jsonpath, --query, -json) that substitute
+# for piping its output to a shell utility". The two axes are independent:
+# a read-only `kubectl get pods | grep` is exactly as much a policy
+# violation as `kubectl delete ... | grep`, because the harm this registry
+# guards against (losing the exit code and the CLI's own structured output)
+# does not depend on whether the verb mutates anything. Deriving this
+# registry from MUTATIVE_VERBS or SecurityTier would silently exempt every
+# read-only invocation of these same CLIs -- exactly the case
+# cloud_pipe_validator exists to catch, so that derivation is deliberately
+# NOT done here.
+#
+# PIPE_POLICY_RELEVANT_FAMILIES narrows CLI_FAMILY_LOOKUP to the families
+# where the question is even meaningful (k8s/iac/cloud infra CLIs). Every
+# name CLI_FAMILY_LOOKUP tags with one of these families MUST appear in
+# either NATIVE_OUTPUT_FLAG_CLIS (opted in) or PIPE_POLICY_EXCLUDED_CLIS
+# (opted out, with a reason). test_pipe_policy_registry_completeness in
+# tests/hooks/modules/security/test_mutative_verbs.py enforces this as a
+# COMPLETENESS property, not a set-equality property: an EXCLUDED entry is a
+# deliberate, reasoned decision and must never fail the test (stern is
+# excluded on purpose -- it is designed to be piped/tailed, so including it
+# would be wrong, not merely stricter). The one failure mode the test
+# enforces is an UNCLASSIFIED name: present in a relevant CLI_FAMILY_LOOKUP
+# family but in neither set, meaning nobody decided. That is how a new CLI
+# (tomorrow's `opentofu`/`cdk`) stops being a silent hole: adding it to
+# CLI_FAMILY_LOOKUP without also classifying it here fails the test instead
+# of quietly falling through.
+
+PIPE_POLICY_RELEVANT_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "cloud"})
+
+# CLIs that expose native output-shaping flags, so piping/redirecting/
+# chaining their invocation is a real policy violation (use --format/
+# --filter/-o/-json instead). cloud_pipe_validator's per-stage cloud-CLI
+# check is built directly from this set.
+NATIVE_OUTPUT_FLAG_CLIS: FrozenSet[str] = frozenset({
+    "gcloud", "aws",                                  # cloud
+    "kubectl", "helm", "flux",                        # k8s
+    "terraform", "terragrunt", "tofu", "cdk",          # iac
+})
+
+# CLIs in a PIPE_POLICY_RELEVANT_FAMILIES family that are deliberately NOT
+# in NATIVE_OUTPUT_FLAG_CLIS, with the reason written down so the exclusion
+# reads as a decision, not an oversight.
+PIPE_POLICY_EXCLUDED_CLIS: Dict[str, str] = {
+    "stern": (
+        "designed to stream/tail logs for piping into grep/awk; there is no "
+        "native --format substitute for that use, so including it would "
+        "break its entire purpose."
+    ),
+    "kustomize": (
+        "`kustomize build | kubectl apply -f -` is the canonical, documented "
+        "usage idiom; kustomize's own output IS meant to be piped."
+    ),
+    "k9s": "an interactive TUI, never invoked as a one-shot command whose output would be piped.",
+    "kubectx": "a context switcher with no structured output to filter.",
+    "kubens": "a namespace switcher with no structured output to filter.",
+    "gh": "a git-hosting CLI (issues/PRs/releases), outside this policy's cloud/infra-state scope.",
+    "glab": "same as gh -- GitLab's git-hosting CLI, outside this policy's scope.",
+    "vercel": "a PaaS deploy CLI outside this policy's cloud/infra-state scope.",
+    "netlify": "same as vercel.",
+    "fly": "same as vercel.",
+    "flyctl": "same as vercel (flyctl is fly's CLI binary).",
+    "heroku": "same as vercel.",
+    # The following are genuinely the same shape as the included CLIs
+    # (native --format/--query/-json output, cloud/infra state) and are
+    # PENDING an explicit decision -- not exempted on a technical basis.
+    # Flagged for the user rather than added unilaterally.
+    "pulumi": "same shape as terraform/terragrunt; pending explicit decision to include, not yet approved.",
+    "cdktf": "same shape as terraform/terragrunt; pending explicit decision to include, not yet approved.",
+    "gsutil": "same shape as aws/gcloud; pending explicit decision to include, not yet approved.",
+    "az": "same shape as aws/gcloud; pending explicit decision to include, not yet approved.",
+    "eksctl": "same shape as aws/gcloud; pending explicit decision to include, not yet approved.",
 }
 
 

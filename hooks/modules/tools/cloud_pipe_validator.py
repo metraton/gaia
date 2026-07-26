@@ -2,7 +2,8 @@
 Command pipe/redirect/chaining validator.
 
 Two-tier validation:
-1. Cloud CLIs (gcloud, kubectl, aws, terraform, terragrunt, helm, flux) — ALL
+1. Cloud/infra CLIs (see ``NATIVE_OUTPUT_FLAG_CLIS`` in
+   ``security.mutative_verbs`` for the current, single-sourced list) — ALL
    pipes, redirects, and chaining operators are rejected because these CLIs
    expose native flags for filtering and formatting.
 2. All other commands — redirects (>, >>) and background operator (&) are
@@ -25,6 +26,15 @@ substring-searching the raw text) means a cloud-CLI name appearing only as an
 argument (`grep terragrunt file.tf | head`, `echo "terraform" | wc -l`) is
 never mistaken for an invocation, since neither `grep` nor `echo` is the
 cloud CLI itself.
+
+``CLOUD_CLI_PATTERN`` itself is DERIVED from ``NATIVE_OUTPUT_FLAG_CLIS``
+(``security.mutative_verbs``), not maintained as an independent list here.
+That registry is the single place a new CLI gets added, and its own
+docstring carries the "why this is a different axis than mutability"
+rationale plus the include/exclude completeness test
+(``tests/hooks/modules/security/test_mutative_verbs.py``,
+``test_pipe_policy_registry_completeness``) that fails when a relevant
+CLI is left unclassified rather than deliberately excluded.
 """
 
 import logging
@@ -34,12 +44,17 @@ from typing import Optional
 
 from .hook_response import build_hook_permission_response
 from .stage_decomposer import StageDecomposer
+from ..security.mutative_verbs import NATIVE_OUTPUT_FLAG_CLIS
 
 logger = logging.getLogger(__name__)
 
-# Cloud/infra CLIs covered by this policy
+# Cloud/infra CLIs covered by this policy, derived from the consolidated
+# registry so there is exactly one list to update, not two. Sorted longest
+# name first purely for deterministic, readable regex source (`\b` after the
+# alternation already prevents any prefix-overlap ambiguity regardless of
+# order).
 CLOUD_CLI_PATTERN = re.compile(
-    r'^\s*(gcloud|kubectl|aws|terraform|terragrunt|helm|flux)\b',
+    r'^\s*(' + '|'.join(sorted(NATIVE_OUTPUT_FLAG_CLIS, key=len, reverse=True)) + r')\b',
     re.IGNORECASE
 )
 
