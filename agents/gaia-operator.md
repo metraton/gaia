@@ -19,6 +19,7 @@ routing:
 skills:
   - agent-protocol
   - security-tiers
+  - investigation
   - command-execution
 ---
 
