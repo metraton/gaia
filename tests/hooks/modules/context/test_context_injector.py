@@ -1,10 +1,12 @@
-"""Tests for the anchor-saving session_id wiring in build_project_context.
+"""Tests for how build_project_context surfaces context anchors.
 
-Regression coverage for the anchor-tracking version of Bug B / P-a11d14e0:
-save_anchors() must be keyed by the real host session id (event.session_id,
-threaded in via the ``session_id`` parameter), not by
-get_or_create_session_id()'s synthetic fallback -- the same id SubagentStop
-never resolves to, since it prefers the parsed event's session_id.
+build_project_context() no longer saves anchors itself: at PreToolUse:Task
+dispatch time the host has not yet assigned this dispatch its agent_id (see
+anchor_tracker.py's module docstring), so the anchors it extracts here travel
+forward -- via the telemetry snapshot this function returns -- to whichever
+caller reaches SubagentStart, where agent_id becomes available and the
+caller can finally call save_anchors() with the full (session_id,
+agent_type, agent_id) key.
 """
 
 import sys
@@ -43,21 +45,6 @@ def stub_context_payload(monkeypatch):
 
 
 @pytest.fixture
-def capture_save_anchors(monkeypatch):
-    """Replace save_anchors with a spy that records its call args."""
-    captured = {}
-
-    def _fake_save_anchors(session_id, agent_type, anchors):
-        captured["session_id"] = session_id
-        captured["agent_type"] = agent_type
-        captured["anchors"] = anchors
-        return None
-
-    monkeypatch.setattr(context_injector, "save_anchors", _fake_save_anchors)
-    return captured
-
-
-@pytest.fixture
 def stub_reminder_and_events(monkeypatch):
     """Avoid touching gaia.db from these unit tests -- neutral no-op stubs."""
     monkeypatch.setattr(
@@ -65,72 +52,43 @@ def stub_reminder_and_events(monkeypatch):
     )
 
 
-class TestBuildProjectContextAnchorSessionWiring:
-    """save_anchors must be keyed by the real event session_id, not the
-    synthetic get_or_create_session_id() fallback."""
+class TestBuildProjectContextAnchorTelemetry:
+    """Anchors extracted during context build must surface in the returned
+    telemetry snapshot -- the handoff to the caller's own save-at-SubagentStart
+    step -- and build_project_context itself must never call save_anchors."""
 
-    def test_uses_real_session_id_when_provided(
-        self, stub_context_payload, capture_save_anchors, stub_reminder_and_events,
-        monkeypatch,
+    def test_anchors_surface_in_telemetry(
+        self, stub_context_payload, stub_reminder_and_events,
     ):
-        """The real host session id (as SubagentStop would resolve it via
-        event.session_id) must reach save_anchors verbatim."""
-        monkeypatch.setattr(
-            context_injector, "get_or_create_session_id",
-            lambda: "synthetic-should-not-be-used",
-        )
-
-        real_session_id = "01830964-78fe-45f5-a059-3f13be3c0ec5"
-        context_injector.build_project_context(
-            {"subagent_type": "platform-architect", "prompt": "investigate terraform"},
-            ["platform-architect"],
-            session_id=real_session_id,
-        )
-
-        assert capture_save_anchors.get("session_id") == real_session_id, (
-            "build_project_context must thread the caller's real session_id "
-            "into save_anchors instead of deriving its own synthetic id -- "
-            "this is the exact key SubagentStop's load_anchors(event.session_id, "
-            "agent_type) must match."
-        )
-        assert capture_save_anchors.get("agent_type") == "platform-architect"
-        assert "qxo-monorepo/terraform" in capture_save_anchors.get("anchors", set())
-
-    def test_falls_back_to_synthetic_when_session_id_omitted(
-        self, stub_context_payload, capture_save_anchors, stub_reminder_and_events,
-        monkeypatch,
-    ):
-        """Backward compatibility: a caller that does not pass session_id
-        (e.g. a legacy or test caller) still gets a saved anchor file, keyed
-        by the synthetic fallback -- degraded, not broken."""
-        monkeypatch.setattr(
-            context_injector, "get_or_create_session_id",
-            lambda: "synthetic-fallback-id",
-        )
-
-        context_injector.build_project_context(
+        _context_text, telemetry = context_injector.build_project_context(
             {"subagent_type": "platform-architect", "prompt": "investigate terraform"},
             ["platform-architect"],
         )
 
-        assert capture_save_anchors.get("session_id") == "synthetic-fallback-id"
+        assert "qxo-monorepo/terraform" in telemetry.get("anchors", []), (
+            "build_project_context must carry extracted anchors forward in "
+            "its telemetry snapshot so the caller can save them once "
+            "agent_id is known (at SubagentStart), instead of saving them "
+            "itself here where agent_id does not yet exist."
+        )
 
-    def test_empty_session_id_string_falls_back_to_synthetic(
-        self, stub_context_payload, capture_save_anchors, stub_reminder_and_events,
-        monkeypatch,
+    def test_does_not_call_save_anchors_itself(
+        self, stub_context_payload, stub_reminder_and_events, monkeypatch,
     ):
-        """An explicitly empty session_id (a caller that resolved no real id)
-        must not be saved as the literal empty string -- fall back the same
-        way an omitted argument would."""
-        monkeypatch.setattr(
-            context_injector, "get_or_create_session_id",
-            lambda: "synthetic-fallback-id",
+        """build_project_context must not import/call save_anchors directly
+        -- that call now lives at SubagentStart, the only place agent_id is
+        available. A regression here would resurrect the two-part key."""
+        assert not hasattr(context_injector, "save_anchors"), (
+            "context_injector must not import save_anchors: saving anchors "
+            "here (before agent_id exists) is exactly the bug this rekey fixes."
         )
 
-        context_injector.build_project_context(
-            {"subagent_type": "platform-architect", "prompt": "investigate terraform"},
+    def test_no_context_payload_yields_no_anchors(self, monkeypatch):
+        """A non-project agent (context build skipped) yields no telemetry
+        and therefore no anchors -- nothing to carry forward."""
+        context_text, telemetry = context_injector.build_project_context(
+            {"subagent_type": "not-a-project-agent", "prompt": "irrelevant"},
             ["platform-architect"],
-            session_id="",
         )
-
-        assert capture_save_anchors.get("session_id") == "synthetic-fallback-id"
+        assert context_text is None
+        assert telemetry == {}

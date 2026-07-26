@@ -14,8 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..core.paths import get_plugin_data_dir
-from ..session.session_manager import get_or_create_session_id
-from .anchor_tracker import extract_anchors, save_anchors
+from .anchor_tracker import extract_anchors
 from .contracts_loader import build_context_update_reminder
 
 logger = logging.getLogger(__name__)
@@ -295,7 +294,6 @@ def build_project_context(
     parameters: dict,
     project_agents: list,
     hooks_dir: Path = None,
-    session_id: str = "",
 ) -> tuple:
     """
     Build project context string for a project agent without mutating parameters.
@@ -308,16 +306,14 @@ def build_project_context(
         project_agents: List of valid project agent names.
         hooks_dir: Path to the hooks directory (for fallback paths).
             Defaults to Path(__file__).parent.parent.parent if None.
-        session_id: The real host session id (event.session_id from the
-            PreToolUse payload). Anchors are saved under this id so
-            SubagentStop's read side -- which resolves the same
-            event.session_id -- can find them. When omitted, falls back to
-            get_or_create_session_id(), which returns a synthetic id that
-            will not match the real session id read at SubagentStop time
-            (the anchor-tracking version of Bug B / P-a11d14e0).
 
     Returns:
         (context_string, telemetry_snapshot) or (None, {}) if no context to inject.
+        telemetry_snapshot carries an "anchors" list (context anchors extracted
+        for hit-rate tracking) when any were found. This function does NOT
+        persist them: at PreToolUse:Task dispatch time the host has not yet
+        assigned the subagent its agent_id, so the caller must save them once
+        it reaches SubagentStart, where agent_id becomes available.
     """
     if hooks_dir is None:
         hooks_dir = Path(__file__).parent.parent.parent
@@ -356,15 +352,13 @@ def build_project_context(
             logger.error("build_context_payload failed: %s", exc, exc_info=True)
             return None, {}
 
-        # Extract and save context anchors for hit tracking
+        # Extract context anchors for hit tracking. Saving happens later, at
+        # SubagentStart, once the host has assigned this dispatch its agent_id
+        # (see build_project_context's docstring) -- stashed into the
+        # telemetry snapshot below for the caller to carry forward.
+        anchors: set = set()
         try:
             anchors = extract_anchors(context_payload)
-            if anchors:
-                effective_session_id = session_id or get_or_create_session_id()
-                save_anchors(effective_session_id, subagent_type, anchors)
-                logger.debug(
-                    "Saved %d context anchors for %s", len(anchors), subagent_type,
-                )
         except Exception as exc:
             logger.debug("Anchor extraction failed (non-fatal): %s", exc)
 
@@ -503,6 +497,8 @@ def build_project_context(
 
         # Build telemetry snapshot
         telemetry = build_context_telemetry_snapshot(context_payload)
+        if anchors:
+            telemetry["anchors"] = sorted(anchors)
 
         sections_count = len(context_payload.get("project_knowledge", {}))
 

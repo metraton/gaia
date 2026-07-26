@@ -5,10 +5,19 @@ Extracts "anchors" (paths, names, IDs) from injected project context and checks
 whether the agent's early tool calls reference them. This measures whether agents
 use injected context as search anchors versus discovering on their own.
 
+Anchor files are keyed by (session_id, agent_type, agent_id) -- the host-assigned
+per-dispatch subagent instance id, NOT just (session_id, agent_type). Two
+subagents of the SAME type dispatched in parallel within the SAME session share
+session_id and agent_type, so a two-part key collides and one dispatch's
+measurement silently overwrites the other's. agent_id is only available once
+the host has spawned the subagent (SubagentStart/SubagentStop), never at the
+PreToolUse:Task dispatch that precedes it -- callers must save at SubagentStart,
+not at dispatch time.
+
 Provides:
     - extract_anchors(): Extract searchable anchors from a context payload
-    - save_anchors(): Persist anchors to a session-scoped temp file
-    - load_anchors(): Load persisted anchors for a session
+    - save_anchors(): Persist anchors to a session+agent+instance-scoped temp file
+    - load_anchors(): Load persisted anchors for a session+agent+instance
     - extract_tool_calls_from_transcript(): Parse early tool calls from JSONL transcript
     - compute_anchor_hits(): Compare tool call args against anchors
 """
@@ -88,32 +97,64 @@ def extract_anchors(context_payload: Dict[str, Any]) -> Set[str]:
     return anchors
 
 
-def save_anchors(session_id: str, agent_type: str, anchors: Set[str]) -> Optional[Path]:
-    """Persist anchors to a session+agent-scoped temp file.
+def _sanitize_key_part(value: str, default: str = "unknown") -> str:
+    """Sanitize and truncate one key component, symmetrically for save/load."""
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", value or default)[:32]
+
+
+def _anchor_file_path(session_id: str, agent_type: str, agent_id: str) -> Optional[Path]:
+    """Build the anchor file path for (session_id, agent_type, agent_id).
+
+    Returns None when agent_id is missing: the host-assigned per-dispatch
+    instance id is the discriminator this key exists for, and a file saved or
+    looked up without it would either collide across parallel same-type
+    dispatches (the bug this key fixes) or never be found by a symmetric
+    caller. Both save and load route through this one builder so the
+    sanitization and truncation can never drift between the two sides.
+    """
+    if not agent_id:
+        return None
+    safe_session = _sanitize_key_part(session_id)
+    safe_agent = _sanitize_key_part(agent_type)
+    safe_agent_id = _sanitize_key_part(agent_id, default="")
+    if not safe_agent_id:
+        return None
+    return _anchors_dir() / f"{safe_session}-{safe_agent}-{safe_agent_id}.json"
+
+
+def save_anchors(
+    session_id: str, agent_type: str, agent_id: str, anchors: Set[str],
+) -> Optional[Path]:
+    """Persist anchors to a session+agent+instance-scoped temp file.
 
     Args:
         session_id: Current session identifier.
         agent_type: Agent name (e.g. "platform-architect").
+        agent_id: Host-assigned per-dispatch subagent instance id. Available
+            at SubagentStart/SubagentStop, never at the PreToolUse:Task
+            dispatch that precedes them -- callers must save here, not there.
         anchors: Set of anchor strings to save.
 
     Returns:
-        Path to the saved file, or None on failure.
+        Path to the saved file, or None on failure or a missing agent_id.
     """
     if not anchors:
         return None
 
+    anchor_file = _anchor_file_path(session_id, agent_type, agent_id)
+    if anchor_file is None:
+        logger.debug(
+            "Skipping anchor save for %s/%s: no agent_id available",
+            session_id, agent_type,
+        )
+        return None
+
     try:
-        anchor_dir = _anchors_dir()
-        anchor_dir.mkdir(parents=True, exist_ok=True)
-
-        safe_session = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id or "unknown")[:32]
-        safe_agent = re.sub(r"[^a-zA-Z0-9_-]", "_", agent_type or "unknown")[:32]
-        anchor_file = anchor_dir / f"{safe_session}-{safe_agent}.json"
-
+        anchor_file.parent.mkdir(parents=True, exist_ok=True)
         anchor_file.write_text(json.dumps(sorted(anchors)))
         logger.debug(
-            "Saved %d anchors for %s/%s -> %s",
-            len(anchors), session_id, agent_type, anchor_file,
+            "Saved %d anchors for %s/%s/%s -> %s",
+            len(anchors), session_id, agent_type, agent_id, anchor_file,
         )
         return anchor_file
     except Exception as e:
@@ -121,22 +162,24 @@ def save_anchors(session_id: str, agent_type: str, anchors: Set[str]) -> Optiona
         return None
 
 
-def load_anchors(session_id: str, agent_type: str) -> Set[str]:
-    """Load persisted anchors for a session+agent.
+def load_anchors(session_id: str, agent_type: str, agent_id: str) -> Set[str]:
+    """Load persisted anchors for a session+agent+instance.
 
     Args:
         session_id: Current session identifier.
         agent_type: Agent name.
+        agent_id: Host-assigned per-dispatch subagent instance id -- the SAME
+            value SubagentStop receives, the same one SubagentStart used
+            to save. A missing agent_id degrades to an empty set (never a
+            crash, never a fabricated match) so the caller's hit-rate
+            computation stays NULL rather than reporting a false 0.0.
 
     Returns:
         Set of anchor strings, or empty set if not found.
     """
     try:
-        safe_session = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id or "unknown")[:32]
-        safe_agent = re.sub(r"[^a-zA-Z0-9_-]", "_", agent_type or "unknown")[:32]
-        anchor_file = _anchors_dir() / f"{safe_session}-{safe_agent}.json"
-
-        if not anchor_file.exists():
+        anchor_file = _anchor_file_path(session_id, agent_type, agent_id)
+        if anchor_file is None or not anchor_file.exists():
             return set()
 
         data = json.loads(anchor_file.read_text())
@@ -299,18 +342,21 @@ def compute_anchor_hits(
     }
 
 
-def cleanup_anchors(session_id: str, agent_type: str) -> None:
-    """Remove the anchor temp file after use.
+def cleanup_anchors(session_id: str, agent_type: str, agent_id: str) -> None:
+    """Remove the anchor temp file for one (session, agent_type, agent_id)
+    after use.
+
+    A missing agent_id is a no-op: nothing could have been saved under an
+    incomplete key, so there is nothing to remove.
 
     Args:
         session_id: Current session identifier.
         agent_type: Agent name.
+        agent_id: Host-assigned per-dispatch subagent instance id.
     """
     try:
-        safe_session = re.sub(r"[^a-zA-Z0-9_-]", "_", session_id or "unknown")[:32]
-        safe_agent = re.sub(r"[^a-zA-Z0-9_-]", "_", agent_type or "unknown")[:32]
-        anchor_file = _anchors_dir() / f"{safe_session}-{safe_agent}.json"
-        if anchor_file.exists():
+        anchor_file = _anchor_file_path(session_id, agent_type, agent_id)
+        if anchor_file is not None and anchor_file.exists():
             anchor_file.unlink()
             logger.debug("Cleaned up anchor file: %s", anchor_file)
     except Exception as e:

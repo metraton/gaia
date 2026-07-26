@@ -136,28 +136,29 @@ class TestExtractAnchors:
 
 
 class TestAnchorPersistence:
-    """Tests for save/load/cleanup anchor files."""
+    """Tests for save/load/cleanup anchor files, keyed by
+    (session_id, agent_type, agent_id)."""
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
         anchors = {"qxo-monorepo/terraform", "oci-pos-dev-cluster", "us-east4"}
-        save_anchors("session-123", "platform-architect", anchors)
-        loaded = load_anchors("session-123", "platform-architect")
+        save_anchors("session-123", "platform-architect", "a111111", anchors)
+        loaded = load_anchors("session-123", "platform-architect", "a111111")
         assert loaded == anchors
 
     def test_load_nonexistent_returns_empty(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
-        assert load_anchors("no-session", "no-agent") == set()
+        assert load_anchors("no-session", "no-agent", "a000000") == set()
 
     def test_save_empty_anchors_returns_none(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
-        result = save_anchors("session-1", "agent-1", set())
+        result = save_anchors("session-1", "agent-1", "a222222", set())
         assert result is None
 
     def test_cleanup_removes_file(self, tmp_path, monkeypatch):
@@ -165,19 +166,89 @@ class TestAnchorPersistence:
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
         anchors = {"some-anchor"}
-        save_anchors("session-x", "agent-y", anchors)
-        assert load_anchors("session-x", "agent-y") == anchors
-        cleanup_anchors("session-x", "agent-y")
-        assert load_anchors("session-x", "agent-y") == set()
+        save_anchors("session-x", "agent-y", "a333333", anchors)
+        assert load_anchors("session-x", "agent-y", "a333333") == anchors
+        cleanup_anchors("session-x", "agent-y", "a333333")
+        assert load_anchors("session-x", "agent-y", "a333333") == set()
 
     def test_special_chars_in_session_id(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
         anchors = {"test-anchor"}
-        save_anchors("session/with:special@chars", "agent.name", anchors)
-        loaded = load_anchors("session/with:special@chars", "agent.name")
+        save_anchors("session/with:special@chars", "agent.name", "a444444", anchors)
+        loaded = load_anchors("session/with:special@chars", "agent.name", "a444444")
         assert loaded == anchors
+
+    def test_missing_agent_id_degrades_to_no_save(self, tmp_path, monkeypatch):
+        """No agent_id -> save is skipped entirely (never a crash, never a
+        write under a fabricated key that could collide later)."""
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        result = save_anchors("session-1", "agent-1", "", {"some-anchor"})
+        assert result is None
+        assert list(tmp_path.glob("*.json")) == []
+
+    def test_missing_agent_id_degrades_to_empty_load(self, tmp_path, monkeypatch):
+        """No agent_id on the read side -> empty set, never a crash and never
+        a fabricated match against another dispatch's file."""
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        save_anchors("session-1", "agent-1", "a555555", {"some-anchor"})
+        assert load_anchors("session-1", "agent-1", "") == set()
+
+
+class TestConcurrentDispatchDoesNotCollide:
+    """The bug this rekey fixes: two subagents of the SAME type dispatched in
+    parallel within the SAME session must not clobber each other's anchor
+    file. Two distinct agent_id discriminators must produce two distinct
+    files, and each load must recover its own -- never the sibling's."""
+
+    def test_two_parallel_dispatches_produce_distinct_files_and_loads(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        session_id = "793cce12-7c4c-46c2-bcc3-985a3cbb0040"
+        agent_type = "gaia-operator"
+        anchors_a = {"qxo-monorepo/terraform", "oci-pos-dev-cluster"}
+        anchors_b = {"balance/src", "metraton-github-io"}
+
+        path_a = save_anchors(session_id, agent_type, "adbbbfda49c413ce1", anchors_a)
+        path_b = save_anchors(session_id, agent_type, "ae8eec07b31dca6bb", anchors_b)
+
+        assert path_a is not None and path_b is not None
+        assert path_a != path_b, (
+            "Same session + same agent_type must not collapse onto one file "
+            "once agent_id differs -- this is the exact collision the "
+            "two-part key produced."
+        )
+
+        loaded_a = load_anchors(session_id, agent_type, "adbbbfda49c413ce1")
+        loaded_b = load_anchors(session_id, agent_type, "ae8eec07b31dca6bb")
+
+        assert loaded_a == anchors_a, "Each dispatch must recover its OWN anchors"
+        assert loaded_b == anchors_b, "Each dispatch must recover its OWN anchors"
+        assert loaded_a != loaded_b
+
+    def test_cleanup_of_one_dispatch_does_not_remove_the_others(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
+        )
+        session_id = "sess-parallel"
+        agent_type = "gaia-operator"
+        save_anchors(session_id, agent_type, "aaaaaaa", {"anchor-a"})
+        save_anchors(session_id, agent_type, "bbbbbbb", {"anchor-b"})
+
+        cleanup_anchors(session_id, agent_type, "aaaaaaa")
+
+        assert load_anchors(session_id, agent_type, "aaaaaaa") == set()
+        assert load_anchors(session_id, agent_type, "bbbbbbb") == {"anchor-b"}
 
 
 # ============================================================================
@@ -460,13 +531,14 @@ class TestSaveLoadCompareFlow:
         assert "qxo-monorepo/terraform" in anchors
         assert "oci-pos-dev-cluster" in anchors
 
-        # 3. Save with a specific session_id (simulating injection time)
+        # 3. Save with a specific session_id + agent_id (simulating SubagentStart)
         session_id = "session-143025-a1b2c3d4"
         agent_type = "platform-architect"
-        save_anchors(session_id, agent_type, anchors)
+        agent_id = "a1b2c3d4e"
+        save_anchors(session_id, agent_type, agent_id, anchors)
 
-        # 4. Load with the SAME session_id (simulating subagent_stop time)
-        loaded = load_anchors(session_id, agent_type)
+        # 4. Load with the SAME session_id + agent_id (simulating subagent_stop time)
+        loaded = load_anchors(session_id, agent_type, agent_id)
         assert loaded == anchors, "Loaded anchors must match saved anchors"
 
         # 5. Build tool calls that reference some anchors
@@ -491,10 +563,10 @@ class TestSaveLoadCompareFlow:
             "modules.context.anchor_tracker._anchors_dir", lambda: tmp_path,
         )
         anchors = {"qxo-monorepo/terraform", "oci-pos-dev-cluster"}
-        save_anchors("session-A", "platform-architect", anchors)
+        save_anchors("session-A", "platform-architect", "a9999999", anchors)
 
         # Load with a different session_id -- simulates the original bug
-        loaded = load_anchors("session-B", "platform-architect")
+        loaded = load_anchors("session-B", "platform-architect", "a9999999")
         assert loaded == set(), "Mismatched session_id must return empty anchors"
 
         # Compute hits with empty anchors -> no data

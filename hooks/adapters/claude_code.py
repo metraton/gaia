@@ -1341,9 +1341,15 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.context.context_injector import build_project_context
         from modules.session.session_event_injector import build_session_events
 
-        context_text, _telemetry = build_project_context(
-            parameters, project_agents, hooks_dir, session_id=session_id,
+        context_text, telemetry = build_project_context(
+            parameters, project_agents, hooks_dir,
         )
+        # Context anchors (for hit-rate tracking) are computed here, where the
+        # context_payload exists, but can only be SAVED once the host assigns
+        # this dispatch its agent_id -- which happens at SubagentStart, not
+        # here. Carried forward through the same cache bridge as the context
+        # text itself (see _cache_context_for_subagent below).
+        anchors = telemetry.get("anchors") if telemetry else None
         events_text = build_session_events(parameters, project_agents)
 
         # Standard task validation (runs against ORIGINAL prompt -- no workaround needed)
@@ -1397,7 +1403,9 @@ class ClaudeCodeAdapter(HookAdapter):
         if additional:
             effective_session_id = session_id or "unknown"
             agent_type = result.agent_name or "unknown"
-            self._cache_context_for_subagent(effective_session_id, agent_type, additional)
+            self._cache_context_for_subagent(
+                effective_session_id, agent_type, additional, anchors=anchors,
+            )
             logger.info(
                 "Cached context for SubagentStart: agent=%s, session=%s",
                 agent_type, effective_session_id,
@@ -2495,7 +2503,15 @@ class ClaudeCodeAdapter(HookAdapter):
                     load_anchors,
                 )
                 transcript_path = task_info.get("agent_transcript_path", "")
-                anchors = load_anchors(session_id, agent_type)
+                # task_info_builder.py defaults agent_id to the literal string
+                # "unknown" when the host omits it -- treat that placeholder
+                # as absent here too, or two dispatches that both lack a real
+                # agent_id would collide on the same fake "unknown" key,
+                # reintroducing the exact bug this rekey fixes.
+                dispatch_agent_id = task_info.get("agent_id", "")
+                if dispatch_agent_id == "unknown":
+                    dispatch_agent_id = ""
+                anchors = load_anchors(session_id, agent_type, dispatch_agent_id)
                 if anchors and transcript_path:
                     tool_calls = extract_tool_calls_from_transcript(transcript_path)
                     # Only report a rate when there were trackable tool calls to
@@ -2518,7 +2534,7 @@ class ClaudeCodeAdapter(HookAdapter):
                             "for %s (anchors=%d) -- leaving anchor_hits unmeasured",
                             agent_type, len(anchors),
                         )
-                    cleanup_anchors(session_id, agent_type)
+                    cleanup_anchors(session_id, agent_type, dispatch_agent_id)
             except Exception as exc:
                 logger.debug("Anchor hit tracking failed (non-fatal): %s", exc)
 
@@ -3161,8 +3177,15 @@ class ClaudeCodeAdapter(HookAdapter):
 
     def _cache_context_for_subagent(
         self, session_id: str, agent_type: str, context: str,
+        anchors: Optional[List[str]] = None,
     ) -> Path:
         """Write built context to a cache file for SubagentStart consumption.
+
+        ``anchors`` (context anchors for hit-rate tracking, when any were
+        extracted) rides alongside the context text: PreToolUse:Task computes
+        them but cannot save them (no agent_id yet), so they travel through
+        this SAME cache to SubagentStart, where adapt_subagent_start saves
+        them once the host-assigned agent_id is available.
 
         Returns the path to the cache file.
         """
@@ -3173,6 +3196,7 @@ class ClaudeCodeAdapter(HookAdapter):
             "context": context,
             "agent_type": agent_type,
             "session_id": session_id,
+            "anchors": anchors or [],
             "created_at": time.time(),
         }
         cache_file.write_text(json.dumps(payload))
@@ -3401,6 +3425,24 @@ class ClaudeCodeAdapter(HookAdapter):
                 cached.get("agent_type", "unknown"),
                 session_id,
             )
+            # Save context anchors now: this is the first point in the
+            # dispatch lifecycle where the host has assigned agent_id (see
+            # anchor_tracker.py's module docstring). PreToolUse:Task computed
+            # the anchors and carried them here via the cache (see
+            # _cache_context_for_subagent); a missing agent_id degrades to a
+            # skipped save, never a crash.
+            cached_anchors = cached.get("anchors") or []
+            if cached_anchors:
+                try:
+                    from modules.context.anchor_tracker import save_anchors
+                    save_anchors(
+                        session_id,
+                        cached.get("agent_type", "unknown"),
+                        raw.get("agent_id", ""),
+                        set(cached_anchors),
+                    )
+                except Exception as exc:
+                    logger.debug("Anchor save at SubagentStart failed (non-fatal): %s", exc)
             return ContextResult(
                 context_injected=True,
                 additional_context=cached["context"],
@@ -3428,8 +3470,8 @@ class ClaudeCodeAdapter(HookAdapter):
                         "prompt": task_description or f"resume {agent_type}",
                     }
 
-                    context_text, _telemetry = build_project_context(
-                        parameters, project_agents, hooks_dir, session_id=session_id,
+                    context_text, resume_telemetry = build_project_context(
+                        parameters, project_agents, hooks_dir,
                     )
                     events_text = build_session_events(parameters, project_agents)
                     additional = "\n".join(filter(None, [context_text, events_text]))
@@ -3441,6 +3483,23 @@ class ClaudeCodeAdapter(HookAdapter):
                             agent_type, session_id,
                         )
                         resume_parts.append(additional)
+
+                        # Already inside SubagentStart -- agent_id (when the
+                        # host provides one on a resume) is available directly
+                        # from raw, no cache bridge needed here.
+                        resume_anchors = (resume_telemetry or {}).get("anchors") or []
+                        if resume_anchors:
+                            try:
+                                from modules.context.anchor_tracker import save_anchors
+                                save_anchors(
+                                    session_id, agent_type,
+                                    raw.get("agent_id", ""), set(resume_anchors),
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "Anchor save at SubagentStart (resume) failed "
+                                    "(non-fatal): %s", exc,
+                                )
             except Exception as exc:
                 logger.warning(
                     "SubagentStart: resume context rebuild failed for "

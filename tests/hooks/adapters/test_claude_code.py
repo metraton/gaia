@@ -1052,7 +1052,8 @@ class TestAdaptSubagentStopAnchorHits:
         payload["agent_transcript_path"] = transcript_path
 
         save_anchors(
-            payload["session_id"], payload["agent_type"], {"qxo-monorepo/terraform"},
+            payload["session_id"], payload["agent_type"], payload["agent_id"],
+            {"qxo-monorepo/terraform"},
         )
 
         captured = {}
@@ -1094,11 +1095,12 @@ class TestAdaptSubagentStopAnchorHits:
         ])
         payload["agent_transcript_path"] = transcript_path
 
-        # Saved keyed by the SAME session_id the event carries -- this is
-        # exactly what the fixed build_project_context(..., session_id=...)
-        # now does at PreToolUse time.
+        # Saved keyed by the SAME (session_id, agent_type, agent_id) the event
+        # carries -- this is exactly what the fixed save-at-SubagentStart
+        # path now does once the host assigns agent_id.
         save_anchors(
-            payload["session_id"], payload["agent_type"], {"qxo-monorepo/terraform"},
+            payload["session_id"], payload["agent_type"], payload["agent_id"],
+            {"qxo-monorepo/terraform"},
         )
 
         captured = {}
@@ -1142,7 +1144,8 @@ class TestAdaptSubagentStopAnchorHits:
         payload["agent_transcript_path"] = transcript_path
 
         save_anchors(
-            payload["session_id"], payload["agent_type"], {"qxo-monorepo/terraform"},
+            payload["session_id"], payload["agent_type"], payload["agent_id"],
+            {"qxo-monorepo/terraform"},
         )
 
         captured = {}
