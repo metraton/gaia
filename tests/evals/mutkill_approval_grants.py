@@ -22,8 +22,14 @@ a reimplementation -- it reuses cosmic-ray's own machinery:
 It does NOT run `cosmic-ray exec` (T3). All work is local: a process pool of
 workers, each operating in its own isolated clone of hooks/ + tests/ so that
 concurrent on-disk mutation of the target module never collides. Cloning and
-cleanup are done in-process via shutil (not shell verbs), so the harness itself
-triggers no T3 approval.
+cleanup are done in-process via shutil, not shell verbs -- but this does NOT
+exempt the harness from T3: `shutil.copytree` is itself a listed FILE_MUTATION
+sink (verb `shutil-copytree`) in inline_ast_analyzer.py's blocklist, so
+invoking this script is classified via AST analysis and requires a one-time
+user approval before it runs at all. Because the clone/cleanup calls happen
+in-process rather than as separate shell commands, that single invocation-level
+approval covers the whole run -- there is no per-worker or per-mutant approval,
+only the one gate at script start.
 
 OUTPUT
 ------

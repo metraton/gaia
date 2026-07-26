@@ -1,0 +1,96 @@
+# Dedicated mutation config for the SEC-* golden security-decision corpus.
+#
+# PURPOSE -- this config answers ONE question the other 8 mutation-*.toml
+# files in this directory cannot: do the 18 SEC-* cases in
+# catalogs/security_decisions.yaml (test_security_golden.py) actually kill
+# mutants in the security-core modules, or do they let mutants survive?
+# grep across all 8 existing configs shows none of them lists
+# test_security_golden.py in test-command -- the golden catalog exercises the
+# real PreToolUse pipeline via HookLogReplayBackend (a faithful oracle,
+# hardened by decision_grader, commit 2ac6219) but until this config existed,
+# mutation testing never ran that pipeline. This closes that gap without
+# touching the other configs.
+#
+# WHY A SEPARATE CONFIG, NOT AN ADDITION TO THE OTHER 8:
+#   Each SEC-* case shells out a real subprocess to hooks/pre_tool_use.py
+#   (test_security_golden.py's own docstring: "the runner's MUST NOT import
+#   from hooks/ contract holds"). Measured standalone: 6 tests / 18 replayed
+#   cases run in ~8.2s wall (see the file's own test run), against ~1-2s per
+#   mutant for the existing per-module unit-test commands. The other 8
+#   configs are budgeted at an inventoried ~5011 mutants total / ~95 min cap
+#   (~1.1s/mutant average). Appending an ~8s subprocess-replay suite to every
+#   one of those configs' test-command would multiply their per-mutant cost
+#   roughly 4-8x, since -x pytest re-runs the WHOLE test-command on every
+#   mutant, not just the file that changed -- turning a ~95 min budget into
+#   several hours. That cost is not worth paying on every mutant, most of
+#   which the golden corpus was never designed to reach.
+#
+#   So: the 8 existing configs stay exactly as they are (they measure the
+#   unit-test suites) and this config is the deliberately separate, higher-
+#   cost instrument for the one question that matters for the golden corpus:
+#   its OWN mutation-kill effectiveness. It is not part of the standard
+#   ~95 min battery and is run on demand, not by default.
+#
+# SCOPE -- mirrors mutation-security-core.toml: the same four security-core
+# modules the golden catalog's replayed cases actually traverse inside
+# pre_tool_use.py (tier classification, mutative-verb detection, blocked-
+# command denial, the approval/nonce store). Same module-path and
+# excluded-modules as mutation-security-core.toml, so this config's mutant
+# population is directly comparable to that config's -- the only variable
+# that changes is the test-command (unit tests vs. golden-catalog replay).
+#
+# ANTI-STALENESS RULE (AC-10):
+#   A cosmic-ray session (.sqlite) records the test-command results from the
+#   moment `cosmic-ray init`/`exec` ran. If security_decisions.yaml, any of
+#   the four core modules, or this toml changes WITHOUT re-running
+#   `cosmic-ray init`, `cr-rate` will report a STALE kill_rate.
+#
+#   RE-INIT IS OBLIGATORY after any of:
+#     - editing catalogs/security_decisions.yaml or test_security_golden.py
+#     - editing any of the four core modules (see excluded-modules below)
+#     - changing test-command, module-path, or excluded-modules in this toml
+#
+#   The `mutkill_approval_grants.py` harness does NOT suffer from this
+#   staleness: it re-runs `mutate_and_test` against the current tests on
+#   every invocation. Use it (not `cr-rate`) for an up-to-date kill_rate.
+#   Detect stale sessions with --check-stale:
+#     uv run python tests/evals/mutkill_approval_grants.py \
+#       --session security-golden.sqlite \
+#       --toml tests/evals/mutation-security-golden.toml --check-stale
+#
+# Equivalent mutants are NOT pre-seeded here: this config has not yet had a
+# survivor triage pass, so no equivalents-security-golden.skip exists yet.
+# Add one, following the pattern of equivalents-approval-grants.skip etc.,
+# once a real run produces survivors worth arguing about.
+#
+# Init:
+#   cd gaia && uv run cosmic-ray init tests/evals/mutation-security-golden.toml security-golden.sqlite
+# Exec (T3 -- requires approval):
+#   uv run cosmic-ray exec tests/evals/mutation-security-golden.toml security-golden.sqlite
+# Score:
+#   uv run cr-rate security-golden.sqlite
+
+[cosmic-ray]
+module-path = "hooks/modules/security"
+timeout = 60.0
+excluded-modules = [
+    "**/__init__.py",
+    "**/approval_cleanup.py",
+    "**/approval_constants.py",
+    "**/approval_messages.py",
+    "**/approval_scopes.py",
+    "**/blocked_message_formatter.py",
+    "**/capability_classes.py",
+    "**/command_semantics.py",
+    "**/composition_rules.py",
+    "**/flag_classifiers.py",
+    "**/gaia_db_write_guard.py",
+    "**/inline_ast_analyzer.py",
+    "**/network_hosts.py",
+    "**/prompt_validator.py",
+    "**/shell_unwrapper.py",
+]
+test-command = "python3 -m pytest tests/evals/test_security_golden.py -q -x --no-header"
+
+[cosmic-ray.distributor]
+name = "local"
