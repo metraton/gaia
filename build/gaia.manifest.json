@@ -27,6 +27,7 @@
       ],
       "PostToolUse": [
         {"matcher": "Bash"},
+        {"matcher": "Task"},
         {"matcher": "AskUserQuestion"}
       ],
       "SubagentStop": [{"matcher": "*"}],

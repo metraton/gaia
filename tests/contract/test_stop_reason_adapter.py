@@ -184,7 +184,20 @@ class TestAdapterOwnsTheStopReasonMapping:
 
         assert classify_stop_reason("end_turn") == STOP_REASON_VIOLATION
 
-    @pytest.mark.parametrize("stop_reason", [None, "", "tool_use", "some_new_reason"])
+    def test_tool_use_maps_to_truncation(self):
+        """The harness cut: the turn ended requesting a tool and never resumed,
+        so it was cut rather than finished -- same class as the budget cut.
+
+        Scope: on the observed cut path SubagentStop never fires, so this
+        classification is only reached when the hook DOES run with that stop
+        reason. Orchestrator-side detection covers the rest (see
+        modules.agents.task_result_observer).
+        """
+        from adapters.claude_code import STOP_REASON_TRUNCATION, classify_stop_reason
+
+        assert classify_stop_reason("tool_use") == STOP_REASON_TRUNCATION
+
+    @pytest.mark.parametrize("stop_reason", [None, "", "some_new_reason"])
     def test_unrecognized_or_absent_reason_maps_to_unknown(self, stop_reason):
         from adapters.claude_code import STOP_REASON_UNKNOWN, classify_stop_reason
 

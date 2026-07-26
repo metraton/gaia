@@ -166,6 +166,14 @@ STOP_REASON_UNKNOWN = "unknown"
 
 _STOP_REASON_MAX_TOKENS = "max_tokens"
 _STOP_REASON_END_TURN = "end_turn"
+_STOP_REASON_TOOL_USE = "tool_use"
+
+# Reasons that mean the turn was CUT rather than finished: the model was still
+# mid-work when it stopped producing. "max_tokens" is the budget cut;
+# "tool_use" is the harness cut -- the last assistant message requested a tool,
+# the tool result landed, and no further message ever came, so the turn never
+# reached end_turn and its contract was never emitted.
+_TRUNCATION_STOP_REASONS = frozenset({_STOP_REASON_MAX_TOKENS, _STOP_REASON_TOOL_USE})
 
 
 def classify_stop_reason(stop_reason: Optional[str]) -> str:
@@ -175,20 +183,36 @@ def classify_stop_reason(stop_reason: Optional[str]) -> str:
         the token budget, not chosen by the agent. A broken/incomplete
         contract under this reason is a salvage candidate (T11), not a hard
         violation.
+    ``"tool_use"`` -> ``STOP_REASON_TRUNCATION``: the harness cut. The last
+        assistant message ended requesting a tool, its result landed, and the
+        model never produced another message -- so the turn never reached
+        ``end_turn`` and never emitted its contract. Like the budget cut, this
+        is not the agent's choice and not a violation.
+
+        SCOPE, measured: on the observed cut path this classification changes
+        nothing, because the hook does not run at all -- ``SubagentStop`` never
+        fires, so no code here is reached (no ``harness_event``, no
+        ``episodes`` row). What this mapping fixes is the case where the hook
+        DOES run and the payload carries ``stop_reason="tool_use"``: a resumed
+        or replayed turn, a host that delivers the stop reason on a later
+        lifecycle event, or any future host that fires SubagentStop on a cut.
+        For the cut the harness swallows entirely, the detection lives on the
+        orchestrator side instead -- see
+        ``modules.agents.task_result_observer``.
     ``"end_turn"`` -> ``STOP_REASON_VIOLATION``: the agent had room to finish
         and stopped anyway. A broken/incomplete contract under this reason is
         a genuine violation.
-    Anything else (``None``, empty, or an unrecognized reason such as
-        ``"tool_use"``) -> ``STOP_REASON_UNKNOWN``: the conservative default.
-        A caller that gates on this classification should treat "unknown"
-        the same as a violation (fail closed) rather than assume a
-        salvage-worthy truncation it cannot confirm.
+    Anything else (``None``, empty, or an unrecognized reason)
+        -> ``STOP_REASON_UNKNOWN``: the conservative default. A caller that
+        gates on this classification should treat "unknown" the same as a
+        violation (fail closed) rather than assume a salvage-worthy
+        truncation it cannot confirm.
 
     This function is the SOLE owner of the max_tokens/end_turn mapping
     (decision #5). ``gaia.contract.validator`` and ``gaia.contract.crosscheck``
     never import it and never branch on stop_reason themselves.
     """
-    if stop_reason == _STOP_REASON_MAX_TOKENS:
+    if stop_reason in _TRUNCATION_STOP_REASONS:
         return STOP_REASON_TRUNCATION
     if stop_reason == _STOP_REASON_END_TURN:
         return STOP_REASON_VIOLATION
@@ -1831,6 +1855,17 @@ class ClaudeCodeAdapter(HookAdapter):
             self._handle_ask_user_question_result(hook_data)
             return HookResponse(output={}, exit_code=0)
 
+        # ------------------------------------------------------------- #
+        # Task: the ONLY place a harness-truncated subagent is observable.
+        # A cut never reaches SubagentStop, so the subagent side writes
+        # nothing at all; the parent, however, still receives a Task result
+        # reporting success but carrying no contract fence. Record it here or
+        # it is lost. Observation only -- never blocks the orchestrator.
+        # ------------------------------------------------------------- #
+        if tool_name == "Task":
+            self._observe_task_result(hook_data)
+            return HookResponse(output={}, exit_code=0)
+
         try:
             pre_state = get_hook_state(
                 session_id=post_session_id, tool_use_id=tool_use_id
@@ -1923,6 +1958,25 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.error("Error in adapt_post_tool_use: %s", e, exc_info=True)
 
         return HookResponse(output={}, exit_code=0)
+
+    @staticmethod
+    def _observe_task_result(hook_data) -> None:
+        """Record a harness-cut subagent turn seen from the Task result.
+
+        Best-effort and strictly non-blocking: detection or persistence
+        failing must never disturb the orchestrator's own turn.
+        """
+        try:
+            from modules.agents.task_result_observer import observe_task_result
+
+            cut = observe_task_result(hook_data)
+            if cut is not None:
+                logger.warning(
+                    "Subagent cut detected: agent=%s reason=%s metrics=%s",
+                    cut.agent, cut.reason, cut.metrics,
+                )
+        except Exception as exc:
+            logger.debug("Task result observation failed (non-fatal): %s", exc)
 
     def _record_t3_outcome_event(
         self,
