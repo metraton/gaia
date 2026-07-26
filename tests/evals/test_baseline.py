@@ -23,9 +23,11 @@ from pathlib import Path
 import pytest
 
 from tests.evals.reporter import (
+    BaselineRegression,
     DriftEntry,
     DriftReport,
     compare_to_baseline,
+    enforce_no_regression,
     load_baseline,
     write_baseline_candidate,
 )
@@ -88,18 +90,31 @@ class TestLoadBaseline:
         assert data["cases"] == {}
         assert data["version"] == 1
 
-    def test_seeded_baseline_file_parses(self):
-        # Read-only check against the committed baseline.
+    def test_seeded_baseline_records_the_expected_passing_score(self):
+        """The committed baseline holds each case's EXPECTED score, not zero.
+
+        It used to be zero-filled for all ten case ids, which quietly
+        neutered the whole mechanism: every real run scored 1.0, so every
+        case reported drift on every run, and a report that is always
+        alarming is a report nobody reads. A baseline is only a baseline if
+        it records the value the case is supposed to hold -- then, and only
+        then, does a departure from it mean something.
+
+        Case-id membership is asserted against the catalog by
+        ``test_evals.py`` (both directions); here we only check the shape and
+        the values.
+        """
         seeded = (
             Path(__file__).resolve().parent / "results" / "baseline.json"
         )
         assert seeded.exists()
         data = load_baseline(seeded)
-        # Plan T6: seed with zero-filled entries for the 10 case ids.
-        expected_ids = {f"S{n}" for n in range(1, 11)}
-        assert set(data["cases"].keys()) == expected_ids
+        assert data["cases"], "baseline carries no cases"
         for case_id, entry in data["cases"].items():
-            assert entry["score"] == 0.0, case_id
+            assert entry["score"] == 1.0, (
+                f"{case_id}: baseline score should be the score the case is "
+                f"expected to hold (1.0 = passing), got {entry['score']}"
+            )
             assert entry["scoring"] in {"semantic", "binary"}, case_id
 
 
@@ -274,15 +289,16 @@ class TestCompareToBaselineInputShapes:
         assert len(report.entries) == 1
 
     def test_uses_default_baseline_path_when_none(self, tmp_path: Path):
-        # When ``baseline_path`` is None we point at the real results dir.
-        # The seeded baseline has all zeros -> a 0.9 semantic score drifts.
+        # When ``baseline_path`` is None we point at the real results dir,
+        # whose S1 entry is the passing score 1.0. A run that scored 0.0 is
+        # a full-drop regression against it.
         new = _run_payload(
-            [{"id": "S1", "score": 0.9, "scoring": "semantic"}]
+            [{"id": "S1", "score": 0.0, "scoring": "semantic"}]
         )
         report = compare_to_baseline(new)
         assert report.missing_baseline is False
-        # 0.9 - 0.0 = 0.9 > 0.10 -> drift
         assert report.has_drift is True
+        assert report.has_regression is True
 
     def test_scoring_inferred_from_baseline_when_absent(self, tmp_path: Path):
         baseline = _baseline_payload(
@@ -294,6 +310,161 @@ class TestCompareToBaselineInputShapes:
         report = compare_to_baseline(new, baseline_path=path)
         assert report.entries[0].scoring == "binary"
         assert report.entries[0].drift is True
+
+
+# --- direction: regression vs improvement ----------------------------------
+
+
+class TestDriftDirection:
+    """Drift is direction-agnostic; regression is the downward half.
+
+    The distinction is what lets the gate below fail on bad news without
+    firing on good news -- a gate that goes red when an agent IMPROVES is a
+    gate that gets switched off, and a switched-off gate protects nothing.
+    """
+
+    def test_downward_semantic_drift_is_a_regression(self, tmp_path: Path):
+        path = _write_baseline(tmp_path, _baseline_payload(
+            {"S1": {"score": 1.0, "scoring": "semantic"}}
+        ))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S1", "score": 0.5, "scoring": "semantic"}]),
+            baseline_path=path,
+        )
+        assert report.has_drift is True
+        assert report.has_regression is True
+        assert [e.id for e in report.regressions()] == ["S1"]
+        assert "REGRESSION" in report.entries[0].reason
+
+    def test_upward_semantic_drift_is_not_a_regression(self, tmp_path: Path):
+        path = _write_baseline(tmp_path, _baseline_payload(
+            {"S1": {"score": 0.5, "scoring": "semantic"}}
+        ))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S1", "score": 1.0, "scoring": "semantic"}]),
+            baseline_path=path,
+        )
+        assert report.has_drift is True
+        assert report.has_regression is False
+        assert "improvement" in report.entries[0].reason
+
+    def test_binary_flip_down_is_a_regression(self, tmp_path: Path):
+        path = _write_baseline(tmp_path, _baseline_payload(
+            {"S6": {"score": 1.0, "scoring": "binary"}}
+        ))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S6", "score": 0.0, "scoring": "binary"}]),
+            baseline_path=path,
+        )
+        assert report.has_regression is True
+
+    def test_binary_flip_up_is_not_a_regression(self, tmp_path: Path):
+        path = _write_baseline(tmp_path, _baseline_payload(
+            {"S6": {"score": 0.0, "scoring": "binary"}}
+        ))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S6", "score": 1.0, "scoring": "binary"}]),
+            baseline_path=path,
+        )
+        assert report.has_drift is True
+        assert report.has_regression is False
+
+    def test_drop_within_threshold_is_not_a_regression(self, tmp_path: Path):
+        """The threshold still governs: a sub-threshold dip is not drift, so
+        it is not a regression either. Regression is a SUBSET of drift, never
+        an independent trigger."""
+        path = _write_baseline(tmp_path, _baseline_payload(
+            {"S1": {"score": 1.0, "scoring": "semantic"}}
+        ))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S1", "score": 0.9, "scoring": "semantic"}]),
+            baseline_path=path,
+        )
+        assert report.has_drift is False
+        assert report.has_regression is False
+
+
+# --- enforce_no_regression: the gate that actually fails --------------------
+
+
+class TestEnforceNoRegression:
+    """The half with teeth.
+
+    ``compare_to_baseline`` classified drift for three separate rot events
+    (a closed brief, a retired path, a renamed field) and returned zero every
+    time, because nothing ever raised on what it found. These tests pin the
+    raise.
+    """
+
+    def test_raises_on_regression(self, tmp_path: Path):
+        path = _write_baseline(tmp_path, _baseline_payload(
+            {"S6": {"score": 1.0, "scoring": "binary"}}
+        ))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S6", "score": 0.0, "scoring": "binary"}]),
+            baseline_path=path,
+        )
+        with pytest.raises(BaselineRegression) as excinfo:
+            enforce_no_regression(report)
+        # The message must be actionable without opening the run JSON.
+        assert "S6" in str(excinfo.value)
+        assert "baseline=1.0" in str(excinfo.value)
+        assert "new=0.0" in str(excinfo.value)
+
+    def test_regression_is_an_assertion_error(self, tmp_path: Path):
+        """pytest renders an AssertionError as a failure, not an internal
+        error -- a regression is a failed expectation, not a crash."""
+        assert issubclass(BaselineRegression, AssertionError)
+
+    def test_silent_on_improvement(self, tmp_path: Path):
+        path = _write_baseline(tmp_path, _baseline_payload(
+            {"S1": {"score": 0.0, "scoring": "semantic"}}
+        ))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S1", "score": 1.0, "scoring": "semantic"}]),
+            baseline_path=path,
+        )
+        assert report.has_drift is True
+        enforce_no_regression(report)  # must not raise
+
+    def test_silent_on_new_case(self, tmp_path: Path):
+        """A case with no baseline entry cannot regress -- there is nothing to
+        regress from. ``test_evals.test_every_case_has_a_baseline_entry`` is
+        what stops a case from living permanently in this blind spot."""
+        path = _write_baseline(tmp_path, _baseline_payload({}))
+        report = compare_to_baseline(
+            _run_payload([{"id": "S99", "score": 0.0, "scoring": "binary"}]),
+            baseline_path=path,
+        )
+        enforce_no_regression(report)  # must not raise
+
+    def test_silent_on_missing_baseline(self, tmp_path: Path):
+        report = compare_to_baseline(
+            _run_payload([{"id": "S1", "score": 0.0, "scoring": "semantic"}]),
+            baseline_path=tmp_path / "absent.json",
+        )
+        assert report.missing_baseline is True
+        enforce_no_regression(report)  # must not raise
+
+    def test_reports_every_offender_not_just_the_first(self, tmp_path: Path):
+        path = _write_baseline(tmp_path, _baseline_payload({
+            "S1": {"score": 1.0, "scoring": "semantic"},
+            "S4": {"score": 1.0, "scoring": "binary"},
+            "S6": {"score": 1.0, "scoring": "binary"},
+        }))
+        report = compare_to_baseline(
+            _run_payload([
+                {"id": "S1", "score": 0.0, "scoring": "semantic"},
+                {"id": "S4", "score": 1.0, "scoring": "binary"},
+                {"id": "S6", "score": 0.0, "scoring": "binary"},
+            ]),
+            baseline_path=path,
+        )
+        with pytest.raises(BaselineRegression) as excinfo:
+            enforce_no_regression(report)
+        message = str(excinfo.value)
+        assert "S1" in message and "S6" in message
+        assert "2 eval case(s)" in message
 
 
 # --- write_baseline_candidate ----------------------------------------------

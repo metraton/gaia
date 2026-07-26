@@ -19,6 +19,11 @@ import yaml
 # validate without importing the runner.
 VALID_BACKENDS = ("subprocess", "routing_sim", "hook_log_replay")
 
+# Allowed values for CaseModel.permission_mode -- the Claude Code
+# ``--permission-mode`` vocabulary, passed through verbatim by
+# ``runner.SubprocessBackend``. ``None`` means "leave the backend default".
+VALID_PERMISSION_MODES = ("default", "acceptEdits", "bypassPermissions", "plan")
+
 # Allowed scoring modes.
 VALID_SCORING = ("binary", "semantic")
 
@@ -71,6 +76,16 @@ class CaseModel:
         grader: List of grader names applied to the response. Multiple
             graders may be combined for a single case.
         backend: Dispatch backend -- see :data:`VALID_BACKENDS`.
+        live_only: When true the case runs ONLY under ``-m llm``. Set it on
+            any case whose signal requires a real agent: the alternative is a
+            canned response the test itself writes, which grades the fixture
+            rather than the agent and can never fail.
+        permission_mode: ``--permission-mode`` for the live dispatch --
+            see :data:`VALID_PERMISSION_MODES`. ``None`` leaves
+            ``SubprocessBackend``'s own default (``acceptEdits``). Cases that
+            measure how an agent reacts to being REFUSED must pin
+            ``default``, since ``acceptEdits`` is precisely the mode that
+            stops the refusal from happening.
         scoring: Either ``"binary"`` (pass/fail) or ``"semantic"``
             (0..1 score with ``threshold``).
         threshold: Minimum score for a semantic case to pass. Defaults
@@ -94,6 +109,8 @@ class CaseModel:
     grader: list[str]
     backend: str
     scoring: str
+    live_only: bool = False
+    permission_mode: Optional[str] = None
     threshold: float = 0.8
     expect_present: list[str] = field(default_factory=list)
     expect_absent: list[str] = field(default_factory=list)
@@ -159,6 +176,20 @@ def _case_from_raw(raw: Any, path: Path, index: int) -> CaseModel:
             f"valid set: {list(VALID_SCORING)}"
         )
 
+    live_only = raw.get("live_only", False)
+    if not isinstance(live_only, bool):
+        raise CatalogError(
+            f"{path}: case {raw['id']} 'live_only' must be a bool, "
+            f"got {type(live_only).__name__}"
+        )
+
+    permission_mode = raw.get("permission_mode")
+    if permission_mode is not None and permission_mode not in VALID_PERMISSION_MODES:
+        raise CatalogError(
+            f"{path}: case {raw['id']} has invalid permission_mode "
+            f"{permission_mode!r}; valid set: {list(VALID_PERMISSION_MODES)}"
+        )
+
     expected_decision = raw.get("expected_decision")
     if expected_decision is not None and expected_decision not in VALID_DECISIONS:
         raise CatalogError(
@@ -198,6 +229,8 @@ def _case_from_raw(raw: Any, path: Path, index: int) -> CaseModel:
         grader=list(grader),
         backend=backend,
         scoring=scoring,
+        live_only=live_only,
+        permission_mode=permission_mode,
         threshold=float(threshold),
         expect_present=_list_field("expect_present"),
         expect_absent=_list_field("expect_absent"),

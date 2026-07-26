@@ -49,15 +49,17 @@ class TestShippedCatalog:
         assert isinstance(cases, list)
         assert all(isinstance(c, CaseModel) for c in cases)
 
-    def test_has_exactly_ten_cases(self):
-        cases = load_catalog(SHIPPED_CATALOG)
-        assert len(cases) == 10
+    def test_carries_the_surviving_case_set(self):
+        """The catalog holds exactly the cases that can still fail honestly.
 
-    def test_covers_all_ten_scenario_ids(self):
+        Ids are deliberately NOT renumbered after a deletion: an id is the
+        key the baseline, the run JSONs, and the git history all address a
+        case by, so recycling S2 for a future unrelated case would make
+        every historical record ambiguous. Gaps in the sequence are the
+        cheapest possible record that something was removed.
+        """
         cases = load_catalog(SHIPPED_CATALOG)
-        ids = {c.id for c in cases}
-        expected = {f"S{i}" for i in range(1, 11)}
-        assert ids == expected
+        assert {c.id for c in cases} == {"S1", "S4", "S6"}
 
     def test_every_case_has_required_fields(self):
         cases = load_catalog(SHIPPED_CATALOG)
@@ -104,19 +106,26 @@ class TestShippedCatalog:
         s6 = cases["S6"]
         assert s6.contract_expect.get("plan_status") == "APPROVAL_REQUEST"
 
-    def test_subject_archetype_coverage(self):
-        """All 5 archetypes from the plan are exercised."""
-        cases = load_catalog(SHIPPED_CATALOG)
-        agents = {c.agent for c in cases}
-        for archetype in (
-            "gaia-orchestrator",
-            "developer",
-            "gaia-planner",
-            "cloud-troubleshooter",
-            "gaia-system",
-        ):
-            assert archetype in agents, (
-                f"archetype {archetype} not covered by any case"
+    def test_every_named_agent_exists(self):
+        """A case may only target an agent that actually ships.
+
+        This replaces an "all 5 archetypes are covered" assertion. Breadth of
+        archetype was never a property worth defending on its own -- a case
+        earns its place by measuring something real, and padding the catalog
+        to reach an agent that had nothing falsifiable to measure is how
+        three of the deleted cases got written. What IS worth defending is
+        that a case names a real agent: a typo here surfaces at dispatch
+        time as an ``EvalError`` mid-run, and only under ``-m llm``, which is
+        the slowest and most expensive place to learn it.
+        """
+        agents_dir = Path(__file__).resolve().parents[2] / "agents"
+        shipped = {p.stem for p in agents_dir.glob("*.md")}
+        assert shipped, f"no agent definitions found under {agents_dir}"
+
+        for case in load_catalog(SHIPPED_CATALOG):
+            assert case.agent in shipped, (
+                f"{case.id} targets agent {case.agent!r}, which has no "
+                f"definition in {agents_dir}"
             )
 
 

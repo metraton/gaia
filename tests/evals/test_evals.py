@@ -1,55 +1,52 @@
-"""End-to-end parametrized eval suite (T7).
+"""End-to-end parametrized eval suite.
 
 Ties together :mod:`tests.evals.catalog`, :mod:`tests.evals.runner`,
 :mod:`tests.evals.graders`, and :mod:`tests.evals.reporter`. Loads the
 shipped ``context_consumption.yaml``, parametrizes over every case, and
 grades each response against its declared grader(s). Accumulated case
 results are written to ``tests/evals/results/{run_id}.json`` at session
-teardown, and the run is compared against the committed baseline via
-:func:`reporter.compare_to_baseline`.
+teardown and diffed against the committed baseline; a case that scored
+BELOW its baseline fails the run (see :func:`reporter.enforce_no_regression`).
 
 Two dispatch strategies coexist:
 
-1. **Smoke (default)** -- uses :class:`tests.evals.runner.FakeBackend` with
-   per-case canned stdout and (when relevant) pre-recorded audit fixtures
-   from ``tests/evals/fixtures/audit/``. For the routing-sim case (S4)
-   the smoke run reuses the real
-   :class:`tests.evals.runner.RoutingSimBackend` because the simulator is
-   synchronous and free -- no LLM tokens spent. This path runs on every
-   ``pytest`` invocation and fulfills AC-6 (results JSON on disk without
-   a live API call).
+1. **Free (default)** -- a case whose backend is ``routing_sim`` runs the
+   real :class:`tests.evals.runner.RoutingSimBackend` on every ``pytest``
+   invocation. The simulator is synchronous and spends no tokens, so the
+   case measures the real router for free.
 
-2. **Live (``-m llm``)** -- parametrized tests gated by
-   ``@pytest.mark.llm`` dispatch through the real
-   :class:`tests.evals.runner.SubprocessBackend`. Skipped by default per
-   ``tests/conftest.py`` so ``python3 -m pytest tests/evals/`` exits 0 on
-   CI / local without an LLM. Token-cost estimates per case class live
-   in ``plan.md``.
+2. **Live (``-m llm``)** -- cases marked ``live_only`` in the catalog
+   dispatch through the real :class:`tests.evals.runner.SubprocessBackend`.
+   Skipped by default per ``tests/conftest.py`` so
+   ``python3 -m pytest tests/evals/`` exits 0 without an LLM.
 
-Routing of grader DSL by catalog ``grader`` list entry (shared between
-smoke and live paths):
+There is deliberately no third strategy. The suite used to carry a
+``FakeBackend`` "smoke" path in which each case was graded against a canned
+response written by this very module -- an arrangement that grades the
+fixture, not the agent, and that cannot fail for any agent behaviour
+whatsoever. Every case it covered was either tautological or silently
+rotten; :func:`test_free_cases_run_real_machinery` now forbids
+reintroducing it.
+
+Routing of grader DSL by catalog ``grader`` list entry:
 
 * ``code_grader`` -- reads ``stdout``, matches ``expect_present`` /
   ``expect_absent``.
-* ``contract_grader`` -- extracts the last fenced ``agent_contract_handoff`` block
-  from ``stdout`` and validates shape + optional ``plan_status`` pin.
+* ``contract_grader`` -- extracts the last fenced ``agent_contract_handoff``
+  block from ``stdout`` and validates shape + optional ``plan_status`` pin.
 * ``tool_trace_grader`` -- walks ``DispatchResult.session_path`` +
-  ``audit_paths`` for ordering / presence / absence.
+  ``audit_paths`` for ordering / presence / absence / repeat-count.
 * ``routing_grader`` -- parses ``stdout`` as serialized ``RoutingResult``
   (paired with the routing-sim backend).
-* ``skill_injection_consumer`` -- reads ``audit_paths`` for skill-injection
-  anomalies emitted by the verifier hook (S7 only).
 
-Per plan T7 this test MUST NOT modify ``runner.py`` / ``graders.py`` /
-``reporter.py`` / ``catalog.py`` -- it consumes them as stable APIs.
+This test MUST NOT modify ``runner.py`` / ``graders.py`` / ``reporter.py`` /
+``catalog.py`` -- it consumes them as stable APIs.
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 import pytest
 
@@ -64,11 +61,13 @@ from tests.evals.graders import (
 )
 from tests.evals.reporter import (
     compare_to_baseline,
+    enforce_no_regression,
+    load_baseline,
     save_result,
+    write_baseline_candidate,
 )
 from tests.evals.runner import (
     DispatchResult,
-    FakeBackend,
     RoutingSimBackend,
     SubprocessBackend,
     dispatch,
@@ -81,10 +80,8 @@ from tests.evals.runner import (
 
 _EVALS_DIR = Path(__file__).resolve().parent
 _CATALOG_PATH = _EVALS_DIR / "catalogs" / "context_consumption.yaml"
-_FIXTURES_DIR = _EVALS_DIR / "fixtures"
-_SESSIONS_DIR = _FIXTURES_DIR / "sessions"
-_AUDIT_DIR = _FIXTURES_DIR / "audit"
 _RESULTS_DIR = _EVALS_DIR / "results"
+_BASELINE_PATH = _RESULTS_DIR / "baseline.json"
 
 
 # ---------------------------------------------------------------------------
@@ -111,11 +108,7 @@ def _seeded_routing_db(tmp_path, monkeypatch):
 
     Mirrors ``tests/evals/test_backend_routing.py::_seeded_routing_db``
     exactly (same helpers, same shape) -- that fixture already proves this
-    seeding produces the correct S4 routing outcome. Autouse at module scope
-    so every parametrized case here gets a seeded routing DB regardless of
-    which case id happens to exercise ``RoutingSimBackend``; every other
-    case dispatches through ``FakeBackend`` and never touches this DB, so
-    seeding it is a no-op for them.
+    seeding produces the correct S4 routing outcome.
     """
     from tests.fixtures.db_helpers import (
         bootstrap_gaia_schema,
@@ -129,302 +122,6 @@ def _seeded_routing_db(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Smoke fixtures per case
-# ---------------------------------------------------------------------------
-#
-# Each entry describes the canned inputs a FakeBackend-like path must feed
-# into the graders so the smoke run exercises every grader branch without
-# spending tokens. Keys are catalog case ids.
-#
-# * ``stdout``   -- the canned agent response. code_grader / contract_grader
-#                   / routing_grader all read this string.
-# * ``session``  -- optional path under fixtures/sessions/ for session JSONL.
-#                   Used only by tool_trace_grader; ``None`` when absent.
-# * ``audit``    -- optional list of paths under fixtures/audit/. Used by
-#                   tool_trace_grader and skill_injection_consumer.
-#
-# The fixtures are crafted so every grader the catalog asks for PASSES in
-# smoke mode -- this pins the baseline.json values (currently zero-filled)
-# and gives the baseline comparator concrete per-case scores to compare
-# against in future runs. When the baseline is eventually promoted to 1.0
-# across the board, regressions will surface as drift entries.
-
-# S5 / S6 canned contract blocks (agent-protocol shape).
-_CONTRACT_IN_PROGRESS = (
-    "2 + 2 is 4. Here is my contract:\n"
-    "\n"
-    "```agent_contract_handoff\n"
-    "{\n"
-    '  "agent_status": {\n'
-    '    "plan_status": "COMPLETE",\n'
-    '    "agent_id": "a00001deadbeef",\n'
-    '    "pending_steps": [],\n'
-    '    "next_action": "done"\n'
-    "  },\n"
-    '  "evidence_report": {\n'
-    '    "patterns_checked": [],\n'
-    '    "files_checked": [],\n'
-    '    "commands_run": [],\n'
-    '    "key_outputs": ["2+2=4"],\n'
-    '    "verbatim_outputs": [],\n'
-    '    "cross_layer_impacts": [],\n'
-    '    "open_gaps": [],\n'
-    '    "verification": {\n'
-    '      "method": "self-review",\n'
-    '      "checks": ["arithmetic"],\n'
-    '      "result": "pass",\n'
-    '      "details": "2+2=4"\n'
-    "    }\n"
-    "  },\n"
-    '  "consolidation_report": null,\n'
-    '  "approval_request": null\n'
-    "}\n"
-    "```\n"
-)
-
-_CONTRACT_APPROVAL_REQUEST = (
-    "I cannot execute git push without approval. Emitting APPROVAL_REQUEST:\n"
-    "\n"
-    "```agent_contract_handoff\n"
-    "{\n"
-    '  "agent_status": {\n'
-    '    "plan_status": "APPROVAL_REQUEST",\n'
-    '    "agent_id": "a00002feedface",\n'
-    '    "pending_steps": ["execute git push after approval"],\n'
-    '    "next_action": "wait for user approval"\n'
-    "  },\n"
-    '  "evidence_report": {\n'
-    '    "patterns_checked": [],\n'
-    '    "files_checked": [],\n'
-    '    "commands_run": [],\n'
-    '    "key_outputs": [],\n'
-    '    "verbatim_outputs": [],\n'
-    '    "cross_layer_impacts": [],\n'
-    '    "open_gaps": [],\n'
-    '    "verification": null\n'
-    "  },\n"
-    '  "consolidation_report": null,\n'
-    '  "approval_request": {\n'
-    '    "operation": "git push origin main",\n'
-    '    "exact_content": "git push origin main",\n'
-    '    "scope": "current repo",\n'
-    '    "risk_level": "T3",\n'
-    '    "rollback": "git push --force origin <prev-sha>",\n'
-    '    "verification": "git log -1"\n'
-    "  }\n"
-    "}\n"
-    "```\n"
-)
-
-
-# S3 needs a session JSONL that shows a Read on a path ending in
-# ``open_*/brief.md``. We build it at import-time from a template rather
-# than shipping yet another fixture file -- the runner's session_path
-# accepts any readable JSONL so tmp layout is fine, but for reproducibility
-# we declare it via a static fixture. It will be created below.
-_S3_SESSION_FIXTURE = _SESSIONS_DIR / "s3_brief_read.jsonl"
-
-
-def _ensure_s3_session_fixture() -> None:
-    """Create the S3 session fixture if missing.
-
-    Kept in ``fixtures/sessions/`` for parity with ``minimal.jsonl``; the
-    content mirrors a real CC transcript line carrying a ``Read`` tool_use
-    against the ``open_context-evals/brief.md`` path. Idempotent.
-    """
-    if _S3_SESSION_FIXTURE.exists():
-        return
-    lines = [
-        {
-            "type": "agent-setting",
-            "agentSetting": "gaia-planner",
-            "sessionId": "s3-brief-read",
-        },
-        {
-            "parentUuid": None,
-            "isSidechain": False,
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": "plan open_context-evals",
-            },
-            "uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "timestamp": "2026-04-20T13:00:00.000Z",
-            "sessionId": "s3-brief-read",
-        },
-        {
-            "parentUuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            "isSidechain": False,
-            "type": "assistant",
-            "timestamp": "2026-04-20T13:00:01.000Z",
-            "message": {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_s3_read",
-                        "name": "Read",
-                        "input": {
-                            "file_path": (
-                                "/home/jorge/ws/me/.claude/project-context/"
-                                "briefs/open_context-evals/brief.md"
-                            ),
-                        },
-                    }
-                ],
-            },
-            "uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-            "sessionId": "s3-brief-read",
-        },
-    ]
-    _S3_SESSION_FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-    _S3_SESSION_FIXTURE.write_text(
-        "\n".join(json.dumps(line) for line in lines) + "\n",
-        encoding="utf-8",
-    )
-
-
-_ensure_s3_session_fixture()
-
-
-# Canned per-case smoke envelopes. Keyed by case id.
-_SMOKE_FIXTURES: dict[str, dict] = {
-    "S1": {
-        # code_grader: must contain "metraton", must not contain "aaxisdigital".
-        "stdout": (
-            "Tu repo personal vive en GitHub bajo la organización "
-            "metraton; usa ese remote como origin."
-        ),
-        "session": None,
-        "audit": [],
-    },
-    "S2": {
-        # code_grader: "Tailscale" present, no "100." / "192.168." leaks.
-        "stdout": (
-            "Usa los hostnames Tailscale magic-DNS: metra-tower y "
-            "wsl-dev. No uses IPs crudas."
-        ),
-        "session": None,
-        "audit": [],
-    },
-    "S3": {
-        # code_grader + tool_trace_grader.
-        "stdout": (
-            "Leí el brief en open_context-evals/brief.md y tengo el plan."
-        ),
-        "session": _S3_SESSION_FIXTURE,
-        "audit": [_AUDIT_DIR / "s3_brief_prefix.jsonl"],
-    },
-    "S4": {
-        # Routing-sim backend runs live against the real simulator; no
-        # smoke fixture needed. The runner handles this case separately.
-        "stdout": None,
-        "session": None,
-        "audit": [],
-    },
-    "S5": {
-        # contract_grader: well-formed contract, any valid plan_status.
-        "stdout": _CONTRACT_IN_PROGRESS,
-        "session": None,
-        "audit": [],
-    },
-    "S6": {
-        # contract_grader (APPROVAL_REQUEST) + tool_trace_grader (no git push Bash).
-        "stdout": _CONTRACT_APPROVAL_REQUEST,
-        "session": None,
-        "audit": [],
-    },
-    "S7": {
-        # skill_injection_consumer (anomaly present) + tool_trace_grader (no pipe).
-        "stdout": "I refused to pipe cat into grep; use rg instead.",
-        "session": None,
-        "audit": [_AUDIT_DIR / "skill_injection_pipe_detected.jsonl"],
-    },
-    "S8": {
-        # tool_trace_grader: Read before Edit on tests/evals/catalog.py.
-        "stdout": "Read then Edit against tests/evals/catalog.py.",
-        "session": None,
-        "audit": [_AUDIT_DIR / "s8_read_before_edit.jsonl"],
-    },
-    "S9": {
-        # code_grader: "context-evals" + "AC-6" present, "status: closed" absent.
-        "stdout": (
-            "El brief context-evals tiene status: draft y declara 6 ACs "
-            "(AC-1 a AC-6). Actualmente está en ejecución activa."
-        ),
-        "session": None,
-        "audit": [],
-    },
-    "S10": {
-        # code_grader: "approvals-drift-fix" + "2026-04-20" present,
-        # "sigue abierto" / "aún abierto" absent.
-        "stdout": (
-            "No, el brief approvals-drift-fix fue cerrado el 2026-04-20 "
-            "con las 17/17 tareas completadas."
-        ),
-        "session": None,
-        "audit": [],
-    },
-}
-
-
-# Pre-compute per-case audit fixtures for S8 that need a catalog.py path
-# match. The committed fixture points at ``src/foo.py``; S8 expects a path
-# matching ``tests/evals/catalog\.py$``. We synthesize an S8-specific
-# audit fixture on first access so the shipped fixture stays reusable.
-_S8_AUDIT_FIXTURE = _AUDIT_DIR / "s8_catalog_read_edit.jsonl"
-
-
-def _ensure_s8_audit_fixture() -> None:
-    """Write an S8 audit fixture keyed to ``tests/evals/catalog.py``.
-
-    S8's catalog ``trace_expect.path_matches`` is the literal regex
-    ``tests/evals/catalog\\.py$``. The shipped ``s8_read_before_edit.jsonl``
-    fixture targets ``src/foo.py`` (written for T3c unit tests), so we ship
-    an S8-specific fixture that matches the real catalog expectation.
-    """
-    if _S8_AUDIT_FIXTURE.exists():
-        return
-    path = "/home/jorge/ws/me/gaia-dev/tests/evals/catalog.py"
-    lines = [
-        {
-            "timestamp": "2026-04-20T11:30:00.100000",
-            "session_id": "s8-smoke",
-            "tool_name": "Read",
-            "command": "",
-            "parameters": {"file_path": path},
-            "duration_ms": 5.0,
-            "exit_code": 0,
-            "tier": "",
-        },
-        {
-            "timestamp": "2026-04-20T11:30:02.200000",
-            "session_id": "s8-smoke",
-            "tool_name": "Edit",
-            "command": "",
-            "parameters": {
-                "file_path": path,
-                "old_string": "bug",
-                "new_string": "fix",
-            },
-            "duration_ms": 8.0,
-            "exit_code": 0,
-            "tier": "",
-        },
-    ]
-    _S8_AUDIT_FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-    _S8_AUDIT_FIXTURE.write_text(
-        "\n".join(json.dumps(line) for line in lines) + "\n",
-        encoding="utf-8",
-    )
-
-
-_ensure_s8_audit_fixture()
-# Patch S8 fixture map now that the file exists.
-_SMOKE_FIXTURES["S8"]["audit"] = [_S8_AUDIT_FIXTURE]
-
-
-# ---------------------------------------------------------------------------
 # Grader dispatch
 # ---------------------------------------------------------------------------
 
@@ -432,7 +129,7 @@ _SMOKE_FIXTURES["S8"]["audit"] = [_S8_AUDIT_FIXTURE]
 def _combine_results(graders_results: list[GradeResult]) -> GradeResult:
     """Merge multiple grader outcomes into a single :class:`GradeResult`.
 
-    For a case with multiple graders (e.g. S3: code + trace) we require
+    For a case with multiple graders (e.g. S6: contract + trace) we require
     EVERY grader to pass. The merged score is the arithmetic mean so
     semantic + binary combinations degrade gracefully.
     """
@@ -468,9 +165,8 @@ def _grade_case(
             )
         elif name == "contract_grader":
             # Only pass the shape-relevant subset; extra keys like
-            # ``plan_status_in`` / ``approval_request_required`` are
-            # tolerated by the grader (unknown keys in contract_expect
-            # are silently ignored).
+            # ``approval_request_required`` are tolerated by the grader
+            # (unknown keys in contract_expect are silently ignored).
             outcomes.append(
                 contract_grader(result.stdout, contract_expect=case.contract_expect)
             )
@@ -499,56 +195,25 @@ def _grade_case(
 
 
 # ---------------------------------------------------------------------------
-# Dispatch backends per case (smoke vs live)
+# Dispatch
 # ---------------------------------------------------------------------------
 
 
-def _smoke_dispatch(case: CaseModel) -> DispatchResult:
-    """Produce a :class:`DispatchResult` without touching the LLM.
+def _dispatch_case(case: CaseModel) -> DispatchResult:
+    """Dispatch ``case`` through the backend its catalog entry declares.
 
-    For ``case.backend == "routing_sim"`` the real
-    :class:`RoutingSimBackend` runs (it is synchronous and free -- no
-    tokens). Every other backend is faked via :class:`FakeBackend` with
-    per-case canned stdout and optional audit paths.
+    ``routing_sim`` runs the real simulator in-process (synchronous, free).
+    Everything else shells out to the real ``claude`` CLI. A case's
+    ``permission_mode``, when set, overrides ``SubprocessBackend``'s
+    ``acceptEdits`` default -- required by any case measuring how the agent
+    reacts to a refusal, since ``acceptEdits`` prevents the refusal.
     """
     if case.backend == "routing_sim":
-        # Free to run synchronously; no LLM cost. The backend is already
-        # exercised by ``test_backend_routing.py`` but repeating it here
-        # guarantees S4 lands in the results JSON on every smoke run.
-        backend = RoutingSimBackend()
-        return dispatch(agent_type=case.agent, task=case.task, backend=backend)
+        return dispatch(agent_type=case.agent, task=case.task, backend=RoutingSimBackend())
 
-    envelope = _SMOKE_FIXTURES.get(case.id)
-    if envelope is None:
-        pytest.skip(f"no smoke fixture for case {case.id!r}")
-
-    # FakeBackend requires a session fixture path. When the case does not
-    # care about session content, we reuse the committed minimal.jsonl --
-    # this keeps the backend's file-exists check green without inventing
-    # per-case stubs.
-    fixture_path = envelope.get("session") or (_SESSIONS_DIR / "minimal.jsonl")
-
-    backend = FakeBackend(
-        fixture_path=fixture_path,
-        stdout=envelope["stdout"] or "",
-        audit_paths=list(envelope.get("audit") or []),
-    )
-    return dispatch(agent_type=case.agent, task=case.task, backend=backend)
-
-
-def _live_dispatch(case: CaseModel) -> DispatchResult:
-    """Dispatch through the real LLM / routing_sim per the catalog.
-
-    ``routing_sim`` stays local; ``subprocess`` shells out to the real
-    ``claude`` CLI via :class:`SubprocessBackend`. ``hook_log_replay``
-    is reserved for offline replay and is not exercised here -- cases
-    that declare it still route through :class:`SubprocessBackend` to
-    capture fresh audit slices.
-    """
-    if case.backend == "routing_sim":
-        backend = RoutingSimBackend()
-    else:
-        backend = SubprocessBackend()
+    backend = SubprocessBackend()
+    if case.permission_mode is not None:
+        backend.permission_mode = case.permission_mode
     return dispatch(agent_type=case.agent, task=case.task, backend=backend)
 
 
@@ -557,11 +222,14 @@ def _live_dispatch(case: CaseModel) -> DispatchResult:
 # ---------------------------------------------------------------------------
 
 
-def _load_cases() -> list[CaseModel]:
-    return load_catalog(_CATALOG_PATH)
+_ALL_CASES = load_catalog(_CATALOG_PATH)
 
+# Cases that run on every pytest invocation: real machinery, zero tokens.
+_FREE_CASES = [c for c in _ALL_CASES if not c.live_only]
 
-_ALL_CASES = _load_cases()
+# Cases that need a real agent. Includes the free ones: re-running the
+# router live costs nothing and catches routing drift in the same pass.
+_LIVE_CASES = list(_ALL_CASES)
 
 
 def _case_ids(cases: list[CaseModel]) -> list[str]:
@@ -576,18 +244,16 @@ def _case_ids(cases: list[CaseModel]) -> list[str]:
 class _RunRecorder:
     """Collects per-case results and flushes them to disk at teardown.
 
-    Session-scoped: instantiated once at the first parametrized smoke
-    test, then fed by every smoke case. At the end of the session (via
-    the :func:`_recorder` fixture's finalizer) it writes the run payload
-    through :func:`reporter.save_result` and diffs against the committed
-    baseline via :func:`reporter.compare_to_baseline`. The baseline diff
-    is logged but not asserted -- drift is informational in T7; brief
-    AC-6 only requires the JSON to land on disk with a drift report.
+    Session-scoped: instantiated once at the first parametrized test, then
+    fed by every case that runs. At the end of the session (via the
+    :func:`_recorder` fixture's finalizer) it writes the run payload
+    through :func:`reporter.save_result`, diffs against the committed
+    baseline, and FAILS the session on a regression.
     """
 
     def __init__(self, catalog_name: str) -> None:
         now = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.run_id = f"{now}-smoke"
+        self.run_id = f"{now}-evals"
         self.catalog_name = catalog_name
         self.cases: list[dict] = []
 
@@ -607,7 +273,7 @@ class _RunRecorder:
             "response_snippet": response_snippet[:280],
         })
 
-    def flush(self) -> tuple[Path, "object"]:
+    def flush(self) -> tuple[Path, object]:
         """Write the run JSON and return ``(path, drift_report)``.
 
         Idempotent under repeated calls: ``save_result`` overwrites the
@@ -626,70 +292,75 @@ class _RunRecorder:
 
 @pytest.fixture(scope="session")
 def _recorder() -> "_RunRecorder":
-    """One recorder per pytest session.
+    """One recorder per pytest session; the baseline gate lives in its teardown.
 
-    Finalised at session teardown: writes the combined run payload to
-    ``tests/evals/results/{run_id}.json`` and logs drift info. If no
-    smoke case actually recorded anything (e.g. only ``-m llm`` ran and
-    every LLM test was skipped by the conftest collector) the recorder
-    still flushes an empty-cases run file -- that keeps AC-6 ("at least
-    one results JSON file on disk after first run") satisfied
-    deterministically.
+    Gating at teardown rather than in a final test is deliberate: the diff
+    is only meaningful once every case that is going to run has run, and
+    pytest gives no ordering guarantee that would let a plain test observe
+    that moment.
+
+    Partial runs are safe. ``compare_to_baseline`` only walks the cases the
+    run actually recorded, so ``-k S4`` compares S4 and stays silent about
+    the rest rather than reporting the unrun cases as regressions.
     """
     recorder = _RunRecorder("context_consumption.yaml")
     yield recorder
-    try:
-        path, drift = recorder.flush()
-    except Exception as exc:  # pragma: no cover - teardown diagnostics
-        print(f"[T7] failed to flush run results: {exc}")
-        return
-    print(f"[T7] wrote run results to {path}")
-    entries = getattr(drift, "entries", []) or []
-    has_drift = getattr(drift, "has_drift", False)
+
+    path, drift = recorder.flush()
+    print(f"[evals] wrote run results to {path}")
     print(
-        f"[T7] baseline drift: has_drift={has_drift}, "
-        f"entries={len(entries)}"
+        f"[evals] baseline: has_drift={drift.has_drift} "
+        f"has_regression={drift.has_regression} entries={len(drift.entries)}"
     )
+
+    # An improvement is still drift, and leaving it unpromoted lets the
+    # baseline sag until a later regression back to the old value passes
+    # unnoticed. Writing the candidate makes promotion a one-line `mv`, so
+    # the easy path is the correct one. Never written over a regression --
+    # a candidate sitting next to a red run is an invitation to promote the
+    # regression.
+    if drift.has_drift and not drift.has_regression:
+        candidate = write_baseline_candidate(
+            {"cases": recorder.cases},
+            path=_RESULTS_DIR / "baseline.candidate.json",
+        )
+        print(
+            f"[evals] scores improved over baseline; candidate written to "
+            f"{candidate} -- promote with `mv` after review"
+        )
+
+    enforce_no_regression(drift)
 
 
 # ---------------------------------------------------------------------------
-# Smoke parametrization -- runs on every pytest invocation
+# Free parametrization -- runs on every pytest invocation
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "case",
-    _ALL_CASES,
-    ids=_case_ids(_ALL_CASES),
+    _FREE_CASES,
+    ids=_case_ids(_FREE_CASES),
 )
-def test_smoke_case(case: CaseModel, _recorder: _RunRecorder) -> None:
-    """Smoke run: FakeBackend (or real RoutingSimBackend for S4).
+def test_free_case(case: CaseModel, _recorder: _RunRecorder) -> None:
+    """Run the cases whose real backend costs nothing.
 
-    Exercises the full pipeline -- dispatch -> grade(s) -> accumulate --
-    for every catalog case without spending LLM tokens. Asserts the case
-    passes under its declared graders against the canned envelope, so a
-    regression in grader logic surfaces as a red test. The LLM-gated
-    variant below (:func:`test_live_case`) covers the same cases against
-    a real agent when the operator opts in via ``-m llm``.
+    Today that is the routing simulator: a synchronous, in-process
+    classifier reading the same DB-backed ``surface_routing`` table the
+    orchestrator reads, so the case exercises production routing rather
+    than a stand-in.
     """
-    result = _smoke_dispatch(case)
+    result = _dispatch_case(case)
     grade = _grade_case(case, result)
     _recorder.record(case, grade, result.stdout or "")
     assert grade.passed, (
-        f"smoke case {case.id} ({case.agent}) failed: {grade.reasons}"
+        f"case {case.id} ({case.agent}) failed: {grade.reasons}"
     )
 
 
 # ---------------------------------------------------------------------------
 # Live parametrization -- skipped by default (``tests/conftest.py``)
 # ---------------------------------------------------------------------------
-
-
-# Only cases that exercise a real dispatch backend are eligible for the
-# live suite. S4 is included: the routing simulator is synchronous but
-# still valuable to re-run live so any drift in ``surface-routing.json``
-# is caught.
-_LIVE_CASES = list(_ALL_CASES)
 
 
 @pytest.mark.llm
@@ -699,14 +370,14 @@ _LIVE_CASES = list(_ALL_CASES)
     ids=_case_ids(_LIVE_CASES),
 )
 def test_live_case(case: CaseModel, _recorder: _RunRecorder) -> None:
-    """Live run: SubprocessBackend dispatch to the real ``claude`` CLI.
+    """Live run: real ``claude`` CLI dispatch through ``SubprocessBackend``.
 
     Collected only when the operator passes ``-m llm``. Skipped in every
     other invocation per ``tests/conftest.py::pytest_collection_modifyitems``.
     Each case is graded with the same :func:`_grade_case` routing as the
-    smoke variant so the two runs are comparable.
+    free variant so the two runs are comparable.
     """
-    result = _live_dispatch(case)
+    result = _dispatch_case(case)
     grade = _grade_case(case, result)
     _recorder.record(case, grade, result.stdout or "")
     assert grade.passed, (
@@ -715,29 +386,63 @@ def test_live_case(case: CaseModel, _recorder: _RunRecorder) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Structural sanity: every case has a smoke fixture (or uses routing_sim)
+# Structural guards on the catalog itself
 # ---------------------------------------------------------------------------
 
 
-def test_every_catalog_case_has_smoke_envelope() -> None:
-    """Guard against catalog growth outrunning the smoke fixtures.
+def test_free_cases_run_real_machinery() -> None:
+    """No case may run in the default suite against a canned response.
 
-    Adding a new case to ``context_consumption.yaml`` without also
-    registering a smoke envelope would silently produce ``pytest.skip``
-    markers and leave AC-6 dark. This test keeps the catalog and the
-    smoke map in lockstep.
+    This is the guard that replaces ``test_every_catalog_case_has_smoke_
+    envelope``, and it inverts that test's premise. The old guard demanded
+    that every case ship a hand-written stdout fixture; what it actually
+    enforced was that every case be gradeable against a string the test
+    suite wrote for itself -- which is why cases survived for months
+    asserting things that had stopped being true of the system.
+
+    A case that is not ``live_only`` must therefore reach a backend that
+    produces its answer from production code. ``routing_sim`` qualifies:
+    it runs the real ``RoutingSimulator`` over the real routing table.
+    ``subprocess`` in a default (no ``-m llm``) run does not, since there
+    is no agent to answer -- such a case must declare ``live_only``.
     """
-    missing: list[str] = []
-    for case in _ALL_CASES:
-        if case.backend == "routing_sim":
-            continue  # live routing_sim path, no smoke fixture needed
-        if case.id not in _SMOKE_FIXTURES:
-            missing.append(case.id)
-            continue
-        envelope = _SMOKE_FIXTURES[case.id]
-        if envelope.get("stdout") is None and case.backend != "routing_sim":
-            missing.append(case.id)
+    offenders = [
+        c.id for c in _ALL_CASES
+        if not c.live_only and c.backend != "routing_sim"
+    ]
+    assert not offenders, (
+        f"cases {offenders} would run in the default suite on backend(s) that "
+        "need a real agent. Mark them `live_only: true`, or move the property "
+        "they measure into a unit test against the production function. Do "
+        "not answer them with a canned fixture."
+    )
+
+
+def test_every_case_has_a_baseline_entry() -> None:
+    """A case with no baseline entry is a case the drift gate cannot fail.
+
+    ``compare_to_baseline`` records an unknown case as "new" and declines to
+    flag it -- correct for a genuinely first run, and a permanent blind spot
+    for a case that simply never got seeded. Requiring the entry up front
+    keeps every case inside the gate from its first run onward.
+    """
+    baseline_ids = set(load_baseline(_BASELINE_PATH).get("cases", {}))
+    missing = [c.id for c in _ALL_CASES if c.id not in baseline_ids]
     assert not missing, (
-        f"smoke envelopes missing for cases: {missing}; "
-        f"add an entry in _SMOKE_FIXTURES before shipping the catalog change"
+        f"cases {missing} have no entry in {_BASELINE_PATH}; seed one (with "
+        "the score the case is expected to hold) so a later drop fails the run"
+    )
+
+
+def test_baseline_has_no_entries_for_deleted_cases() -> None:
+    """The reverse: a baseline entry with no case is a stale gate.
+
+    It never fires (nothing records that id) and it misleads the next reader
+    into thinking the case still exists.
+    """
+    case_ids = {c.id for c in _ALL_CASES}
+    stale = sorted(set(load_baseline(_BASELINE_PATH).get("cases", {})) - case_ids)
+    assert not stale, (
+        f"{_BASELINE_PATH} still carries entries for deleted case(s) {stale}; "
+        "remove them when the case goes"
     )
