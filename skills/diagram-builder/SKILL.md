@@ -22,7 +22,7 @@ idea
      └─ page        one act/view (also the ROOT section: its columns + sections)
          └─ section     a grid zone; nests other sections freely (a grid of grids)
              └─ component   a leaf that carries: a card, a divider, a lane label
-   filters (document- or page-level) light a relation across components
+   filters (page-level only) light a relation across components
 ```
 
 ## The governing definition (the anchor)
