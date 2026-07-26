@@ -15,7 +15,8 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
-import { widthAtTier, isBandAtTier, isBandClass, place } from './check-layout.mjs';
+import { widthAtTier, isBandAtTier, isBandClass, place,
+  textBudget, capacityFor, MONO_ADVANCE_EM } from './check-layout.mjs';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -254,6 +255,88 @@ function shapeCorpus() {
     if (widthAtTier(span, cols, tracks) !== divergentWidth(span, cols, tracks)) { caught = true; break; }
   report('AGREE/teeth: the comparator reports a seeded divergence', caught,
     'a deliberately wrong width function was accepted as equal');
+}
+
+// ── 6/7. TEXT — the character budget AGREES IN DIRECTION with the render's N ─
+// The budget is the one APPROXIMATE check in the static gate, so the only thing
+// that earns it its line is DIRECTION: a title the render gate would fail must be
+// flagged HERE FIRST, and a title that fits must NOT be flagged at all. An
+// advisory that points the other way is worse than no advisory, because the first
+// person to see it contradict the verdict learns to ignore it.
+//
+// Both halves are asserted over ONE cell: N's own predicate is called with the
+// SAME available width and the SAME monospace demand the static budget computes
+// with, so this is an agreement between the two DECISIONS and not a re-run of one
+// of them. N is pure over `m.wordFit`, which is why no browser is needed — the
+// same reason the placement cases above can lift the engine's own functions.
+const N_CELL_PX = 270.5;   // a span-1 cell of the seed's 4-track, 1246px band grid
+const N_FONT_PX = 17;      // .box .t at the two widest tiers
+
+// A measurement stub carrying only what the invariant table reads. Every other
+// invariant is free to come back red on it — only N's verdict is read.
+function nVerdict(word) {
+  const { runInvariants } = require(path.join(ROOT, 'tools', 'validate-layout.cjs'));
+  const m = { clipped: 0, overflowX: 0, topZones: [], leftPad: 0, rightPad: 0,
+    collisions: [], balloons: [], stackOverflow: [], leafGrids: [], spanRatios: [],
+    rootRowMax: 2, halfSlots: [], heights: [], rowTracks: [],
+    census: { diffs: [], authored: {}, rendered: {}, nActs: 0, nAuthoredPages: 0, pageId: 'x' },
+    wordFit: [{ zone: 'z', k: 'x', word, vertical: false,
+      wordW: Math.round(word.length * N_FONT_PX * MONO_ADVANCE_EM),
+      availW: Math.round(N_CELL_PX) }] };
+  const ctx = { form: 'dashboard', tier: 'ultra', w: 2560, WIDE: true, PASSES: 3,
+    deterministic: true, sigs: [], uniqueSigs: [], robustOk: true, robustDetail: '',
+    captureOk: true, captureDetail: '' };
+  const n = runInvariants(m, ctx).find(c => c.id === 'N');
+  return n ? n.ok : null;
+}
+const staticFlags = word => textBudget({ id: 'x', title: word },
+  { availPx: N_CELL_PX, fontPx: N_FONT_PX, half: false, cell: 'cell' })
+  .findings.some(f => f.kind === 'token');
+
+// 6 — a token that FAILS N is flagged by the budget, end to end and by predicate.
+{
+  const LONG = 'Orquestacionmultiregionconsolidada';   // 34 chars, one token
+  const cap = capacityFor(N_CELL_PX, N_FONT_PX);
+  const budgetFlags = staticFlags(LONG), nOk = nVerdict(LONG);
+
+  // …and the real gate says so on a real deck, naming the numbers. The line must
+  // be an [INFO]: the budget is an advisory, so it reports without failing. (The
+  // fabricated deck still exits non-zero on the CENSUS — data.generated.js is
+  // deliberately not copied — so the exit code cannot carry this assertion; that
+  // the budget never fails the gate is case 4's intact-seed ALL PASS.)
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'item-b').title = LONG;
+  saveOverview(p, doc);
+  const { out } = runNode([CHECK, dir]);
+  const line = out.split('\n').find(l => l.includes(`title token "${LONG}"`)) || '';
+  const gateSpeaks = line.includes('[INFO]') && line.includes(`is ${LONG.length} char(s)`)
+    && line.includes('the cell holds') && line.includes('track(s) in a');
+  rmDeck(dir);
+
+  report('TEXT/agree: a token N fails is flagged (advisory) by the static budget',
+    budgetFlags === true && nOk === false && gateSpeaks,
+    `budget=${budgetFlags} N.ok=${nOk} gate=${gateSpeaks} (${LONG.length} chars vs cap ${cap} @${N_CELL_PX}px) line=${line.trim().slice(0, 120)}`);
+}
+
+// 7 — TEETH IN THE OTHER DIRECTION: a token that fits must be flagged by NEITHER.
+// Without this the budget could "agree" with N by flagging everything.
+{
+  const SHORT = 'Orden';                               // 5 chars, comfortably inside
+  const cap = capacityFor(N_CELL_PX, N_FONT_PX);
+  const budgetFlags = staticFlags(SHORT), nOk = nVerdict(SHORT);
+
+  const dir = mkDeck();
+  const { p, doc } = loadOverview(dir);
+  findNode(doc, 'item-b').title = SHORT;
+  saveOverview(p, doc);
+  const { out } = runNode([CHECK, dir]);
+  const quiet = !out.includes(`title token "${SHORT}"`);
+  rmDeck(dir);
+
+  report('TEXT/teeth: a title that fits is flagged by neither gate',
+    budgetFlags === false && nOk === true && quiet,
+    `budget=${budgetFlags} N.ok=${nOk} quiet=${quiet} (${SHORT.length} chars vs cap ${cap} @${N_CELL_PX}px)`);
 }
 
 console.log(`\n${failures === 0 ? 'OK' : 'FAILED'} — ${failures} guard(s) did not detect their defect.`);
