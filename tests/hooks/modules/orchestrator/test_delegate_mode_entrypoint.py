@@ -5,11 +5,18 @@ the actual ``hooks/pre_tool_use.py`` script as a subprocess with the payload
 shape Claude Code sends, so the decision is read off the hook's real stdout and
 exit code rather than asserted against the function that produces it.
 
-Two properties are pinned here, and the second is the one that must never
-regress: a ``--agent <specialist>`` main thread is NOT stopped by the delegate
-gate, and the orchestrator still is -- under BOTH spellings its main thread can
-arrive in (no ``agent_type`` at all, and ``agent_type`` naming the orchestrator,
-which is what Gaia's own ``agent:`` setting produces).
+Four roles are pinned here. A dispatched subagent (``agent_id`` present) is
+never stopped by the delegate gate. The orchestrator's main thread is denied
+under BOTH spellings it can arrive in (no ``agent_type`` at all, and
+``agent_type`` naming the orchestrator, which is what Gaia's own ``agent:``
+setting produces) -- losing that distinction would open Bash to the
+orchestrator. And a ``--agent <specialist>`` main thread (NAMED_SPECIALIST)
+is ALSO denied: this mode runs outside the real dispatch path and never
+receives the per-agent context a genuine orchestrator dispatch builds, so
+granting it tools would leave it acting with less information than a real
+dispatch provides. It must be denied under its OWN reason, never the
+orchestrator's "delegate to a specialist" message -- that would tell a
+specialist to delegate to itself.
 """
 
 import json
@@ -24,6 +31,7 @@ WORKTREE = Path(__file__).resolve().parents[4]
 PRE_TOOL_USE = WORKTREE / "hooks" / "pre_tool_use.py"
 
 DELEGATION_MARKER = "DELEGATION REQUIRED"
+NOT_STANDALONE_MARKER = "NOT RUNNABLE STANDALONE"
 
 
 def _run_pre_tool_use(payload: dict, tmp_path: Path):
@@ -93,23 +101,29 @@ def test_orchestrator_still_cannot_run_bash(identity, tmp_path):
     )
 
 
-def test_named_specialist_main_thread_can_run_bash(tmp_path):
+def test_named_specialist_main_thread_denied_with_its_own_reason(tmp_path):
     """`claude --agent developer`: main thread, no agent_id, not the orchestrator.
 
-    This is the production defect: the delegate gate read the absent agent_id as
-    orchestrator-ness and denied Bash to the specialist the user named.
+    Inverted on purpose from the prior assertion (this mode is out of Gaia's
+    design -- agents are used through the orchestrator, never invoked
+    standalone): Bash is denied, but the denial must be the truthful,
+    specialist-specific reason, never the orchestrator's "delegate to a
+    specialist" message -- which would be absurd for a specialist to receive.
     """
     code, stdout, stderr = _run_pre_tool_use(
         _bash_payload(agent_type="developer"), tmp_path
     )
 
-    assert DELEGATION_MARKER not in stdout + stderr, (
-        f"a named specialist must not hit the delegate gate; exit={code} "
+    assert _decision(stdout) == "deny", (
+        f"a named specialist's main thread must be denied Bash; got exit={code} "
         f"stdout={stdout!r} stderr={stderr!r}"
     )
-    assert _decision(stdout) != "deny", (
-        f"a T0 command from a named specialist must not be denied; "
-        f"stdout={stdout!r}"
+    assert NOT_STANDALONE_MARKER in stdout, (
+        f"the denial must be the named-specialist reason; stdout={stdout!r}"
+    )
+    assert DELEGATION_MARKER not in stdout, (
+        "a named specialist must never receive the orchestrator's "
+        "'delegate to a specialist' message"
     )
 
 

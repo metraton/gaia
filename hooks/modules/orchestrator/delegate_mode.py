@@ -1,12 +1,13 @@
 """Orchestrator delegate mode enforcement.
 
-When GAIA is installed, delegate mode is always active. The orchestrator
-(main session) is restricted to dispatch tools plus Read. Mutative and
-bulk-investigation tools (Bash, Edit, Write, Glob, Grep, etc.) are blocked
-so the orchestrator must delegate to specialist agents; Read (read-only,
-T0) is allowed so the orchestrator can triangulate evidence with the user
--- validate a document or an image against a specialist's contract.
-Delegate-first remains an identity instruction, not a hook lock.
+When GAIA is installed, delegate mode is always active. Both non-dispatched
+roles -- the orchestrator's own main thread AND a main thread started with
+``--agent <specialist>`` -- are restricted to dispatch tools plus Read.
+Mutative and bulk-investigation tools (Bash, Edit, Write, Glob, Grep, etc.)
+are blocked; Read (read-only, T0) is allowed so either can triangulate
+evidence with the user -- validate a document or an image against a
+specialist's contract. Delegate-first remains an identity instruction, not a
+hook lock.
 
 Detection is a taxonomy over the TWO identity fields the harness provides,
 not the presence of one of them. Claude Code documents them verbatim:
@@ -23,13 +24,29 @@ not the presence of one of them. Claude Code documents them verbatim:
 
 So ``agent_id`` alone answers "am I a dispatched subagent?" -- it does NOT
 answer "am I the orchestrator?". A main thread started with ``--agent
-developer`` has no ``agent_id`` and is not the orchestrator; reading the
-absence of the id as orchestrator-ness denied Bash to the very specialist the
-user named. ``classify_session_role`` crosses both fields instead, and the
-orchestrator is identified by NAME (``ORCHESTRATOR_AGENT_TYPES``) because
-Gaia's own installer selects it through the settings ``agent`` field, which
-the harness treats exactly like ``--agent``: the orchestrator's own main
-thread therefore also arrives carrying an ``agent_type``.
+developer`` has no ``agent_id`` and is not the orchestrator; the old binary
+proxy (``not agent_id``) read that absence as orchestrator-ness.
+``classify_session_role`` crosses both fields into three roles instead, and
+the orchestrator is identified by NAME (``ORCHESTRATOR_AGENT_TYPES``)
+because Gaia's own installer selects it through the settings ``agent``
+field, which the harness treats exactly like ``--agent``: the
+orchestrator's own main thread therefore also arrives carrying an
+``agent_type``.
+
+Distinguishing the three roles is a true statement about the harness's shape
+and stays. What to DO with a NAMED_SPECIALIST main thread is a separate
+decision: this module denies it, same as the orchestrator, because a
+``--agent <specialist>`` session runs OUTSIDE the real dispatch path. The
+per-agent, filtered project-context injection is built only when the
+orchestrator actually dispatches (`modules.context.context_injector`) --
+a `--agent` session never enters that path, so a named specialist granted
+tools here would run WITH tools but WITHOUT the context a genuine dispatch
+provides, which is worse than being blocked. Gaia's own design treats this
+mode as out of scope: agents are tested and used through the orchestrator,
+never invoked standalone. So NAMED_SPECIALIST is denied like ORCHESTRATOR,
+but under its OWN reason -- it must never receive the orchestrator's
+"delegate to a specialist" message, which would tell a specialist to
+delegate to itself.
 """
 
 from __future__ import annotations
@@ -95,7 +112,11 @@ ORCHESTRATOR_AGENT_TYPES = frozenset({
 class SessionRole(str, Enum):
     """Who is calling, over the harness's (agent_id, agent_type) pair.
 
-    ORCHESTRATOR is the only role delegate mode restricts.
+    SUBAGENT is the only role delegate mode leaves unrestricted. ORCHESTRATOR
+    and NAMED_SPECIALIST are both gated -- a --agent main thread runs outside
+    the real dispatch path and never receives the per-agent context a
+    genuine dispatch builds -- but each is denied under its own, distinct
+    reason (see ``check_delegate_mode``).
     """
 
     SUBAGENT = "subagent"                    # agent_id present: a dispatch
@@ -161,12 +182,15 @@ def check_delegate_mode(
 
     Returns:
         DelegateModeResult with blocked=True and a reason if the call
-        should be denied, or blocked=False if it should proceed.
+        should be denied, or blocked=False if it should proceed. A
+        SUBAGENT call always proceeds; ORCHESTRATOR and NAMED_SPECIALIST
+        are gated by the same ``ORCHESTRATOR_ALLOWED_TOOLS`` set but each
+        carries its own, truthful denial reason.
     """
     role = classify_session_role(hook_payload)
-    if role is not SessionRole.ORCHESTRATOR:
-        # Dispatched subagents and named-specialist main threads both have full
-        # tool access -- delegate mode does not apply to either.
+    if role is SessionRole.SUBAGENT:
+        # A dispatched subagent has full tool access -- delegate mode does
+        # not apply. This is the only role it skips.
         logger.debug(
             "delegate_mode check: SKIP (role=%s agent=%s) tool=%s",
             role,
@@ -178,10 +202,31 @@ def check_delegate_mode(
     normalized = tool_name.lower().strip()
     if normalized in ORCHESTRATOR_ALLOWED_TOOLS:
         logger.debug(
-            "delegate_mode check: ALLOW (orchestrator allowed tool) tool=%s",
+            "delegate_mode check: ALLOW (role=%s allowed tool) tool=%s",
+            role,
             tool_name,
         )
         return DelegateModeResult(blocked=False)
+
+    if role is SessionRole.NAMED_SPECIALIST:
+        logger.warning(
+            "DELEGATE_MODE blocked tool '%s' for named specialist (main thread, "
+            "agent_type=%s)",
+            tool_name,
+            hook_payload.get("agent_type"),
+        )
+        return DelegateModeResult(
+            blocked=True,
+            reason=(
+                f"NOT RUNNABLE STANDALONE: '{tool_name}' is not available.\n"
+                f"This agent runs only under a genuine orchestrator dispatch. "
+                f"The per-agent, filtered project-context injection is built "
+                f"solely on that dispatch path -- a --agent main thread never "
+                f"enters it, so running here would give this specialist tools "
+                f"without the context a real dispatch provides.\n"
+                f"Ask the orchestrator to dispatch this agent instead."
+            ),
+        )
 
     logger.warning(
         "DELEGATE_MODE blocked tool '%s' for orchestrator (main session)",

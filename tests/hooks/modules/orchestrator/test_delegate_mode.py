@@ -147,6 +147,38 @@ class TestCheckDelegateMode(unittest.TestCase):
             "agent_type": "platform-architect",
         }
 
+    def _named_specialist_payload(self, tool_name: str) -> dict:
+        """Build a payload simulating a `--agent <specialist>` main thread."""
+        return {
+            "session_id": "abc123",
+            "tool_name": tool_name,
+            "tool_input": {},
+            "agent_type": "developer",
+        }
+
+    # -- Named-specialist main thread: blocked, with its own reason --
+
+    def test_blocks_bash_for_named_specialist(self):
+        """Out of design: agents run only via a genuine orchestrator dispatch.
+
+        A --agent main thread never enters the context-injection path a real
+        dispatch builds, so it is denied like the orchestrator -- but under a
+        distinct, truthful reason.
+        """
+        result = check_delegate_mode("Bash", self._named_specialist_payload("Bash"))
+        self.assertTrue(result.blocked)
+        self.assertIn("NOT RUNNABLE STANDALONE", result.reason)
+
+    def test_named_specialist_reason_is_not_the_orchestrator_message(self):
+        """A named specialist must never be told to delegate to a specialist."""
+        result = check_delegate_mode("Bash", self._named_specialist_payload("Bash"))
+        self.assertNotIn("DELEGATION REQUIRED", result.reason)
+
+    def test_allows_read_for_named_specialist(self):
+        """Read stays available, mirroring the orchestrator's own allowance."""
+        result = check_delegate_mode("Read", self._named_specialist_payload("Read"))
+        self.assertFalse(result.blocked)
+
     # -- Orchestrator context: blocked tools --
 
     def test_blocks_bash_for_orchestrator(self):
