@@ -61,6 +61,7 @@ from modules.agents.response_contract import (
     resolve_agent_id,
 )
 from modules.agents.task_info_builder import build_task_info_from_hook_data
+from modules.agents.transcript_analyzer import analyze as analyze_transcript
 from modules.agents.transcript_reader import read_transcript
 from modules.audit.workflow_auditor import audit as audit_workflow, signal_gaia_analysis
 from modules.audit.workflow_recorder import record as record_workflow
@@ -116,6 +117,28 @@ def subagent_stop_hook(task_info, agent_output):
         agent_type = task_info.get("agent", "unknown")
 
         parsed_contract = parse_contract(agent_output)
+
+        # Transcript-based anomaly checks (investigation_skip, context_ignored,
+        # duration_outlier, pipe_retroactive) need a TranscriptAnalysis; degrade
+        # cleanly, with a recorded reason, when no usable transcript exists
+        # instead of silently skipping them (see transcript_checks_skipped below).
+        transcript_analysis = None
+        transcript_checks_skipped_reason = None
+        transcript_path = task_info.get("agent_transcript_path", "")
+        if not transcript_path:
+            transcript_checks_skipped_reason = "no agent_transcript_path in task_info"
+        elif not Path(transcript_path).expanduser().exists():
+            transcript_checks_skipped_reason = f"transcript file not found: {transcript_path}"
+        else:
+            try:
+                transcript_analysis = analyze_transcript(transcript_path)
+            except Exception as exc:
+                transcript_checks_skipped_reason = f"transcript analysis failed: {exc}"
+                logger.warning(
+                    "Transcript analysis failed for %s (agent=%s): transcript-based "
+                    "anomaly checks skipped this turn: %s",
+                    transcript_path, agent_type, exc,
+                )
 
         contract_result = validate_contract(agent_output, task_info)
         if not contract_result.is_valid:
@@ -197,7 +220,17 @@ def subagent_stop_hook(task_info, agent_output):
             agent_output,
             task_info,
             rejected_sections=(context_update_result or {}).get("rejected", []),
+            transcript_analysis=transcript_analysis,
         )
+        if transcript_checks_skipped_reason:
+            anomalies.append({
+                "type": "transcript_checks_skipped",
+                "severity": "info",
+                "message": (
+                    f"Transcript-based anomaly checks did not run for {agent_type}: "
+                    f"{transcript_checks_skipped_reason}"
+                ),
+            })
         if not response_contract.valid:
             missing = ", ".join(response_contract.missing) or "none"
             invalid = ", ".join(response_contract.invalid) or "none"
