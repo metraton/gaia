@@ -3,15 +3,25 @@ Command pipe/redirect/chaining validator.
 
 Two-tier validation:
 1. Cloud/infra CLIs (see ``NATIVE_OUTPUT_FLAG_CLIS`` in
-   ``security.mutative_verbs`` for the current, single-sourced list) — ALL
-   pipes, redirects, and chaining operators are rejected because these CLIs
-   expose native flags for filtering and formatting.
+   ``security.mutative_verbs`` for the current, single-sourced list) —
+   redirects and chaining operators are rejected outright (deny, not
+   approvable) whenever any decomposed stage invokes one of these CLIs,
+   because these CLIs expose native flags for filtering and formatting. The
+   PIPE rule is narrower: it denies only when the cloud CLI is the ORIGIN of
+   the pipe (its own output is being piped away); when the cloud CLI is only
+   the pipe's DESTINATION (receiving piped-in content it did not produce),
+   this validator defers to the normal per-stage T3/mutative-verb
+   classification instead of denying outright -- see
+   ``_command_has_cloud_pipe_origin`` for why origin and destination are not
+   the same risk.
 2. All other commands — redirects (>, >>) and background operator (&) are
    rejected because Claude Code tools (Write, Edit) are the correct way to
    produce file output, and background execution hides exit codes.
 
 This validator runs before tier classification so violations are caught early
 and the agent receives a corrective response rather than a blocked execution.
+Deferring the pipe-destination case is what lets that later classification
+run at all for that shape.
 
 Cloud-CLI governance is decided PER STAGE, not by anchoring on the first
 token of the whole command string. ``_command_has_cloud_cli_stage`` runs the
@@ -158,6 +168,34 @@ def _command_has_cloud_cli_stage(command: str) -> bool:
     return any(CLOUD_CLI_PATTERN.match(stage.executable) for stage in decomposed.stages)
 
 
+def _command_has_cloud_pipe_origin(command: str) -> bool:
+    """
+    True when a cloud/infra CLI stage pipes its OWN output away (the
+    ORIGIN of a pipe), as opposed to only receiving piped-in content (the
+    DESTINATION of a pipe).
+
+    Origin and destination are not the same risk. As origin
+    (`kubectl get pods | grep`), the CLI already exposes native
+    `--format`/`--filter`/`-o jsonpath` flags, so shelling its own output
+    out is unnecessary and this validator's "pipe" rule denies it
+    outright -- there is always a native substitute. As destination
+    (`kustomize build overlay | kubectl apply -f -`), the CLI is not
+    producing output to filter; it is CONSUMING content this validator
+    cannot inspect. That is not a false positive to wave through -- it is
+    routed to the normal per-component T3 classification instead (see
+    ``_find_violation``), which independently catches a real mutation
+    (`kubectl apply` is a MUTATIVE_VERBS verb) and asks for consent the
+    ordinary way, rather than a categorical, non-approvable deny whose
+    "use native output flags" correction does not even apply to a CLI
+    that is not producing the piped output in the first place.
+    """
+    decomposed = StageDecomposer().decompose(command)
+    return any(
+        stage.operator == "|" and CLOUD_CLI_PATTERN.match(stage.executable)
+        for stage in decomposed.stages
+    )
+
+
 def _find_violation(command: str) -> Optional[PipeViolation]:
     """
     Return the first pipe/redirect/chaining violation found in command,
@@ -170,6 +208,20 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
     ``_command_has_cloud_cli_stage`` -- not only when the CLI is the first
     token of the whole string.
 
+    The "pipe" rule specifically is further narrowed to the ORIGIN direction
+    -- see ``_command_has_cloud_pipe_origin``. When a cloud CLI stage exists
+    only as a pipe DESTINATION (receiving piped-in content, never piping its
+    own output further), this validator does not flag it: the command is
+    left to fall through to the normal per-stage T3/mutative-verb
+    classification, which still requires consent for a genuine mutation
+    (`kubectl apply`) -- just via the ordinary approvable "ask" path instead
+    of this validator's categorical, non-approvable "deny". Redirect and
+    chaining are NOT given this direction split: a redirect always writes
+    the CLI's OWN output (there is no "destination" reading for `>`), and
+    chaining (`;`/`&&`) composes independent commands with no content flow
+    between them, so both remain governed exactly as before whenever any
+    stage is a recognized cloud CLI.
+
     Skips characters inside single or double quoted strings to avoid
     false positives (e.g. --filter='status:RUNNING' contains no violation).
     """
@@ -178,10 +230,16 @@ def _find_violation(command: str) -> Optional[PipeViolation]:
     unquoted = _strip_quoted_sections(command)
 
     is_cloud = _command_has_cloud_cli_stage(command)
+    has_pipe_origin = _command_has_cloud_pipe_origin(command)
 
     if is_cloud:
-        # Cloud CLIs: check ALL rules (pipe, redirect, chaining)
+        # Cloud CLIs: check ALL rules (pipe, redirect, chaining), except the
+        # "pipe" rule is skipped when the only cloud-CLI involvement is as a
+        # pipe destination -- see the docstring above and
+        # _command_has_cloud_pipe_origin.
         for rule_name, pattern, correction in VIOLATIONS:
+            if rule_name == "pipe" and not has_pipe_origin:
+                continue
             match = pattern.search(unquoted)
             if match:
                 return PipeViolation(

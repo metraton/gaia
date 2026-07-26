@@ -1617,9 +1617,9 @@ PIPE_POLICY_RELEVANT_FAMILIES: FrozenSet[str] = frozenset({"k8s", "iac", "cloud"
 # --filter/-o/-json instead). cloud_pipe_validator's per-stage cloud-CLI
 # check is built directly from this set.
 NATIVE_OUTPUT_FLAG_CLIS: FrozenSet[str] = frozenset({
-    "gcloud", "aws",                                  # cloud
+    "gcloud", "aws", "gsutil", "az", "eksctl",         # cloud
     "kubectl", "helm", "flux",                        # k8s
-    "terraform", "terragrunt", "tofu", "cdk",          # iac
+    "terraform", "terragrunt", "tofu", "cdk", "pulumi", "cdktf",  # iac
 })
 
 # CLIs in a PIPE_POLICY_RELEVANT_FAMILIES family that are deliberately NOT
@@ -1645,15 +1645,6 @@ PIPE_POLICY_EXCLUDED_CLIS: Dict[str, str] = {
     "fly": "same as vercel.",
     "flyctl": "same as vercel (flyctl is fly's CLI binary).",
     "heroku": "same as vercel.",
-    # The following are genuinely the same shape as the included CLIs
-    # (native --format/--query/-json output, cloud/infra state) and are
-    # PENDING an explicit decision -- not exempted on a technical basis.
-    # Flagged for the user rather than added unilaterally.
-    "pulumi": "same shape as terraform/terragrunt; pending explicit decision to include, not yet approved.",
-    "cdktf": "same shape as terraform/terragrunt; pending explicit decision to include, not yet approved.",
-    "gsutil": "same shape as aws/gcloud; pending explicit decision to include, not yet approved.",
-    "az": "same shape as aws/gcloud; pending explicit decision to include, not yet approved.",
-    "eksctl": "same shape as aws/gcloud; pending explicit decision to include, not yet approved.",
 }
 
 
