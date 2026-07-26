@@ -6186,30 +6186,44 @@ def insert_agent_contract_handoff(
 #
 #       INSERT INTO agent_contract_handoffs (...) VALUES (...)
 #       ON CONFLICT(contract_id) DO UPDATE SET <terminal fields>
-#       WHERE agent_contract_handoffs.agent_state = 'DISPATCHED'
+#       WHERE agent_contract_handoffs.agent_state NOT IN <TERMINAL_PLAN_STATUSES>
 #       RETURNING id
 #
 #   Two shapes of row can pre-exist the finalize: (a) NONE (legacy / no
-#   born-at-dispatch) -- the INSERT lands the terminal row directly; (b) a
-#   NASCENT row born at dispatch with agent_state='DISPATCHED' (see
-#   insert_dispatched_handoff) -- the DO UPDATE CONVERGES that single row to the
-#   terminal verdict, so there is still exactly ONE row per turn and no duplicate
-#   INSERT. The born-at-dispatch binding columns (plan_task_id, plan_id,
+#   born-at-dispatch) -- the INSERT lands the terminal row directly; (b) a row
+#   already exists for this contract_id, either the NASCENT
+#   agent_state='DISPATCHED' birth row (see insert_dispatched_handoff) or a
+#   PRIOR non-terminal verdict from an earlier finalize call on the SAME draft
+#   (IN_PROGRESS, APPROVAL_REQUEST, BLOCKED, NEEDS_INPUT, NEEDS_VERIFICATION --
+#   see gaia.state.TERMINAL_PLAN_STATUSES for which values are excluded from
+#   this set) -- the DO UPDATE CONVERGES that single row to the newest verdict,
+#   so there is still exactly ONE row per turn and no duplicate INSERT. The
+#   born-at-dispatch binding columns (plan_task_id, plan_id,
 #   parent_handoff_id, kind) and the birth created_at are NOT in the SET list, so
 #   convergence preserves them.
 #
-#   The `WHERE agent_state = 'DISPATCHED'` guard is what preserves the
-#   write-once-for-terminal + exactly-once invariant under a race: the first
-#   writer to COMMIT for a contract_id wins (it inserts, or converges the
-#   nascent DISPATCHED row); every subsequent write for the SAME contract_id (a
-#   retried `gaia contract finalize`, or -- T9 -- a racing SubagentStop hook
-#   backstop) finds the row already terminal, the WHERE is false, the UPDATE is
-#   skipped, RETURNING yields no row, and the call is a genuine no-op: no
-#   duplicate row, no exception, no mutation of the terminal row. finalize+hook-
-#   backstop therefore converge to EXACTLY ONE row (never-lost because SOME
-#   writer always succeeds first; exactly-once because only a DISPATCHED row is
-#   ever converged and a terminal row is never edited in place). Whichever writer
-#   loses the race accepts the winner's terminal row as-is.
+#   BUG FIXED (was: `WHERE agent_state = 'DISPATCHED'`): that guard treated ANY
+#   non-DISPATCHED state as write-blocking, so a row that legitimately
+#   auto-finalized as IN_PROGRESS (a paused checkpoint, not a verdict) could
+#   never converge to its true COMPLETE outcome on a later finalize call for
+#   the SAME contract_id (e.g. after a resume) -- the row lied forever about
+#   work that had genuinely completed. The guard now blocks convergence ONLY
+#   when the row's CURRENT state is already in TERMINAL_PLAN_STATUSES
+#   (COMPLETE) -- the one verdict that must never be overwritten or regressed.
+#
+#   The `WHERE agent_state NOT IN <TERMINAL_PLAN_STATUSES>` guard is what
+#   preserves the write-once-for-COMPLETE + exactly-once-per-verdict invariant
+#   under a race: the first writer to COMMIT for a contract_id wins (it
+#   inserts, or converges the existing non-terminal row); every subsequent
+#   write for the SAME contract_id (a retried `gaia contract finalize`, or --
+#   T9 -- a racing SubagentStop hook backstop) is itself free to converge
+#   again UNLESS the row is already COMPLETE, in which case the WHERE is
+#   false, the UPDATE is skipped, RETURNING yields no row, and the call is a
+#   genuine no-op: no duplicate row, no exception, no mutation of the terminal
+#   row. finalize+hook-backstop therefore converge to EXACTLY ONE row
+#   (never-lost because SOME writer always succeeds first; write-once-COMPLETE
+#   because a COMPLETE row is never edited in place). Whichever writer loses
+#   the race against an already-COMPLETE row accepts the winner's verdict as-is.
 #
 #   `contract_id` may be omitted (None/empty) by a caller that has no draft
 #   concept (legacy/back-compat path) -- SQLite's UNIQUE index permits any
@@ -6314,8 +6328,14 @@ def finalize_agent_contract_handoff(
             con.execute("BEGIN IMMEDIATE")
             try:
                 _ensure_workspace_row(con, workspace)
+                # SSOT for which agent_state values block further convergence
+                # (gaia.state.TERMINAL_PLAN_STATUSES -- currently just COMPLETE).
+                # Built as a NOT IN (...) placeholder list rather than a literal
+                # so this stays correct if the terminal set ever grows.
+                from gaia.state import TERMINAL_PLAN_STATUSES
+                _terminal_placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
                 cur = con.execute(
-                    """
+                    f"""
                     -- v37: the persisted column is `agent_state` (renamed from
                     -- task_status). The Python parameter is now also `agent_state`
                     -- (plan 34 task 4 completed the envelope-field rename
@@ -6323,27 +6343,40 @@ def finalize_agent_contract_handoff(
                     -- agent_state column here.
                     --
                     -- v37 born-at-dispatch (plan 34 task 5): finalize CONVERGES
-                    -- onto the nascent row instead of only DO NOTHING. A row may
+                    -- onto an existing row instead of only DO NOTHING. A row may
                     -- already exist for this contract_id because it was BORN at
                     -- dispatch with agent_state='DISPATCHED' (see
-                    -- insert_dispatched_handoff). The UPSERT therefore:
-                    --   * INSERTs a fresh terminal row when none exists (the
-                    --     legacy / no-born-at-dispatch path), OR
-                    --   * CONVERGES a nascent DISPATCHED row to the terminal
-                    --     verdict via DO UPDATE ... WHERE agent_state='DISPATCHED',
-                    --     leaving the born-at-dispatch binding columns
-                    --     (plan_task_id, plan_id, parent_handoff_id, kind) AND the
-                    --     birth created_at untouched -- one row per turn, no
-                    --     duplicate INSERT.
-                    -- The `WHERE agent_state = 'DISPATCHED'` guard is what
-                    -- preserves the write-once-for-terminal + exactly-once
-                    -- invariant: a row that is ALREADY terminal (a prior finalize,
-                    -- or -- T9 -- a racing hook backstop that got there first) does
-                    -- NOT match the WHERE, so the second writer's UPDATE is skipped
-                    -- and `RETURNING id` yields no row -> a genuine no-op. This is
-                    -- what makes finalize+finalize and finalize+backstop converge to
-                    -- EXACTLY ONE row under a race, in either arrival order, while a
-                    -- terminal row is still never edited in place.
+                    -- insert_dispatched_handoff), or because an EARLIER finalize
+                    -- call for the SAME draft already recorded a non-terminal
+                    -- verdict (IN_PROGRESS, APPROVAL_REQUEST, BLOCKED,
+                    -- NEEDS_INPUT, NEEDS_VERIFICATION) on a resume. The UPSERT
+                    -- therefore:
+                    --   * INSERTs a fresh row when none exists (the legacy /
+                    --     no-born-at-dispatch path), OR
+                    --   * CONVERGES an existing DISPATCHED-or-non-terminal row to
+                    --     the newest verdict via DO UPDATE ... WHERE agent_state
+                    --     NOT IN <TERMINAL_PLAN_STATUSES>, leaving the
+                    --     born-at-dispatch binding columns (plan_task_id,
+                    --     plan_id, parent_handoff_id, kind) AND the birth
+                    --     created_at untouched -- one row per turn, no duplicate
+                    --     INSERT.
+                    -- BUG FIXED: this guard used to read
+                    -- `WHERE agent_state = 'DISPATCHED'`, which treated ANY
+                    -- non-DISPATCHED state as write-blocking -- so a row that
+                    -- auto-finalized as IN_PROGRESS mid-loop could never
+                    -- converge to its true COMPLETE outcome on a later finalize
+                    -- for the SAME contract_id, and the DB lied forever about
+                    -- work that had genuinely completed. The guard now blocks
+                    -- convergence ONLY when the row's CURRENT state is already
+                    -- in TERMINAL_PLAN_STATUSES (COMPLETE): a row that is
+                    -- ALREADY COMPLETE (a prior finalize, or -- T9 -- a racing
+                    -- hook backstop that got there first) does NOT match the
+                    -- WHERE, so the second writer's UPDATE is skipped and
+                    -- `RETURNING id` yields no row -> a genuine no-op. This is
+                    -- what makes finalize+finalize and finalize+backstop
+                    -- converge to EXACTLY ONE row under a race, in either
+                    -- arrival order, while a COMPLETE row is still never edited
+                    -- in place.
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
                          agent_state, raw_handoff_json, created_at)
@@ -6354,7 +6387,7 @@ def finalize_agent_contract_handoff(
                         brief_id         = excluded.brief_id,
                         agent_state      = excluded.agent_state,
                         raw_handoff_json = excluded.raw_handoff_json
-                    WHERE agent_contract_handoffs.agent_state = 'DISPATCHED'
+                    WHERE agent_contract_handoffs.agent_state NOT IN ({_terminal_placeholders})
                     RETURNING id
                     """,
                     (
@@ -6366,14 +6399,16 @@ def finalize_agent_contract_handoff(
                         agent_state,
                         raw_handoff_json,
                         _now_iso(),
+                        *TERMINAL_PLAN_STATUSES,
                     ),
                 )
                 # RETURNING yields exactly one row iff THIS call inserted a fresh
-                # row OR converged a nascent DISPATCHED row (the WHERE matched); it
-                # yields NO row when the UPSERT hit a conflict against an already
-                # terminal row (WHERE false -> DO UPDATE skipped) -- the idempotent
-                # no-op. This is deterministic and avoids the ambiguous cur.rowcount
-                # of an ON CONFLICT DO UPDATE ... WHERE upsert.
+                # row OR converged an existing non-terminal row (the WHERE
+                # matched); it yields NO row when the UPSERT hit a conflict
+                # against an already-COMPLETE row (WHERE false -> DO UPDATE
+                # skipped) -- the idempotent no-op. This is deterministic and
+                # avoids the ambiguous cur.rowcount of an
+                # ON CONFLICT DO UPDATE ... WHERE upsert.
                 returned = cur.fetchone()
                 if returned is not None:
                     handoff_id = returned["id"]

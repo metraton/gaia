@@ -48,6 +48,29 @@ VALID_PLAN_STATUSES: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
+# 1b) Terminal subset of VALID_PLAN_STATUSES -- a row's write-once boundary.
+#
+# Of the six values above, COMPLETE is the ONLY one a genuinely-finalized
+# ``agent_contract_handoffs`` row must never regress from: once a turn is
+# verified COMPLETE, no later write (a retried finalize, a racing SubagentStop
+# backstop, or a resumed draft's stale envelope) may overwrite or downgrade it.
+# Every other value -- IN_PROGRESS, APPROVAL_REQUEST, BLOCKED, NEEDS_INPUT,
+# NEEDS_VERIFICATION -- is a paused, mid-loop checkpoint awaiting resumption
+# (by the agent itself, by user input, by an approval grant, or by an
+# independent verifier) and MUST stay convergeable to a later, truer verdict
+# for the SAME contract_id. Treating any of them as write-blocking freezes a
+# row that legitimately auto-finalized mid-loop and can never converge to its
+# true COMPLETE outcome -- the defect this tuple exists to prevent.
+#
+# Consumed by gaia.store.writer.finalize_agent_contract_handoff (the
+# convergence guard) and hooks.modules.agents.handoff_persister.persist_handoff
+# (the backstop's passive/converge decision) -- both must agree on this set.
+# ---------------------------------------------------------------------------
+TERMINAL_PLAN_STATUSES: tuple[str, ...] = (
+    "COMPLETE",
+)
+
+# ---------------------------------------------------------------------------
 # 2) Brief lifecycle -- briefs.status
 #
 # Canonical source: gaia.briefs.store.VALID_STATUSES (kept in sync via
@@ -200,6 +223,7 @@ STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
 
 __all__ = [
     "VALID_PLAN_STATUSES",
+    "TERMINAL_PLAN_STATUSES",
     "VALID_BRIEF_STATUSES",
     "VALID_PLAN_LIFECYCLE_STATUSES",
     "VALID_TASK_STATUSES",
