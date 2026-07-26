@@ -767,7 +767,11 @@ _ANOMALY_TYPE_GLOSSARY = {
     "response_contract_violation": "agent's response envelope was missing or invalid",
     "execution_failure": "agent exited with a non-zero code",
     "investigation_skip": "agent acted without investigating first",
-    "context_ignored": "agent ignored the project context it was given",
+    "context_ignored": (
+        "[retired] measured a 4-string text proxy for context usage; "
+        "context is injected inline, not by file, so it never matched "
+        "real usage -- historical rows only, no longer emitted"
+    ),
     "context_update_missing": "agent didn't write back an expected context update",
     "missing_evidence": "evidence_report was empty or missing required fields",
     "empty_evidence": "an evidence sub-section (e.g. files_checked) came back empty",

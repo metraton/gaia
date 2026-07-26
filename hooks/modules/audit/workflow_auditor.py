@@ -8,7 +8,6 @@ Provides:
     - signal_gaia_analysis(): Create flag file for Gaia analysis
 """
 
-import json
 import logging
 import re
 from collections import deque
@@ -73,33 +72,6 @@ def _check_investigation_skip(
             "validate/dry-run command)"
         ),
     }
-
-
-def _check_context_ignored(
-    analysis: TranscriptAnalysis,
-) -> Optional[Dict[str, str]]:
-    """Warning if the first tool call does not reference project-context paths."""
-    if not analysis.tool_sequence:
-        return None
-    first_call = analysis.tool_sequence[0]
-    args_str = json.dumps(first_call.arguments)
-    # Look for any project-context path references
-    context_indicators = [
-        "project-context",
-        ".claude/",
-        "CLAUDE.md",
-        "context-contracts",
-    ]
-    if not any(indicator in args_str for indicator in context_indicators):
-        return {
-            "type": "context_ignored",
-            "severity": "warning",
-            "message": (
-                "First tool call does not reference any project-context "
-                "paths — agent may have ignored injected context"
-            ),
-        }
-    return None
 
 
 def _check_context_update_missing(
@@ -445,7 +417,6 @@ def audit(
     Transcript-analysis checks (only when transcript_analysis is provided):
     - investigation_skip: first tool was Bash AND that first command
       classifies as T3 (state-mutating) per classify_command_tier
-    - context_ignored: first tool call has no project-context paths
     - context_update_missing: agent owns writable contracts but no update_contracts emitted
     - excessive_tool_calls: tool_call_count > 75
     - token_budget: cache_creation_tokens > 200000
@@ -460,6 +431,25 @@ def audit(
     - skill_order: skills injected in unexpected order
     - duplicate_tools: duplicate tool calls detected
     - bash_permission_gate: agent declares Bash but made 0 calls (native layer block)
+
+    Retired: ``context_ignored`` (warned when the first tool call's arguments
+    carried none of ["project-context", ".claude/", "CLAUDE.md",
+    "context-contracts"]). Removed because it measured a delivery mechanism
+    Gaia does not use -- project context is injected inline as prompt text
+    (``context_injector.py::build_project_context``), never as a file path
+    the agent opens, so the four literal strings had no relationship to
+    whether context was actually read. A sample of real firings (25 rows out
+    of 600 historical) showed zero genuine context-ignoring behavior, only
+    ordinary first actions (``git status``, ``gh auth status``, ``npm run
+    build``) that do not happen to mention those substrings; cross-checking
+    unflagged episodes showed only ~4% coincidental matches, unrelated to
+    real context usage. No working structural signal was available to
+    replace it with: ``anchor_tracker.py``'s ``context_anchor_hit_rate`` is
+    wired but always null in production (a separate, unrelated defect), and
+    ``contract_validator.check_context_usage`` has no production call site.
+    The historical ``episode_anomalies`` rows of this type are left in place
+    as audit trace; the glossary entry in ``bin/cli/metrics.py`` documents
+    the type as retired rather than being deleted.
 
     Args:
         metrics: Workflow metrics dict (from workflow_recorder.record()).
@@ -581,7 +571,6 @@ def audit(
     if transcript_analysis is not None:
         for check_fn in (
             _check_investigation_skip,
-            _check_context_ignored,
             _check_excessive_tool_calls,
             _check_token_budget,
             _check_duplicate_tools,

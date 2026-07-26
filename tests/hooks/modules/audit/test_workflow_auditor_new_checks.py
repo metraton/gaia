@@ -103,32 +103,23 @@ class TestInvestigationSkip:
 
 
 # ===========================================================================
-# 2. context_ignored
+# 2. context_ignored -- retired (see audit() docstring for the rationale:
+# it measured a delivery mechanism -- file-path references -- that Gaia does
+# not use; context is injected inline). These tests guard against silently
+# reintroducing the type, including via the exact transcript shape that
+# used to trigger it.
 # ===========================================================================
 
 
-class TestContextIgnored:
-    def test_triggers_when_no_context_paths_in_first_call(self):
+class TestContextIgnoredRetired:
+    def test_never_emitted_regardless_of_first_call_content(self):
         tc = ToolCall(index=1, tool_name="Read", arguments={"file_path": "/tmp/foo"})
-        ta = _base_analysis(tool_sequence=[tc])
-        anomalies = audit(_base_metrics(), transcript_analysis=ta)
-        types = [a["type"] for a in anomalies]
-        assert "context_ignored" in types
-        match = next(a for a in anomalies if a["type"] == "context_ignored")
-        assert match["severity"] == "warning"
-
-    def test_no_anomaly_when_first_call_references_context(self):
-        tc = ToolCall(
-            index=1,
-            tool_name="Read",
-            arguments={"file_path": "/project/.claude/config.json"},
-        )
         ta = _base_analysis(tool_sequence=[tc])
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "context_ignored" not in types
 
-    def test_no_anomaly_when_no_tool_sequence(self):
+    def test_never_emitted_when_no_tool_sequence(self):
         ta = _base_analysis(tool_sequence=[])
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
@@ -428,7 +419,6 @@ class TestBackwardCompatibility:
         anomalies = audit(metrics, agent_output="", transcript_analysis=None)
         transcript_types = {
             "investigation_skip",
-            "context_ignored",
             "context_update_missing",
             "excessive_tool_calls",
             "token_budget",

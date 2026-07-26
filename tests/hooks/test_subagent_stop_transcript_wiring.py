@@ -3,11 +3,13 @@
 Integration tests for the transcript_analysis wiring in subagent_stop_hook().
 
 Covers the reconnection of the transcript-analysis argument between
-subagent_stop_hook() and workflow_auditor.audit(): the four
-transcript-based checks (investigation_skip, context_ignored,
-duration_outlier, pipe_retroactive) must run when a usable transcript is
-available, and the hook must degrade cleanly -- with a recorded reason,
-never a silent pass -- when it is not.
+subagent_stop_hook() and workflow_auditor.audit(): the three
+transcript-based checks (investigation_skip, duration_outlier,
+pipe_retroactive) must run when a usable transcript is available, and the
+hook must degrade cleanly -- with a recorded reason, never a silent pass --
+when it is not. (A fourth check, context_ignored, was retired -- see
+workflow_auditor.audit()'s docstring; this file also guards that the
+retired type stays gone.)
 """
 
 import json
@@ -55,19 +57,23 @@ PLAIN_OUTPUT = "## Report\n\nChecked instances, all nominal.\n"
 
 
 def _write_triggering_transcript(tmp_path: Path) -> Path:
-    """A transcript designed to trip all four transcript-based checks:
+    """A transcript designed to trip all three transcript-based checks:
 
     - first tool call is Bash AND that command mutates state (a cloud CLI
       delete, not a read) -> investigation_skip
-    - that Bash call's args carry no project-context path -> context_ignored
     - the Bash command pipes a cloud CLI's output -> pipe_retroactive
     - first/last timestamps span 11 minutes -> duration_outlier (> 10 min)
 
     The command is deliberately a mutation (``delete``), not a read
     (``list``): investigation_skip is now scoped to a first Bash command
     that classifies as T3 (state-mutating), so a read-only cloud CLI pipe
-    would no longer trip it -- exercising all four checks together requires
+    would no longer trip it -- exercising all three checks together requires
     the pipe target itself to be a genuine mutation.
+
+    This same command shape used to also trip the now-retired
+    context_ignored check (its args carry no project-context path); that
+    coincidence no longer matters, but the tests below assert the retired
+    type stays absent regardless.
     """
     transcript_path = tmp_path / "agent_transcript.jsonl"
     lines = [
@@ -97,10 +103,10 @@ def _write_triggering_transcript(tmp_path: Path) -> Path:
 
 
 class TestTranscriptChecksRunWhenAvailable:
-    """With a usable transcript, the four checks fire through subagent_stop_hook()."""
+    """With a usable transcript, the three checks fire through subagent_stop_hook()."""
 
     @patch("subagent_stop.write_episode", return_value="ep-test-901")
-    def test_all_four_checks_fire(self, mock_write_episode, base_task_info, tmp_path):
+    def test_all_three_checks_fire(self, mock_write_episode, base_task_info, tmp_path):
         transcript_path = _write_triggering_transcript(tmp_path)
         task_info = dict(base_task_info)
         task_info["agent_transcript_path"] = str(transcript_path)
@@ -115,14 +121,16 @@ class TestTranscriptChecksRunWhenAvailable:
 
         expected = {
             "investigation_skip",
-            "context_ignored",
             "duration_outlier",
             "pipe_retroactive",
         }
         assert expected.issubset(types), (
-            f"Expected all four transcript-based anomalies, got: {types}"
+            f"Expected all three transcript-based anomalies, got: {types}"
         )
         assert "transcript_checks_skipped" not in types
+        # Regression guard: this exact transcript shape used to also trip
+        # the retired context_ignored check -- it must not resurface.
+        assert "context_ignored" not in types
         assert result["anomalies_detected"] >= len(expected)
 
 
@@ -152,7 +160,6 @@ class TestTranscriptChecksDegradeWhenMissing:
         # as if they ran and found nothing.
         transcript_check_types = {
             "investigation_skip",
-            "context_ignored",
             "duration_outlier",
             "pipe_retroactive",
         }
