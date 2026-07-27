@@ -789,6 +789,10 @@ _ANOMALY_TYPE_GLOSSARY = {
     "duplicate_write_storm": "many duplicate writes to the same resource in one turn",
     "duration_outlier": "turn duration was a statistical outlier vs. this agent's history",
     "tool_call_velocity": "tool calls fired at an abnormally high rate",
+    "agent_reported_defect": (
+        "the agent itself reported a concrete defect in its contract "
+        "(failure_report): what it attempted, what broke, and the evidence"
+    ),
 }
 
 # Plain-language meaning per plan_status (agent_contract_handoff enum).

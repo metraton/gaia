@@ -55,6 +55,7 @@ from modules.agents.contract_validator import (
     requires_consolidation_report,
     validate as validate_contract,
 )
+from modules.agents.defect_capture import build_defect_anomaly
 from modules.agents.response_contract import (
     save_validation_result,
     validate_response_contract,
@@ -242,6 +243,16 @@ def subagent_stop_hook(task_info, agent_output):
                     f"missing=[{missing}] invalid=[{invalid}]"
                 ),
             })
+
+        # Contract-reported defect -> raw defect floor. Same unrequested,
+        # non-blocking capture the adapter performs; kept in lockstep here so
+        # this backward-compatible entry point does not lose the defect.
+        try:
+            defect_anomaly = build_defect_anomaly(parsed_contract, agent=agent_type)
+            if defect_anomaly:
+                anomalies.append(defect_anomaly)
+        except Exception as defect_exc:
+            logger.debug("Defect capture skipped (non-fatal): %s", defect_exc)
 
         if anomalies:
             logger.warning(f"{len(anomalies)} anomalies detected in workflow")

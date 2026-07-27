@@ -2706,6 +2706,30 @@ class ClaudeCodeAdapter(HookAdapter):
             except Exception as exc:
                 logger.debug("Compliance score computation failed (non-fatal): %s", exc)
 
+            # ----------------------------------------------------------
+            # Contract-reported defect -> raw defect floor.
+            #
+            # Unrequested: the agent opts into nothing; emitting a
+            # failure_report in its contract is its whole participation.
+            # Non-blocking: build_defect_anomaly never raises, and the
+            # write below (episode_writer.write -> store_episode ->
+            # insert_episode_anomaly) logs and continues past a rejected
+            # insert. Placed BEFORE write_episode -- the later advisory
+            # appends (verbatim/approval/skill checks) only reach the
+            # returned dict, never the persisted episode.
+            # ----------------------------------------------------------
+            try:
+                from modules.agents.defect_capture import build_defect_anomaly
+                _defect_anomaly = build_defect_anomaly(parsed_contract, agent=agent_type)
+                if _defect_anomaly:
+                    anomalies.append(_defect_anomaly)
+                    logger.info(
+                        "Contract-reported defect captured for %s (severity=%s)",
+                        agent_type, _defect_anomaly.get("severity"),
+                    )
+            except Exception as _defect_exc:
+                logger.debug("Defect capture skipped (non-fatal): %s", _defect_exc)
+
             if anomalies:
                 logger.warning("%d anomalies detected in workflow", len(anomalies))
                 signal_gaia_analysis(anomalies, workflow_metrics)
