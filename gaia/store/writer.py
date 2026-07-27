@@ -34,7 +34,10 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+
+if TYPE_CHECKING:  # annotation-only; runtime imports of gaia.state stay lazy
+    from gaia.state.task_closure import GateVerdict
 
 # Schema file lives alongside this module
 _SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -4198,6 +4201,42 @@ def list_task_gates(
         return [dict(r) for r in rows]
     finally:
         con.close()
+
+
+def read_task_gate_verdict(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    *,
+    db_path: Path | None = None,
+) -> GateVerdict:
+    """Return the derived gate verdict for the task at ``task_order_num``.
+
+    The read half of the derivation: fetch the task's persisted gates and hand
+    them to ``gaia.state.task_closure.derive_gate_verdict``, which owns the
+    semantics (fail closed; zero gates is NOT an approving verdict). Returns a
+    ``GateVerdict``.
+
+    Read-only by construction: one SELECT, no UPDATE, no INSERT, no commit --
+    it cannot advance ``tasks.status`` or ``task_gates.status``, and so it does
+    NOT call ``_assert_dispatch_can_advance_state``. That omission is
+    deliberate, not an oversight: the guard exists to gate state ADVANCEMENT on
+    a dispatch identity, and making a pure read answer differently depending on
+    who is asking would both misuse the guard and couple the verdict to a
+    dispatch coordinate the derivation is specified to ignore.
+
+    Raises ValueError on missing brief/plan/task -- an unresolvable task yields
+    no verdict at all rather than a non-approving one, since "this task does
+    not exist" and "this task is not approved" are different answers and only
+    the second is a verdict. Consistent with ``list_task_gates``, whose
+    resolution it reuses.
+    """
+    from gaia.state.task_closure import derive_gate_verdict
+
+    gates = list_task_gates(
+        workspace, brief_name, task_order_num, db_path=db_path
+    )
+    return derive_gate_verdict(gates)
 
 
 def remove_gate_from_task(
