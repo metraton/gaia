@@ -932,6 +932,248 @@ def cross_surface_query(
 
 
 # ---------------------------------------------------------------------------
+# Defect triage -- row-level reads across the two defect channels
+# ---------------------------------------------------------------------------
+#
+# ``gaia metrics`` already answers "how many of each anomaly type"; nothing
+# answered "show me the instances of one type so I can triage them". These
+# readers are that missing half -- one row per defect, never an aggregate.
+#
+# A defect reaches the substrate through two channels that cannot be merged
+# at the storage layer, so they are merged here:
+#
+#   subagent (episode_anomalies)
+#       The raw defect floor. Every anomaly the runtime infers about a
+#       subagent turn, plus the ``agent_reported_defect`` rows a subagent
+#       states itself. Rows hang off an episode (FK -> episodes.episode_id),
+#       which is where the agent name lives; agent-reported rows also carry
+#       it inside the JSON payload, so the reader coalesces both.
+#
+#   orchestrator (harness_events)
+#       Failures observed from OUTSIDE a subagent turn -- a dispatch that
+#       ends in a harness cut is the first of them. These can never become
+#       ``episode_anomalies`` rows: the cut turn never reached SubagentStop,
+#       so no episode exists to satisfy the foreign key, and minting a
+#       synthetic one to hang the row off would fabricate a turn that never
+#       happened.
+#
+# Inclusion on the orchestrator side is by SEVERITY, not by an enumerated
+# list of event types: ``harness_events`` is the harness's own observation
+# log, and a row it grades above ``info`` is by construction an abnormality
+# it observed. Enumerating the types instead would make every new observation
+# channel invisible here until someone remembered to extend the list.
+
+DEFECT_ORIGINS = ("subagent", "orchestrator", "all")
+
+# harness_events severities that mark ordinary telemetry rather than a defect.
+# Everything else (warning / error / critical) is a defect for triage purposes.
+NON_DEFECT_EVENT_SEVERITIES = ("info", "debug")
+
+# episode_anomalies.payload is free-form JSON. json_extract raises on a
+# malformed blob, which would fail the whole query for one bad row, so every
+# extraction is guarded by json_valid.
+_ANOMALY_AGENT_SQL = (
+    "COALESCE(e.agent, CASE WHEN json_valid(ea.payload) "
+    "THEN json_extract(ea.payload, '$.agent') END)"
+)
+
+
+def _query_subagent_defects(
+    con: sqlite3.Connection,
+    *,
+    workspace: str | None,
+    since_iso: str | None,
+    until_iso: str | None,
+    type_filter: str | None,
+    severity_filter: str | None,
+    agent_filter: str | None,
+    limit: int,
+) -> list[dict]:
+    """One row per ``episode_anomalies`` row, agent resolved via its episode."""
+    where: list[str] = []
+    params: list[Any] = []
+    if workspace:
+        where.append("ea.workspace = ?")
+        params.append(workspace)
+    if since_iso:
+        where.append("ea.timestamp >= ?")
+        params.append(since_iso)
+    if until_iso:
+        where.append("ea.timestamp <= ?")
+        params.append(until_iso)
+    if type_filter:
+        where.append("ea.type = ?")
+        params.append(type_filter)
+    if severity_filter:
+        where.append("LOWER(COALESCE(ea.severity, '')) = ?")
+        params.append(severity_filter.lower())
+    if agent_filter:
+        where.append(f"{_ANOMALY_AGENT_SQL} = ?")
+        params.append(agent_filter)
+
+    sql = (
+        "SELECT ea.id AS id, ea.episode_id AS episode_id, ea.workspace AS workspace, "
+        "ea.timestamp AS timestamp, ea.type AS type, ea.severity AS severity, "
+        f"ea.message AS message, {_ANOMALY_AGENT_SQL} AS agent "
+        "FROM episode_anomalies ea "
+        "LEFT JOIN episodes e ON e.episode_id = ea.episode_id"
+    )
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY ea.timestamp DESC, ea.id DESC LIMIT ?"
+    params.append(limit)
+
+    out = []
+    for r in con.execute(sql, params).fetchall():
+        d = {k: r[k] for k in r.keys()}
+        out.append({
+            "origin": "subagent",
+            "id": d["id"],
+            "timestamp": d["timestamp"] or "",
+            "type": d["type"] or "",
+            "severity": d["severity"] or "",
+            "agent": d["agent"] or None,
+            "workspace": d["workspace"],
+            "message": (d["message"] or "").replace("\n", " ").strip(),
+            "source": d["episode_id"],
+        })
+    return out
+
+
+def _query_orchestrator_defects(
+    con: sqlite3.Connection,
+    *,
+    workspace: str | None,
+    since_iso: str | None,
+    until_iso: str | None,
+    type_filter: str | None,
+    severity_filter: str | None,
+    agent_filter: str | None,
+    limit: int,
+) -> list[dict]:
+    """One row per abnormal ``harness_events`` row (severity above info)."""
+    placeholders = ", ".join("?" for _ in NON_DEFECT_EVENT_SEVERITIES)
+    where: list[str] = [
+        f"LOWER(COALESCE(severity, 'info')) NOT IN ({placeholders})",
+    ]
+    params: list[Any] = list(NON_DEFECT_EVENT_SEVERITIES)
+    if workspace:
+        where.append("(workspace = ? OR workspace IS NULL)")
+        params.append(workspace)
+    if since_iso:
+        where.append("ts >= ?")
+        params.append(since_iso)
+    if until_iso:
+        where.append("ts <= ?")
+        params.append(until_iso)
+    if type_filter:
+        where.append("type = ?")
+        params.append(type_filter)
+    if severity_filter:
+        where.append("LOWER(COALESCE(severity, '')) = ?")
+        params.append(severity_filter.lower())
+    if agent_filter:
+        where.append("agent = ?")
+        params.append(agent_filter)
+
+    sql = (
+        "SELECT id, workspace, ts, type, source, agent, result, severity "
+        "FROM harness_events WHERE " + " AND ".join(where) +
+        " ORDER BY ts DESC, id DESC LIMIT ?"
+    )
+    params.append(limit)
+
+    out = []
+    for r in con.execute(sql, params).fetchall():
+        d = {k: r[k] for k in r.keys()}
+        out.append({
+            "origin": "orchestrator",
+            "id": d["id"],
+            "timestamp": d["ts"] or "",
+            "type": d["type"] or "",
+            "severity": d["severity"] or "",
+            "agent": d["agent"] or None,
+            "workspace": d["workspace"],
+            "message": (d["result"] or "").replace("\n", " ").strip(),
+            "source": d["source"],
+        })
+    return out
+
+
+def read_defects(
+    *,
+    origin: str = "all",
+    workspace: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    type: str | None = None,
+    severity: str | None = None,
+    agent: str | None = None,
+    limit: int = 20,
+    db_path: Path | None = None,
+) -> list[dict]:
+    """Return individual defect rows, newest first, across both channels.
+
+    Args:
+        origin:    ``subagent`` | ``orchestrator`` | ``all`` (default).
+        workspace: Workspace identity. ``None`` means every workspace.
+        since:     Lower time bound -- duration ('24h', '7d') or ISO date.
+        until:     Upper time bound -- same format as ``since``.
+        type:      Exact match on the defect type (``skipped_verification``,
+                   ``agent_reported_defect``, ``agent.cut``, ...).
+        severity:  Exact, case-insensitive match on severity.
+        agent:     Exact match on the agent the defect is attributed to.
+        limit:     Per-channel row cap, applied in SQL before the merge.
+        db_path:   Optional explicit substrate path (tests).
+
+    Returns:
+        List of dicts sharing one shape across both channels: ``origin, id,
+        timestamp, type, severity, agent, workspace, message, source``.
+
+    Raises:
+        ValueError: when ``origin`` is not one of :data:`DEFECT_ORIGINS`.
+    """
+    if origin not in DEFECT_ORIGINS:
+        raise ValueError(
+            f"invalid origin '{origin}'; must be one of {list(DEFECT_ORIGINS)}"
+        )
+
+    since_iso = parse_when(since) if since else None
+    until_iso = parse_when(until) if until else None
+
+    con = _connect(db_path)
+    try:
+        rows: list[dict] = []
+        if origin in ("subagent", "all"):
+            rows.extend(_query_subagent_defects(
+                con,
+                workspace=workspace,
+                since_iso=since_iso,
+                until_iso=until_iso,
+                type_filter=type,
+                severity_filter=severity,
+                agent_filter=agent,
+                limit=limit,
+            ))
+        if origin in ("orchestrator", "all"):
+            rows.extend(_query_orchestrator_defects(
+                con,
+                workspace=workspace,
+                since_iso=since_iso,
+                until_iso=until_iso,
+                type_filter=type,
+                severity_filter=severity,
+                agent_filter=agent,
+                limit=limit,
+            ))
+    finally:
+        con.close()
+
+    rows.sort(key=lambda r: (r.get("timestamp") or "", r.get("id") or 0), reverse=True)
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Episodic FTS5 search -- canonical reader over episodes_fts in gaia.db
 # ---------------------------------------------------------------------------
 #
@@ -1463,6 +1705,9 @@ __all__ = [
     "VALID_GROUP_BY",
     "parse_when",
     "cross_surface_query",
+    "DEFECT_ORIGINS",
+    "NON_DEFECT_EVENT_SEVERITIES",
+    "read_defects",
     "group_and_count",
     "aggregate_metrics",
     "sanitize_episodes_fts_query",
