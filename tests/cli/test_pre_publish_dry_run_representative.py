@@ -32,7 +32,7 @@ that it no longer false-fails on version comparisons.
 
 from __future__ import annotations
 
-import re
+import os
 import shutil
 import subprocess
 import unittest
@@ -40,6 +40,18 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT = _REPO_ROOT / "bin" / "pre-publish-validate.js"
+
+# The script auto-enables --validate-only when it sees these (line ~781), which
+# skips bumpVersion() and leaves this.newVersion null -- and with newVersion
+# null the buggy and the fixed expectedVersion expressions collapse to the same
+# value, so the false-fail assertions below cannot fail. Neutralizing them makes
+# the dry-run path this test exists to guard run identically whether or not the
+# outer runner is CI.
+_CI_ENV_VARS = ("CI", "GITHUB_ACTIONS")
+
+
+def _non_ci_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in _CI_ENV_VARS}
 
 
 def _node_available() -> bool:
@@ -69,6 +81,7 @@ class TestPrePublishDryRunRepresentative(unittest.TestCase):
         res = subprocess.run(
             ["node", str(_SCRIPT), "--dry-run"],
             cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=120,
+            env=_non_ci_env(),
         )
         combined = res.stdout + res.stderr
 
@@ -86,16 +99,11 @@ class TestPrePublishDryRunRepresentative(unittest.TestCase):
             res.returncode, 0,
             msg=f"dry-run should complete cleanly on a clean tree. Output:\n{combined}",
         )
-        # The script auto-enables --validate-only under CI (self-install cannot
-        # be validated before the package is on the registry), and summary()
-        # branches on validateOnly before dryRun. So the completion line is
-        # mode-dependent: accept whichever effective mode actually ran, since
-        # what this test asserts is a clean completion, not which banner printed.
-        self.assertTrue(
-            "Dry run completed - no changes made" in combined
-            or "Validation completed successfully (--validate-only mode)" in combined,
-            msg=f"dry-run produced no completion line. Output:\n{combined}",
-        )
+        # With the CI vars stripped, summary() cannot take the validateOnly
+        # branch, so the dry-run banner is the only acceptable completion line --
+        # seeing the --validate-only one instead would mean the env neutralization
+        # failed and the assertions above ran on the inert path.
+        self.assertIn("Dry run completed - no changes made", combined)
 
         after = self._git_dirty_paths()
         self.assertEqual(
@@ -110,6 +118,7 @@ class TestPrePublishDryRunRepresentative(unittest.TestCase):
         res = subprocess.run(
             ["node", str(_SCRIPT), "--dry-run"],
             cwd=str(_REPO_ROOT), capture_output=True, text=True, timeout=120,
+            env=_non_ci_env(),
         )
         combined = res.stdout + res.stderr
         self.assertIn("Step 7: Running validation tests", combined)
