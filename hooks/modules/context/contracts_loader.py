@@ -140,5 +140,8 @@ def build_context_update_reminder(
         f"\n**CONTEXT UPDATE REQUIRED:** Your writable contracts {empty_list} "
         f"are currently EMPTY. After completing your task, you MUST include an "
         f"`update_contracts` clause in your agent_contract_handoff with any data "
-        f"you discovered. See the agent-contract-handoff skill for the format.\n\n"
+        f"you discovered. A payload is a DELTA: it is deep-merged into the "
+        f"section, so keys you omit are preserved and a partial write is safe -- "
+        f"except a list, which replaces the stored list wholesale, so restate a "
+        f"list in full. See the agent-contract-handoff skill for the format.\n\n"
     )

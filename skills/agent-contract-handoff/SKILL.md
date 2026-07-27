@@ -174,15 +174,16 @@ Each entry is one `{contract, payload}` pair (`parse_update_contracts`). The `co
 | `contract` | required | a contract name from your `writable_sections`; off-list -> rejected |
 | `payload` | required | the dict merged under that contract; keys you omit are preserved |
 
-**Merge semantics** (how the runtime applies `payload` -- the field is additive, never destructive):
+**Merge semantics** (how the runtime applies `payload` -- at the key level the field is additive, never destructive):
 
 | Operation | Behavior |
 |-----------|----------|
 | ADD | new keys inserted into the section |
 | MERGE | existing dicts recursively merged |
-| UNION | lists merged, no duplicates |
-| OVERWRITE | scalar values replaced |
+| OVERWRITE | any non-dict value replaces the stored one -- including a LIST, replaced wholesale, never unioned |
 | NO-DELETE | keys you do not mention are preserved |
+
+Enforced by `apply_update` (`hooks/modules/context/context_writer.py`), which reads the stored section, deep-merges your payload into it (`_merge_section_payload`), and writes the result back inside one transaction. So a payload naming one key of a five-key section leaves the other four intact, and the section's other writer -- `tools/scan/promote.py`, which refreshes only its scan-owned keys -- does not clobber your enrichment either. Two consequences to write against: **a list is atomic**, so restate it in full (a partial list write drops the elements you omit; if you can only ever know one element, key it under a dict instead of listing it); and **there is no delete** -- removing a stale key is an operator action (`gaia context`), not something a payload can express. The one case where a write is NOT a merge is a stored payload that is corrupt JSON or not an object: it has no keys to preserve, so it is replaced (`write_mode: "replace"` in the audit record, and `trg_pcc_history` still captures the before/after pair).
 
 **Well-formed payload (index, not snapshot).** A payload indexes what statically exists in the project -- identifiers, names, relationships, semi-stable metadata. It must not carry live-state: cloud runtime status (pod counts, instance status, VPC IDs), API-discovered facts that change without a rescan (load-balancer DNS, IP addresses, OIDC-derived IAM bindings), or any field whose scanner needs a live cloud API call. Stale live-state in context gives the next agent false confidence; obtain it on demand via the cloud CLI instead. For the produce-side judgment of *when* to emit and *what* to prioritize, see `agent-protocol`.
 

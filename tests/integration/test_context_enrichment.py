@@ -163,11 +163,11 @@ class TestFreshInstallFirstEnrichment:
 
 
 # ============================================================================
-# Scenario 2: Incremental enrichment - second write overwrites with new payload
+# Scenario 2: Incremental enrichment - a second write merges into the section
 # ============================================================================
 
 class TestIncrementalEnrichment:
-    """Scenario 2: writing to a contract that already has data replaces it."""
+    """Scenario 2: writing to a contract that already has data merges into it."""
 
     def test_incremental_enrichment_new_data(self, ctx_db):
         process_update_contracts = _import_process_update_contracts()
@@ -201,10 +201,47 @@ class TestIncrementalEnrichment:
 
         stored = read_contract(ctx_db, "test-ws", "cluster_details")
         assert stored is not None
-        # The payload replaces the previous value (upsert semantics)
+        # The mentioned list is restated wholesale...
         app_ns = stored["namespaces"]["application"]
         assert "nova-auth-dev" in app_ns
         assert "adm" in app_ns
+        # ...while the sibling keys the payload never mentioned survive.
+        assert sorted(stored["namespaces"]["infrastructure"]) == ["cert-manager", "flux-system"]
+        assert stored["namespaces"]["system"] == ["kube-system"]
+
+    def test_partial_write_preserves_unmentioned_sections_of_the_payload(self, ctx_db):
+        """A one-key payload must not collapse a multi-entry section.
+
+        Regression for the measured incident where a partial write to
+        `project_identity` deleted every entry it did not name.
+        """
+        process_update_contracts = _import_process_update_contracts()
+
+        seed_workspace_contracts(ctx_db, "test-ws", {
+            "cluster_details": {
+                "cluster_name": "prod-cluster",
+                "region": "us-central1",
+                "namespaces": {"application": ["adm"]},
+                "node_pools": [{"name": "default", "size": 3}],
+            }
+        })
+
+        contract = make_contract("cluster_details", {"kubernetes_version": "1.30.0"})
+        result = process_update_contracts(
+            contract,
+            _build_task_info("cloud-troubleshooter", ctx_db),
+        )
+
+        assert result["updated"] is True
+
+        stored = read_contract(ctx_db, "test-ws", "cluster_details")
+        assert stored == {
+            "cluster_name": "prod-cluster",
+            "region": "us-central1",
+            "namespaces": {"application": ["adm"]},
+            "node_pools": [{"name": "default", "size": 3}],
+            "kubernetes_version": "1.30.0",
+        }
 
 
 # ============================================================================

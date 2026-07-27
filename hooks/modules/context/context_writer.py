@@ -3,7 +3,7 @@ ContextWriter: validates and persists update_contracts clauses from agent output
 
 Parses the ``update_contracts`` array from the agent_contract_handoff envelope,
 enforces write permissions via agent_contract_permissions in ~/.gaia/gaia.db,
-and upserts to project_context_contracts.
+and merges into project_context_contracts.
 
 update_contracts format (array inside agent_contract_handoff)::
 
@@ -12,18 +12,29 @@ update_contracts format (array inside agent_contract_handoff)::
       ...
     ]
 
+A payload is a DELTA, not a snapshot: :func:`apply_update` deep-merges it into
+the stored section instead of replacing it, so keys the payload does not mention
+survive the write (see :func:`_merge_section_payload` for the exact rules and
+why). This is the semantics agents are instructed to expect
+(``skills/agent-contract-handoff``) and the one the section's other writer
+already honours: ``tools/scan/promote.py`` refreshes only its scan-owned keys
+and preserves agent-owned enrichment. Both actors write disjoint keys of the
+same section, so a full-section replace from either side destroys the other's
+contribution.
+
 Public API:
     - validate_permission(update, agent_name, cloud_scope, db_path) -> (allowed, message)
     - apply_update(update, agent_name, workspace, db_path) -> dict
     - process_update_contracts(contract_dict, task_info) -> dict
 """
 
+import copy
 import json
 import logging
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -144,17 +155,84 @@ def _derive_workspace() -> str:
         return "global"
 
 
+def _merge_section_payload(stored: Any, delta: dict) -> dict:
+    """Deep-merge ``delta`` into ``stored`` and return the merged section.
+
+    The rules, which ``skills/agent-contract-handoff`` states as the contract
+    agents write against:
+
+      * ADD       -- a key absent from ``stored`` is inserted.
+      * MERGE     -- two dicts merge recursively, key by key.
+      * OVERWRITE -- any other value type replaces the stored one.
+      * NO-DELETE -- a key ``delta`` does not mention is left untouched.
+
+    A LIST replaces the stored list wholesale rather than being unioned into it,
+    matching ``bin/cli/contract.py::_deep_merge``. Unioning is tempting and
+    wrong: project-context lists are lists of records (helm releases, apps), so
+    a union leaves two contradictory entries for the same resource and makes the
+    drift correction that motivated the write unexpressible. A writer restates
+    the whole list; a writer that only knows one element puts it under a keyed
+    dict instead.
+    """
+    merged = copy.deepcopy(stored) if isinstance(stored, dict) else {}
+    for key, value in delta.items():
+        current = merged.get(key)
+        if isinstance(value, dict) and isinstance(current, dict):
+            merged[key] = _merge_section_payload(current, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _decode_stored_payload(raw: Optional[str], contract_name: str) -> Any:
+    """Decode a stored payload column, returning None when it cannot be merged into.
+
+    A payload that is absent, unparseable, or not a JSON object has no keys to
+    preserve, so the caller replaces it outright. The prior value is not lost:
+    ``trg_pcc_history`` records the before/after pair for every UPDATE.
+    """
+    if raw is None:
+        return None
+    try:
+        decoded = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "Stored payload for contract '%s' is not valid JSON (%s); "
+            "replacing it instead of merging",
+            contract_name, exc,
+        )
+        return None
+    if not isinstance(decoded, dict):
+        logger.warning(
+            "Stored payload for contract '%s' is a %s, not an object; "
+            "replacing it instead of merging",
+            contract_name, type(decoded).__name__,
+        )
+        return None
+    return decoded
+
+
 def apply_update(
     update: dict,
     agent_name: str,
     workspace: Optional[str] = None,
     db_path: Optional[Path] = None,
 ) -> dict:
-    """Upsert a validated update_contracts entry into project_context_contracts.
+    """Merge a validated update_contracts entry into project_context_contracts.
+
+    The payload is a DELTA: the stored section is read, deep-merged with the
+    payload (:func:`_merge_section_payload`), and written back, so a partial
+    write preserves the sibling keys it does not mention. Read and write happen
+    inside one ``BEGIN IMMEDIATE`` transaction, since agents run concurrently and
+    an interleaved read-modify-write would lose one of the two deltas.
 
     ``workspace`` defaults to gaia.project.current() when not provided.
 
-    Returns an audit dict: ``{timestamp, agent, contract, workspace, success, error}``.
+    Returns an audit dict:
+    ``{timestamp, agent, contract, workspace, success, error, write_mode}``,
+    where ``write_mode`` is ``insert`` (no prior row), ``merge`` (deep-merged
+    into the prior payload), or ``replace`` (the prior payload was corrupt or
+    not an object, so it had no keys to preserve).
     """
     contract_name = update["contract"]
     payload = update["payload"]
@@ -168,6 +246,7 @@ def apply_update(
         "workspace": ws,
         "success": False,
         "error": None,
+        "write_mode": None,
     }
 
     resolved = db_path or _get_db_path()
@@ -177,14 +256,39 @@ def apply_update(
         return audit
 
     try:
-        payload_json = json.dumps(payload)
+        json.dumps(payload)
     except (TypeError, ValueError) as exc:
         audit["error"] = f"payload is not JSON-serializable: {exc}"
         return audit
 
+    con = None
     try:
-        con = sqlite3.connect(str(resolved))
+        con = sqlite3.connect(str(resolved), isolation_level=None)
         con.execute("PRAGMA foreign_keys = ON")
+        con.execute("BEGIN IMMEDIATE")
+
+        row = con.execute(
+            "SELECT payload FROM project_context_contracts "
+            "WHERE workspace = ? AND contract_name = ?",
+            (ws, contract_name),
+        ).fetchone()
+
+        if row is None:
+            stored = None
+            write_mode = "insert"
+        else:
+            stored = _decode_stored_payload(row[0], contract_name)
+            write_mode = "merge" if stored is not None else "replace"
+
+        if isinstance(payload, dict):
+            merged_payload = _merge_section_payload(stored, payload)
+        else:
+            # A non-object payload has no keys to merge; the schema-level shape
+            # check lives upstream, so persist it as-is rather than dropping it.
+            merged_payload = payload
+            write_mode = "replace"
+
+        payload_json = json.dumps(merged_payload)
 
         # Ensure workspace row exists so the FK on project_context_contracts holds.
         con.execute(
@@ -203,23 +307,33 @@ def apply_update(
             """,
             (ws, contract_name, payload_json, None, now),
         )
-        con.commit()
-        con.close()
+        con.execute("COMMIT")
 
         audit["success"] = True
+        audit["write_mode"] = write_mode
         logger.info(
-            "Context updated by %s: workspace=%s contract=%s",
-            agent_name, ws, contract_name,
+            "Context updated by %s: workspace=%s contract=%s mode=%s keys=%d",
+            agent_name, ws, contract_name, write_mode,
+            len(merged_payload) if isinstance(merged_payload, dict) else 0,
         )
         return audit
 
     except sqlite3.Error as exc:
         audit["error"] = str(exc)
         logger.error(
-            "Failed to upsert contract '%s' for agent '%s': %s",
+            "Failed to merge contract '%s' for agent '%s': %s",
             contract_name, agent_name, exc,
         )
+        if con is not None:
+            try:
+                con.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
         return audit
+
+    finally:
+        if con is not None:
+            con.close()
 
 
 # ============================================================================
