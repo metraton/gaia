@@ -5,6 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Manual re-run trigger. Without it, revalidating a red run required a dummy
+  # push, which both burned a full matrix and stacked another queued run.
+  workflow_dispatch:
+
+# One live run per ref. Pushes land faster than a full matrix completes (six
+# complete runs between 06:24 and 09:17 on 2026-07-24 from stacked pushes), and
+# every superseded run was spending the whole matrix on a commit already
+# replaced. Cancelling in progress keeps only the run whose result can matter.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test-python:
@@ -22,11 +33,17 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          # pyproject.toml is named explicitly rather than left to the action's
+          # dependency-file discovery: this repo has no requirements.txt, and a
+          # `cache: pip` that matches no dependency file fails the step.
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
           node-version: "20"
+          cache: npm
 
       # The Python suite includes tests that shell out to real Node scripts
       # (e.g. tests/cli/test_pre_publish_dry_run_representative.py runs
@@ -46,8 +63,14 @@ jobs:
       # (plus test_evals.py, which imports catalog.py) fails outright.
       # Installed explicitly here, rather than assumed present on the
       # runner image -- ubuntu-latest does not ship pyyaml by default.
+      #
+      # pytest-xdist: required by the `-n auto` on the Run tests step below.
+      # It is declared in pyproject.toml's [dev] extra, but this job installs
+      # explicit specs rather than `.[dev]`, so the extra alone does not put it
+      # on the runner -- without this name, `-n auto` aborts on an unrecognized
+      # argument before collecting a single test.
       - name: Install test dependencies
-        run: pip install pytest==8.3.5 pyyaml
+        run: pip install pytest==8.3.5 pyyaml pytest-xdist
 
       # tests/evals runs in-scope here (no --ignore) so the drift gate
       # (compare_to_baseline / enforce_no_regression, tests/evals/test_evals.py
@@ -59,8 +82,23 @@ jobs:
       # the subprocess dispatch lane they needed); the only remaining
       # `@pytest.mark.llm` tests live in tests/layer2_llm_evaluation, already
       # excluded above via --ignore, so no -m flag is needed here.
+      # No -x, deliberately. Fail-fast made a red run report only its FIRST
+      # failure and hide everything behind it (one cut at 967 tests, another at
+      # 5846 of 7605), so each further defect cost a full push to discover.
+      # Without it the same run reports every failure at once. WHAT is validated
+      # is unchanged -- the selection (tests/ minus the two --ignore paths) is
+      # identical; only the reporting is.
+      #
+      # -n auto mirrors package.json's `test` script, which has always run this
+      # same selection under xdist -- CI was the slower of the two surfaces for
+      # identical work. It also pairs correctly with dropping -x: xdist's
+      # fail-fast is non-deterministic (already-dispatched tests keep running),
+      # so the two flags were never a combination worth keeping. The tests/evals
+      # baseline gate shards safely because compare_to_baseline only walks the
+      # cases a run actually recorded, so a per-worker session compares its own
+      # subset rather than reporting the unrun cases as regressions.
       - name: Run tests
-        run: python -m pytest tests/ -x -q --tb=short --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
+        run: python -m pytest tests/ -q --tb=short -n auto --ignore=tests/layer2_llm_evaluation --ignore=tests/layer3_e2e
 
   l2-ci-subset:
     name: L2 ci_subset (budget-bounded LLM)
@@ -76,6 +114,8 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
       - name: Install test dependencies
         run: pip install pytest==8.3.5
@@ -107,6 +147,7 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node-version }}
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
@@ -152,6 +193,7 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: "20"
+          cache: npm
 
       - name: Install dependencies
         run: npm ci
