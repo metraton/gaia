@@ -161,7 +161,7 @@ Any malformation of a present block -- not an object, a missing/blank required f
 | `description` | required | `MEMORIALIZE_REQUIRED_FIELDS` |
 | `body` | required | `MEMORIALIZE_REQUIRED_FIELDS` |
 | `slug` | optional | -- |
-| `type` | optional | enum `atom` \| `decision` \| `negative` (`MEMORIALIZE_VALID_TYPES`); off-enum kept with a warning |
+| `type` | optional | enum `atom` \| `decision` \| `negative` \| `feedback` (`MEMORIALIZE_VALID_TYPES`); off-enum kept with a warning. `feedback` is the declared type for a defect or correction the system must remember -- proposing it grants no write: a direct `gaia memory add` from a dispatched subagent other than `gaia-operator` stays categorically blocked |
 | `class` | optional | enum `anchor` \| `thread` \| `log` (`MEMORIALIZE_VALID_CLASSES`); off-enum kept with a warning |
 | `rationale` | optional | -- |
 

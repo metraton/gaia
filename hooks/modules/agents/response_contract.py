@@ -129,8 +129,9 @@ class ConsolidationReportBlock:
 # ----------------------------------------------------------------------------
 # memorialize_suggestions -- optional top-level contract field
 #
-# A subagent may notice something worth memorializing (an atom, decision, or
-# negative-space note) but is NOT authorized to persist memory itself (T3
+# A subagent may notice something worth memorializing (an atom, decision,
+# negative-space note, or a feedback entry recording a defect or correction the
+# system must remember) but is NOT authorized to persist memory itself (T3
 # enforces that only the user + orchestrator decide what enters curated
 # memory). Instead, the subagent emits a `memorialize_suggestions` array.
 # The orchestrator presents each suggestion to the user as a deliberate
@@ -140,7 +141,11 @@ class ConsolidationReportBlock:
 # emit warnings but never fail contract validation.
 # ----------------------------------------------------------------------------
 
-MEMORIALIZE_VALID_TYPES = {"atom", "decision", "negative"}
+# Mirror of the `type` values the curated-memory store accepts for a proposable
+# row (`memory.type` CHECK in gaia/store/schema.sql). `project` and `user` stay
+# out: those are workspace-scoped notes the operator authors, not something a
+# dispatched subagent proposes from inside a task.
+MEMORIALIZE_VALID_TYPES = {"atom", "decision", "negative", "feedback"}
 MEMORIALIZE_VALID_CLASSES = {"anchor", "thread", "log"}
 MEMORIALIZE_REQUIRED_FIELDS = ("description", "body")
 

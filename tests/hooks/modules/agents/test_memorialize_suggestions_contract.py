@@ -11,6 +11,9 @@ user + orchestrator). The parser must:
 - Emit warnings (not failures) for malformed entries while keeping the
   contract valid.
 - Surface multiple suggestions in order.
+- Accept every declared type -- including `feedback` -- without an advisory
+  warning, while the runtime keeps a direct curated-memory write from a
+  non-operator subagent categorically blocked: proposing is the only path.
 """
 
 import json
@@ -19,14 +22,20 @@ from pathlib import Path
 
 import pytest
 
-HOOKS_DIR = Path(__file__).resolve().parents[4] / "hooks"
-sys.path.insert(0, str(HOOKS_DIR))
+PLUGIN_ROOT = Path(__file__).resolve().parents[4]
+HOOKS_DIR = PLUGIN_ROOT / "hooks"
+for _p in (str(HOOKS_DIR), str(PLUGIN_ROOT)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from modules.agents.response_contract import (  # noqa: E402
+    MEMORIALIZE_VALID_TYPES,
     MemorializeSuggestionsBlock,
     parse_memorialize_suggestions,
     validate_response_contract,
 )
+from modules.security.tiers import SecurityTier  # noqa: E402
+from modules.tools.bash_validator import BashValidator  # noqa: E402
 
 FIXTURE_PATH = (
     Path(__file__).resolve().parents[3]
@@ -216,6 +225,83 @@ class TestMemorializeSuggestionsParser:
         # Two advisory warnings, one for type and one for class.
         assert sum(1 for w in block.warnings if "type=" in w) == 1
         assert sum(1 for w in block.warnings if "class=" in w) == 1
+
+
+class TestFeedbackIsAFirstClassProposalType:
+    """`feedback` is proposable warning-free, and proposing stays the ONLY path.
+
+    Two halves of the same contract. The positive half: a subagent that noticed
+    a defect or a correction the system must remember can say so with
+    ``type: "feedback"`` and the parser accepts it silently, like any other
+    declared type. The negative half: that declaration grants no write -- a
+    direct ``gaia memory add --type=feedback`` from a dispatched subagent other
+    than the memory operator is still categorically rejected.
+    """
+
+    def test_feedback_is_declared_in_the_type_enum(self):
+        assert "feedback" in MEMORIALIZE_VALID_TYPES
+
+    def test_feedback_suggestion_is_accepted_without_advisory_warning(self):
+        suggestion = {
+            "slug": "feedback_contract_fence_omitted_after_finalize",
+            "type": "feedback",
+            "class": "log",
+            "description": "Finalizing via the CLI without emitting the fence fails the turn",
+            "body": (
+                "symptom: SubagentStop rejected a turn whose draft was finalized cleanly.\n"
+                "component: hooks/adapters/claude_code.py (full-verdict gate).\n"
+                "evidence: exit 2 with no fence in the response text."
+            ),
+            "rationale": "Recurring failure worth remembering across sessions.",
+        }
+        contract = {
+            "agent_status": _BASE_STATUS,
+            "evidence_report": _BASE_EVIDENCE,
+            "memorialize_suggestions": [suggestion],
+        }
+        output = _wrap(contract)
+        block = parse_memorialize_suggestions(output)
+
+        assert block.marker_present is True
+        assert len(block.suggestions) == 1
+        assert block.suggestions[0]["type"] == "feedback"
+        assert block.warnings == [], (
+            f"type=feedback must not raise an advisory warning; got: {block.warnings}"
+        )
+
+        result = validate_response_contract(output, task_agent_id="a990010f1e2d3c4b5")
+        assert result.valid is True, (
+            f"a feedback suggestion must not affect contract validity; "
+            f"missing={result.missing}, invalid={result.invalid}"
+        )
+
+    def test_direct_feedback_memory_write_from_a_subagent_stays_blocked(self):
+        """The negative half: declaring the type grants no write capability."""
+        command = (
+            "gaia memory add --name=feedback_contract_fence_omitted_after_finalize "
+            "--type=feedback --class=log --body 'symptom: ...'"
+        )
+        result = BashValidator().validate(
+            command, is_subagent=True, agent_type="gaia-system"
+        )
+
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert "memorialize_suggestions" in result.reason
+        # Categorical deny: no grant is offered and none was consumed.
+        assert "not approvable" in result.reason
+        assert result.consumed_approval_id is None
+
+    def test_memory_operator_may_persist_the_same_feedback_row(self):
+        """The allow-listed writer is the path a proposal graduates through."""
+        command = (
+            "gaia memory add --name=feedback_contract_fence_omitted_after_finalize "
+            "--type=feedback --class=log --body 'symptom: ...'"
+        )
+        result = BashValidator().validate(
+            command, is_subagent=True, agent_type="gaia-operator"
+        )
+        assert result.allowed is True
 
 
 class TestMemorializeSuggestionsFixture:
