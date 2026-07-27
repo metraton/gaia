@@ -106,17 +106,36 @@ def _check_context_update_missing(
     return None
 
 
+OBSERVED_HARNESS_CUT_TOOL_CALLS = (55, 58, 59, 62, 85)
+"""Tool-call counts of the five harness truncations observed on 2026-07-26.
+
+Kept in the module rather than in a test so the threshold below and the
+measurement that justifies it cannot drift apart.
+"""
+
+EXCESSIVE_TOOL_CALL_THRESHOLD = 50
+"""Tool-call count above which a turn enters the elevated-truncation band.
+
+Measured over 2416 archived transcripts: the rate of turns ending in a harness
+cut steps up roughly sevenfold once a turn crosses 50 tool calls. The previous
+value, 75, sat above every cut in OBSERVED_HARNESS_CUT_TOOL_CALLS but one, so
+the check fired after the risk it was meant to observe had already
+materialized. The number is the measured step, not a round figure.
+"""
+
+
 def _check_excessive_tool_calls(
     analysis: TranscriptAnalysis,
 ) -> Optional[Dict[str, str]]:
-    """Warning if tool_call_count exceeds 75."""
-    if analysis.tool_call_count > 75:
+    """Warning if tool_call_count crosses the measured truncation-risk step."""
+    if analysis.tool_call_count > EXCESSIVE_TOOL_CALL_THRESHOLD:
         return {
             "type": "excessive_tool_calls",
             "severity": "warning",
             "message": (
                 f"Agent made {analysis.tool_call_count} tool calls "
-                f"(threshold: 75) — may indicate inefficient exploration"
+                f"(threshold: {EXCESSIVE_TOOL_CALL_THRESHOLD}) — past the "
+                f"measured step where harness truncation risk rises sharply"
             ),
         }
     return None
@@ -432,7 +451,7 @@ def audit(
     - investigation_skip: first tool was Bash AND that first command
       classifies as T3 (state-mutating) per classify_command_tier
     - context_update_missing: agent owns writable contracts but no update_contracts emitted
-    - excessive_tool_calls: tool_call_count > 75
+    - excessive_tool_calls: tool_call_count > EXCESSIVE_TOOL_CALL_THRESHOLD
     - token_budget: cache_creation_tokens > 200000
     - token_explosion: total tokens (input+cache_creation+output) > 10M
     - cache_efficiency: cache read ratio < 60% with significant volume

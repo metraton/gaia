@@ -20,7 +20,7 @@ from modules.agents.transcript_analyzer import (
     ToolCall,
     TranscriptAnalysis,
 )
-from modules.audit.workflow_auditor import audit
+from modules.audit.workflow_auditor import EXCESSIVE_TOOL_CALL_THRESHOLD, audit
 from modules.core.paths import clear_path_cache
 
 
@@ -195,22 +195,22 @@ class TestContextUpdateMissing:
 
 
 class TestExcessiveToolCalls:
-    def test_triggers_when_over_75(self):
-        ta = _base_analysis(tool_call_count=76)
+    def test_triggers_above_threshold_tool_calls(self):
+        ta = _base_analysis(tool_call_count=EXCESSIVE_TOOL_CALL_THRESHOLD + 1)
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "excessive_tool_calls" in types
         match = next(a for a in anomalies if a["type"] == "excessive_tool_calls")
         assert match["severity"] == "warning"
-        assert "76" in match["message"]
+        assert str(EXCESSIVE_TOOL_CALL_THRESHOLD + 1) in match["message"]
 
-    def test_no_anomaly_at_boundary(self):
-        ta = _base_analysis(tool_call_count=75)
+    def test_no_anomaly_at_boundary_tool_calls(self):
+        ta = _base_analysis(tool_call_count=EXCESSIVE_TOOL_CALL_THRESHOLD)
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
         assert "excessive_tool_calls" not in types
 
-    def test_no_anomaly_when_zero(self):
+    def test_no_anomaly_when_zero_tool_calls(self):
         ta = _base_analysis(tool_call_count=0)
         anomalies = audit(_base_metrics(), transcript_analysis=ta)
         types = [a["type"] for a in anomalies]
