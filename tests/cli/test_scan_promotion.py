@@ -15,6 +15,8 @@ cover each stage in isolation plus the decoupling and ownership guarantees:
     curated remote_url;
   * matching is by physical identity (local_path / remote), so a re-scan
     refreshes the existing entry in place instead of duplicating (requirement 4);
+  * a concurrent agent update_contracts merge is not lost: promotion's
+    read-merge-write is one transaction, so both writers' keys survive;
   * dry-run (apply=False) writes nothing and materializes no DB file;
   * a hand-authored FLAT contract with >1 promotable project is AUTO-CONVERTED
     to a map, preserving the old workspace-level metadata under a reserved key;
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -575,6 +578,126 @@ def test_promotion_is_independently_invocable(tmp_db):
     rep = promote_workspace(ws, db_path=tmp_db, apply=True)
     assert rep["applied"] is True
     assert _read_contract(tmp_db, ws) is not None
+
+
+# ---------------------------------------------------------------------------
+# Atomicity: promotion vs a concurrent agent update_contracts merge
+# ---------------------------------------------------------------------------
+
+AGENT_OWNED_VALUE = "curated by the agent"
+
+
+def _promote_with_an_interleaved_agent_merge(tmp_db, monkeypatch, ws):
+    """Run a promotion with an agent ``update_contracts`` merge forced into the
+    seam between promotion's read and its write. Returns the resulting entry.
+
+    The interleaving is FORCED rather than raced, so the check bites every run:
+    ``classify_identity_shape`` is called after promotion's read and before its
+    write on either connection lifecycle, so it is the seam where the agent
+    thread is released. That thread is then awaited only briefly -- long enough
+    to complete when promotion holds no write lock (a non-atomic writer, whose
+    delta then sits on the row promotion is about to overwrite), and short enough
+    that it is still blocked when promotion holds ``BEGIN IMMEDIATE`` (the atomic
+    writer, so the delta lands after the COMMIT and merges into fresh data).
+    """
+    from hooks.modules.context.context_writer import apply_update
+    from tools.scan.promote import promote_workspace
+
+    _seed_project(tmp_db, ws, "alpha", path="/abs/alpha",
+                  identity="/abs/alpha/.git",
+                  remote="git@github.com:me/alpha.git",
+                  platform="github", language="python")
+    # An entry matched by local_path, with no platform/language yet -- so
+    # promotion has a real scan-owned refresh to write.
+    _write_contract(tmp_db, ws, {"alpha": {"name": "alpha",
+                                           "local_path": "/abs/alpha"}})
+
+    audits: list = []
+
+    def _agent_merge() -> None:
+        audits.append(apply_update(
+            {"contract": "project_identity",
+             "payload": {"alpha": {"description": AGENT_OWNED_VALUE}}},
+            "developer", workspace=ws, db_path=tmp_db,
+        ))
+
+    thread = threading.Thread(target=_agent_merge)
+    import gaia.identity_shape as identity_shape
+    real_classify = identity_shape.classify_identity_shape
+
+    def _classify_then_release_the_agent(payload):
+        if not thread.is_alive() and not audits:
+            thread.start()
+            thread.join(timeout=0.5)
+        return real_classify(payload)
+
+    monkeypatch.setattr(identity_shape, "classify_identity_shape",
+                        _classify_then_release_the_agent)
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    thread.join(timeout=30)
+
+    assert not thread.is_alive(), "the agent merge thread never finished"
+    assert audits and audits[0]["success"], f"agent merge failed: {audits!r}"
+    assert rep["applied"] is True
+    return _read_contract(tmp_db, ws)["alpha"]
+
+
+def test_concurrent_agent_merge_survives_promotion(tmp_db, monkeypatch):
+    """A concurrent ``update_contracts`` merge must not be lost by promotion.
+
+    ``project_context_contracts`` has two writers -- promotion here and
+    ``context_writer.apply_update`` for an agent's delta -- and both finish with
+    ``payload = excluded.payload``. So the write is only safe if the payload it
+    replaces was read under the same lock. The property is order-independent:
+    the final payload carries the fresh scan-owned keys AND the agent-owned key
+    that existed.
+    """
+    entry = _promote_with_an_interleaved_agent_merge(tmp_db, monkeypatch, "ws-race")
+    assert entry.get("description") == AGENT_OWNED_VALUE, (
+        "the concurrent agent merge was lost by promotion"
+    )
+    assert entry["platform"] == "github"
+    assert entry["language"] == "python"
+
+
+def test_interleaving_harness_detects_a_non_atomic_writer(tmp_db, monkeypatch):
+    """Counterfactual: the harness above must FAIL a non-atomic writer.
+
+    Without this, the property test could pass vacuously -- an interleaving that
+    never actually happens proves nothing. Here promotion's read-modify-write is
+    replaced with the same merge across TWO connections (the shape it had before
+    the transaction was introduced, built from the same helpers rather than a
+    stale copy of them), and the agent's delta is duly lost. The loss is what is
+    asserted, so the harness is shown to bite on the exact defect it guards.
+    """
+    import tools.scan.promote as promote
+
+    def _non_atomic_merge_and_write(workspace, promotable, missing, db_path):
+        from gaia.store.writer import _connect
+        existing = promote._read_identity_contract(workspace, db_path)
+        shape, payload, stats = promote._merge_for_shape(existing, promotable, missing)
+        if payload is None or not promote._stats_changed(stats):
+            return shape, payload, stats, False
+        con = _connect(db_path)
+        try:
+            promote._upsert_identity_payload(con, workspace, payload)
+            con.commit()
+        finally:
+            con.close()
+        return shape, payload, stats, True
+
+    monkeypatch.setattr(promote, "_merge_and_write_atomically",
+                        _non_atomic_merge_and_write)
+
+    entry = _promote_with_an_interleaved_agent_merge(
+        tmp_db, monkeypatch, "ws-race-nonatomic")
+    assert "description" not in entry, (
+        "the non-atomic writer did not lose the agent merge -- the harness is "
+        "not exercising the interleaving it claims to"
+    )
+    # The scan-owned side still landed, so the loss is specifically the agent's.
+    assert entry["platform"] == "github"
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,16 @@ Three properties this module guarantees:
      (``mark_missing_in`` sets ``status='missing'`` + ``missing_since``; an
      upsert with ``missing_since=None`` reactivates).
 
+  2c. ATOMICITY. The contract row has a SECOND writer -- an agent's
+     ``update_contracts`` delta, deep-merged by
+     ``hooks/modules/context/context_writer.apply_update`` -- so promotion's
+     read-merge-write runs inside one ``BEGIN IMMEDIATE`` transaction
+     (:func:`_merge_and_write_atomically`). Without that, an agent merge landing
+     between the read and the write is silently overwritten: the ownership
+     boundary below is a policy about WHICH keys are rewritten, and it only
+     preserves the other writer's keys if the value being merged into is the
+     current one.
+
   3. OWNERSHIP BOUNDARY. Promotion writes ONLY scan-owned keys
      (:data:`_ENTRY_SCAN_REFRESH`: local_path, remote_url, platform, language)
      and SEEDS name/type only when absent (:data:`_ENTRY_SCAN_SEED`). Every
@@ -66,6 +76,7 @@ import copy
 import json
 import os
 import re
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -392,19 +403,17 @@ def _auto_convert_to_map(
 # Contract read / write (reuses the store connection + the SQL history trigger)
 # ---------------------------------------------------------------------------
 
-def _read_identity_contract(workspace: str, db_path: Optional[Path]) -> Optional[dict]:
-    if not _db_file_exists(db_path):
-        return None
-    from gaia.store.writer import _connect
-    con = _connect(db_path)
-    try:
-        row = con.execute(
-            "SELECT payload FROM project_context_contracts "
-            "WHERE workspace = ? AND contract_name = ?",
-            (workspace, CONTRACT_NAME),
-        ).fetchone()
-    finally:
-        con.close()
+def _select_identity_payload(con, workspace: str) -> Optional[dict]:
+    """Read the stored payload on an ALREADY-OPEN connection.
+
+    Returns None when there is no row, or when the stored value is not a JSON
+    object -- neither carries keys to preserve, so the caller merges into {}.
+    """
+    row = con.execute(
+        "SELECT payload FROM project_context_contracts "
+        "WHERE workspace = ? AND contract_name = ?",
+        (workspace, CONTRACT_NAME),
+    ).fetchone()
     if not row:
         return None
     try:
@@ -414,27 +423,129 @@ def _read_identity_contract(workspace: str, db_path: Optional[Path]) -> Optional
         return None
 
 
-def _write_identity_contract(workspace: str, payload: dict, db_path: Optional[Path]) -> None:
-    """Upsert the project_identity contract. The AFTER UPDATE trigger
-    ``trg_pcc_history`` records the before/after payload automatically."""
+def _upsert_identity_payload(con, workspace: str, payload: dict) -> None:
+    """Upsert the project_identity contract on an ALREADY-OPEN connection.
+
+    The AFTER UPDATE trigger ``trg_pcc_history`` records the before/after
+    payload automatically.
+    """
+    now = _now_iso()
+    con.execute(
+        "INSERT OR IGNORE INTO workspaces (name, identity, created_at) "
+        "VALUES (?, ?, ?)",
+        (workspace, workspace, now),
+    )
+    con.execute(
+        "INSERT INTO project_context_contracts "
+        "(workspace, contract_name, payload, metadata, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(workspace, contract_name) DO UPDATE SET "
+        "payload = excluded.payload, updated_at = excluded.updated_at",
+        (workspace, CONTRACT_NAME, json.dumps(payload), None, now),
+    )
+
+
+def _read_identity_contract(workspace: str, db_path: Optional[Path]) -> Optional[dict]:
+    """Read the contract in its own short-lived connection (preview path only).
+
+    A dry-run never writes, so it needs no write lock -- and it must not
+    materialize the DB file for a workspace that was never scanned.
+    """
+    if not _db_file_exists(db_path):
+        return None
     from gaia.store.writer import _connect
     con = _connect(db_path)
-    now = _now_iso()
     try:
-        con.execute(
-            "INSERT OR IGNORE INTO workspaces (name, identity, created_at) "
-            "VALUES (?, ?, ?)",
-            (workspace, workspace, now),
-        )
-        con.execute(
-            "INSERT INTO project_context_contracts "
-            "(workspace, contract_name, payload, metadata, updated_at) "
-            "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(workspace, contract_name) DO UPDATE SET "
-            "payload = excluded.payload, updated_at = excluded.updated_at",
-            (workspace, CONTRACT_NAME, json.dumps(payload), None, now),
-        )
-        con.commit()
+        return _select_identity_payload(con, workspace)
+    finally:
+        con.close()
+
+
+def _merge_for_shape(
+    existing: Optional[dict], promotable: list, missing: list
+) -> tuple[str, Optional[dict], Optional[dict]]:
+    """Dispatch the merge on the stored payload's shape. Pure -- no I/O.
+
+    Returns ``(shape, payload, stats)``, with payload and stats None when the
+    shape dictates that nothing promotes at all.
+    """
+    from gaia.identity_shape import classify_identity_shape
+
+    shape = classify_identity_shape(existing)
+
+    if shape in ("map", "empty"):
+        payload, stats = _merge_map(existing or {}, promotable, missing)
+    elif not promotable:
+        # Flat / scanner shape with nothing on disk to promote: converting it
+        # on the strength of vanished rows alone would rewrite a hand-authored
+        # payload with no project entry to show for it.
+        return shape, None, None
+    elif shape == "flat" and len(promotable) == 1:
+        # P2 (parked): a single-project flat / workspace-identity contract keeps
+        # its top-level shape -- refresh scan-owned keys in place, no conversion.
+        payload, stats = _merge_flat(existing or {}, promotable[0])
+    else:
+        # Flat with >1 promotable, OR a scanner (workspace_repos) shape: convert
+        # to a map so every project promotes cleanly, preserving the old
+        # top-level metadata under the reserved workspace key. A scanner shape is
+        # routed here (never through _merge_flat) precisely so its structured
+        # payload is preserved intact instead of being clobbered with top-level
+        # scan-owned keys.
+        payload, stats = _auto_convert_to_map(existing, promotable, missing)
+    return shape, payload, stats
+
+
+def _stats_changed(stats: Optional[dict]) -> bool:
+    if not stats:
+        return False
+    return (
+        stats["added_entries"] > 0
+        or stats["refreshed_entries"] > 0
+        or stats["marked_missing_entries"] > 0
+    )
+
+
+def _merge_and_write_atomically(
+    workspace: str, promotable: list, missing: list, db_path: Optional[Path]
+) -> tuple[str, Optional[dict], Optional[dict], bool]:
+    """Read, merge and write the contract inside ONE ``BEGIN IMMEDIATE``.
+
+    Holding the write lock from the SELECT through the UPSERT is what makes the
+    ownership boundary hold under concurrency, and it is not optional. This row
+    has a second writer -- ``hooks/modules/context/context_writer.apply_update``,
+    which deep-merges an agent's ``update_contracts`` delta into the SAME
+    section -- and both sides finish with ``payload = excluded.payload``. So a
+    read taken outside the transaction lets any agent merge that lands between
+    it and the UPSERT be overwritten with a payload computed before that merge
+    existed: the agent's contribution disappears with no error on either side.
+    Serializing the two read-modify-writes is the only thing that makes the
+    result order-independent, containing both the fresh scan-owned keys and the
+    agent-owned keys that were present.
+
+    Returns ``(shape, payload, stats, wrote)``. Nothing is written when the
+    shape yields no payload or when the merge produced no change, so an
+    idempotent re-promotion still touches no row.
+    """
+    from gaia.store.writer import _connect
+
+    con = _connect(db_path)
+    con.isolation_level = None  # explicit transaction control, no implicit BEGIN
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        existing = _select_identity_payload(con, workspace)
+        shape, payload, stats = _merge_for_shape(existing, promotable, missing)
+        if payload is None or not _stats_changed(stats):
+            con.execute("ROLLBACK")
+            return shape, payload, stats, False
+        _upsert_identity_payload(con, workspace, payload)
+        con.execute("COMMIT")
+        return shape, payload, stats, True
+    except BaseException:
+        try:
+            con.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
     finally:
         con.close()
 
@@ -452,6 +563,11 @@ def promote_workspace(
     """Promote scanned ``projects`` rows of ``workspace`` into the
     ``project_identity`` contract, merging scan-owned fields without clobbering
     agent-owned enrichment.
+
+    On ``apply``, the read-merge-write goes through
+    :func:`_merge_and_write_atomically` so a concurrent agent merge into the same
+    row cannot be lost. A preview reads outside any transaction: it writes
+    nothing, so it has nothing to serialize against.
 
     Args:
         workspace: Workspace whose scanned projects to promote.
@@ -498,46 +614,28 @@ def promote_workspace(
     if not promotable and not missing:
         return report
 
-    from gaia.identity_shape import classify_identity_shape
-
-    existing = _read_identity_contract(workspace, db_path)
-    shape = classify_identity_shape(existing)
+    if apply:
+        shape, new_payload, stats, wrote = _merge_and_write_atomically(
+            workspace, promotable, missing, db_path
+        )
+    else:
+        shape, new_payload, stats = _merge_for_shape(
+            _read_identity_contract(workspace, db_path), promotable, missing
+        )
+        wrote = False
     report["shape"] = shape
 
-    if shape in ("map", "empty"):
-        new_payload, stats = _merge_map(existing or {}, promotable, missing)
-    elif not promotable:
-        # Flat / scanner shape with nothing on disk to promote: converting it
-        # on the strength of vanished rows alone would rewrite a hand-authored
-        # payload with no project entry to show for it.
+    if new_payload is None:
         return report
-    elif shape == "flat" and len(promotable) == 1:
-        # P2 (parked): a single-project flat / workspace-identity contract keeps
-        # its top-level shape -- refresh scan-owned keys in place, no conversion.
-        new_payload, stats = _merge_flat(existing or {}, promotable[0])
-    else:
-        # Flat with >1 promotable, OR a scanner (workspace_repos) shape: convert
-        # to a map so every project promotes cleanly, preserving the old
-        # top-level metadata under the reserved workspace key. A scanner shape
-        # is routed here (never through _merge_flat) precisely so its structured
-        # payload is preserved intact instead of being clobbered with top-level
-        # scan-owned keys.
-        new_payload, stats = _auto_convert_to_map(existing, promotable, missing)
 
     report["added_entries"] = stats["added_entries"]
     report["refreshed_entries"] = stats["refreshed_entries"]
     report["marked_missing_entries"] = stats["marked_missing_entries"]
     report["preview"] = new_payload
 
-    changed = (
-        stats["added_entries"] > 0
-        or stats["refreshed_entries"] > 0
-        or stats["marked_missing_entries"] > 0
-    )
-    if not changed:
+    if not _stats_changed(stats):
         report["outcome"] = "no-op"
-    elif apply:
-        _write_identity_contract(workspace, new_payload, db_path)
+    elif wrote:
         report["applied"] = True
         report["outcome"] = "applied"
     else:
