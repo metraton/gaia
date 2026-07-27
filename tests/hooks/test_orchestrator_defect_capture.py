@@ -14,14 +14,16 @@ merely present somewhere in the table.
 Every seeded row here goes through an isolated, per-test substrate (the
 autouse ``GAIA_DATA_DIR`` fixture in ``tests/conftest.py``), never the
 developer's own ``~/.gaia``. The one exception is
-``TestRealProductionCutRows``, which deliberately reads the REAL substrate at
-``~/.gaia/gaia.db`` -- read-only, via ``read_defects`` -- to confirm the
-harness-cut case is not merely reproducible in a fixture but already landing
-in production today.
+``TestRealSubstrateCutRows``, which deliberately reads the REAL substrate at
+``~/.gaia/gaia.db`` -- read-only, via ``read_defects`` -- to check read-back
+fidelity on rows this repo did not write. See the comment block above that
+class for its precondition and why the precondition is measured outside the
+reader.
 """
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -116,29 +118,169 @@ class TestHarnessCutLandsAsOrchestratorDefect:
         assert rows[0]["severity"] == "warning"
 
 
-class TestRealProductionCutRows:
-    """Read-only: confirms the cut case is not just reproducible, it already
-    happened. No write of any kind touches this path."""
+# ---------------------------------------------------------------------------
+# Read-back fidelity against the machine's own accumulated substrate
+# ---------------------------------------------------------------------------
+#
+# The property here is read-back fidelity on rows this commit did not write:
+# agent.cut rows accumulated over time by whatever task_result_observer was
+# installed when each was recorded must STILL surface through read_defects as
+# origin=orchestrator / severity=warning today. The fixture-seeded test above
+# cannot cover that -- it writes and reads within one commit.
+#
+# The precondition is measured through a channel INDEPENDENT of the code under
+# test: a raw COUNT over harness_events, never read_defects. That independence
+# is the entire design, and it is what stops this from becoming an inert
+# sentinel that can only skip or pass:
+#
+#   raw count == 0 -> nothing of this type is on disk, so there is nothing to
+#                     read back and the precondition is genuinely unmet: skip
+#                     with the reason named. No reader regression can fabricate
+#                     this state, because the count never goes through the
+#                     reader.
+#   raw count > 0  -> cuts ARE on disk, and every one of them must come back as
+#                     an orchestrator-origin warning: assert. A reader that
+#                     surfaces fewer -- a moved severity floor, a broken origin
+#                     mapping, a renamed column -- FAILS here.
+#
+# Do NOT collapse the guard into `if not read_defects(...): skip`. Measuring the
+# precondition with the code under test makes the exact regression this test
+# exists to catch indistinguishable from having nothing to check, and the
+# sentinel silently stops biting. TestTheRealSubstrateSentinelStillBites pins
+# both directions so that collapse cannot land unnoticed.
+#
+# Equally deliberate: a substrate holding thousands of OTHER event types but no
+# agent.cut row skips rather than fails. A machine that never suffered a harness
+# cut is healthy, not defective -- requiring one to exist is the "this machine's
+# history is an invariant of the suite" coupling this test was rewritten to
+# remove.
+_REAL_SUBSTRATE = Path.home() / ".gaia" / "gaia.db"
 
-    def test_the_live_agent_cut_rows_are_orchestrator_origin_and_warning(self):
-        real_db = Path.home() / ".gaia" / "gaia.db"
-        if not real_db.exists():
-            pytest.skip(f"no real substrate at {real_db} on this machine")
+# Read-back cap, and therefore also the ceiling on the expected count: a
+# substrate holding more cuts than this stays comparable instead of failing on
+# truncation alone.
+_READ_BACK_LIMIT = 10_000
 
-        rows = read_defects(
-            origin="orchestrator",
-            type=AGENT_CUT_EVENT,
-            workspace=None,
-            limit=10_000,
-            db_path=real_db,
+
+def _count_recorded_cuts(substrate: Path) -> int:
+    """Raw ``agent.cut`` row count, read-only and bypassing ``read_defects``."""
+    con = sqlite3.connect(f"file:{substrate}?mode=ro", uri=True)
+    try:
+        return con.execute(
+            "SELECT COUNT(*) FROM harness_events WHERE type = ?",
+            (AGENT_CUT_EVENT,),
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _assert_recorded_cuts_read_back_as_orchestrator_warnings(substrate: Path) -> None:
+    """Skip when no cut is recorded; assert read-back fidelity when one is."""
+    if not substrate.exists():
+        pytest.skip(f"precondition unmet: no substrate at {substrate} on this machine")
+
+    try:
+        recorded = _count_recorded_cuts(substrate)
+    except sqlite3.OperationalError as exc:
+        pytest.skip(
+            f"precondition unmet: substrate at {substrate} has no queryable "
+            f"harness_events table ({exc})"
         )
 
-        assert len(rows) > 0, (
-            f"expected at least one real {AGENT_CUT_EVENT} row already recorded "
-            "in production"
+    if recorded == 0:
+        pytest.skip(
+            f"precondition unmet: substrate at {substrate} has recorded no "
+            f"{AGENT_CUT_EVENT} row (raw harness_events count is 0), so there "
+            "is no accumulated row to read back"
         )
-        assert all(row["origin"] == "orchestrator" for row in rows)
-        assert all(row["severity"] == "warning" for row in rows)
+
+    rows = read_defects(
+        origin="orchestrator",
+        type=AGENT_CUT_EVENT,
+        workspace=None,
+        limit=_READ_BACK_LIMIT,
+        db_path=substrate,
+    )
+
+    assert len(rows) == min(recorded, _READ_BACK_LIMIT), (
+        f"{recorded} {AGENT_CUT_EVENT} row(s) are on disk in {substrate} but "
+        f"read_defects surfaced {len(rows)} -- recorded cuts stopped reading "
+        "back as orchestrator-origin defects"
+    )
+    assert all(row["origin"] == "orchestrator" for row in rows)
+    assert all(row["severity"] == "warning" for row in rows)
+
+
+class TestRealSubstrateCutRows:
+    """Read-only against the real substrate -- no write touches this path."""
+
+    def test_recorded_cut_rows_read_back_as_orchestrator_origin_and_warning(self):
+        _assert_recorded_cuts_read_back_as_orchestrator_warnings(_REAL_SUBSTRATE)
+
+
+class TestTheRealSubstrateSentinelStillBites:
+    """The guard above must tell 'nothing recorded' apart from 'recorded but no
+    longer surfaced', rather than skipping its way out of both. These pin each
+    branch on a synthetic substrate, so the distinction stays enforced on any
+    machine -- including one whose real substrate always skips."""
+
+    def test_recorded_cuts_that_stop_surfacing_as_defects_fail(self, tmp_path):
+        substrate = tmp_path / "populated.db"
+        write_harness_event(
+            event_type=CONTRACT_REJECTED_EVENT, source="hook", agent="gaia-system",
+            result="an unrelated defect the reader still surfaces",
+            severity="error", workspace=WORKSPACE, db_path=substrate,
+        )
+        # Cuts on disk, graded below the reader's defect floor -- the shape a
+        # writer/reader drift produces, and the failure this test owns.
+        for _ in range(2):
+            write_harness_event(
+                event_type=AGENT_CUT_EVENT, source="hook", agent="gaia-system",
+                result="a cut that no longer grades as a defect",
+                severity="info", workspace=WORKSPACE, db_path=substrate,
+            )
+
+        assert _count_recorded_cuts(substrate) == 2
+        assert read_defects(origin="orchestrator", db_path=substrate), (
+            "fixture drifted: the substrate must be populated and readable, so "
+            "the failure below is about cuts specifically, not a dead reader"
+        )
+
+        with pytest.raises(AssertionError, match="stopped reading back"):
+            _assert_recorded_cuts_read_back_as_orchestrator_warnings(substrate)
+
+    def test_a_substrate_with_events_but_no_recorded_cut_skips_with_the_reason(
+        self, tmp_path,
+    ):
+        substrate = tmp_path / "no_cuts.db"
+        write_harness_event(
+            event_type="agent.dispatch", source="hook", agent="gaia-system",
+            result="ordinary telemetry", severity="info",
+            workspace=WORKSPACE, db_path=substrate,
+        )
+
+        assert _count_recorded_cuts(substrate) == 0
+        with pytest.raises(pytest.skip.Exception,
+                           match="raw harness_events count is 0"):
+            _assert_recorded_cuts_read_back_as_orchestrator_warnings(substrate)
+
+    def test_an_absent_substrate_skips_with_the_reason(self, tmp_path):
+        with pytest.raises(pytest.skip.Exception, match="no substrate at"):
+            _assert_recorded_cuts_read_back_as_orchestrator_warnings(
+                tmp_path / "never-created.db"
+            )
+
+    def test_well_formed_recorded_cuts_pass(self, tmp_path):
+        """The counterpart to the failing branch: the guard is not simply
+        strict, it passes on a substrate whose cuts read back correctly."""
+        substrate = tmp_path / "healthy.db"
+        write_harness_event(
+            event_type=AGENT_CUT_EVENT, source="hook", agent="gaia-system",
+            result="a cut recorded exactly as the observer writes it",
+            severity="warning", workspace=WORKSPACE, db_path=substrate,
+        )
+
+        _assert_recorded_cuts_read_back_as_orchestrator_warnings(substrate)
 
 
 class TestContractRejectionLandsAsOrchestratorDefect:
