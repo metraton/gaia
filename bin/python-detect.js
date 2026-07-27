@@ -10,7 +10,7 @@
  * lifetime of the process so repeated calls are free.
  */
 
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 /** @type {string | null | undefined} */
 let _cached;

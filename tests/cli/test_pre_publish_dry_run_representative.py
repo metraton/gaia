@@ -86,7 +86,16 @@ class TestPrePublishDryRunRepresentative(unittest.TestCase):
             res.returncode, 0,
             msg=f"dry-run should complete cleanly on a clean tree. Output:\n{combined}",
         )
-        self.assertIn("Dry run completed - no changes made", combined)
+        # The script auto-enables --validate-only under CI (self-install cannot
+        # be validated before the package is on the registry), and summary()
+        # branches on validateOnly before dryRun. So the completion line is
+        # mode-dependent: accept whichever effective mode actually ran, since
+        # what this test asserts is a clean completion, not which banner printed.
+        self.assertTrue(
+            "Dry run completed - no changes made" in combined
+            or "Validation completed successfully (--validate-only mode)" in combined,
+            msg=f"dry-run produced no completion line. Output:\n{combined}",
+        )
 
         after = self._git_dirty_paths()
         self.assertEqual(
