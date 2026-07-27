@@ -177,6 +177,18 @@ def _merge_section_payload(stored: Any, delta: dict) -> dict:
     drift correction that motivated the write unexpressible. A writer restates
     the whole list; a writer that only knows one element puts it under a keyed
     dict instead.
+
+    NO-DELETE is total, and the omission of a tombstone/sentinel is deliberate:
+    every value in ``delta`` is a value to STORE, so nothing here spells "remove
+    this key", and no other seam removes one either. A delta is computed from
+    partial knowledge, so a sentinel would put a writer that merely did not
+    OBSERVE a key one keystroke from erasing another actor's contribution -- the
+    loss this merge exists to prevent, re-entered by the front door. The posture
+    on a fact that stopped being true is to MARK it: ``promote._mark_missing``
+    stamps ``MISSING_MARK_KEY`` and keeps the entry, and a mis-keyed row is
+    re-keyed with ``superseded_by`` rather than hard-deleted. A targeted delete
+    verb did exist once and was removed on exactly these grounds -- see the note
+    in ``tests/test_writer_surgical_reconciliation.py``.
     """
     merged = copy.deepcopy(stored) if isinstance(stored, dict) else {}
     for key, value in delta.items():
