@@ -158,6 +158,13 @@ def _initial_envelope(agent_id: str) -> dict:
     IN_PROGRESS, pending_steps is present (empty list), next_action is a
     non-empty placeholder the agent overwrites via `set`/`add`, and
     evidence_report carries all seven required keys.
+
+    ``failure_report`` is seeded ``None`` for the same reason
+    ``consolidation_report``/``approval_request`` already are: seeding the
+    slot makes it discoverable in `gaia contract view` without making it
+    required -- ``gaia.contract.validator.validate_form`` only runs the
+    FAILURE_REPORT_SHAPE check when the block is present and non-null, so a
+    seeded ``None`` reaches no check at all, exactly like an omitted key.
     """
     return {
         "agent_status": {
@@ -177,6 +184,7 @@ def _initial_envelope(agent_id: str) -> dict:
         },
         "consolidation_report": None,
         "approval_request": None,
+        "failure_report": None,
     }
 
 

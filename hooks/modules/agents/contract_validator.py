@@ -41,6 +41,7 @@ Provides:
     - parse_context_consumption(): Parse context_consumption clause (advisory)
     - parse_memory_suggestions(): Parse memory_suggestions clause (advisory)
     - parse_user_facing_summary(): Parse user_facing_summary clause (advisory)
+    - parse_failure_report(): Parse the optional failure_report clause (advisory)
 """
 
 import json
@@ -755,6 +756,56 @@ def parse_user_facing_summary(contract: dict) -> Optional[str]:
         return None
     text = raw.strip()
     return text or None
+
+
+def parse_failure_report(contract: dict) -> Optional[Dict[str, Any]]:
+    """Parse the optional top-level ``failure_report`` clause (advisory).
+
+    The block is the failure axis: a concrete defect the turn suffered --
+    what it attempted, what broke, and the observed proof -- kept separate
+    from ``open_gaps`` (the unknown, not a defect) and ``rollback_executed``
+    (a rollback, not a defect).
+
+    Advisory means advisory: absent, explicit null, or malformed all return
+    None -- the "no hay" signal, never a raised exception and never a
+    partial/best-effort dict a caller could mistake for a clean report.
+    Well-formedness is delegated to the SAME shape check the validator (and
+    the SubagentStop gate) apply -- ``gaia.contract.validator.validate_form``'s
+    FAILURE_REPORT_SHAPE code -- so a block malformed enough to be rejected
+    at write time is never read here as if it were clean; there is one
+    definition of "well-formed", not a second one that could drift apart.
+
+    Returns the normalized dict on success::
+
+        {"attempted": str, "symptom": str, "evidence": [str, ...],
+         "component": str | None, "severity": str | None}
+    """
+    raw = contract.get("failure_report")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        logger.warning("failure_report: expected object, got %s", type(raw).__name__)
+        return None
+
+    form_result = validate_form(contract)
+    if any(err.code is FormErrorCode.FAILURE_REPORT_SHAPE for err in form_result.errors):
+        logger.warning("failure_report: malformed block, treating as absent")
+        return None
+
+    evidence = [
+        item.strip() for item in raw.get("evidence", [])
+        if isinstance(item, str) and item.strip()
+    ]
+    component = raw.get("component")
+    severity = raw.get("severity")
+
+    return {
+        "attempted": str(raw["attempted"]).strip(),
+        "symptom": str(raw["symptom"]).strip(),
+        "evidence": evidence,
+        "component": component.strip() if isinstance(component, str) and component.strip() else None,
+        "severity": severity.strip().lower() if isinstance(severity, str) and severity.strip() else None,
+    }
 
 
 def extract_plan_status_from_output(agent_output: str) -> str:

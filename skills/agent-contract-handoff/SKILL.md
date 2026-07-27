@@ -42,6 +42,7 @@ A still-emitted fenced `agent_contract_handoff` block is a supported migration f
 | `consolidation_report` | Conditional | required when INPUT set `consolidation_required` / `cross_check_required` / `surface_routing.multi_surface` (`requires_consolidation_report`); else may be `null` |
 | `approval_request` | Conditional | required (non-null) when `agent_state` is `APPROVAL_REQUEST`, else `APPROVAL_REQUEST_SHAPE` (R4); see sub-field table for which sub-fields that code also gates |
 | `loop_state` | Conditional | agentic-loop turns only; `_check_loop_state_blocking` blocks `COMPLETE` when `iteration < max_iterations AND metric < threshold` |
+| `failure_report` | Optional | a top-level object, sibling of `consolidation_report` and `approval_request`, seeded `null` by `gaia contract init`. Advisory on every `agent_state` -- absent or explicit `null` triggers no check at all; present triggers the full shape and rejects with `FAILURE_REPORT_SHAPE` on a defect. See its own section below. |
 | `user_facing_summary` | Optional | a brief prose summary written ONCE for the human reader; `parse_user_facing_summary`. The only human-audience field in the contract -- every other field is machine-audience for the orchestrator. On a single-agent `COMPLETE` (N=1) the orchestrator relays it near-verbatim (adapted to the user's language) instead of re-synthesizing `key_outputs`. Absent, or N>1 (multi-agent), the orchestrator falls back to synthesizing `key_outputs`. Purely additive: never required, never rejected. |
 | `memorialize_suggestions` | Optional | structured memory candidates for the user to triage; `parse_memorialize_suggestions` |
 | `memory_suggestions` | Optional | advisory text-only notes (array of strings); `parse_memory_suggestions` |
@@ -51,7 +52,7 @@ A still-emitted fenced `agent_contract_handoff` block is a supported migration f
 
 ## Named shape-error codes (SSOT)
 
-Seven stable, named codes (`FormErrorCode` in `gaia/contract/validator.py`) are the SSOT for every SHAPE rejection, whichever path produced it -- the `gaia contract` CLI's write-time validation, the SubagentStop hook gate, and the fence fallback all resolve to the same set. Five were the original AC-1 set; `VERIFICATION_SHAPE` was added additively in R3; `APPROVAL_REQUEST_SHAPE` and `COMPLETE_SHAPE` were added additively in R4 to close two pure-shape cross-field conditionals the form layer had previously left unchecked:
+Eight stable, named codes (`FormErrorCode` in `gaia/contract/validator.py`) are the SSOT for every SHAPE rejection, whichever path produced it -- the `gaia contract` CLI's write-time validation, the SubagentStop hook gate, and the fence fallback all resolve to the same set. Five were the original AC-1 set; `VERIFICATION_SHAPE` was added additively in R3; `APPROVAL_REQUEST_SHAPE` and `COMPLETE_SHAPE` were added additively in R4 to close two pure-shape cross-field conditionals the form layer had previously left unchecked; `FAILURE_REPORT_SHAPE` was added additively in plan 38 for the optional `failure_report` block:
 
 | Code | Fires when |
 |------|------------|
@@ -62,6 +63,7 @@ Seven stable, named codes (`FormErrorCode` in `gaia/contract/validator.py`) are 
 | `MISSING_FIELD` | a required field is absent (`agent_status`, one of its four sub-fields, `evidence_report`, or one of its seven keys) |
 | `APPROVAL_REQUEST_SHAPE` (R4) | `agent_state` is `APPROVAL_REQUEST` and the top-level `approval_request` object is absent/null, OR present but its `exact_content` is missing/blank. Deliberately does NOT require `approval_id` (see "approval_request" sub-field table below for why). |
 | `COMPLETE_SHAPE` (R4) | `agent_state` is `COMPLETE` and (`agent_status.next_action` is present but not exactly `"done"`) OR (`agent_status.pending_steps` is present and non-empty). Pure cross-field coherence, independent of `VERIFICATION_RESULT`; each half only fires when the field in question is itself present -- the `MISSING_FIELD` checks already own the absent case, so this never stacks with `MISSING_FIELD` on the same field. |
+| `FAILURE_REPORT_SHAPE` (plan 38) | the top-level `failure_report` is present (not `null`) but malformed -- not an object, or missing/blank `attempted`/`symptom`, or `evidence` not a list with at least one non-empty entry, or a `severity` outside its enum. Checked on EVERY `agent_state`, not gated on `COMPLETE` or any other status -- a defect is a defect regardless of how the turn ended. Absent or explicit `null` triggers no check at all; this is what keeps the code additive over already-persisted history. See "failure_report" sub-field table below. |
 
 Each rejection carries `{code, field, detail}` (dotted `field` path, human `detail`) plus the byte-stable `repair_message` -- ALWAYS `CANONICAL_REPAIR_MESSAGE`, the single source of truth for the reissued fenced template, so a caller that injects it keeps a cache-stable surface regardless of which specific code fired. Read it at `gaia/contract/validator.py::CANONICAL_REPAIR_MESSAGE`; it is never duplicated inline elsewhere.
 
@@ -131,6 +133,24 @@ Present when `agent_state` is `APPROVAL_REQUEST`. As of R4, enforcement is layer
 | `approval_id` | optional, by design | the id the hook produced, when one was issued -- absent on the "plan not yet blocked" flavor |
 
 For the full sealed-payload schema and the approval lifecycle, see `agent-approval-protocol`.
+
+### failure_report
+
+Optional top-level object, sibling of `consolidation_report` and `approval_request` -- seeded `null` by `gaia contract init`. It reports a concrete failure the agent suffered (an operation that did not work, with the observed proof), never a certification of the turn: its presence or absence has no bearing on whether the turn may be `COMPLETE`, and it is checked identically on every `agent_state` (`IN_PROGRESS`, `BLOCKED`, `COMPLETE`, ...). Absent, or explicitly `null`, triggers no check at all -- the same advisory pattern `verification.type` uses (opt in to declare it; once declared, it must be well-formed). What it is NOT: a place for prose or opinion. A "report" that cites nothing observed does not qualify -- `evidence` is required and non-empty for exactly that reason.
+
+| Key | Status | Holds |
+|-----|--------|-------|
+| `attempted` | required | non-empty string naming the operation that was attempted |
+| `symptom` | required | non-empty string stating what broke, as observed |
+| `evidence` | required | a list with at least one non-empty entry -- verbatim excerpts (error text, exit status, output) that show the failure. An empty list, or a list of only blank/non-string entries, fails the same as a missing list. |
+| `component` | optional | the file/module/surface involved, when known |
+| `severity` | optional | one of `info` \| `warning` \| `error` (`VALID_FAILURE_SEVERITIES`); any other value rejects |
+
+Any malformation of a present block -- not an object, a missing/blank required field, an `evidence` list with no usable entry, or an off-enum `severity` -- rejects with `FAILURE_REPORT_SHAPE` (`gaia/contract/validator.py::_failure_report_shape_errors`); several defects in one block report as several `FAILURE_REPORT_SHAPE` errors, not several codes.
+
+**Construction trap.** The whole block validates as one unit the moment it is present -- there is no partial-write grace period. Building it field-by-field with `gaia contract set failure_report.attempted "..."` alone leaves the block with only `attempted` set; validation on that write sees the incomplete block and rejects, so nothing persists. Build it in ONE call instead: `gaia contract fill --json '{"failure_report": {"attempted": "...", "symptom": "...", "evidence": ["..."]}}'`. An agent that does not know this loses the report entirely, not just the missing sub-fields.
+
+**Reading seam for consumers.** `parse_failure_report()` in `hooks/modules/agents/contract_validator.py` is how a downstream reader gets the normalized block: it returns `None` for absent, explicit `null`, or anything `FAILURE_REPORT_SHAPE` would reject (delegating to the same `validate_form` check, so there is one definition of "well-formed," never a second one that could drift), or the normalized dict `{"attempted", "symptom", "evidence", "component", "severity"}` on success.
 
 ### memorialize_suggestions entry
 

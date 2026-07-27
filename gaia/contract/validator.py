@@ -60,6 +60,11 @@ two pure-shape cross-field conditionals the form layer previously missed):
                            already own the case where either sub-field is
                            absent, so this never stacks with MISSING_FIELD on
                            the same field.
+    FAILURE_REPORT_SHAPE -- the OPTIONAL top-level failure_report block is
+                           present but malformed (not an object, a required
+                           sub-field missing/blank, an empty evidence list, or
+                           a severity outside the enum). Absent or null ==
+                           no check, on every agent_state.
 
 Design notes:
     - SHAPE ONLY: the form layer takes the already-parsed envelope dict. Fence
@@ -227,6 +232,53 @@ REQUIRED_AGENT_STATUS_FIELDS: Tuple[str, ...] = (
     "next_action",
 )
 
+# ---------------------------------------------------------------------------
+# failure_report -- the OPTIONAL advisory failure axis (AC-1).
+#
+# A turn can end in a valid contract and still have suffered a concrete defect
+# along the way: something it attempted broke. The envelope had no place to say
+# so -- open_gaps is free prose about what is UNKNOWN, and rollback_executed is
+# about a rollback, not a defect -- so those failures were only ever recoverable
+# by reading a transcript. This block is that place, and it is ADVISORY in the
+# strict sense: its ABSENCE is never an error on any agent_state, and its
+# PRESENCE is never a substitute for any other requirement. Thousands of
+# terminal rows persisted before it existed keep the exact verdict they had.
+#
+# The shape is a single object, not an array. One defect per turn is the one
+# worth curating; a list invites a dump, and the incremental CLI build
+# (`gaia contract set failure_report.symptom ...`) only reads naturally on an
+# object. A turn that genuinely hit several failures reports the one that
+# mattered and cites the rest in ``evidence``.
+#
+# The three required sub-fields ARE the axis -- what was attempted, what broke,
+# and the observed proof -- and the shape exists to be consumed by a writer, not
+# only read by a human:
+#
+#     attempted  (str, non-empty)   the operation tried, stated concretely
+#     symptom    (str, non-empty)   what broke, as observed rather than inferred
+#     evidence   (list, non-empty)  verbatim excerpts: the error text, the exit
+#                                   status, the command output that shows it
+#     component  (str, optional)    the file/module/surface involved, when known
+#     severity   (str, optional)    one of VALID_FAILURE_SEVERITIES
+#
+# ``evidence`` being REQUIRED and non-empty is what keeps this from becoming a
+# prose field: a defect report that cannot cite what was observed is an opinion,
+# and an opinion is not worth a row in the defect floor.
+#
+# Because presence triggers the whole shape at once, a partial first write is
+# rejected -- ``set failure_report.attempted X`` alone leaves the block
+# incomplete. That is the same order-aware trap the terminal statuses have, and
+# the detail messages below say the same thing they do: build the block in ONE
+# write (`gaia contract fill --json`), not field by field.
+# ---------------------------------------------------------------------------
+REQUIRED_FAILURE_REPORT_FIELDS: Tuple[str, ...] = (
+    "attempted",
+    "symptom",
+    "evidence",
+)
+
+VALID_FAILURE_SEVERITIES: Tuple[str, ...] = ("info", "warning", "error")
+
 
 class FormErrorCode(str, Enum):
     """Named, stable error codes emitted by the form layer (AC-1).
@@ -254,6 +306,10 @@ class FormErrorCode(str, Enum):
     # non-empty pending_steps. A pure-shape cross-field coherence check,
     # independent of VERIFICATION_RESULT.
     COMPLETE_SHAPE = "COMPLETE_SHAPE"
+    # Additive (AC-1, plan 38): the OPTIONAL failure_report block is present
+    # but malformed. Never fires on an envelope that omits the block, which is
+    # what makes the field additive over already-persisted history.
+    FAILURE_REPORT_SHAPE = "FAILURE_REPORT_SHAPE"
 
 
 @dataclass(frozen=True)
@@ -457,6 +513,92 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
                 ),
             )
     return (None, "")
+
+
+_FAILURE_REPORT_ORDER_HINT = (
+    "The whole block is validated the moment it appears, so build it in ONE "
+    "write -- e.g. `gaia contract fill --json '{\"failure_report\": "
+    "{\"attempted\": \"<what you tried>\", \"symptom\": \"<what broke>\", "
+    "\"evidence\": [\"<verbatim output>\"]}}'` -- rather than one `set` per "
+    "sub-field, where the first write is rejected for the fields not written "
+    "yet. Omitting failure_report entirely is always valid: it reports a "
+    "defect, it does not certify the turn."
+)
+
+
+def _failure_report_shape_errors(block: Any) -> List[Tuple[str, str]]:
+    """Return ``(field, detail)`` pairs for a malformed failure_report block.
+
+    The caller has already established that the block is PRESENT and not null;
+    absence is handled there and is never an error. An empty list return means
+    the block is well-formed. One pair per offending sub-field, so several
+    defects in one block report as several errors under the single
+    FAILURE_REPORT_SHAPE code -- the same fan-out the required evidence keys
+    use, never several codes for one block.
+    """
+    if not isinstance(block, dict):
+        return [(
+            "failure_report",
+            (
+                f"failure_report must be an object, got "
+                f"{type(block).__name__}. Expected keys: "
+                f"{list(REQUIRED_FAILURE_REPORT_FIELDS)} (plus the optional "
+                f"'component' and 'severity'). " + _FAILURE_REPORT_ORDER_HINT
+            ),
+        )]
+
+    problems: List[Tuple[str, str]] = []
+
+    for key in ("attempted", "symptom"):
+        if not _is_nonempty_str(block.get(key)):
+            problems.append((
+                f"failure_report.{key}",
+                (
+                    f"failure_report requires a non-empty '{key}' "
+                    + (
+                        "naming the operation that was attempted"
+                        if key == "attempted"
+                        else "stating what broke, as observed"
+                    )
+                    + f", got {block.get(key)!r}. " + _FAILURE_REPORT_ORDER_HINT
+                ),
+            ))
+
+    evidence = block.get("evidence")
+    if not isinstance(evidence, list):
+        problems.append((
+            "failure_report.evidence",
+            (
+                f"failure_report requires 'evidence' to be a list of verbatim "
+                f"excerpts (the error text, exit status, or output that shows "
+                f"the failure), got {type(evidence).__name__}. "
+                + _FAILURE_REPORT_ORDER_HINT
+            ),
+        ))
+    elif not [item for item in evidence if _is_nonempty_str(item)]:
+        problems.append((
+            "failure_report.evidence",
+            (
+                "failure_report requires at least one non-empty entry in "
+                "'evidence'. A reported defect that cites nothing observed is "
+                "an opinion, and the block exists to carry proof, not a "
+                "claim. " + _FAILURE_REPORT_ORDER_HINT
+            ),
+        ))
+
+    severity = block.get("severity")
+    if severity is not None:
+        if str(severity).strip().lower() not in VALID_FAILURE_SEVERITIES:
+            problems.append((
+                "failure_report.severity",
+                (
+                    f"failure_report.severity is optional, but when present it "
+                    f"must be one of {list(VALID_FAILURE_SEVERITIES)}, got "
+                    f"{severity!r}. Omit it to let the consumer classify."
+                ),
+            ))
+
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -764,6 +906,24 @@ def validate_form(envelope: Any) -> FormValidationResult:
                 )
             )
 
+    # --- failure_report (OPTIONAL advisory axis, pure SHAPE, AC-1) ----------
+    # Checked independently of agent_state: a defect is a defect whether the
+    # turn ended COMPLETE, BLOCKED or IN_PROGRESS, so this is not gated on the
+    # status the way the COMPLETE/APPROVAL_REQUEST checks above are. It is
+    # gated only on PRESENCE -- an envelope that omits the key, or sets it to
+    # null the way consolidation_report/approval_request are habitually
+    # nulled, reaches no check at all. That guard is the whole reason a shape
+    # change can be made here without disturbing already-persisted history.
+    if envelope.get("failure_report") is not None:
+        for field, detail in _failure_report_shape_errors(envelope["failure_report"]):
+            errors.append(
+                FormError(
+                    code=FormErrorCode.FAILURE_REPORT_SHAPE,
+                    field=field,
+                    detail=detail,
+                )
+            )
+
     return FormValidationResult(
         ok=not errors,
         errors=tuple(errors),
@@ -782,4 +942,6 @@ __all__ = [
     "ENVELOPE_VERIFICATION_TYPES",
     "REQUIRED_EVIDENCE_FIELDS",
     "REQUIRED_AGENT_STATUS_FIELDS",
+    "REQUIRED_FAILURE_REPORT_FIELDS",
+    "VALID_FAILURE_SEVERITIES",
 ]
