@@ -444,6 +444,32 @@ def rewrite_workspace_dep_spec(workspace: Path, tarball: Path) -> dict[str, Any]
     return {"action": "updated", "path": str(pkg_path), "details": f"pinned {_NPM_PACKAGE_NAME} -> {spec}"}
 
 
+def record_dev_build(version: str | None) -> str | None:
+    """Advance the local dev-build counter for *version* and return its label.
+
+    The counter is keyed by base version and advanced only when the hooks
+    tree's content digest changed since the last recorded build, so a repack
+    whose packaged bytes are identical does not inflate it -- see
+    `gaia.dev_builds` for why that is the right identity. The digest is taken
+    from THIS source tree's `hooks/`, which is exactly what was just packed.
+
+    Returns a label like `5.3.0 (dev.7, build fb27693c)`, or None when there is
+    nothing to report (no version, unavailable module, unwritable sidecar).
+    Never raises: the counter is a display affordance and must not be able to
+    fail the dev loop it annotates.
+    """
+    if not version:
+        return None
+    try:
+        from gaia.dev_builds import format_label, record_build  # noqa: PLC0415
+        from gaia.hooks_build import hooks_content_hash  # noqa: PLC0415
+
+        record = record_build(version, hooks_content_hash(_PACKAGE_ROOT / "hooks"))
+        return format_label(version, record) if record else None
+    except Exception:
+        return None
+
+
 def _print_convergence_report(workspace: Path, origin_version: str | None, quiet: bool) -> dict:
     """Inspect + report the 5 install surfaces of *workspace* vs this origin.
 
@@ -552,9 +578,14 @@ def _run_pack_mode(
     # surfaces converged on this origin (the local source). Read-only.
     _print_convergence_report(workspace, pack_res.get("version"), quiet=quiet)
 
+    # Counted only now that the build actually landed, so a run that failed to
+    # pack, install, or wire never advances the iteration count.
+    version = pack_res.get("version")
+    build_label = record_dev_build(version) or version
+
     if not quiet:
         print(
-            f"\n  gaia dev: packed {pack_res.get('name')}@{pack_res.get('version')} "
+            f"\n  gaia dev: packed {pack_res.get('name')}@{build_label} "
             f"into {workspace}.\n"
         )
         print(_restart_warning())

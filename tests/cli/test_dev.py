@@ -1049,5 +1049,164 @@ class TestWorkspaceMarkerRemoved(unittest.TestCase):
         self.assertFalse(hasattr(dev_mod, "_WORKSPACE_MARKER"))
 
 
+# ---------------------------------------------------------------------------
+# record_dev_build -- the dev-iteration counter advanced by pack mode
+# ---------------------------------------------------------------------------
+
+class TestRecordDevBuild(unittest.TestCase):
+    """`gaia dev` is the only writer of the counter.
+
+    The digest it records comes from THIS source tree's `hooks/`, which is
+    exactly what was packed, so a repack whose packaged bytes did not change
+    yields the identical digest and must not advance the count.
+    """
+
+    def setUp(self):
+        self._data_dir_ctx = tempfile.TemporaryDirectory()
+        self._gaia_data_dir = Path(self._data_dir_ctx.name) / "gaia-data"
+        self._gaia_data_dir.mkdir()
+        self._env_patcher = patch.dict(os.environ, {"GAIA_DATA_DIR": str(self._gaia_data_dir)})
+        self._env_patcher.start()
+
+    def tearDown(self):
+        self._env_patcher.stop()
+        self._data_dir_ctx.cleanup()
+
+    def test_records_the_real_source_hooks_digest(self):
+        from gaia.dev_builds import read_record
+        from gaia.hooks_build import hooks_content_hash
+
+        label = dev_mod.record_dev_build("9.9.9")
+
+        expected = hooks_content_hash(_REPO_ROOT / "hooks")
+        self.assertTrue(expected)
+        self.assertEqual(read_record("9.9.9")["hooks_hash"], expected)
+        self.assertEqual(label, f"9.9.9 (dev.1, build {expected})")
+
+    def test_repeated_calls_without_a_hooks_change_do_not_advance(self):
+        from gaia.dev_builds import read_record
+
+        first = dev_mod.record_dev_build("9.9.9")
+        second = dev_mod.record_dev_build("9.9.9")
+
+        self.assertEqual(first, second)
+        self.assertEqual(read_record("9.9.9")["count"], 1)
+
+    def test_a_hooks_change_advances_by_one(self):
+        digests = iter(["aaaaaaaa", "bbbbbbbb"])
+        with patch("gaia.hooks_build.hooks_content_hash", lambda _d: next(digests)):
+            self.assertEqual(dev_mod.record_dev_build("9.9.9"), "9.9.9 (dev.1, build aaaaaaaa)")
+            self.assertEqual(dev_mod.record_dev_build("9.9.9"), "9.9.9 (dev.2, build bbbbbbbb)")
+
+    def test_a_new_base_version_starts_its_own_count(self):
+        digests = iter(["aaaaaaaa", "bbbbbbbb", "cccccccc"])
+        with patch("gaia.hooks_build.hooks_content_hash", lambda _d: next(digests)):
+            dev_mod.record_dev_build("9.9.9")
+            dev_mod.record_dev_build("9.9.9")
+            self.assertEqual(dev_mod.record_dev_build("9.9.10"), "9.9.10 (dev.1, build cccccccc)")
+
+    def test_no_version_records_nothing(self):
+        self.assertIsNone(dev_mod.record_dev_build(None))
+        self.assertIsNone(dev_mod.record_dev_build(""))
+
+    def test_returns_none_when_the_counter_module_raises(self):
+        with patch("gaia.dev_builds.record_build", side_effect=RuntimeError("boom")):
+            self.assertIsNone(dev_mod.record_dev_build("9.9.9"))
+
+
+class TestPackModeReportsTheDevIteration(unittest.TestCase):
+    """The closing line is the third display surface (with the SessionStart
+    manifest and `gaia doctor`), and it must degrade to the bare version."""
+
+    def setUp(self):
+        self._data_dir_ctx = tempfile.TemporaryDirectory()
+        self._gaia_data_dir = Path(self._data_dir_ctx.name) / "gaia-data"
+        self._gaia_data_dir.mkdir()
+        self._env_patcher = patch.dict(os.environ, {"GAIA_DATA_DIR": str(self._gaia_data_dir)})
+        self._env_patcher.start()
+
+    def tearDown(self):
+        self._env_patcher.stop()
+        self._data_dir_ctx.cleanup()
+
+    def _args(self, workspace) -> argparse.Namespace:
+        ns = argparse.Namespace()
+        ns.workspace = str(workspace)
+        ns.mode = "pack"
+        ns.quiet = False
+        ns.verbose = False
+        ns.keep_tarball = False
+        ns.pack_dest = None
+        ns.no_global_link = True
+        return ns
+
+    def _run(self, workspace):
+        tarball = workspace / "pkg.tgz"
+        tarball.write_bytes(b"x")
+
+        def fake_pack(source_root, dest_dir=None, **kwargs):
+            Path(dest_dir).mkdir(parents=True, exist_ok=True)
+            return {
+                "action": "created", "path": str(tarball), "details": "ok",
+                "tarball": tarball, "name": "@jaguilar87/gaia", "version": "9.9.9",
+            }
+
+        buf = io.StringIO()
+        with patch("cli.dev._pack_helpers.pack_tarball", side_effect=fake_pack), \
+             patch("cli.dev.install_tarball", return_value={"action": "created", "path": "x", "details": "ok", "package_manager": "npm"}), \
+             patch("cli.dev.wire_workspace_via_installed_gaia", return_value={"action": "created", "path": "x", "details": "ok"}), \
+             patch("cli.dev._print_convergence_report", return_value={}):
+            with redirect_stdout(buf):
+                rc = cmd_dev(self._args(workspace))
+        return rc, buf.getvalue()
+
+    def test_closing_line_carries_the_iteration_and_build(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("gaia.hooks_build.hooks_content_hash", lambda _d: "aaaaaaaa"):
+                rc, out = self._run(Path(tmp))
+        self.assertEqual(rc, 0)
+        self.assertIn("packed @jaguilar87/gaia@9.9.9 (dev.1, build aaaaaaaa)", out)
+
+    def test_second_identical_run_reports_the_same_iteration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("gaia.hooks_build.hooks_content_hash", lambda _d: "aaaaaaaa"):
+                self._run(Path(tmp))
+                rc, out = self._run(Path(tmp))
+        self.assertEqual(rc, 0)
+        self.assertIn("(dev.1, build aaaaaaaa)", out)
+        self.assertNotIn("dev.2", out)
+
+    def test_closing_line_degrades_to_the_bare_version_when_the_counter_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("cli.dev.record_dev_build", return_value=None):
+                rc, out = self._run(Path(tmp))
+        self.assertEqual(rc, 0)
+        self.assertIn("packed @jaguilar87/gaia@9.9.9 into", out)
+        self.assertNotIn("dev.", out)
+
+    def test_a_failed_run_never_advances_the_counter(self):
+        from gaia.dev_builds import read_record
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            tarball = workspace / "pkg.tgz"
+            tarball.write_bytes(b"x")
+
+            def fake_pack(source_root, dest_dir=None, **kwargs):
+                Path(dest_dir).mkdir(parents=True, exist_ok=True)
+                return {
+                    "action": "created", "path": str(tarball), "details": "ok",
+                    "tarball": tarball, "name": "@jaguilar87/gaia", "version": "9.9.9",
+                }
+
+            with patch("cli.dev._pack_helpers.pack_tarball", side_effect=fake_pack), \
+                 patch("cli.dev.install_tarball", return_value={"action": "error", "path": "", "details": "boom", "package_manager": "npm"}):
+                with redirect_stdout(io.StringIO()):
+                    rc = cmd_dev(self._args(workspace))
+
+        self.assertEqual(rc, 1)
+        self.assertIsNone(read_record("9.9.9"))
+
+
 if __name__ == "__main__":
     unittest.main()

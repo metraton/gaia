@@ -71,6 +71,26 @@ def _read_gaia_version() -> Optional[str]:
     return None
 
 
+def _describe_gaia_version(version: str) -> str:
+    """Annotate *version* with the machine's local dev-build count, if any.
+
+    A `gaia dev` build ships the same semver as the release it was packed from,
+    so the bare version cannot distinguish the pristine release from the Nth
+    local iteration of it; `gaia.dev_builds` keeps that count in a sidecar
+    (never in the five version sources the release gate cross-checks).
+
+    Returns *version* unchanged whenever the counter is absent, corrupt, or
+    unreadable -- the same fail-to-silence discipline as the memory block, and
+    the reason SessionStart cannot be broken by this annotation.
+    """
+    try:
+        from gaia.dev_builds import describe_version
+        return describe_version(version) or version
+    except Exception as exc:
+        logger.debug("dev-build label unavailable (non-fatal): %s", exc)
+        return version
+
+
 def _read_workspace_identity() -> Optional[str]:
     """Read the workspace name from the project_context_contracts table.
 
@@ -171,7 +191,7 @@ def build_environment_block() -> str:
             lines.append(f"- Workspace: {workspace}")
         lines.append(f"- Machine: {machine}")
         if version:
-            lines.append(f"- Gaia: {version}")
+            lines.append(f"- Gaia: {_describe_gaia_version(version)}")
         lines.append(f"- cwd: {cwd}")
         if plugin_root:
             lines.append(f"- Plugin root: {plugin_root}")

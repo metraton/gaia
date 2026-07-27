@@ -169,6 +169,64 @@ class TestCheckGaiaVersion:
         assert r["severity"] == "pass"
         assert r["detail"].startswith("v")
 
+    def test_detail_carries_the_local_dev_build_count(self, tmp_path, monkeypatch):
+        """The count belongs on this line: it is part of "which Gaia is this".
+
+        The adjacent question -- is the build I am RUNNING the wired one -- is
+        answered by "Hooks active & fresh" (order 150), so this check reports
+        identity only.
+        """
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+        stub = tmp_path / "pkg"
+        stub.mkdir()
+        (stub / "package.json").write_text('{"version": "5.3.0"}', encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: stub)
+
+        from gaia.dev_builds import record_build
+        record_build("5.3.0", "fb27693c")
+
+        r = doctor_mod.check_gaia_version()
+        assert r["severity"] == "pass"
+        assert r["detail"] == "v5.3.0 (dev.1, build fb27693c)"
+
+    def test_detail_is_bare_when_no_dev_build_was_recorded(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+        stub = tmp_path / "pkg"
+        stub.mkdir()
+        (stub / "package.json").write_text('{"version": "5.3.0"}', encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: stub)
+
+        r = doctor_mod.check_gaia_version()
+        assert r["detail"] == "v5.3.0"
+
+    def test_counter_failure_does_not_change_the_verdict(self, tmp_path, monkeypatch):
+        """The annotation is a suffix over a degrading counter -- it must never
+        turn a healthy version check into a warning or an error."""
+        stub = tmp_path / "pkg"
+        stub.mkdir()
+        (stub / "package.json").write_text('{"version": "5.3.0"}', encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: stub)
+
+        import gaia.dev_builds as dev_builds
+
+        def _boom(_version):
+            raise RuntimeError("simulated counter failure")
+
+        monkeypatch.setattr(dev_builds, "describe_version", _boom)
+
+        r = doctor_mod.check_gaia_version()
+        assert r["severity"] == "pass"
+        assert r["detail"] == "v5.3.0"
+
+    def test_unknown_version_still_errors(self, tmp_path, monkeypatch):
+        stub = tmp_path / "pkg"
+        stub.mkdir()
+        (stub / "package.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: stub)
+
+        r = doctor_mod.check_gaia_version()
+        assert r["severity"] == "error"
+
 
 class TestCheckPython:
     """Test Python version check."""

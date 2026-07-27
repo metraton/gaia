@@ -296,6 +296,25 @@ def _load_hooks_content_hash():
     except Exception:
         return None
 
+
+def _describe_gaia_version(version: str) -> str:
+    """Annotate *version* with this machine's local dev-build count, if any.
+
+    Same lazy package-root insertion as `_load_hooks_content_hash` (doctor runs
+    as a bin/cli script whose sys.path lacks the package root). Returns
+    *version* unchanged when the counter is absent, corrupt, or unreadable, so
+    the check reports the pristine version rather than degrading its severity.
+    """
+    try:
+        import sys as _sys  # noqa: PLC0415
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+        from gaia.dev_builds import describe_version  # noqa: PLC0415
+        return describe_version(version) or version
+    except Exception:
+        return version
+
 # Canonical set of hook events Gaia wires. This is the same set asserted by
 # tests/hooks/adapters/test_plugin_manifests.py::test_hooks_json_has_all_required_events
 # and generated from build/gaia.manifest.json's hooks.matchers. It is the
@@ -380,11 +399,22 @@ def check_package_integrity() -> dict:
 
 @register_check("Gaia", order=10)
 def check_gaia_version() -> dict:
-    """Check that package.json is readable and has a version."""
+    """Check that package.json is readable and has a version.
+
+    The detail carries the local dev-build count when there is one
+    (``v5.3.0 (dev.7, build fb27693c)``). It belongs on THIS line rather than a
+    check of its own: the question "which Gaia is this" is exactly what order
+    10 answers, and the adjacent question -- "is the build I am RUNNING the
+    wired one" -- is already owned by "Hooks active & fresh" (order 150), which
+    compares the session's pinned digest against the wired one. A separate
+    check would split one identity across two lines and duplicate half of each.
+    The annotation is a pure suffix over a counter that degrades to silence, so
+    it adds no failure mode to this check's pass/error verdict.
+    """
     pkg_path = _package_root() / "package.json"
     data = _read_json(pkg_path)
     if data and "version" in data:
-        return _result("Gaia", "pass", f"v{data['version']}")
+        return _result("Gaia", "pass", f"v{_describe_gaia_version(data['version'])}")
     return _result("Gaia", "error", "Version unknown", "Reinstall @jaguilar87/gaia")
 
 

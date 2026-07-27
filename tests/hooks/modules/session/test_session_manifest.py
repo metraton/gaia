@@ -89,6 +89,61 @@ class TestBuildEnvironmentBlock:
         # but must not see a Workspace line for the failing helper.
         assert "Workspace:" not in result
 
+    def test_version_line_carries_the_local_dev_build_count(self, monkeypatch, tmp_path):
+        """A `gaia dev` build ships the base semver, so the count is what
+        distinguishes the pristine release from the Nth local iteration."""
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
+
+        from gaia.dev_builds import record_build
+        record_build("5.3.0", "fb27693c")
+
+        assert "Gaia: 5.3.0 (dev.1, build fb27693c)" in build_environment_block()
+
+    def test_version_line_is_bare_when_no_dev_build_was_recorded(self, monkeypatch, tmp_path):
+        """A pristine npm install has no sidecar, and must render as it always did."""
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
+
+        result = build_environment_block()
+        assert "Gaia: 5.3.0" in result
+        assert "dev." not in result
+
+    def test_version_line_degrades_when_the_counter_raises(self, monkeypatch):
+        """SessionStart must not be breakable by the counter.
+
+        Same discipline as the memory block: any failure yields the display
+        that existed before the counter did, never an exception and never a
+        dropped Environment block.
+        """
+        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
+
+        import gaia.dev_builds as dev_builds
+
+        def _boom(_version):
+            raise RuntimeError("simulated counter failure")
+
+        monkeypatch.setattr(dev_builds, "describe_version", _boom)
+
+        result = build_environment_block()
+        assert "Gaia: 5.3.0" in result
+        assert "dev." not in result
+
+    def test_version_line_degrades_when_the_counter_module_is_absent(self, monkeypatch):
+        """A partial install without gaia.dev_builds still renders the version."""
+        monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
+        monkeypatch.setitem(sys.modules, "gaia.dev_builds", None)
+
+        assert "Gaia: 5.3.0" in build_environment_block()
+
 
 # ---------------------------------------------------------------------------
 # build_agentic_loop_block
