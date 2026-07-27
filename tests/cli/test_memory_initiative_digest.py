@@ -212,15 +212,18 @@ class TestMemoryPendingByProject:
         assert "balance_x" not in names
         assert "Pendientes de gaia" in payload["block"]
 
-    def test_project_mode_top_n_overflow(self, tmp_db, capsys):
-        n = memory_mod._PROJECT_MODE_TOP_N
-        for i in range(n + 2):
+    def test_project_mode_returns_whole_corpus_uncapped(self, tmp_db, capsys):
+        # Well past any historical top-N: every row must come back, and the
+        # overflow footer must be gone entirely -- nothing is withheld.
+        total = 23
+        for i in range(total):
             _insert(tmp_db, f"gaia_{i}", class_="thread", status="open",
                     initiative="gaia", updated_at=f"2026-07-15T{i:02d}:00:00Z")
         payload = _run(_args(initiative="gaia"), capsys)
-        assert len(payload["items"]) == n
-        assert payload["overflow"] == 2
-        assert "+2 más en gaia" in payload["block"]
+        assert len(payload["items"]) == total
+        assert payload["overflow"] == 0
+        assert "más en gaia" not in payload["block"]
+        assert payload["block"].count("\n- gaia_") == total
 
     def test_project_mode_normalises_key(self, tmp_db, capsys):
         # Stored key is normalised; request with a raw label still resolves.
@@ -237,6 +240,109 @@ class TestMemoryPendingByProject:
         payload = _run(_args(initiative="otros"), capsys)
         names = {i["name"] for i in payload["items"]}
         assert names == {"loose"}
+
+
+# ---------------------------------------------------------------------------
+# Whole-corpus retrieval: body projected, description untruncated
+# ---------------------------------------------------------------------------
+
+# The fixed body shape of a promoted defect (skills/memory/reference.md). The
+# retrieval surface must return it intact: the consumer splits on "## " to
+# recover the fields, so a body truncated anywhere destroys the last field.
+_DEFECT_HEADINGS = ("## Symptom", "## Component", "## Evidence",
+                    "## Reproduction")
+
+
+def _defect_body() -> str:
+    return "\n\n".join(
+        f"{h}\ndetail for {h[3:].lower()}" for h in _DEFECT_HEADINGS
+    )
+
+
+class TestProjectModeCorpusShape:
+    def test_body_is_projected_and_splits_into_the_four_fields(
+            self, tmp_db, capsys):
+        _insert(tmp_db, "feedback_x_y", class_="thread", status="carry_forward",
+                initiative="gaia_system", updated_at="2026-07-15T10:00:00Z",
+                type_="feedback")
+        con = sqlite3.connect(str(tmp_db))
+        con.execute("UPDATE memory SET body = ? WHERE name = ?",
+                    (_defect_body(), "feedback_x_y"))
+        con.commit()
+        con.close()
+
+        payload = _run(_args(initiative="gaia_system"), capsys)
+        item = payload["items"][0]
+        assert item["class"] == "thread"
+        assert item["memory_status"] == "carry_forward"
+        assert item["initiative"] == "gaia_system"
+        headings = [
+            line.strip() for line in item["body"].splitlines()
+            if line.startswith("## ")
+        ]
+        assert headings == list(_DEFECT_HEADINGS)
+
+    def test_description_is_returned_verbatim(self, tmp_db, capsys):
+        # Longer than every truncation limit in the module, so any surviving
+        # cap shows up as a shortened string rather than a silent pass.
+        long_desc = "D" * (max(memory_mod._RELEVANT_ITEM_DESC_MAX,
+                               memory_mod._DIGEST_DESC_MAX) * 4)
+        _insert(tmp_db, "feedback_long", class_="thread",
+                status="carry_forward", initiative="gaia_system",
+                updated_at="2026-07-15T10:00:00Z", desc=long_desc)
+        payload = _run(_args(initiative="gaia_system"), capsys)
+        assert payload["items"][0]["description"] == long_desc
+        assert "…" not in payload["block"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: the SessionStart injection renderers are NOT widened
+# ---------------------------------------------------------------------------
+
+class TestInjectionRenderersUnchanged:
+    """The digest and section renderers share the read path project mode
+    widened. They feed an unrequested SessionStart block, so they must stay
+    capped, char-budgeted and body-less."""
+
+    def _seed_many(self, tmp_db, n=14, desc_len=400):
+        for i in range(n):
+            _insert(tmp_db, f"row_{i}", class_="thread", status="carry_forward",
+                    initiative=f"proj{i}", updated_at=f"2026-07-15T{i:02d}:00:00Z",
+                    desc="L" * desc_len)
+
+    def test_digest_block_did_not_grow(self, tmp_db, capsys):
+        self._seed_many(tmp_db)
+        payload = _run(_args(max_chars=1500), capsys)
+        assert len(payload["block"]) <= 1500
+        assert len(payload["items"]) <= memory_mod._DIGEST_TOP_K
+        for item in payload["items"]:
+            assert item["description"].endswith("…")
+            assert len(item["description"]) <= memory_mod._DIGEST_DESC_MAX + 1
+            assert "body" not in item
+
+    def test_digest_block_is_invariant_to_body_size(self, tmp_db, capsys):
+        # Differential oracle for "the injection block did not grow": the body
+        # is now SELECTed on this shared path, so prove it never reaches the
+        # rendered block by growing it 5000x and diffing the two renders.
+        self._seed_many(tmp_db, n=4, desc_len=80)
+        before = _run(_args(max_chars=1500), capsys)["block"]
+        con = sqlite3.connect(str(tmp_db))
+        con.execute("UPDATE memory SET body = ?", ("B" * 5000,))
+        con.commit()
+        con.close()
+        after = _run(_args(max_chars=1500), capsys)["block"]
+        assert after == before
+
+    def test_sections_renderer_still_capped(self, tmp_db, capsys):
+        self._seed_many(tmp_db)
+        payload = _run(_args(sections="carry_forward", max_chars=800), capsys)
+        assert len(payload["block"]) <= 800
+        assert len(payload["items"]) <= memory_mod._RELEVANT_CARRY_FORWARD_CAP
+        for item in payload["items"]:
+            assert len(item["description"]) <= (
+                memory_mod._RELEVANT_ITEM_DESC_MAX + 1
+            )
+            assert "body" not in item
 
 
 # ---------------------------------------------------------------------------

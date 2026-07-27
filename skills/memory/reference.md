@@ -102,8 +102,15 @@ cwd:
   project is "active" from where the command was launched, the caller names
   the initiative directly (normalized the same way the write side stores it,
   via `normalize_initiative`); the special value `otros` targets the
-  NULL-initiative bucket. Returns the top-N freshest pending items of that
-  one initiative, with an overflow footer.
+  NULL-initiative bucket. Returns the WHOLE live-pending corpus of that one
+  initiative -- no top-N cap, no overflow footer, `body` projected alongside
+  `class`/`status`, and `description` verbatim (uncapped, no ellipsis).
+  `--max-chars` is accepted and ignored here. The attention cap that governs
+  the digest and section renderers exists because THEY feed an unrequested
+  SessionStart block, where the budget is scarce; applying the same cap to a
+  corpus the caller explicitly asked for, for triage, would silently
+  withhold part of the answer it was asked to return. This is deliberate --
+  do not reintroduce the cap here to make the two modes "consistent."
 - **`--types=...`** -- the legacy per-type flow (`_cmd_get_relevant_by_type`),
   kept verbatim for back-compat; also workspace-scoped only.
 

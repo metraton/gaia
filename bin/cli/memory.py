@@ -1277,9 +1277,14 @@ _DIGEST_DESC_MAX = 60
 # session_manifest.build_workspace_memory_block passes --max-chars=1500 as the
 # injection authority; this is the fallback when --max-chars is omitted.
 _DIGEST_DEFAULT_MAX_CHARS = 1500
-# Project-mode ("--initiative=X"): how many pending items of the one requested
-# initiative to show before rolling the rest into an overflow footer.
-_PROJECT_MODE_TOP_N = 5
+# Project mode ("--initiative=X") is deliberately UNBOUNDED -- no top-N cap, no
+# char budget, no per-item description cap -- unlike the digest and section
+# renderers above. Those render an unrequested SessionStart block competing for
+# the orchestrator's attention, so they must stay small. Project mode is a
+# RETRIEVAL surface: the caller named one initiative and asked for its corpus.
+# A promoted defect carries its detail as `## `-headed fields in the body, so a
+# capped, truncated or body-less projection destroys the structure the corpus
+# exists to preserve.
 # Bucket label for rows whose initiative IS NULL. Never re-derived from a slug
 # -- a NULL initiative is its own explicit bucket, not a guess.
 _OTHERS_BUCKET = "otros"
@@ -1293,8 +1298,8 @@ def _cmd_get_relevant(args) -> int:
     decided purely by the flags:
 
       * ``--types=...``  -> legacy per-type flow (unchanged, back-compat).
-      * ``--initiative=X`` -> PROJECT MODE: the top ``_PROJECT_MODE_TOP_N``
-        live-pending threads of the ONE requested initiative, with overflow.
+      * ``--initiative=X`` -> PROJECT MODE: the WHOLE live-pending corpus of
+        the ONE requested initiative, uncapped and body-bearing.
       * ``--sections=...`` -> SECTION renderer: the class/status sections
         (carry_forward / anchor / thread_open). This is the subagent-dispatch
         path (``--sections=anchor`` gives a dispatched subagent the durable
@@ -1627,7 +1632,8 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 # excluded BY DESIGN (a worklist, not a knowledge dump). Soft-deleted and
 # supersedes-destination rows are excluded exactly as the section renderer does.
 _PENDING_VIVO_SELECT = (
-    "SELECT name, type, description, updated_at, initiative, status "
+    "SELECT name, type, description, body, updated_at, initiative, "
+    "       class, status "
     "FROM memory "
     "WHERE workspace = ? "
     "  AND deleted_at IS NULL "
@@ -1640,9 +1646,14 @@ _PENDING_VIVO_SELECT = (
 )
 
 
+def _collapse_desc(text: str) -> str:
+    """Flatten a description to a single line for bullet rendering."""
+    return (text or "").replace("\n", " ").strip()
+
+
 def _digest_truncate(text: str, limit: int) -> str:
     """Collapse newlines and cap a description to ``limit`` chars + ellipsis."""
-    text = (text or "").replace("\n", " ").strip()
+    text = _collapse_desc(text)
     if len(text) > limit:
         return text[:limit].rstrip() + "…"
     return text
@@ -1781,16 +1792,19 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
 
 def _render_project_mode(args, workspace: str, initiative_arg: str,
                          as_json: bool) -> int:
-    """Project mode: live-pending work of ONE requested initiative.
+    """Project mode: the WHOLE live-pending corpus of ONE requested initiative.
 
     ``--initiative=X`` normalises X the SAME way the write side does
     (``normalize_initiative``), so the key matches what was stored. The
-    special value "otros" targets the NULL-initiative bucket. Returns the
-    top-N freshest pending items with an overflow footer.
-    """
-    max_chars = int(getattr(args, "max_chars", None) or _DIGEST_DEFAULT_MAX_CHARS)
-    max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
+    special value "otros" targets the NULL-initiative bucket.
 
+    Every matching row is returned -- no top-N cap, no overflow footer, no
+    char budget -- with the description verbatim and the ``body`` projected
+    alongside ``class`` and ``status``. ``--max-chars`` is accepted and
+    ignored here: it governs the attention-budgeted SessionStart renderers,
+    and applying it to an explicitly requested corpus would silently withhold
+    part of the answer. See the note above ``_DIGEST_HEADER``.
+    """
     try:
         from gaia.store.writer import normalize_initiative
         key = normalize_initiative(initiative_arg)
@@ -1810,27 +1824,24 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    shown = rows[:_PROJECT_MODE_TOP_N]
-    overflow = len(rows) - len(shown)
-
     header = f"## Memory — Pendientes de {label}"
     lines = [header, ""]
     items: list[dict] = []
-    for r in shown:
+    for r in rows:
         name = r.get("name") or ""
-        desc = _digest_truncate(r.get("description") or "", _RELEVANT_ITEM_DESC_MAX)
-        lines.append(f"- {name}: {desc}" if desc else f"- {name}")
+        description = r.get("description") or ""
+        bullet = _collapse_desc(description)
+        lines.append(f"- {name}: {bullet}" if bullet else f"- {name}")
         items.append({
             "name": name,
             "type": r.get("type"),
             "initiative": label,
+            "class": r.get("class"),
             "memory_status": r.get("status"),
             "section": "project",
-            "description": desc,
+            "description": description,
+            "body": r.get("body"),
         })
-    if overflow > 0:
-        lines.append("")
-        lines.append(f"+{overflow} más en {label} — pedime que profundice")
 
     block = "\n".join(lines) + "\n\n" + _MEMORY_POINTER
 
@@ -1839,7 +1850,7 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             "workspace": workspace,
             "items": items,
             "block": block,
-            "overflow": overflow,
+            "overflow": 0,
         }, indent=2, default=str))
     else:
         print(block)
