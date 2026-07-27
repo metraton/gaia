@@ -556,8 +556,18 @@ def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
     """Parse the ``update_contracts`` clause from a contract dict.
 
     The clause is an array of ``{contract, payload}`` objects.  Each
-    structurally well-formed entry (has both ``contract`` and ``payload`` keys
-    and is a dict) is returned as-is.
+    structurally well-formed entry (has both ``contract`` and ``payload`` keys,
+    is a dict, and carries a ``payload`` that is itself a JSON object) is
+    returned as-is.
+
+    A non-object ``payload`` is rejected here rather than passed on, because a
+    payload is a DELTA the writer deep-merges into the stored section: only a
+    dict has keys to merge, so any other type could only replace the whole
+    section, silently discarding the entries the delta never mentioned. The
+    writer refuses such a payload as well
+    (``context_writer.apply_update``) -- this is the earlier of the two gates,
+    the one that stops the entry before a permission query or a write
+    transaction is opened for it.
 
     Structural failures (not a dict, missing required keys) are skipped and
     logged.  Payload-level validation for specific contract types (e.g.
@@ -583,6 +593,13 @@ def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
         if "contract" not in entry or "payload" not in entry:
             logger.warning(
                 "update_contracts[%d]: missing required keys 'contract'/'payload', skipping", i
+            )
+            continue
+        if not isinstance(entry["payload"], dict):
+            logger.warning(
+                "update_contracts[%d]: payload for contract %r is a %s, not an object; "
+                "skipping (a non-object delta could only replace the whole section)",
+                i, entry.get("contract"), type(entry["payload"]).__name__,
             )
             continue
 

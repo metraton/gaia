@@ -20,7 +20,11 @@ why). This is the semantics agents are instructed to expect
 already honours: ``tools/scan/promote.py`` refreshes only its scan-owned keys
 and preserves agent-owned enrichment. Both actors write disjoint keys of the
 same section, so a full-section replace from either side destroys the other's
-contribution.
+contribution. That is also why a payload must BE an object: any other type
+carries no keys to merge and could only express the wholesale replace, so it is
+refused at both seams -- skipped by
+``contract_validator.parse_update_contracts`` on the way in, and refused by
+:func:`apply_update` at the write itself.
 
 Public API:
     - validate_permission(update, agent_name, cloud_scope, db_path) -> (allowed, message)
@@ -226,6 +230,17 @@ def apply_update(
     inside one ``BEGIN IMMEDIATE`` transaction, since agents run concurrently and
     an interleaved read-modify-write would lose one of the two deltas.
 
+    A payload that is not an object is REFUSED (``success`` False, no write),
+    not persisted: it has no keys to merge, so the only thing it could express
+    is a wholesale replacement of the section, discarding every entry it does
+    not mention. ``contract_validator.parse_update_contracts`` already skips
+    such an entry on the envelope path; this check is the one adjacent to the
+    write, so a direct caller of this function cannot reach the destructive
+    path either. Note the asymmetry with a non-object payload already IN the
+    row, handled by :func:`_decode_stored_payload`: that one is replaced, since
+    a corrupt or non-object stored value has nothing worth preserving and
+    ``trg_pcc_history`` retains the prior value regardless.
+
     ``workspace`` defaults to gaia.project.current() when not provided.
 
     Returns an audit dict:
@@ -255,6 +270,19 @@ def apply_update(
         logger.error("apply_update: gaia.db unavailable: %s", resolved)
         return audit
 
+    if not isinstance(payload, dict):
+        audit["error"] = (
+            f"payload must be a JSON object, got {type(payload).__name__}; "
+            "refusing to replace the stored section"
+        )
+        logger.error(
+            "apply_update: refused a %s payload for contract '%s' from %s; "
+            "only an object has keys to merge, so writing it would drop every "
+            "entry the delta does not mention",
+            type(payload).__name__, contract_name, agent_name,
+        )
+        return audit
+
     try:
         json.dumps(payload)
     except (TypeError, ValueError) as exc:
@@ -280,14 +308,7 @@ def apply_update(
             stored = _decode_stored_payload(row[0], contract_name)
             write_mode = "merge" if stored is not None else "replace"
 
-        if isinstance(payload, dict):
-            merged_payload = _merge_section_payload(stored, payload)
-        else:
-            # A non-object payload has no keys to merge; the schema-level shape
-            # check lives upstream, so persist it as-is rather than dropping it.
-            merged_payload = payload
-            write_mode = "replace"
-
+        merged_payload = _merge_section_payload(stored, payload)
         payload_json = json.dumps(merged_payload)
 
         # Ensure workspace row exists so the FK on project_context_contracts holds.

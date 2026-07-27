@@ -457,6 +457,58 @@ class TestApplyUpdateMerges:
         assert audit["write_mode"] == "replace"
         assert _read_contract(tmp_db, "me", "stack") == {"languages": ["python"]}
 
+    @pytest.mark.parametrize(
+        "payload",
+        [["x"], "x", 7, None, True],
+        ids=["list", "str", "int", "none", "bool"],
+    )
+    def test_non_object_incoming_payload_is_refused_not_persisted(
+        self, tmp_db: Path, payload
+    ):
+        """The inverse of test_non_object_stored_payload_is_replaced.
+
+        There the NON-OBJECT value was already in the row and had nothing worth
+        preserving. Here it ARRIVES as the delta, and the section it would land
+        on holds four entries: persisting it would collapse them all, which is
+        the same loss the merge fix closed for dict payloads. A list is the
+        reported shape and is included on purpose -- a list is not unioned into
+        the section, so it is a wholesale replace like any other non-object.
+        """
+        _seed_contract(tmp_db, "me", "project_identity", self.IDENTITY)
+
+        audit = apply_update(
+            {"contract": "project_identity", "payload": payload},
+            "gaia-operator",
+            workspace="me",
+            db_path=tmp_db,
+        )
+
+        assert audit["success"] is False
+        assert audit["write_mode"] is None
+        assert "JSON object" in audit["error"]
+        assert _read_contract(tmp_db, "me", "project_identity") == self.IDENTITY, (
+            "a non-object payload must leave the stored section untouched"
+        )
+
+    def test_non_object_incoming_payload_is_skipped_before_the_write(self, tmp_db: Path):
+        """The envelope path drops the entry at the parser, before any write.
+
+        Both seams guard the same property; this asserts the outer one fires, so
+        the entry never reaches the permission query or the write transaction.
+        """
+        from hooks.modules.agents.contract_validator import parse_update_contracts
+
+        entries = parse_update_contracts(
+            {
+                "update_contracts": [
+                    {"contract": "project_identity", "payload": ["x"]},
+                    {"contract": "stack", "payload": {"languages": ["python"]}},
+                ]
+            }
+        )
+
+        assert [e["contract"] for e in entries] == ["stack"]
+
     def test_merge_does_not_duplicate_the_row(self, tmp_db: Path):
         _seed_contract(tmp_db, "me", "stack", {"a": 1})
         apply_update(
