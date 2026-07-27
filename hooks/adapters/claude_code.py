@@ -1856,13 +1856,20 @@ class ClaudeCodeAdapter(HookAdapter):
             return HookResponse(output={}, exit_code=0)
 
         # ------------------------------------------------------------- #
-        # Task: the ONLY place a harness-truncated subagent is observable.
-        # A cut never reaches SubagentStop, so the subagent side writes
-        # nothing at all; the parent, however, still receives a Task result
+        # Subagent dispatch: the ONLY place a harness-truncated subagent is
+        # observable. A cut never reaches SubagentStop, so the subagent side
+        # writes nothing at all; the parent, however, still receives a result
         # reporting success but carrying no contract fence. Record it here or
         # it is lost. Observation only -- never blocks the orchestrator.
+        #
+        # The tool reports itself as "Agent"; "Task" is its former name. The
+        # hooks.json matcher still says "Task" and the harness still honors it,
+        # so the hook DOES fire -- but the payload carries the new name, which
+        # is why gating this branch on "Task" alone silently observed nothing.
         # ------------------------------------------------------------- #
-        if tool_name == "Task":
+        from modules.agents.task_result_observer import TASK_TOOL_NAMES
+
+        if tool_name in TASK_TOOL_NAMES:
             self._observe_task_result(hook_data)
             return HookResponse(output={}, exit_code=0)
 
