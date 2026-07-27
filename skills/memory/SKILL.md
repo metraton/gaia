@@ -250,6 +250,7 @@ when to write:
 | Cross-cutting repo / system knowledge | `project_<topic>` → `--type=project` | `anchor` | No -- surfaces in "About you / What I know" |
 | User preference or identity | `user_<topic>` → `--type=user` | `anchor` | No -- surfaces in "About you / What I know" |
 | Post-mortem / correction the system must remember | `feedback_<topic>` → `--type=feedback` | `log` | No -- `log` is never injected |
+| A defect promoted out of the raw floor to last | `feedback_<component>_<symptom>` → `--type=feedback` | `thread` (`--status=carry_forward --initiative=gaia_system`) | **Yes** -- and the body is the fixed four-field shape in `reference.md` |
 | Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) | **Yes** -- the only row that lands in the transversal digest |
 
 The CLI enforces `^{type}_[a-z0-9_]+$` with type-specific matching: a
@@ -303,7 +304,14 @@ in place. There is no separate `update` command.
 - **`negative_*`**: state the closed path in the first line, then why
   it failed and what was used instead. The point is *do not retry this*.
 - **`project_*` / `user_*` / `feedback_*`**: free-form markdown.
-  Treat as anchors unless the content is a running thread.
+  Treat as anchors unless the content is a running thread. One
+  exception, and it is not free-form: a **promoted defect** -- a
+  `feedback_*` row written under `--initiative=gaia_system
+  --class=thread --status=carry_forward` -- has a fixed body of four
+  named fields (Symptom, Component, Evidence, Reproduction) so the whole
+  defect corpus is retrievable and triageable in one query. See
+  "Promoted defect: the `gaia_system` initiative shape" in
+  `reference.md` for the shape and the promotion path.
 
 ### Project-scoped memory (summary)
 
