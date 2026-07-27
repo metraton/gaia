@@ -273,6 +273,91 @@ class TestHooksJson:
         )
 
 
+class TestHooksJsonManifestSync:
+    """hooks/hooks.json must equal generate_hooks_json(build/gaia.manifest.json).
+
+    hooks.json is a GENERATED artifact; build/gaia.manifest.json is its source of
+    truth. A hand edit to the generated file that is not mirrored in the manifest
+    fails silently -- the next `npm run generate:plugin-root` restores the
+    committed bytes, so the change vanishes with no git diff and a fresh mtime,
+    and the only symptom is the runtime behaviour reverting. These tests turn
+    that into a loud failure in the suite instead of a discovery hours later.
+
+    scripts/check_hooks_drift.py enforces the same invariant at publish time
+    (bin/pre-publish-validate.js); this exercises it against the working tree.
+    """
+
+    def _load_drift_guard(self):
+        spec = importlib.util.spec_from_file_location(
+            "_gaia_check_hooks_drift", PROJECT_ROOT / "scripts" / "check_hooks_drift.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_hooks_json_matches_generator_output(self, gaia_manifest):
+        """The committed hooks.json is exactly what the manifest generates."""
+        build_plugin = _load_build_plugin_module()
+        expected = build_plugin.generate_hooks_json(gaia_manifest)
+        actual = json.loads((PROJECT_ROOT / "hooks" / "hooks.json").read_text())
+        assert actual == expected, (
+            "hooks/hooks.json has drifted from build/gaia.manifest.json. Edit the "
+            "manifest (never the generated file) and run "
+            "`npm run generate:plugin-root`."
+        )
+
+    def test_drift_guard_passes_on_the_working_tree(self, capsys):
+        """The publish-time guard agrees with the suite on the real files."""
+        guard = self._load_drift_guard()
+        assert guard.main() == 0, capsys.readouterr().err
+
+    def test_drift_guard_fails_on_a_hand_edited_hooks_json(self, tmp_path, monkeypatch, capsys):
+        """A generated-file-only edit must be detected, not silently reverted.
+
+        Reproduces the real failure on a fixture pair: the manifest keeps its
+        matcher, hooks.json is edited by hand. The guard must exit 1.
+        """
+        guard = self._load_drift_guard()
+        build_plugin = _load_build_plugin_module()
+
+        manifest = json.loads((PROJECT_ROOT / "build" / "gaia.manifest.json").read_text())
+        hand_edited = build_plugin.generate_hooks_json(manifest)
+        hand_edited["hooks"]["PreToolUse"][0]["matcher"] = "Bash|SomethingNobodyDeclared"
+
+        fixture_manifest = tmp_path / "gaia.manifest.json"
+        fixture_hooks = tmp_path / "hooks.json"
+        fixture_plugin = tmp_path / "plugin.json"
+        fixture_manifest.write_text(json.dumps(manifest))
+        fixture_hooks.write_text(json.dumps(hand_edited))
+        fixture_plugin.write_text(json.dumps({"name": "gaia"}))
+
+        monkeypatch.setattr(guard, "MANIFEST", fixture_manifest)
+        monkeypatch.setattr(guard, "HOOKS_JSON", fixture_hooks)
+        monkeypatch.setattr(guard, "PLUGIN_JSON", fixture_plugin)
+
+        assert guard.main() == 1, "drift guard failed to detect a hand-edited hooks.json"
+        assert "matcher mismatch: PreToolUse" in capsys.readouterr().err
+
+    def test_drift_guard_passes_on_an_in_sync_fixture(self, tmp_path, monkeypatch):
+        """Control: the same fixture wiring reports 0 when nothing diverges."""
+        guard = self._load_drift_guard()
+        build_plugin = _load_build_plugin_module()
+
+        manifest = json.loads((PROJECT_ROOT / "build" / "gaia.manifest.json").read_text())
+        fixture_manifest = tmp_path / "gaia.manifest.json"
+        fixture_hooks = tmp_path / "hooks.json"
+        fixture_plugin = tmp_path / "plugin.json"
+        fixture_manifest.write_text(json.dumps(manifest))
+        fixture_hooks.write_text(json.dumps(build_plugin.generate_hooks_json(manifest)))
+        fixture_plugin.write_text(json.dumps({"name": "gaia"}))
+
+        monkeypatch.setattr(guard, "MANIFEST", fixture_manifest)
+        monkeypatch.setattr(guard, "HOOKS_JSON", fixture_hooks)
+        monkeypatch.setattr(guard, "PLUGIN_JSON", fixture_plugin)
+
+        assert guard.main() == 0
+
+
 class TestMarketplaceJson:
     """Test .claude-plugin/marketplace.json manifest.
 

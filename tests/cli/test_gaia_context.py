@@ -4,6 +4,7 @@ Unit tests for bin/cli/context.py -- gaia context subcommand.
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -242,6 +243,33 @@ class TestCmdGet:
         assert "workspace" in captured.out
         assert rc == 0
 
+    def test_get_defaults_to_active_view(self):
+        """Without --include-missing the provider keeps its active-view default."""
+        import cli.context  # noqa: F401 -- ensures the module is imported
+
+        args = _MockArgs(
+            context_cmd="get", workspace="ws", section=None, json=True, text=False,
+        )
+        provider = MagicMock(return_value=_SAMPLE_SUBSTRATE_CTX)
+        with patch("gaia.project.current", return_value="ws"):
+            with patch("gaia.store.provider.get_context", provider):
+                rc = _cmd_get(args)
+        assert rc == 0
+        assert provider.call_args.kwargs["include_missing"] is False
+
+    def test_get_include_missing_propagates_to_provider(self):
+        """--include-missing must reach get_context(include_missing=True)."""
+        args = _MockArgs(
+            context_cmd="get", workspace="ws", section=None, json=True, text=False,
+            include_missing=True,
+        )
+        provider = MagicMock(return_value=_SAMPLE_SUBSTRATE_CTX)
+        with patch("gaia.project.current", return_value="ws"):
+            with patch("gaia.store.provider.get_context", provider):
+                rc = _cmd_get(args)
+        assert rc == 0
+        assert provider.call_args.kwargs["include_missing"] is True
+
     def test_get_identity_field_is_workspace_name(self, capsys):
         """Fix #4: identity in shape must be the workspace name, not a repo URL."""
         ctx = dict(_SAMPLE_SUBSTRATE_CTX)
@@ -251,6 +279,80 @@ class TestCmdGet:
         data = json.loads(captured.out)
         assert data["identity"] == "test-workspace"
         assert rc == 0
+
+
+class TestCmdGetIncludeMissing:
+    """--include-missing surfaces soft-deleted rows against a real substrate.
+
+    The provider is NOT mocked here: the point is that a row `gaia scan`
+    demoted (status='missing' + missing_since) is genuinely readable through
+    the CLI with the flag, and genuinely hidden without it.
+    """
+
+    @pytest.fixture()
+    def seeded_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        from gaia.paths import db_path
+        from gaia.store.writer import _connect
+
+        con = _connect(db_path())
+        try:
+            con.execute(
+                "INSERT INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
+                ("ws-soft-delete", "ws-soft-delete", "2026-01-01T00:00:00Z"),
+            )
+            con.execute(
+                "INSERT INTO projects (workspace, name, scanner_ts, status) "
+                "VALUES (?, ?, ?, 'active')",
+                ("ws-soft-delete", "alive", "2026-01-01T00:00:00Z"),
+            )
+            con.execute(
+                "INSERT INTO projects "
+                "(workspace, name, scanner_ts, status, missing_since) "
+                "VALUES (?, ?, ?, 'missing', ?)",
+                ("ws-soft-delete", "vanished", "2026-01-01T00:00:00Z",
+                 "2026-02-01T00:00:00Z"),
+            )
+            con.commit()
+        finally:
+            con.close()
+        return db_path()
+
+    def _projects(self, capsys, *, include_missing):
+        args = _MockArgs(
+            context_cmd="get",
+            workspace="ws-soft-delete",
+            section="projects",
+            json=True,
+            text=False,
+            include_missing=include_missing,
+        )
+        rc = _cmd_get(args)
+        assert rc == 0
+        return {p["name"]: p for p in json.loads(capsys.readouterr().out)}
+
+    def test_without_flag_missing_project_is_hidden(self, seeded_db, capsys):
+        projects = self._projects(capsys, include_missing=False)
+        assert "alive" in projects
+        assert "vanished" not in projects
+
+    def test_with_flag_missing_project_exposes_missing_since(self, seeded_db, capsys):
+        projects = self._projects(capsys, include_missing=True)
+        assert "alive" in projects
+        assert "vanished" in projects
+        assert projects["vanished"]["status"] == "missing"
+        assert projects["vanished"]["missing_since"] == "2026-02-01T00:00:00Z"
+
+    def test_flag_is_registered_on_the_get_parser(self):
+        """The flag has to exist on the real parser, not just in _cmd_get."""
+        from cli.context import register
+
+        parser = argparse.ArgumentParser(prog="gaia")
+        register(parser.add_subparsers(dest="command"))
+
+        args = parser.parse_args(["context", "get", "--include-missing"])
+        assert args.include_missing is True
+        assert parser.parse_args(["context", "get"]).include_missing is False
 
 
 # ---------------------------------------------------------------------------

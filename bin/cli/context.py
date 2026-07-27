@@ -5,7 +5,8 @@ Subcommands:
   gaia context show [--section SECTION] [--json]   Display context from SQLite substrate (tabular)
   gaia context scan [--dry-run] [--json]            Run project scanner (legacy)
   gaia context get  [--workspace W] [--section S]   Emit canonical workspace shape from substrate
-                    [--json] [--text]
+                    [--json] [--text]                (--include-missing also emits soft-deleted rows)
+                    [--include-missing]
   gaia context dump [--workspace W]                 (deprecated) alias for `gaia context get`
   gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
   gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
@@ -240,11 +241,18 @@ _SELECT_VERBS = {"select", "with", "explain", "pragma"}
 
 
 def _cmd_get(args) -> int:
-    """Handle `gaia context get [--workspace W] [--section S] [--json] [--text]`.
+    """Handle `gaia context get [--workspace W] [--section S] [--json] [--text]
+    [--include-missing]`.
 
     Emits the canonical workspace shape from the SQLite substrate.
     Defaults to JSON output. Use --text for the same tabular renderer as `show`.
     Fix #5: exits 1 with message when workspace does not exist in the DB.
+
+    --include-missing surfaces the soft-deleted rows (status='missing') that the
+    default active view hides. The soft-delete itself is intentional: `gaia scan`
+    demotes a project that vanished from disk instead of dropping it, so the
+    "existed but no longer on disk" record stays consultable. Without the flag
+    that record was written but unreadable through the CLI.
     """
     try:
         from gaia.store.provider import get_context
@@ -254,8 +262,9 @@ def _cmd_get(args) -> int:
         return 1
 
     workspace = getattr(args, "workspace", None) or _project_current()
+    include_missing = getattr(args, "include_missing", False)
     try:
-        ctx = get_context(workspace)
+        ctx = get_context(workspace, include_missing=include_missing)
     except Exception as exc:
         print(f"gaia context get: error reading store: {exc}", file=sys.stderr)
         return 1
@@ -842,6 +851,14 @@ def register(subparsers) -> None:
             default=False,
             help="Emit human-readable tabular presentation",
         )
+        p.add_argument(
+            "--include-missing",
+            dest="include_missing",
+            action="store_true",
+            default=False,
+            help="Also emit soft-deleted rows (status='missing') with their "
+                 "missing_since; the default active view hides them",
+        )
 
     get_parser = ctx_subparsers.add_parser(
         "get",
@@ -1022,6 +1039,7 @@ def cmd_context(args) -> int:
     get_p.add_argument("--section", metavar="SECTION")
     get_p.add_argument("--json", action="store_true")
     get_p.add_argument("--text", action="store_true")
+    get_p.add_argument("--include-missing", dest="include_missing", action="store_true")
     tmp_sub.add_parser("dump", help="(deprecated) alias for `get`").add_argument("--workspace", metavar="W")
     tmp_sub.add_parser("query", help="Read-only SELECT").add_argument("sql", metavar="SQL")
     wipe_p = tmp_sub.add_parser("wipe", help="(DESTRUCTIVE) Delete all rows for a workspace (CASCADE)")
