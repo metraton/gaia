@@ -265,6 +265,21 @@ _GATE_FALSE_VALUES = {"0", "false", "no", "off"}
 GATE_MODE_THREE_CASE = "three_case"
 GATE_MODE_FULL_VERDICT = "full_verdict"
 
+# Dotted event category written to harness_events when the gate REJECTS a turn.
+# A rejection is invisible everywhere else: it is not observable in PostToolUse
+# (a subagent that repairs comes back carrying a valid fence, and one that never
+# repairs is indistinguishable from a harness cut, which agent.cut already
+# claims), so the verdict is only knowable where the gate runs. Severity is
+# error -- strictly above info -- because the triage reader
+# (gaia.store.reader._query_orchestrator_defects) selects the orchestrator
+# channel by a severity threshold, never by an enumeration of event types.
+CONTRACT_REJECTED_EVENT = "agent.contract_rejected"
+
+# How much of the rejection message to keep on the event payload, in characters.
+# Enough to recognize WHICH rejection it was without storing the whole repair
+# block, which is long by design.
+_REJECTION_PREVIEW_CHARS = 400
+
 
 def full_verdict_gate_enabled() -> bool:
     """Whether the M4 full-verdict gate is active (DEFAULT ON).
@@ -467,7 +482,7 @@ def _three_case_verdict(
     return ContractGateVerdict(False, "", (), GATE_MODE_THREE_CASE)
 
 
-def evaluate_contract_gate(
+def _contract_gate_verdict(
     parsed_contract: Any,
     *,
     agent_type: str = "unknown",
@@ -476,7 +491,12 @@ def evaluate_contract_gate(
     ramp_enabled: Optional[bool] = None,
     db_path: Optional[str] = None,
 ) -> ContractGateVerdict:
-    """Evaluate the SubagentStop contract gate for one turn (T16 / AC-9).
+    """Compute the SubagentStop contract gate verdict for one turn (T16 / AC-9).
+
+    Pure decision: it reads the envelope and returns the verdict, and writes
+    nothing. Telemetry for a rejection is layered on by the public
+    :func:`evaluate_contract_gate` wrapper so the verdict logic stays free of
+    side effects.
 
     Args:
         parsed_contract: the parsed agent_contract_handoff envelope dict, or
@@ -595,6 +615,90 @@ def evaluate_contract_gate(
         )
 
     return ContractGateVerdict(True, reason, anomalies, GATE_MODE_FULL_VERDICT)
+
+
+def _record_contract_rejection_defect(
+    verdict: ContractGateVerdict,
+    *,
+    agent_type: str,
+    plan_task_id: Optional[int],
+) -> None:
+    """Record a gate rejection as a defect in harness_events. Never raises.
+
+    Writes through ``EventWriter().write_event`` -- the same append-only
+    ``harness_events`` path ``agent.cut`` uses. That channel is deliberate: it
+    takes no ``episode_id``, so recording a rejection never needs a parent
+    ``episodes`` row and never invents one. A rejection typically happens on a
+    turn whose episode does not exist yet, and fabricating a turn to satisfy a
+    foreign key would falsify the history the triage reads.
+
+    Strictly observational: the caller ignores the outcome and every failure is
+    swallowed, so the gate's verdict and the ``exit 2`` that forces the subagent
+    to repair are unaffected by anything that happens here.
+    """
+    try:
+        from modules.events.event_writer import EventWriter
+
+        codes = [
+            str(a.get("code", ""))
+            for a in verdict.anomalies
+            if isinstance(a, dict) and a.get("code")
+        ]
+        summary = verdict.rejection_reason.replace("\n", " ").strip()
+        meta: Dict[str, Any] = {
+            "gate_mode": verdict.mode,
+            "agent": agent_type,
+            "codes": codes,
+            "reason_preview": summary[:_REJECTION_PREVIEW_CHARS],
+        }
+        if plan_task_id is not None:
+            meta["plan_task_id"] = plan_task_id
+
+        detail = f": {', '.join(codes)}" if codes else ""
+        EventWriter().write_event(
+            CONTRACT_REJECTED_EVENT,
+            "hook",
+            agent_type,
+            f"contract gate rejected {agent_type}'s turn ({verdict.mode}){detail}",
+            severity="error",
+            meta=meta,
+        )
+    except Exception as exc:  # pragma: no cover - telemetry must never block
+        logger.debug("contract rejection event write failed (non-fatal): %s", exc)
+
+
+def evaluate_contract_gate(
+    parsed_contract: Any,
+    *,
+    agent_type: str = "unknown",
+    plan_task_id: Optional[int] = None,
+    stop_reason_classification: str = STOP_REASON_UNKNOWN,
+    ramp_enabled: Optional[bool] = None,
+    db_path: Optional[str] = None,
+) -> ContractGateVerdict:
+    """Evaluate the SubagentStop contract gate and record a rejection as a defect.
+
+    The verdict is computed by :func:`_contract_gate_verdict` and returned
+    unchanged; a rejecting verdict additionally lands one ``harness_events`` row
+    of type :data:`CONTRACT_REJECTED_EVENT` at severity ``error``. A salvaged
+    truncation does not reject, so it is not recorded here -- the T11 fast-path /
+    T9 backstop already capture that turn.
+
+    See :func:`_contract_gate_verdict` for the argument semantics.
+    """
+    verdict = _contract_gate_verdict(
+        parsed_contract,
+        agent_type=agent_type,
+        plan_task_id=plan_task_id,
+        stop_reason_classification=stop_reason_classification,
+        ramp_enabled=ramp_enabled,
+        db_path=db_path,
+    )
+    if verdict.rejected:
+        _record_contract_rejection_defect(
+            verdict, agent_type=agent_type, plan_task_id=plan_task_id
+        )
+    return verdict
 
 
 def _append_workspace_memory(context: str) -> str:
