@@ -16,7 +16,8 @@ Output columns are the same for both origins:
 
     origin     -- 'subagent' | 'orchestrator'
     date       -- ISO8601 timestamp, second precision
-    type       -- defect type ('skipped_verification', 'agent.cut', ...)
+    type       -- defect type ('skipped_verification', 'agent.cut',
+                  'agent.contract_rejected', ...)
     severity   -- 'info' | 'warning' | 'error' | 'critical'
     agent      -- agent the defect is attributed to, when known
     message    -- one-line description from the source row
@@ -133,6 +134,7 @@ _DEFECTS_EPILOG = """\
 Examples:
   gaia defects                                     # newest defects, both origins
   gaia defects --type=skipped_verification         # every instance of one class
+  gaia defects --type=agent.contract_rejected      # rejected handoff contracts
   gaia defects --origin=orchestrator --since=7d    # harness-observed failures
   gaia defects --severity=critical --limit=50
   gaia defects --agent=gaia-system --json
@@ -161,7 +163,10 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--type", default=None, metavar="VALUE",
-        help="Exact defect type ('skipped_verification', 'agent.cut', ...).",
+        help=(
+            "Exact defect type ('skipped_verification', 'agent.cut', "
+            "'agent.contract_rejected', ...)."
+        ),
     )
     p.add_argument(
         "--severity", default=None, metavar="LEVEL",

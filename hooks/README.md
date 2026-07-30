@@ -119,6 +119,15 @@ Neither `pre_compact.py` nor `post_compact.py` can deliver model-facing `additio
 
 **A rejected turn no longer loses its work.** When the full-verdict gate rejects a turn (exit 2, missing/invalid `agent_contract_handoff` fence), the harness delivers the rejection to the SUBAGENT, and the repair turn it produces REPLACES the rejected message in everything the orchestrator receives — so a full diagnosis can be silently swapped for a thin "this only adds the envelope" re-emission. The gate is unchanged; the cost of a rejection is not. `modules/agents/rejected_turn_relay.py` strips the contract fences from the rejected message, persists the remaining substantive text under `<data_dir>/rejected_turns/<session>.<agent_id>.txt`, and reinjects it VERBATIM into the rejection message the harness hands back, with an explicit instruction to reproduce it — the only in-band route to an orchestrator that reads the subagent's final message and nothing else. A second rejection carries the ORIGINAL text forward rather than letting a thinner repair overwrite it, and a turn that finally passes reports (`preserved_output_relayed`) whether the text actually came back.
 
+**Harness-observed defect events.** Failures visible only from outside a
+subagent are persisted in `harness_events` and appear through `gaia defects
+--origin=orchestrator`. `agent.cut` means the Task result claimed completion
+but contained no parseable contract fence; it is observational and does not
+recover the lost work. `agent.contract_rejected` means the full-verdict gate
+rejected the emitted contract; its substantive output may have been preserved
+by `rejected_turn_relay.py` as described above. Both are warning-grade by
+default and can be isolated with `gaia defects --type=<event>`.
+
 ## Ver también
 
 - [`build/gaia.manifest.json`](../build/gaia.manifest.json) — hook registration and matchers
