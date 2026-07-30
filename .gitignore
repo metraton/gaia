@@ -74,6 +74,7 @@ tests/evals/results/baseline.candidate.json
 
 # Temporary probe/test artifacts
 tmp-*
+.tmp_*
 probe-*.md
 
 # Pytest temp dir (basetemp in pyproject.toml)
