@@ -1,0 +1,31 @@
+-- Migration v37 -> v38: index the plan-task binding on agent_contract_handoffs.
+--
+-- WHAT CHANGES
+--   One index: agent_contract_handoffs(plan_task_id).
+--
+-- WHY
+--   v37 introduced plan_task_id as a NULLABLE FK -> tasks.id (the born-at-dispatch
+--   plan-task binding) and indexed workspace, brief_id, session_id and contract_id
+--   alongside it -- but not plan_task_id itself. SQLite indexes only the PARENT
+--   side of a foreign key (tasks.id, already a rowid alias); the CHILD column gets
+--   no index unless one is declared. So "which handoff rows are bound to this
+--   task" is a full table scan of a table that grows with every dispatched turn
+--   in every session, while the answer it returns is bounded by the handful of
+--   turns for one task. That is the read the task closure condition performs on
+--   the identity axis, once per gate write.
+--
+-- IDEMPOTENCY
+--   CREATE INDEX IF NOT EXISTS: a no-op on a DB that already carries the index
+--   (including a fresh install, where schema.sql has already created it before
+--   this file is replayed under the floor model). No table rebuild, no data
+--   movement, no column change -- an index is derived state, so applying it twice
+--   and applying it to an empty table are both harmless.
+--
+--   NOTE the ordering that makes the fresh-install path a no-op rather than a
+--   conflict: bootstrap applies schema.sql FIRST (Section 2) and only then walks
+--   pending migrations (Section 3c), so on a fresh DB the index already exists by
+--   the time this runs. On a live v37 DB schema.sql's CREATE ... IF NOT EXISTS
+--   also creates it, and this file then finds it present. Both paths converge on
+--   the same single index; the ledger stamp is what differs.
+
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_plan_task ON agent_contract_handoffs(plan_task_id);

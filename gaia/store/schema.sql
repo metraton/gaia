@@ -1149,6 +1149,11 @@ CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_session   ON agent_contra
 -- real constraint-backed idempotent UPSERT rather than an application-level
 -- convention -- see the contract_id column comment above.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_contract_handoffs_contract_id ON agent_contract_handoffs(contract_id);
+-- SQLite does not index a foreign-key CHILD column automatically, so every
+-- lookup of "which turns were dispatched for this task" scans the whole table.
+-- That is the access path behind the task closure condition, which asks once
+-- per gate write and grows with the contract history, not with the task.
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_plan_task ON agent_contract_handoffs(plan_task_id);
 
 -- ---------------------------------------------------------------------------
 -- agent_contract_handoff_approvals: approval decisions linked to handoffs (v9/M4)
