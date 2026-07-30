@@ -929,8 +929,12 @@ def _build_subcommands(sub) -> None:
         help="List persisted agent_contract_handoffs rows (read-only)",
     )
     p_list.add_argument(
-        "--agent", dest="agent_id", metavar="AGENT_ID", default=None,
-        help="Filter by agent_id (the minted a<hex> handle, or the dispatch agent name)",
+        "--agent-id", "--agent", dest="agent_id", metavar="AGENT_ID", default=None,
+        help=(
+            "Filter by the exact persisted agent_id (normally the minted "
+            "a<hex> handle). Dispatch agent type/name is not stored on legacy "
+            "rows and cannot be inferred by this filter."
+        ),
     )
     p_list.add_argument(
         "--state", dest="state", metavar="AGENT_STATE", default=None,

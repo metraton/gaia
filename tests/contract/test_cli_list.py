@@ -126,6 +126,16 @@ class TestListFilters:
         assert payload["count"] == 1
         assert payload["handoffs"][0]["contract_id"] == "c-a"
 
+    def test_agent_id_spelling_is_supported_and_literal(self, db_path, capsys):
+        minted = "a" + "c" * 16
+        _seed(db_path, contract_id="c-agent-id", agent_id=minted)
+
+        _, out = _run(
+            ["contract", "list", "--agent-id", minted, "--json"], capsys
+        )
+
+        assert json.loads(out)["handoffs"][0]["contract_id"] == "c-agent-id"
+
     def test_filter_by_state(self, db_path, capsys):
         _seed(db_path, contract_id="c-done", agent_state="COMPLETE")
         _seed(db_path, contract_id="c-open", agent_state="DISPATCHED")
