@@ -1,6 +1,6 @@
 ---
 name: git-conventions
-description: Use when creating a git commit or preparing changes for a pull request
+description: Use when committing, squashing, merging, rebasing, or preparing changes for a pull request
 ---
 
 # Git Conventions
