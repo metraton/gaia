@@ -222,6 +222,7 @@ def birth_dispatched_row(
     parent_handoff_id: "Optional[int]" = None,
     session_id: "Optional[str]" = None,
     brief_id: "Optional[int]" = None,
+    agent_name: "Optional[str]" = None,
     db_path: "_pl.Path | None" = None,
 ) -> dict:
     """Validate the binding, then BIRTH the nascent DISPATCHED row.
@@ -231,6 +232,11 @@ def birth_dispatched_row(
     NOT touching the DB when the binding fails referential integrity), then
     stamps the binding into a nascent ``agent_state='DISPATCHED'`` row via
     ``gaia.store.writer.insert_dispatched_handoff``.
+
+    ``agent_name`` is the dispatched agent's NAME, recorded inside the birth
+    envelope (never in the identity columns). It is the only coordinate a turn
+    that does not ADOPT its minted identity still shares with its own row, so it
+    is what lets such a row be found and closed at SubagentStop.
 
     Returns the writer's result dict (``status`` / ``created`` / ``handoff_id`` /
     ``contract_id``). Idempotency is inherited from the writer: a re-dispatch for
@@ -254,6 +260,7 @@ def birth_dispatched_row(
         kind=kind,
         session_id=session_id,
         brief_id=brief_id,
+        agent_name=agent_name,
         db_path=db_path,
     )
 

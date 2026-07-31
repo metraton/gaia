@@ -38,21 +38,24 @@ SECOND, INDEPENDENT RESPONSIBILITY -- closing the born-at-dispatch row:
     separate job from the capture above, and it is unconditional: it runs on
     EVERY turn, not only on a crash.
 
-    Why it cannot be the finalize path's job -- the TWO KEY SPACES. A born row
-    is keyed by a synthetic dispatch id (``dispatch.{session}.{agent-name}.{key}``,
-    with the agent NAME in its ``agent_id`` column, because at dispatch time the
-    agent has not minted anything yet), while the agent's own ``gaia contract
-    finalize`` keys on the draft id it minted for itself
-    (``{minted-agent-id}.{token}``). The two never intersect. So a perfectly
-    healthy turn writes its verdict to a DIFFERENT row, and the born row is left
-    behind -- with a corrected fence or without one, crash or no crash. THIS
-    MODULE IS THE ONLY LAYER THAT HOLDS BOTH IDENTITIES, which is why the exit
-    belongs here and nowhere else. (Earlier revisions of this docstring claimed
-    the backstop "is also the REAPER" that converges the nascent row on a crash.
-    It never could: it looked the orphan up by the MINTED id, which a born row
-    never carries. Zero rows were ever reaped. Both halves of that -- the wrong
-    key space, and the assumption that only a crash leaves an orphan -- are what
-    the two closure modes below fix.)
+    When it IS the finalize path's job, and when it falls here. The dispatch now
+    mints a REAL, adoptable identity for the row (``dispatch_identity``: an
+    ``a``+hex ``agent_id`` and a ``{agent_id}.{token}`` ``contract_id``) and
+    injects both halves into the subagent's context. A turn that ADOPTS them
+    (``gaia contract init --agent-id ... --draft-id ...``) finalizes under the
+    same ``contract_id`` the row was born with, so its own finalize CONVERGES the
+    born row -- there is one row, already closed, and nothing here to supersede.
+    The closure below is for the turn that did NOT adopt: no identity block
+    reached it, or it minted a rival id anyway, so its verdict landed on a
+    DIFFERENT row and the born one is left behind -- with a corrected fence or
+    without one, crash or no crash. THIS MODULE IS THE ONLY LAYER THAT HOLDS BOTH
+    IDENTITIES, which is why that exit belongs here and nowhere else. (Earlier
+    revisions of this docstring claimed the backstop "is also the REAPER" that
+    converges the nascent row on a crash. It never could: it looked the orphan up
+    by the MINTED id, which a born row did not carry back when birth used a
+    synthetic dispatch key. Zero rows were ever reaped. Both halves of that -- the
+    wrong key space, and the assumption that only a crash leaves an orphan -- are
+    what the two closure modes below fix.)
 
     Two closure modes, distinguished so the row never lies about the turn:
       * SUPERSEDED -- the turn DID record its own terminal contract row (its own
@@ -267,6 +270,7 @@ def close_born_dispatch_row(
     turn_recorded_own_contract: bool,
     db_path=None,
     skip_contract_id: "str | None" = None,
+    agent_name: "str | None" = None,
 ) -> "dict | None":
     """Take the turn's born-at-dispatch row out of 'DISPATCHED'. Runs EVERY turn.
 
@@ -294,6 +298,21 @@ def close_born_dispatch_row(
 
     ``skip_contract_id`` names a row the CALLER already converged in its own
     capture step. Passing it keeps the two steps from writing the same row twice.
+    It is ALSO what makes the ADOPTED case a no-op: a turn that adopted the
+    identity minted for it at dispatch has ONE row -- the born row IS its contract
+    row -- so the capture and this closure resolve the same ``contract_id`` and
+    there is no scaffold left to supersede. Nothing here needs to detect adoption
+    separately; the identity collapsing to one value is the detection.
+
+    ``agent_name`` is the LAST-RESORT lane, for the opposite case: a turn that
+    never adopted, whose own draft id is unrelated to its row. The dispatched name
+    is then the only shared coordinate, matched against the birth envelope. Two
+    guards keep that lane from closing a row belonging to a CONCURRENT sibling,
+    because a name is shared by every dispatch of that agent while an identity is
+    not: it is skipped entirely when the turn's own row was itself born at
+    dispatch (adoption -- there is no scaffold to close), and it declines an
+    ambiguous match outright rather than picking the most recent (see the writer's
+    ``find_dispatched_row_by_agent_name``).
 
     Idempotent and race-safe without a lock: only a row still in 'DISPATCHED' is
     touched, and the convergence goes through the same UPSERT the capture uses.
@@ -307,9 +326,22 @@ def close_born_dispatch_row(
     import json as _json
 
     try:
+        # Imported inside the try on purpose: this function must never raise --
+        # a failure here would cost the turn its born-row closure -- so an
+        # unavailable core degrades through the same non-blocking path as any
+        # other failure below.
+        from gaia.state import CUT_REASON_REAPED
+
         orphan = _writer.find_orphaned_dispatched_handoff(
             session_id, identity_candidates, db_path=db_path
         )
+        turn_row_was_born_at_dispatch = _writer.is_born_at_dispatch_row(
+            skip_contract_id or contract_pointer, db_path=db_path
+        )
+        if orphan is None and agent_name and not turn_row_was_born_at_dispatch:
+            orphan = _writer.find_dispatched_row_by_agent_name(
+                session_id, agent_name, db_path=db_path
+            )
         if orphan is None:
             return None
         born_contract_id = orphan["contract_id"]
@@ -322,6 +354,14 @@ def close_born_dispatch_row(
         }
         if contract_pointer:
             envelope["superseded_by_contract_id"] = contract_pointer
+        # v39: the structural twin of the degraded/reaped envelope flags below.
+        # Same split, same reasoning: a REAPED row is a turn that never recorded
+        # a contract of its own, so it keeps a cut mark; a SUPERSEDED scaffold is
+        # a healthy turn whose verdict lives on the row `contract_pointer` names,
+        # so it clears -- marking it would stamp every healthy bound dispatch and
+        # drown the population the mark exists to identify, exactly as marking it
+        # `degraded` would.
+        cut_reason = None if turn_recorded_own_contract else CUT_REASON_REAPED
         if not turn_recorded_own_contract:
             envelope["degraded"] = True
             envelope["auto_captured"] = True
@@ -330,14 +370,17 @@ def close_born_dispatch_row(
 
         outcome = _writer.finalize_agent_contract_handoff(
             contract_id=born_contract_id,
-            # The born row's own dispatch identity -- preserved, never rewritten
-            # to the minted id, so the row stays queryable in the space it was
-            # born in and the two identity spaces are not silently merged.
-            agent_id=identity_candidates[0],
+            # The row's OWN identity, read back from the row -- never the
+            # candidate this closure happened to search by. The birth now stamps
+            # a minted handle, so restamping with a candidate would overwrite it
+            # with an agent NAME that no contract validator accepts, and the row
+            # would stop being joinable to the draft it was adopted under.
+            agent_id=orphan.get("agent_id") or identity_candidates[0],
             workspace=workspace,
             agent_state=_CLOSED_DISPATCH_STATE,
             raw_handoff_json=_json.dumps(envelope),
             session_id=session_id,
+            cut_reason=cut_reason,
             db_path=db_path,
         )
         logger.info(
@@ -413,6 +456,11 @@ def persist_handoff(
             _repo_root = _pl.Path(__file__).resolve().parent.parent.parent.parent
             _sys.path.insert(0, str(_repo_root))
             from gaia.store import writer as _writer
+
+        from gaia.state import (
+            CUT_REASON_BACKSTOP_CAPTURE,
+            CUT_REASON_REAPED,
+        )
 
         minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
         # agent_id stored in the NOT NULL row column.
@@ -557,6 +605,15 @@ def persist_handoff(
                 # the backstop) from a plain no-row-yet degraded capture.
                 envelope["reaped"] = True
 
+            # Every row this capture writes is by construction a row the agent
+            # did NOT finalize itself -- the step returns early when a terminal
+            # row already exists -- so it always carries a cut mark. Which one
+            # mirrors the envelope split just above: a converged orphan is
+            # REAPED, a captured no-row turn is a BACKSTOP_CAPTURE.
+            cut_reason = (
+                CUT_REASON_REAPED if reaping else CUT_REASON_BACKSTOP_CAPTURE
+            )
+
             raw_handoff_json = _json.dumps(envelope)
             brief_id = _extract_brief_id(envelope)
 
@@ -569,6 +626,7 @@ def persist_handoff(
                 session_id=session_id,
                 plan_task_id=plan_task_id,
                 brief_id=brief_id,
+                cut_reason=cut_reason,
                 db_path=db_path,
             )
 
@@ -648,6 +706,7 @@ def persist_handoff(
             turn_recorded_own_contract=turn_recorded_own_contract,
             db_path=db_path,
             skip_contract_id=contract_id,
+            agent_name=task_info.get("agent"),
         )
 
     except Exception as _exc:

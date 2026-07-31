@@ -6283,8 +6283,17 @@ def insert_agent_contract_handoff(
 #       *,
 #       session_id: str | None = None,
 #       brief_id: int | None = None,
+#       cut_reason: str | None = None,
 #       db_path: Path | None = None,
 #   ) -> dict
+#
+#   v39 adds `cut_reason`, and with it the property that only THIS function can
+#   produce a clean closure: the born row carries 'never_finalized' from birth
+#   (insert_dispatched_handoff), the DO UPDATE writes cut_reason last-write-wins,
+#   and the default None is what clears it. An agent finalizing its own contract
+#   passes nothing; the closure paths (reap / backstop capture / truncation
+#   salvage) pass the reason they are closing under, so the row stays marked and
+#   `WHERE cut_reason IS NOT NULL` finds it without parsing raw_handoff_json.
 #
 #   Returns {"status": "applied", "created": bool, "handoff_id": int | None,
 #   "contract_id": str}. `created` is True only for the call that actually
@@ -6308,6 +6317,7 @@ def finalize_agent_contract_handoff(
     session_id: str | None = None,
     plan_task_id: int | None = None,
     brief_id: int | None = None,
+    cut_reason: str | None = None,
     db_path: "Path | None" = None,
 ) -> dict:
     """Idempotently write the terminal agent_contract_handoffs row.
@@ -6339,6 +6349,19 @@ def finalize_agent_contract_handoff(
                           clears a binding already stamped on the row at birth
                           (see the COALESCE in the UPSERT below).
         brief_id:         briefs.id FK (optional -- EXTENSION_POINT).
+        cut_reason:       v39 structural cut marker (gaia.state.CUT_REASONS).
+                          DEFAULT None, and that default is the point: this
+                          function is the ONLY writer that can produce a CLEAN
+                          closure, and it does so precisely by leaving this
+                          argument alone. An agent's own `gaia contract
+                          finalize` passes nothing here and the row's birth
+                          stamp is cleared; a CLOSURE path (reap, backstop
+                          capture, truncation salvage) passes the reason it is
+                          closing under and the row stays marked. Unlike
+                          session_id/plan_task_id this is NOT COALESCEd -- the
+                          writer that lands the verdict owns the mark, so a
+                          clean finalize cannot leave a stale cut marker behind
+                          and a cut cannot silently inherit cleanliness.
         db_path:          Optional explicit DB path (used by tests).
 
     Returns:
@@ -6437,10 +6460,20 @@ def finalize_agent_contract_handoff(
                     -- still wins, so a later, truer attribution converges
                     -- normally. The other columns keep last-write-wins: they
                     -- describe the turn's outcome, which the newest verdict owns.
+                    --
+                    -- cut_reason (v39) is deliberately in the LAST-WRITE-WINS
+                    -- group, NOT the COALESCE group. Whoever lands the verdict
+                    -- owns the mark: an agent's own clean finalize passes NULL
+                    -- and thereby CLEARS the birth stamp (this is the only
+                    -- statement in the system that can), while a closure path
+                    -- passes its reason and the mark stands. COALESCEing it
+                    -- would make a clean COMPLETE inherit the birth stamp
+                    -- forever, so every healthy turn would read as a cut.
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
-                         plan_task_id, agent_state, raw_handoff_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         plan_task_id, agent_state, cut_reason, raw_handoff_json,
+                         created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(contract_id) DO UPDATE SET
                         agent_id         = excluded.agent_id,
                         session_id       = COALESCE(excluded.session_id,
@@ -6449,6 +6482,7 @@ def finalize_agent_contract_handoff(
                         plan_task_id     = COALESCE(excluded.plan_task_id,
                                                     agent_contract_handoffs.plan_task_id),
                         agent_state      = excluded.agent_state,
+                        cut_reason       = excluded.cut_reason,
                         raw_handoff_json = excluded.raw_handoff_json
                     WHERE agent_contract_handoffs.agent_state NOT IN ({_terminal_placeholders})
                     RETURNING id
@@ -6461,6 +6495,7 @@ def finalize_agent_contract_handoff(
                         brief_id,
                         plan_task_id,
                         agent_state,
+                        cut_reason,
                         raw_handoff_json,
                         _now_iso(),
                         *TERMINAL_PLAN_STATUSES,
@@ -6525,21 +6560,34 @@ def finalize_agent_contract_handoff(
 # plan_id, parent_handoff_id, kind) that bind the turn to the plan/task it
 # executes.
 #
-# WHO CLOSES THIS ROW (do not assume finalize does). finalize_agent_contract_handoff
-# converges a nascent row ONLY when it is called with the SAME contract_id the row
-# was born under -- and in production it never is: birth mints a SYNTHETIC dispatch
-# key (``dispatch.{session}.{agent-name}.{task-or-parent}``, built in the hook
-# adapter) while the agent's own finalize keys on the draft id it minted for itself
-# (``{minted-agent-id}.{token}``). Those are two disjoint key spaces, so a normal,
-# healthy turn writes its verdict to a DIFFERENT row and leaves this one behind.
-# Closing the born row is therefore NOT the finalize path's job: it is done at the
-# END of the dispatch lifecycle by the SubagentStop hook
-# (hooks/modules/agents/handoff_persister.py), which is the only layer that holds
-# BOTH identities. It closes the row in one of two ways -- superseded (the turn did
-# produce its own terminal contract row; this scaffold points at it) or reaped
-# (the turn never finalized at all; an honest degraded non-COMPLETE verdict).
-# 'DISPATCHED' is thus a transient ROW state whose exit is owned by the stop hook,
-# and a row left in it means that hook never ran for the turn.
+# WHO CLOSES THIS ROW. Two paths reach it, and which one runs is decided by
+# whether the turn ADOPTED the identity this row was born under:
+#
+#   * ADOPTION -- the healthy path. Birth mints a REAL, adoptable identity
+#     (hooks/modules/agents/dispatch_identity.py: an ``a``+hex agent_id and a
+#     contract_id with the ``{agent_id}.{token}`` draft shape) and injects both
+#     halves into the subagent's context. An agent that adopts them
+#     (``gaia contract init --agent-id ... --draft-id ...``) finalizes under the
+#     SAME contract_id this row carries, so finalize_agent_contract_handoff
+#     CONVERGES this very row: one row per turn, binding preserved, nothing left
+#     behind and nothing to supersede.
+#   * NO ADOPTION -- the degraded path. A turn that never adopts (no identity
+#     block reached it, or it minted a rival id anyway) writes its verdict to a
+#     DIFFERENT row and leaves this one behind. Closing it then falls to the
+#     SubagentStop hook (hooks/modules/agents/handoff_persister.py), the only
+#     layer holding both identities: superseded (the turn did produce its own
+#     terminal row; this scaffold points at it) or reaped (it never finalized;
+#     an honest degraded non-COMPLETE verdict).
+#
+# A THIRD writer touches this row, before either closure: the incremental mirror
+# (mirror_partial_contract_handoff, wired into ``gaia contract set/add/fill``)
+# reflects the adopted draft's partial envelope onto it WHILE the turn runs,
+# writing raw_handoff_json and nothing else -- never agent_state, never the
+# binding. That is what leaves a turn cut before finalize with recoverable
+# evidence on the row instead of only a birth envelope.
+#
+# 'DISPATCHED' is thus a transient ROW state, and a row still in it means the
+# turn neither converged it by finalize nor reached the stop hook.
 #
 # Idempotent by construction (INSERT ... ON CONFLICT(contract_id) DO NOTHING):
 # a re-dispatch / re-fire for the SAME contract_id never births a second row
@@ -6565,6 +6613,7 @@ def insert_dispatched_handoff(
     raw_handoff_json: str | None = None,
     session_id: str | None = None,
     brief_id: int | None = None,
+    agent_name: str | None = None,
     db_path: "Path | None" = None,
 ) -> dict:
     """Birth a nascent ``agent_contract_handoffs`` row (agent_state='DISPATCHED').
@@ -6589,6 +6638,15 @@ def insert_dispatched_handoff(
                            NULL, but no contract envelope exists yet at birth).
         session_id:        CLAUDE_SESSION_ID at dispatch time (optional).
         brief_id:          briefs.id FK (optional).
+        agent_name:        The dispatched agent's NAME (``gaia-system``,
+                           ``gaia-verifier``). Recorded INSIDE the birth envelope,
+                           never in the ``agent_id`` column, which holds the
+                           minted handle the turn can adopt. The name is what
+                           :func:`find_dispatched_row_by_agent_name` matches on so
+                           a turn that never adopts its identity can still have
+                           its born row found and closed. Ignored when an explicit
+                           ``raw_handoff_json`` is supplied (the caller then owns
+                           the envelope).
         db_path:           Optional explicit DB path (used by tests).
 
     Returns:
@@ -6610,10 +6668,13 @@ def insert_dispatched_handoff(
 
     _assert_dispatch_can_write_handoff()
 
+    from gaia.state import CUT_REASON_NEVER_FINALIZED
+
     if raw_handoff_json is None:
-        raw_handoff_json = json.dumps(
-            {"agent_state": "DISPATCHED", "born_at_dispatch": True}
-        )
+        birth_envelope = {"agent_state": "DISPATCHED", "born_at_dispatch": True}
+        if agent_name:
+            birth_envelope[BIRTH_AGENT_NAME_KEY] = str(agent_name)
+        raw_handoff_json = json.dumps(birth_envelope)
 
     def _work() -> dict:
         con = _connect(db_path)
@@ -6626,11 +6687,17 @@ def insert_dispatched_handoff(
                 _ensure_workspace_row(con, workspace)
                 cur = con.execute(
                     """
+                    -- v39: the row is BORN carrying the cut mark
+                    -- ('never_finalized'). Only a finalize that supplies no
+                    -- cut_reason clears it, so a turn that never finalizes --
+                    -- including one cut so hard that SubagentStop never fires
+                    -- and no closure path ever touches this row -- stays
+                    -- structurally marked with no further write required.
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
                          plan_task_id, plan_id, parent_handoff_id, kind,
-                         agent_state, raw_handoff_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCHED', ?, ?)
+                         agent_state, cut_reason, raw_handoff_json, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCHED', ?, ?, ?)
                     ON CONFLICT(contract_id) DO NOTHING
                     RETURNING id
                     """,
@@ -6644,6 +6711,7 @@ def insert_dispatched_handoff(
                         plan_id,
                         parent_handoff_id,
                         kind,
+                        CUT_REASON_NEVER_FINALIZED,
                         raw_handoff_json,
                         _now_iso(),
                     ),
@@ -6800,27 +6868,26 @@ def find_orphaned_dispatched_handoff(
     """Locate a nascent DISPATCHED row for ``(session_id, agent_id)``, or None.
 
     v37 born-at-dispatch (plan 34 task 5) -- the reaper's orphan-discovery
-    query. A row born at dispatch is keyed by its ``contract_id``, which the
-    SubagentStop backstop cannot reconstruct (it is a synthetic dispatch key, NOT
-    the agent's minted draft id -- see the two-identity-space warning below), so
-    the orphan is found by the coordinate pair the birth DOES stamp:
-    ``session_id`` + ``agent_id``.
+    query. A row born at dispatch is keyed by its ``contract_id``, which a caller
+    that did not observe the dispatch cannot reconstruct, so the orphan is found
+    instead by the coordinate pair the birth DOES stamp: ``session_id`` +
+    ``agent_id``.
 
-    TWO IDENTITY SPACES -- pass the DISPATCH-side one. The ``agent_id`` column of
-    a born row holds the identity the DISPATCH knew, which is the agent's NAME
-    (``gaia-verifier``, ``platform-architect``): the row is born in PreToolUse:Agent
-    BEFORE the agent has minted anything, so no minted id exists yet to stamp.
-    Every OTHER writer on this table stamps the agent's MINTED draft id
-    (``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``). The two spaces never
-    intersect, so a caller that passes
-    only the minted id matches NOTHING and the orphan is never found -- the defect
-    that left every born row stuck in 'DISPATCHED' (zero reaps ever recorded)
-    while the reaper's own unit tests passed, because they birthed their fixture
-    rows under the minted id instead of the dispatch identity production uses.
-    Accordingly ``agent_id`` accepts EITHER a single identity OR an iterable of
-    candidate identities, matched with IN (...): a caller that does not know which
-    space the row was born under passes both (the harness agent name first, since
-    that is what production births under).
+    WHICH IDENTITY ``agent_id`` HOLDS -- pass every candidate you have. Since the
+    dispatch began minting a real, adoptable identity
+    (``modules.agents.dispatch_identity.mint_dispatch_identity``), this column
+    carries a MINTED handle (``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``),
+    the same space every other writer on this table uses; the agent's NAME is no
+    longer here at all -- it lives in the birth ENVELOPE under
+    :data:`BIRTH_AGENT_NAME_KEY`, which is what
+    :func:`find_dispatched_row_by_agent_name` matches on. Rows born BEFORE that
+    change still hold the agent NAME in this column, and a caller searching by
+    one shape while the row carries the other matches NOTHING -- the defect that
+    left every born row stuck in 'DISPATCHED' (zero reaps ever recorded) while
+    the reaper's own unit tests passed against fixtures born under the other
+    shape. So ``agent_id`` accepts EITHER a single identity OR an iterable of
+    candidate identities, matched with IN (...): a caller that does not know
+    which shape the row carries passes both.
 
     Only rows still in the 'DISPATCHED' ROW state are returned: a row that has
     already converged to a terminal verdict is not an orphan and is skipped. The
@@ -6834,9 +6901,13 @@ def find_orphaned_dispatched_handoff(
         db_path:    Optional explicit DB path (used by tests).
 
     Returns:
-        ``{"id": int, "contract_id": str, "plan_task_id": int | None}`` of the
-        orphaned nascent row, or None when no DISPATCHED row exists for that
-        (session, agent) pair.
+        ``{"id": int, "contract_id": str, "agent_id": str,
+        "plan_task_id": int | None}`` of the orphaned nascent row, or None when
+        no DISPATCHED row exists for that (session, agent) pair. ``agent_id`` is
+        the identity the row was BORN under: a closer must preserve it rather
+        than restamp the row with whichever candidate it searched by, or a row
+        born under a minted handle would be rewritten to an agent NAME that no
+        contract validator accepts.
     """
     if not session_id or not agent_id:
         return None
@@ -6850,7 +6921,8 @@ def find_orphaned_dispatched_handoff(
     try:
         placeholders = ", ".join("?" for _ in candidates)
         row = con.execute(
-            f"SELECT id, contract_id, plan_task_id FROM agent_contract_handoffs "
+            f"SELECT id, contract_id, agent_id, plan_task_id "
+            f"FROM agent_contract_handoffs "
             f"WHERE agent_state = 'DISPATCHED' AND session_id = ? "
             f"AND agent_id IN ({placeholders}) "
             f"ORDER BY id DESC LIMIT 1",
@@ -6861,6 +6933,373 @@ def find_orphaned_dispatched_handoff(
         return {
             "id": row["id"],
             "contract_id": row["contract_id"],
+            "agent_id": row["agent_id"],
+            "plan_task_id": row["plan_task_id"],
+        }
+    finally:
+        con.close()
+
+
+# The key under which :func:`insert_dispatched_handoff` records the dispatched
+# agent's NAME inside the birth envelope. It is a JSON field rather than a column
+# because the name is dispatch metadata, not row identity: the identity columns
+# hold the minted handle the turn adopts, and adding a column would need a
+# migration for a fact the birth envelope can already carry.
+BIRTH_AGENT_NAME_KEY = "agent_name"
+
+# The birth-envelope name lane reads the marker only from rows whose
+# raw_handoff_json is valid JSON: the column is free text as far as SQLite is
+# concerned, and a bare json_extract over a malformed value aborts the WHOLE
+# query rather than skipping that row.
+_BIRTH_AGENT_NAME_SQL = (
+    "CASE WHEN json_valid(raw_handoff_json) "
+    "THEN json_extract(raw_handoff_json, '$." + BIRTH_AGENT_NAME_KEY + "') END"
+)
+
+
+def find_dispatched_row_by_agent_name(
+    session_id: "str | None",
+    agent_name: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """Locate the SOLE nascent DISPATCHED row born for ``agent_name`` in a session.
+
+    The fallback lane for a turn that never ADOPTED the identity minted for it at
+    dispatch. Since the born row's ``agent_id`` column now holds that minted
+    handle (not the agent's name), an unadopting turn shares no identifier with
+    its own row: the agent minted an unrelated handle of its own, so neither the
+    row's ``contract_id`` nor its ``agent_id`` can be reached from anything the
+    turn produced. The dispatched NAME, recorded in the birth envelope
+    (:data:`BIRTH_AGENT_NAME_KEY`), is the one coordinate both sides still share.
+
+    REFUSES TO GUESS, and that is the whole design of this lane. A name is not
+    unique per dispatch: two concurrent dispatches of the same agent type in one
+    session each birth a row carrying the SAME name. Returning the most recent of
+    them would close a row that belongs to a sibling turn that is still running --
+    reaping a live dispatch, the exact corruption the minted identity exists to
+    prevent. So this returns a row ONLY when the match is unambiguous: exactly one
+    DISPATCHED row for that (session, name). Two or more -> None, and the rows are
+    left in 'DISPATCHED' for the closure paths that can tell them apart.
+
+    Args:
+        session_id: The dispatch session id (falsy -> None: nothing to match).
+        agent_name: The dispatched agent's name (falsy -> None).
+        db_path:    Optional explicit DB path (used by tests).
+
+    Returns:
+        ``{"id": int, "contract_id": str, "agent_id": str,
+        "plan_task_id": int | None}`` when exactly one row matches; None when
+        none or several do.
+    """
+    if not session_id or not agent_name:
+        return None
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            f"SELECT id, contract_id, agent_id, plan_task_id "
+            f"FROM agent_contract_handoffs "
+            f"WHERE agent_state = 'DISPATCHED' AND session_id = ? "
+            f"AND {_BIRTH_AGENT_NAME_SQL} = ? "
+            f"ORDER BY id DESC LIMIT 2",
+            (session_id, str(agent_name)),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        return {
+            "id": row["id"],
+            "contract_id": row["contract_id"],
+            "agent_id": row["agent_id"],
+            "plan_task_id": row["plan_task_id"],
+        }
+    finally:
+        con.close()
+
+
+def is_born_at_dispatch_row(
+    contract_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> bool:
+    """Return True iff the row for ``contract_id`` was BORN at dispatch.
+
+    Structural, not textual: ``kind``, ``plan_id`` and ``parent_handoff_id`` are
+    written ONLY by :func:`insert_dispatched_handoff`. A finalize neither sets
+    them on insert nor touches them on convergence, so any of the three being
+    present means this row started as a dispatch. Reading the birth envelope
+    instead would not survive adoption -- finalize replaces ``raw_handoff_json``
+    wholesale, so the birth marker inside it is gone precisely in the case a
+    caller most needs to recognize.
+
+    The caller that needs this is the born-row closure: when the turn's OWN
+    contract row is itself a born row, the turn adopted its dispatch identity and
+    there is no separate scaffold left to close. Skipping the closure's
+    last-resort name lane in that case is what stops a finished turn from closing
+    the row of a concurrent sibling that is still running.
+    """
+    if not contract_id:
+        return False
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT kind, plan_id, parent_handoff_id "
+            "FROM agent_contract_handoffs WHERE contract_id = ? LIMIT 1",
+            (contract_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        return any(
+            row[column] is not None
+            for column in ("kind", "plan_id", "parent_handoff_id")
+        )
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: mirror_partial_contract_handoff (incremental fill -> the row)
+# ---------------------------------------------------------------------------
+#
+# Brief: contrato-adoptado-en-dispatch-con-llenado-incremental-y-finalize (AC-2).
+#
+# Incremental contract building persisted to DISK only: `gaia contract
+# set/add/fill` wrote the draft under ``data_dir()/contract_drafts/`` and nothing
+# reached the row. A turn cut before `finalize` therefore left a row holding the
+# birth envelope and none of the evidence the turn had already accumulated -- the
+# work existed on disk but was invisible to every DB reader. This is the
+# capability that closes that gap: the partial envelope is MIRRORED onto the
+# turn's own already-born row as it is built, so the row carries recoverable
+# partial evidence at every point of the turn, not only after finalize.
+#
+# It is a strictly WEAKER writer than finalize, by construction -- three
+# properties, each enforced by the shape of the statement rather than by a
+# caller's discipline:
+#
+#   * NEVER CREATES. The statement is an UPDATE, not an UPSERT. A draft with no
+#     row (a turn that minted its own identity instead of adopting the one born
+#     for it, or a plain CLI use with no dispatch behind it) mirrors to nothing:
+#     the disk write still happened and this is a silent no-op. Birth stays the
+#     sole business of insert_dispatched_handoff and finalize.
+#   * NEVER TOUCHES A TERMINAL ROW. The same
+#     ``agent_state NOT IN <TERMINAL_PLAN_STATUSES>`` guard finalize converges
+#     under: a COMPLETE row is immutable, and a late mirror (a stray `set` after
+#     finalize) cannot regress it.
+#   * NEVER MOVES THE ROW'S STATE OR ITS BINDING. ``raw_handoff_json`` is the
+#     ONLY column in the SET list. agent_state stays exactly where it was --
+#     which is load-bearing, not incidental: a row mirrored out of 'DISPATCHED'
+#     would vanish from find_orphaned_dispatched_handoff (no reap) and from
+#     dispatched_binding_plan_task_id (the blind-verification gate would read the
+#     turn as UNBOUND and let a plan-task-bound producer self-COMPLETE). The
+#     binding columns (plan_task_id, plan_id, parent_handoff_id, kind), the
+#     attribution (session_id) and the birth created_at are untouched for the
+#     same reason finalize's DO UPDATE leaves them alone.
+#   * NEVER CLEARS THE CUT MARK (v39). cut_reason is not in the SET list either,
+#     so mirroring evidence onto a row does NOT make it look cleanly closed. This
+#     is what keeps the two AC-2/AC-3 halves consistent: a turn cut after several
+#     `set`/`add`/`fill` calls leaves a row that BOTH carries its partial
+#     evidence AND still reads as a cut. Only finalize earns the clean state.
+#
+# Birth markers survive the mirror. The birth envelope carries the dispatched
+# agent's NAME (BIRTH_AGENT_NAME_KEY) and the born_at_dispatch flag, and the
+# closure's last-resort lane (find_dispatched_row_by_agent_name) matches on that
+# name INSIDE a still-DISPATCHED row. Overwriting the envelope wholesale while
+# the row stays DISPATCHED would erase the only coordinate that lane has, so the
+# marker keys are carried forward onto the mirrored envelope. finalize still
+# replaces the envelope wholesale -- by then the row has left 'DISPATCHED' and
+# the name lane no longer looks at it.
+# ---------------------------------------------------------------------------
+
+# Top-level keys of the birth envelope that a mirror carries forward (see the
+# module comment above). They are dispatch metadata, not contract fields, so a
+# partial envelope never produces them on its own.
+_BIRTH_MARKER_KEYS = ("born_at_dispatch", BIRTH_AGENT_NAME_KEY)
+
+
+def _merge_birth_markers(existing_raw: "str | None", envelope_raw: str) -> str:
+    """Carry the birth-marker keys from ``existing_raw`` into ``envelope_raw``.
+
+    Returns ``envelope_raw`` unchanged when either side is not a JSON object or
+    the existing row carries no marker -- the mirror must degrade to "write the
+    partial envelope as-is", never to a failed write.
+    """
+    try:
+        existing = json.loads(existing_raw) if existing_raw else None
+        envelope = json.loads(envelope_raw)
+    except (TypeError, ValueError):
+        return envelope_raw
+    if not isinstance(existing, dict) or not isinstance(envelope, dict):
+        return envelope_raw
+    carried = {
+        key: existing[key]
+        for key in _BIRTH_MARKER_KEYS
+        if key in existing and key not in envelope
+    }
+    if not carried:
+        return envelope_raw
+    envelope.update(carried)
+    return json.dumps(envelope)
+
+
+def mirror_partial_contract_handoff(
+    contract_id: "str | None",
+    raw_handoff_json: str,
+    *,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Mirror a PARTIAL contract envelope onto an existing non-terminal row.
+
+    See the module comment above for the three invariants this writer is shaped
+    around (never creates, never touches a terminal row, never moves the row's
+    state or binding). Called best-effort from ``gaia contract set/add/fill``
+    after the draft has been validated and persisted to disk, so the row tracks
+    the draft while the turn is still running.
+
+    Args:
+        contract_id:      The draft/contract id the turn is building under. A
+                          falsy value is a no-op (nothing to key on) rather than
+                          an error -- this runs on a best-effort seam.
+        raw_handoff_json: The partial envelope, serialized. Validated by the
+                          caller BEFORE it gets here; this writer does not
+                          re-validate, it only persists what the draft holds.
+        db_path:          Optional explicit DB path (used by tests).
+
+    Returns:
+        ``{"status": "applied", "handoff_id": int, "contract_id": str}`` when a
+        non-terminal row was mirrored.
+        ``{"status": "skipped", "reason": ...}`` otherwise, where reason is
+        ``no_contract_id`` (nothing to key on), ``no_row`` (nothing born to
+        mirror -- the silent no-op) or ``terminal`` (the row is already a final
+        verdict and is immutable).
+
+    Raises:
+        HandoffWriteForbidden: when GAIA_DISPATCH_AGENT names an unseeded agent
+            (the same gate finalize and birth are held to).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            # BEGIN IMMEDIATE (write-lock-first): same rationale as finalize --
+            # the body is SELECT-then-UPDATE, so take the RESERVED lock up front
+            # instead of racing a SHARED->RESERVED upgrade against a concurrent
+            # finalize of the same row.
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                from gaia.state import TERMINAL_PLAN_STATUSES
+                existing = con.execute(
+                    "SELECT id, agent_state, raw_handoff_json "
+                    "FROM agent_contract_handoffs WHERE contract_id = ? LIMIT 1",
+                    (contract_id,),
+                ).fetchone()
+                if existing is None:
+                    con.commit()
+                    return {"status": "skipped", "reason": "no_row"}
+                if existing["agent_state"] in TERMINAL_PLAN_STATUSES:
+                    con.commit()
+                    return {"status": "skipped", "reason": "terminal"}
+
+                merged = _merge_birth_markers(
+                    existing["raw_handoff_json"], raw_handoff_json
+                )
+                placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
+                cur = con.execute(
+                    f"""
+                    -- raw_handoff_json is the ONLY column written: agent_state,
+                    -- the born-at-dispatch binding (plan_task_id, plan_id,
+                    -- parent_handoff_id, kind), session_id, the v39 cut_reason
+                    -- and the birth created_at all stay exactly as they are.
+                    -- Leaving cut_reason alone is load-bearing: a mirrored row
+                    -- is a turn still in flight, and letting evidence-filling
+                    -- clear the birth stamp would launder a cut into a clean
+                    -- closure. The NOT IN guard
+                    -- is redundant with the SELECT above under this lock and is
+                    -- kept as the statement-level restatement of the invariant:
+                    -- a terminal row is never edited in place, by any writer.
+                    UPDATE agent_contract_handoffs
+                       SET raw_handoff_json = ?
+                     WHERE contract_id = ?
+                       AND agent_state NOT IN ({placeholders})
+                    RETURNING id
+                    """,
+                    (merged, contract_id, *TERMINAL_PLAN_STATUSES),
+                )
+                returned = cur.fetchone()
+                con.commit()
+                if returned is None:
+                    return {"status": "skipped", "reason": "terminal"}
+                return {
+                    "status": "applied",
+                    "handoff_id": returned["id"],
+                    "contract_id": contract_id,
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def dispatch_row_for_identity(
+    session_id: "str | None",
+    agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """Return the row for ``(session_id, agent_id)`` in ANY state, or None.
+
+    The state-agnostic sibling of :func:`find_orphaned_dispatched_handoff`. Both
+    key on the coordinate pair a birth stamps, but they answer different
+    questions: the orphan finder asks "is a born row still open?", this asks
+    "which row belongs to this turn?".
+
+    ADOPTION is why the distinction now matters. When a turn adopts the identity
+    minted for it, its ``gaia contract finalize`` CONVERGES the born row itself,
+    so by the time SubagentStop runs, the row is no longer 'DISPATCHED' and the
+    orphan finder correctly reports nothing. The binding stamped at birth
+    (``plan_task_id``, ``parent_handoff_id``) survives that convergence untouched,
+    and a reader that needs it -- the blind-verification gate above all -- must
+    still be able to reach it. Restricting to 'DISPATCHED' would make an adopted
+    turn look unbound and silently drop the gate that forbids a plan-task-bound
+    producer from self-COMPLETEing.
+
+    Pass a MINTED handle, not an agent name: the pair is unique per dispatch only
+    in the minted space (see :func:`find_dispatched_row_by_agent_name` for why a
+    name is not).
+
+    Args:
+        session_id: The dispatch session id (falsy -> None).
+        agent_id:   The minted identity the row was born under (falsy -> None).
+        db_path:    Optional explicit DB path (used by tests).
+
+    Returns:
+        ``{"id": int, "contract_id": str, "agent_id": str, "agent_state": str,
+        "plan_task_id": int | None}`` of the most-recent match, or None.
+    """
+    if not session_id or not agent_id:
+        return None
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id, contract_id, agent_id, agent_state, plan_task_id "
+            "FROM agent_contract_handoffs "
+            "WHERE session_id = ? AND agent_id = ? "
+            "ORDER BY id DESC LIMIT 1",
+            (session_id, str(agent_id)),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "contract_id": row["contract_id"],
+            "agent_id": row["agent_id"],
+            "agent_state": row["agent_state"],
             "plan_task_id": row["plan_task_id"],
         }
     finally:

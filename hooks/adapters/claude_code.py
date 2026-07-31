@@ -1528,11 +1528,38 @@ class ClaudeCodeAdapter(HookAdapter):
         # as the single source of truth for the primitive. Fail-safe.
         additional = _append_workspace_memory(additional)
 
+        # Born-at-dispatch (v37, plan 34 task 6): stamp the nascent
+        # agent_contract_handoffs row FROM the dispatch metadata, validated for
+        # referential integrity. Best-effort and STRICTLY non-blocking -- a
+        # dispatch is never blocked by a binding that fails to resolve or a birth
+        # that errors; the row simply is not born (the SubagentStop backstop/reaper
+        # still guarantees exactly-one row).
+        #
+        # It runs HERE, before the context is cached, because the identity it
+        # mints has to ride along in that same cache: the row is adoptable only
+        # if the agent learns which id it was born under, and the context cache
+        # is the one bridge from this hook into the subagent's own payload.
+        identity = self._maybe_birth_dispatched_row(
+            parameters, result.agent_name, session_id,
+        )
+        if identity:
+            from modules.agents.dispatch_identity import render_identity_block
+
+            identity_block = render_identity_block(
+                identity.get("agent_id", ""), identity.get("contract_id", ""),
+            )
+            if identity_block:
+                additional = "\n\n".join(filter(None, [additional, identity_block]))
+
         if additional:
             effective_session_id = session_id or "unknown"
             agent_type = result.agent_name or "unknown"
             self._cache_context_for_subagent(
-                effective_session_id, agent_type, additional, anchors=anchors,
+                effective_session_id,
+                agent_type,
+                additional,
+                anchors=anchors,
+                task_description=parameters.get("description", ""),
             )
             logger.info(
                 "Cached context for SubagentStart: agent=%s, session=%s",
@@ -1550,26 +1577,24 @@ class ClaudeCodeAdapter(HookAdapter):
         except Exception:
             pass  # Events are non-critical
 
-        # Born-at-dispatch (v37, plan 34 task 6): stamp the nascent
-        # agent_contract_handoffs row FROM the dispatch metadata, validated for
-        # referential integrity. Best-effort and STRICTLY non-blocking -- a
-        # dispatch is never blocked by a binding that fails to resolve or a birth
-        # that errors; the row simply is not born (the SubagentStop backstop/reaper
-        # still guarantees exactly-one row). The contract_id here is a synthetic
-        # dispatch key derived from (session, agent, task); the agent later mints
-        # its own draft id (correlation resolved by the reaper's (session, agent)
-        # discovery -- plan 34 S2).
-        self._maybe_birth_dispatched_row(parameters, result.agent_name, session_id)
-
         return HookResponse(output={}, exit_code=0)
 
     @staticmethod
-    def _maybe_birth_dispatched_row(parameters, agent_name, session_id) -> None:
+    def _maybe_birth_dispatched_row(
+        parameters, agent_name, session_id,
+    ) -> Optional[Dict[str, str]]:
         """Best-effort born-at-dispatch row birth (plan 34 task 6).
 
-        Never raises: extraction gaps, an unresolvable binding
-        (DispatchBindingError), or any writer error are all swallowed so a
-        dispatch is never blocked. See _adapt_task for the rationale.
+        Mints a REAL, adoptable identity for the turn (see
+        ``modules.agents.dispatch_identity``) and births the nascent row under
+        it, returning ``{"agent_id": ..., "contract_id": ...}`` on success so
+        the caller can inject that same identity into the subagent's context.
+        Returns None whenever the row was not born -- an unresolvable binding,
+        a writer error, or an extraction gap -- so "no identity to inject" and
+        "no row to adopt" are the same condition and can never disagree.
+
+        Never raises: every failure path is swallowed so a dispatch is never
+        blocked. See _adapt_task for the rationale.
         """
         try:
             import os as _os
@@ -1577,6 +1602,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 DispatchBindingError,
                 birth_dispatched_row,
             )
+            from modules.agents.dispatch_identity import mint_dispatch_identity
 
             meta = {
                 "prompt": parameters.get("prompt", ""),
@@ -1593,20 +1619,19 @@ class ClaudeCodeAdapter(HookAdapter):
             sid = session_id or "unknown"
             agent = agent_name or "unknown"
             ptid = binding.get("plan_task_id")
-            parent_hid = binding.get("parent_handoff_id")
-            # Synthetic, idempotent dispatch key: a re-dispatch for the same
-            # (session, agent, task) is a no-op via the writer's ON CONFLICT.
-            # A verifier turn carries no plan_task_id of its own (it binds by
-            # parent_handoff_id), so key it on the parent instead -- otherwise
-            # every verifier dispatch in a session would collapse onto the same
-            # `...None` key and only the first would be born.
-            _key = ptid if ptid is not None else f"p{parent_hid}"
-            contract_id = f"dispatch.{sid}.{agent}.{_key}"
+            # The identity is MINTED, not derived from (session, agent, task).
+            # A derived key collapses two concurrent dispatches of the same
+            # agent type onto one row -- see dispatch_identity's module comment
+            # for why uniqueness beats per-key idempotency here. Idempotency
+            # survives at the scope that matters: the writer's ON CONFLICT makes
+            # a single dispatch's birth a no-op on retry.
+            identity = mint_dispatch_identity()
+            contract_id = identity["contract_id"]
 
             try:
                 birth_dispatched_row(
                     contract_id=contract_id,
-                    agent_id=agent,
+                    agent_id=identity["agent_id"],
                     workspace=workspace,
                     kind=binding.get("kind"),
                     turn_role=binding.get("turn_role"),
@@ -1614,11 +1639,19 @@ class ClaudeCodeAdapter(HookAdapter):
                     plan_id=binding.get("plan_id"),
                     parent_handoff_id=binding.get("parent_handoff_id"),
                     session_id=sid,
+                    # The NAME goes in the birth envelope, not in agent_id --
+                    # that column now holds the minted handle the turn adopts.
+                    # It is the only coordinate a turn that never adopts still
+                    # shares with its own row (see the writer's
+                    # find_dispatched_row_by_agent_name).
+                    agent_name=agent,
                 )
                 logger.info(
-                    "Born-at-dispatch: nascent row stamped (agent=%s, task=%s)",
-                    agent, ptid,
+                    "Born-at-dispatch: nascent row stamped (agent=%s, task=%s, "
+                    "contract_id=%s)",
+                    agent, ptid, contract_id,
                 )
+                return identity
             except DispatchBindingError as exc:
                 # A binding that does not resolve is NOT an error to block on --
                 # log why the row was not born and let the dispatch proceed.
@@ -1628,6 +1661,67 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
         except Exception:
             logger.debug("Born-at-dispatch birth failed (non-fatal)", exc_info=True)
+        return None
+
+    @staticmethod
+    def _resolve_dispatch_row(
+        *,
+        session_id: str,
+        agent_type: str,
+        task_info: dict,
+        parsed_contract,
+        db_path: Optional[Path] = None,
+    ) -> Optional[dict]:
+        """Locate the born-at-dispatch row for the turn that is ENDING.
+
+        The binding stamped at birth (``plan_task_id`` above all) lives on that
+        row, and the blind-verification gate reads it to decide whether this turn
+        is a plan-task-bound producer. Three lanes, most exact first, because the
+        row is reachable by a different coordinate depending on what the turn did
+        with the identity minted for it:
+
+          1. ADOPTED -- the turn ran ``gaia contract init`` under the injected
+             identity, so its own ``agent_id`` IS the row's. Looked up
+             state-agnostically: an adopted turn's ``finalize`` CONVERGES the born
+             row, so by now it is no longer 'DISPATCHED' and a DISPATCHED-only
+             query would report the turn as unbound and silently drop the gate.
+          2. LEGACY -- rows born before the identity was minted carry the agent
+             NAME in ``agent_id``. Still queried so an in-flight turn dispatched
+             under the old shape keeps its binding.
+          3. UNADOPTED -- the turn minted its own unrelated handle, so it shares
+             no identifier with its row; the dispatched NAME recorded in the birth
+             envelope is the last coordinate left. That lane refuses to guess
+             between concurrent same-name dispatches (see the writer's
+             ``find_dispatched_row_by_agent_name``), so it resolves nothing rather
+             than binding a turn to a sibling's row.
+
+        Returns the row dict, or None when no lane resolves -- which every caller
+        must read as "unbound", never as an error.
+        """
+        from gaia.store.writer import (
+            dispatch_row_for_identity,
+            find_dispatched_row_by_agent_name,
+            find_orphaned_dispatched_handoff,
+        )
+        from modules.agents.handoff_persister import resolve_minted_agent_id
+
+        minted = resolve_minted_agent_id(parsed_contract, task_info)
+        if minted and str(minted) != str(agent_type):
+            row = dispatch_row_for_identity(
+                session_id, str(minted), db_path=db_path,
+            )
+            if row is not None:
+                return row
+
+        legacy = find_orphaned_dispatched_handoff(
+            session_id, [agent_type], db_path=db_path,
+        )
+        if legacy is not None:
+            return legacy
+
+        return find_dispatched_row_by_agent_name(
+            session_id, agent_type, db_path=db_path,
+        )
 
     def _adapt_send_message(
         self, tool_name: str, parameters: dict, session_id: str = "",
@@ -2547,14 +2641,18 @@ class ClaudeCodeAdapter(HookAdapter):
             # and non-fatal -- an unresolvable binding (no born-at-dispatch row, or
             # a DB read error) leaves plan_task_id None, i.e. treated as unbound.
             _bound_plan_task_id: Optional[int] = None
+            _bound_dispatch_row: Optional[dict] = None
             try:
-                from gaia.store.writer import dispatched_binding_plan_task_id
                 _db_for_binding = task_info.get("db_path")
-                _bound_plan_task_id = dispatched_binding_plan_task_id(
-                    session_id,
-                    agent_type,
+                _bound_dispatch_row = self._resolve_dispatch_row(
+                    session_id=session_id,
+                    agent_type=agent_type,
+                    task_info=task_info,
+                    parsed_contract=parsed_contract,
                     db_path=Path(_db_for_binding) if _db_for_binding else None,
                 )
+                if _bound_dispatch_row is not None:
+                    _bound_plan_task_id = _bound_dispatch_row.get("plan_task_id")
             except Exception:
                 logger.debug(
                     "Could not resolve dispatch binding plan_task_id for %s "
@@ -3273,7 +3371,10 @@ class ClaudeCodeAdapter(HookAdapter):
         try:
             from gaia.contract.drafts import load_draft, resolve_draft_id
             from gaia.contract.view import render_resume_hint
-            from gaia.state import VALID_PLAN_STATUSES
+            from gaia.state import (
+                CUT_REASON_SALVAGED_TRUNCATION,
+                VALID_PLAN_STATUSES,
+            )
             from gaia.store import writer as _writer
         except Exception as exc:
             logger.debug("T11 salvage: core import failed (non-fatal): %s", exc)
@@ -3329,6 +3430,11 @@ class ClaudeCodeAdapter(HookAdapter):
                 session_id=session_id,
                 plan_task_id=plan_task_id,
                 brief_id=None,
+                # The structural twin of the ``salvaged`` envelope flag above: a
+                # rescued draft is a turn the token budget ended, never a
+                # closure the agent chose, so the row must not read as cleanly
+                # finalized just because a writer reached it.
+                cut_reason=CUT_REASON_SALVAGED_TRUNCATION,
                 db_path=db_path,
             )
 
@@ -3427,6 +3533,7 @@ class ClaudeCodeAdapter(HookAdapter):
     def _cache_context_for_subagent(
         self, session_id: str, agent_type: str, context: str,
         anchors: Optional[List[str]] = None,
+        task_description: str = "",
     ) -> Path:
         """Write built context to a cache file for SubagentStart consumption.
 
@@ -3435,6 +3542,12 @@ class ClaudeCodeAdapter(HookAdapter):
         them but cannot save them (no agent_id yet), so they travel through
         this SAME cache to SubagentStart, where adapt_subagent_start saves
         them once the host-assigned agent_id is available.
+
+        ``task_description`` is the Task tool's own ``description`` parameter,
+        stored purely as a CORRELATION key: SubagentStart's payload carries a
+        field of the same name, so when the two agree the bridge can pair a
+        start with the dispatch that produced it instead of guessing by recency
+        (see ``_read_cached_context``). It is never injected into the subagent.
 
         Returns the path to the cache file.
         """
@@ -3446,17 +3559,45 @@ class ClaudeCodeAdapter(HookAdapter):
             "agent_type": agent_type,
             "session_id": session_id,
             "anchors": anchors or [],
+            "task_description": task_description or "",
             "created_at": time.time(),
         }
         cache_file.write_text(json.dumps(payload))
         logger.debug("Context cache written: %s", cache_file)
         return cache_file
 
-    def _read_cached_context(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Read and consume the most recent cached context for a session.
+    def _read_cached_context(
+        self,
+        session_id: str,
+        agent_type: str = "",
+        task_description: str = "",
+    ) -> Optional[Dict[str, Any]]:
+        """Read and consume the cached context this subagent start belongs to.
 
-        Finds the newest cache file matching the session_id, reads it,
-        deletes it (one-shot consumption), and cleans up stale entries.
+        Finds the cache entries for the session, picks the one that best
+        CORRELATES with the starting subagent, deletes it (one-shot
+        consumption), and cleans up stale entries.
+
+        Correlation, strongest first -- this is what keeps two concurrent
+        dispatches from swapping payloads:
+          1. Same ``agent_type`` AND same ``task_description``. The Task tool's
+             ``description`` and SubagentStart's ``task_description`` are the
+             only pair of fields the two events share beyond the agent name, so
+             when both are present and agree the pairing is exact rather than
+             inferred.
+          2. Same ``agent_type``. Eliminates cross-TYPE contamination, which is
+             the common shape of a concurrent dispatch.
+          3. Most recent for the session -- the historical behavior, kept as the
+             fallback so a host that supplies neither discriminator, and every
+             existing caller passing only ``session_id``, behave exactly as
+             before.
+        Within each tier the newest entry wins, matching the prior contract.
+
+        This narrows the crossing window; it does not close it. Two concurrent
+        dispatches of the SAME agent type with the SAME description remain
+        indistinguishable at this seam, because SubagentStart's payload carries
+        no token identifying WHICH dispatch it is starting. Closing that needs a
+        correlation token from the host, not a better heuristic here.
 
         Returns None if no cache is found.
         """
@@ -3482,8 +3623,11 @@ class ClaudeCodeAdapter(HookAdapter):
             candidates = all_files
 
         now = time.time()
-        result = None
 
+        # Collect the live entries first (newest-first order preserved) so the
+        # correlation tiers can be applied across ALL of them rather than
+        # committing to whichever happened to be newest.
+        live: List[tuple] = []
         for cache_file in candidates:
             try:
                 data = json.loads(cache_file.read_text())
@@ -3495,21 +3639,53 @@ class ClaudeCodeAdapter(HookAdapter):
                     logger.debug("Cleaned stale context cache: %s (age=%.1fs)", cache_file.name, age)
                     continue
 
-                # Found a valid entry -- consume it
-                result = data
-                cache_file.unlink(missing_ok=True)
-                logger.debug("Consumed context cache: %s (age=%.1fs)", cache_file.name, age)
-                break
+                live.append((cache_file, data, age))
 
             except (json.JSONDecodeError, OSError) as exc:
                 logger.warning("Failed to read context cache %s: %s", cache_file, exc)
                 cache_file.unlink(missing_ok=True)
                 continue
 
+        selected = self._select_cached_entry(live, agent_type, task_description)
+
+        result = None
+        if selected is not None:
+            cache_file, data, age = selected
+            result = data
+            cache_file.unlink(missing_ok=True)
+            logger.debug("Consumed context cache: %s (age=%.1fs)", cache_file.name, age)
+
         # Clean up any remaining stale files (background hygiene)
         self._cleanup_stale_cache(now)
 
         return result
+
+    @staticmethod
+    def _select_cached_entry(
+        live: List[tuple], agent_type: str, task_description: str,
+    ) -> Optional[tuple]:
+        """Pick the live cache entry correlating best with a starting subagent.
+
+        ``live`` is ``[(path, payload, age), ...]`` newest-first. See
+        ``_read_cached_context`` for the tier rationale; this is only the
+        selection, split out so it is testable without touching the filesystem.
+        """
+        if not live:
+            return None
+
+        if agent_type:
+            typed = [e for e in live if e[1].get("agent_type") == agent_type]
+            if typed:
+                if task_description:
+                    exact = [
+                        e for e in typed
+                        if e[1].get("task_description") == task_description
+                    ]
+                    if exact:
+                        return exact[0]
+                return typed[0]
+
+        return live[0]
 
     def _cleanup_stale_cache(self, now: float) -> None:
         """Remove cache files older than TTL."""
@@ -3674,7 +3850,16 @@ class ClaudeCodeAdapter(HookAdapter):
         """
         session_id = raw.get("session_id", "")
 
-        cached = self._read_cached_context(session_id)
+        # agent_type / task_description are passed as CORRELATION keys only:
+        # they decide WHICH cached dispatch this start belongs to. That matters
+        # now that the cached payload carries the dispatch's minted contract
+        # identity -- handing the wrong entry to a subagent would have it adopt
+        # a row bound to a different dispatch.
+        cached = self._read_cached_context(
+            session_id,
+            agent_type=raw.get("agent_type", ""),
+            task_description=raw.get("task_description", ""),
+        )
         if cached:
             logger.info(
                 "SubagentStart: forwarding cached context for agent=%s (session=%s)",

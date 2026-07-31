@@ -115,6 +115,7 @@ Retention -- ``collectable_drafts(max_age_days, grace_hours)``:
 Public surface (stable for T6 resume-read, T7 finalize store-writer, T13
 concurrency-isolation):
     drafts_dir() -> Path
+    mint_agent_id() -> str                       # "a" + 16 hex, SSOT
     mint_draft_id(agent_id) -> str
     draft_path(draft_id) -> Path
     draft_exists(draft_id) -> bool
@@ -150,6 +151,11 @@ _DRAFT_SUFFIX = ".json"
 # beyond any realistic number of concurrent drafts per agent, so two
 # same-agent cycles minting in the same instant do not collide.
 _TOKEN_HEX_BYTES = 6
+
+# Agent-handle width (bytes -> 2x hex chars). 8 bytes = 16 hex digits, exactly
+# the floor ``gaia.contract.validator.AGENT_ID_PATTERN_TEXT`` enforces and the
+# shortest length measured to be collision-free across the observed corpus.
+_AGENT_HEX_BYTES = 8
 
 # Agent states that mean "this turn's outcome is already durably recorded".
 # A draft whose contract_id carries a row in one of these states is SPENT: the
@@ -425,6 +431,19 @@ def mint_draft_id(agent_id: str) -> str:
     harness session identifier or environment variable.
     """
     return f"{agent_id}.{secrets.token_hex(_TOKEN_HEX_BYTES)}"
+
+
+def mint_agent_id() -> str:
+    """Mint a fresh agent handle conforming to ``AGENT_ID_PATTERN_TEXT``.
+
+    The SSOT for the handle's shape, shared by every minting site: the CLI's
+    ``gaia contract init`` and the dispatch-side birth that stamps an identity
+    onto the nascent handoff row before the agent runs. Keeping one function
+    is what makes an id born at dispatch and an id minted by the CLI the SAME
+    kind of value -- a dispatch-born row is adoptable by the CLI only while
+    both agree on the format.
+    """
+    return "a" + secrets.token_hex(_AGENT_HEX_BYTES)
 
 
 def draft_path(draft_id: str) -> Path:
