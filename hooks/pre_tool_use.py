@@ -30,6 +30,7 @@ from modules.core.logging_setup import configure_hook_logging
 # so this entry point never names the concrete host class.
 from adapters.registry import get_adapter
 from modules.core.stdin import has_stdin_data
+from modules.core.operational_errors import storage_exhaustion_message
 from adapters.utils import warn_if_dual_channel
 
 # Configure logging -- file handler only when GAIA_DEBUG is set (see
@@ -99,6 +100,9 @@ def pre_tool_use_hook(tool_name: str, parameters: dict) -> str | dict | None:
 
     except Exception as e:
         logger.error(f"Unexpected error in pre_tool_use_hook: {e}", exc_info=True)
+        operational_message = storage_exhaustion_message(e)
+        if operational_message is not None:
+            return operational_message
         return f"Error during security validation: {str(e)}"
 
 
@@ -413,7 +417,8 @@ if __name__ == "__main__":
                 sys.exit(response.exit_code)
             elif isinstance(response.output, str) and response.output:
                 summary = response.output.split('\n')[0]
-                print(f"BLOCKED: {summary}", file=sys.stderr)
+                label = "HOOK ERROR" if response.exit_code == 1 else "BLOCKED"
+                print(f"{label}: {summary}", file=sys.stderr)
                 print(response.output)
                 sys.exit(response.exit_code)
             else:

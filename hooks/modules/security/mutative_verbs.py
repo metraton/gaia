@@ -1639,6 +1639,42 @@ HELP_IDEMPOTENT_BASE_CMDS: FrozenSet[str] = frozenset({
     "gaia",      # project CLI, not in CLI_FAMILY_LOOKUP
 })
 
+# These CLIs parse help as a global, non-executing request even when the
+# subcommand path is deeper than the generic two-token boundary below. Keep
+# this list deliberately small: it exists for command trees such as
+# ``gcloud identity groups create --help`` where counting the group nouns as
+# positional mutation arguments produced a false T3.
+HELP_ANY_POSITION_BASE_CMDS: FrozenSet[str] = frozenset({
+    "gcloud",
+    "terraform",
+})
+
+# State-changing command paths whose action verb is intentionally absent from
+# the global verb taxonomy. ``add``/``link``/``unlink`` cannot safely be
+# global mutative verbs (for example, ``git add`` is local bookkeeping), and
+# Terraform's ``taint`` vocabulary is product-specific. Anchor these paths to
+# their CLI family so remote mutations cannot fall through as T0 while
+# unrelated uses of the same words remain unaffected.
+CLI_MUTATIVE_PATH_PREFIXES: Dict[str, Tuple[Tuple[str, ...], ...]] = {
+    "terraform": (
+        ("taint",),
+        ("untaint",),
+        ("import",),
+        ("force-unlock",),
+        ("state", "rm"),
+        ("state", "mv"),
+        ("state", "push"),
+        ("state", "replace-provider"),
+    ),
+    "gcloud": (
+        ("billing", "projects", "link"),
+        ("billing", "projects", "unlink"),
+        ("identity", "groups", "memberships", "add"),
+        ("identity", "groups", "memberships", "remove"),
+        ("identity", "groups", "memberships", "modify-membership-roles"),
+    ),
+}
+
 # Shell redirect tokens (e.g., "2>&1", ">out", "<in") that shlex produces
 # as non-flag tokens but carry no CLI semantic value. Used by the --help
 # exemption to count only real positional args.
@@ -2043,9 +2079,168 @@ def _is_subcommand_identifier(token: str) -> bool:
     if not token:
         return False
     for ch in token:
-        if ch in _NON_SUBCOMMAND_CHARS:
+        if ch.isspace() or ch in _NON_SUBCOMMAND_CHARS:
             return False
     return True
+
+
+_SHELL_ARITHMETIC_EXPANSION_RE = _re.compile(r"\$\(\([^()]*\)\)")
+
+
+def _extract_command_substitutions(text: str) -> "Optional[List[str]]":
+    """Extract the top-level ``$(...)`` / backtick bodies from *text*.
+
+    Uses a balanced-paren scanner (the same conventions as
+    ``_consume_shell_word``) so a NESTED substitution such as
+    ``$(rm -rf $(pwd))`` yields its full OUTER body -- a flat regex stops at
+    the first ``)`` and hands the classifier only the innermost (often
+    read-only) command, hiding the mutative outer one.  Single-quoted spans
+    are skipped because the shell never expands inside them; double quotes do
+    not suppress expansion, so their content is scanned normally.
+
+    Returns ``None`` when an opener is present but no balanced body can be
+    extracted (unterminated ``$(`` or backtick, or an opener hidden behind an
+    unterminated quote) -- the caller must treat that as unparseable and
+    classify conservatively.
+    """
+    bodies: "List[str]" = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            j = text.find("'", i + 1)
+            if j == -1:
+                # Unterminated quote: anything after it is ambiguous.
+                if "$(" in text[i:] or "`" in text[i + 1:]:
+                    return None
+                break
+            i = j + 1
+            continue
+        if c == "`":
+            j = text.find("`", i + 1)
+            if j == -1:
+                return None
+            bodies.append(text[i + 1:j])
+            i = j + 1
+            continue
+        if c == "$" and i + 1 < n and text[i + 1] == "(":
+            depth = 1
+            j = i + 2
+            while j < n and depth:
+                cj = text[j]
+                if cj == "\\":
+                    j += 2
+                    continue
+                if cj == "'":
+                    q = text.find("'", j + 1)
+                    if q == -1:
+                        return None
+                    j = q + 1
+                    continue
+                if cj == '"':
+                    j += 1
+                    while j < n:
+                        if text[j] == "\\":
+                            j += 2
+                            continue
+                        if text[j] == '"':
+                            j += 1
+                            break
+                        j += 1
+                    continue
+                if cj == "(":
+                    depth += 1
+                elif cj == ")":
+                    depth -= 1
+                j += 1
+            if depth:
+                return None
+            bodies.append(text[i + 2:j - 1])
+            i = j
+            continue
+        i += 1
+    return bodies
+
+
+def _classify_leading_shell_assignments(
+    command: str, *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Classify leading ``NAME=value`` words and substitutions they execute.
+
+    A pure assignment is transient shell bookkeeping. A ``$(...)`` or
+    backtick inside its value, however, executes a command and must be judged
+    by that command's real effect before the env-prefix peeler discards it.
+    An ``env [opts]`` wrapper ahead of the assignments is skipped so
+    ``env NAME=$(...) cmd`` is examined exactly like the bare form -- the
+    peeler would otherwise discard the substitution unseen.
+    Returns ``None`` when a real command follows the assignments so ordinary
+    classification can continue after all substitutions have been checked.
+    """
+    n = len(command)
+    saw_assignment = False
+    cursor = _skip_env_wrapper(command, 0)
+    while cursor < n:
+        while cursor < n and command[cursor].isspace():
+            cursor += 1
+        if _ENV_ASSIGN_PREFIX_RE.match(command, cursor) is None:
+            break
+        saw_assignment = True
+        end = _consume_shell_word(command, cursor)
+        assignment = command[cursor:end]
+        # ``$((1 + 2))`` is arithmetic expansion, not command execution.
+        # Remove simple arithmetic forms before looking for ``$(...)``.
+        executable_text = _SHELL_ARITHMETIC_EXPANSION_RE.sub("", assignment)
+        substitutions = _extract_command_substitutions(executable_text)
+        if substitutions is None:
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb="shell-substitution-unparseable",
+                cli_family="system",
+                confidence="low",
+                reason=(
+                    "Shell assignment contains a command substitution that "
+                    "could not be parsed conservatively"
+                ),
+            )
+        for inner_body in substitutions:
+            inner = inner_body.strip()
+            if not inner:
+                continue
+            inner_result = detect_mutative_command(
+                inner, cwd=cwd, _depth=_depth + 1,
+            )
+            if inner_result.is_mutative:
+                return MutativeResult(
+                    is_mutative=True,
+                    category=inner_result.category,
+                    verb=inner_result.verb,
+                    dangerous_flags=inner_result.dangerous_flags,
+                    cli_family=inner_result.cli_family,
+                    confidence=inner_result.confidence,
+                    reason=(
+                        f"Shell assignment executes mutative substitution "
+                        f"{inner!r}: {inner_result.reason}"
+                    ),
+                )
+        cursor = end
+
+    if not saw_assignment:
+        return None
+    if command[cursor:].strip():
+        return None
+    return MutativeResult(
+        is_mutative=False,
+        category=CATEGORY_READ_ONLY,
+        verb="shell-assignment",
+        cli_family="system",
+        confidence="high",
+        reason="Shell variable assignment with no mutative substitution",
+    )
 
 
 # ============================================================================
@@ -2096,6 +2291,16 @@ def detect_mutative_command(
             reason="Empty command",
             confidence="high",
         )
+
+    # A variable assignment changes only the current shell's transient
+    # environment, but command substitutions in its value still execute.
+    # Inspect those before env-prefix peeling; otherwise
+    # ``TOKEN=$(mutative-command) read-only-command`` loses the mutation.
+    assignment_result = _classify_leading_shell_assignments(
+        command, cwd=cwd, _depth=_depth,
+    )
+    if assignment_result is not None:
+        return assignment_result
 
     # --- Honor leading `cd <dir>` navigation in a chain ---
     # ``cd /repo && node build.mjs`` runs the script relative to /repo, not the
@@ -2407,7 +2612,35 @@ def detect_mutative_command(
             t for t in semantics.non_flag_tokens
             if not _SHELL_REDIRECT_RE.match(t)
         ]
-        if flag_set & HELP_FLAGS and len(semantic_non_flags) <= 2:
+        # A help flag only counts when it sits BEFORE a literal `--`
+        # separator: tokens after `--` are a verbatim payload the CLI passes
+        # through (gcloud compute ssh ... -- <remote command> --help runs the
+        # remote command; the trailing --help is ssh's argument, not gcloud's).
+        if "--" in tokens:
+            separator_index = tokens.index("--")
+            help_requested = any(
+                t in HELP_FLAGS for t in tokens[:separator_index]
+            )
+        else:
+            help_requested = bool(flag_set & HELP_FLAGS)
+        # The any-position whitelist must never outrank an explicitly
+        # registered mutative command path: `terraform state rm ... --help` /
+        # `gcloud billing projects unlink ... --help` stay gated even though
+        # their positional count exceeds the generic boundary.
+        command_path = tuple(t.lower() for t in semantic_non_flags)
+        on_mutative_path = any(
+            command_path[:len(prefix)] == prefix
+            for prefix in CLI_MUTATIVE_PATH_PREFIXES.get(base_cmd, ())
+        )
+        within_generic_boundary = len(semantic_non_flags) <= 2
+        if (
+            help_requested
+            and not on_mutative_path
+            and (
+                within_generic_boundary
+                or base_cmd in HELP_ANY_POSITION_BASE_CMDS
+            )
+        ):
             verb = (
                 semantic_non_flags[0]
                 if semantic_non_flags
@@ -2418,10 +2651,16 @@ def detect_mutative_command(
                 category=CATEGORY_READ_ONLY,
                 verb=verb,
                 cli_family=family,
-                confidence="high",
+                # Beyond the generic 2-positional boundary the exemption rests
+                # on the any-position whitelist alone -- do not report it with
+                # full confidence.
+                confidence="high" if within_generic_boundary else "medium",
                 reason=(
                     f"--help on whitelisted CLI '{base_cmd}' "
-                    f"with simple invocation (<=2 non-flag tokens)"
+                    "with simple invocation (<=2 non-flag tokens)"
+                    if within_generic_boundary
+                    else f"--help on whitelisted CLI '{base_cmd}' "
+                    "via any-position help whitelist"
                 ),
             )
 
@@ -2447,7 +2686,25 @@ def detect_mutative_command(
     ):
         return _check_inline_code(command, base_cmd, family, skip_length_check=True)
 
-    # --- Step 3d: Git local-only subcommand guard ---
+    # --- Step 3d: CLI-specific mutative command paths ---
+    command_path = tuple(token.lower() for token in semantics.non_flag_tokens)
+    for mutative_prefix in CLI_MUTATIVE_PATH_PREFIXES.get(base_cmd, ()):
+        if command_path[:len(mutative_prefix)] == mutative_prefix:
+            dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=mutative_prefix[-1],
+                dangerous_flags=dangerous_flags,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"State-mutating command path "
+                    f"'{' '.join((base_cmd,) + mutative_prefix)}'"
+                ),
+            )
+
+    # --- Step 3e: Git local-only subcommand guard ---
     # When base_cmd is "git" and the subcommand is local-only (commit, stash,
     # add, log, etc.), short-circuit to non-mutative.  This prevents message
     # body text after -m from leaking into the verb scanner and triggering
@@ -2477,7 +2734,7 @@ def detect_mutative_command(
                 reason=f"Git local-only subcommand '{git_subcmd}' is safe",
             )
 
-    # --- Step 3d.5: Command+subcommand mutative UPGRADE (anchored) ---
+    # --- Step 3e.5: Command+subcommand mutative UPGRADE (anchored) ---
     # The symmetric opposite of the downgrade exception in Step 3e: anchor a
     # state-mutating install subcommand to MUTATIVE when it carries no verb in
     # MUTATIVE_VERBS and would otherwise reach Step 4 and be READ_ONLY "by
@@ -3438,6 +3695,63 @@ def _consume_shell_word(s: str, i: int) -> int:
     return i
 
 
+def _skip_env_wrapper(s: str, i: int) -> int:
+    """Return the index just past a leading ``env [opts]`` wrapper at ``s[i]``.
+
+    Skips leading whitespace, the bare ``env`` token, and its option flags,
+    stopping at the first assignment or wrapped-command token.  Returns ``i``
+    unchanged (modulo leading whitespace) when no wrapper is present.  Shared
+    by the env-prefix peeler and the assignment-substitution guard so both see
+    the same prefix boundary -- if only the peeler skipped the wrapper, an
+    ``env NAME=$(mutative) cmd`` form would have its substitution discarded
+    without ever being classified.
+    """
+    n = len(s)
+    while i < n and s[i].isspace():
+        i += 1
+    # Only a bare `env` TOKEN (followed by whitespace or end) is the wrapper;
+    # `env=x` is an assignment named `env`, handled by the assignment loop.
+    if not (s[i : i + 3] == "env" and (i + 3 >= n or s[i + 3].isspace())):
+        return i
+    i += 3
+    while i < n:
+        while i < n and s[i].isspace():
+            i += 1
+        if i >= n:
+            break
+        # An assignment ends the env-flag scan; the assignment loop takes over.
+        if _ENV_ASSIGN_PREFIX_RE.match(s, i):
+            break
+        tok_end = _consume_shell_word(s, i)
+        tok = s[i:tok_end]
+        if tok == "--":
+            i = tok_end
+            break
+        if tok in _ENV_WRAPPER_BOOL_FLAGS:
+            i = tok_end
+            continue
+        if tok in _ENV_WRAPPER_VALUE_FLAGS:
+            # Short value flag consumes the following token as its argument.
+            i = tok_end
+            while i < n and s[i].isspace():
+                i += 1
+            i = _consume_shell_word(s, i)
+            continue
+        if tok.startswith("--") and "=" in tok:
+            # Self-contained long option (--chdir=/x, --unset=FOO).
+            i = tok_end
+            continue
+        if tok in _ENV_WRAPPER_VALUE_LONG_FLAGS:
+            i = tok_end
+            while i < n and s[i].isspace():
+                i += 1
+            i = _consume_shell_word(s, i)
+            continue
+        # Any other token is the wrapped command -- stop peeling here.
+        break
+    return i
+
+
 def _peel_leading_env_prefix(command: str) -> "Tuple[str, bool]":
     """Peel a leading env-var assignment / ``env`` wrapper prefix off *command*.
 
@@ -3445,8 +3759,8 @@ def _peel_leading_env_prefix(command: str) -> "Tuple[str, bool]":
     with any leading ``NAME=value`` assignments and/or a leading ``env [opts]``
     wrapper removed, and ``peeled`` reports whether anything was stripped.  The
     real (possibly mutative) command follows such a prefix, but the token-0 base
-    command scan lands on the assignment token or on ``env`` and never sees the
-    verb -- this restores it (T3 gate-evasion fix).
+    command scan lands on the assignment token or on ``env`` (a read-only base
+    command) and never sees the verb -- this restores it (T3 gate-evasion fix).
 
     Careful NOT to over-strip: the assignment regex is anchored at the scan
     cursor, which only ever sits at the command start or immediately after a
@@ -3457,50 +3771,8 @@ def _peel_leading_env_prefix(command: str) -> "Tuple[str, bool]":
     """
     s = command.strip() if command else ""
     n = len(s)
-    i = 0
-    peeled = False
-
-    # --- Optional leading `env` wrapper (env [opts] NAME=val ... cmd) ---
-    # Only a bare `env` TOKEN (followed by whitespace or end) is the wrapper;
-    # `env=x` is an assignment named `env`, handled by the assignment loop below.
-    if s[i : i + 3] == "env" and (i + 3 >= n or s[i + 3].isspace()):
-        i += 3
-        peeled = True
-        while i < n:
-            while i < n and s[i].isspace():
-                i += 1
-            if i >= n:
-                break
-            # An assignment ends the env-flag scan; the assignment loop takes over.
-            if _ENV_ASSIGN_PREFIX_RE.match(s, i):
-                break
-            tok_end = _consume_shell_word(s, i)
-            tok = s[i:tok_end]
-            if tok == "--":
-                i = tok_end
-                break
-            if tok in _ENV_WRAPPER_BOOL_FLAGS:
-                i = tok_end
-                continue
-            if tok in _ENV_WRAPPER_VALUE_FLAGS:
-                # Short value flag consumes the following token as its argument.
-                i = tok_end
-                while i < n and s[i].isspace():
-                    i += 1
-                i = _consume_shell_word(s, i)
-                continue
-            if tok.startswith("--") and "=" in tok:
-                # Self-contained long option (--chdir=/x, --unset=FOO).
-                i = tok_end
-                continue
-            if tok in _ENV_WRAPPER_VALUE_LONG_FLAGS:
-                i = tok_end
-                while i < n and s[i].isspace():
-                    i += 1
-                i = _consume_shell_word(s, i)
-                continue
-            # Any other token is the wrapped command -- stop peeling here.
-            break
+    i = _skip_env_wrapper(s, 0)
+    peeled = i > 0
 
     # --- Leading NAME=value assignments (one or more) ---
     while True:
@@ -4790,5 +5062,3 @@ def build_t3_block_response(
         "decision": "block",
         "message": message,
     }
-
-

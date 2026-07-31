@@ -534,3 +534,49 @@ class TestFullPipelineScenarios:
         assert not result.allowed
         assert result.tier == SecurityTier.T3_BLOCKED
         assert result.block_response is None
+
+
+class TestGateEquivalenceEndToEnd:
+    """Commands gated at HEAD must stay gated regardless of the spelling.
+
+    Each case is an equivalence between a directly-gated command and a
+    laundered spelling of the same effect (nested substitution, env wrapper,
+    trailing --help): if the direct form requires consent, the laundered form
+    must too. All assertions go through validate_bash_command(), the same
+    entry the PreToolUse hook uses.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "OUT=$(rm -rf $(pwd))",
+            "OUT=$(kubectl delete pod $(kubectl get pod -o name))",
+            "env FOO=$(rm -rf /data) ls",
+            "gcloud billing projects unlink sample --help",
+            "terraform state rm aws_instance.foo --help",
+        ],
+    )
+    def test_laundered_mutations_still_require_consent(self, command):
+        result = validate_bash_command(command)
+        assert not result.allowed, (command, result.reason)
+
+    def test_subagent_memory_write_via_help_substitution_blocked(self):
+        result = validate_bash_command(
+            "gaia memory add --help $(gaia memory add --slug x --content y)",
+            is_subagent=True,
+            agent_type="developer",
+        )
+        assert not result.allowed
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # The read-only counterparts of the laundered forms must stay free,
+            # or the gate above is just a blanket ban on substitution.
+            "OUT=$(kubectl get pod -o name)",
+            "env FOO=$(pwd) kubectl get pods",
+        ],
+    )
+    def test_read_only_counterparts_stay_free(self, command):
+        result = validate_bash_command(command)
+        assert result.allowed is True, (command, result.reason)

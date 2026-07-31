@@ -118,6 +118,22 @@ def is_memory_write_attempt(command: str) -> bool:
         while k < n and tokens[k].startswith("-"):
             k += 1
         if k < n and tokens[k] in MEMORY_WRITE_VERBS:
+            # A help-only invocation exits after printing usage and performs
+            # no write. Exempt only the immediate flag form, and only on a
+            # SIMPLE line: any substitution or chaining marker means another
+            # command shares the line (``gaia memory add --help $(gaia memory
+            # add ...)`` executes the inner write while the outer --help would
+            # launder the whole line), so the exemption must not speak for it.
+            tail = tokens[k + 1:]
+            if (
+                tail
+                and tail[0] in {"--help", "-h", "-?", "--usage"}
+                and not any(
+                    marker in command
+                    for marker in ("$(", "`", "&", ";", "|", "\n")
+                )
+            ):
+                continue
             return True
     return False
 

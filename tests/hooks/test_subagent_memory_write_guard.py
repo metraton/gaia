@@ -76,6 +76,32 @@ def test_unrelated_command_not_flagged():
     assert is_memory_write_attempt("") is False
 
 
+@pytest.mark.parametrize("flag", ["--help", "-h", "-?", "--usage"])
+def test_help_only_write_verb_not_flagged(flag):
+    assert is_memory_write_attempt(f"gaia memory add {flag}") is False
+
+
+def test_help_after_operand_remains_conservative():
+    assert is_memory_write_attempt("gaia memory add project_foo --help") is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The --help exemption only speaks for a SIMPLE line: a substitution
+        # or chaining marker means another command shares the line and can
+        # perform the write the outer --help would launder.
+        "gaia memory add --help $(gaia memory add --slug x --content y)",
+        "gaia memory add --help `gaia memory add --slug x --content y`",
+        "gaia memory add --help && gaia memory add --slug x --content y",
+        "gaia memory add --help; gaia memory add --slug x --content y",
+        "gaia memory add --help | gaia memory add --slug x --content y",
+    ],
+)
+def test_help_with_composition_remains_flagged(command):
+    assert is_memory_write_attempt(command) is True
+
+
 # ---------------------------------------------------------------------------
 # Layer 1: agent scoping (check)
 # ---------------------------------------------------------------------------

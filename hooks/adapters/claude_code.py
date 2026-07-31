@@ -1324,6 +1324,18 @@ class ClaudeCodeAdapter(HookAdapter):
 
         except Exception as e:
             logger.error("Unexpected error in adapt_pre_tool_use: %s", e, exc_info=True)
+            from modules.core.operational_errors import storage_exhaustion_message
+            operational_message = storage_exhaustion_message(e)
+            if operational_message is not None:
+                # Exit 2 keeps the failure FAIL-CLOSED: the runtime treats only
+                # exit 2 as blocking (exit 1 is a non-blocking "HOOK ERROR", so
+                # the tool call would proceed unvalidated). The distinct message
+                # is what tells the operator this is storage exhaustion, not a
+                # security-policy denial.
+                return HookResponse(
+                    output=operational_message,
+                    exit_code=2,
+                )
             return HookResponse(
                 output=f"Error during security validation: {str(e)}",
                 exit_code=2,

@@ -2472,6 +2472,46 @@ class TestEnvAssignmentPrefixEvasion:
         assert result.is_mutative is True
         assert result.verb == "apply"
 
+    # --- Nested substitutions: the OUTER command is the one that mutates ---
+
+    def test_nested_substitution_outer_mutative_is_detected(self):
+        """A flat regex stops at the first ``)`` and classifies only the inner
+        ``pwd``; the balanced scanner must surface the outer ``rm -rf``."""
+        result = detect_mutative_command("OUT=$(rm -rf $(pwd))")
+        assert result.is_mutative is True
+
+    def test_nested_substitution_outer_kubectl_delete_is_detected(self):
+        result = detect_mutative_command(
+            "OUT=$(kubectl delete pod $(kubectl get pod -o name))"
+        )
+        assert result.is_mutative is True
+
+    def test_nested_read_only_substitution_stays_read_only(self):
+        result = detect_mutative_command("X=$(echo $(pwd))")
+        assert result.is_mutative is False
+        assert result.verb == "shell-assignment"
+
+    def test_unbalanced_substitution_is_conservatively_mutative(self):
+        result = detect_mutative_command("X=$(rm -rf $(pwd)")
+        assert result.is_mutative is True
+        assert result.verb == "shell-substitution-unparseable"
+
+    def test_env_wrapped_substitution_assignment_is_detected(self):
+        """``env NAME=$(...) cmd`` must be examined exactly like the bare
+        assignment form; the peeler used to discard the substitution unseen."""
+        result = detect_mutative_command("env FOO=$(rm -rf /data) ls")
+        assert result.is_mutative is True
+
+    def test_env_wrapped_nested_substitution_is_detected(self):
+        result = detect_mutative_command(
+            "env -i FOO=$(kubectl delete pod $(kubectl get pod -o name)) ls"
+        )
+        assert result.is_mutative is True
+
+    def test_env_wrapped_read_only_substitution_stays_read_only(self):
+        result = detect_mutative_command("env FOO=$(pwd) kubectl get pods")
+        assert result.is_mutative is False
+
     # --- No over-strip / no false positive regressions ---
 
     def test_equals_in_later_argument_is_not_stripped(self):
@@ -4399,3 +4439,128 @@ class TestPipePolicyRegistryCompleteness:
         for name in ("pulumi", "cdktf", "gsutil", "az", "eksctl"):
             assert name in NATIVE_OUTPUT_FLAG_CLIS, name
             assert name not in PIPE_POLICY_EXCLUDED_CLIS, name
+
+
+class TestSemanticCloudAndTerraformPaths:
+    """Product-specific state changes must not depend on generic English verbs."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "terraform taint module.api.google_project_service.run",
+            "terraform untaint module.api.google_project_service.run",
+            "terraform import google_project.main project-id",
+            "terraform force-unlock lock-id",
+            "terraform state rm module.old",
+            "terraform state mv module.old module.new",
+            "terraform state push state.tfstate",
+            "terraform state replace-provider old/provider new/provider",
+            "gcloud billing projects link sample --billing-account=123",
+            "gcloud billing projects unlink sample",
+            (
+                "gcloud identity groups memberships add "
+                "--group-email=team@example.com --member-email=user@example.com"
+            ),
+            (
+                "gcloud identity groups memberships remove "
+                "--group-email=team@example.com --member-email=user@example.com"
+            ),
+            (
+                "gcloud identity groups memberships modify-membership-roles "
+                "--group-email=team@example.com --member-email=user@example.com"
+            ),
+        ],
+    )
+    def test_product_specific_mutations_are_t3(self, command):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is True, (command, result)
+        assert result.category == "MUTATIVE"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "terraform state list",
+            "terraform state show module.api",
+            "terraform state pull",
+            "gcloud billing projects describe sample",
+            "gcloud identity groups memberships list --group-email=team@example.com",
+        ],
+    )
+    def test_neighboring_inspection_paths_remain_read_only(self, command):
+        assert detect_mutative_command(command).is_mutative is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gcloud identity groups create --help",
+        ],
+    )
+    def test_deep_help_paths_do_not_request_consent(self, command):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+        # Beyond the generic positional boundary the verdict rests on the
+        # any-position whitelist alone -- it must not claim full confidence.
+        assert result.confidence != "high"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # Registered mutative command paths outrank the any-position help
+            # whitelist: these were gated before the whitelist existed and a
+            # trailing --help must not launder them.
+            "gcloud billing projects unlink sample --help",
+            "gcloud identity groups memberships add --help",
+            "terraform state rm aws_instance.foo --help",
+            "terraform state replace-provider --help",
+        ],
+    )
+    def test_help_on_registered_mutative_path_stays_gated(self, command):
+        result = detect_mutative_command(command)
+        assert result.is_mutative is True, (command, result)
+        assert result.category == "MUTATIVE"
+
+    def test_help_after_remainder_separator_is_not_gclouds(self):
+        """Tokens after ``--`` are a verbatim REMAINDER gcloud hands to ssh;
+        a --help there belongs to the REMOTE command, which really runs. The
+        exemption must not fire, so the command classifies exactly as it does
+        without the trailing --help."""
+        with_help = detect_mutative_command(
+            'gcloud compute ssh vm-1 -- sudo sh -c "rm -rf /data" --help'
+        )
+        without_help = detect_mutative_command(
+            'gcloud compute ssh vm-1 -- sudo sh -c "rm -rf /data"'
+        )
+        assert (with_help.is_mutative, with_help.category) == (
+            without_help.is_mutative,
+            without_help.category,
+        )
+        assert not (
+            with_help.category == "READ_ONLY" and with_help.confidence == "high"
+        )
+
+
+class TestShellVerificationProse:
+    def test_quoted_function_message_is_not_a_cli_verb(self):
+        result = detect_mutative_command(
+            'section "expected protected environment names for this install"'
+        )
+        assert result.is_mutative is False
+
+    def test_assignment_containing_script_path_does_not_execute_it(self):
+        result = detect_mutative_command(
+            'SCAFFOLD="${REPO_ROOT}/installer/bk-scaffold.py"'
+        )
+        assert result.is_mutative is False
+        assert result.verb == "shell-assignment"
+
+    def test_assignment_with_command_substitution_is_not_exempted(self):
+        result = detect_mutative_command(
+            'RESULT="$(terraform untaint module.api)"'
+        )
+        assert result.is_mutative is True
+
+    def test_assignment_with_arithmetic_expansion_is_read_only(self):
+        result = detect_mutative_command("NEXT=$((CURRENT + 1))")
+        assert result.is_mutative is False
+        assert result.verb == "shell-assignment"
