@@ -32,6 +32,21 @@ Validate-on-write, no false-pass (AC-4):
     printed to stderr, and the process exits non-zero -- never a crash.
     ``validate`` and ``finalize`` never mutate; they only report the verdict.
 
+Incremental fill is MIRRORED to the row, not only to disk:
+    ``set``/``add``/``fill`` persist the draft to
+    ``data_dir()/contract_drafts/`` AND, best-effort, reflect the same partial
+    envelope onto this turn's already-born ``agent_contract_handoffs`` row via
+    ``gaia.store.writer.mirror_partial_contract_handoff``. Without it a turn cut
+    before ``finalize`` left every piece of evidence it had accumulated
+    invisible to any DB reader, however much had been written to disk. The
+    mirror is deliberately weaker than ``finalize``: it never CREATES a row (a
+    draft with no born row mirrors to nothing and the disk write stands alone),
+    never touches a row already in a terminal state, and never moves the row's
+    ``agent_state`` or its born-at-dispatch binding -- only
+    ``raw_handoff_json``. Every failure is swallowed: the mirror can never turn
+    a successful draft write into a failed CLI call. Read the mirrored row back
+    with ``gaia contract list --contract-id <draft-id> --json``.
+
 Attribution vs. harness-agnosticism (they are not in conflict):
     The purity rule below is about what this CLI READS, not about what it may
     RECORD. It never reads ``CLAUDE_SESSION_ID`` (or any other harness value)
@@ -359,26 +374,64 @@ def _print_ambiguous_draft_error(exc, as_json: bool) -> None:
         print(f"Error: {exc}", file=sys.stderr)
 
 
+def _mirror_partial_to_row(draft_id: str, envelope: dict) -> bool:
+    """Mirror the partial envelope onto this turn's DB row. Best-effort.
+
+    The disk draft is the primary record and is already written by the time
+    this runs; the row is the SECOND place the same partial evidence lands, so
+    a turn cut before ``finalize`` still leaves recoverable evidence somewhere
+    a query can reach. Every failure mode is swallowed: no row born under this
+    draft id, a DB that does not exist yet, an unseeded dispatch identity
+    rejected by the write guard -- none of them may turn a successful draft
+    write into a failed CLI call.
+
+    The writer (``gaia.store.writer.mirror_partial_contract_handoff``) is what
+    guarantees this can never create a row and never touch a terminal one; this
+    seam only decides WHEN to offer the mirror, never what it is allowed to do.
+
+    Returns True only when a row was actually updated.
+    """
+    try:
+        from gaia.store.writer import mirror_partial_contract_handoff
+
+        outcome = mirror_partial_contract_handoff(draft_id, json.dumps(envelope))
+        return bool(outcome.get("status") == "applied")
+    except Exception:
+        return False
+
+
 def _write_if_valid(
     envelope: dict,
     draft_id: str,
     as_json: bool,
     extra_json: Optional[dict] = None,
     extra_lines: Optional[list] = None,
+    mirror: bool = False,
 ) -> int:
     """Validate-on-write core: persist ONLY when the full verdict is ok.
 
     ``extra_json``/``extra_lines`` let a caller enrich the SUCCESS report
     without emitting a second record after this one -- a machine consumer
     reading stdout must still find exactly one JSON object.
+
+    ``mirror`` additionally reflects the freshly-persisted partial envelope
+    onto this turn's non-terminal row (see ``_mirror_partial_to_row``). It is
+    opt-in per subcommand rather than automatic: the incremental verbs
+    (``set``/``add``/``fill``) are the ones whose evidence would otherwise be
+    lost to a cut, while ``init`` has nothing to preserve yet -- its envelope is
+    the empty starting shape, and mirroring it would overwrite the birth
+    envelope with no evidence gained.
     """
     result = _validate_envelope(envelope)
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
     _save_draft(draft_id, envelope)
+    mirrored = _mirror_partial_to_row(draft_id, envelope) if mirror else None
     if as_json:
         payload = {"status": "ok", "draft_id": draft_id}
+        if mirrored is not None:
+            payload["mirrored"] = mirrored
         payload.update(extra_json or {})
         print(json.dumps(payload))
     else:
@@ -436,13 +489,15 @@ def _mint_agent_id() -> str:
     ``secrets`` and that suffix has never collided across 6540 rows; the
     PREFIX -- the part resolution actually keys on -- was the one piece asked
     of the model, which is where every measured collision came from. Minting
-    both here removes that asymmetry. ``token_hex(8)`` is 16 hex digits,
-    exactly the floor ``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``
-    enforces.
-    """
-    import secrets
+    both here removes that asymmetry.
 
-    return "a" + secrets.token_hex(8)
+    Delegates to ``gaia.contract.drafts.mint_agent_id``, the SSOT the
+    dispatch-side birth mints from too -- a row born at dispatch is adoptable
+    by this CLI only while both sites agree on the handle's shape.
+    """
+    from gaia.contract.drafts import mint_agent_id
+
+    return mint_agent_id()
 
 
 def cmd_init(args) -> int:
@@ -488,7 +543,7 @@ def cmd_set(args) -> int:
     except ValueError as exc:
         _print_error(str(exc), as_json)
         return 1
-    return _write_if_valid(envelope, draft_id, as_json)
+    return _write_if_valid(envelope, draft_id, as_json, mirror=True)
 
 
 def cmd_add(args) -> int:
@@ -502,7 +557,7 @@ def cmd_add(args) -> int:
     except ValueError as exc:
         _print_error(str(exc), as_json)
         return 1
-    return _write_if_valid(envelope, draft_id, as_json)
+    return _write_if_valid(envelope, draft_id, as_json, mirror=True)
 
 
 def cmd_view(args) -> int:
@@ -670,9 +725,13 @@ def cmd_finalize(args) -> int:
     Attribution: ``--session-id`` and ``--plan-task-id`` are stamped on the row
     when supplied, making the finalized contract findable by that coordinate
     pair. They are arguments, never environment reads -- see the module
-    docstring. This write does NOT close the nascent born-at-dispatch row: that
-    row lives in a different key space and is closed at SubagentStop (again, see
-    gaia.store.writer's born-at-dispatch module comment).
+    docstring. When the turn ADOPTED the identity born for it at dispatch (the
+    draft id came from the injected ``# Contract Identity`` block), this write
+    lands on that very row: the UPSERT keys on the SAME contract_id, so it
+    converges the nascent row and closes it, binding intact -- no second row and
+    nothing for SubagentStop to supersede. Only an UNADOPTED turn leaves the born
+    row behind for the stop hook to close (see gaia.store.writer's
+    born-at-dispatch module comment for both paths).
     """
     draft_id, envelope, as_json = _load_target_draft(args)
     if envelope is None:
@@ -722,14 +781,14 @@ def cmd_finalize(args) -> int:
     # with NO plan_task_id (investigation / memory / a verifier turn, which binds
     # by parent_handoff_id) is unbound and may self-COMPLETE -- unchanged.
     #
-    # BINDING SOURCE, in priority order. An EXPLICIT ``--plan-task-id`` flag wins:
-    # in production the contract-keyed lookup below can never resolve, because a
-    # born-at-dispatch row is keyed by a synthetic dispatch id and NOT by the
-    # agent's draft id (see gaia.store.writer's born-at-dispatch module comment) --
-    # so with no flag this gate silently treated EVERY turn as unbound and the leak
-    # it was written to close stayed open. The flag is the coordinate the caller's
-    # own dispatch envelope carries, so a producer that declares its binding is
-    # held to it here, at the same seam it is held to by the SubagentStop gate.
+    # BINDING SOURCE, in priority order. An EXPLICIT ``--plan-task-id`` flag wins.
+    # The contract-keyed lookup below is the fallback and now genuinely resolves
+    # for an ADOPTED turn -- the born row is keyed by the same draft id this
+    # finalize carries -- but it still resolves to nothing for a turn that minted
+    # its own identity, which is exactly how the leak this gate closes stayed open
+    # when the two key spaces were disjoint. The flag is the coordinate the
+    # caller's own dispatch envelope carries, so a producer that declares its
+    # binding is held to it here, at the same seam the SubagentStop gate holds it.
     if agent_state == "COMPLETE":
         bound_plan_task_id = getattr(args, "plan_task_id", None)
         if bound_plan_task_id is None:
@@ -826,7 +885,7 @@ def cmd_fill(args) -> int:
         _print_error("--json must decode to a JSON object", as_json)
         return 1
     _deep_merge(envelope, patch)
-    return _write_if_valid(envelope, draft_id, as_json)
+    return _write_if_valid(envelope, draft_id, as_json, mirror=True)
 
 
 # ---------------------------------------------------------------------------
