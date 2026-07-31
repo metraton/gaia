@@ -71,6 +71,59 @@ TERMINAL_PLAN_STATUSES: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
+# 1c) Cut vocabulary -- agent_contract_handoffs.cut_reason (v39)
+#
+# A turn can end two ways: the agent runs its own `gaia contract finalize` (a
+# CLEAN closure, the verdict is the agent's own), or something else closes the
+# row for it -- a harness cut, a truncation salvage, a SubagentStop backstop, a
+# reap. The second population is what an operator needs to find, and until v39
+# it was only recorded INSIDE ``raw_handoff_json`` (``degraded``/``reaped``/
+# ``salvaged``), which no SQL predicate can reach without parsing every row's
+# JSON. ``cut_reason`` lifts that fact into a column, so a cut is
+#
+#     SELECT ... FROM agent_contract_handoffs WHERE cut_reason IS NOT NULL
+#
+# The column is DEFAULT-MARKED, not default-clean, and that inversion is the
+# whole design: a row is stamped NEVER_FINALIZED the moment it is BORN at
+# dispatch, and ONLY ``finalize_agent_contract_handoff`` called WITHOUT a
+# cut_reason clears it. So "clean" is something a turn has to earn by
+# finalizing, never something it inherits by disappearing. The strongest
+# consequence is the case no closure path can help with: a harness cut so hard
+# that SubagentStop never fires leaves the row untouched -- and it is still
+# marked, because nothing ever cleared the birth stamp.
+#
+# The closure paths REFINE that stamp rather than create it, each recording
+# WHICH lane closed the row:
+#   * REAPED             -- a closure converged a born row the agent never
+#                           finalized (handoff_persister.close_born_dispatch_row
+#                           in reaped mode; the backstop converging a nascent
+#                           DISPATCHED row).
+#   * BACKSTOP_CAPTURE   -- the SubagentStop backstop wrote the turn's row
+#                           itself because no row existed (a fence-only turn
+#                           that never ran `gaia contract init`).
+#   * SALVAGED_TRUNCATION-- a max_tokens truncation was rescued from the
+#                           on-disk draft (adapters/claude_code
+#                           _salvage_truncated_draft).
+#
+# Deliberately NOT a CHECK constraint on the column: `kind` set the precedent
+# for a pure tag on this table, and a migrated DB's ALTER TABLE ADD COLUMN would
+# not carry a CHECK anyway, so declaring one only in schema.sql would make the
+# fresh-install and migrated shapes disagree. The tuple below is the enforced
+# vocabulary; the column stores whatever a writer passes.
+# ---------------------------------------------------------------------------
+CUT_REASON_NEVER_FINALIZED: str = "never_finalized"
+CUT_REASON_REAPED: str = "reaped"
+CUT_REASON_BACKSTOP_CAPTURE: str = "backstop_capture"
+CUT_REASON_SALVAGED_TRUNCATION: str = "salvaged_truncation"
+
+CUT_REASONS: tuple[str, ...] = (
+    CUT_REASON_NEVER_FINALIZED,
+    CUT_REASON_REAPED,
+    CUT_REASON_BACKSTOP_CAPTURE,
+    CUT_REASON_SALVAGED_TRUNCATION,
+)
+
+# ---------------------------------------------------------------------------
 # 2) Brief lifecycle -- briefs.status
 #
 # Canonical source: gaia.briefs.store.VALID_STATUSES (kept in sync via
@@ -224,6 +277,11 @@ STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
 __all__ = [
     "VALID_PLAN_STATUSES",
     "TERMINAL_PLAN_STATUSES",
+    "CUT_REASON_NEVER_FINALIZED",
+    "CUT_REASON_REAPED",
+    "CUT_REASON_BACKSTOP_CAPTURE",
+    "CUT_REASON_SALVAGED_TRUNCATION",
+    "CUT_REASONS",
     "VALID_BRIEF_STATUSES",
     "VALID_PLAN_LIFECYCLE_STATUSES",
     "VALID_TASK_STATUSES",

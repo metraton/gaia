@@ -1125,6 +1125,29 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
                      -- envelope plan_status value (plan 34 F9) -- episodes.plan_status
                      -- and the envelope enum do NOT gain it.
                      CHECK (agent_state IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION', 'DISPATCHED')),
+    -- v39: STRUCTURAL cut marker. NULL means the turn closed cleanly under its
+    -- own `gaia contract finalize`; any non-NULL value means it did not, and
+    -- names which lane closed it (gaia.state.CUT_REASONS -- never_finalized /
+    -- reaped / backstop_capture / salvaged_truncation). Before v39 that fact
+    -- lived only INSIDE raw_handoff_json as `degraded`/`reaped`/`salvaged`,
+    -- where no SQL predicate can reach it without parsing every row.
+    --
+    -- DEFAULT-MARKED, NOT DEFAULT-CLEAN: insert_dispatched_handoff stamps
+    -- 'never_finalized' at BIRTH and only finalize_agent_contract_handoff
+    -- called without a cut_reason clears it. A clean closure is therefore
+    -- something a turn EARNS by finalizing, not something it inherits by
+    -- disappearing -- which is what makes the hardest case detectable: a
+    -- harness cut where SubagentStop never fires leaves the row untouched, and
+    -- the birth stamp is still on it.
+    --
+    -- No column DEFAULT on purpose: finalize's INSERT path (a legacy turn with
+    -- no born row) must land CLEAN, so the value is always passed explicitly by
+    -- the writer rather than supplied by the table.
+    --
+    -- No CHECK, mirroring `kind` above: a migrated DB gets this column through
+    -- ALTER TABLE ADD COLUMN, which carries no CHECK, so declaring one only
+    -- here would make the fresh-install and migrated shapes disagree.
+    cut_reason       TEXT,
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note
@@ -1154,6 +1177,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_contract_handoffs_contract_id ON age
 -- That is the access path behind the task closure condition, which asks once
 -- per gate write and grows with the contract history, not with the task.
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_plan_task ON agent_contract_handoffs(plan_task_id);
+-- v39: PARTIAL index over the cut population only. Cut rows are the minority
+-- the query "which turns did not close cleanly" wants, and indexing only the
+-- non-NULL side keeps the index proportional to that minority instead of to the
+-- whole contract history.
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_cut ON agent_contract_handoffs(cut_reason) WHERE cut_reason IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- agent_contract_handoff_approvals: approval decisions linked to handoffs (v9/M4)
