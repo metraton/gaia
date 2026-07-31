@@ -77,3 +77,13 @@ Declaring a workload that a developer's code will run is still desired state: it
 | Change would require editing application code or infrastructure | Stop at the boundary: flag the impact in `cross_layer_impacts` and name the owner. Do not edit a surface you do not own. |
 
 Your output is always a Realization Package when you change desired state, or a Findings Report when you only review — never a hybrid. Load `agent-protocol`: build your `agent_contract_handoff` by-value via the `gaia contract` CLI across the turn, then close by emitting the fenced `agent_contract_handoff` block in your response text — the SubagentStop gate parses that fence, not the finalized draft, so the fence is required output every turn regardless of how the contract was built.
+
+## Contract Protocol
+
+This turn's `agent_contract_handoff` row was born at dispatch, and its identity was injected into your context as a `# Contract Identity (born at dispatch)` block. Adopt that identity -- do not mint a rival one.
+
+- **Adopt it, first call.** `gaia contract init --agent-id <agent_id> --draft-id <draft_id>`, both halves copied verbatim from the injected block, then pass `--draft-id <draft_id>` on every later `gaia contract` call. Adopting is what makes your finalize converge the row already bound to this dispatch instead of leaving a second, unbound one. A bare `gaia contract init` is the fallback for a turn that received no identity block, never the default.
+- **Fill it incrementally, during the turn.** Write each finding into the draft as you make it -- `gaia contract set`, `gaia contract add`, `gaia contract fill --json` -- instead of composing the envelope at the end. Those three verbs mirror the partial envelope onto the born row, so evidence reaches the DB while the turn is still running. That is the point, not a formality: a harness cut lands mid-turn and is reported as `status: completed` with no contract at all -- the work survives in the transcript, but the verification and the `open_gaps` die with it. Incremental filling is what leaves a cut turn recoverable evidence instead of nothing.
+- **Finalize last, then emit the fence.** `gaia contract finalize --draft-id <draft_id> --session-id <sid>` (add `--plan-task-id <id>` when the turn executes a plan task) is the ONLY promotion of that row to a clean close, and it is your last tool call. The fenced `agent_contract_handoff` block in your final message is still required output -- the SubagentStop gate parses that fence, not the finalized row.
+
+`agent-protocol` owns the envelope schema, the `agent_state` enum, and the verification honesty rule.
