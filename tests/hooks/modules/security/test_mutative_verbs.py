@@ -2269,6 +2269,65 @@ class TestGaiaPlanningBookkeepingException:
             f"Got: category={result.category}, reason={result.reason}"
         )
 
+    # ---- gaia contract fill: report PROSE containing a mutative word is
+    # content, not a command. Measured false positives (2026-08-01): a
+    # `gaia contract fill --json '...'` call was blocked as T3 because the
+    # word "resume" or "grant" appeared inside the TEXT of a report being
+    # saved -- not because the classifier read the string and matched a
+    # verb (it structurally cannot: the (gaia, contract) exception below
+    # short-circuits on subcommand SHAPE, before content is ever scanned),
+    # but because broken shell quoting around the prose (an apostrophe or
+    # embedded quote inside the payload) split the command into bare-word
+    # fragments upstream of detect_mutative_command. These tests pin the
+    # part of the property this module owns: a CLEANLY tokenized
+    # `gaia contract fill --json '<payload containing prose>'` must never
+    # be misread as mutative regardless of the words inside that payload.
+    # The upstream quoting hazard itself is fixed by `gaia contract fill
+    # --json-file PATH` (bin/cli/contract.py) so the prose never has to
+    # survive shell quoting as a single argument in the first place.
+
+    def test_gaia_contract_fill_with_resume_in_payload_not_mutative(self):
+        result = detect_mutative_command(
+            "gaia contract fill --json "
+            "'{\"evidence_report\": {\"key_outputs\": "
+            "[\"the operator will resume broadcasting after the outage\"]}}'"
+        )
+        assert result.is_mutative is False, (
+            f"'resume' inside gaia contract fill report TEXT must not be "
+            f"read as the mutative verb 'resume'. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_contract_fill_with_grant_in_payload_not_mutative(self):
+        result = detect_mutative_command(
+            "gaia contract fill --json "
+            "'{\"evidence_report\": {\"open_gaps\": "
+            "[\"not investigated further under the 5-minute grant window\"]}}'"
+        )
+        assert result.is_mutative is False, (
+            f"'grant' inside gaia contract fill report TEXT must not be "
+            f"read as the mutative verb 'grant'. "
+            f"Got: category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    def test_gaia_contract_fill_with_force_in_payload_still_re_gates(self):
+        """Negative control: a genuine --force flag on the command itself
+        (not inside the JSON payload) must still re-gate to T3 -- the fix
+        for the two cases above must not widen into ignoring real danger
+        signals on the command line."""
+        result = detect_mutative_command(
+            "gaia contract fill --json "
+            "'{\"evidence_report\": {\"key_outputs\": [\"resume and grant\"]}}' "
+            "--force"
+        )
+        assert result.is_mutative is True, (
+            f"--force on the command line must still re-gate to T3 even "
+            f"when the payload contains 'resume'/'grant' as prose. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
+
     def test_raw_sqlite_write_still_mutative(self):
         """Guard: a genuinely T3 op (raw sqlite write) must not be swept up by
         the narrow `('gaia', 'contract')` anchor -- it is anchored to the gaia
@@ -3902,6 +3961,20 @@ class TestReadOnlyVerbEscalatedByAlwaysFlag:
         # Control: the same read-only verb without an ALWAYS flag is unchanged.
         result = detect_mutative_command("git fetch origin")
         assert result.is_mutative is False
+
+    def test_git_fetch_bare_stays_read_only(self):
+        """The reported false positive: bare `git fetch` (no remote, no
+        flags) is strictly read-only -- it updates local remote-tracking
+        refs, touches neither the working tree, the index, nor the remote.
+        Measured DB evidence for the incidents reported alongside this test
+        (approvals table, 2026-08-01) showed every blocked `git fetch` row
+        carried `--prune`; no bare-fetch false positive reproduced, but this
+        pins the plain case explicitly since it was the one named."""
+        result = detect_mutative_command("git fetch")
+        assert result.is_mutative is False, (
+            f"bare 'git fetch' must classify read-only. "
+            f"Got: category={result.category}, reason={result.reason}"
+        )
         assert result.category == "READ_ONLY"
 
     def test_read_only_verb_with_non_always_flag_not_escalated(self):

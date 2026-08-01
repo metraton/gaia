@@ -20,6 +20,8 @@ Subcommands (the 6 verbs + the ``fill --json`` batch mode):
     validate                      [--draft-id ID]  Validate the draft WITHOUT mutating it
     finalize                      [--draft-id ID]  Validate the draft as final
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
+             --json-file PATH                      ... or read the patch from a file (avoids shell
+                                                     quoting a payload that carries report prose)
 
 All subcommands exit 0 on success, 1 on a rejected write / validation
 failure or a usage error (never a raw traceback).
@@ -955,10 +957,29 @@ def cmd_fill(args) -> int:
     draft_id, envelope, as_json = _load_target_draft(args, force_json=True)
     if envelope is None:
         return 1
+    # --json-file reads the patch from disk instead of a shell argument.
+    # A patch built from report prose (open_gaps, key_outputs, verification
+    # notes) routinely carries apostrophes and embedded quotes; surviving
+    # that text through shell quoting is a hazard the caller should not have
+    # to manage by hand -- an unescaped apostrophe inside a single-quoted
+    # --json value breaks the shell's own quoting, and everything after the
+    # break is re-tokenized as bare words, no longer recognizable as the
+    # `gaia contract fill` invocation it was part of. Writing the patch to a
+    # file with the Write tool sidesteps shell quoting entirely, the same
+    # discipline already used for a long approval `exact_content`.
+    if args.json_file is not None:
+        try:
+            with open(args.json_file, "r", encoding="utf-8") as fh:
+                raw_patch = fh.read()
+        except OSError as exc:
+            _print_error(f"--json-file could not be read: {exc}", as_json)
+            return 1
+    else:
+        raw_patch = args.json_patch
     try:
-        patch = json.loads(args.json_patch)
+        patch = json.loads(raw_patch)
     except (json.JSONDecodeError, TypeError) as exc:
-        _print_error(f"--json must be valid JSON: {exc}", as_json)
+        _print_error(f"--json/--json-file must be valid JSON: {exc}", as_json)
         return 1
     if not isinstance(patch, dict):
         _print_error("--json must decode to a JSON object", as_json)
@@ -1177,12 +1198,23 @@ def _build_subcommands(sub) -> None:
     p_finalize.set_defaults(func=cmd_finalize)
 
     p_fill = sub.add_parser("fill", help="Batch-merge a JSON patch into the draft (validate-on-write)")
-    p_fill.add_argument(
+    p_fill_json_source = p_fill.add_mutually_exclusive_group(required=True)
+    p_fill_json_source.add_argument(
         "--json",
         dest="json_patch",
-        required=True,
         metavar="JSON",
         help="JSON object to deep-merge into the draft envelope",
+    )
+    p_fill_json_source.add_argument(
+        "--json-file",
+        dest="json_file",
+        metavar="PATH",
+        help=(
+            "Read the JSON patch from PATH instead of a shell argument -- "
+            "write it with the Write tool first when the patch carries "
+            "report prose (apostrophes, embedded quotes) that is fragile "
+            "to pass as a single shell-quoted --json value"
+        ),
     )
     _add_common_draft_arg(p_fill)
     _add_agent_scope_arg(p_fill)

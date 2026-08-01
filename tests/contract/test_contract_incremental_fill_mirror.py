@@ -509,3 +509,87 @@ def test_contract_incremental_fill_then_finalize_converges_one_row(cli_env):
     assert rows[0]["agent_state"] == "COMPLETE"
     assert rows[0]["plan_id"] == PLAN_ID, "the binding survives mirror + finalize"
     assert rows[0]["kind"] == "task_execution"
+
+
+# ---------------------------------------------------------------------------
+# fill --json-file -- the patch read from disk instead of a shell argument
+#
+# A `--json` patch built from report prose (open_gaps, key_outputs,
+# verification notes) routinely carries apostrophes and embedded quotes. An
+# unescaped apostrophe inside a single-quoted --json value closes the shell's
+# quoting early; everything after the break is re-tokenized as bare words, no
+# longer recognizable as part of the `gaia contract fill` invocation it was
+# written as. --json-file removes the hazard at its source: the patch never
+# has to survive shell quoting at all.
+# ---------------------------------------------------------------------------
+
+def test_contract_fill_json_file_reads_patch_from_disk(cli_env, tmp_path):
+    """--json-file merges a patch read from PATH, identically to --json."""
+    db_path = _cli_db(cli_env)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _seed_binding_targets(db_path)
+    cid = f"{AGENT_ID}.cli-json-file"
+    _born(db_path, cid)
+
+    assert _run(["init", "--agent-id", AGENT_ID, "--draft-id", cid], cli_env).returncode == 0
+
+    patch_path = tmp_path / "patch.json"
+    patch_path.write_text(json.dumps({
+        "evidence_report": {"key_outputs": ["from a file, not a shell argument"]},
+    }))
+
+    fillc = _run(["fill", "--draft-id", cid, "--json-file", str(patch_path)], cli_env)
+    assert fillc.returncode == 0, fillc.stderr
+    assert json.loads(fillc.stdout)["mirrored"] is True
+
+    view = _run(["view", "--draft-id", cid], cli_env)
+    envelope = json.loads(view.stdout)["envelope"]
+    assert envelope["evidence_report"]["key_outputs"] == [
+        "from a file, not a shell argument"
+    ]
+
+
+def test_contract_fill_json_file_survives_report_prose_with_apostrophes(cli_env, tmp_path):
+    """The exact hazard --json-file exists to avoid: prose with apostrophes and
+    the words 'resume'/'grant' embedded in report text, not as commands."""
+    db_path = _cli_db(cli_env)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _seed_binding_targets(db_path)
+    cid = f"{AGENT_ID}.cli-json-file-prose"
+    _born(db_path, cid)
+
+    assert _run(["init", "--agent-id", AGENT_ID, "--draft-id", cid], cli_env).returncode == 0
+
+    prose = (
+        "the controller's missing resources.requests was not investigated "
+        "further under the 5-minute grant window; the operator will resume "
+        "broadcasting once the review is done"
+    )
+    patch_path = tmp_path / "patch.json"
+    patch_path.write_text(json.dumps({
+        "evidence_report": {"open_gaps": [prose]},
+    }))
+
+    fillc = _run(["fill", "--draft-id", cid, "--json-file", str(patch_path)], cli_env)
+    assert fillc.returncode == 0, fillc.stderr
+
+    view = _run(["view", "--draft-id", cid], cli_env)
+    envelope = json.loads(view.stdout)["envelope"]
+    assert envelope["evidence_report"]["open_gaps"] == [prose]
+
+
+def test_contract_fill_json_and_json_file_are_mutually_exclusive(cli_env):
+    """Supplying both --json and --json-file is a usage error, not a silent pick."""
+    result = _run(
+        ["fill", "--json", "{}", "--json-file", "/nonexistent/patch.json"],
+        cli_env,
+    )
+    assert result.returncode != 0
+    assert "not allowed with argument" in result.stderr
+
+
+def test_contract_fill_requires_json_or_json_file(cli_env):
+    """Omitting both --json and --json-file is a usage error, not an empty merge."""
+    result = _run(["fill", "--draft-id", "whatever"], cli_env)
+    assert result.returncode != 0
+    assert "required" in result.stderr.lower()
