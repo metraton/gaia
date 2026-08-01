@@ -36,8 +36,8 @@ the orchestrator forgets at scale. Symptoms the user has flagged:
 - Mid-session decisions get dropped because later topics overwrote them.
 - Follow-ups get mixed with closures -- "we agreed to defer X" turns into
   "we closed X".
-- Conclusions get invented to fill the three-section structure when
-  honest sections would have been shorter.
+- Conclusions get invented to fill the section structure when honest
+  sections would have been shorter.
 - The user's plain-language framing gets re-technified ("dejémoslo así"
   becomes "decided to maintain current state").
 
@@ -89,12 +89,19 @@ are unsure which, it is **open**: a pending mislabeled as closed
 vanishes, while a closed item mislabeled as open only costs a harmless
 extra thread later. This asymmetry is the safe default; err toward open.
 
+**A fifth check, separate from the four above: harvest the contracts.**
+Every subagent turn returned an `agent_contract_handoff`, and its
+`cross_layer_impacts` / `open_gaps` fields often carry friction, defects,
+or missing capability the user never saw. These need no user reaction to
+count -- they are findings about the system, not agreements. Keep them
+in a third list, separate from closed and open.
+
 This is the antidote to "orchestrator forgets at scale". List these
 mentally (or in a scratch buffer) before writing the first bullet.
 
-### Step 2: Three-section structure with objective criteria
+### Step 2: Four-section structure with objective criteria
 
-Produce a short response with three sections. Each section has an objective
+Produce a short response with four sections. Each section has an objective
 admission criterion -- if the criterion is not met, the section is empty.
 
 **What we agreed**
@@ -107,6 +114,11 @@ What was raised but not closed -- ideas, deferred questions, follow-ups
 that surfaced and did not reach closure. Admission criterion: the topic
 appeared in the session and was *not* concluded. Do not force items;
 "nothing significant stayed open" is valid output.
+
+**What the session revealed about the system**
+Friction, defects, or missing capabilities a contract named in
+`cross_layer_impacts` or `open_gaps`, whether or not the user reacted.
+Omit the section when none did -- do not invent a finding to fill it.
 
 **What deserves to crystallize**
 Optional suggestion of which decisions or learnings would be worth
@@ -149,17 +161,34 @@ save decomposes the real arc, not the drafted one.
 
 ### Step 5: Length budget
 
-The reflection itself is **<= 200 words**. Honest brevity beats padded
-structure. If a section has nothing real to say, omit it or say so.
+The reflection itself is **<= 200 words**, all four sections included.
+The system-findings section does not add to that budget -- if it
+appears, the other three tighten to make room.
+
+Honest brevity beats padded structure. If a section has nothing real to
+say, omit it or say so.
+
+Do not re-summarize commit hashes the user already saw during the
+session. They read that output live; repeating it is not reflection, it
+is noise.
 
 The skill *instructions* (this file) can be longer; the *output* cannot.
 
-### Step 6: Persistence is opt-in -- and decomposed
+### Step 6: Closing is itself a save point -- the orchestrator decides, gaia-operator executes
 
-After presenting the reflection, you may offer to save what is worth
-keeping. Never persist without explicit user consent; the reflection
-itself writes nowhere -- it is offered, the user accepts or declines. If
-the user accepts, save **decomposed**, never as one packed anchor.
+#### The decision
+
+Closing any turn of substantial work is a save point on its own. It does
+not wait for the user to ask. The orchestrator decides what earned a
+place in memory and proposes it to the user -- deciding is not optional.
+User consent to persist is still mandatory; only an explicit yes turns
+the proposal into a write.
+
+The orchestrator has no shell of its own. It dispatches gaia-operator to
+run `gaia memory checkpoint`, with the payload the orchestrator
+dictates. The operator executes the write -- it does not decide what to
+save, what to connect it to, or whether to create or link. If the user
+accepts, save **decomposed**, never as one packed anchor.
 
 **A pending never travels inside the summary body.** A single
 `gaia memory add` that folds the whole session -- closures *and*
@@ -170,13 +199,14 @@ buried in that body becomes invisible and has to be rescued by hand.
 The save is a record and its threads -- but write it as **one atomic
 command**, not an `add` per row.
 
-**Use `gaia memory checkpoint`.** It persists the whole reflection in a
-single transaction: the record anchor, one carry-forward thread per
-pending, and a `derived_from` edge from each thread back to the record.
-It is all-or-nothing -- if any row is invalid the checkpoint writes
-*zero* rows, so you never end a session with a half-written save. Build a
-JSON payload and pass it via `--file` (or `--file -` to stream it on
-stdin):
+#### The mechanics
+
+**gaia-operator runs `gaia memory checkpoint`.** It persists the whole
+reflection in one transaction: the record anchor, one carry-forward
+thread per pending, and a `derived_from` edge from each thread back to
+the record. It is all-or-nothing -- an invalid row writes *zero* rows,
+never a half-written save. The orchestrator dictates the JSON payload
+below; gaia-operator passes it via `--file` (or `--file -` on stdin):
 
 ```json
 {
@@ -184,7 +214,7 @@ stdin):
     "name": "project_session_2026-07-14_<topic>",
     "type": "project",
     "description": "<one-line summary of the arc>",
-    "body": "<the durable account of what happened -- NO live pendings>"
+    "body": "Source: brief <id>, plan <id>, tasks <ids>. Related: <sibling anchor names created this session>. <the durable account of what happened -- NO live pendings>"
   },
   "pendientes": [
     {
@@ -195,6 +225,12 @@ stdin):
   ]
 }
 ```
+
+**Name the source work in the body, in that same fixed spot.** No field
+or link ties a memory entry to a brief, a plan, or a task --
+`derived_from` only connects memory to memory. The only connection until
+then is textual: use the `Source:` / `Related:` line above every time,
+or six weeks later nobody can tell which work the note came from.
 
 ```bash
 gaia memory checkpoint --file /tmp/session_checkpoint.json \
@@ -219,7 +255,7 @@ line) while `pendientes` is empty, `checkpoint` returns a non-blocking
 **warning** -- heed it and lift the pending into a `pendientes` entry.
 
 `checkpoint` is non-mutative (T0, no approval) and idempotent: the
-fecha-stamped `project_session_<date>_<topic>` slug avoids collisions, so
+date-stamped `project_session_<date>_<topic>` slug avoids collisions, so
 re-running the same payload UPSERTs the same rows rather than duplicating
 them.
 
@@ -228,39 +264,6 @@ UPSERT semantics, and **Carry-forward / handoff** for the
 `derived_from` grouping and why a thread is closed by its `status`, not
 by editing its body.
 
-## Anti-Patterns
-
-- **Re-summarizing commit hashes the user already saw** -- they read the
-  output during the session; repeating it is not reflection, it is noise.
-- **Forcing three sections when nothing is open** -- if no follow-ups
-  surfaced, omit the section. Padding for shape destroys the signal.
-- **Translating user's plain Spanish to technical English** -- "dejémoslo"
-  is not "we will maintain the current state". Keep the user's framing.
-- **Auto-persisting to memory without explicit consent** -- the
-  crystallize section is a proposal. Silence is not approval; ask first.
-- **Inflating bullets to fill structure** -- an honest "nothing
-  significant stayed open" beats four invented follow-ups.
-- **Skipping the recovery pass on dense sessions** -- without Step 1, the
-  reflection drifts to "what I remember from the last few turns" instead
-  of "what we actually agreed across the whole arc".
-- **Mixing follow-ups with closures** -- a deferred topic is open, not
-  agreed. A topic accepted via "vayamos con eso" is agreed, not open.
-  The objective criteria in Step 2 exist to keep these separate.
-- **Saving the session as one packed anchor** -- folding closures and
-  pendings into a single anchor body buries the real pendings where
-  SessionStart never re-injects them, so they go invisible. Save
-  decomposed with `gaia memory checkpoint`: one record anchor plus one
-  carry-forward thread per open pending, in one atomic call (Step 6). A
-  pending never rides inside the summary body.
-
-## Filesystem behavior (DEPRECATED)
-
-Earlier iterations of this skill suggested writing to `MEMORY.md` directly.
-That path is **legacy** -- the curated memory layer is now the `memory`
-table in the Gaia substrate (`~/.gaia/gaia.db`), accessed through
-`gaia memory add`. See `memory/SKILL.md`.
-
-If you find code, docs, or other skills that still describe writing
-reflections to `MEMORY.md` or `~/.claude/projects/.../memory/*.md`, flag
-them in `cross_layer_impacts` -- do not edit them as a side effect of a
-reflection task.
+Memory lives in the `memory` table in the Gaia substrate
+(`~/.gaia/gaia.db`), never in disk files such as `MEMORY.md`. Flag any
+doc that still describes file-based reflections in `cross_layer_impacts`.

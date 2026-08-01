@@ -23,9 +23,8 @@ dispatch (`is_subagent` -- true whenever the harness supplies an `agent_id`)
 UNLESS that subagent is `gaia-operator`, the one sanctioned writer alongside
 the orchestrator itself (the orchestrator is never a subagent, so
 `is_subagent` is always false for it and it is never blocked here). This is
-categorical and NOT approvable -- there is no `approval_id` that lifts it,
-because the correct path for every other subagent is to PROPOSE via
-`memorialize_suggestions`, never to escalate. Everything else below --
+categorical and NOT approvable -- there is no `approval_id` that lifts it.
+See "Who writes" below for the sanctioned path. Everything else below --
 which `class`/`status` to pick, when a fact earns a place in memory, how a
 body is shaped -- is *not* enforced by the runtime the way that boundary or
 a security tier is: these are project-specific agreements that *guide* the
@@ -43,7 +42,7 @@ Two orthogonal axes describe every memory row:
 
 | Axis | Values | What it captures |
 |------|--------|------------------|
-| `class` | `anchor` / `thread` / `log` | The role the note plays in the session. `anchor` = stable knowledge available in any session, surfaced in `## Memory — About you / What I know` -- it is background knowledge, not a pending-item mechanism. `thread` = actionable work-in-progress that needs handoff; a `thread` with `status=carry_forward` is the one class/status pair the SessionStart transversal digest surfaces as live-pending work at the top of the *next* session (grouped by initiative); the classic `## Memory — For this session` heading is what the CLI's section renderer emits for that same status when explicitly requested via `--sections=carry_forward`. `log` = append-only history kept for traceability, never re-injected. |
+| `class` | `anchor` / `thread` / `log` | The role the note plays in the session. `anchor` = stable background knowledge, surfaced in `## Memory — About you / What I know`. `thread` = actionable work-in-progress; `status=carry_forward` is the pair the SessionStart digest surfaces as live-pending work, grouped by initiative -- see "Decide from intention first" below. `log` = append-only history, never re-injected. |
 | `type` | `atom` / `decision` / `negative` / `project` / `user` / `feedback` | The discipline of the body -- how the row is shaped and validated. Internal taxonomy: never surface `atom`/`decision`/`negative` to the user as the way to think about memory. |
 
 `status` only applies when `class=thread`. Its values form the thread
@@ -99,28 +98,22 @@ write.
 ### Trust the injected block first
 
 At SessionStart the orchestrator receives TWO curated memory blocks
-(`gaia memory get-relevant`, both bounded, each a separate call querying a
-disjoint DB class so neither duplicates the other):
+(`gaia memory get-relevant`, two separate calls, each querying a
+disjoint DB class):
 
-- `## Memory — Pendientes vivos por proyecto` -- the TRANSVERSAL INITIATIVE
-  DIGEST (the default, no-`--sections` call): a cross-project worklist of
-  live-pending threads (`class=thread`, `status` in `carry_forward`/`open`)
-  grouped by `memory.initiative`, ordered by recency, top-K initiatives with
-  overflow. This is where a `carry_forward` thread actually surfaces today --
-  not the older per-status section below.
-- `## Memory — About you / What I know` -- the durable anchors (`class=anchor`,
-  via an explicit `--sections=anchor` call). Restores what a prior regression
-  (commit `d2fba1c`) dropped when it moved the orchestrator's default call to
-  digest-only with no compensating anchor call.
+- `## Memory — Pendientes vivos por proyecto` -- the transversal
+  initiative digest (the default, no-`--sections` call): a cross-project
+  worklist of live-pending threads (`class=thread`, `status` in
+  `carry_forward`/`open`), grouped by `memory.initiative`, ordered by
+  recency, top-K initiatives with overflow. This is where a
+  `carry_forward` thread surfaces.
+- `## Memory — About you / What I know` -- the durable anchors
+  (`class=anchor`, via an explicit `--sections=anchor` call).
 
-The older class/status section renderer (`## Memory — For this session`,
-`## Memory — About you / What I know`, `## Memory — Open threads` as three
-sections in one call) still exists in the CLI and is what a dispatched
-subagent's `anchor`-only cut is built on, but the live SessionStart path no
-longer requests `carry_forward` or `thread_open` through it -- those are
-carried by the digest instead. When the user's question can be answered from
-what is already in your context, do **not** re-query -- the injected blocks
-are already the relevance-ranked top.
+A dispatched subagent receives only the anchor block, via that same
+`--sections=anchor` call. When the user's question can be answered from
+what is already in your context, do **not** re-query -- the injected
+blocks are already the relevance-ranked top.
 
 ### Query for depth
 
@@ -181,53 +174,41 @@ there -- a copy in memory is just a second source of truth that drifts.
 Two roles split the work: the **orchestrator decides what** earns a
 place (it applies this test and the value judgment), and
 **`gaia-operator` executes the save** (it applies the shaping rules
-below). A subagent does neither -- it proposes via
-`memorialize_suggestions` and the orchestrator disposes.
+below). A subagent does neither -- see "Who writes" above.
 
 ### Search before you write
 
-Before any `add`, run `gaia memory search "<topic>" --scope=memory`.
-Three outcomes, three actions:
+The search always runs first. `gaia-operator` runs `gaia memory
+search "<topic>" --scope=memory` and reports the result to the
+orchestrator, which decides: create, merge, replace, or link.
+`gaia-operator` executes that decision -- it does not choose.
 
-| Search reveals | Action |
-|----------------|--------|
-| Nothing related | Write the new row -- it is genuinely new knowledge. |
-| A row on the same topic, narrower or stale | UPSERT the broader content into the existing slug; do not create a parallel slug. |
-| A row that contradicts the new fact | Resolve before writing -- see Conflict resolution in `reference.md`. Writing both leaves the substrate self-contradictory. |
+| Search reveals | Orchestrator decides |
+|----------------|------------------------|
+| Nothing related | Create -- genuinely new knowledge. |
+| A row on the same topic, narrower or stale | Merge -- UPSERT the broader content into the existing slug. |
+| A row that contradicts the new fact | Resolve first -- see Conflict resolution in `reference.md`; pick replace or link. |
 
-Skipping the search is how the substrate accumulates near-duplicates
-that each carry a fraction of the weight one consolidated row would.
-The search is always-on; the deeper consolidation it can trigger is
-proportional -- a trivial new fact with no overlap writes directly,
-and only an overlap pulls in dedup or supersede work.
+Skipping the search lets near-duplicates accumulate, each carrying a
+fraction of the weight one consolidated row would.
 
 ### Decide from intention first, then apply the type defaults
 
-Before consulting the defaults table below, ask one question: **does this
-item need to appear at the top of the NEXT session as live-pending work?**
-That answer -- not the row's type -- is the primary criterion for
-`class`/`status`:
+Before consulting the defaults table below, ask one question: **does
+this item need to appear at the top of the NEXT session as live-pending
+work?** That answer decides `class`/`status` -- not the row's type.
 
-- **If YES** -- this is a pending for the next session, it must land in the
-  SessionStart transversal digest (`## Memory — Pendientes vivos por
-  proyecto`) -- the row MUST be `class=thread --status=carry_forward`,
-  regardless of what type/slug prefix it uses. `atom_*`, `decision_*`,
-  `project_*`, `user_*` all support this: the slug prefix still picks the
-  *content shape*, but the class/status override expresses the *intent to
-  carry forward*, not the type default.
-- **If NO** -- it is durable background knowledge, not a pending item -- the
-  type's default `class=anchor` is correct, and the row is expected to
-  surface only in `## Memory — About you / What I know`.
+- **If YES** -- it must land in the SessionStart transversal digest.
+  Set `class=thread --status=carry_forward`, regardless of the slug
+  prefix. `atom_*`, `decision_*`, `project_*`, `user_*` all support
+  this: the prefix still picks the content shape, but the class/status
+  override expresses the intent to carry forward.
+- **If NO** -- it is durable background knowledge, not a pending item.
+  The type's default `class=anchor` is correct.
 
-Getting this backwards is the most common curated-memory mistake: a
-`class=anchor` row -- which is the DEFAULT for `project_*`, `user_*`,
-`atom_*`, and `decision_*` in the table below -- never appears in the
-transversal digest, no matter how urgent its content. It surfaces only in
-`About you / What I know`, a section capped at a small quota
-(see "Trim order and quotas" under Carry-forward / handoff below). A
-"pendiente para la próxima sesión" saved as an anchor does not fail loudly --
-it is simply never presented as a pending, and competes for a small,
-unrelated quota instead of the digest's own worklist budget.
+Getting this backwards is the most common curated-memory mistake. An
+anchor never resurfaces in the digest, no matter how urgent its
+content -- see "Budgets" under Carry-forward / handoff for why.
 
 ### The slug is the single source of truth for type
 
@@ -242,22 +223,22 @@ slug prefix, and the prefix is the type. This table maps the shape of
 the body to its slug -- it is the form a row takes, not a checklist of
 when to write:
 
-| Body shape | Slug prefix → type | Class default | Resurfaces in the pending digest? |
+| Body shape | Slug prefix → type | Class default | In the pending digest? |
 |------------|-------------------|---------------|:---:|
-| A closed decision with its rationale | `decision_<topic>` → `--type=decision` | `anchor` | No -- surfaces in "About you / What I know" |
-| A stable reusable fact | `atom_<topic>` → `--type=atom` | `anchor` | No -- surfaces in "About you / What I know" |
-| A closed path that should not recur | `negative_<topic>` → `--type=negative` | `anchor` | No -- surfaces in "About you / What I know" |
-| Cross-cutting repo / system knowledge | `project_<topic>` → `--type=project` | `anchor` | No -- surfaces in "About you / What I know" |
-| User preference or identity | `user_<topic>` → `--type=user` | `anchor` | No -- surfaces in "About you / What I know" |
-| Post-mortem / correction the system must remember | `feedback_<topic>` → `--type=feedback` | `log` | No -- `log` is never injected |
-| A defect promoted out of the raw floor to last | `feedback_<component>_<symptom>` → `--type=feedback` | `thread` (`--status=carry_forward --initiative=gaia_system`) | **Yes** -- and the body is the fixed four-field shape in `reference.md` |
-| Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) | **Yes** -- the only row that lands in the transversal digest |
+| A closed decision with its rationale | `decision_<topic>` → `--type=decision` | `anchor` | No |
+| A stable reusable fact | `atom_<topic>` → `--type=atom` | `anchor` | No |
+| A closed path that should not recur | `negative_<topic>` → `--type=negative` | `anchor` | No |
+| Cross-cutting repo / system knowledge | `project_<topic>` → `--type=project` | `anchor` | No |
+| User preference or identity | `user_<topic>` → `--type=user` | `anchor` | No |
+| Post-mortem / correction the system must remember | `feedback_<topic>` → `--type=feedback` | `log` | No |
+| A defect promoted out of the raw floor to last | `feedback_<component>_<symptom>` → `--type=feedback` | `thread` (`--status=carry_forward --initiative=gaia_system`) | **Yes** -- fixed four-field body, see `reference.md` |
+| Work-in-progress that must survive the session | `<type>_<topic>` → `--type=<type>` | `thread` (`--status=carry_forward`) | **Yes** |
 
 The CLI enforces `^{type}_[a-z0-9_]+$` with type-specific matching: a
 `decision_*` slug is only valid with `--type=decision`, not with
 `--type=atom`. The store also rejects legacy-type calls
 (`--type=project`) that use a curated slug prefix (`atom_*`,
-`decision_*`, `negative_*`). Both directions of mismatch fail loudly.
+`decision_*`, `negative_*`).
 
 The flow:
 
@@ -312,6 +293,22 @@ in place. There is no separate `update` command.
   defect corpus is retrievable and triageable in one query. See
   "Promoted defect: the `gaia_system` initiative shape" in
   `reference.md` for the shape and the promotion path.
+
+### Write the body for six weeks later
+
+The body is written for a reader who was not in this conversation --
+maybe six weeks from now. Make it specific enough to act on. Make it
+self-contained enough to need no other context.
+
+When the entry comes out of concrete work, name the source in one
+fixed place: the brief, the plan, and the tasks it came from, and any
+sibling entries created in the same piece of work.
+
+The reason is a hard limit, not a preference. Memory only links to
+memory -- there is no link from a memory row to a brief, a plan, or a
+task. Until that exists, the body's own text is the only place that
+connection survives. Without it, no one can reconstruct which work
+produced the note.
 
 ### Project-scoped memory (summary)
 
@@ -368,53 +365,24 @@ lifecycle is a state machine on the `status` column, not prose in the
 body:
 
 1. **Born** -- `gaia memory reclassify <slug> --class=thread --status=carry_forward`.
-2. **Surfaced** -- at SessionStart the orchestrator's default (no-`--sections`)
-   call to `gaia memory get-relevant` renders the transversal initiative
-   digest, and a `carry_forward` thread (together with `status=open` threads)
-   is exactly the "pendiente vivo" population that query selects -- grouped
-   by `memory.initiative`, ordered by recency of the freshest pending in each
-   group, so the next orchestrator instance sees it near the top. The older
-   per-status section renderer (`## Memory — For this session`) still exists
-   in the CLI and still sorts `carry_forward` first when invoked directly via
-   `--sections=carry_forward,...`, but the live SessionStart path no longer
-   reaches it for this status -- the digest is what surfaces it today.
+2. **Surfaced** -- at SessionStart the orchestrator's default
+   (no-`--sections`) call to `gaia memory get-relevant` renders the
+   transversal initiative digest. A `carry_forward` thread (together
+   with `status=open` threads) is exactly the "pendiente vivo"
+   population that query selects, grouped by `memory.initiative`,
+   ordered by recency, so the next orchestrator instance sees it near
+   the top.
 3. **Closed** -- when the work concludes, `reclassify --status=closed`
    (no longer relevant) or `--status=graduated`, or promote to
    `class=anchor` if it became stable knowledge.
 
-### Budgets: the digest and the anchor block are independent (why an anchor can vanish, but a carry_forward usually survives)
+### Budgets: the digest and the anchor block are independent
 
-`class=anchor` and `class=thread status=carry_forward` are NOT surfaced
-through the same query or the same budget -- this is exactly why "pendientes
-para la próxima sesión" belong in `carry_forward`, never in `anchor`. The
-orchestrator's two SessionStart calls (see "Trust the injected block first"
-above) never compete against each other for space, but each has its own,
-much smaller headroom for the "wrong" class:
-
-- **The digest (`carry_forward`/`open`) never carries anchors at all.** Its
-  query filters `class='thread' AND status IN ('carry_forward', 'open')`, so
-  an `anchor` row is invisible to it regardless of budget. Its own overflow
-  mechanism trims whole initiatives from the tail (top-K initiatives, with a
-  global "+N más" and a per-initiative "+N más en X" hint) when the
-  ~1500-char cap is exceeded -- it never competes with anchors for that
-  budget.
-- **The anchor call (`sections=["anchor"]`) never carries pendings at all.**
-  Its query filters `class='anchor'` only, and is additionally capped at a
-  small fixed quota (`_RELEVANT_PER_CLASS_QUOTA["anchor"]`, identity anchors
-  pinned first, then most-recently-updated) before it is even rendered --
-  independent of and much tighter than the digest's own worklist budget.
-- **The three-way, single-call trim order still exists in the CLI** --
-  `gaia memory get-relevant --sections=carry_forward,anchor,thread_open` (one
-  call, all three sections) trims one bullet at a time in the fixed order
-  `thread_open` → `anchor` → `carry_forward` when the combined render
-  overflows the char cap -- but no live caller requests that three-section
-  combination today; it is reachable only by an explicit manual invocation.
-
-The practical consequence is unchanged even though the mechanism moved: a
-pending saved as `class=anchor` is disadvantaged -- it competes for the
-anchor call's small, unrelated quota instead of ever reaching the digest's
-worklist at all (see "Decide from intention first" above). It does not fail
-loudly; it is simply never presented as a pending.
+The digest and the anchor block run separate queries against separate
+budgets. An anchor row is invisible to the digest's query, no matter
+how much headroom the digest has -- that is the mechanism behind
+"decide from intention first" above. See `reference.md` for the query
+filters, quotas, and trim order.
 
 **One thread = one note.** A carry-forward captures *one* concern with
 *one* `status`. Do not pack independent items into a single body with
@@ -452,62 +420,27 @@ thread = one note" rule applied at the session boundary.
 | One topic per row | The slug names a single concern; split if a row outgrows its scope. |
 | `description` is required for new rows | Listings, the injection block, and search results lean on description, not body. |
 | `description` is an honest summary of one thread | Keep it a one-line summary of the single concern the row holds -- never a manual rollup of multiple items. With one thread per note there is nothing to roll up and nothing to drift. |
-| One thread = one note | A carry-forward or thread holds one concern with one `status`. Multi-item handoffs are N notes linked with `derived_from`, not one bundled body. Close a thread by its `status` (`reclassify --status=closed`), never by editing body prose. |
 | Rich bodies require `--description` | The CLI enforces this: when the body contains code blocks, headers, or 3+ blank lines, `--description` is mandatory. SessionStart falls back to `body[:60]` when description is absent, which destroys code-block semantics. |
 | Confirm before pruning | Report what will be removed and get user confirmation. |
 | Add with `append`, correct with `edit` | To grow a note, use `append` (T0, additive, no approval) -- it is the primary "add something" verb. Reserve `edit` (T3) for CORRECTING content that is wrong: `add` (UPSERT) and `edit` both replace the live row in place, so `show` first to overwrite deliberately. The prior version is never lost -- `trg_memory_history` archives it into `memory_history` -- but the live row then shows only the new text. |
 | Use UPSERT, not delete-then-insert | Preserves `origin_session_id` provenance and avoids FTS5 churn. |
-| The slug prefix IS the type -- they are the same thing | Do not choose a slug and then pick `--type` independently. Pick the slug; derive `--type` from its prefix. A `(slug, type)` pair that disagrees is always an error -- the CLI and store reject it in both directions (curated-slug-with-wrong-type and curated-prefix-with-legacy-type). |
-| Subagents propose, the orchestrator persists | Direct `gaia memory add` from a dispatch is rejected -- use `memorialize_suggestions` instead. |
 
 ## Anti-patterns
 
-- **Saving a "pendiente para la próxima sesión" as `class=anchor`** --
-  including via `project_*` or `user_*`, which default to `anchor`. It
-  lands in `## Memory — About you / What I know`, competes for that
-  section's small, unrelated quota (see "Budgets: the digest and the anchor
-  block are independent" under Carry-forward / handoff), and never reaches
-  the SessionStart transversal digest as a pending no matter how urgent its
-  content. Pendings are threads: use `class=thread --status=carry_forward`,
-  regardless of the slug's type
-  prefix (see "Decide from intention first" in Write flow).
 - **Surfacing `atom`/`decision`/`negative` to the user as the way to
   think about memory** -- `type` is internal discipline of the body;
   the user reasons in terms of "for this session", "about me", "open
   threads", "log". Present roles, not buckets.
-- **Writing memory from inside a subagent dispatch** -- the writer
-  enforcement layer rejects it. Propose via `memorialize_suggestions`
-  in the contract and let the orchestrator persist.
 - **Changing `class` without thinking about `status`** -- moving away
   from `class=thread` auto-clears `status`. That is usually what you
   want, but pass `--status` explicitly when the new state matters for
   audit (e.g. `--status=null` on a promotion to anchor).
-- **Bundling several threads into one note** -- a body with
-  `## PENDIENTE` / `## CERRADO` sections gives many concerns one
-  `status`, so neither the state machine nor the injector can tell what
-  is open, and progress degenerates into editing body prose while the
-  `description` rollup drifts from the body. One thread = one note; group
-  multi-item handoffs with `derived_from` and close each with
-  `reclassify`, never by hand-editing text. This is the same failure a
-  session save hits when it packs the whole arc into one anchor -- see
-  Carry-forward / handoff and `session-reflection/SKILL.md`.
 - **Deleting a superseded note instead of linking** -- a
   `supersedes` link keeps the historical reasoning reachable; delete
   only when the row was always noise.
 - **Saving trivial observations** -- "tested locally and it worked"
   is conversational filler, not memory. Memory is the bounded set of
   facts, decisions, and closed paths that anchor *future* sessions.
-- **Treating `--type` and `--name` as two independent parameters** --
-  they are the same thing expressed twice. Choose the slug; read
-  `--type` from its prefix. Passing `--name=decision_foo --type=atom`
-  or `--name=atom_foo --type=project` both produce an error from the
-  CLI -- the store rejects mismatches in both directions. If you find
-  yourself wondering which type to pass for a given slug, the answer
-  is always the prefix of the slug.
-- **Slug discipline violations on curated types** -- `atom_*`,
-  `decision_*`, `negative_*` slugs that do not match the pattern get
-  rejected at the CLI. The pattern is not bureaucracy; it is what
-  makes the taxonomy queryable as a set.
 - **Treating delete as the way to update** -- UPSERT (re-running
   `add`) is the canonical update path; `reclassify` moves the row
   through its lifecycle; `link` wires the graph. Deletion is
