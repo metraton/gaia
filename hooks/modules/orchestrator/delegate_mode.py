@@ -3,11 +3,28 @@
 When GAIA is installed, delegate mode is always active. Both non-dispatched
 roles -- the orchestrator's own main thread AND a main thread started with
 ``--agent <specialist>`` -- are restricted to dispatch tools plus Read.
-Mutative and bulk-investigation tools (Bash, Edit, Write, Glob, Grep, etc.)
-are blocked; Read (read-only, T0) is allowed so either can triangulate
-evidence with the user -- validate a document or an image against a
-specialist's contract. Delegate-first remains an identity instruction, not a
-hook lock.
+Mutative and bulk-investigation tools (Edit, Write, Glob, Grep, etc.) are
+blocked; Read (read-only, T0) is allowed so either can triangulate evidence
+with the user -- validate a document or an image against a specialist's
+contract. Delegate-first remains an identity instruction, not a hook lock.
+
+Bash is the one exception, and it is granted to the ORCHESTRATOR role alone
+-- never to NAMED_SPECIALIST, which stays fully denied Bash like every other
+investigation tool. That grant is a narrow lane, not a reopened shell: it is
+what lets ``gaia_cli_only_guard`` (``modules.security.gaia_cli_only_guard``)
+actually fire, since that guard only evaluates a Bash call it is given the
+chance to see. ``_tool_is_allowed`` -- the shared set consulted by BOTH
+non-dispatched roles -- deliberately does NOT carry Bash: adding it there
+would hand the same grant to a ``--agent <specialist>`` main thread, which is
+exactly what this module exists to prevent. The grant instead lives in its
+own role-scoped check (``_orchestrator_bash_is_allowed``), evaluated only
+after the caller has already classified as ``SessionRole.ORCHESTRATOR`` and
+never for ``SessionRole.NAMED_SPECIALIST``. Passing this module's gate is not
+the last word on what the orchestrator's Bash can run -- every command still
+has to clear ``gaia_cli_only_guard`` (wired as Phase 0 of
+``bash_validator.validate()``), which restricts it to the trusted, installed
+``gaia`` CLI and its allowlisted verbs. This module only decides whether the
+tool call reaches that guard at all.
 
 Detection is a taxonomy over the TWO identity fields the harness provides,
 not the presence of one of them. Claude Code documents them verbatim:
@@ -249,6 +266,26 @@ def _tool_is_allowed(tool_name: str, hook_payload: Dict[str, Any]) -> bool:
     return normalized in ORCHESTRATOR_ALLOWED_TOOLS
 
 
+def _orchestrator_bash_is_allowed(tool_name: str, hook_payload: Dict[str, Any]) -> bool:
+    """Whether *tool_name* is the Bash grant reserved for SessionRole.ORCHESTRATOR.
+
+    Deliberately NOT folded into ``ORCHESTRATOR_ALLOWED_TOOLS``: that set is
+    read by ``_tool_is_allowed`` for BOTH non-dispatched roles, so adding
+    Bash there would also open it to a ``--agent <specialist>`` main thread
+    (SessionRole.NAMED_SPECIALIST) -- exactly the grant this module must not
+    make. Callers must gate this check on ``role is SessionRole.ORCHESTRATOR``
+    themselves; this function only decides the tool-name-and-host half.
+
+    Codex is excluded: its tool vocabulary (``CODEX_ALLOWED_TOOLS``) has no
+    "Bash" primitive of its own -- Codex reaches a shell, if at all, through
+    its own named tools -- so this grant is scoped to the Claude host, the
+    one host where "Bash" is a real tool name a session can invoke.
+    """
+    if hook_payload.get(HOST_MARKER_KEY) == CODEX_HOST:
+        return False
+    return normalize_tool_name(tool_name) == "bash"
+
+
 # Main-thread agent identities that ARE the orchestrator. Gaia's installer
 # writes ``agent: gaia-orchestrator`` into settings.local.json
 # (bin/cli/_install_helpers.py, enforced by `gaia doctor`), so the orchestrator
@@ -338,9 +375,11 @@ def check_delegate_mode(
     Returns:
         DelegateModeResult with blocked=True and a reason if the call
         should be denied, or blocked=False if it should proceed. A
-        SUBAGENT call always proceeds; ORCHESTRATOR and NAMED_SPECIALIST
-        are gated by the same ``ORCHESTRATOR_ALLOWED_TOOLS`` set but each
-        carries its own, truthful denial reason.
+        SUBAGENT call always proceeds. ORCHESTRATOR and NAMED_SPECIALIST are
+        both gated by the same ``ORCHESTRATOR_ALLOWED_TOOLS`` set, but only
+        ORCHESTRATOR additionally clears its own role-scoped Bash grant
+        (``_orchestrator_bash_is_allowed``) -- NAMED_SPECIALIST never does.
+        Each denial carries its own, truthful reason.
     """
     role = classify_session_role(hook_payload)
     if role is SessionRole.SUBAGENT:
@@ -350,6 +389,20 @@ def check_delegate_mode(
             "delegate_mode check: SKIP (role=%s agent=%s) tool=%s",
             role,
             hook_payload.get("agent_type") or hook_payload.get("agent_id") or "<none>",
+            tool_name,
+        )
+        return DelegateModeResult(blocked=False)
+
+    if role is SessionRole.ORCHESTRATOR and _orchestrator_bash_is_allowed(
+        tool_name, hook_payload
+    ):
+        # The orchestrator's one Bash lane. This module's job ends here --
+        # it does not restrict WHICH gaia command runs, only that Bash
+        # reaches the guard that does: gaia_cli_only_guard.check(), wired as
+        # Phase 0 of bash_validator.validate().
+        logger.debug(
+            "delegate_mode check: ALLOW (role=%s orchestrator bash grant) tool=%s",
+            role,
             tool_name,
         )
         return DelegateModeResult(blocked=False)
