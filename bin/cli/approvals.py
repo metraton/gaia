@@ -302,25 +302,30 @@ def cmd_list(args) -> int:
     except Exception:
         db_grants = []
 
-    # DB-backed pending listing (canonical since Task E FS retirement)
-    fs_pending = []
+    # DB-backed pending listing (canonical since Task E filesystem retirement).
+    # Keep the shared scanner helper, but do not expose its historical `_fs`
+    # implementation name as the primary API vocabulary.
+    pending_rows = []
     try:
-        fs_pending = _scan_pending_shared(exclude_live_sessions=orphans_only)
+        pending_rows = _scan_pending_shared(exclude_live_sessions=orphans_only)
     except Exception:
         pass
 
     db_items = [_grant_to_display(g) for g in db_grants]
-    fs_items = [_pending_to_display(p) for p in fs_pending]
+    pending_items = [_pending_to_display(p) for p in pending_rows]
 
     if getattr(args, "json", False):
         print(json.dumps({
             "grants": db_items,
-            "pending_fs": fs_items,
-            "count": len(db_items) + len(fs_items),
+            "pending": pending_items,
+            # Backward-compatible alias; pending approvals have been DB-backed
+            # since Task E. New consumers must use `pending`.
+            "pending_fs": pending_items,
+            "count": len(db_items) + len(pending_items),
         }, indent=2))
         return 0
 
-    if not db_items and not fs_items:
+    if not db_items and not pending_items:
         print("No active grants or pending approvals.")
         return 0
 
@@ -338,10 +343,10 @@ def cmd_list(args) -> int:
             )
         print(f"\n{len(db_items)} DB grant(s).")
 
-    if fs_items:
+    if pending_items:
         print(f"\n{'ID':<12}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
         print("-" * 70)
-        for item in fs_items:
+        for item in pending_items:
             cmd_preview = item["command"][:40]
             source = item["source"][:14] if item["source"] else "-"
             print(
@@ -351,7 +356,7 @@ def cmd_list(args) -> int:
                 f"{source:<16}  "
                 f"{cmd_preview}"
             )
-        print(f"\n{len(fs_items)} filesystem pending approval(s).")
+        print(f"\n{len(pending_items)} pending approval(s).")
 
     return 0
 

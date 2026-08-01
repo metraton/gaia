@@ -220,6 +220,8 @@ class TestCmdList:
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["count"] == 1
+        assert len(data["pending"]) == 1
+        assert data["pending"][0]["approval_id"] == "P-abcd1234"
         assert len(data["pending_fs"]) == 1
         assert data["pending_fs"][0]["approval_id"] == "P-abcd1234"
 
@@ -229,6 +231,7 @@ class TestCmdList:
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["count"] == 0
+        assert data["pending"] == []
         assert data["pending_fs"] == []
 
     # ----- --orphans-only --------------------------------------------------
