@@ -149,7 +149,16 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "attach", "bind", "connect", "mount",
     # Execution
     # NOTE: "run" removed -- safe by elimination (e.g., docker run is common dev workflow)
-    "exec", "execute", "invoke", "trigger", "send", "reply",
+    # "replay" re-executes a previously recorded command (e.g. `gaia approvals
+    # replay <id>` re-runs the sealed_payload of an already-used approval via
+    # `subprocess.run(cmd, shell=True)`, including commands that were
+    # originally T3). Global, not a `gaia`-specific exception: replaying a
+    # stored command has the exact same effect as running it the first time,
+    # so it must classify at least as mutative as the taxonomy already treats
+    # "execute"/"invoke". `--dry-run` (which only prints, never executes)
+    # still short-circuits to non-mutative via the SIMULATION_FLAGS check in
+    # Step 3, which runs before this table is ever consulted.
+    "exec", "execute", "invoke", "trigger", "send", "reply", "replay",
     # Git operations
     # NOTE: "stash" removed -- safe by elimination (local-only operation)
     # NOTE: "commit" removed -- local-only operation, trust system
@@ -161,7 +170,14 @@ MUTATIVE_VERBS: FrozenSet[str] = frozenset({
     "reconcile", "rsync",
     # Deletion / removal (approvable via nonce -- blocked_commands.py catches
     # the truly destructive patterns like "delete namespace", "delete-vpc", etc.)
-    "delete", "destroy", "remove", "drop", "purge", "wipe", "clean",
+    # NOTE: "cleanup" sits alongside "clean" rather than relying on hyphen-split
+    # collapsing it to "clean" -- there is no hyphen in "cleanup" to split, and
+    # the CLI subcommand token IS the literal word "cleanup" (`gaia cleanup`,
+    # no flags, removes CLAUDE.md/settings.json/symlinks/plugin markers and
+    # applies retention deletions with no prompt). `--dry-run` still
+    # short-circuits to non-mutative via SIMULATION_FLAGS in Step 3, which
+    # runs before this table is consulted.
+    "delete", "destroy", "remove", "drop", "purge", "wipe", "clean", "cleanup",
     "trash", "shred", "srm",
     "truncate", "kill", "terminate", "uninstall", "unpublish",
     "drain", "evict", "cordon", "deregister", "detach",
@@ -474,6 +490,35 @@ COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str], FrozenSet[str]] = {
     # Both are already generic MUTATIVE_VERBS, so without re-gating them here the
     # group exception would silently downgrade them to T0.
     ("gaia", "schedule"): frozenset({"sync", "remove"}),
+}
+
+# Per-group deny verbs that live one level DEEPER than
+# COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS -- for a subcommand GROUP that itself
+# nests its own action verb (`gaia task gate <add|list|remove|set-status>`).
+# The two dicts above only ever inspect non_flag_tokens[1] (the token right
+# after the exempted group, e.g. "gate"); they never look at
+# non_flag_tokens[2] (the nested action, e.g. "remove"), so a destructive verb
+# hiding one level deeper than the group token passed through as bookkeeping.
+# `gaia task gate remove` hard-deletes a `task_gates` row (see
+# gaia.store.writer.remove_gate_from_task) -- an irreversible destruction of a
+# verification record, not reversible status bookkeeping like `gate
+# set-status`, so it must stay T3 exactly like `gaia task remove` above.
+#
+# Anchored to the SPECIFIC (base_cmd, group, subgroup) triple rather than a
+# generic "always check token[2]" rule: `gaia brief milestone remove` and
+# `gaia brief ac remove` are the same three-token shape (`brief` -> `milestone`
+# / `ac` -> `remove`) but are DELIBERATELY exempt already (see
+# `_cmd_milestone` / `_cmd_ac` in `bin/cli/brief.py` -- documented as
+# reversible single-row deletes, re-addable). A blanket token[2] check would
+# silently re-gate those two as a side effect; this table changes the
+# classification of `gaia task gate remove` ONLY.
+#
+# Key:   (base_cmd, group, subgroup)  -- group is non_flag_tokens[1],
+#        subgroup is non_flag_tokens[2].
+# Value: frozenset of nested verbs that stay/become gated (T3) despite the
+#        group's own tier exception.
+NESTED_SUBCOMMAND_EXTRA_DENY_VERBS: Dict[Tuple[str, str, str], FrozenSet[str]] = {
+    ("gaia", "task", "gate"): frozenset({"remove"}),
 }
 
 
@@ -2792,27 +2837,56 @@ def detect_mutative_command(
             or group_verb.split("-", 1)[0] in _extra_deny
             or group_verb in _extra_deny
         )
+        # A group can nest its OWN action verb one token deeper (`gaia task
+        # gate <add|remove|...>`). The checks above only ever look at
+        # non_flag_tokens[1] ("gate"), so a destructive verb hiding at
+        # non_flag_tokens[2] ("remove") would otherwise pass as bookkeeping.
+        # See NESTED_SUBCOMMAND_EXTRA_DENY_VERBS for why this is anchored to
+        # the specific (base_cmd, group, subgroup) triple rather than a
+        # blanket token[2] check.
+        nested_verb = (
+            semantics.non_flag_tokens[2]
+            if len(semantics.non_flag_tokens) > 2 else ""
+        )
+        _nested_deny = NESTED_SUBCOMMAND_EXTRA_DENY_VERBS.get(
+            (base_cmd, semantics.non_flag_tokens[0], group_verb), frozenset()
+        )
+        nested_verb_is_destructive = (
+            nested_verb.split("-", 1)[0] in _nested_deny
+            or nested_verb in _nested_deny
+        )
         if subcommand_key in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS:
-            if verb_is_destructive:
-                # Whole-record destruction (e.g. `gaia plan delete`) must stay
-                # T3 even inside an excepted group.  Anchor it MUTATIVE here
-                # instead of falling through to Step 4: the group token itself
-                # (`plan`) collides lexically with SIMULATION_VERBS['plan'], so
-                # the verb scanner would otherwise mis-classify the whole
-                # command as SIMULATION and silently un-gate the delete.  This
-                # explicit return is what makes `gaia plan delete` behave like
-                # `gaia brief delete` (where `brief` has no such collision).
+            if verb_is_destructive or nested_verb_is_destructive:
+                # Whole-record destruction (e.g. `gaia plan delete`, `gaia
+                # task gate remove`) must stay T3 even inside an excepted
+                # group.  Anchor it MUTATIVE here instead of falling through
+                # to Step 4: the group token itself (`plan`) collides
+                # lexically with SIMULATION_VERBS['plan'], so the verb
+                # scanner would otherwise mis-classify the whole command as
+                # SIMULATION and silently un-gate the delete.  This explicit
+                # return is what makes `gaia plan delete` behave like `gaia
+                # brief delete` (where `brief` has no such collision).
+                destructive_verb = (
+                    nested_verb.split("-", 1)[0]
+                    if nested_verb_is_destructive
+                    else group_verb.split("-", 1)[0]
+                )
+                destructive_path = (
+                    f"{base_cmd} {semantics.non_flag_tokens[0]} {group_verb} {nested_verb}"
+                    if nested_verb_is_destructive
+                    else f"{base_cmd} {semantics.non_flag_tokens[0]} {group_verb}"
+                )
                 dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
                 return MutativeResult(
                     is_mutative=True,
                     category=CATEGORY_MUTATIVE,
-                    verb=group_verb.split("-", 1)[0],
+                    verb=destructive_verb,
                     dangerous_flags=dangerous_flags,
                     cli_family=family,
                     confidence="high",
                     reason=(
                         f"Whole-record destruction "
-                        f"'{base_cmd} {semantics.non_flag_tokens[0]} {group_verb}' "
+                        f"'{destructive_path}' "
                         f"stays T3 despite the local bookkeeping exception"
                     ),
                 )
