@@ -160,10 +160,15 @@ lifts it. An orchestrator session has no legitimate reason to run a command
 this guard rejects; the correct move is to dispatch a specialist, not to seek
 consent for a wider shell.
 
-This module intentionally does NOT wire itself into ``bash_validator.py`` /
-``delegate_mode.py`` / any agent frontmatter -- that integration is a
-separate, later change specifically so a live regression can be attributed
-to either this module's logic or its wiring, not both at once.
+This module IS wired into ``bash_validator.py``: ``BashValidator.validate()``
+calls ``check()`` here as Phase 0, the very first statement of ``validate()``,
+ahead of the empty-command check, footer stripping, the three write guards,
+and normalization. It is inert today for a different reason -- not because
+the wiring is missing, but because the orchestrator has not yet been granted
+a Bash lane at all (``delegate_mode`` keeps Bash out of
+``ORCHESTRATOR_ALLOWED_TOOLS``), so Phase 0 never sees an orchestrator-role
+invocation to evaluate. The day that lane opens, this guard is already live
+with no further wiring change required.
 
 Public API:
     TRUSTED_GAIA_BINARY: str

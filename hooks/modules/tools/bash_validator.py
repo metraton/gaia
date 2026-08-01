@@ -28,6 +28,17 @@ Earlier flat-pipeline order preserved within phases for backward compat:
     hiding it from phases 1-5 (see _try_sanitize_command's docstring).
   - Indirect execution detection is the first check in phase 1
   - Blocked commands run before cloud_pipe and mutative_verbs in phase 3
+
+Phase 0 -- GAIA CLI ONLY GUARD (gaia_cli_only_guard.check): runs before
+everything above, including footer stripping and smart sanitization. It is a
+closed-by-default restriction for the ORCHESTRATOR role only (see that
+module's docstring) and is a no-op for every other caller today, because
+delegate_mode does not yet grant the orchestrator a Bash lane at all. It is
+wired in ahead of any command-text transformation on purpose: it evaluates
+the RAW string the harness sent, never a version something upstream already
+normalized. Only invoked when a caller supplies `hook_payload` -- see
+validate()'s own docstring for why "not supplied" and "supplied with an
+empty role" are kept distinct rather than collapsed by a default.
 """
 
 from __future__ import annotations
@@ -35,6 +46,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import shutil
 import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
@@ -75,6 +87,13 @@ from ..security.subagent_memory_write_guard import (
 from ..security.protected_path_guard import (
     check as check_protected_path_write,
 )
+# gaia_cli_only_guard is NOT imported at module scope: it itself imports
+# `..tools.stage_decomposer`, which (via this package's own __init__.py
+# eagerly importing bash_validator) closes a circular-import loop back to
+# this exact module. Importing it lazily, inside validate() at the point of
+# use, is the same convention gaia_cli_only_guard.py already applies to its
+# own delegate_mode import, for the identical reason: it avoids assuming
+# either package finishes initializing before the other.
 from ..security.composition_rules import (
     build_composition_stages,
     check_composition,
@@ -202,6 +221,63 @@ class BashValidator:
         self.shell_parser = get_shell_parser()
         self._unwrapper = ShellUnwrapper()
         self._decomposer = StageDecomposer()
+
+    def _resolve_bare_gaia_token_for_guard(self, command: str) -> str:
+        """Rewrite a bare `gaia` binary token to its $PATH-resolved absolute path.
+
+        For gaia_cli_only_guard.check() ONLY -- the string this returns is
+        never executed, only handed to the guard's identity check.
+
+        The guard itself deliberately requires the binary token to already be
+        an absolute path in the command text (gaia_cli_only_guard.py, Design
+        decision 2): it does not trust the ambient $PATH at analysis time,
+        because that environment need not match the one the command actually
+        runs under. That is the right call for the guard's own comparison,
+        but left alone it would also deny a `gaia contract view` typed the
+        normal way, since a bare word never satisfies `os.path.isabs`. This
+        method is the wiring-side fix: it resolves the bare token through
+        $PATH here, at the call site, and hands the guard an absolute-path
+        candidate to run its EXACT realpath comparison against
+        TRUSTED_GAIA_BINARY -- so a poisoned $PATH still fails that
+        comparison and is denied exactly as before. Resolving does not
+        widen what the guard accepts; it only lets a normally-typed
+        invocation reach the same identity check an absolute path already
+        would.
+
+        Returns *command* unchanged when there is no bare `gaia` token in
+        binary position of any stage, or when $PATH has no `gaia` to find --
+        the guard's own absolute-path check then denies as it always did.
+        """
+        decomposed = self._decomposer.decompose(command)
+        if not decomposed.stages:
+            return command
+
+        resolved_path: Optional[str] = None
+        rewrote_any = False
+        pieces: List[str] = []
+
+        for stage in decomposed.stages:
+            text = stage.command
+            is_bare_gaia_token = (
+                stage.args
+                and stage.args[0] == "gaia"
+                and text[:4] == "gaia"
+                and (len(text) == 4 or text[4] in (" ", "\t"))
+            )
+            if is_bare_gaia_token:
+                if resolved_path is None:
+                    which_result = shutil.which("gaia") or ""
+                    resolved_path = which_result if os.path.isabs(which_result) else ""
+                if resolved_path:
+                    text = resolved_path + text[4:]
+                    rewrote_any = True
+            pieces.append(text)
+            if stage.operator is not None:
+                pieces.append(f" {stage.operator} ")
+
+        if not rewrote_any:
+            return command
+        return "".join(pieces)
 
     def _detect_indirect_execution(self, command: str) -> Optional[BashValidationResult]:
         """Detect indirect execution wrappers that can bypass regex blocking.
@@ -399,6 +475,7 @@ class BashValidator:
         is_subagent: bool = False,
         session_id: str = "",
         agent_type: str = "",
+        hook_payload: Optional[Dict[str, Any]] = None,
     ) -> BashValidationResult:
         """
         Validate a Bash command through the 5-phase pipeline.
@@ -410,15 +487,74 @@ class BashValidator:
             4. COMPOSITION - cross-stage pattern checks (stub for T4)
             5. AGGREGATE   - combine results into final verdict
 
+        A phase 0, ahead of all of the above, is described where it runs
+        below (GAIA CLI ONLY GUARD).
+
         Args:
             command: Command string to validate
             is_subagent: True when running in subagent context
             session_id: Session ID for approval scoping
             agent_type: Name of the originating agent (for pending approval context)
+            hook_payload: The full stdin JSON dict from the harness, when the
+                caller has one. The live adapter path (claude_code.py's
+                _adapt_bash) always supplies it; back-compat call sites that
+                predate it (validate_bash_command(), pre_tool_use.py's
+                _handle_bash, and direct-construction tests) do not, and
+                leaving it unset -- `None`, never a substituted `{}` -- is
+                what keeps the guard below correctly inert for them instead
+                of misreading their absence as an empty orchestrator role.
 
         Returns:
             BashValidationResult with validation details
         """
+        # ================================================================
+        # PHASE 0: GAIA CLI ONLY GUARD (orchestrator role closure)
+        # First guard in the pipeline -- ahead of the three write guards
+        # below and ahead of EARLY NORMALIZATION -- because it is a
+        # closed-by-default restriction keyed on the CALLER'S ROLE, and
+        # nothing may transform `command` (footer stripping, nohup/&/
+        # redirect sanitization) before that role-based closure evaluates
+        # the string exactly as the harness sent it.
+        #
+        # `hook_payload` is passed through to the guard UNCHANGED, never
+        # flattened into a pre-extracted role flag here -- see
+        # gaia_cli_only_guard.py's own docstring (Design decision 1) for
+        # why an intermediate flattening is itself a place the "empty
+        # field reads as false" failure mode could be reintroduced.
+        #
+        # `hook_payload is None` (this parameter's own absence) and "a
+        # payload whose agent_type happens to be empty" are two distinct
+        # cases, deliberately not collapsed by a shared default:
+        #   - None: no caller supplied a payload at all (a legacy call
+        #     site -- see this method's docstring) -- the guard does not
+        #     apply, and validate() proceeds exactly as it always has.
+        #   - a dict, even an empty one or one with agent_type=="": this
+        #     IS the harness payload, so the guard runs. An empty
+        #     agent_type classifies as the orchestrator role inside
+        #     classify_session_role (Gaia's installer writes
+        #     `agent: gaia-orchestrator` into settings, and a session that
+        #     never got that field populated is still the orchestrator's
+        #     own main thread) -- so it is evaluated, never silently
+        #     skipped for looking blank.
+        #
+        # A bare `gaia contract view`, typed normally, resolves through
+        # $PATH here (see _resolve_bare_gaia_token_for_guard) into an
+        # absolute-path candidate BEFORE the guard's own exact realpath
+        # comparison runs -- the guard's identity check itself is
+        # unchanged and still denies a poisoned $PATH resolving elsewhere.
+        # ================================================================
+        if hook_payload is not None:
+            from ..security.gaia_cli_only_guard import check as check_gaia_cli_only
+
+            guard_command = self._resolve_bare_gaia_token_for_guard(command)
+            guard_allowed, guard_reason = check_gaia_cli_only(guard_command, hook_payload)
+            if not guard_allowed:
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=guard_reason,
+                )
+
         if not command or not command.strip():
             return BashValidationResult(
                 allowed=False,

@@ -1479,7 +1479,7 @@ class ClaudeCodeAdapter(HookAdapter):
         validator = BashValidator()
         result = validator.validate(
             command, is_subagent=is_subagent, session_id=session_id,
-            agent_type=agent_type,
+            agent_type=agent_type, hook_payload=hook_data,
         )
 
         if not result.allowed:
