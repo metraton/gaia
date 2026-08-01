@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
@@ -29,14 +29,60 @@ function report(name, ok, detail) {
   if (!ok) failures++;
 }
 
-// A minimal deck fixture: just data/document.yaml + data/pages/*.yaml, which
-// is all loadAuthoredDeck() reads. data.generated.js is deliberately NOT
-// copied — its absence only fails the unrelated CENSUS line, never RECT/CHIP.
+// A self-owned minimal fixture. Never copy the consumer deck here: consumers
+// are instructed to delete seed pages they do not need, so a test that depends
+// on their `overview.yaml` breaks precisely when the scaffold is used
+// correctly. The six single cells plus one span-2 cell close a 4×2 rectangle;
+// item-1/3/7 provide the three-member `flow` chip used by the CHIP negative.
+const FIXTURE_DOCUMENT = {
+  title: 'Guard fixture',
+  pages: [{
+    id: 'overview', name: 'Guard fixture', order: 1, visible: true,
+    file: 'pages/overview.yaml',
+  }],
+};
+const FIXTURE_OVERVIEW = {
+  id: 'overview',
+  layout: 'grid',
+  columns: 1,
+  filters: [{ key: 'flow', label: 'Fixture flow' }],
+  sections: [{
+    id: 'section-e',
+    title: 'Closed rectangle fixture',
+    span: 1,
+    columns: 4,
+    children: [
+      { id: 'item-a', title: 'A' },
+      { id: 'item-b', title: 'B' },
+      { id: 'item-c', title: 'C', span: 2 },
+      { id: 'item-1', title: 'One', filters: ['flow'] },
+      { id: 'item-2', title: 'Two' },
+      { id: 'item-3', title: 'Three', filters: ['flow'] },
+      { id: 'item-7', title: 'Seven', filters: ['flow'] },
+    ],
+  }],
+};
+
 function mkDeck() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'diagram-guard-'));
-  fs.mkdirSync(path.join(dir, 'data'));
-  fs.copyFileSync(path.join(ROOT, 'data', 'document.yaml'), path.join(dir, 'data', 'document.yaml'));
-  fs.cpSync(path.join(ROOT, 'data', 'pages'), path.join(dir, 'data', 'pages'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'data', 'pages'), { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'data', 'document.yaml'),
+    yaml.dump(FIXTURE_DOCUMENT),
+    'utf8',
+  );
+  fs.writeFileSync(
+    path.join(dir, 'data', 'pages', 'overview.yaml'),
+    yaml.dump(FIXTURE_OVERVIEW),
+    'utf8',
+  );
+  fs.mkdirSync(path.join(dir, 'engine'));
+  fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
+  fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
+  execFileSync('node', [path.join(dir, 'engine', 'build-data.mjs')], {
+    cwd: dir,
+    stdio: 'ignore',
+  });
   return dir;
 }
 function loadOverview(dir) {
@@ -50,14 +96,28 @@ function findNode(doc, id) {
   return walk(doc.sections);
 }
 function runNode(args) {
-  const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] };
-  try { return { code: 0, out: execFileSync('node', args, opts) }; }
-  catch (e) { return { code: e.status ?? 1, out: (e.stdout || '') + (e.stderr || '') }; }
+  // check-layout emits a large report before setting a non-zero exit status.
+  // Node may discard buffered pipe output at process shutdown, so capture in a
+  // regular temporary file: writes are synchronous and diagnostics survive.
+  const captureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'diagram-guard-out-'));
+  const capture = path.join(captureDir, 'output.txt');
+  const fd = fs.openSync(capture, 'w');
+  const result = spawnSync('node', args, { stdio: ['ignore', fd, fd] });
+  fs.closeSync(fd);
+  const out = fs.readFileSync(capture, 'utf8');
+  fs.rmSync(captureDir, { recursive: true, force: true });
+  return { code: result.status ?? 1, out: `${out}${result.error?.message || ''}` };
 }
 // fs.rmSync here is a Node API call inside THIS process, not a chained shell
 // `rm` — the T3 gate only classifies Bash-tool commands, so cleanup is not
 // expected to be blocked; the try/catch is defensive against OS-level errors.
-function rmDeck(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ } }
+function rmDeck(dir) {
+  if (process.env.DIAGRAM_GUARD_KEEP_FIXTURES === '1') {
+    console.log(`[INFO] kept fixture ${dir}`);
+    return;
+  }
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+}
 
 // ── 1. RECT — section-e short by exactly 1 cell after removing item-b ─────
 // NOT a section whose child count is what pins its track count: dropping a cell
@@ -76,16 +136,13 @@ function rmDeck(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); }
   saveOverview(p, doc);
   const { code, out } = runNode([CHECK, dir]);
   const ok = code !== 0 && out.includes('SHORT BY EXACTLY 1 cell(s)');
-  report('RECT: section-e short by 1 cell', ok, `exit=${code}`);
+  report('RECT: section-e short by 1 cell', ok, `exit=${code}\n${out}`);
   rmDeck(dir);
 }
 
 // ── 2a. Invariant A, layer 1 — build-data.mjs rejects unknown page form ────
 {
   const dir = mkDeck();
-  fs.mkdirSync(path.join(dir, 'engine'));
-  fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
-  fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
   const { p, doc } = loadOverview(dir);
   doc.form = 'dashboards';
   saveOverview(p, doc);
@@ -117,15 +174,17 @@ function rmDeck(dir) { try { fs.rmSync(dir, { recursive: true, force: true }); }
     && out.includes('chip "ghost-chip"') && out.includes('NO component references it')
     && out.includes('key "dangling-key"') && out.includes('NO chip declares it')
     && out.includes('chip "flow"') && out.includes('has exactly ONE member');
-  report('CHIP: orphan + dangling key + arity-1', ok, `exit=${code}`);
+  report('CHIP: orphan + dangling key + arity-1', ok, `exit=${code}\n${out}`);
   rmDeck(dir);
 }
 
-// ── 4. control positive — the intact seed must pass ────────────────────────
+// ── 4. control positive — the intact owned fixture must pass ───────────────
 {
-  const { code, out } = runNode([CHECK, ROOT]);
+  const dir = mkDeck();
+  const { code, out } = runNode([CHECK, dir]);
   const ok = code === 0 && out.includes('ALL PASS');
-  report('control: intact seed passes', ok, `exit=${code}`);
+  report('control: intact owned fixture passes', ok, `exit=${code}\n${out}`);
+  rmDeck(dir);
 }
 
 // ── 5. PLACEMENT AGREEMENT — the engine's model vs the gate's mirror ───────
@@ -352,9 +411,6 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
 // rejected every spacer would score five out of five here.
 {
   const dir = mkDeck();
-  fs.mkdirSync(path.join(dir, 'engine'));
-  fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
-  fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
   const buildInDir = path.join(dir, 'engine', 'build-data.mjs');
   const { p, doc } = loadOverview(dir);
   const probe = { id: 'probe-spacer', type: 'spacer', order: 99 };

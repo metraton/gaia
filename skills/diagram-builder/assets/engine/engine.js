@@ -37,9 +37,9 @@
 // each grid by its real width need; it emits `--cols` + `--span` and never a
 // literal grid-column (the container queries own the collapse). The ONE row
 // height that is not --cell-h is the SEPARATOR ROW: a row whose only occupants
-// are horizontal separators is reduced to --sep-row-h, emitted as a per-tier
-// `grid-auto-rows` track list (see applyRowTracks) — the separator stays a cell,
-// only its row shrinks.
+// are horizontal separators and declared holes is reduced to --sep-row-h,
+// emitted as a per-tier `grid-auto-rows` track list (see applyRowTracks) — the
+// separator stays a cell, only its row shrinks.
 //
 // Stable ids + order are preserved end-to-end so a future edit mode can
 // overlay a localStorage {id: order} map without touching this engine or
@@ -223,8 +223,17 @@
   // `.sep-v` is a line as tall as its row), so thinning its row would shorten
   // the drawing rather than fit the drawing — the opposite of the intent. Only
   // a horizontal separator draws across the row and needs none of its height.
+  //
+  // A `spacer` IS thin, and for the row's own reason rather than the spacer's:
+  // a row composed only of RULES and DECLARED HOLES carries no cell-height
+  // content — it is a ONE-LINE row — and a declared hole inside it is the
+  // absence of a RULE, not the absence of a BOX. Charging that hole a full
+  // --cell-h would let the cell a rule chose NOT to reach set the height of the
+  // row the rule lives in. A spacer beside ORDINARY cells is untouched: `every`
+  // still fails on those cells, so that row keeps --cell-h.
   const isLeafOfType = (c, t) => c && !Array.isArray(c.children) && c.type === t;
-  const isThinRowLeaf = c => isLeafOfType(c, 'separator') && !hasTreatment(c, 'vertical');
+  const isThinRowLeaf = c => isLeafOfType(c, 'spacer')
+    || (isLeafOfType(c, 'separator') && !hasTreatment(c, 'vertical'));
 
   // ── THE PLACEMENT MODEL ─────────────────────────────────────────────────
   // Three pieces — widthAtTier, isBandAtTier, rowOccupants — and they are the
@@ -301,11 +310,13 @@
   }
 
   // The `grid-auto-rows` TRACK LIST for one track count: one entry per row,
-  // --sep-row-h where the row's only occupants are horizontal separators and
-  // --cell-h everywhere else. Returns null when NO row is separator-only, so a
-  // grid without one is left on the plain fixed-row default (no inline style).
-  // A row with no occupant at all (an interior hole — RECT/HOLE in `npm run
-  // check` owns that defect) keeps --cell-h: a hole is not a thin row.
+  // --sep-row-h where the row's only occupants are thin leaves (a horizontal
+  // separator or a declared hole) and --cell-h everywhere else. Returns null
+  // when NO row is thin, so a grid without one is left on the plain fixed-row
+  // default (no inline style). A row with NO occupant at all (an UNdeclared
+  // interior hole — RECT/HOLE in `npm run check` owns that defect) keeps
+  // --cell-h: an empty track is not a thin row, and only a hole someone
+  // DECLARED with a spacer earns the reduced height.
   function rowTrackList(items, tracks) {
     const rows = rowOccupants(items, tracks);
     let thin = false;

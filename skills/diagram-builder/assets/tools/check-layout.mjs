@@ -1004,7 +1004,8 @@ function main() {
     console.log('\n══════════════════════════════════════════════════════════════');
     for (const p of deck.problems) console.log(`    [FAIL] ${p}`);
     console.log('\nFAIL — the authored deck could not be READ, so nothing was asserted.\n');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   const pages = [];
@@ -1062,24 +1063,26 @@ function main() {
   if (asserted === 0) {
     console.log(`FAIL — 0 assertions ran across ${pages.length} page(s). A gate that asserted NOTHING is ` +
       `not a pass: either no page was read, or no grid carried a track model.\n`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   const adv = advisories ? ` (${advisories} advisory note(s) — [INFO], non-failing)` : '';
   if (failed + censusFail === 0) {
     console.log(`ALL PASS — ${asserted} assertions across ${pages.length} page(s) × ${TIERS.length} container tiers, ` +
       `no browser${adv}.\n`);
-    process.exit(0);
+    process.exitCode = 0;
+    return;
   }
   console.log(`FAIL — ${failed} failing check(s)${censusFail ? ' + a stale/divergent census' : ''} ` +
     `out of ${asserted} assertions. See the [FAIL] lines above${adv}.\n`);
-  process.exit(1);
+  process.exitCode = 1;
 }
 
 // Run ONLY when invoked as the gate. Imported (by the agreement test in
 // tools/test-guards.mjs, which asserts this placement model still matches the
 // engine's) the module must expose its functions without running a gate or
-// calling process.exit.
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+// terminating the importing process.
+if (process.argv[1]?.endsWith(`${path.sep}check-layout.mjs`)) main();
 
 export { widthAtTier, isBandAtTier, isBandClass, place, tracksFor,
   orderedChildren, slotsOf, effectiveCols, DEFAULT_SECTION_COLUMNS,

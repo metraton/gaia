@@ -583,10 +583,10 @@ height. The derivation:
 
 1. `rowOccupants(items, tracks)` returns the occupant nodes per row.
 2. `rowTrackList(items, tracks)` walks those rows and emits ONE entry each:
-   `var(--sep-row-h)` when the row has occupants and EVERY one is a horizontal
-   separator (`isThinRowLeaf`), `var(--cell-h)` otherwise. It returns `null` when
-   no row qualifies, so a grid without a separator row gets no inline style at
-   all and stays on the plain fixed-row default.
+   `var(--sep-row-h)` when the row has occupants and EVERY one is a THIN LEAF —
+   a horizontal separator or a `spacer` (`isThinRowLeaf`) — `var(--cell-h)`
+   otherwise. It returns `null` when no row qualifies, so a grid without a thin
+   row gets no inline style at all and stays on the plain fixed-row default.
 3. `applyRowTracks(grid, slots, cols)` emits that list once PER COLLAPSE TIER —
    `--row-tracks` (authored `cols`), `--row-tracks-2`, `--row-tracks-1` — skipping
    any tier that would widen the grid. The CSS consumes them as
@@ -597,10 +597,20 @@ height. The derivation:
    that shares its row with boxes at the authored width but ends up alone at 2
    tracks is thin only in that tier's list.
 
+A `spacer` counts as thin, for the ROW's reason and not the spacer's. A row
+composed only of rules and DECLARED holes carries nothing of cell height — it is
+a one-line row — and a declared hole inside it is the absence of a RULE, not the
+absence of a BOX. A rule that spans 3 of 4 tracks needs the fourth declared (the
+rectangle must close), and charging that declared cell a full `--cell-h` would
+let the track the rule chose NOT to reach set the height of the rule's own row.
+A spacer beside ORDINARY cells changes nothing: `every` still fails on those
+cells, so that row keeps `--cell-h`.
+
 Two exclusions are deliberate. A **VERTICAL** separator is never thin — its ink
 IS the row height, so thinning its row would shorten the drawing rather than fit
-it. And a row with NO occupant at all (an interior hole) keeps `--cell-h`: a hole
-is not a thin row, and `RECT`/`HOLE` own that defect.
+it. And a row with NO occupant at all (an UNdeclared interior hole) keeps
+`--cell-h`: an empty track is not a thin row, only a hole someone declared is,
+and `RECT`/`HOLE` own that defect.
 
 ### Half-slot pairing
 
