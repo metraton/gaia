@@ -92,6 +92,26 @@ def _seed_brief_with_plan_task_ac_ms(db_path: Path, brief_name: str = "test-brie
         con.close()
 
 
+def _approve_the_task_gate(db_path: Path, brief_name: str = "test-brief") -> None:
+    """Record an approving gate verdict for the seeded task.
+
+    Closing a task is conditioned on its gates: a task with zero gates carries
+    no approving verdict, so a bare close is refused
+    (``gaia.state.task_closure_condition``). The lifecycle tests below are about
+    the TRANSITION, not about that condition, so they establish the evidence
+    that makes the close legitimate rather than overriding it -- what they
+    assert stays a legal ``pending -> done``, never a free close.
+    """
+    from gaia.store.writer import add_gate_to_task
+
+    add_gate_to_task(
+        "me", brief_name, 1, "command",
+        evidence_shape="run: true | expect: exit 0",
+        status="pass",
+        db_path=db_path,
+    )
+
+
 # ---------------------------------------------------------------------------
 # set_task_status
 # ---------------------------------------------------------------------------
@@ -100,6 +120,7 @@ class TestSetTaskStatus:
 
     def test_normal_transition_pending_to_done(self, tmp_db):
         _seed_brief_with_plan_task_ac_ms(tmp_db)
+        _approve_the_task_gate(tmp_db)
         from gaia.store.writer import set_task_status
         result = set_task_status("me", "test-brief", 1, "done", db_path=tmp_db)
         assert result["action"] == "updated"
@@ -118,8 +139,11 @@ class TestSetTaskStatus:
 
     def test_illegal_transition_raises(self, tmp_db):
         _seed_brief_with_plan_task_ac_ms(tmp_db)
+        _approve_the_task_gate(tmp_db)
         from gaia.store.writer import set_task_status
-        # Mark done, then try to transition done -> skipped (illegal; done can only go to pending)
+        # Reach 'done' on the evidence of an approving verdict, so the only move
+        # this test refuses is the ILLEGAL one out of it: done -> skipped (done
+        # reopens only to pending).
         set_task_status("me", "test-brief", 1, "done", db_path=tmp_db)
         with pytest.raises(ValueError, match="illegal task lifecycle transition"):
             set_task_status("me", "test-brief", 1, "skipped", db_path=tmp_db)

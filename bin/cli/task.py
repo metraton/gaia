@@ -6,7 +6,7 @@ Architecture: Opción B (DB canónica). All mutating operations write only to
 
 Subcommands:
     gaia task set-status <brief> <task_id> <status>  Transition task status
-                         [--workspace W] [--json]
+                         [--override --reason="..."] [--workspace W] [--json]
     gaia task add <brief> --order=N --goal="..."      Add a task to a plan
                   [--workspace W] [--json]
     gaia task list <brief>                            List a plan's tasks (read-only)
@@ -70,23 +70,51 @@ def _err(msg: str, as_json: bool = False) -> int:
 # Subcommand handlers
 # ---------------------------------------------------------------------------
 
+# The two override flags are required to travel together, and each half of that
+# pairing is refused for its own reason. `--override` without a reason would be
+# an unaccountable close, which the channel exists to prevent. `--reason`
+# without `--override` is the more insidious half: the writer's API carries a
+# single ``override_reason``, so a reason with no flag to arm it would be
+# dropped, leaving the operator believing they had recorded a justification.
+_REASON_WITHOUT_OVERRIDE_MESSAGE = (
+    "--reason states why a task is being closed against its gates, which is an "
+    "override: pass --override alongside it. Without that flag the reason would "
+    "not be recorded anywhere."
+)
+
+
 def _cmd_set_status(args) -> int:
     from gaia.store.writer import set_task_status
     from gaia.state.permissions import StateTransitionForbidden
+    from gaia.state.task_closure_event import normalize_reason
 
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     brief_name = args.brief
     task_id = args.task_id
     new_status = args.status
     as_json = getattr(args, "json", False)
+    override = bool(getattr(args, "override", False))
+    reason = getattr(args, "reason", None)
 
     try:
         task_id_int = int(task_id)
     except (ValueError, TypeError):
         return _err(f"task_id must be an integer, got {task_id!r}", as_json=as_json)
 
+    if override:
+        # The one validator, reused: `normalize_reason` owns what counts as a
+        # stated reason, so `--override` with nothing behind it fails here with
+        # the same message a direct caller of the writer would see.
+        try:
+            normalize_reason(reason)
+        except ValueError as exc:
+            return _err(str(exc), as_json=as_json)
+    elif reason is not None:
+        return _err(_REASON_WITHOUT_OVERRIDE_MESSAGE, as_json=as_json)
+
     try:
         res = set_task_status(workspace, brief_name, task_id_int, new_status,
+                              override_reason=reason if override else None,
                               db_path=None)
     except StateTransitionForbidden as exc:
         return _err(f"forbidden: {exc}", as_json=as_json)
@@ -326,7 +354,46 @@ def _cmd_gate_set_status(args) -> int:
     else:
         print(f"Gate id={args.gate_id} on task order_num={args.order_num} "
               f"in '{args.brief}': {res['old_status']} -> {res['new_status']}")
+        _print_derived_closure(res, args)
     return 0
+
+
+def _print_derived_closure(res: dict, args) -> None:
+    """Report what the recorded verdict implied for the task itself.
+
+    The operator asked to record a gate verdict and may get a task transition
+    they did not type; an unannounced status change is the one outcome of the
+    automatism that would read as the substrate moving on its own. The inaction
+    branch is reported too, but only its reason -- silence there would leave
+    "why did this verdict not close the task?" answerable only by re-deriving it
+    by hand.
+
+    A failed derivation is printed on stderr and does NOT change the exit code:
+    the verdict the operator asked for IS recorded, and a non-zero exit would
+    invite them to re-issue a write that already landed.
+    """
+    from gaia.store.writer import (
+        DERIVED_CLOSURE_ERROR_ACTION,
+        DERIVED_CLOSURE_RESULT_KEY,
+    )
+
+    derived = res.get(DERIVED_CLOSURE_RESULT_KEY) or {}
+    action = derived.get("action")
+    task = f"task order_num={args.order_num} in '{args.brief}'"
+
+    if action == DERIVED_CLOSURE_ERROR_ACTION:
+        print(
+            f"  WARNING: the gate verdict IS recorded, but the derived "
+            f"{derived.get('intended_action')} of {task} failed: "
+            f"{derived.get('error')}",
+            file=sys.stderr,
+        )
+    elif action in ("close", "reopen"):
+        print(f"  Derived {action}: {task} "
+              f"{derived.get('old_status')} -> {derived.get('new_status')} "
+              f"-- {derived.get('why')}")
+    elif derived.get("why"):
+        print(f"  No derived transition: {derived['why']}")
 
 
 def _cmd_gate(args) -> int:
@@ -367,11 +434,19 @@ def register(subparsers) -> None:
     setstatus_p = actions.add_parser(
         "set-status",
         help="Transition a task's status",
-        description="Validate and apply a task status transition.",
+        description=(
+            "Validate and apply a task status transition. Closing a task "
+            "('done') requires either an approving gate verdict or an explicit "
+            "--override with a --reason, which is recorded as an auditable "
+            "event. 'skipped' and reopening to 'pending' carry no gate "
+            "condition."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia task set-status my-brief 1 done\n"
+            "  gaia task set-status my-brief 1 done --override "
+            "--reason='the gate runner is offline'\n"
             "  gaia task set-status my-brief 2 skipped --json\n"
         ),
     )
@@ -382,6 +457,15 @@ def register(subparsers) -> None:
         "status",
         choices=("pending", "done", "skipped"),
         help="Target status.",
+    )
+    setstatus_p.add_argument(
+        "--override", action="store_true", default=False,
+        help=("Close the task despite gates that have not passed. Requires "
+              "--reason and leaves an auditable event."),
+    )
+    setstatus_p.add_argument(
+        "--reason", default=None, metavar="TEXT",
+        help="Why the task is being closed against its gates (needs --override).",
     )
     setstatus_p.add_argument("--workspace", default=None, metavar="W")
     setstatus_p.add_argument("--json", action="store_true", default=False,

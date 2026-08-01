@@ -406,19 +406,31 @@ def test_read_seam_writes_nothing_to_the_substrate(tmp_db):
     _seed_task(tmp_db)
     gate = add_gate_to_task("me", _BRIEF, 1, "command",
                             evidence_shape="pytest -q", db_path=tmp_db)
-    set_gate_status("me", _BRIEF, 1, gate["gate_id"], "pass", db_path=tmp_db)
+    recorded = set_gate_status("me", _BRIEF, 1, gate["gate_id"], "pass",
+                               db_path=tmp_db)
 
     before = _snapshot(tmp_db)
     verdict = read_task_gate_verdict("me", _BRIEF, 1, db_path=tmp_db)
     after = _snapshot(tmp_db)
 
-    # An approving verdict is the case where a write would be tempting: the
-    # primitive derives it and still leaves the task pending and the gate as it
-    # found it. Closing is someone else's decision, at another seam.
+    # An approving verdict is the case where a write would be tempting, and the
+    # primitive still declines it: deriving the verdict leaves the substrate
+    # exactly as it found it, which is what before == after asserts.
+    #
+    # Closing IS someone else's decision, and that someone now exists -- it is
+    # the seam that PERSISTS the verdict. set_gate_status above already carried
+    # the task from 'pending' to 'done' by derivation, before this read ran. So
+    # the task reads 'done' below not because the primitive wrote anything, but
+    # because recording the verdict did, and the snapshot pair is what tells
+    # those two apart.
     assert verdict.approving is True
     assert before == after
+    derived = recorded["derived_closure"]
+    assert derived["action"] == "close"
+    assert derived["old_status"] == "pending"
+    assert derived["new_status"] == "done"
     assert dict(zip(("id", "plan_id", "order_num", "status"),
-                    after["tasks"][0]))["status"] == "pending"
+                    after["tasks"][0]))["status"] == "done"
 
 
 def test_read_seam_never_reaches_a_writer_entry_point(tmp_db, monkeypatch):

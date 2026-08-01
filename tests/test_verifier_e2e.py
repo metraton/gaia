@@ -320,8 +320,20 @@ def test_verifier_e2e_rework_returns_done_task_to_pending(tmp_db):
         db_path=tmp_db,
     )
 
-    # Simulate a prior cycle that had already closed the task.
-    set_task_status("me", brief, 1, "done", db_path=tmp_db)
+    # Simulate a prior cycle that had already closed the task. The gates just
+    # added are still pending, so this close is an override and says so: it is a
+    # fixture standing in for a closure that happened before this test began,
+    # not a claim that these gates approved anything. The rework path under test
+    # starts from a 'done' row; how that row got there is not its subject.
+    set_task_status(
+        "me", brief, 1, "done",
+        override_reason=(
+            "rework fixture: simulating a PRIOR verification cycle that had "
+            "already closed this task, so the reopen path has a 'done' row to "
+            "return to pending; the gates of this cycle have not been run yet"
+        ),
+        db_path=tmp_db,
+    )
     assert _task_status(tmp_db, brief, 1) == "done"
 
     all_pass = _run_verifier_flow(

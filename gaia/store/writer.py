@@ -3544,6 +3544,7 @@ def set_task_status(
     task_id: int,
     new_status: str,
     *,
+    override_reason: object | None = None,
     db_path: Path | None = None,
 ) -> dict:
     """Transition a task's ``status`` after validating the move is legal.
@@ -3551,14 +3552,79 @@ def set_task_status(
     Navigates workspace -> brief_name -> brief_id -> plan_id -> task row
     by ``(plan_id, order_num)`` where ``task_id`` is the order_num integer.
 
+    CLOSING A TASK IS CONDITIONED; the other transitions are not. A move to
+    ``'done'`` is permitted only when the task's persisted gates amount to an
+    approving verdict OR the caller states why it is being closed anyway -- the
+    disjunction owned by ``gaia.state.task_closure_condition``. A move to
+    ``'skipped'``, and the reopen to ``'pending'``, carry no gate condition
+    (``UNCONDITIONED_STATUSES``); neither asserts that the work was verified.
+
+    A PRODUCER MAY NOT CLOSE ITS OWN TASK, AND NO OVERRIDE LIFTS THAT. Above the
+    disjunction sits an identity refusal: when a handoff row binds an agent to
+    this task by ``plan_task_id`` and the caller carries that agent's name, the
+    close is refused with or without an override
+    (``gaia.state.task_closure_identity``). When NOTHING names a producer, the
+    absence grants nothing -- the disjunction above decides exactly as it
+    otherwise would, so a close with no approving verdict still needs the same
+    override and no second path exists to reach one. Only ``'done'`` is guarded;
+    a producer marking its own task ``'skipped'`` or reopening it stays exempt,
+    because neither asserts the work was verified.
+
+    THE CONDITION LIVES HERE, NOT ONLY IN THE CLI. This is the single writer of
+    ``tasks.status``, so a condition placed here holds for every future caller --
+    a hook, a convergence step, a verifier seam -- whereas one placed at the
+    command-line flag holds only for the one path that goes through it.
+
+    AN OVERRIDE'S RECORD PRECEDES ITS MUTATION. When the override carries the
+    close, ``write_task_close_override_event`` is appended BEFORE the UPDATE and
+    is deliberately not wrapped: a failure to record the justification aborts
+    the close rather than completing it silently. The two possible failures are
+    not symmetric -- a record of a close that did not happen is a visible
+    inconsistency, while a close with no record is exactly the silent escape
+    hatch the channel exists to prevent.
+
+    A NO-OP IS NOT A CLOSURE. When the task already holds ``new_status`` the
+    call returns before the condition is consulted: nothing is being closed, so
+    there is neither anything to justify nor anything to record. That keeps a
+    re-issued close idempotent instead of demanding a fresh override for a
+    transition that will not happen.
+
+    Args:
+        workspace:       Workspace owning the brief.
+        brief_name:      Brief whose plan holds the task.
+        task_id:         The task's ``order_num`` within that plan.
+        new_status:      Target status (``VALID_TASK_STATUSES``).
+        override_reason: WHY this task is being closed without an approving gate
+                         verdict. ``None`` (the default) requests no override.
+                         Anything else is a request and must state something.
+        db_path:         Optional explicit DB path (used by tests).
+
     Returns a dict with keys: status, action, brief_name, entity_id,
     old_status, new_status, updated_at.
 
-    Raises ValueError on illegal transition or missing entity.
+    Raises:
+        ValueError: on illegal transition, missing entity, an override reason
+            that states nothing, or an override stated for a transition that is
+            not a closure.
+        TaskClosureBlocked: (a ``ValueError``) when a close is backed by neither
+            an approving verdict nor a stated reason, or when the caller is the
+            agent the task was dispatched to.
     """
     from gaia.state.permissions import _assert_dispatch_can_advance_state
     _assert_dispatch_can_advance_state("tasks")
     from gaia.state import VALID_TASK_STATUSES
+    from gaia.state.task_closure import derive_gate_verdict
+    from gaia.state.task_closure_condition import (
+        TaskClosureBlocked,
+        closure_is_conditioned,
+        override_not_applicable_message,
+    )
+    from gaia.state.task_closure_event import normalize_reason, resolve_actor
+    from gaia.state.task_closure_identity import (
+        classify_producer_standing,
+        decide_closure_under_identity,
+        producer_agent_names,
+    )
     from gaia.state.transitions import assert_legal_task_lifecycle
 
     if new_status not in VALID_TASK_STATUSES:
@@ -3566,6 +3632,14 @@ def set_task_status(
             f"invalid task status {new_status!r}; must be one of "
             f"{list(VALID_TASK_STATUSES)}"
         )
+
+    # An override is an argument about closing, so its shape is checked here,
+    # ahead of any DB work: it is rejected identically whatever the row turns
+    # out to hold, including when the transition would have been a no-op.
+    if override_reason is not None:
+        override_reason = normalize_reason(override_reason)
+        if not closure_is_conditioned(new_status):
+            raise ValueError(override_not_applicable_message(new_status))
 
     con = _connect(db_path)
     try:
@@ -3607,6 +3681,46 @@ def set_task_status(
             }
 
         assert_legal_task_lifecycle(old_status, new_status)
+
+        if closure_is_conditioned(new_status):
+            # The two impure reads the condition needs, both performed here
+            # rather than inside the predicate: WHO is asking (the one identity
+            # coordinate a CLI invocation carries -- an agent NAME, resolved by
+            # the same resolver the audit record uses, so a human caller is a
+            # known identity and not a blank), and WHO the task was dispatched
+            # to. Everything downstream of these two values is pure.
+            caller_agent = resolve_actor(os.environ.get("GAIA_DISPATCH_AGENT"))
+            decision = decide_closure_under_identity(
+                verdict=derive_gate_verdict(
+                    _read_task_gate_rows(con, task_row["id"])
+                ),
+                brief_name=brief_name,
+                task_order_num=task_id,
+                standing=classify_producer_standing(
+                    caller_agent=caller_agent,
+                    producer_agents=producer_agent_names(
+                        _read_task_binding_rows(con, task_row["id"])
+                    ),
+                ),
+                caller_agent=caller_agent,
+                override_reason=override_reason,
+            )
+            if not decision.permitted:
+                raise TaskClosureBlocked(decision.denial_message)
+            if decision.override_used:
+                write_task_close_override_event(
+                    workspace,
+                    brief_name,
+                    task_order_num=task_id,
+                    reason=decision.reason,
+                    task_id=task_row["id"],
+                    details={
+                        "gate_count": decision.verdict.gate_count,
+                        "gate_status_counts": dict(decision.verdict.status_counts),
+                        "verdict_reasons": list(decision.verdict.reasons),
+                    },
+                    db_path=db_path,
+                )
 
         now = _now_iso()
         con.execute(
@@ -4175,6 +4289,55 @@ def add_gate_to_task(
         con.close()
 
 
+def _read_task_binding_rows(con: sqlite3.Connection, task_id: int) -> list[dict]:
+    """Return the handoff rows bound to one plan task, on an OPEN connection.
+
+    The counterpart of :func:`_read_task_gate_rows` for the identity axis of the
+    closure condition: every ``agent_contract_handoffs`` row that references this
+    ``tasks.id`` through ``plan_task_id``, which is the only column that ties an
+    agent to a task it was dispatched to execute.
+
+    Deliberately UNFILTERED by ``agent_state`` or ``kind``. A row born at
+    dispatch, a row that later converged to a terminal verdict, and a row written
+    by some future path all name an actor, and treating each of them as naming a
+    producer is the fail-closed direction: a new writer of the binding widens the
+    refusal instead of slipping past it. Which of those actors is a COMPARABLE
+    name is not decided here -- that is
+    ``gaia.state.task_closure_identity.producer_agent_names``, so the impure read
+    stays a read.
+
+    Takes the connection rather than a path so the closure condition can ask
+    mid-transaction without opening a second one.
+    """
+    rows = con.execute(
+        "SELECT id, agent_id, plan_task_id, kind, agent_state "
+        "FROM agent_contract_handoffs WHERE plan_task_id = ? ORDER BY id",
+        (task_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _read_task_gate_rows(con: sqlite3.Connection, task_id: int) -> list[dict]:
+    """Return one task's gate rows on an ALREADY OPEN connection.
+
+    The single SELECT behind every gate read, so ``list_task_gates`` and the
+    closure condition inside ``set_task_status`` see the identical row shape --
+    which is what lets ``gaia.state.task_closure.derive_gate_verdict`` consume
+    either without a translation step. ``task_id`` is the persisted
+    ``tasks.id``, not an ``order_num``.
+
+    Takes the connection rather than a path so a caller mid-transaction can ask
+    without opening a second one.
+    """
+    rows = con.execute(
+        "SELECT id, task_id, verification_type, evidence_type, "
+        "       evidence_shape, artifact_path, status "
+        "FROM task_gates WHERE task_id = ? ORDER BY id",
+        (task_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def list_task_gates(
     workspace: str,
     brief_name: str,
@@ -4192,13 +4355,7 @@ def list_task_gates(
         task_id = _resolve_task_id_by_order(
             con, workspace, brief_name, task_order_num
         )
-        rows = con.execute(
-            "SELECT id, task_id, verification_type, evidence_type, "
-            "       evidence_shape, artifact_path, status "
-            "FROM task_gates WHERE task_id = ? ORDER BY id",
-            (task_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        return _read_task_gate_rows(con, task_id)
     finally:
         con.close()
 
@@ -4237,6 +4394,86 @@ def read_task_gate_verdict(
         workspace, brief_name, task_order_num, db_path=db_path
     )
     return derive_gate_verdict(gates)
+
+
+def write_task_close_override_event(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    *,
+    reason: str,
+    actor: str | None = None,
+    task_id: int | None = None,
+    details: Mapping[str, Any] | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Append the auditable record of a manual task-close override.
+
+    The impure half of ``gaia.state.task_closure_event``, which owns the record's
+    shape and the reasoning behind it: append-only into ``harness_events``, graded
+    above ``info`` so ``gaia defects`` surfaces it, actor in the ``agent`` column
+    so it is filterable.
+
+    Three properties of this seam are worth stating because a caller could
+    reasonably assume the opposite of each:
+
+    NOT A SECOND WRITER OF ``tasks.status``. It appends one row to a different
+    table and touches no state machine, which is why it does not call
+    ``_assert_dispatch_can_advance_state``: there is no transition to authorize.
+    Whoever closes the task still goes through ``set_task_status``, the single
+    writer.
+
+    NOT BEST-EFFORT. The hook pipeline wraps ``write_harness_event`` in
+    ``try/except: pass`` because telemetry must never break a hook. This record is
+    not telemetry -- it is the stated justification for a state change -- so a
+    failure to write it must surface. Exceptions propagate; do not swallow them at
+    the call site.
+
+    NO TASK LOOKUP. ``brief_name`` and ``task_order_num`` are recorded as given
+    and ``task_id`` is whatever the caller already resolved. ``harness_events``
+    holds no foreign key to ``tasks`` by design, and making the append depend on a
+    resolution would let a lookup failure suppress the record of a mutation that
+    already happened.
+
+    Args:
+        workspace:      Workspace the record is attributed to -> ``workspace``
+                        column, which is how ``gaia defects --workspace=W`` finds
+                        it.
+        brief_name:     Brief owning the task's plan.
+        task_order_num: The task's ``order_num`` within that plan.
+        reason:         WHY the task is closed without an approving verdict.
+        actor:          Explicit actor. When ``None`` (the default) the dispatch
+                        identity is read from ``GAIA_DISPATCH_AGENT`` -- the one
+                        environment read in this channel, and the only identity
+                        coordinate a CLI invocation carries.
+        task_id:        Persisted ``tasks.id``, when the caller has it.
+        details:        Optional structured context, nested in the payload so it
+                        cannot shadow the actor or the reason.
+        db_path:        Optional explicit DB path (used by tests).
+
+    Returns:
+        Integer primary key of the appended ``harness_events`` row.
+
+    Raises:
+        ValueError: when ``reason`` states nothing (see
+            ``task_closure_event.MISSING_REASON_MESSAGE``).
+    """
+    from gaia.state.task_closure_event import build_override_event
+
+    actor_source = actor if actor is not None else os.environ.get("GAIA_DISPATCH_AGENT")
+    event = build_override_event(
+        brief_name=brief_name,
+        task_order_num=task_order_num,
+        reason=reason,
+        actor=actor_source,
+        task_id=task_id,
+        details=details,
+    )
+    return write_harness_event(
+        workspace=workspace,
+        db_path=db_path,
+        **event.as_write_kwargs(),
+    )
 
 
 def remove_gate_from_task(
@@ -4282,6 +4519,146 @@ def remove_gate_from_task(
         con.close()
 
 
+# Key under which :func:`set_gate_status` reports what the recorded verdict
+# implied for the task itself. Always present, so a caller distinguishes "the
+# derivation ran and did nothing" from "the derivation did not run" without
+# testing for a missing key.
+DERIVED_CLOSURE_RESULT_KEY = "derived_closure"
+
+# Reported in place of the decided action when the derived transition itself
+# failed. Not a member of ``DerivedClosureAction``: the derivation reached a
+# decision, and what failed is the write that followed it.
+DERIVED_CLOSURE_ERROR_ACTION = "error"
+
+
+def _read_task_status(con: sqlite3.Connection, task_id: int) -> str | None:
+    """Return one task's current ``status`` on an ALREADY OPEN connection.
+
+    Companion to :func:`_read_task_gate_rows` and
+    :func:`_read_task_binding_rows`: the third impure input the derived-closure
+    decision needs, read the same way and for the same reason -- so a caller
+    mid-transaction can ask without opening a second connection. ``task_id`` is
+    the persisted ``tasks.id``, not an ``order_num``. None means no such row.
+    """
+    row = con.execute(
+        "SELECT status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return row["status"] or "pending"
+
+
+def _apply_derived_task_closure(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    *,
+    gate_rows: list[dict],
+    binding_rows: list[dict],
+    task_status: str | None,
+    db_path: Path | None,
+) -> dict:
+    """Perform whatever a freshly recorded gate verdict implies for the task.
+
+    The impure half of ``gaia.state.task_closure_derivation``: it resolves the
+    caller's dispatch identity, hands the pure decision its three inputs, and --
+    when an act follows -- performs it through :func:`set_task_status`.
+
+    THROUGH THE SINGLE WRITER, WITH NO PRIVILEGE. The transition goes through the
+    same function and therefore the same guard a manual close goes through; no
+    override travels with it. A derived close satisfies that guard the way it is
+    meant to be satisfied -- by evidence -- because the only cell that produces
+    one is the cell where every gate passed, which is the condition's first
+    disjunct. A derived reopen is exempt from the condition for the same reason a
+    manual reopen is: it withdraws an assertion rather than making one.
+
+    BEST EFFORT, AND REPORTED RATHER THAN RAISED. By the time this runs the gate
+    verdict is committed, and the verdict is what the caller asked to record. So
+    a failure is returned in the result (action ``DERIVED_CLOSURE_ERROR_ACTION``,
+    with the exception text) instead of propagating: raising here would report a
+    recorded verdict as a failed command and invite the operator to re-issue a
+    write that already landed. Nothing is lost by not raising -- the evidence is
+    on the gates, so the task remains closable by its own approving verdict at
+    any later moment.
+
+    THE GUARANTEE IS ABOUT THE MOMENT, NOT ABOUT ONE STATEMENT, so the guard
+    spans the WHOLE body: the deferred imports, the identity resolution, the pure
+    decision, and the transition alike. Everything here runs after a commit the
+    caller already owns, and the reason none of it may propagate is that
+    position -- not which of the steps happens to be fallible today. Guarding
+    only the write would leave the promise wider than the protection: the pure
+    half documents "never raises" and an ``ImportError`` needs no impurity at
+    all, so a reader trusting the docstring would be trusting coverage the
+    ``try`` did not give. ``outcome`` is therefore built incrementally and starts
+    at the error action, so a failure at any point still returns the key set the
+    success path returns.
+
+    Note the deliberate asymmetry with ``write_task_close_override_event``, which
+    is NOT best-effort and precedes its mutation: that record is the
+    JUSTIFICATION for a state change and must not be missing from one that
+    happened. This is a CONSEQUENCE of a state change that already happened, and
+    a missing consequence leaves the substrate consistent, merely un-advanced.
+    """
+    outcome: dict = {
+        "action": DERIVED_CLOSURE_ERROR_ACTION,
+        "why": "the derivation did not reach a decision",
+        "gate_count": None,
+        "verdict_approving": None,
+    }
+
+    try:
+        from gaia.state.task_closure import derive_gate_verdict
+        from gaia.state.task_closure_derivation import decide_derived_closure
+        from gaia.state.task_closure_event import resolve_actor
+        from gaia.state.task_closure_identity import (
+            classify_producer_standing,
+            producer_agent_names,
+        )
+
+        caller_agent = resolve_actor(os.environ.get("GAIA_DISPATCH_AGENT"))
+        verdict = derive_gate_verdict(gate_rows)
+        outcome["gate_count"] = verdict.gate_count
+        outcome["verdict_approving"] = verdict.approving
+
+        decision = decide_derived_closure(
+            verdict=verdict,
+            task_status=task_status,
+            standing=classify_producer_standing(
+                caller_agent=caller_agent,
+                producer_agents=producer_agent_names(binding_rows),
+            ),
+        )
+        outcome["action"] = decision.action.value
+        outcome["why"] = decision.why
+        if decision.target_status is None:
+            return outcome
+
+        transition = set_task_status(
+            workspace,
+            brief_name,
+            task_order_num,
+            decision.target_status,
+            db_path=db_path,
+        )
+    except Exception as exc:
+        # Whatever the derivation had already decided is what it intended; a
+        # failure landing before any decision has only the derivation itself to
+        # name, and says so rather than reporting an intent it never formed.
+        decided = outcome["action"]
+        outcome["intended_action"] = (
+            "derivation" if decided == DERIVED_CLOSURE_ERROR_ACTION else decided
+        )
+        outcome["action"] = DERIVED_CLOSURE_ERROR_ACTION
+        outcome["error"] = f"{type(exc).__name__}: {exc}"
+        return outcome
+
+    outcome["task_action"] = transition.get("action")
+    outcome["old_status"] = transition.get("old_status")
+    outcome["new_status"] = transition.get("new_status")
+    return outcome
+
+
 def set_gate_status(
     workspace: str,
     brief_name: str,
@@ -4292,7 +4669,7 @@ def set_gate_status(
     db_path: Path | None = None,
 ) -> dict:
     """Set the ``status`` of the task_gates row ``gate_id`` on the task at
-    ``task_order_num``.
+    ``task_order_num``, then apply whatever that verdict implies for the task.
 
     Write surface for `gaia task gate set-status` (harness B3/T3): the ONLY
     way, prior to this, to move task_gates.status off its INSERT-time value
@@ -4302,8 +4679,32 @@ def set_gate_status(
     ValueError ahead of the DB CHECK the column also carries as of v36 (see
     gaia.state.VALID_GATE_STATUSES docstring).
 
+    THE VERDICT CARRIES THE TASK WITH IT. Once the gate row is committed, the
+    task's own status either still follows from its gates or no longer does, and
+    :func:`_apply_derived_task_closure` applies the difference: a pending task
+    whose every gate now passes is closed with no manual step, and a closed task
+    whose gates no longer all pass is reopened. Both go through
+    :func:`set_task_status`, the single writer, with the same guard in front of
+    them -- there is no second writer and no privileged path. What was decided
+    is reported under :data:`DERIVED_CLOSURE_RESULT_KEY`, always present, so the
+    caller can say what happened to the task as well as to the gate.
+
+    THIS SEAM CARRIES THE TASK'S IDENTITY IN ITS OWN ARGUMENTS, which is why the
+    derivation hangs here rather than off the verifier's own turn-closing step:
+    the task is named by ``brief_name`` + ``task_order_num`` before any lookup,
+    and the sibling gates are readable on the connection already open.
+
+    WHY THE DERIVATION IS PLACED AFTER THE COMMIT. The verdict is what the caller
+    asked to record, and it must survive whatever the derivation does or fails to
+    do. The gate write commits first and the derivation runs against a closed
+    transaction, so no outcome of it can roll back, alter, or withhold the verdict
+    that has already landed.
+
     Raises ValueError on missing brief/plan/task, when ``gate_id`` does not
-    belong to that task, or when ``status`` is out of vocabulary.
+    belong to that task, or when ``status`` is out of vocabulary. A failure of
+    the derivation -- anywhere in it, from resolving who is calling to the
+    transition it implies -- does NOT raise, it is reported under
+    :data:`DERIVED_CLOSURE_RESULT_KEY`; see :func:`_apply_derived_task_closure`.
     """
     from gaia.state.permissions import _assert_dispatch_can_advance_state
     _assert_dispatch_can_advance_state("tasks")
@@ -4330,7 +4731,8 @@ def set_gate_status(
             (status, gate_id, task_id),
         )
         con.commit()
-        return {
+
+        result = {
             "status": "applied",
             "action": "status_updated",
             "brief_name": brief_name,
@@ -4339,8 +4741,25 @@ def set_gate_status(
             "old_status": old_status,
             "new_status": status,
         }
+        # Read the derivation's three inputs while the connection is open, so the
+        # transition below opens the only other one -- rather than nesting a
+        # writer's connection inside this function's still-open read.
+        gate_rows = _read_task_gate_rows(con, task_id)
+        binding_rows = _read_task_binding_rows(con, task_id)
+        task_status = _read_task_status(con, task_id)
     finally:
         con.close()
+
+    result[DERIVED_CLOSURE_RESULT_KEY] = _apply_derived_task_closure(
+        workspace,
+        brief_name,
+        task_order_num,
+        gate_rows=gate_rows,
+        binding_rows=binding_rows,
+        task_status=task_status,
+        db_path=db_path,
+    )
+    return result
 
 
 # ---------------------------------------------------------------------------

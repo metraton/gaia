@@ -34,7 +34,16 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 def _seed_tasks(tmp_db: Path, brief: str = "list-brief") -> None:
-    """Seed brief -> plan -> three tasks with mixed statuses."""
+    """Seed brief -> plan -> three tasks with mixed statuses.
+
+    The 'done' row is produced by an explicit override, not by declaring gates.
+    Closing a task is conditioned on an approving gate verdict
+    (``gaia.state.task_closure_condition``), and the subject of this file is the
+    LIST reader -- which never looks at gates. So the fixture states on the
+    record why it is closing the task instead of standing up verification
+    machinery the assertions below do not read. 'skipped' carries no such
+    condition and needs nothing.
+    """
     from gaia.briefs import upsert_brief
     from gaia.store.writer import (
         upsert_plan, add_task_to_plan, set_task_status,
@@ -45,7 +54,14 @@ def _seed_tasks(tmp_db: Path, brief: str = "list-brief") -> None:
     add_task_to_plan("me", brief, 1, "pending task AC-1", db_path=tmp_db)
     add_task_to_plan("me", brief, 2, "done task AC-2", db_path=tmp_db)
     add_task_to_plan("me", brief, 3, "skipped task AC-3", db_path=tmp_db)
-    set_task_status("me", brief, 2, "done", db_path=tmp_db)
+    set_task_status(
+        "me", brief, 2, "done",
+        override_reason=(
+            "listing fixture: a 'done' row is needed so the list reader has one "
+            "to render and filter on; no gate verdict is claimed"
+        ),
+        db_path=tmp_db,
+    )
     set_task_status("me", brief, 3, "skipped", db_path=tmp_db)
 
 
