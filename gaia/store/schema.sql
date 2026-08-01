@@ -1148,6 +1148,18 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
     -- ALTER TABLE ADD COLUMN, which carries no CHECK, so declaring one only
     -- here would make the fresh-install and migrated shapes disagree.
     cut_reason       TEXT,
+    -- v40: the harness's OWN per-run agent id (`agentId` on the Task result,
+    -- `agent_id` on SubagentStart/SubagentStop payloads) -- a DIFFERENT
+    -- identifier space from the CLI-minted agent_id above, independent and
+    -- indistinguishable by shape (both match ^a[0-9a-f]{16,}$). Stamped by
+    -- SubagentStart (gaia.store.writer.stamp_harness_agent_id), the one point
+    -- in the dispatch lifecycle where both identities coexist BEFORE the turn
+    -- can be cut; SubagentStop cannot be the stamping seam because it never
+    -- fires on a harness cut -- the very case this join exists to recover.
+    -- NULLABLE: legacy rows, and any turn whose start never reached the
+    -- stamping seam, carry NULL. No CHECK, mirroring `kind`/`cut_reason`
+    -- (ALTER TABLE ADD COLUMN carries no CHECK on the migrated path).
+    harness_agent_id TEXT,
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note
@@ -1182,6 +1194,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_plan_task ON agent_contra
 -- non-NULL side keeps the index proportional to that minority instead of to the
 -- whole contract history.
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_cut ON agent_contract_handoffs(cut_reason) WHERE cut_reason IS NOT NULL;
+-- v40: PARTIAL index over the stamped population only -- the lookup this
+-- serves is "recover the contract row for the harness agentId the parent
+-- holds", which only ever targets non-NULL values.
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_harness ON agent_contract_handoffs(harness_agent_id) WHERE harness_agent_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- agent_contract_handoff_approvals: approval decisions linked to handoffs (v9/M4)

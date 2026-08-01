@@ -1,0 +1,58 @@
+-- Migration v39 -> v40: harness run id on agent_contract_handoffs.
+--
+-- WHAT CHANGES
+--   One column: agent_contract_handoffs.harness_agent_id (TEXT, nullable).
+--   One partial index: idx_agent_contract_handoffs_harness, over the non-NULL
+--   side.
+--   No backfill: the harness id of a historical turn survives only inside
+--   agent.cut event payloads, where it cannot be joined to a contract row
+--   without guessing across concurrent same-name dispatches -- a wrong stamp
+--   is worse than a NULL, so legacy rows stay NULL.
+--
+-- WHY
+--   A contract row lives in the CLI-minted identifier space (`a`+hex agent_id,
+--   `{agent_id}.{token}` contract_id), while the harness reports its OWN
+--   per-run agent id (`agentId` on the Task result, `agent_id` on
+--   SubagentStart/SubagentStop payloads). The two spaces are independent and
+--   indistinguishable by shape, so when a harness cut ends a turn the only
+--   id the orchestrator holds -- the harness one -- resolved no row, and
+--   recovery meant searching by date and content. This column is the join:
+--   SubagentStart stamps the harness id onto the born row (the one point in
+--   the dispatch lifecycle where both identities coexist BEFORE the turn can
+--   be cut), and recovery becomes
+--
+--       SELECT * FROM agent_contract_handoffs WHERE harness_agent_id = ?;
+--
+--   No CHECK constraint, mirroring `kind` and `cut_reason`: ALTER TABLE ADD
+--   COLUMN carries no CHECK, so declaring one only in schema.sql would leave a
+--   migrated DB and a fresh install with different shapes.
+--
+--   The index is PARTIAL because only rows stamped at SubagentStart carry a
+--   value; indexing the non-NULL side keeps it proportional to the stamped
+--   population rather than to the whole contract history.
+--
+-- IDEMPOTENCY
+--   Both statements are safe to replay, on both paths:
+--
+--   * ADD COLUMN. SQLite has no `ADD COLUMN IF NOT EXISTS`, so idempotency is
+--     supplied by the bootstrap runner's guard (`_filter_add_column_idempotent`
+--     in scripts/bootstrap_database.py): the line is NEUTRALISED (commented
+--     out) when agent_contract_handoffs.harness_agent_id already exists, and
+--     applied otherwise. The same runner's Section 1.5 pre-schema reconcile
+--     parses this same line to add the column to an EXISTING DB before
+--     schema.sql runs, so the CREATE INDEX in schema.sql cannot abort with
+--     "no such column". Both depend on the statement being ONE
+--     `ALTER TABLE ... ADD COLUMN ...` per LINE, which is why it is written
+--     flat below.
+--   * CREATE INDEX IF NOT EXISTS. Idempotent by construction.
+--
+--   ORDERING across the two paths (unchanged from v38 -> v39): bootstrap
+--   applies schema.sql FIRST and only then walks pending migrations. On a
+--   FRESH install the column and index already exist when this file replays
+--   (ADD COLUMN neutralised, CREATE INDEX no-op). On a live v39 DB the
+--   pre-schema reconcile adds the column, schema.sql creates the index, and
+--   this file finds both present. Both paths converge on the same shape.
+
+ALTER TABLE agent_contract_handoffs ADD COLUMN harness_agent_id TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_harness ON agent_contract_handoffs(harness_agent_id) WHERE harness_agent_id IS NOT NULL;

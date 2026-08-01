@@ -7246,6 +7246,86 @@ def mirror_partial_contract_handoff(
     return _retry_on_locked(_work)
 
 
+def stamp_harness_agent_id(
+    contract_id: "str | None",
+    harness_agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Record the harness's own per-run agent id on the turn's contract row.
+
+    The row lives in the CLI-minted identifier space; the harness reports a
+    DIFFERENT id for the same run (``agentId`` on the Task result, ``agent_id``
+    on SubagentStart/SubagentStop payloads), and nothing joined the two. This
+    stamp is that join, and its call site is deliberately SubagentStart: the
+    one point in the dispatch lifecycle where the caller holds both identities
+    BEFORE the turn can be cut. SubagentStop cannot be the stamping seam --
+    it never fires on a harness cut, which is exactly the turn this join
+    exists to recover (``SELECT ... WHERE harness_agent_id = ?`` instead of
+    searching by date and content).
+
+    Only ``harness_agent_id`` is written: the verdict, the binding, the birth
+    ``created_at``, ``cut_reason`` and ``raw_handoff_json`` all stay exactly
+    as they are. A terminal row is refused, restating the writer-wide
+    invariant that a final verdict is never edited in place; at the stamping
+    seam the row is still 'DISPATCHED', so the refusal only guards the odd
+    late caller.
+
+    Returns:
+        ``{"status": "applied", "handoff_id": int, "contract_id": str}`` when
+        the stamp landed; ``{"status": "skipped", "reason": ...}`` otherwise
+        (``no_contract_id`` / ``no_harness_agent_id`` / ``no_row`` /
+        ``terminal``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+    if not harness_agent_id:
+        return {"status": "skipped", "reason": "no_harness_agent_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                from gaia.state import TERMINAL_PLAN_STATUSES
+
+                placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
+                cur = con.execute(
+                    f"""
+                    UPDATE agent_contract_handoffs
+                       SET harness_agent_id = ?
+                     WHERE contract_id = ?
+                       AND agent_state NOT IN ({placeholders})
+                    RETURNING id
+                    """,
+                    (str(harness_agent_id), contract_id, *TERMINAL_PLAN_STATUSES),
+                )
+                returned = cur.fetchone()
+                con.commit()
+                if returned is None:
+                    exists = con.execute(
+                        "SELECT 1 FROM agent_contract_handoffs "
+                        "WHERE contract_id = ? LIMIT 1",
+                        (contract_id,),
+                    ).fetchone()
+                    reason = "terminal" if exists is not None else "no_row"
+                    return {"status": "skipped", "reason": reason}
+                return {
+                    "status": "applied",
+                    "handoff_id": returned["id"],
+                    "contract_id": contract_id,
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
 def dispatch_row_for_identity(
     session_id: "str | None",
     agent_id: "str | None",
@@ -7458,6 +7538,7 @@ def list_agent_contract_handoffs(
     brief_id: int | None = None,
     agent_state: str | None = None,
     contract_id: str | None = None,
+    harness_agent_id: str | None = None,
     limit: int = 100,
     db_path: "Path | None" = None,
 ) -> list[dict]:
@@ -7471,6 +7552,10 @@ def list_agent_contract_handoffs(
         agent_state: Filter by resolved agent_state (turn status).
         contract_id: Filter by the T7 idempotency key (the CLI-minted
             draft/contract id) -- see finalize_agent_contract_handoff.
+        harness_agent_id: Filter by the harness's per-run agent id (v40,
+            stamped at SubagentStart -- see stamp_harness_agent_id). This is
+            the recovery coordinate for a cut turn: the parent's Task result
+            carries this id even when the subagent never finalized.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
@@ -7501,6 +7586,9 @@ def list_agent_contract_handoffs(
         if contract_id is not None:
             clauses.append("contract_id = ?")
             params.append(contract_id)
+        if harness_agent_id is not None:
+            clauses.append("harness_agent_id = ?")
+            params.append(harness_agent_id)
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)

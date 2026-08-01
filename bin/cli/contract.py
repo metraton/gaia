@@ -16,6 +16,7 @@ Subcommands (the 6 verbs + the ``fill --json`` batch mode):
     set      FIELD VALUE          [--draft-id ID]  Set a scalar field (dotted path)
     add      FIELD VALUE          [--draft-id ID]  Append a value to a list field
     view     [--field DOTTED_PATH][--draft-id ID]  Print the draft envelope, or ONLY a dotted-path subtree
+             [--harness-id ID]                     ... or resolve by the harness's per-run agentId (cut-turn recovery)
     validate                      [--draft-id ID]  Validate the draft WITHOUT mutating it
     finalize                      [--draft-id ID]  Validate the draft as final
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
@@ -560,6 +561,76 @@ def cmd_add(args) -> int:
     return _write_if_valid(envelope, draft_id, as_json, mirror=True)
 
 
+def _view_by_harness_id(args, harness_id: str) -> int:
+    """Resolve and print a turn's contract by the HARNESS's per-run agent id.
+
+    The recovery lane for a cut turn: the parent's Task result reports an
+    ``agentId`` in the harness's own identifier space, which resolves no draft
+    (drafts key on the CLI-minted space). Since v40 SubagentStart stamps that
+    id onto the born row (``agent_contract_handoffs.harness_agent_id``), so
+    the row -- and through its ``contract_id``, the on-disk draft when one
+    still exists -- is reachable directly, with no date search or content
+    grep. The freshest source wins: the draft on disk when present (it may
+    carry writes newer than the last DB mirror), else the row's own
+    ``raw_handoff_json``.
+    """
+    from gaia.store.writer import list_agent_contract_handoffs
+
+    rows = list_agent_contract_handoffs(harness_agent_id=harness_id, limit=1)
+    if not rows:
+        _print_error(
+            f"no contract row carries harness_agent_id={harness_id!r}. Rows "
+            f"are stamped at SubagentStart (v40); a turn dispatched before "
+            f"that version, or one whose start never reached the stamping "
+            f"seam, is only reachable by session/date via 'gaia contract "
+            f"list'.",
+            as_json=False,
+        )
+        return 1
+    row = rows[0]
+    contract_id = row.get("contract_id")
+
+    envelope = _load_draft(contract_id) if contract_id else None
+    source = "draft"
+    if envelope is None:
+        source = "db_row"
+        try:
+            envelope = json.loads(row.get("raw_handoff_json") or "null")
+        except (TypeError, ValueError):
+            envelope = None
+
+    field = getattr(args, "field", None)
+    if field is not None:
+        if not isinstance(envelope, dict):
+            _print_error(
+                f"row {row.get('id')} has no readable envelope to take "
+                f"--field from.",
+                as_json=False,
+            )
+            return 1
+        try:
+            subtree = _get_nested(envelope, field)
+        except ValueError as exc:
+            _print_error(str(exc), as_json=False)
+            return 1
+        print(json.dumps(subtree, indent=2))
+        return 0
+
+    print(json.dumps({
+        "harness_agent_id": harness_id,
+        "contract_id": contract_id,
+        "handoff_id": row.get("id"),
+        "agent_id": row.get("agent_id"),
+        "agent_state": row.get("agent_state"),
+        "cut_reason": row.get("cut_reason"),
+        "session_id": row.get("session_id"),
+        "created_at": row.get("created_at"),
+        "envelope_source": source,
+        "envelope": envelope,
+    }, indent=2))
+    return 0
+
+
 def cmd_view(args) -> int:
     """Print the current draft envelope, or ONLY a dotted-path subtree of it
     (``--field``), without mutating anything.
@@ -569,7 +640,14 @@ def cmd_view(args) -> int:
     it resolves that subtree via the same ``_split_path`` addressing ``set``
     uses and prints ONLY that subtree as JSON -- an invalid/absent path is a
     clean error to stderr with a non-zero exit, never a raw traceback.
+
+    ``--harness-id`` switches the lookup to the harness's per-run agent id
+    (see ``_view_by_harness_id``) -- the id the parent holds for a turn that
+    was cut before it could finalize.
     """
+    harness_id = getattr(args, "harness_id", None)
+    if harness_id:
+        return _view_by_harness_id(args, harness_id)
     draft_id, envelope, as_json = _load_target_draft(args)
     if envelope is None:
         return 1
@@ -653,6 +731,7 @@ def cmd_list(args) -> int:
         session_id=args.session_id,
         agent_state=args.state,
         contract_id=args.contract_id,
+        harness_agent_id=getattr(args, "harness_id", None),
         limit=args.limit,
     )
     if args.since or args.until:
@@ -981,6 +1060,19 @@ def _build_subcommands(sub) -> None:
     )
     _add_common_draft_arg(p_view)
     _add_agent_scope_arg(p_view)
+    p_view.add_argument(
+        "--harness-id",
+        dest="harness_id",
+        metavar="HARNESS_AGENT_ID",
+        default=None,
+        help=(
+            "Resolve by the HARNESS's per-run agent id (the agentId the "
+            "parent's Task result reports) instead of a draft id -- the "
+            "recovery lane for a turn cut before it finalized. Prints the "
+            "stamped row and its envelope (on-disk draft when present, else "
+            "the row's own raw_handoff_json)."
+        ),
+    )
     p_view.set_defaults(func=cmd_view)
 
     p_list = sub.add_parser(
@@ -1006,6 +1098,15 @@ def _build_subcommands(sub) -> None:
     p_list.add_argument(
         "--contract-id", dest="contract_id", metavar="CONTRACT_ID", default=None,
         help="Filter by contract_id (the draft/dispatch idempotency key)",
+    )
+    p_list.add_argument(
+        "--harness-id", dest="harness_id", metavar="HARNESS_AGENT_ID",
+        default=None,
+        help=(
+            "Filter by the harness's per-run agent id (stamped at "
+            "SubagentStart, v40) -- recovers a cut turn's row from the "
+            "agentId the parent's Task result reports"
+        ),
     )
     p_list.add_argument(
         "--workspace", dest="workspace", metavar="NAME", default=None,

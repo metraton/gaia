@@ -1572,6 +1572,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 additional,
                 anchors=anchors,
                 task_description=parameters.get("description", ""),
+                contract_id=(identity or {}).get("contract_id"),
             )
             logger.info(
                 "Cached context for SubagentStart: agent=%s, session=%s",
@@ -3546,6 +3547,7 @@ class ClaudeCodeAdapter(HookAdapter):
         self, session_id: str, agent_type: str, context: str,
         anchors: Optional[List[str]] = None,
         task_description: str = "",
+        contract_id: Optional[str] = None,
     ) -> Path:
         """Write built context to a cache file for SubagentStart consumption.
 
@@ -3561,6 +3563,13 @@ class ClaudeCodeAdapter(HookAdapter):
         start with the dispatch that produced it instead of guessing by recency
         (see ``_read_cached_context``). It is never injected into the subagent.
 
+        ``contract_id`` is the born-at-dispatch row's key, riding the same
+        bridge as ``anchors`` and for the same reason: PreToolUse:Task births
+        the row but the host has not assigned the dispatch its agent_id yet.
+        SubagentStart, holding both, stamps the harness id onto the row
+        (``stamp_harness_agent_id``) so a cut turn stays recoverable by the id
+        the parent's Task result reports.
+
         Returns the path to the cache file.
         """
         self.CONTEXT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -3572,6 +3581,7 @@ class ClaudeCodeAdapter(HookAdapter):
             "session_id": session_id,
             "anchors": anchors or [],
             "task_description": task_description or "",
+            "contract_id": contract_id or "",
             "created_at": time.time(),
         }
         cache_file.write_text(json.dumps(payload))
@@ -3896,6 +3906,29 @@ class ClaudeCodeAdapter(HookAdapter):
                     )
                 except Exception as exc:
                     logger.debug("Anchor save at SubagentStart failed (non-fatal): %s", exc)
+            # Stamp the harness's per-run agent id onto the born-at-dispatch
+            # row. This is the ONE seam where both identifier spaces coexist
+            # before the turn can be cut: the minted contract_id rode the cache
+            # from PreToolUse:Task, and the host has just assigned agent_id.
+            # SubagentStop cannot do this -- it never fires on a harness cut,
+            # the very turn the stamp exists to make recoverable. Best-effort:
+            # a failed stamp never blocks the start.
+            try:
+                from gaia.store.writer import stamp_harness_agent_id
+
+                _stamp = stamp_harness_agent_id(
+                    cached.get("contract_id") or None,
+                    raw.get("agent_id", "") or None,
+                )
+                if _stamp.get("status") == "applied":
+                    logger.info(
+                        "Harness agent id stamped: contract_id=%s harness_agent_id=%s",
+                        cached.get("contract_id"), raw.get("agent_id"),
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Harness agent id stamp failed (non-fatal): %s", exc
+                )
             return ContextResult(
                 context_injected=True,
                 additional_context=cached["context"],
