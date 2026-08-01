@@ -302,9 +302,10 @@ class TestDoubleApprovalReproduction:
         # (different fd-dup redirect) must REUSE that pending, not mint a third.
         #
         # NOTE: we use fd-duplication redirects (`2>&1`, `1>&2`) here, not a
-        # trailing `> file` -- the latter is rewritten away by the sanitizer
-        # (phase 3d) BEFORE it reaches the T3 block path, so it never blocks.
-        # fd-dups are deliberately NOT sanitized and reach the T3 classifier.
+        # trailing `> file`, to keep this reproduction independent of the
+        # trailing-redirect sanitizer path (covered separately by
+        # test_sanitizer_redirect_t3_evasion.py). fd-dups are never touched
+        # by the sanitizer and always reach the T3 classifier directly.
         result_reblock_a = validate_bash_command(
             "git push 2>&1", is_subagent=True, session_id=session_id,
         )

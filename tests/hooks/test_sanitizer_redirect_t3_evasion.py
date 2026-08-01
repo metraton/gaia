@@ -1,22 +1,33 @@
 """
-Empirical measurement: does the sanitizer short-circuit in
-BashValidator.validate() let a real T3 block be evaded by appending a
-trailing redirect?
+Regression guard for a fixed sanitizer evasion of the T3 approval gate.
 
-_try_sanitize_command (phase 3d of validate(), bash_validator.py) strips a
-trailing ``> file`` / ``>> file`` and returns allowed=True / tier=T0
-IMMEDIATELY -- before phase 5, where mutative-verb detection would otherwise
-classify the same command as T3 and route it to the approval ("ask")
-dialog. This was VERIFIED by reading the code. This test MEASURES it: it
-runs the concrete command ``terraform apply`` through the real pipeline
-(``validate_bash_command``, the same entry the PreToolUse hook uses) both
-bare and with a trailing redirect appended, and asserts the OBSERVED
-result of each -- it does not modify _try_sanitize_command, validate(), or
-any other validator code.
+HISTORICAL RECORD (kept intentionally -- do not delete this file or its
+narrative): this module was originally committed to document a LIVE
+vulnerability, verified by reading the code and then CONFIRMED by running
+the concrete command through the real pipeline (``validate_bash_command``,
+the same entry the PreToolUse hook uses). Phase 3d of ``validate()``
+(``_try_sanitize_command`` in ``bash_validator.py``) matched a trailing
+``> file`` / ``>> file`` redirect, stripped it, and returned allowed=True /
+tier=T0 IMMEDIATELY -- before phase 5, where mutative-verb detection would
+otherwise classify the same command as T3 and route it to the approval
+("ask") dialog. The observed evasion, byte for byte:
 
-Repro, byte for byte:
-  Bare:      terraform apply
-  Redirect:  terraform apply > /tmp/tf-out.txt
+    Bare:      terraform apply                    -> blocked, T3_BLOCKED
+    Redirect:  terraform apply > /tmp/tf-out.txt   -> allowed, T0_READ_ONLY
+
+FIX: the sanitizer no longer classifies the command it cleans. It strips the
+decorator (nohup prefix / trailing background `&` / trailing redirect) and
+lets the CLEANED command re-enter the full classification pipeline (unwrap
+-> decompose -> classify -> composition -> aggregate) exactly like any other
+command, so a redirect can no longer hide a genuine T3 verb from the
+mutative-verb detector. The sanitization step now runs in EARLY
+NORMALIZATION, before phase 1, rather than short-circuiting from inside
+phase 3 -- see ``bash_validator.py`` for the current pipeline shape.
+
+The two tests below now assert the FIXED behavior: the bare and the
+redirected form of the same command classify IDENTICALLY (T3_BLOCKED). If
+either assertion below ever reverts to allowed=True for the redirected
+form, the evasion this file was written to catch has reopened.
 """
 
 import sys
@@ -37,12 +48,11 @@ REDIRECTED_COMMAND = "terraform apply > /tmp/tf-out.txt"
 
 def test_sanitizer_redirect_baseline_is_blocked_t3():
     """
-    OBSERVED: the bare command IS a real T3 block today.
-
-    ``terraform apply`` is a mutative verb (phase 5 of validate()) with no
-    active approval grant, so it is routed to decide_t3_outcome() and comes
-    back not-allowed, tier T3_BLOCKED, with an "ask" block_response. This is
-    the block the redirect form is checked against below.
+    The bare command is a real T3 block: ``terraform apply`` is a mutative
+    verb (phase 5 of validate()) with no active approval grant, so it is
+    routed to decide_t3_outcome() and comes back not-allowed, tier
+    T3_BLOCKED, with an "ask" block_response. This is the block the
+    redirected form is checked against below.
     """
     result = validate_bash_command(BARE_COMMAND)
     assert result.allowed is False
@@ -53,24 +63,26 @@ def test_sanitizer_redirect_baseline_is_blocked_t3():
     )
 
 
-def test_sanitizer_redirect_evades_t3_block():
+def test_sanitizer_redirect_no_longer_evades_t3_block():
     """
-    OBSERVED: appending a trailing redirect to the SAME command that
-    test_sanitizer_redirect_baseline_is_blocked_t3 proves is T3-gated
-    reverses the verdict to allowed=True, tier=T0_READ_ONLY.
+    REGRESSION GUARD: appending a trailing redirect to the SAME command that
+    test_sanitizer_redirect_baseline_is_blocked_t3 proves is T3-gated must
+    classify IDENTICALLY -- still blocked, still T3_BLOCKED, still an "ask".
+    The sanitizer strips the trailing ``> /tmp/tf-out.txt`` and re-enters
+    classification on the cleaned command, which is exactly where the bare
+    form is caught -- the decorator changes nothing about the verdict.
 
-    validate()'s phase 3d (_try_sanitize_command) matches the trailing
-    ``> /tmp/tf-out.txt``, strips it, and returns allowed=True immediately
-    -- before phase 5 (mutative-verb detection) ever runs on the stripped
-    command. The result carries modified_input with the redirect-free
-    command, confirming the sanitize branch (not some other allow path)
-    produced the verdict.
-
-    This CONFIRMS the hypothesis under test: the sanitizer short-circuit
-    lets a command that is a real T3 block bypass approval by appending a
-    trailing redirect.
+    Before the fix this test asserted the OPPOSITE (allowed=True, tier=T0)
+    under the name ``test_sanitizer_redirect_evades_t3_block`` -- see the
+    module docstring above for the vulnerability that assertion documented.
     """
     result = validate_bash_command(REDIRECTED_COMMAND)
-    assert result.allowed is True
-    assert result.tier == SecurityTier.T0_READ_ONLY
+    assert result.allowed is False
+    assert result.tier == SecurityTier.T3_BLOCKED
+    assert result.block_response is not None
+    assert (
+        result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+    )
+    # The classified command inside the block carries the CLEANED form --
+    # confirming the redirect was stripped and re-classified, not ignored.
     assert result.modified_input == {"command": BARE_COMMAND}

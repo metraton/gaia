@@ -19,6 +19,13 @@ enforcement layer for dangerous command detection.
 
 Earlier flat-pipeline order preserved within phases for backward compat:
   - Footer stripping runs before phase 1 (EARLY NORMALIZATION)
+  - Smart sanitization (strip nohup / trailing & / trailing redirect) also
+    runs in EARLY NORMALIZATION, after footer stripping and after the
+    gaia.db / subagent-memory / protected-path write guards, but before
+    phase 1. It strips the decorator and lets the CLEANED command flow
+    into phase 1 like any other command -- it never classifies the
+    command itself, so a decorator can never move a command's tier by
+    hiding it from phases 1-5 (see _try_sanitize_command's docstring).
   - Indirect execution detection is the first check in phase 1
   - Blocked commands run before cloud_pipe and mutative_verbs in phase 3
 """
@@ -301,9 +308,11 @@ class BashValidator:
         background operators.  This is a fast pre-filter — the full
         shell parser handles quote-aware splitting downstream.
 
-        Note: '>' and '&' are included so commands with redirects or
-        background operators reach the compound path, where the
-        sanitization layer can strip them.
+        Note: '>' and '&' are included so a command still carrying one of
+        these tokens after EARLY NORMALIZATION's sanitization pass (e.g. an
+        embedded ``2>&1``, or a redirect that is not the trailing one
+        sanitization strips) is still routed through the compound-parsing
+        path below instead of being mis-treated as a simple command.
         """
         # Fast check for common operators outside quotes
         # This avoids expensive parsing for 70% of commands
@@ -319,22 +328,31 @@ class BashValidator:
     # Fd duplication (2>&1) is harmless and should NOT be stripped.
     _FD_DUP_RE = re.compile(r"\d+>&\d+")
 
-    def _try_sanitize_command(self, command: str) -> Optional[BashValidationResult]:
-        """Attempt to strip dangerous operators and return a clean command.
+    def _try_sanitize_command(self, command: str) -> Optional[tuple[str, List[str]]]:
+        """Strip a decorator that changes nothing about WHAT will run.
 
-        Sanitizable patterns (can be stripped without changing semantics):
+        Sanitizable patterns (stripped without changing semantics):
         - nohup prefix:  ``nohup cmd args`` -> ``cmd args``
         - trailing &:    ``cmd args &``      -> ``cmd args``
         - trailing redirect: ``cmd args > file`` -> ``cmd args``
 
-        Non-sanitizable patterns (reject with guidance):
-        - Pipes (change data flow between commands)
-        - Chaining operators (&&, ||, ;) — use one-command-per-step
+        This method ONLY strips; it does NOT decide the command's tier. The
+        caller (``validate()``, EARLY NORMALIZATION section) re-enters the
+        FULL classification pipeline on the cleaned command -- unwrap,
+        decompose, blocked-command checks, cloud-pipe checks, composition,
+        and mutative-verb detection all run on the cleaned string exactly as
+        they would on any other command. A decorator must never be able to
+        move a command from T3 to T0 by hiding it from that pipeline; see
+        ``tests/hooks/test_sanitizer_redirect_t3_evasion.py`` for the
+        vulnerability this fixes and the regression test that guards it.
+
+        Pipes and chaining operators (&&, ||, ;) are NOT touched here --
+        they change data flow / composition and are handled by the
+        cloud-pipe and composition checks downstream, not by this stripper.
 
         Returns:
-            BashValidationResult with cleaned command via modified_input if
-            sanitization succeeded, or a block response if it cannot be cleaned.
-            None if no sanitization is needed (command has no dangerous operators).
+            (cleaned_command, stripped_parts) if a decorator was stripped,
+            else None (nothing to sanitize).
         """
         original = command
         cleaned = command
@@ -373,32 +391,7 @@ class BashValidator:
         if cleaned == original:
             return None  # Sanitization didn't change anything
 
-        logger.info(
-            "Command sanitized: stripped [%s] from: %s",
-            ", ".join(stripped_parts),
-            original[:80],
-        )
-
-        # Build the response with the cleaned command via updatedInput
-        reason = (
-            f"Command sanitized: stripped {', '.join(stripped_parts)}. "
-            f"Read the command-execution skill for proper patterns.\n"
-            f"Original: {original[:120]}\n"
-            f"Cleaned:  {cleaned[:120]}"
-        )
-        # build_hook_permission_response forwards updated_input to the adapter,
-        # which assembles the host-specific updatedInput field. No manual
-        # injection here -- business logic does not touch the host shape.
-        hook_response = build_hook_permission_response(
-            "allow", reason, updated_input={"command": cleaned}
-        )
-        return BashValidationResult(
-            allowed=True,
-            tier=SecurityTier.T0_READ_ONLY,
-            reason=reason,
-            modified_input={"command": cleaned},
-            block_response=hook_response,
-        )
+        return cleaned, stripped_parts
 
     def validate(
         self,
@@ -529,6 +522,42 @@ class BashValidator:
             )
 
         # ================================================================
+        # EARLY NORMALIZATION (cont'd): SMART SANITIZATION
+        # Strip a decorator that changes nothing about WHAT will run -- a
+        # leading `nohup`, a trailing background `&`, or a trailing
+        # `> file` / `>> file` redirect -- and RE-ENTER the full
+        # classification pipeline on the cleaned command by simply letting
+        # it flow into phase 1 below, rather than returning a verdict here.
+        #
+        # This runs AFTER the three write guards above (gaia.db, subagent
+        # memory, protected-path) so a redirect INTO a guarded target
+        # (e.g. ``echo x > .claude/hooks/y``) is still caught by those
+        # guards on the undecorated command -- sanitizing first would let
+        # the redirect vanish before a guard ever saw it.
+        #
+        # HISTORICAL NOTE: an earlier version of this step classified the
+        # cleaned command itself, returning allowed=True / tier=T0
+        # immediately upon stripping a decorator. That let a genuine T3
+        # command evade its block by appending a trailing redirect --
+        # ``terraform apply`` was blocked T3, but
+        # ``terraform apply > /tmp/tf-out.txt`` was allowed T0, because the
+        # stripped command never reached the mutative-verb detection in
+        # phase 5. Measured and fixed; the vulnerability and the regression
+        # test that now guards it are documented in
+        # tests/hooks/test_sanitizer_redirect_t3_evasion.py.
+        # ================================================================
+        sanitize_result = self._try_sanitize_command(command)
+        if sanitize_result is not None:
+            cleaned_command, stripped_parts = sanitize_result
+            logger.info(
+                "Command sanitized: stripped [%s] from: %s -- re-entering "
+                "classification on cleaned command: %s",
+                ", ".join(stripped_parts), command[:80], cleaned_command[:80],
+            )
+            command = cleaned_command
+            command_was_modified = True
+
+        # ================================================================
         # PHASE 1: UNWRAP
         # Use ShellUnwrapper to detect and strip shell wrapper layers
         # (bash -c, sh -c, env bash -c, etc.).  If the wrapper nesting
@@ -569,10 +598,14 @@ class BashValidator:
         #   3a. blocked_commands on full command (exit 2)
         #   3b. blocked_commands on each compound component (exit 2)
         #   3c. Git commit message validation
-        #   3d. Smart sanitization (strip nohup, &, redirects)
-        #   3e. Cloud pipe/redirect/chain check (corrective deny)
-        #   3f. Dispatch to single/compound classification
+        #   3d. Cloud pipe/redirect/chain check (corrective deny)
+        #   3e. Dispatch to single/compound classification
         #        (mutative_verbs, safe-by-elimination)
+        #
+        # Smart sanitization (strip nohup / trailing & / trailing redirect)
+        # runs in EARLY NORMALIZATION, before phase 1 -- not here -- so the
+        # cleaned command re-enters this whole pipeline instead of
+        # short-circuiting past it.
         # ================================================================
 
         # 3a. Blocked commands check on FULL command (exit 2).
@@ -613,15 +646,7 @@ class BashValidator:
             if not commit_validation.allowed:
                 return commit_validation
 
-        # 3d. Smart sanitization: strip nohup, trailing &, trailing redirect.
-        sanitized = self._try_sanitize_command(command)
-        if sanitized is not None:
-            if sanitized.allowed:
-                return sanitized
-            else:
-                return sanitized
-
-        # 3e. Cloud pipe/redirect/chaining check.
+        # 3d. Cloud pipe/redirect/chaining check.
         pipe_block = validate_cloud_pipe(command)
         if pipe_block is not None:
             return BashValidationResult(
@@ -653,7 +678,7 @@ class BashValidator:
 
         # ================================================================
         # PHASE 5: AGGREGATE
-        # 3f. Dispatch to per-stage classifiers (single or compound)
+        # 3e. Dispatch to per-stage classifiers (single or compound)
         # and combine into the final BashValidationResult.
         # ================================================================
         if not has_operators:
