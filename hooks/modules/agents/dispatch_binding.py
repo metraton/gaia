@@ -1,5 +1,6 @@
 """
-Born-at-dispatch binding + referential integrity (plan 34 task 6, Fase 2).
+Born-at-dispatch binding + referential integrity (plan 34 task 6, Fase 2;
+plan 49 task 1 -- free-turn birth + degrade-not-drop, D1).
 
 At dispatch time (the PreToolUse:Agent / SubagentStart path) the hook BIRTHS the
 nascent ``agent_contract_handoffs`` row via
@@ -30,6 +31,36 @@ dangling coordinate surfaces as a clean ``DispatchBindingError`` here rather tha
 as a raw SQLite foreign-key ``IntegrityError`` from the writer's INSERT. The
 extra dispatchability constraint (status='pending') is scoped to task_execution,
 per the rules above.
+
+``validate_dispatch_binding`` / ``birth_dispatched_row`` above are UNCHANGED by
+plan 49 task 1 -- their raise contract (reject, birth nothing) is exactly what
+``tests/hooks/test_dispatch_referential_integrity.py`` locks down, and the
+free-turn / degrade work below is deliberately layered ON TOP rather than
+folded into them:
+
+  * A dispatch that extracts with NO binding token at all (see
+    ``extract_dispatch_binding``) is now labeled a FREE kind
+    (``investigation`` / ``memory``, S1) instead of being forced into
+    ``task_execution``. Since a free kind does not require ``plan_task_id``,
+    the row births normally through the existing happy path -- no new
+    machinery needed for this half.
+  * A dispatch that DOES carry an attempted ``task_execution`` binding
+    (``task_id=`` was present) but that binding fails to RESOLVE
+    (``plan_task_id_unresolved`` / ``plan_task_id_not_dispatchable``) still
+    calls ``validate_dispatch_binding`` first and still gets the same
+    ``DispatchBindingError`` -- referential integrity is not weakened. What
+    changed is what the CALLER (``hooks/adapters/claude_code.py``,
+    ``_maybe_birth_dispatched_row``) does with that rejection: instead of
+    letting the row go unborn, it degrades via :func:`birth_degraded_row`
+    below, which births the row anyway with ``plan_task_id`` NULL (the FK
+    forbids sealing a coordinate that does not resolve) and the rejection
+    reason + the token that failed to resolve recorded INSIDE the birth
+    envelope, consultable via ``gaia contract list --json``. The existing
+    anomaly event (``DISPATCH_BINDING_REJECTED_EVENT``) still fires --
+    degrading the row does not silence it. A verifier turn's rejection
+    (``verifier_requires_parent_handoff_id`` / ``parent_handoff_id_unresolved``)
+    is NOT degraded -- out of D1's scope, and the verifier dispatch must keep
+    behaving exactly as it does today (see the module's own tests).
 """
 
 from __future__ import annotations
@@ -54,6 +85,23 @@ _TASK_EXECUTION_KIND = "task_execution"
 
 # The turn role that makes a resolvable parent_handoff_id MANDATORY.
 _VERIFIER_ROLE = "verifier"
+
+# Free-turn kind labels (plan 49 task 1, S1). Neither requires plan_task_id --
+# they exist so a dispatch with NO binding token at all still births a row,
+# instead of being forced through the task_execution branch it never intended
+# to satisfy.
+_INVESTIGATION_KIND = "investigation"
+_MEMORY_KIND = "memory"
+
+# The two DispatchBindingError reasons D1 (gate 499) degrades rather than
+# drops: both mean an ATTEMPTED task_execution binding (task_id= WAS present)
+# failed to resolve. The other three reasons (task_execution_requires_
+# plan_task_id, and the two verifier reasons) are left to reject as they do
+# today -- see the module docstring for why each stays out of scope.
+DEGRADABLE_BINDING_REASONS = frozenset({
+    "plan_task_id_unresolved",
+    "plan_task_id_not_dispatchable",
+})
 
 
 class DispatchBindingError(ValueError):
@@ -265,6 +313,92 @@ def birth_dispatched_row(
     )
 
 
+def birth_degraded_row(
+    *,
+    contract_id: str,
+    agent_id: str,
+    workspace: str,
+    kind: "Optional[str]",
+    rejection_reason: str,
+    failed_plan_task_id: "Optional[int]",
+    plan_id: "Optional[int]" = None,
+    session_id: "Optional[str]" = None,
+    brief_id: "Optional[int]" = None,
+    agent_name: "Optional[str]" = None,
+    db_path: "_pl.Path | None" = None,
+) -> dict:
+    """Birth a nascent row for an ATTEMPTED binding that failed to resolve --
+    D1 (gate 499): degrade, do not drop.
+
+    Deliberately does NOT call :func:`validate_dispatch_binding`. The caller
+    already ran it (via :func:`birth_dispatched_row`), already has the
+    ``DispatchBindingError`` it raised, and is choosing to degrade rather than
+    let the row go unborn. Re-validating here with ``plan_task_id=None`` would
+    raise again but under the WRONG reason
+    (``task_execution_requires_plan_task_id``), masking the real one -- so this
+    function trusts the caller's classification and just writes.
+
+    ``plan_task_id`` is stamped NULL in the column: the FK to ``tasks.id``
+    forbids sealing a coordinate that does not resolve, and NULL is also
+    exactly what keeps the blind-verification gate reading this turn as
+    UNBOUND (``_blind_verification_required`` in ``hooks/adapters/claude_code.py``
+    is a pure function of the column, not of ``kind``) -- the documented
+    residual: a degraded turn runs without the blind-verification gate, same
+    as a turn with no row at all today. What changes is that the reason and
+    the token that failed are now recorded INSIDE the birth envelope
+    (``binding_rejection: {reason, attempted_plan_task_id}``), consultable via
+    ``gaia contract list --json`` instead of vanishing with the unborn row.
+
+    Returns the writer's result dict, same shape as :func:`birth_dispatched_row`.
+    """
+    import json as _json
+
+    writer = _import_writer()
+    birth_envelope: dict = {
+        "agent_state": "DISPATCHED",
+        "born_at_dispatch": True,
+        "binding_rejection": {
+            "reason": rejection_reason,
+            "attempted_plan_task_id": failed_plan_task_id,
+        },
+    }
+    if agent_name:
+        birth_envelope[writer.BIRTH_AGENT_NAME_KEY] = str(agent_name)
+
+    return writer.insert_dispatched_handoff(
+        contract_id=contract_id,
+        agent_id=agent_id,
+        workspace=workspace,
+        plan_task_id=None,
+        plan_id=plan_id,
+        parent_handoff_id=None,
+        kind=kind,
+        raw_handoff_json=_json.dumps(birth_envelope),
+        session_id=session_id,
+        brief_id=brief_id,
+        db_path=db_path,
+    )
+
+
+def _classify_free_kind(prompt: str) -> str:
+    """S1: label a FREE dispatch (no binding token at all) 'investigation' by
+    default, 'memory' when the prompt names the memory skill explicitly.
+
+    ``Skill('memory')`` (or the double-quoted spelling) is the literal marker
+    every memory dispatch carries -- see ``agents/gaia-orchestrator.md``
+    ("only when the user needs depth ... do I dispatch a subagent with
+    `Skill('memory')`") and ``agents/gaia-operator.md`` ("written through the
+    `gaia memory` CLI under the rules in `Skill('memory')`"). A dispatch that
+    does not name it is classified 'investigation', the more general free-turn
+    shape.
+    """
+    import re as _re
+
+    if _re.search(r"Skill\(\s*['\"]memory['\"]\s*\)", prompt):
+        return _MEMORY_KIND
+    return _INVESTIGATION_KIND
+
+
 def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     """Best-effort extraction of the binding from PreToolUse:Agent metadata.
 
@@ -276,6 +410,20 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     find is left as None. The caller decides whether the resulting binding is
     complete enough to birth a row (the referential-integrity validation is the
     hard gate; this is only extraction).
+
+    ``kind`` classification (plan 49 task 1, S1/S2): a verifier dispatch is
+    always ``kind='verifier'``. Everything else is ``task_execution`` iff the
+    prompt carries ANY binding-shaped token -- ``task_id=``, ``plan_id=``, or a
+    stray ``parent_handoff_id=`` -- and a FREE kind (``investigation`` /
+    ``memory``, see :func:`_classify_free_kind`) only when NONE of the three
+    are present. This is deliberately conservative (S2: "free only when there
+    is no binding token at all; any token present keeps task_execution
+    semantics"), so a dispatch that named a plan but dropped its ``task_id=``
+    token (the misdispatch shape ``_is_anomalous_dispatch_binding_rejection``
+    in ``hooks/adapters/claude_code.py`` flags) is never silently reclassified
+    as free -- doing so would disarm the blind-verification gate for what may
+    be a genuinely plan-task-bound turn, which is the one regression this task
+    must not introduce.
 
     Returns a dict with keys ``plan_id``, ``plan_task_id``, ``kind``,
     ``turn_role``, ``parent_handoff_id`` -- any of which may be None.
@@ -307,21 +455,28 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
 
     is_verifier = "verifier" in agent.lower()
     turn_role = _VERIFIER_ROLE if is_verifier else None
-    kind = _VERIFIER_ROLE if is_verifier else _TASK_EXECUTION_KIND
 
-    # A verifier turn is bound to the PRODUCER it verifies via parent_handoff_id,
-    # NOT to a plan_task_id of its own (see module docstring + the finalize gate
-    # in hooks/adapters/claude_code.py::_blind_verification_required). The verifier
-    # prompt still MENTIONS the task_id it is verifying, so the `task_id=` token
-    # extraction above would otherwise STAMP that plan_task_id onto the verifier's
-    # nascent row -- which the plan_task_id-keyed blind-verification gate would then
-    # read as "this turn is a plan-task-bound producer" and force its COMPLETE to
-    # NEEDS_VERIFICATION. That is a DEADLOCK: the verifier could never promote the
-    # increment because it would itself be sent back for verification forever.
-    # Drop the plan_task_id for a verifier turn so it binds by parent_handoff_id
-    # only and is treated as UNBOUND by the gate (free to self-COMPLETE / promote).
     if is_verifier:
+        kind = _VERIFIER_ROLE
+        # A verifier turn is bound to the PRODUCER it verifies via
+        # parent_handoff_id, NOT to a plan_task_id of its own (see module
+        # docstring + the finalize gate in
+        # hooks/adapters/claude_code.py::_blind_verification_required). The
+        # verifier prompt still MENTIONS the task_id it is verifying, so the
+        # `task_id=` token extraction above would otherwise STAMP that
+        # plan_task_id onto the verifier's nascent row -- which the
+        # plan_task_id-keyed blind-verification gate would then read as "this
+        # turn is a plan-task-bound producer" and force its COMPLETE to
+        # NEEDS_VERIFICATION. That is a DEADLOCK: the verifier could never
+        # promote the increment because it would itself be sent back for
+        # verification forever. Drop the plan_task_id for a verifier turn so
+        # it binds by parent_handoff_id only and is treated as UNBOUND by the
+        # gate (free to self-COMPLETE / promote).
         plan_task_id = None
+    elif plan_task_id is not None or plan_id is not None or parent_handoff_id is not None:
+        kind = _TASK_EXECUTION_KIND
+    else:
+        kind = _classify_free_kind(prompt)
 
     return {
         "plan_id": plan_id,

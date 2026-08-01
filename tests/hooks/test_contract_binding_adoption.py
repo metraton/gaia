@@ -189,9 +189,17 @@ def test_dispatch_births_row_under_the_minted_identity(db_path):
     assert row["plan_task_id"] == TASK_PENDING
 
 
-def test_unresolvable_binding_yields_no_identity_and_no_row(db_path):
-    """No row born -> no identity to inject; the two can never disagree."""
+def test_unresolvable_binding_degrades_to_an_unbound_row(db_path):
+    """Plan 49 task 1 (D1, gate 499): an unresolved task_id= no longer yields
+    no row at all -- it DEGRADES. The row still births (plan_task_id NULL in
+    the column, the rejection recorded inside the envelope) and the identity
+    still comes back, so it still reaches the subagent -- see
+    tests/hooks/test_dispatch_binding_rejected_event.py for the full
+    degrade-vs-drop coverage. What this file still pins: the row born this
+    way carries NO resolvable plan_task_id, so it remains UNBOUND for the
+    blind-verification gate, same governance posture as "no row at all"."""
     from adapters.claude_code import ClaudeCodeAdapter
+    from gaia.store.reader import _connect
 
     _seed_plan_task(db_path)
     identity = ClaudeCodeAdapter._maybe_birth_dispatched_row(
@@ -199,7 +207,18 @@ def test_unresolvable_binding_yields_no_identity_and_no_row(db_path):
         "gaia-system",
         "sess-unresolvable",
     )
-    assert identity is None
+    assert identity is not None
+
+    con = _connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        row = con.execute(
+            "SELECT plan_task_id FROM agent_contract_handoffs WHERE contract_id = ?",
+            (identity["contract_id"],),
+        ).fetchone()
+    finally:
+        con.close()
+    assert row["plan_task_id"] is None, "unresolved -- stays UNBOUND for the blind-verification gate"
 
 
 # ---------------------------------------------------------------------------
@@ -987,3 +1006,95 @@ def test_subagent_stop_gate_rejects_a_bound_complete_from_the_resolved_row(
         f"an unbound verifier's COMPLETE is the promotion, not a violation: "
         f"{verifier_gate.rejection_reason}"
     )
+
+
+def test_free_kind_row_adopted_and_finalized_to_complete_with_no_blind_verification(
+    db_path,
+):
+    """Gate 492 point (d), end to end: a genuinely FREE dispatch (no binding
+    token at all -- no task_id=, no plan_id=, no parent_handoff_id=) births a
+    kind=investigation row with plan_task_id NULL (plan 49 task 1, S1). The
+    turn adopts that row through the real CLI, finalizes straight to COMPLETE,
+    and the SubagentStop gate -- driven from the RESOLVED row via
+    ``_resolve_dispatch_row``, the same seam SubagentStop actually runs, not a
+    hand-fed literal -- neither rejects the turn nor raises
+    BLIND_VERIFICATION_REQUIRED.
+
+    Before this test the property was inferred only from unchanged gate code
+    (``_blind_verification_required`` is a pure function of ``plan_task_id``)
+    plus the already-green adoption suites above, never exercised end to end
+    for the free-kind class specifically -- this closes that gap.
+    """
+    from adapters.claude_code import ClaudeCodeAdapter, evaluate_contract_gate
+
+    identity = ClaudeCodeAdapter._maybe_birth_dispatched_row(
+        {"prompt": "investigate why the build is flaky"},
+        "gaia-system", "sess-free-e2e",
+    )
+    assert identity is not None, "a genuinely free dispatch must still birth its row"
+
+    born = _rows_for(db_path, identity["contract_id"])
+    assert len(born) == 1, "birth adds exactly one row"
+    assert born[0]["agent_state"] == "DISPATCHED"
+    assert born[0]["kind"] == "investigation"
+    assert born[0]["plan_task_id"] is None, (
+        "a free turn never carries a plan_task_id -- that is what keeps the "
+        "blind-verification gate disarmed for it"
+    )
+
+    _adopt(identity)
+    assert _cli([
+        "fill", "--draft-id", identity["contract_id"], "--json",
+        json.dumps({"evidence_report": {
+            "verification": {
+                "method": "test", "result": "pass", "details": "suite green",
+            },
+        }}),
+    ]).returncode == 0
+    assert _cli([
+        "set", "--draft-id", identity["contract_id"],
+        "agent_status.next_action", "done",
+    ]).returncode == 0
+    assert _cli([
+        "set", "--draft-id", identity["contract_id"],
+        "agent_status.agent_state", "COMPLETE",
+    ]).returncode == 0
+
+    fin = _cli([
+        "finalize", "--draft-id", identity["contract_id"],
+        "--session-id", "sess-free-e2e", "--json",
+    ])
+    assert fin.returncode == 0, (
+        f"a free-kind (unbound) turn may self-COMPLETE: {fin.stdout} {fin.stderr}"
+    )
+
+    rows = _rows_for(db_path, identity["contract_id"])
+    assert len(rows) == 1, "the born row and the finalized row are ONE row"
+    row = rows[0]
+    assert row["agent_state"] == "COMPLETE"
+    assert row["kind"] == "investigation"
+    assert row["plan_task_id"] is None
+
+    resolved = ClaudeCodeAdapter._resolve_dispatch_row(
+        session_id="sess-free-e2e",
+        agent_type="gaia-system",
+        task_info=_task_info(db_path),
+        parsed_contract=_complete_envelope(identity),
+        db_path=db_path,
+    )
+    assert resolved is not None, "an adopted free turn must not read as rowless"
+    assert resolved["plan_task_id"] is None
+
+    gate = evaluate_contract_gate(
+        _complete_envelope(identity),
+        agent_type="gaia-system",
+        plan_task_id=resolved["plan_task_id"],
+        ramp_enabled=True,
+        db_path=str(db_path),
+    )
+    assert not gate.rejected, (
+        f"a free-kind turn's COMPLETE must not be rejected: {gate.rejection_reason}"
+    )
+    assert not any(
+        a["code"] == "BLIND_VERIFICATION_REQUIRED" for a in gate.anomalies
+    ), gate.anomalies

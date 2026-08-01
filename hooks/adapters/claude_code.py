@@ -280,6 +280,33 @@ CONTRACT_REJECTED_EVENT = "agent.contract_rejected"
 # block, which is long by design.
 _REJECTION_PREVIEW_CHARS = 400
 
+# Dotted event category written to harness_events when a nascent-row birth is
+# rejected for an ANOMALOUS reason (see _is_anomalous_dispatch_binding_rejection
+# below). Severity is warning, not error: a rejected birth never blocks the
+# dispatch (modules.agents.dispatch_binding.DispatchBindingError is always
+# swallowed), so nothing here forces a repair the way CONTRACT_REJECTED_EVENT
+# does -- it only makes an otherwise-silent misdispatch (a typo'd task_id=, a
+# verifier missing its parent_handoff_id=) visible to triage instead of
+# vanishing into a logger.info line no one reads by default.
+DISPATCH_BINDING_REJECTED_EVENT = "dispatch.binding_rejected"
+
+# DispatchBindingError.reason codes that are ALWAYS anomalous: each of these
+# names a binding that carried SOME plan/verifier coordinate and failed to
+# resolve it, never a turn that simply carried none. Mirrors the reason list
+# in modules.agents.dispatch_binding.DispatchBindingError's own docstring.
+_ALWAYS_ANOMALOUS_BINDING_REASONS = frozenset({
+    "plan_task_id_unresolved",
+    "plan_task_id_not_dispatchable",
+    "verifier_requires_parent_handoff_id",
+    "parent_handoff_id_unresolved",
+})
+
+# The one reason code that is CONDITIONALLY anomalous: a task_execution
+# dispatch with no task_id= token at all. This is the legitimate shape of a
+# free-standing turn (investigation, memory) that carries no plan_id= either --
+# see _is_anomalous_dispatch_binding_rejection.
+_CONDITIONAL_BINDING_REASON = "task_execution_requires_plan_task_id"
+
 
 def full_verdict_gate_enabled() -> bool:
     """Whether the M4 full-verdict gate is active (DEFAULT ON).
@@ -734,6 +761,81 @@ def _append_workspace_memory(context: str) -> str:
     except Exception as exc:
         logger.debug("_append_workspace_memory failed (non-fatal): %s", exc)
         return context
+
+
+def _is_anomalous_dispatch_binding_rejection(
+    reason: str, binding: Dict[str, Any],
+) -> bool:
+    """Whether a rejected nascent-row birth is worth surfacing as an event.
+
+    A rejected birth is the correct, silent outcome for a free-standing turn
+    (investigation, memory) dispatched with no plan coordinate at all --
+    ``extract_dispatch_binding`` labels every non-verifier dispatch
+    ``task_execution`` by default, so the ABSENCE of a ``task_id=`` token on
+    such a turn is not a mistake, it is the shape of a legitimate free
+    dispatch. Emitting an event for that case would train the triage reader
+    to ignore the channel, which defeats the reason it exists.
+
+    Four reasons are anomalous unconditionally: each one means SOME plan or
+    verifier coordinate was supplied and failed to resolve, which is never the
+    free-turn shape. The fifth, ``task_execution_requires_plan_task_id``, is
+    anomalous only when ``plan_id`` WAS extracted from the prompt -- that
+    combination means the dispatcher intended a plan-bound turn (it named the
+    plan) and simply dropped the ``task_id=`` token, the exact misdispatch the
+    convention in ``agents/gaia-orchestrator.md`` exists to prevent.
+    """
+    if reason in _ALWAYS_ANOMALOUS_BINDING_REASONS:
+        return True
+    if reason == _CONDITIONAL_BINDING_REASON:
+        return binding.get("plan_id") is not None
+    return False
+
+
+def _record_dispatch_binding_rejection(
+    exc: Any, *, agent_name: str, binding: Dict[str, Any],
+) -> None:
+    """Record an ANOMALOUS nascent-row birth rejection as a harness_events row.
+
+    Mirrors ``_record_contract_rejection_defect``: writes through
+    ``EventWriter().write_event`` at severity ``warning`` (below the ``error``
+    that channel uses, since a rejected birth never blocks the dispatch the
+    way a contract-gate rejection does), and is strictly best-effort -- every
+    failure is swallowed so a birth rejection, itself already non-blocking,
+    can never become a reason the dispatch fails.
+
+    Silent by design for the legitimate free-turn shape; see
+    :func:`_is_anomalous_dispatch_binding_rejection` for the discriminator.
+    """
+    reason = getattr(exc, "reason", "")
+    if not _is_anomalous_dispatch_binding_rejection(reason, binding):
+        return
+    try:
+        from modules.events.event_writer import EventWriter
+
+        meta: Dict[str, Any] = {
+            "agent": agent_name,
+            "reason": reason,
+            "binding": {
+                "kind": binding.get("kind"),
+                "turn_role": binding.get("turn_role"),
+                "plan_id": binding.get("plan_id"),
+                "plan_task_id": binding.get("plan_task_id"),
+                "parent_handoff_id": binding.get("parent_handoff_id"),
+            },
+        }
+        EventWriter().write_event(
+            DISPATCH_BINDING_REJECTED_EVENT,
+            "hook",
+            agent_name,
+            f"nascent-row birth rejected for {agent_name} ({reason})",
+            severity="warning",
+            meta=meta,
+        )
+    except Exception as write_exc:  # pragma: no cover - telemetry must never block
+        logger.debug(
+            "dispatch binding rejection event write failed (non-fatal): %s",
+            write_exc,
+        )
 
 
 class ClaudeCodeAdapter(HookAdapter):
@@ -1596,15 +1698,28 @@ class ClaudeCodeAdapter(HookAdapter):
     def _maybe_birth_dispatched_row(
         parameters, agent_name, session_id,
     ) -> Optional[Dict[str, str]]:
-        """Best-effort born-at-dispatch row birth (plan 34 task 6).
+        """Best-effort born-at-dispatch row birth (plan 34 task 6; plan 49
+        task 1 -- degrade-not-drop, D1).
 
         Mints a REAL, adoptable identity for the turn (see
         ``modules.agents.dispatch_identity``) and births the nascent row under
         it, returning ``{"agent_id": ..., "contract_id": ...}`` on success so
         the caller can inject that same identity into the subagent's context.
-        Returns None whenever the row was not born -- an unresolvable binding,
-        a writer error, or an extraction gap -- so "no identity to inject" and
-        "no row to adopt" are the same condition and can never disagree.
+        Returns None only when NO row was born at all -- a writer error, or an
+        extraction gap -- so "no identity to inject" and "no row to adopt"
+        stay the same condition and can never disagree.
+
+        D1 (gate 499): an ATTEMPTED task_execution binding (``task_id=`` WAS
+        present) whose ``plan_task_id`` fails to RESOLVE
+        (``DEGRADABLE_BINDING_REASONS``) is no longer left unborn. The row is
+        still born via :func:`~modules.agents.dispatch_binding.birth_degraded_row`
+        -- ``plan_task_id`` NULL in the column (referential integrity is not
+        weakened), the rejection reason and the failed token recorded INSIDE
+        the birth envelope. The identity is still returned so it is still
+        injected and the turn still runs -- degrade, not block. A verifier
+        turn's unresolved binding (``verifier_requires_parent_handoff_id`` /
+        ``parent_handoff_id_unresolved``) is NOT in ``DEGRADABLE_BINDING_REASONS``
+        and keeps today's behavior exactly: no row, no identity.
 
         Never raises: every failure path is swallowed so a dispatch is never
         blocked. See _adapt_task for the rationale.
@@ -1612,7 +1727,9 @@ class ClaudeCodeAdapter(HookAdapter):
         try:
             import os as _os
             from modules.agents.dispatch_binding import (
+                DEGRADABLE_BINDING_REASONS,
                 DispatchBindingError,
+                birth_degraded_row,
                 birth_dispatched_row,
             )
             from modules.agents.dispatch_identity import mint_dispatch_identity
@@ -1672,6 +1789,33 @@ class ClaudeCodeAdapter(HookAdapter):
                     "Born-at-dispatch: binding not born (agent=%s): %s",
                     agent, exc,
                 )
+                _record_dispatch_binding_rejection(
+                    exc, agent_name=agent, binding=binding,
+                )
+                if exc.reason in DEGRADABLE_BINDING_REASONS:
+                    try:
+                        birth_degraded_row(
+                            contract_id=contract_id,
+                            agent_id=identity["agent_id"],
+                            workspace=workspace,
+                            kind=binding.get("kind"),
+                            rejection_reason=exc.reason,
+                            failed_plan_task_id=ptid,
+                            plan_id=binding.get("plan_id"),
+                            session_id=sid,
+                            agent_name=agent,
+                        )
+                        logger.info(
+                            "Born-at-dispatch: DEGRADED row stamped (agent=%s, "
+                            "failed_task=%s, reason=%s, contract_id=%s)",
+                            agent, ptid, exc.reason, contract_id,
+                        )
+                        return identity
+                    except Exception:
+                        logger.debug(
+                            "Born-at-dispatch degraded birth failed (non-fatal)",
+                            exc_info=True,
+                        )
         except Exception:
             logger.debug("Born-at-dispatch birth failed (non-fatal)", exc_info=True)
         return None
