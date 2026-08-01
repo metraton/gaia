@@ -14,7 +14,6 @@ The brief markdown format (used by the interactive --editor flow) is:
           shape:
             run: "..."
             expect: "..."
-        artifact: evidence/AC-1.txt
       - id: AC-2
         ...
     ---
@@ -502,7 +501,7 @@ def parse_brief_markdown(text: str) -> dict[str, Any]:
           "acceptance_criteria": [
               {"ac_id": "AC-1", "description": "...",
                "evidence_type": "command", "evidence_shape": <dict>,
-               "artifact_path": "evidence/AC-1.txt"},
+               "artifact_path": None},
               ...
           ],
           "milestones": [{"name": "M1: ...", "description": "..."}, ...],

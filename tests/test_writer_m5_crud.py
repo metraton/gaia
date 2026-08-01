@@ -333,6 +333,32 @@ class TestVerifyBrief:
         kinds = {i["kind"] for i in res["inconsistencies"]}
         assert "done_ac_without_artifact" in kinds
 
+    def test_done_ac_with_inline_evidence_is_not_missing_artifact(self, seeded_db):
+        from gaia.briefs.store import verify_brief
+        con = sqlite3.connect(str(seeded_db))
+        try:
+            brief_id = con.execute(
+                "SELECT id FROM briefs WHERE name='test-brief'"
+            ).fetchone()[0]
+            con.execute(
+                "UPDATE acceptance_criteria "
+                "SET status='done', evidence_type='text', artifact_path=NULL "
+                "WHERE ac_id='AC-1'"
+            )
+            con.execute(
+                "INSERT INTO evidence "
+                "(brief_id, ac_id, type, text, size_bytes) "
+                "VALUES (?, 'AC-1', 'text', 'verified inline', 15)",
+                (brief_id,),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        res = verify_brief("me", "test-brief", db_path=seeded_db)
+        kinds = {i["kind"] for i in res["inconsistencies"]}
+        assert "done_ac_without_artifact" not in kinds
+
     def test_empty_plan_detected(self, seeded_db):
         from gaia.briefs.store import verify_brief
         con = sqlite3.connect(str(seeded_db))

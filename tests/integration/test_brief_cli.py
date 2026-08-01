@@ -812,10 +812,13 @@ def test_ac_add_and_show_roundtrip(tmp_db, tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert _cmd_new(_new_args(title="AC Brief", surface_type="cli")) == 0
 
+    canonical_artifact = str(
+        Path.home() / ".gaia" / "evidence" / "me" / "ac-brief" / "AC-1" / "result.txt"
+    )
     rc = _cmd_ac(argparse.Namespace(
         ac_action="add", brief="ac-brief", workspace="me",
         id="AC-1", description="first criterion", evidence_type="command",
-        evidence_shape=None, artifact="evidence/AC-1.txt", json=False,
+        evidence_shape=None, artifact=canonical_artifact, json=False,
     ))
     assert rc == 0, capsys.readouterr()
 
@@ -823,7 +826,26 @@ def test_ac_add_and_show_roundtrip(tmp_db, tmp_path, monkeypatch, capsys):
     acs = {a.get("ac_id"): a for a in brief["acceptance_criteria"]}
     assert "AC-1" in acs
     assert acs["AC-1"]["evidence_type"] == "command"
-    assert acs["AC-1"]["artifact_path"] == "evidence/AC-1.txt"
+    assert acs["AC-1"]["artifact_path"] == canonical_artifact
+
+
+def test_ac_add_rejects_repository_relative_artifact(
+    tmp_db, tmp_path, monkeypatch, capsys
+):
+    import argparse
+    from cli.brief import _cmd_ac, _cmd_new
+
+    monkeypatch.chdir(tmp_path)
+    assert _cmd_new(_new_args(title="Unsafe Artifact", surface_type="cli")) == 0
+
+    rc = _cmd_ac(argparse.Namespace(
+        ac_action="add", brief="unsafe-artifact", workspace="me",
+        id="AC-1", description="criterion", evidence_type="command",
+        evidence_shape=None, artifact="evidence/AC-1.txt", json=False,
+    ))
+
+    assert rc == 1
+    assert "repository-relative evidence paths are unsafe" in capsys.readouterr().err
 
 
 def test_milestone_and_ac_duplicate_rejected(tmp_db, tmp_path, monkeypatch, capsys):

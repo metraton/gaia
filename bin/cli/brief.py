@@ -913,7 +913,9 @@ def register(subparsers) -> None:
         epilog=(
             "Examples:\n"
             "  gaia brief ac add my-brief --id=AC-1 --description='...' "
-            "--evidence-type=command --artifact=evidence/AC-1.txt\n"
+            "--evidence-type=command\n"
+            "  # After execution: gaia evidence add --brief my-brief "
+            "--ac AC-1 --type command_output --artifact-file /tmp/result.txt\n"
             "  gaia brief ac remove my-brief --id=AC-1\n"
         ),
     )
@@ -932,7 +934,10 @@ def register(subparsers) -> None:
     )
     ac_add.add_argument(
         "--artifact", dest="artifact", default=None,
-        help="Relative artifact path (e.g. evidence/AC-1.txt).",
+        help=(
+            "Optional existing absolute blob path returned by `gaia evidence "
+            "add`; repository-relative paths are rejected."
+        ),
     )
     ac_add.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
@@ -1040,12 +1045,16 @@ def _cmd_ac(args) -> int:
 
     try:
         if sub == "add":
+            artifact_path = getattr(args, "artifact", None)
+            if artifact_path is not None:
+                from gaia.evidence.fs import require_canonical_artifact_path
+                artifact_path = require_canonical_artifact_path(artifact_path)
             res = add_ac(
                 workspace, brief_name, ac_id,
                 description=getattr(args, "description", None),
                 evidence_type=getattr(args, "evidence_type", None),
                 evidence_shape=getattr(args, "evidence_shape", None),
-                artifact_path=getattr(args, "artifact", None),
+                artifact_path=artifact_path,
             )
         else:
             res = remove_ac(workspace, brief_name, ac_id)

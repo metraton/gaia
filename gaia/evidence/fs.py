@@ -29,6 +29,35 @@ def _evidence_root() -> Path:
     return Path.home() / ".gaia" / "evidence"
 
 
+def require_canonical_artifact_path(artifact_path: str) -> str:
+    """Validate and normalize an artifact path owned by Gaia evidence storage.
+
+    Acceptance criteria may reference an already-recorded evidence blob, but
+    they must never direct producers to write repository-relative
+    ``evidence/...`` files.  Actual blobs are minted by ``gaia evidence add``.
+    """
+    if not artifact_path or not artifact_path.strip():
+        raise ValueError("artifact path must not be empty")
+    candidate = Path(artifact_path).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError(
+            "artifact paths must be absolute paths returned by "
+            "`gaia evidence add`; repository-relative evidence paths are unsafe"
+        )
+    root = _evidence_root().resolve()
+    resolved = candidate.resolve(strict=False)
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"artifact path must be under canonical Gaia evidence root {root}; "
+            "record the payload with `gaia evidence add` first"
+        ) from exc
+    if not relative.parts:
+        raise ValueError("artifact path must identify a blob below the evidence root")
+    return str(resolved)
+
+
 # ---------------------------------------------------------------------------
 # Path construction
 # ---------------------------------------------------------------------------

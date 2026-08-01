@@ -1117,14 +1117,21 @@ def verify_brief(
                             ),
                         })
 
-        # Invariant 3: AC with status='done' but no artifact_path AND
-        # evidence_type is set (the type promised evidence; the artifact is
-        # missing).
+        # Invariant 3: a done AC that promised evidence must have either a
+        # legacy/canonical artifact_path reference OR at least one structured
+        # evidence row. Inline evidence deliberately has no artifact_path, so
+        # requiring that column alone incorrectly rejects valid canonical
+        # evidence and encourages repository-relative placeholder files.
         bad_acs = con.execute(
-            "SELECT ac_id, evidence_type, artifact_path FROM acceptance_criteria "
-            "WHERE brief_id = ? AND status = 'done' "
-            "AND evidence_type IS NOT NULL "
-            "AND (artifact_path IS NULL OR artifact_path = '')",
+            "SELECT ac.ac_id, ac.evidence_type, ac.artifact_path "
+            "FROM acceptance_criteria ac "
+            "WHERE ac.brief_id = ? AND ac.status = 'done' "
+            "AND ac.evidence_type IS NOT NULL "
+            "AND (ac.artifact_path IS NULL OR ac.artifact_path = '') "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM evidence e "
+            "  WHERE e.brief_id = ac.brief_id AND e.ac_id = ac.ac_id"
+            ")",
             (brief_id,),
         ).fetchall()
         for ac_row in bad_acs:
@@ -1133,7 +1140,7 @@ def verify_brief(
                 "detail": (
                     f"AC '{ac_row['ac_id']}' is status=done with "
                     f"evidence_type={ac_row['evidence_type']!r} but no "
-                    f"artifact_path"
+                    "canonical evidence row or artifact_path"
                 ),
             })
 

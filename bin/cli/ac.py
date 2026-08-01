@@ -107,6 +107,9 @@ def _cmd_add(args) -> int:
     as_json = getattr(args, "json", False)
 
     try:
+        if artifact_path is not None:
+            from gaia.evidence.fs import require_canonical_artifact_path
+            artifact_path = require_canonical_artifact_path(artifact_path)
         res = add_ac(
             workspace, brief_name, ac_id,
             description=description,
@@ -171,6 +174,9 @@ def _cmd_edit(args) -> int:
         )
 
     try:
+        if artifact_path is not None:
+            from gaia.evidence.fs import require_canonical_artifact_path
+            artifact_path = require_canonical_artifact_path(artifact_path)
         res = update_ac(
             workspace, brief_name, ac_id,
             description=description,
@@ -255,7 +261,8 @@ def register(subparsers) -> None:
     add_p.add_argument("--evidence-shape", dest="evidence_shape", default=None,
                        help="Evidence shape as JSON string.")
     add_p.add_argument("--artifact-path", dest="artifact_path", default=None,
-                       help="Path to artifact file.")
+                       help=("Existing absolute blob path returned by `gaia "
+                             "evidence add`; relative paths are rejected."))
     add_p.add_argument("--workspace", default=None, metavar="W")
     add_p.add_argument("--json", action="store_true", default=False,
                        help="Emit JSON.")
@@ -300,7 +307,8 @@ def register(subparsers) -> None:
     edit_p.add_argument("--evidence-shape", dest="evidence_shape", default=None,
                         help="New evidence shape as JSON string.")
     edit_p.add_argument("--artifact-path", dest="artifact_path", default=None,
-                        help="New artifact path.")
+                        help=("New canonical blob path returned by `gaia "
+                              "evidence add`; relative paths are rejected."))
     edit_p.add_argument("--workspace", default=None, metavar="W")
     edit_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON.")

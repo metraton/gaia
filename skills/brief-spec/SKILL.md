@@ -96,9 +96,13 @@ Tu trabajo:
      --id=AC-1 \
      --description="<user observation>" \
      --evidence-type=<command|url|playwright|artifact|metric> \
-     --evidence-shape='<free-form string or JSON>' \
-     --artifact=evidence/AC-1.txt
+     --evidence-shape='<free-form string or JSON>'
    ```
+
+   Do not predeclare a repository-relative artifact such as
+   `evidence/AC-1.txt`. During execution, persist the actual result with
+   `gaia evidence add`; Gaia stores small results inline and larger blobs below
+   `~/.gaia/evidence/`, then returns the canonical record/path.
 
    Remove one the same way, dispatching `gaia brief ac remove <slug>
    --id=AC-1`. The shapes per evidence type are under "Evidence Types" below;
@@ -192,7 +196,6 @@ acceptance_criteria:
         expect:
           status: 200
           body_contains: "Sign in"
-    artifact: evidence/AC-1.json
   - id: AC-2
     description: "pytest auth suite green"
     evidence:
@@ -200,7 +203,6 @@ acceptance_criteria:
       shape:
         run: "pytest tests/auth/ -q"
         expect: "exit 0"
-    artifact: evidence/AC-2.txt
 ---
 
 # [Feature Name]
@@ -231,8 +233,9 @@ Human-readable summary. Source of truth lives in frontmatter.
 
 - Every AC has a description (user observation) and an evidence block.
 - Evidence must be reproducible by the user -- not only by the agent.
-- Every AC declares an `artifact` path; the orchestrator persists the
-  verification output there so the user can read it after completion.
+- Every completed AC has a structured row created by `gaia evidence add`.
+  Never invent a repository-relative output path. Small results live inline
+  in Gaia's DB; larger blobs live below `~/.gaia/evidence/`.
 - Vague ACs get pushed back: "Fast means what? Under 200ms p95?"
 - Surface type restricts valid evidence types (see table).
 
