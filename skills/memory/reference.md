@@ -129,6 +129,34 @@ neither infers project scope from the launch directory -- `add` demands an
 explicit `--project`/`--project-ref`/`--workspace`, and `get-relevant` demands
 an explicit `--initiative` to narrow to one project's pending work.
 
+## Digest and anchor budgets: query mechanics
+
+`class=anchor` and `class=thread status=carry_forward` surface through
+two separate SessionStart queries, each with its own budget. `SKILL.md`
+keeps the practical consequence -- an anchor never reaches the digest;
+this section holds the query mechanics behind it.
+
+- **The digest (`carry_forward`/`open`) never carries anchors at all.**
+  Its query filters `class='thread' AND status IN ('carry_forward',
+  'open')`, so an `anchor` row is invisible to it regardless of budget.
+  Its own overflow mechanism trims whole initiatives from the tail
+  (top-K initiatives, with a global "+N más" and a per-initiative "+N
+  más en X" hint) when the ~1500-char cap is exceeded -- it never
+  competes with anchors for that budget.
+- **The anchor call (`sections=["anchor"]`) never carries pendings at
+  all.** Its query filters `class='anchor'` only, and is additionally
+  capped at a small fixed quota (`_RELEVANT_PER_CLASS_QUOTA["anchor"]`,
+  identity anchors pinned first, then most-recently-updated) before it
+  is even rendered -- independent of and much tighter than the
+  digest's own worklist budget.
+- **A three-way, single-call trim order also exists in the CLI** --
+  `gaia memory get-relevant --sections=carry_forward,anchor,thread_open`
+  (one call, all three sections) trims one bullet at a time in the
+  fixed order `thread_open` → `anchor` → `carry_forward` when the
+  combined render overflows the char cap. No live caller requests that
+  three-section combination today; it is reachable only by an explicit
+  manual invocation.
+
 ## Promoted defect: the `gaia_system` initiative shape
 
 `episode_anomalies` is the raw defect floor. It is written unrequested at
