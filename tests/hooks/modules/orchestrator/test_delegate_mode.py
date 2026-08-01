@@ -1,21 +1,24 @@
 """Tests for orchestrator delegate mode enforcement."""
 
-import unittest
-
 import sys
+import unittest
 from pathlib import Path
 
 # Add hooks directory to path for module resolution
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "hooks"))
 
 from modules.orchestrator.delegate_mode import (
+    CODEX_ALLOWED_TOOLS,
+    CODEX_DELEGATION_TOOLS,
+    CODEX_HOST,
+    HOST_MARKER_KEY,
     ORCHESTRATOR_AGENT_TYPES,
     ORCHESTRATOR_ALLOWED_TOOLS,
-    DelegateModeResult,
     SessionRole,
     check_delegate_mode,
     classify_session_role,
     is_orchestrator_context,
+    normalize_tool_name,
 )
 
 
@@ -313,6 +316,110 @@ class TestAllowedToolsCompleteness(unittest.TestCase):
 
     def test_read_present(self):
         self.assertIn("read", ORCHESTRATOR_ALLOWED_TOOLS)
+
+
+class TestCodexDelegateMode(unittest.TestCase):
+    """Codex gets its own closed tool vocabulary; Claude remains unchanged."""
+
+    @staticmethod
+    def _payload(tool_name: str) -> dict:
+        return {
+            "session_id": "codex-thread",
+            "tool_name": tool_name,
+            "tool_input": {},
+            HOST_MARKER_KEY: CODEX_HOST,
+        }
+
+    def test_exec_command_alias_bash_remains_delegated(self):
+        result = check_delegate_mode("Bash", self._payload("Bash"))
+        self.assertTrue(result.blocked)
+        self.assertIn("collaboration.spawn_agent", result.reason)
+
+    def test_apply_patch_and_edit_alias_remain_delegated(self):
+        for name in ("apply_patch", "Edit"):
+            with self.subTest(name=name):
+                self.assertTrue(
+                    check_delegate_mode(name, self._payload(name)).blocked
+                )
+
+    def test_delegation_tool_spellings_are_never_blocked(self):
+        for name in (
+            "spawn_agent",
+            "collaboration.spawn_agent",
+            "collaboration_spawn_agent",
+            "collaboration-spawn-agent",
+            "collaborationspawn_agent",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(
+                    check_delegate_mode(name, self._payload(name)).blocked
+                )
+
+    def test_collaboration_coordination_tools_are_allowed(self):
+        for name in (
+            "collaboration.list_agents",
+            "collaboration.send_message",
+            "collaboration.followup_task",
+            "collaboration.wait_agent",
+            "collaboration.interrupt_agent",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(
+                    check_delegate_mode(name, self._payload(name)).blocked
+                )
+
+    def test_codex_direct_read_and_state_tools_are_allowed(self):
+        for name in (
+            "get_goal",
+            "update_plan",
+            "view_image",
+            "list_mcp_resources",
+            "read_mcp_resource",
+            "web.run",
+            "functions.exec",
+            "tool_search",
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(
+                    check_delegate_mode(name, self._payload(name)).blocked
+                )
+
+    def test_read_only_mcp_leaf_is_allowed(self):
+        name = "mcp__codex_apps__github__search_repositories"
+        self.assertFalse(check_delegate_mode(name, self._payload(name)).blocked)
+
+    def test_mutative_or_unknown_mcp_leaf_is_blocked(self):
+        for name in (
+            "mcp__codex_apps__gmail__send_email",
+            "mcp__server__get_or_create_resource",
+            "mcp__server__synchronize",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(
+                    check_delegate_mode(name, self._payload(name)).blocked
+                )
+
+    def test_unknown_local_tool_remains_blocked(self):
+        name = "custom_unknown_tool"
+        self.assertTrue(check_delegate_mode(name, self._payload(name)).blocked)
+
+    def test_denial_does_not_claim_routing_recommendation_exists(self):
+        result = check_delegate_mode("Bash", self._payload("Bash"))
+        self.assertNotIn("routing recommendation", result.reason.lower())
+        self.assertNotIn("last message", result.reason.lower())
+
+    def test_codex_delegation_invariant(self):
+        self.assertTrue(CODEX_DELEGATION_TOOLS)
+        self.assertLessEqual(CODEX_DELEGATION_TOOLS, CODEX_ALLOWED_TOOLS)
+
+    def test_normalization_covers_points_underscores_and_hyphens(self):
+        expected = "collaborationspawnagent"
+        for name in (
+            "collaboration.spawn_agent",
+            "collaboration_spawn_agent",
+            "collaboration-spawn-agent",
+        ):
+            self.assertEqual(normalize_tool_name(name), expected)
 
 
 if __name__ == "__main__":
