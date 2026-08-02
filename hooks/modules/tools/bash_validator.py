@@ -237,9 +237,10 @@ class BashValidator:
         normal way, since a bare word never satisfies `os.path.isabs`. This
         method is the wiring-side fix: it resolves the bare token through
         $PATH here, at the call site, and hands the guard an absolute-path
-        candidate to run its EXACT realpath comparison against
-        TRUSTED_GAIA_BINARY -- so a poisoned $PATH still fails that
-        comparison and is denied exactly as before. Resolving does not
+        candidate to run its package-provenance identity check against
+        (is_trusted_gaia_binary) -- so a poisoned $PATH resolving to a
+        binary no trusted package declares still fails and is denied
+        exactly as before. Resolving does not
         widen what the guard accepts; it only lets a normally-typed
         invocation reach the same identity check an absolute path already
         would.

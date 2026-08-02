@@ -53,7 +53,7 @@ guard layered on top, and folding them in would blur what this module is
 answering ("is the orchestrator only running its own CLI?") with a question
 delegate mode already owns.
 
-Design decision 2 -- the binary must resolve to a TRUSTED ABSOLUTE PATH
+Design decision 2 -- identity is PACKAGE PROVENANCE, not a path
 --------------------------------------------------------------------------
 ``subagent_memory_write_guard.py`` (the structural precedent for this module)
 resolves the invoked binary by BASENAME: it strips a token down to its last
@@ -67,7 +67,26 @@ on ``$PATH`` -- has the basename ``gaia`` and would satisfy that comparison.
 A guard whose entire job is "only the real gaia CLI may run" cannot itself be
 fooled by a same-named file; that would be a key left under the doormat.
 
-So this module verifies FULL PATH IDENTITY instead of a name fragment:
+The first design overcorrected in the opposite direction: it realpath'd the
+invoked token and required EXACT equality against the one ``bin/gaia`` that
+ships alongside this very hook module (computed from ``__file__``). That
+equality is a property of a LAYOUT, not of identity, and a live install
+disproved it: a real workspace runs the hook module out of the installed
+pnpm dev-pack under ``node_modules`` (``.claude/hooks`` symlinks there),
+while the ``$PATH`` launcher is an npm-global symlink chain that resolves to
+the SOURCE TREE's ``bin/gaia`` -- two genuine, simultaneously installed
+copies of the same package, two distinct real paths, so the guard denied the
+legitimate CLI, including its own. Multiple concurrent genuine installs are
+the NORMAL condition of this workspace (the ``.pnpm`` store carries one new
+hash-named package root per dev-pack build), which also rules out the
+obvious repair of a trusted-locations SET: any enumerated set is stale after
+the next ``pack``, on the next machine, and for the next layout -- it rots
+by construction, and a rotten allowlist on a security gate fails open or
+fails useless.
+
+So identity is verified by PROVENANCE: *the trusted gaia CLI is any file
+that a genuinely installed gaia package -- the same npm package this hook
+module itself ships in, by name -- declares as its own ``gaia`` executable.*
 
   1. The token in the binary position of a command component must already be
      an ABSOLUTE path in the command text as written (``os.path.isabs``).
@@ -81,18 +100,51 @@ So this module verifies FULL PATH IDENTITY instead of a name fragment:
      compound-cwd threading, out of this module's scope) -- resolving a
      relative token would mean guessing a cwd this module cannot verify.
      Both are rejected outright rather than approximated.
-  2. That absolute token is then resolved with ``os.path.realpath`` (follows
-     every symlink in the chain) and compared for EXACT equality against
-     ``TRUSTED_GAIA_BINARY`` -- the real, on-disk ``bin/gaia`` that ships
-     ALONGSIDE this very hook module, computed from ``__file__`` rather than
-     hard-coded. Hard-coding a path (e.g. a specific user's npm global
-     prefix) would break for every other install layout; anchoring to
-     ``__file__`` instead answers "is this the SAME package this hook code
-     itself shipped in?", which is true for a source checkout, an installed
-     npm package, and the ``.claude/`` copy alike -- ``.resolve()`` /
-     ``os.path.realpath`` follow the ``.claude/hooks`` symlink back to the
-     real package root, so the identity check is layout-agnostic without
-     needing to special-case any one of them.
+  2. The absolute token is resolved with ``os.path.realpath`` (follows every
+     symlink in the chain) to a real file R. R must exist.
+  3. Walking UP from R, the NEAREST directory containing a ``package.json``
+     is taken as R's declaring package root -- npm's own resolution rule.
+     No ``package.json`` above R means R belongs to no package: denied.
+  4. That manifest's ``name`` must equal ``TRUSTED_PACKAGE_NAME`` -- the
+     ``name`` read at import time from the ``package.json`` of the package
+     THIS module ships in (``__file__`` walked up to the package root). The
+     expected name is never hard-coded: the module asks "what package am I?"
+     and demands the invoked binary belong to a package of the same name, so
+     a rename of the npm package updates both sides of the comparison in the
+     same commit. If this module's own manifest is missing or unreadable,
+     ``TRUSTED_PACKAGE_NAME`` is ``None`` and EVERY candidate is denied --
+     failing closed, never open.
+  5. The manifest's own ``bin`` entry for ``gaia`` must realpath-resolve to
+     EXACTLY R. This is the load-bearing link: it is not enough for R to
+     live somewhere inside a gaia package (that would trust every file in
+     the tree); the package itself must declare R as its gaia executable.
+
+  Steps 2-5 fail closed on every doubt: unreadable or unparseable manifest,
+  name mismatch, missing/odd ``bin`` field, ``bin`` resolving elsewhere, and
+  any ``OSError`` all deny. A pnpm-global SHELL-SHIM launcher (pnpm writes a
+  wrapper script, not a symlink, so its realpath is the shim itself, inside
+  no gaia package) is also denied by construction -- fail closed; the lane
+  there is to invoke the installed package's own ``bin/gaia`` path.
+
+  Deliberately NOT chosen: content identity (hashing the invoked file
+  against the sibling ``bin/gaia``). Two genuine installs need not be the
+  same VERSION -- the incident layout ran dev-pack hooks against a launcher
+  resolving into the source tree, and a stable-global-launcher-plus-dev-tree
+  mix is routine -- so byte equality would re-break every mixed-version
+  layout the day ``bin/gaia`` changes at all: the same "property of the
+  layout mistaken for identity" bug, re-expressed as a property of the
+  release cadence.
+
+  Stated residual, within this guard's threat model: provenance reads the
+  filesystem, so an actor who can WRITE the filesystem could fabricate a
+  package tree that passes it. That actor is outside this guard's model --
+  the orchestrator lane this module gates has no file-writing tool (that is
+  delegate mode's job) and the allowlisted gaia verbs write rows, not files;
+  and the fabrication power is exactly the power that already defeated the
+  old design (overwriting the single trusted ``bin/gaia`` IN PLACE passed
+  the path-equality check, which never looked at content either). Provenance
+  narrows what passes without conceding anything path equality actually
+  held.
 
   A useful side effect of requiring an EXACT absolute-path match at the
   binary position: it also closes the env-prefix vector named in the task
@@ -103,12 +155,11 @@ So this module verifies FULL PATH IDENTITY instead of a name fragment:
   must still make a decision about whatever remains. This guard's job is the
   opposite: nothing may precede the trusted binary at all. Tokenizing
   ``FOO=bar /abs/path/bin/gaia contract view`` places the assignment
-  ``"FOO=bar"`` (not the trusted path) at position 0, so the absolute-path
-  identity check above rejects it on its own, for the same reason it rejects
-  everything else that is not, character for character, the trusted
-  binary's own real path. Peeling and then re-checking would only add a
-  second code path to keep in sync with the first; the identity check alone
-  already covers the shape the task calls out.
+  ``"FOO=bar"`` (not a path at all) at position 0, so the absolute-path
+  requirement in step 1 rejects it on its own, before provenance is even
+  consulted. Peeling and then re-checking would only add a second code path
+  to keep in sync with the first; the identity check alone already covers
+  the shape the task calls out.
 
 Design decision 3 -- every COMPONENT and every SUBSTITUTION BODY is checked
 -------------------------------------------------------------------------------
@@ -171,7 +222,7 @@ invocation to evaluate. The day that lane opens, this guard is already live
 with no further wiring change required.
 
 Public API:
-    TRUSTED_GAIA_BINARY: str
+    TRUSTED_PACKAGE_NAME: Optional[str]
     ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]]
     ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]]
     ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]]
@@ -183,6 +234,7 @@ Public API:
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, FrozenSet, Optional, Tuple
 
@@ -193,36 +245,119 @@ from ..tools.stage_decomposer import StageDecomposer
 # ---------------------------------------------------------------------------
 
 # The real, on-disk directory containing THIS file, with every symlink in the
-# chain resolved -- this is what makes the identity check layout-agnostic: it
-# resolves the SAME way whether this module is read from the source tree or
-# from an installed ``.claude/hooks`` copy symlinked back to the real package.
+# chain resolved -- so the package root below is the root of whichever real
+# package this module is running from (source tree, or an installed copy
+# under node_modules that ``.claude/hooks`` symlinks into).
 _MODULE_DIR = os.path.dirname(os.path.realpath(__file__))
 
 # hooks/modules/security -> hooks/modules -> hooks -> <package root>
 _PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(_MODULE_DIR)))
 
-# The ONE trusted gaia binary: the dispatcher that ships alongside this hook
-# module, not any file that merely happens to be named "gaia" elsewhere on
-# disk or on $PATH. Realpath'd once at import time so every comparison below
-# is a plain string equality against an already-canonical target.
-TRUSTED_GAIA_BINARY: str = os.path.realpath(
-    os.path.join(_PACKAGE_ROOT, "bin", "gaia")
-)
+
+def _read_package_manifest(package_root: str) -> Optional[Dict[str, Any]]:
+    """Return *package_root*'s parsed ``package.json`` dict, or None.
+
+    None on any doubt -- missing file, unreadable, unparseable, or a JSON
+    document that is not an object. Callers treat None as a denial.
+    """
+    manifest_path = os.path.join(package_root, "package.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _own_package_name() -> Optional[str]:
+    """The npm package name this hook module itself ships in, or None."""
+    manifest = _read_package_manifest(_PACKAGE_ROOT)
+    if manifest is None:
+        return None
+    name = manifest.get("name")
+    if isinstance(name, str) and name.strip():
+        return name
+    return None
+
+
+# The identity anchor: not a path, the NAME of the package this module ships
+# in, read from its own manifest at import time. None (own manifest missing
+# or unreadable) makes is_trusted_gaia_binary() deny everything -- closed.
+TRUSTED_PACKAGE_NAME: Optional[str] = _own_package_name()
+
+
+def _find_declaring_package_root(real_file: str) -> Optional[str]:
+    """Nearest ancestor directory of *real_file* containing a package.json.
+
+    npm's own resolution rule: the nearest manifest wins, and the walk stops
+    there -- a mismatching nearest manifest is a denial, never a reason to
+    keep climbing toward a manifest that would match.
+    """
+    directory = os.path.dirname(real_file)
+    while True:
+        if os.path.isfile(os.path.join(directory, "package.json")):
+            return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+
+
+def _declared_gaia_bin(package_root: str, manifest: Dict[str, Any]) -> Optional[str]:
+    """Realpath of the file *manifest* declares as its ``gaia`` executable.
+
+    Handles npm's two ``bin`` forms: the object form (``{"gaia": "bin/gaia"}``,
+    the form this package publishes) and the string form, which npm names
+    after the package's unscoped basename -- accepted only when that basename
+    is exactly ``gaia``. Anything else (missing ``bin``, no ``gaia`` entry,
+    non-string value) returns None, which callers treat as a denial.
+    """
+    bin_field = manifest.get("bin")
+    bin_rel: Optional[str] = None
+    if isinstance(bin_field, dict):
+        candidate = bin_field.get("gaia")
+        if isinstance(candidate, str):
+            bin_rel = candidate
+    elif isinstance(bin_field, str):
+        name = manifest.get("name")
+        if isinstance(name, str) and name.rsplit("/", 1)[-1] == "gaia":
+            bin_rel = bin_field
+    if not bin_rel or not bin_rel.strip():
+        return None
+    return os.path.realpath(os.path.join(package_root, bin_rel))
 
 
 def is_trusted_gaia_binary(token: str) -> bool:
-    """Return True iff *token* is, by absolute path identity, the trusted gaia CLI.
+    """Return True iff *token* is, by package provenance, the trusted gaia CLI.
 
-    Rejects (returns False for) a bare word (no ``$PATH`` lookup is
-    performed -- see Design decision 2), a relative path (cwd-dependent,
-    and this module does not track ``cd`` state), and any absolute path
-    whose realpath does not exactly match :data:`TRUSTED_GAIA_BINARY` --
-    including a same-named file elsewhere on disk.
+    Trusted means: *token* is absolute as written, and its realpath is the
+    very file that a genuinely installed package named
+    :data:`TRUSTED_PACKAGE_NAME` declares as its own ``gaia`` executable
+    (Design decision 2 -- steps 2-5). Rejects a bare word (no ``$PATH``
+    lookup is performed), a relative path (cwd-dependent, and this module
+    does not track ``cd`` state), a same-named file that belongs to no such
+    package, and a file that merely lives INSIDE such a package without
+    being its declared ``gaia`` bin entry. Fails closed on every doubt,
+    including when this module's own package name could not be established.
     """
     if not token or not os.path.isabs(token):
         return False
+    if TRUSTED_PACKAGE_NAME is None:
+        return False
     try:
-        return os.path.realpath(token) == TRUSTED_GAIA_BINARY
+        real = os.path.realpath(token)
+        if not os.path.isfile(real):
+            return False
+        package_root = _find_declaring_package_root(real)
+        if package_root is None:
+            return False
+        manifest = _read_package_manifest(package_root)
+        if manifest is None:
+            return False
+        if manifest.get("name") != TRUSTED_PACKAGE_NAME:
+            return False
+        declared = _declared_gaia_bin(package_root, manifest)
+        return declared is not None and declared == real
     except OSError:
         return False
 
@@ -547,11 +682,12 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
     if not is_trusted_gaia_binary(binary):
         return False, (
             f"GAIA CLI ONLY: '{binary}' is not the trusted gaia CLI "
-            f"(expected the absolute path resolving to {TRUSTED_GAIA_BINARY!r}). "
-            f"A bare command name, a relative path, an env-var prefix, or a "
-            f"different binary entirely all fail this identity check by "
-            f"design -- see gaia_cli_only_guard.py for why. Denied outright, "
-            f"not approvable."
+            f"(expected an absolute path whose realpath is the declared "
+            f"'gaia' executable of an installed {TRUSTED_PACKAGE_NAME!r} "
+            f"package). A bare command name, a relative path, an env-var "
+            f"prefix, or a binary no such package declares all fail this "
+            f"identity check by design -- see gaia_cli_only_guard.py for "
+            f"why. Denied outright, not approvable."
         )
 
     rest = args[1:]
