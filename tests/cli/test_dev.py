@@ -83,6 +83,13 @@ class TestRegisterSubcommand(unittest.TestCase):
         args = parser.parse_args(["dev", "--workspace", "/tmp/ws"])
         self.assertEqual(args.workspace, "/tmp/ws")
 
+    def test_opencode_host_flag(self):
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+        args = parser.parse_args(["dev", "--host", "opencode"])
+        self.assertEqual(args.host, "opencode")
+
     def test_keep_tarball_and_pack_dest_flags(self):
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="subcommand")
@@ -400,6 +407,7 @@ class TestCmdDevRefusesNonSourceCheckout(unittest.TestCase):
         ns.verbose = False
         ns.keep_tarball = False
         ns.pack_dest = None
+        ns.host = "claude_code"
         return ns
 
     def test_refuses_when_package_root_is_not_a_source_checkout(self):
@@ -754,6 +762,7 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
         ns.verbose = overrides.get("verbose", False)
         ns.keep_tarball = False
         ns.pack_dest = None
+        ns.host = overrides.get("host", "claude_code")
         return ns
 
     def test_link_mode_calls_cmd_install_with_workspace(self):
@@ -764,6 +773,7 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
             def fake_cmd_install(ns):
                 captured["workspace"] = ns.workspace
                 captured["skip_workspace"] = ns.skip_workspace
+                captured["host"] = ns.host
                 return 0
 
             with patch("cli.dev.link_source_into_workspace",
@@ -775,6 +785,24 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(captured["workspace"], str(workspace))
             self.assertFalse(captured["skip_workspace"])
+            self.assertEqual(captured["host"], "claude_code")
+
+    def test_link_mode_propagates_opencode_host(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            captured = {}
+
+            def fake_cmd_install(ns):
+                captured["host"] = ns.host
+                return 0
+
+            with patch("cli.dev.link_source_into_workspace",
+                       return_value={"action": "created", "path": "x", "details": "ok"}), \
+                 patch("cli.dev.install_mod.cmd_install", side_effect=fake_cmd_install):
+                with redirect_stdout(io.StringIO()):
+                    cmd_dev(self._make_args(workspace, host="opencode"))
+
+            self.assertEqual(captured["host"], "opencode")
 
     def test_link_mode_never_packs_or_installs_tarball(self):
         with tempfile.TemporaryDirectory() as tmp:

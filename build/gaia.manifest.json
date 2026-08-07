@@ -70,6 +70,7 @@
     "bin/cli/defects.py"
   ],
   "include": [
+    "opencode/",
     "gaia/",
     "scripts/bootstrap_database.py",
     "scripts/bootstrap_database.sh",

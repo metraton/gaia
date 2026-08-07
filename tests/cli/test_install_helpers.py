@@ -312,6 +312,109 @@ class TestMergeLocalHooks(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# merge_worktree_settings
+# ---------------------------------------------------------------------------
+
+class TestMergeWorktreeSettings(unittest.TestCase):
+    def test_skipped_when_no_claude_dir(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            res = helpers.merge_worktree_settings(Path(tmp))
+        self.assertEqual(res["action"], "skipped")
+
+    def test_creates_settings_local_with_bg_isolation_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            res = helpers.merge_worktree_settings(workspace)
+            self.assertEqual(res["action"], "updated")
+            data = json.loads((workspace / ".claude" / "settings.local.json").read_text())
+            self.assertEqual(data["worktree"]["bgIsolation"], "none")
+
+    def test_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            helpers.merge_worktree_settings(workspace)
+            before = (workspace / ".claude" / "settings.local.json").read_text()
+            res2 = helpers.merge_worktree_settings(workspace)
+            after = (workspace / ".claude" / "settings.local.json").read_text()
+            self.assertEqual(res2["action"], "noop")
+            self.assertEqual(before, after)
+
+    def test_dry_run_does_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            res = helpers.merge_worktree_settings(workspace, dry_run=True)
+            self.assertEqual(res["action"], "updated")
+            self.assertFalse((workspace / ".claude" / "settings.local.json").exists())
+
+    def test_preserves_unrelated_top_level_content(self):
+        """Other settings.local.json keys (hooks, permissions, agent, env)
+        set by prior helpers or the user must not be lost or reordered away."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({
+                "agent": "gaia-orchestrator",
+                "env": {"CUSTOM_VAR": "x"},
+                "permissions": {"allow": ["MyCustomTool(*)"], "deny": [], "ask": []},
+            }))
+            helpers.merge_worktree_settings(workspace)
+            data = json.loads(local.read_text())
+            self.assertEqual(data["agent"], "gaia-orchestrator")
+            self.assertEqual(data["env"]["CUSTOM_VAR"], "x")
+            self.assertIn("MyCustomTool(*)", data["permissions"]["allow"])
+            self.assertEqual(data["worktree"]["bgIsolation"], "none")
+
+    def test_preserves_sibling_keys_under_worktree(self):
+        """Only `bgIsolation` is Gaia-owned -- any other key nested under
+        `worktree` (present or future harness options) is left untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({
+                "worktree": {"someOtherOption": "keep-me"},
+            }))
+            helpers.merge_worktree_settings(workspace)
+            data = json.loads(local.read_text())
+            self.assertEqual(data["worktree"]["someOtherOption"], "keep-me")
+            self.assertEqual(data["worktree"]["bgIsolation"], "none")
+
+    def test_normalizes_existing_divergent_value(self):
+        """A pre-existing worktree.bgIsolation set to anything other than
+        "none" (a harness default, or a value written before this fix
+        existed) is normalized to "none" -- this key is authoritative, like
+        the `agent` identity field, not a user preference to preserve."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({
+                "worktree": {"bgIsolation": "worktree"},
+            }))
+            res = helpers.merge_worktree_settings(workspace)
+            self.assertEqual(res["action"], "updated")
+            data = json.loads(local.read_text())
+            self.assertEqual(data["worktree"]["bgIsolation"], "none")
+
+    def test_malformed_worktree_value_is_replaced(self):
+        """A non-dict `worktree` value (corrupted file) is replaced with a
+        fresh dict carrying only bgIsolation, rather than raising."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({"worktree": "not-a-dict"}))
+            res = helpers.merge_worktree_settings(workspace)
+            self.assertEqual(res["action"], "updated")
+            data = json.loads(local.read_text())
+            self.assertEqual(data["worktree"], {"bgIsolation": "none"})
+
+
+# ---------------------------------------------------------------------------
 # manage_symlinks
 # ---------------------------------------------------------------------------
 

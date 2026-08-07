@@ -3,7 +3,7 @@ gaia dev -- Fast local dev loop: pack + install + wire in one command.
 
 Collapses today's manual 3-step loop (`npm pack` -> `npm`/`pnpm add
 <tarball>` -> `gaia install --workspace <target>`) into a single atomic
-`gaia dev [--workspace <path>]` invocation, so testing a source change in a
+`gaia dev [--workspace <path>] [--host <host>]` invocation, so testing a source change in a
 real consumer workspace is one command: edit source, run `gaia dev`,
 restart Claude Code, test.
 
@@ -76,8 +76,8 @@ from cli.install import _report_step  # type: ignore  # noqa: E402
 _NPM_PACKAGE_NAME = "@jaguilar87/gaia"
 
 
-def _restart_warning() -> str:
-    """The mandatory post-`gaia dev` restart notice.
+def _restart_warning(host: str = "claude_code") -> str:
+    """The mandatory post-`gaia dev` restart notice for the selected host.
 
     The Claude Code harness pins each hook's command at SESSION START and does
     not hot-reload it, so a session that is already open keeps running the OLD
@@ -85,6 +85,8 @@ def _restart_warning() -> str:
     Emitted verbatim by both pack and link modes so the notice is identical and
     testable.
     """
+    if host == "opencode":
+        return "  Restart OpenCode to activate the Gaia plugin and agent configuration."
     return (
         "  ⚠  Restart your Claude Code session to activate the new hooks.\n"
         "     The harness pins hook commands at session start (no hot-reload),\n"
@@ -185,6 +187,7 @@ def wire_workspace_via_installed_gaia(
     *,
     quiet: bool = True,
     timeout: int = 120,
+    host: str = "claude_code",
 ) -> dict[str, Any]:
     """Run the FRESHLY INSTALLED copy's own `gaia install --workspace`.
 
@@ -203,7 +206,15 @@ def wire_workspace_via_installed_gaia(
             "details": "installed gaia entrypoint not found -- tarball install may have failed",
         }
 
-    cmd = [sys.executable or "python3", str(installed_gaia), "install", "--workspace", str(workspace)]
+    cmd = [
+        sys.executable or "python3",
+        str(installed_gaia),
+        "install",
+        "--workspace",
+        str(workspace),
+        "--host",
+        host,
+    ]
     if quiet:
         cmd.append("--quiet")
 
@@ -296,7 +307,7 @@ def link_source_into_workspace(workspace: Path, source_root: Path) -> dict[str, 
 # Orchestration
 # ---------------------------------------------------------------------------
 
-def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool) -> int:
+def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool, host: str) -> int:
     link_res = link_source_into_workspace(workspace, _PACKAGE_ROOT)
     _report_step(name="node_modules link", result=link_res, quiet=quiet, verbose=verbose)
     if link_res["action"] == "error":
@@ -310,13 +321,14 @@ def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool) -> int:
         workspace=str(workspace),
         skip_workspace=False,
         no_path=False,
+        host=host,
     )
     rc = install_mod.cmd_install(ns)
     if rc == 0 and not quiet:
         print(
             "\n  gaia dev (link): workspace wired to the live source tree.\n"
         )
-        print(_restart_warning())
+        print(_restart_warning(host))
         print()
     return rc
 
@@ -501,6 +513,7 @@ def _run_pack_mode(
     keep_tarball: bool,
     pack_dest: str | None,
     no_global_link: bool = False,
+    host: str = "claude_code",
 ) -> int:
     # keep_tarball is retained for CLI compatibility only: now that the
     # pack destination is always stable and persistent (never a tmp dir
@@ -556,7 +569,7 @@ def _run_pack_mode(
             verbose=verbose,
         )
 
-    wire_res = wire_workspace_via_installed_gaia(workspace, quiet=quiet)
+    wire_res = wire_workspace_via_installed_gaia(workspace, quiet=quiet, host=host)
     _report_step(name="gaia install (wire)", result=wire_res, quiet=quiet, verbose=verbose)
     if wire_res["action"] == "error":
         return 1
@@ -588,7 +601,7 @@ def _run_pack_mode(
             f"\n  gaia dev: packed {pack_res.get('name')}@{build_label} "
             f"into {workspace}.\n"
         )
-        print(_restart_warning())
+        print(_restart_warning(host))
         print()
     return 0
 
@@ -615,7 +628,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "  --mode link: symlink node_modules/@jaguilar87/gaia straight at\n"
             "  this source tree (no pack, no install) for instant iteration.\n"
             "\n"
-            "After it returns, restart Claude Code in the target workspace and test.\n"
+            "Use --host=opencode to configure OpenCode; otherwise Claude Code is used.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -625,6 +638,12 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Target workspace to install/link into (default: cwd)",
+    )
+    p.add_argument(
+        "--host",
+        choices=("claude_code", "opencode"),
+        default="claude_code",
+        help="Host to configure (default: claude_code)",
     )
     p.add_argument(
         "--mode",
@@ -716,6 +735,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
     pack_dest = getattr(args, "pack_dest", None)
     no_global_link = bool(getattr(args, "no_global_link", False))
     workspace_arg = getattr(args, "workspace", None)
+    host = getattr(args, "host", "claude_code")
 
     workspace = (
         Path(workspace_arg).expanduser().resolve()
@@ -733,7 +753,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
         print(f"  workspace: {workspace}\n")
 
     if mode == "link":
-        return _run_link_mode(workspace, quiet=quiet, verbose=verbose)
+        return _run_link_mode(workspace, quiet=quiet, verbose=verbose, host=host)
 
     return _run_pack_mode(
         workspace,
@@ -742,4 +762,5 @@ def cmd_dev(args: argparse.Namespace) -> int:
         keep_tarball=keep_tarball,
         pack_dest=pack_dest,
         no_global_link=no_global_link,
+        host=host,
     )

@@ -11,6 +11,7 @@ Public helpers exposed to install/update:
   - configure_settings_json   Create or repair `.claude/settings.json`.
   - merge_local_permissions   Union gaia permissions into `settings.local.json`.
   - merge_local_hooks         Merge hook event entries into `settings.local.json`.
+  - merge_worktree_settings   Force `worktree.bgIsolation: "none"` into `settings.local.json`.
   - manage_symlinks           Create or repair `.claude/{agents,hooks,...}` symlinks.
   - register_plugin           Write `.claude/plugin-registry.json` with the version.
 
@@ -138,6 +139,188 @@ def configure_settings_json(workspace: Path, *, dry_run: bool = False) -> dict[s
 
     settings_path.write_text("{}\n", encoding="utf-8")
     return _result("created", settings_path, "created empty settings.json")
+
+
+def configure_opencode_plugin(
+    workspace: Path,
+    plugin_root: Path | None = None,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Register Gaia's packaged OpenCode plugin without touching ``.claude/``."""
+    pkg_root = plugin_root or _PACKAGE_ROOT
+    plugin_path = (pkg_root / "opencode" / "plugin.ts").resolve()
+    policy_path = pkg_root / "opencode" / "agent-policy.json"
+    config_path = workspace / "opencode.json"
+    if not plugin_path.is_file():
+        return _result("error", config_path, f"OpenCode plugin not found: {plugin_path}")
+    policy = _read_json(policy_path)
+    if not isinstance(policy, dict):
+        return _result("error", config_path, f"OpenCode agent policy is invalid: {policy_path}")
+
+    try:
+        skill_links = _link_opencode_skills(
+            workspace, pkg_root, dry_run=dry_run
+        )
+    except OSError as exc:
+        return _result("error", config_path, f"could not link OpenCode skills: {exc}")
+    if skill_links is None:
+        return _result("error", config_path, "OpenCode skill path conflicts with a user-managed file")
+    linked_skills, skills_changed = skill_links
+
+    existing = _read_json(config_path) if config_path.exists() else {}
+    if existing is None:
+        return _result("error", config_path, "opencode.json is not valid JSON")
+    plugins = existing.get("plugin", [])
+    if not isinstance(plugins, list) or not all(isinstance(item, str) for item in plugins):
+        return _result("error", config_path, "opencode.json plugin must be an array of paths")
+
+    entry = str(plugin_path)
+    desired = dict(existing)
+    def _is_gaia_opencode_plugin(item: str) -> bool:
+        normalized = item.replace("\\", "/")
+        return item == entry or normalized.endswith("/@jaguilar87/gaia/opencode/plugin.ts")
+
+    foreign_plugins = [item for item in plugins if not _is_gaia_opencode_plugin(item)]
+    desired["plugin"] = [*foreign_plugins, entry]
+    desired["agent"] = _opencode_agents(pkg_root, policy, existing.get("agent"))
+    desired["default_agent"] = "gaia-orchestrator"
+    config_changed = existing != desired
+    if not config_changed and not skills_changed:
+        return _result("noop", config_path, "Gaia OpenCode configuration already up to date")
+    if dry_run:
+        return _result("updated", config_path, "would register Gaia OpenCode plugin and canonical agents")
+    if config_changed:
+        _write_json(config_path, desired)
+    return _result(
+        "updated",
+        config_path,
+        f"registered Gaia OpenCode plugin, {len(linked_skills)} skill links, and canonical agents",
+    )
+
+
+def _link_opencode_skills(
+    workspace: Path, package_root: Path, *, dry_run: bool = False
+) -> tuple[list[str], bool] | None:
+    """Expose canonical skills to OpenCode as symlinks, never copied files."""
+    skills_root = package_root / "skills"
+    target_root = workspace / ".opencode" / "skills"
+    if not skills_root.is_dir():
+        raise OSError(f"skills source not found: {skills_root}")
+    if not dry_run:
+        target_root.mkdir(parents=True, exist_ok=True)
+
+    linked: list[str] = []
+    changed = False
+    for source in sorted(skills_root.iterdir()):
+        if not (source / "SKILL.md").is_file():
+            continue
+        target = target_root / source.name
+        if target.is_symlink():
+            if target.resolve(strict=False) == source.resolve():
+                linked.append(source.name)
+                continue
+            if not dry_run:
+                target.unlink()
+        elif target.exists():
+            return None
+        if not dry_run:
+            target.symlink_to(source, target_is_directory=True)
+        changed = True
+        linked.append(source.name)
+    return linked, changed
+
+
+def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict:
+    """Derive OpenCode agent entries from Gaia's canonical Markdown sources."""
+    agents = dict(existing) if isinstance(existing, dict) else {}
+    default = policy.get("default", {})
+    for source in sorted((package_root / "agents").glob("*.md")):
+        frontmatter = _agent_frontmatter(source)
+        name = frontmatter.get("name")
+        description = frontmatter.get("description")
+        if not name or not description:
+            continue
+        host_policy = {**default, **policy.get(name, {})}
+        agent = {
+            "description": description,
+            "mode": host_policy["mode"],
+            "prompt": f"{{file:{source.resolve()}}}",
+        }
+        max_turns = frontmatter.get("maxTurns")
+        if max_turns and max_turns.isdigit():
+            agent["steps"] = int(max_turns)
+        model = frontmatter.get("model")
+        if model and model != "inherit" and "/" in model:
+            agent["model"] = model
+        permission = _opencode_frontmatter_permissions(frontmatter)
+        permission.update(host_policy.get("permission", {}))
+        if permission:
+            agent["permission"] = permission
+        agents[name] = agent
+    return agents
+
+
+def _opencode_frontmatter_permissions(frontmatter: dict[str, Any]) -> dict[str, Any]:
+    """Translate Gaia tool and skill declarations to OpenCode permissions."""
+    tool_names = {
+        "Agent": "task",
+        "AskUserQuestion": "question",
+        "Bash": "bash",
+        "Edit": "edit",
+        "Glob": "glob",
+        "Grep": "grep",
+        "Read": "read",
+        "Skill": "skill",
+        "WebFetch": "webfetch",
+        "WebSearch": "websearch",
+        "Write": "edit",
+    }
+    permission: dict[str, Any] = {"*": "deny"}
+    permission.update({
+        tool_names[name]: "allow"
+        for name in frontmatter.get("tools", [])
+        if name in tool_names and name != "Skill"
+    })
+    for name in frontmatter.get("disallowedTools", []):
+        if name in tool_names:
+            permission[tool_names[name]] = "deny"
+    skills = frontmatter.get("skills", [])
+    if skills:
+        permission["skill"] = {"*": "deny", **{name: "allow" for name in skills}}
+    return permission
+
+
+def _agent_frontmatter(source: Path) -> dict[str, Any]:
+    """Read the frontmatter fields needed by the OpenCode generator."""
+    try:
+        lines = source.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}
+    if not lines or lines[0] != "---":
+        return {}
+    values: dict[str, Any] = {}
+    list_key: str | None = None
+    for line in lines[1:]:
+        if line == "---":
+            break
+        stripped = line.strip()
+        if list_key and stripped.startswith("- "):
+            values[list_key].append(stripped[2:].strip())
+            continue
+        list_key = None
+        key, separator, value = line.partition(":")
+        if not separator:
+            continue
+        if key in {"name", "description", "maxTurns", "model", "effort", "permissionMode"}:
+            values[key] = value.strip()
+        elif key in {"tools", "disallowedTools"}:
+            raw = value.strip().strip("[]")
+            values[key] = [item.strip() for item in raw.split(",") if item.strip()]
+        elif key == "skills":
+            values[key] = []
+            list_key = key
+    return values
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +559,66 @@ def merge_local_hooks(
 
 
 # ---------------------------------------------------------------------------
-# 4. Symlinks under .claude/
+# 4. settings.local.json -- worktree background-isolation override
+# ---------------------------------------------------------------------------
+
+# Claude Code >= 2.1.143 defaults `worktree.bgIsolation` to "worktree": any
+# background session -- including the one `claude agents` (Agent View)
+# launches by design -- gets CLAUDE_JOB_DIR set, and the harness then tries
+# to isolate writes into a git worktree. When the workspace is not a git
+# repo, the harness cannot create that worktree, and every subagent
+# Edit/Write in the workspace is silently blocked with no way out. Setting
+# bgIsolation to "none" was validated live: it unblocks writes even with
+# CLAUDE_JOB_DIR set, in both git and non-git workspaces. Gaia forces this
+# in every install so a workspace launched via Agent View is never silently
+# broken by a harness default it never opted into.
+_WORKTREE_BG_ISOLATION_KEY = "bgIsolation"
+_WORKTREE_BG_ISOLATION_VALUE = "none"
+
+
+def merge_worktree_settings(workspace: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """Force `worktree.bgIsolation: "none"` into settings.local.json.
+
+    Authoritative on this ONE key -- like the `agent` identity field in
+    merge_local_permissions, not like the env-var smart-merge in the same
+    function. Gaia needs this exact value to take effect in EVERY install,
+    including a re-install over a workspace that already carries a
+    `worktree.bgIsolation` set to something else (a stale harness default,
+    or a value written before this fix existed) -- so an existing value
+    that is not already "none" is normalized rather than preserved. Any
+    OTHER key nested under `worktree` (present or future harness options)
+    is left untouched; only `bgIsolation` is Gaia-owned.
+    """
+    claude_dir = workspace / ".claude"
+    local_path = claude_dir / "settings.local.json"
+
+    if not claude_dir.exists():
+        return _result("skipped", local_path, ".claude/ not found")
+
+    existing = _read_json(local_path) if local_path.exists() else {}
+    if existing is None:
+        existing = {}
+
+    worktree = existing.get("worktree")
+    if not isinstance(worktree, dict):
+        worktree = {}
+
+    if worktree.get(_WORKTREE_BG_ISOLATION_KEY) == _WORKTREE_BG_ISOLATION_VALUE:
+        return _result("noop", local_path, 'worktree.bgIsolation already "none"')
+
+    if dry_run:
+        return _result(
+            "updated", local_path, 'would set worktree.bgIsolation to "none"',
+        )
+
+    worktree[_WORKTREE_BG_ISOLATION_KEY] = _WORKTREE_BG_ISOLATION_VALUE
+    existing["worktree"] = worktree
+    _write_json(local_path, existing)
+    return _result("updated", local_path, 'set worktree.bgIsolation to "none"')
+
+
+# ---------------------------------------------------------------------------
+# 5. Symlinks under .claude/
 # ---------------------------------------------------------------------------
 
 # Directories the package exposes via .claude/<name> symlinks
@@ -648,7 +890,7 @@ def manage_symlinks(
 
 
 # ---------------------------------------------------------------------------
-# 5. plugin-registry.json
+# 6. plugin-registry.json
 # ---------------------------------------------------------------------------
 
 def _read_plugin_version(plugin_root: Path) -> str | None:
@@ -741,9 +983,11 @@ def register_plugin(
 # ---------------------------------------------------------------------------
 
 __all__ = [
+    "configure_opencode_plugin",
     "configure_settings_json",
     "merge_local_permissions",
     "merge_local_hooks",
+    "merge_worktree_settings",
     "manage_symlinks",
     "register_plugin",
 ]

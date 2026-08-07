@@ -29,19 +29,23 @@ entry point changing.
 
 from __future__ import annotations
 
+import os
 from typing import Dict, Optional, Type
 
 from .base import HookAdapter
 from .claude_code import ClaudeCodeAdapter
+from .opencode import OpenCodeAdapter
 
 # The only host Gaia ships an adapter for today. Confined to this module so the
 # concrete class name appears at exactly one call site in the whole core.
 DEFAULT_HOST = "claude_code"
+HOST_ENV_VAR = "GAIA_HOST"
 
 # host key -> adapter class. A new host appends one entry here (or via
 # register_adapter); nothing else in the codebase references the class.
 _REGISTRY: Dict[str, Type[HookAdapter]] = {
     DEFAULT_HOST: ClaudeCodeAdapter,
+    "opencode": OpenCodeAdapter,
 }
 
 # Cache of constructed adapters, keyed by host. The adapter is stateless, so a
@@ -78,7 +82,7 @@ def get_adapter(host: Optional[str] = None) -> HookAdapter:
     Raises:
         KeyError: If ``host`` has no registered adapter class.
     """
-    key = host or DEFAULT_HOST
+    key = host or os.environ.get(HOST_ENV_VAR, DEFAULT_HOST)
     instance = _INSTANCES.get(key)
     if instance is None:
         adapter_cls = _REGISTRY[key]

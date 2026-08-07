@@ -55,8 +55,9 @@ Flags:
                      helper individually.
   --db-path PATH     Override target DB path (default: ~/.gaia/gaia.db,
                      forwarded to bootstrap.sh via the GAIA_DB env var).
-  --workspace PATH   Workspace where settings/symlinks/registry are
-                     written (default: cwd).
+   --workspace PATH   Workspace where settings/symlinks/registry are
+                      written (default: cwd).
+   --host HOST        Target host: claude_code (default) or opencode.
   --skip-workspace   Bootstrap the DB only; skip workspace configuration.
                      Useful when running install just to refresh the DB
                      schema from a non-Gaia directory.
@@ -1056,12 +1057,15 @@ def _report_step(*, name: str, result: dict, quiet: bool, verbose: bool) -> None
     print(f"  [{icon}] {name}: {details}")
 
 
-def _print_next_steps(*, quiet: bool, postinstall: bool) -> None:
+def _print_next_steps(*, quiet: bool, postinstall: bool, host: str = "claude_code") -> None:
     if quiet:
         return
     print()
     print("  Gaia ready. Next steps:")
-    if postinstall:
+    if host == "opencode":
+        print("    1. Restart OpenCode to load the Gaia plugin.")
+        print("    2. Run `gaia doctor` to verify the installation.")
+    elif postinstall:
         print("    1. Restart Claude Code to pick up new hooks/agents.")
         print("    2. Run `gaia doctor` to verify the installation.")
     else:
@@ -1127,6 +1131,12 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Workspace where .claude/ is configured (default: cwd)",
     )
     p.add_argument(
+        "--host",
+        choices=("claude_code", "opencode"),
+        default="claude_code",
+        help="Host to configure (default: claude_code)",
+    )
+    p.add_argument(
         "--skip-workspace",
         dest="skip_workspace",
         action="store_true",
@@ -1152,6 +1162,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     skip_workspace = bool(getattr(args, "skip_workspace", False))
     no_path = bool(getattr(args, "no_path", False))
     workspace_arg = getattr(args, "workspace", None)
+    host = getattr(args, "host", "claude_code")
 
     workspace = (
         Path(workspace_arg).expanduser().resolve()
@@ -1198,7 +1209,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         return rc
 
     if skip_workspace:
-        _print_next_steps(quiet=quiet, postinstall=postinstall)
+        _print_next_steps(quiet=quiet, postinstall=postinstall, host=host)
         return 0
 
     # Steps 2-6 -- workspace configuration
@@ -1207,49 +1218,49 @@ def cmd_install(args: argparse.Namespace) -> int:
             print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
         return 0
 
-    # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
-    # The first four helpers (configure_settings_json, merge_local_permissions,
-    # merge_local_hooks, manage_symlinks) early-return "skipped" when .claude/
-    # is missing. Only register_plugin used to mkdir it -- too late. Doing it
-    # here makes all five helpers see a real directory and apply their work.
-    # Placed AFTER bootstrap so a bootstrap failure does not leave behind a
-    # partially-initialized workspace; placed BEFORE the helpers so they can
-    # write into the directory.
-    claude_dir = workspace / ".claude"
-    if not claude_dir.exists():
-        try:
-            claude_dir.mkdir(parents=True, exist_ok=True)
-            if not quiet:
-                print(f"  [+] workspace: created {claude_dir}")
-        except OSError as exc:
-            if not quiet:
-                print(
-                    f"  [!] workspace: failed to create {claude_dir}: {exc}",
-                    file=sys.stderr,
-                )
-            # Non-fatal under postinstall (parity with bootstrap behavior);
-            # surface error in manual mode.
-            if not postinstall:
-                return 1
-            return 0
+    if host == "opencode":
+        opencode_res = _install_helpers.configure_opencode_plugin(workspace)
+        _report_step(name="OpenCode plugin", result=opencode_res, quiet=quiet, verbose=verbose)
+        if opencode_res.get("action") == "error":
+            return 1
+    else:
+        # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
+        # The first four helpers early-return when .claude/ is missing, so it
+        # must exist before any Claude-specific configuration runs.
+        claude_dir = workspace / ".claude"
+        if not claude_dir.exists():
+            try:
+                claude_dir.mkdir(parents=True, exist_ok=True)
+                if not quiet:
+                    print(f"  [+] workspace: created {claude_dir}")
+            except OSError as exc:
+                if not quiet:
+                    print(
+                        f"  [!] workspace: failed to create {claude_dir}: {exc}",
+                        file=sys.stderr,
+                    )
+                if not postinstall:
+                    return 1
+                return 0
 
-    settings_res = _install_helpers.configure_settings_json(workspace)
-    _report_step(name="settings.json", result=settings_res, quiet=quiet, verbose=verbose)
+        settings_res = _install_helpers.configure_settings_json(workspace)
+        _report_step(name="settings.json", result=settings_res, quiet=quiet, verbose=verbose)
 
-    perms_res = _install_helpers.merge_local_permissions(workspace)
-    _report_step(name="permissions", result=perms_res, quiet=quiet, verbose=verbose)
+        perms_res = _install_helpers.merge_local_permissions(workspace)
+        _report_step(name="permissions", result=perms_res, quiet=quiet, verbose=verbose)
 
-    # merge_local_hooks is most relevant for npm mode but is safe in any mode
-    # (it's a no-op when hooks are already merged).
-    hooks_res = _install_helpers.merge_local_hooks(workspace)
-    _report_step(name="hooks", result=hooks_res, quiet=quiet, verbose=verbose)
+        hooks_res = _install_helpers.merge_local_hooks(workspace)
+        _report_step(name="hooks", result=hooks_res, quiet=quiet, verbose=verbose)
 
-    sym_res = _install_helpers.manage_symlinks(workspace)
-    _report_step(name="symlinks", result=sym_res, quiet=quiet, verbose=verbose)
+        worktree_res = _install_helpers.merge_worktree_settings(workspace)
+        _report_step(name="worktree", result=worktree_res, quiet=quiet, verbose=verbose)
 
-    registry_source = "npm-postinstall" if postinstall else "cli-install"
-    reg_res = _install_helpers.register_plugin(workspace, source=registry_source)
-    _report_step(name="plugin-registry", result=reg_res, quiet=quiet, verbose=verbose)
+        sym_res = _install_helpers.manage_symlinks(workspace)
+        _report_step(name="symlinks", result=sym_res, quiet=quiet, verbose=verbose)
+
+        registry_source = "npm-postinstall" if postinstall else "cli-install"
+        reg_res = _install_helpers.register_plugin(workspace, source=registry_source)
+        _report_step(name="plugin-registry", result=reg_res, quiet=quiet, verbose=verbose)
 
     # Step 6.5 -- PATH launcher (~/.local/bin/gaia) unless --no-path
     if not no_path:
@@ -1289,5 +1300,5 @@ def cmd_install(args: argparse.Namespace) -> int:
     # stale install-error marker left by a prior failed bootstrap attempt.
     _clear_install_error_marker()
 
-    _print_next_steps(quiet=quiet, postinstall=postinstall)
+    _print_next_steps(quiet=quiet, postinstall=postinstall, host=host)
     return 0

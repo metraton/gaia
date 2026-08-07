@@ -1,0 +1,28 @@
+{
+  "default": {
+    "mode": "subagent"
+  },
+  "gaia-orchestrator": {
+    "mode": "primary",
+    "permission": {
+      "bash": {
+        "*": "deny",
+        "gaia *": "allow"
+      },
+      "task": {
+        "*": "deny",
+        "cloud-troubleshooter": "allow",
+        "developer": "allow",
+        "gaia-operator": "allow",
+        "gaia-planner": "allow",
+        "gaia-system": "allow",
+        "gaia-verifier": "allow",
+        "gitops-operator": "allow",
+        "platform-architect": "allow"
+      },
+      "edit": "deny",
+      "glob": "deny",
+      "grep": "deny"
+    }
+  }
+}

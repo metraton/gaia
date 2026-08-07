@@ -9,7 +9,7 @@ they never see raw CLI JSON.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import FrozenSet
+from typing import Dict, FrozenSet, Optional
 
 from .types import (
     AgentCompletion,
@@ -99,6 +99,30 @@ class HookAdapter(ABC):
             - When request.updated_input is set, the response preserves it
               through the consent step
         """
+        ...
+
+    @abstractmethod
+    def format_ask_response(
+        self, reason: str, updated_input: Optional[dict] = None
+    ) -> HookResponse:
+        """Format a host-native interactive permission request."""
+        ...
+
+    @abstractmethod
+    def read_permission_decision(self, output: Dict[str, object]) -> Optional[str]:
+        """Read an allow, deny, or ask decision from a host response."""
+        ...
+
+    @abstractmethod
+    def read_permission_reason(self, output: Dict[str, object]) -> str:
+        """Read the human-facing reason from a host response."""
+        ...
+
+    @abstractmethod
+    def inject_updated_input(
+        self, output: Dict[str, object], updated_input: Dict[str, object]
+    ) -> Dict[str, object]:
+        """Attach rewritten input to an existing host response."""
         ...
 
     # ------------------------------------------------------------------ #

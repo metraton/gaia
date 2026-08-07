@@ -16,7 +16,12 @@ from typing import Any, Dict, List, Optional
 
 
 class HookEventType(enum.Enum):
-    """All Claude Code hook events as an enumeration."""
+    """Normalized lifecycle events used by the host adapters.
+
+    The original member values remain Claude Code's event names for backwards
+    compatibility. Other hosts map their native events onto the same lifecycle
+    points instead of teaching policy modules a second vocabulary.
+    """
 
     # P0 - Currently implemented
     PRE_TOOL_USE = "PreToolUse"
@@ -142,6 +147,10 @@ class HookEvent:
     session_id: str
     payload: Dict[str, Any]
     distribution: Optional[HostDistribution] = None
+    host_agent_id: Optional[str] = None
+    dispatch_id: Optional[str] = None
+    parent_dispatch_id: Optional[str] = None
+    call_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -242,6 +251,7 @@ class ToolResult:
     output: str
     exit_code: int
     session_id: str
+    call_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -253,6 +263,8 @@ class AgentCompletion:
     transcript_path: str
     last_message: str
     session_id: str
+    dispatch_id: Optional[str] = None
+    parent_session_id: Optional[str] = None
 
 
 @dataclass(frozen=True)

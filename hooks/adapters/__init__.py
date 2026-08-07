@@ -31,6 +31,7 @@ from .types import (
 )
 from .base import HookAdapter
 from .claude_code import ClaudeCodeAdapter
+from .opencode import OpenCodeAdapter
 from .registry import get_adapter, register_adapter, DEFAULT_HOST
 from .utils import has_stdin_data, warn_if_dual_channel
 
@@ -54,6 +55,7 @@ __all__ = [
     "HookResponse",
     "HookAdapter",
     "ClaudeCodeAdapter",
+    "OpenCodeAdapter",
     "get_adapter",
     "register_adapter",
     "DEFAULT_HOST",

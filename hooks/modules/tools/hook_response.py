@@ -24,12 +24,6 @@ if _hooks_dir not in sys.path:
 from adapters.registry import get_adapter
 from adapters.types import ValidationResult
 
-# Single construction point: the shared, process-wide adapter from the registry
-# (formerly a module-level ``ClaudeCodeAdapter()`` singleton). Resolved once at
-# import; the registry caches the stateless instance.
-_adapter = get_adapter()
-
-
 def build_hook_permission_response(
     decision: str, reason: str, updated_input: dict | None = None
 ) -> dict:
@@ -45,13 +39,29 @@ def build_hook_permission_response(
         Dict suitable for ``json.dumps()`` and ``print()`` in the hook
         entry point.
     """
+    adapter = get_adapter()
     if decision == "ask":
-        response = _adapter.format_ask_response(reason, updated_input=updated_input)
+        response = adapter.format_ask_response(reason, updated_input=updated_input)
         return response.output
 
     vr = ValidationResult(
         allowed=(decision == "allow"),
         reason=reason,
     )
-    response = _adapter.format_validation_response(vr)
+    response = adapter.format_validation_response(vr)
     return response.output
+
+
+def read_permission_decision(output: dict) -> str | None:
+    """Read a permission decision through the active host adapter."""
+    return get_adapter().read_permission_decision(output)
+
+
+def read_permission_reason(output: dict) -> str:
+    """Read a permission reason through the active host adapter."""
+    return get_adapter().read_permission_reason(output)
+
+
+def inject_updated_input(output: dict, updated_input: dict) -> dict:
+    """Attach rewritten tool input through the active host adapter."""
+    return get_adapter().inject_updated_input(output, updated_input)
