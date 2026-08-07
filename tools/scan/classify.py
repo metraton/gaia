@@ -812,9 +812,14 @@ def scan(
             compute_stack_sections,
             primary_language_from_sections,
             stack_output_to_facets,
+            worktree_facets,
         )
         sections = compute_stack_sections(Path(c.path))
-        facets = stack_output_to_facets(sections)
+        # `worktree` facets are not part of the stack fingerprint: they record
+        # the repo's LINKED WORKTREES, which _list_repos excludes from the
+        # projects table (a worktree is a view of this repo, not a project) but
+        # which must still be placed -- as rows derived from this repo.
+        facets = stack_output_to_facets(sections) + worktree_facets(Path(c.path))
         primary_language = primary_language_from_sections(sections)
 
         applied = False

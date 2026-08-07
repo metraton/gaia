@@ -574,6 +574,10 @@ FACET_SCOPES = (
     "deployment",
     "orchestration",
     "ci_cd",
+    # Not part of the stack fingerprint: one row per LINKED GIT WORKTREE of the
+    # repo (key = worktree path, value = branch). Produced by
+    # `worktree_facets`, not by `stack_output_to_facets`.
+    "worktree",
 )
 
 
@@ -716,15 +720,17 @@ def primary_language_from_sections(sections: Mapping[str, Any] | None) -> str | 
 
 
 def compute_facets(project_path: Path) -> list[dict]:
-    """Run the scanners over ``project_path`` and return its stack fingerprint.
+    """Run the scanners over ``project_path`` and return its facet rows.
 
     Read-only: runs the scanner orchestrator (no DB writes) and maps the merged
-    sections to facet rows via :func:`stack_output_to_facets`. Used by the
-    dry-run preview (no persistence) AND, indirectly, by :func:`populate_facets`
-    when the caller did not precompute the facets. Never raises -- a scanner
-    failure degrades to an empty fingerprint rather than aborting the scan.
+    sections to facet rows via :func:`stack_output_to_facets`, then appends the
+    repo's ``worktree`` facets (:func:`worktree_facets`). Used by the dry-run
+    preview (no persistence) AND, indirectly, by :func:`populate_facets` when
+    the caller did not precompute the facets. Never raises -- a scanner failure
+    degrades to an empty fingerprint rather than aborting the scan.
     """
-    return stack_output_to_facets(compute_stack_sections(project_path))
+    stack = stack_output_to_facets(compute_stack_sections(project_path))
+    return stack + worktree_facets(project_path)
 
 
 def populate_facets(
@@ -1001,6 +1007,144 @@ def _git_remote_origin(project_path: Path) -> str | None:
     return url or None
 
 
+def is_linked_worktree(project_path: Path) -> bool:
+    """Return True when ``project_path`` is a LINKED git worktree.
+
+    A linked worktree (``git worktree add``) is a second checkout of the SAME
+    repository on another branch -- a view, not a project. It must never become
+    a ``projects`` row: its :func:`resolve_project_identity` is the shared
+    git-common-dir, identical to the base repo's, so the writer's
+    identity-collapse UPDATE would overwrite the base repo's ``path``,
+    ``remote_url``, ``primary_language``, ``role`` and ``group_name`` with the
+    worktree's.
+
+    The check is ``git rev-parse --git-dir`` != ``--git-common-dir``. Three
+    shapes exist and only the linked worktree splits the pair:
+
+      * repo root       -- git-dir == git-common-dir == ``<repo>/.git``
+      * linked worktree -- git-dir ``<base>/.git/worktrees/<wt>``,
+                           git-common-dir ``<base>/.git``  -> DIFFERENT
+      * submodule       -- git-dir == git-common-dir ==
+                           ``<super>/.git/modules/<name>``
+
+    Testing the pair is what keeps submodules out of the exclusion. A submodule
+    also replaces its ``.git`` directory with a gitfile, so "``.git`` is a file"
+    alone would misclassify every submodule as a worktree; the common dir, by
+    contrast, exists precisely to name the repository shared BY worktrees, so a
+    submodule -- which owns its repository -- never splits it.
+
+    The gitfile shape is still used as a cheap pre-filter: a linked worktree
+    ALWAYS carries a ``.git`` file, never a directory, so a ``.git`` directory
+    short-circuits to False without paying for a subprocess.
+
+    Read-only; never raises (no git, not a repo, timeout -> False).
+    """
+    import shutil
+    import subprocess
+
+    dot_git = Path(project_path) / ".git"
+    if dot_git.is_dir():
+        return False
+    if shutil.which("git") is None:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_path), "rev-parse",
+             "--git-dir", "--git-common-dir"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    if result.returncode != 0:
+        return False
+    lines = [ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()]
+    if len(lines) != 2:
+        return False
+    resolved = []
+    for raw in lines:
+        p = Path(raw)
+        if not p.is_absolute():
+            p = Path(project_path) / p
+        try:
+            resolved.append(str(p.resolve()))
+        except (OSError, RuntimeError):
+            resolved.append(str(p))
+    return resolved[0] != resolved[1]
+
+
+def worktree_facets(project_path: Path) -> list[dict]:
+    """Return ``worktree``-scope facet rows for the linked worktrees of a repo.
+
+    A linked worktree is excluded from the ``projects`` table (see
+    :func:`is_linked_worktree`), but it is NOT dropped silently: it is recorded
+    as a facet DERIVED from the base repo's row, so the scan still places what
+    is on disk and the branch it holds is not lost.
+
+    ``project_facets`` is the right carrier rather than a new column or table:
+    it is wholly scanner-owned, its ``(workspace, project, scope, key)`` key is
+    FK-bound to the base repo's row -- which is exactly the "derived from" edge
+    -- and :func:`populate_facets` already refreshes-and-prunes it, so a removed
+    worktree disappears on the next scan with no extra bookkeeping and no schema
+    change.
+
+    One row per linked worktree: ``key`` = the worktree's absolute path,
+    ``value`` = the branch it has checked out (``"detached"`` when it holds no
+    branch). The main worktree -- the repo root itself, which IS the project row
+    -- is never emitted.
+
+    Read-only; never raises (no git, not a repo, timeout -> empty list).
+    """
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        return []
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(project_path), "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    if result.returncode != 0:
+        return []
+
+    try:
+        repo_root = str(Path(project_path).resolve())
+    except (OSError, RuntimeError):
+        repo_root = str(project_path)
+
+    facets: list[dict] = []
+    current: str | None = None
+    branch: str | None = None
+
+    def _flush() -> None:
+        nonlocal current, branch
+        if current is not None and current != repo_root:
+            facets.append({
+                "scope": "worktree",
+                "key": current,
+                "value": branch or "detached",
+            })
+        current = None
+        branch = None
+
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            _flush()
+            raw = line[len("worktree "):].strip()
+            p = Path(raw)
+            try:
+                current = str(p.resolve())
+            except (OSError, RuntimeError):
+                current = raw
+        elif line.startswith("branch "):
+            ref = line[len("branch "):].strip()
+            branch = ref.rpartition("refs/heads/")[2] or ref
+    _flush()
+    return facets
+
+
 def _platform_from_remote(url: str | None) -> str | None:
     if not url:
         return None
@@ -1040,9 +1184,15 @@ def _detect_primary_language(project_path: Path) -> str | None:
 def _list_repos(root: Path, max_depth: int = 4) -> list[Path]:
     """Return git repositories discovered under root via bounded recursive walk.
 
-    A directory is a repo if it contains a ``.git`` entry (directory or
-    file -- the file form covers git worktrees).  Container directories that
-    are not themselves repos are descended into so that layouts like::
+    A directory is a repo if it contains a ``.git`` entry (directory or file --
+    the file form covers submodules, whose gitfile points at the superproject's
+    ``modules/`` store).  A LINKED GIT WORKTREE is deliberately NOT a repo here:
+    it is a second checkout of a repository already discovered elsewhere, and
+    indexing it would collapse it onto the base repo's row and overwrite that
+    row's path (see :func:`is_linked_worktree`).  Its existence is still
+    recorded, as a ``worktree`` facet on the base repo (:func:`worktree_facets`).
+    Container directories that are not themselves repos are descended into so
+    that layouts like::
 
         ~/ws/github-repos/        <- container, no .git
             repo-a/               <- repo, has .git
@@ -1075,8 +1225,10 @@ def _list_repos(root: Path, max_depth: int = 4) -> list[Path]:
         return []
 
     # Root itself is a repo -- return it directly without recursing into it.
+    # The worktree exclusion applies here too: "a linked worktree is never a
+    # projects row" is an invariant of discovery, not of the walk depth.
     if (root / ".git").exists():
-        return [root]
+        return [] if is_linked_worktree(root) else [root]
 
     repos: list[Path] = []
     _walk_for_repos(root, root, current_depth=0, max_depth=max_depth, repos=repos)
@@ -1185,8 +1337,11 @@ def _walk_for_repos(
         if name.startswith(".") or name in _REPO_WALK_SKIP:
             continue
         if (entry / ".git").exists():
-            # This directory is a git repo -- collect it, do not recurse.
-            repos.append(entry)
+            # This directory is a git checkout -- do not recurse either way.
+            # A linked worktree is skipped entirely: it is a view of a repo
+            # discovered elsewhere, not a project of its own.
+            if not is_linked_worktree(entry):
+                repos.append(entry)
         else:
             # Container directory: recurse to find repos inside it.
             _walk_for_repos(root, entry, current_depth + 1, max_depth, repos)

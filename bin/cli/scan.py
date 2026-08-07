@@ -190,12 +190,20 @@ def register(subparsers) -> argparse.ArgumentParser:
     """Register the `scan` subcommand with the root parser."""
     p = subparsers.add_parser(
         "scan",
-        help="Classify repos into (workspace, project) rows (scan only -- never installs)",
+        help="Index repos into (workspace, project) rows -- WRITES; --dry-run previews",
         description=(
             "Walk a directory for git repos and classify each into a "
             "(workspace, project) row, keyed on --workspace. Deterministic: no "
-            "inference. This command never installs."
+            "inference.\n"
+            "\n"
+            "WRITES: rows are persisted to gaia.db and scan-owned facts are "
+            "promoted into the project_identity context contract. Pass "
+            "--dry-run to report the same classification without writing "
+            "anything.\n"
+            "\n"
+            "This command indexes only -- it never installs Gaia anywhere."
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--workspace",
