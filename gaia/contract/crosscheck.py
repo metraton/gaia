@@ -39,10 +39,17 @@ Read-only by construction:
 Public surface (stable for T4/T9/T16 -- the CLI validate-on-write path, the
 finalize store writer, and the hook full-verdict gate all consume this):
     validate_crosscheck(envelope, *, db_path=None) -> CrossCheckResult
-    validate(envelope, *, db_path=None)            -> EnvelopeValidationResult
+    validate(envelope, *, db_path=None, source="declaration") -> EnvelopeValidationResult
     CrossCheckErrorCode.APPROVAL_ID_NOT_PENDING
     CrossCheckError, CrossCheckResult, EnvelopeValidationResult
     CROSSCHECK_REPAIR_MESSAGE
+
+``source`` is forwarded to layer 1 (``gaia.contract.validator.validate_form``)
+unchanged and never read by this module -- it selects which of the two
+canonical repair messages a shape failure gets, "declaration" (the agent's
+own final fence) or "row" (the turn's persisted dispatch row); see the
+row-first SubagentStop gate, ``hooks/adapters/claude_code.py::
+resolve_subagent_stop_gate``.
 """
 
 from __future__ import annotations
@@ -270,7 +277,7 @@ def validate_crosscheck(
 
 
 def validate(
-    envelope: Any, *, db_path: Optional[Path] = None
+    envelope: Any, *, db_path: Optional[Path] = None, source: str = "declaration"
 ) -> EnvelopeValidationResult:
     """Full-verdict validation: layer 1 (form) gates layer 2 (cross-check).
 
@@ -281,6 +288,10 @@ def validate(
     Args:
         envelope: the already-parsed contract dict.
         db_path: optional explicit path to gaia.db (used by tests).
+        source: forwarded verbatim to ``validate_form`` -- ``"declaration"``
+            (default) or ``"row"``. Purely a wording choice for layer 1's
+            MISSING_FIELD detail and repair message; never a validation input,
+            and irrelevant to layer 2, which does not read it.
 
     Returns:
         EnvelopeValidationResult. ``ok`` is True only when BOTH layers pass.
@@ -288,7 +299,7 @@ def validate(
         makes its approval_request unreliable to cross-check) and
         ``crosscheck`` is reported as a no-op result.
     """
-    form_result = validate_form(envelope)
+    form_result = validate_form(envelope, source=source)
     if not form_result.ok:
         return EnvelopeValidationResult(
             ok=False,

@@ -391,8 +391,12 @@ class FormValidationResult:
     Attributes:
         ok: True when the envelope is shape-valid (no errors).
         errors: tuple of FormError, one per distinct invalidity.
-        repair_message: ALWAYS the canonical rich repair message
-            (``CANONICAL_REPAIR_MESSAGE``). It is byte-stable regardless of which
+        repair_message: the canonical rich repair message for the envelope's
+            ``source`` (see ``validate_form``) -- ``CANONICAL_REPAIR_MESSAGE``
+            when the envelope came from the agent's own final declaration (the
+            default, and the only value before the row-first gate existed),
+            ``ROW_ENVELOPE_REPAIR_MESSAGE`` when it came from the turn's
+            persisted dispatch row. Byte-stable per source regardless of which
             errors fired, so a caller that injects it (hook gate, CLI) keeps a
             cache-stable surface; the specific defects live in ``errors``.
     """
@@ -425,12 +429,21 @@ class FormValidationResult:
 # Unified from the two prior validators' repair blocks. Always returned (see
 # FormValidationResult.repair_message). Kept as a module constant so it is
 # byte-stable across calls.
+#
+# Two variants share one body (``_REPAIR_MESSAGE_BODY``) and differ only in
+# their opening sentence, because a validated envelope now has one of two
+# distinct sources (the row-first SubagentStop gate,
+# ``hooks/adapters/claude_code.py::resolve_subagent_stop_gate``): the agent's
+# own final ```agent_contract_handoff``` declaration, or the persisted
+# ``agent_contract_handoffs`` row it built incrementally via `gaia contract
+# set/add/fill`. Telling an agent to fix "your response" when the row -- not
+# the response text -- is what actually failed to parse sends the repair to
+# the wrong place; ``validate_form``'s ``source`` argument selects the
+# matching variant. The JSON template and build-order guidance below apply
+# identically either way, so only the opening clause forks.
 # ---------------------------------------------------------------------------
-CANONICAL_REPAIR_MESSAGE = (
-    "Repair: your response must carry an agent_contract_handoff envelope whose "
-    "body is valid JSON (parsed with json.loads -- NOT YAML: comments, trailing "
-    "commas, or unquoted keys will fail to parse and the block is treated as "
-    "missing).\n"
+_REPAIR_MESSAGE_BODY = (
+    "\n"
     "\n"
     "```agent_contract_handoff\n"
     "{\n"
@@ -474,6 +487,23 @@ CANONICAL_REPAIR_MESSAGE = (
     "terminal row is immutable once `gaia contract finalize` persists it, so "
     "there is no fixing the order after that point -- get it right on this "
     "write, not the next one."
+)
+
+CANONICAL_REPAIR_MESSAGE = (
+    "Repair: your response must carry an agent_contract_handoff envelope whose "
+    "body is valid JSON (parsed with json.loads -- NOT YAML: comments, trailing "
+    "commas, or unquoted keys will fail to parse and the block is treated as "
+    "missing)." + _REPAIR_MESSAGE_BODY
+)
+
+ROW_ENVELOPE_REPAIR_MESSAGE = (
+    "Repair: this turn's OWN persisted dispatch row "
+    "(agent_contract_handoffs.raw_handoff_json) is what the gate read and is "
+    "what needs fixing -- a fenced agent_contract_handoff block in your "
+    "response text is not consulted once that row is reachable, however well "
+    "formed. Rebuild the draft with `gaia contract set`/`add`/`fill --json` "
+    "(valid JSON, parsed with json.loads -- NOT YAML) and close it with `gaia "
+    "contract finalize`; that write is what repairs the row." + _REPAIR_MESSAGE_BODY
 )
 
 
@@ -657,33 +687,58 @@ def _failure_report_shape_errors(block: Any) -> List[Tuple[str, str]]:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def validate_form(envelope: Any) -> FormValidationResult:
+def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidationResult:
     """Validate an ``agent_contract_handoff`` envelope by SHAPE ONLY.
 
     Args:
         envelope: the already-parsed contract dict. A non-dict (including None,
             e.g. an unparseable / missing block) is reported as a single
             MISSING_FIELD on ``agent_contract_handoff``.
+        source: where ``envelope`` was read from, purely for the wording of
+            the MISSING_FIELD detail and the choice of repair message --
+            never a validation input. ``"declaration"`` (the default, and the
+            only value that existed before the row-first SubagentStop gate)
+            means the agent's own final fenced text. ``"row"`` means the
+            turn's persisted ``agent_contract_handoffs`` row, read because
+            that row -- not the fence -- was the gate's authoritative source
+            for this turn (see ``resolve_subagent_stop_gate``); a non-dict
+            envelope under this source is the row's ``raw_handoff_json``
+            having failed to parse as JSON, a distinct and real failure from
+            "the agent wrote no fence at all."
 
     Returns:
         FormValidationResult. ``ok`` is True only when there are no errors.
-        ``repair_message`` is always ``CANONICAL_REPAIR_MESSAGE``.
+        ``repair_message`` is ``CANONICAL_REPAIR_MESSAGE`` for
+        ``source="declaration"``, ``ROW_ENVELOPE_REPAIR_MESSAGE`` for
+        ``source="row"``.
     """
     errors: List[FormError] = []
+    from_row = source == "row"
+    repair_message = ROW_ENVELOPE_REPAIR_MESSAGE if from_row else CANONICAL_REPAIR_MESSAGE
 
     if not isinstance(envelope, dict):
+        if from_row:
+            detail = (
+                "this turn's own dispatch row was reachable, but its "
+                f"raw_handoff_json could not be read as a JSON object (got "
+                f"{type(envelope).__name__}). The row is authoritative once "
+                "reachable, so this is not 'no fence in the response' -- it is "
+                "the persisted draft itself failing to parse."
+            )
+        else:
+            detail = (
+                "no parseable agent_contract_handoff envelope (expected a "
+                f"JSON object, got {type(envelope).__name__})"
+            )
         errors.append(
             FormError(
                 code=FormErrorCode.MISSING_FIELD,
                 field="agent_contract_handoff",
-                detail=(
-                    "no parseable agent_contract_handoff envelope (expected a "
-                    f"JSON object, got {type(envelope).__name__})"
-                ),
+                detail=detail,
             )
         )
         return FormValidationResult(
-            ok=False, errors=tuple(errors), repair_message=CANONICAL_REPAIR_MESSAGE
+            ok=False, errors=tuple(errors), repair_message=repair_message
         )
 
     # --- agent_status -------------------------------------------------------
@@ -1004,7 +1059,7 @@ def validate_form(envelope: Any) -> FormValidationResult:
     return FormValidationResult(
         ok=not errors,
         errors=tuple(errors),
-        repair_message=CANONICAL_REPAIR_MESSAGE,
+        repair_message=repair_message,
     )
 
 
@@ -1014,6 +1069,7 @@ __all__ = [
     "FormValidationResult",
     "validate_form",
     "CANONICAL_REPAIR_MESSAGE",
+    "ROW_ENVELOPE_REPAIR_MESSAGE",
     "VALID_PLAN_STATUSES",
     "VALID_VERIFICATION_TYPES",
     "ENVELOPE_VERIFICATION_TYPES",

@@ -517,6 +517,7 @@ def _contract_gate_verdict(
     stop_reason_classification: str = STOP_REASON_UNKNOWN,
     ramp_enabled: Optional[bool] = None,
     db_path: Optional[str] = None,
+    envelope_source: str = "declaration",
 ) -> ContractGateVerdict:
     """Compute the SubagentStop contract gate verdict for one turn (T16 / AC-9).
 
@@ -541,6 +542,12 @@ def _contract_gate_verdict(
             False, returns the legacy 3-case verdict. When True, returns the
             full-verdict verdict from the single portable core.
         db_path: optional gaia.db path for the layer-2 cross-check.
+        envelope_source: where ``parsed_contract`` was actually read from --
+            ``"declaration"`` (default) for the agent's final fence, ``"row"``
+            for the turn's persisted dispatch row. Forwarded to
+            ``gaia.contract.crosscheck.validate`` so a row-sourced envelope
+            that fails to parse is reported as the row failing, not as "no
+            fence in the response" (see ``resolve_subagent_stop_gate``).
 
     Returns:
         ContractGateVerdict.
@@ -555,7 +562,7 @@ def _contract_gate_verdict(
     from gaia.contract.crosscheck import validate as _core_validate
 
     _db = Path(db_path) if db_path else None
-    result = _core_validate(parsed_contract, db_path=_db)
+    result = _core_validate(parsed_contract, db_path=_db, source=envelope_source)
     if result.ok:
         # The portability core (form + cross-check) is shape-valid. Layer the
         # blind-verification check on top (plan 34 task 7) -- deliberately
@@ -702,6 +709,7 @@ def evaluate_contract_gate(
     stop_reason_classification: str = STOP_REASON_UNKNOWN,
     ramp_enabled: Optional[bool] = None,
     db_path: Optional[str] = None,
+    envelope_source: str = "declaration",
 ) -> ContractGateVerdict:
     """Evaluate the SubagentStop contract gate and record a rejection as a defect.
 
@@ -711,7 +719,8 @@ def evaluate_contract_gate(
     truncation does not reject, so it is not recorded here -- the T11 fast-path /
     T9 backstop already capture that turn.
 
-    See :func:`_contract_gate_verdict` for the argument semantics.
+    See :func:`_contract_gate_verdict` for the argument semantics, including
+    ``envelope_source``.
     """
     verdict = _contract_gate_verdict(
         parsed_contract,
@@ -720,6 +729,7 @@ def evaluate_contract_gate(
         stop_reason_classification=stop_reason_classification,
         ramp_enabled=ramp_enabled,
         db_path=db_path,
+        envelope_source=envelope_source,
     )
     if verdict.rejected:
         _record_contract_rejection_defect(
@@ -857,7 +867,37 @@ def _row_unfinalized_verdict(
     return ContractGateVerdict(True, reason, anomalies, gate_mode)
 
 
-def resolve_subagent_stop_gate(
+def _select_gate_source(
+    *,
+    bound_dispatch_row: Optional[dict],
+    stop_reason_classification: str,
+    db_path: Optional[Path] = None,
+) -> Tuple[str, Optional[dict]]:
+    """Decide which source is authoritative for this turn and fetch it once.
+
+    This is the ONE place the row-vs-fence decision is made; both
+    :func:`_resolve_subagent_stop_gate_full` (the gate's own verdict) and
+    nonce preservation (``ClaudeCodeAdapter.adapt_subagent_stop``, which reads
+    the envelope for a wholly different purpose -- which pending approval_id
+    to keep alive -- but must agree on WHERE that envelope came from) call
+    this instead of each re-implementing the lookup, so the two can never
+    diverge on which turn's row counts.
+
+    Returns ``(source, full_row)`` where ``source`` is one of
+    :data:`GATE_SOURCE_ROW`, :data:`GATE_SOURCE_ROW_UNFINALIZED`,
+    :data:`GATE_SOURCE_FENCE`, and ``full_row`` is the fetched dispatch row
+    when source is one of the two ROW variants, else None.
+    """
+    full_row = _row_gate_candidate(bound_dispatch_row=bound_dispatch_row, db_path=db_path)
+    if full_row is not None:
+        if _row_cleanly_finalized(full_row):
+            return GATE_SOURCE_ROW, full_row
+        if stop_reason_classification != STOP_REASON_TRUNCATION:
+            return GATE_SOURCE_ROW_UNFINALIZED, full_row
+    return GATE_SOURCE_FENCE, None
+
+
+def _resolve_subagent_stop_gate_full(
     *,
     parsed_contract: Any,
     agent_type: str = "unknown",
@@ -866,13 +906,20 @@ def resolve_subagent_stop_gate(
     ramp_enabled: Optional[bool] = None,
     bound_dispatch_row: Optional[dict] = None,
     db_path: Optional[str] = None,
-) -> Tuple[ContractGateVerdict, str]:
+) -> Tuple[ContractGateVerdict, str, Any]:
     """The row-first SubagentStop gate: locate the turn's own dispatch row,
     validate ITS persisted envelope when cleanly finalized, and use the fence
-    only as the backup path. Returns ``(verdict, source)`` where ``source`` is
-    one of :data:`GATE_SOURCE_ROW`, :data:`GATE_SOURCE_ROW_UNFINALIZED`,
-    :data:`GATE_SOURCE_FENCE` -- for logging/telemetry only, never branched on
-    by a caller.
+    only as the backup path. Returns ``(verdict, source, envelope_used)``
+    where ``source`` is one of :data:`GATE_SOURCE_ROW`,
+    :data:`GATE_SOURCE_ROW_UNFINALIZED`, :data:`GATE_SOURCE_FENCE`, and
+    ``envelope_used`` is the envelope this call actually treated as
+    authoritative for the turn (the row's parsed ``raw_handoff_json`` for
+    either ROW source, ``parsed_contract`` for FENCE) -- exposed so a caller
+    with a DIFFERENT reason to read the envelope (nonce preservation) reads
+    from the exact same place the verdict did, instead of re-deriving its own
+    notion of "authoritative" and risking the two disagreeing. ``source`` is
+    otherwise for logging/telemetry only, never branched on by a caller.
+    :func:`resolve_subagent_stop_gate` is the stable 2-tuple public wrapper.
 
     Three cases, in order:
 
@@ -886,7 +933,10 @@ def resolve_subagent_stop_gate(
       2. A dispatch row is reachable but was NOT cleanly finalized, and the
          stop was not a harness truncation: reject via
          :func:`_row_unfinalized_verdict`, regardless of fence content. This
-         is the case a well-formed fence must never paper over.
+         is the case a well-formed fence must never paper over -- and the
+         case where an approval mirrored onto the row via `gaia contract
+         fill` (but never closed by `finalize`) still counts as this turn's
+         own record, not a lost one.
       3. No dispatch row is reachable at all, OR one exists unfinalized but
          the stop was a max_tokens truncation (not the agent's violation --
          handled by salvage elsewhere): fall back to the fence, byte-for-byte
@@ -897,26 +947,31 @@ def resolve_subagent_stop_gate(
     gate_mode = GATE_MODE_FULL_VERDICT if ramp_enabled else GATE_MODE_THREE_CASE
 
     db_path_obj = Path(db_path) if db_path else None
-    full_row = _row_gate_candidate(bound_dispatch_row=bound_dispatch_row, db_path=db_path_obj)
+    source, full_row = _select_gate_source(
+        bound_dispatch_row=bound_dispatch_row,
+        stop_reason_classification=stop_reason_classification,
+        db_path=db_path_obj,
+    )
 
-    if full_row is not None:
-        if _row_cleanly_finalized(full_row):
-            row_envelope = _parse_row_envelope(full_row)
-            verdict = evaluate_contract_gate(
-                row_envelope,
-                agent_type=agent_type,
-                plan_task_id=plan_task_id,
-                stop_reason_classification=stop_reason_classification,
-                ramp_enabled=ramp_enabled,
-                db_path=db_path,
-            )
-            return verdict, GATE_SOURCE_ROW
-        if stop_reason_classification != STOP_REASON_TRUNCATION:
-            verdict = _row_unfinalized_verdict(agent_type, full_row, gate_mode)
-            _record_contract_rejection_defect(
-                verdict, agent_type=agent_type, plan_task_id=plan_task_id
-            )
-            return verdict, GATE_SOURCE_ROW_UNFINALIZED
+    if source == GATE_SOURCE_ROW:
+        row_envelope = _parse_row_envelope(full_row)
+        verdict = evaluate_contract_gate(
+            row_envelope,
+            agent_type=agent_type,
+            plan_task_id=plan_task_id,
+            stop_reason_classification=stop_reason_classification,
+            ramp_enabled=ramp_enabled,
+            db_path=db_path,
+            envelope_source="row",
+        )
+        return verdict, GATE_SOURCE_ROW, row_envelope
+
+    if source == GATE_SOURCE_ROW_UNFINALIZED:
+        verdict = _row_unfinalized_verdict(agent_type, full_row, gate_mode)
+        _record_contract_rejection_defect(
+            verdict, agent_type=agent_type, plan_task_id=plan_task_id
+        )
+        return verdict, GATE_SOURCE_ROW_UNFINALIZED, _parse_row_envelope(full_row)
 
     verdict = evaluate_contract_gate(
         parsed_contract,
@@ -926,7 +981,36 @@ def resolve_subagent_stop_gate(
         ramp_enabled=ramp_enabled,
         db_path=db_path,
     )
-    return verdict, GATE_SOURCE_FENCE
+    return verdict, GATE_SOURCE_FENCE, parsed_contract
+
+
+def resolve_subagent_stop_gate(
+    *,
+    parsed_contract: Any,
+    agent_type: str = "unknown",
+    plan_task_id: Optional[int] = None,
+    stop_reason_classification: str = STOP_REASON_UNKNOWN,
+    ramp_enabled: Optional[bool] = None,
+    bound_dispatch_row: Optional[dict] = None,
+    db_path: Optional[str] = None,
+) -> Tuple[ContractGateVerdict, str]:
+    """Stable 2-tuple public wrapper over :func:`_resolve_subagent_stop_gate_full`.
+
+    Returns ``(verdict, source)`` -- see the full function for the three-case
+    ordering and argument semantics. Callers that also need to know WHICH
+    envelope decided the verdict (nonce preservation) call the full function
+    directly instead of re-deriving the same lookup a second time.
+    """
+    verdict, source, _envelope_used = _resolve_subagent_stop_gate_full(
+        parsed_contract=parsed_contract,
+        agent_type=agent_type,
+        plan_task_id=plan_task_id,
+        stop_reason_classification=stop_reason_classification,
+        ramp_enabled=ramp_enabled,
+        bound_dispatch_row=bound_dispatch_row,
+        db_path=db_path,
+    )
+    return verdict, source
 
 
 def _is_anomalous_dispatch_binding_rejection(
@@ -3175,8 +3259,13 @@ class ClaudeCodeAdapter(HookAdapter):
                     agent_type, session_id, exc_info=True,
                 )
             _gate_source = GATE_SOURCE_FENCE
+            # Degrades to the fence by construction: an exception below leaves
+            # this at its pre-gate value (parsed_contract), the SAME envelope
+            # GATE_SOURCE_FENCE would have used, so a gate failure never
+            # silently drops a nonce that a working gate call would have found.
+            _authoritative_envelope: Any = parsed_contract
             try:
-                _gate, _gate_source = resolve_subagent_stop_gate(
+                _gate, _gate_source, _authoritative_envelope = _resolve_subagent_stop_gate_full(
                     parsed_contract=parsed_contract,
                     agent_type=agent_type,
                     plan_task_id=_bound_plan_task_id,
@@ -3193,14 +3282,31 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
                 _gate = ContractGateVerdict(False, "", (), _gate_mode)
 
-            # Preserve pending files that the agent's final contract still
-            # references via APPROVAL_REQUEST. Cleanup must not destroy
-            # approvals the user is being asked to act on.
+            # Preserve a pending approval this turn's own record still
+            # references via APPROVAL_REQUEST. Cleanup must not destroy an
+            # approval the user is being asked to act on -- and "this turn's
+            # own record" is now, correctly, the SAME source the gate above
+            # just treated as authoritative (_authoritative_envelope: the
+            # persisted dispatch row's envelope whenever a row was reachable
+            # at all -- cleanly finalized or not, see GATE_SOURCE_ROW /
+            # GATE_SOURCE_ROW_UNFINALIZED -- degrading to the fence
+            # (parsed_contract) only in the identical residual case the gate
+            # itself falls back to it (no row reachable, or an unfinalized row
+            # excused by a harness truncation). Reading ONLY parsed_contract
+            # here (the pre-inversion behavior) silently dropped the nonce for
+            # any turn whose approval was recorded on the row but never echoed
+            # in a final fenced declaration -- exactly the row-first gate's own
+            # central case.
             preserved_nonces: set = set()
-            if isinstance(parsed_contract, dict):
-                _approval_req = parsed_contract.get("approval_request") or {}
+            if isinstance(_authoritative_envelope, dict):
+                _nonce_agent_status = _authoritative_envelope.get("agent_status") or {}
+                _nonce_agent_state = (
+                    _resolve_status(_nonce_agent_status)
+                    if isinstance(_nonce_agent_status, dict) else ""
+                )
+                _approval_req = _authoritative_envelope.get("approval_request") or {}
                 _nonce = _approval_req.get("approval_id") if isinstance(_approval_req, dict) else None
-                if _resolved_agent_state == "APPROVAL_REQUEST" and _nonce:
+                if _nonce_agent_state == "APPROVAL_REQUEST" and _nonce:
                     preserved_nonces.add(_nonce)
 
             cleanup_approval(

@@ -41,6 +41,7 @@
 # test suite does) is unaffected either way.
 from gaia.contract.validator import (  # noqa: E402  (re-export, appended T3)
     CANONICAL_REPAIR_MESSAGE,
+    ROW_ENVELOPE_REPAIR_MESSAGE,
     FormError,
     FormErrorCode,
     FormValidationResult,
@@ -73,5 +74,6 @@ __all__ = [
     "FormError",
     "FormValidationResult",
     "CANONICAL_REPAIR_MESSAGE",
+    "ROW_ENVELOPE_REPAIR_MESSAGE",
     *_LAZY_CROSSCHECK_NAMES,
 ]
