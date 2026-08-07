@@ -57,12 +57,19 @@ from gaia.contract.drafts import mint_draft_id, save_draft  # noqa: E402
 from gaia.contract.view import render_resume_hint  # noqa: E402
 from gaia.store.writer import (  # noqa: E402
     agent_contract_handoff_exists,
+    agent_contract_handoff_finalized,
     finalize_agent_contract_handoff,
+    insert_dispatched_handoff,
+    stamp_harness_agent_id,
 )
 from modules.agents.handoff_persister import persist_handoff  # noqa: E402
 from tests.fixtures.agent_ids import valid_agent_id  # noqa: E402
 
 VALID_AGENT_ID = valid_agent_id("a1234abcd")
+# The harness's own per-run agent id: same shape, different identifier space.
+# Kept DIFFERENT from the minted handle on purpose -- equating them makes the
+# resolver appear to work without ever crossing between the two spaces.
+HARNESS_AGENT_ID = "a00000000000000ff"
 WORKSPACE = "me"
 
 
@@ -143,10 +150,25 @@ def _verified_complete_envelope() -> dict:
 
 
 def _task_info(db_path: Path | None) -> dict:
-    ti = {"agent_id": VALID_AGENT_ID, "agent": "developer", "workspace": WORKSPACE}
+    """The SubagentStop view: the harness id, never the minted one."""
+    ti = {"agent_id": HARNESS_AGENT_ID, "agent": "developer", "workspace": WORKSPACE}
     if db_path is not None:
         ti["db_path"] = str(db_path)
     return ti
+
+
+def _born_and_stamped(draft_id: str, db_path: Path | None = None) -> None:
+    """The dispatch lifecycle a truncated turn's row has already been through:
+    born under the MINTED identity, then stamped with the HARNESS id at
+    SubagentStart. That row is what lets the salvage cross from what
+    SubagentStop knows back to the draft key."""
+    insert_dispatched_handoff(
+        contract_id=draft_id,
+        agent_id=VALID_AGENT_ID,
+        workspace=WORKSPACE,
+        db_path=db_path,
+    )
+    stamp_harness_agent_id(draft_id, HARNESS_AGENT_ID, db_path=db_path)
 
 
 def _rows(db_path: Path):
@@ -178,8 +200,11 @@ def _adapter() -> ClaudeCodeAdapter:
 def test_salvage_finalizes_partial_draft_as_degraded(db):
     draft_id = mint_draft_id(VALID_AGENT_ID)
     save_draft(draft_id, _partial_envelope("IN_PROGRESS"))
+    _born_and_stamped(draft_id, db)
 
-    assert agent_contract_handoff_exists(draft_id, db_path=db) is False
+    assert agent_contract_handoff_finalized(draft_id, db_path=db) is False, (
+        "the row is born, not finalized -- salvage territory"
+    )
 
     out = _adapter()._salvage_truncated_draft(
         parsed_contract=None,               # truncated: no valid contract block
@@ -230,6 +255,7 @@ def test_salvaged_row_distinguishable_from_verified_complete(default_db):
     # it unambiguously.
     trunc_draft = mint_draft_id(VALID_AGENT_ID)
     save_draft(trunc_draft, _partial_envelope("IN_PROGRESS"))
+    _born_and_stamped(trunc_draft, default_db)
     out = _adapter()._salvage_truncated_draft(
         parsed_contract=None,
         task_info=_task_info(default_db),
@@ -254,6 +280,7 @@ def test_salvage_reuses_view_render_resume_hint(db):
     draft_id = mint_draft_id(VALID_AGENT_ID)
     envelope = _partial_envelope("IN_PROGRESS")
     save_draft(draft_id, envelope)
+    _born_and_stamped(draft_id, db)
 
     out = _adapter()._salvage_truncated_draft(
         parsed_contract=None,
@@ -361,7 +388,8 @@ def _subagent_stop_event(adapter, *, stop_reason: str, agent_output: str):
         "hook_event_name": "SubagentStop",
         "session_id": "sess-e2e",
         "agent_type": "developer",
-        "agent_id": VALID_AGENT_ID,
+        # The harness id the payload really carries -- not the minted handle.
+        "agent_id": HARNESS_AGENT_ID,
         "agent_transcript_path": "",
         "last_assistant_message": agent_output,
         "stop_reason": stop_reason,
@@ -376,6 +404,7 @@ def test_adapter_salvages_on_max_tokens_truncation(default_db):
     marker) and surfaces it in the response."""
     draft_id = mint_draft_id(VALID_AGENT_ID)
     save_draft(draft_id, _partial_envelope("IN_PROGRESS"))
+    _born_and_stamped(draft_id, default_db)
 
     adapter = _adapter()
     event = _subagent_stop_event(

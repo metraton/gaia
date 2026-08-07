@@ -107,6 +107,48 @@ def test_view_field_returns_scalar_leaf(base_env):
 
 
 # ---------------------------------------------------------------------------
+# Empty-but-EXISTING vs. absent: two distinct responses, never confused.
+# A fresh draft's evidence_report lists start empty and its optional dict
+# fields start null -- both are real, present keys with no content, which
+# must read as "exists, empty" (exit 0) and never as "does not exist" (exit
+# 1, the case covered above).
+# ---------------------------------------------------------------------------
+def test_view_field_existing_empty_list_is_not_an_error(base_env):
+    _init_draft(base_env)
+    view = _run(["view", "--field", "evidence_report.cross_layer_impacts"], base_env)
+    assert view.returncode == 0, f"stderr={view.stderr!r}"
+    assert view.stderr.strip() == ""
+    assert json.loads(view.stdout) == []
+
+
+def test_view_field_existing_null_value_is_not_an_error(base_env):
+    _init_draft(base_env)
+    view = _run(["view", "--field", "consolidation_report"], base_env)
+    assert view.returncode == 0, f"stderr={view.stderr!r}"
+    assert view.stderr.strip() == ""
+    assert json.loads(view.stdout) is None
+
+
+def test_view_field_empty_and_absent_are_distinguishable_pair(base_env):
+    """The same draft, two neighboring calls: one path exists and is empty,
+    the other does not exist at all -- exit code alone already tells them
+    apart, and stdout is empty on the error side where the empty-but-real
+    field printed content (`[]`) on the success side."""
+    _init_draft(base_env)
+    empty = _run(["view", "--field", "evidence_report.cross_layer_impacts"], base_env)
+    absent = _run(["view", "--field", "evidence_report.cross_layer_impact"], base_env)  # typo'd, absent
+
+    assert empty.returncode == 0
+    assert json.loads(empty.stdout) == []
+
+    assert absent.returncode != 0
+    assert absent.stdout.strip() == ""
+    assert "cross_layer_impact" in absent.stderr
+
+    assert empty.returncode != absent.returncode
+
+
+# ---------------------------------------------------------------------------
 # An absent path is a clean, non-zero-exit error -- never a raw traceback.
 # ---------------------------------------------------------------------------
 def test_view_field_nonexistent_nested_path_clean_error(base_env):
@@ -161,6 +203,43 @@ def test_view_without_field_returns_full_envelope(base_env):
         "approval_request",
     }
     assert env["agent_status"]["agent_id"] == VALID_AGENT_ID
+
+
+# ---------------------------------------------------------------------------
+# --json shapes a --field (or plain view) ERROR as machine-readable JSON,
+# matching every other contract subcommand's --json. Success output was
+# already valid JSON either way (the subtree or the full envelope); --json
+# only changes the ERROR path, which used to be unreachable for `view`
+# because the flag itself was never wired into argparse.
+# ---------------------------------------------------------------------------
+def test_view_field_absent_path_json_error_shape(base_env):
+    _init_draft(base_env)
+    view = _run(
+        ["view", "--field", "evidence_report.does_not_exist", "--json"], base_env
+    )
+    assert view.returncode != 0
+    assert view.stderr.strip() == ""  # JSON error goes to stdout, not stderr
+    payload = json.loads(view.stdout)
+    assert payload["status"] == "error"
+    assert "does_not_exist" in payload["error"]
+
+
+def test_view_no_draft_found_json_error_shape(base_env):
+    view = _run(["view", "--draft-id", "abogus.doesnotexist", "--json"], base_env)
+    assert view.returncode != 0
+    payload = json.loads(view.stdout)
+    assert payload["status"] == "error"
+    assert "abogus.doesnotexist" in payload["error"]
+
+
+def test_view_harness_id_not_found_json_error_shape(base_env):
+    """Regression: --harness-id used to hardcode plain-text errors regardless
+    of --json (the flag was checked only after this early return)."""
+    view = _run(["view", "--harness-id", "no-such-harness-id", "--json"], base_env)
+    assert view.returncode != 0
+    payload = json.loads(view.stdout)
+    assert payload["status"] == "error"
+    assert "no-such-harness-id" in payload["error"]
 
 
 # ---------------------------------------------------------------------------

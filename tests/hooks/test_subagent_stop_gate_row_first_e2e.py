@@ -213,12 +213,16 @@ def test_unfinalized_row_rejects_through_the_real_hook_despite_a_perfect_fence(d
 
 
 # ---------------------------------------------------------------------------
-# Backup path: no dispatch row was ever born for this session/agent (e.g. a
-# turn dispatched before the born-at-dispatch birth existed at all) -- the
-# fence still decides, exactly as the gate behaved before this migration.
+# No dispatch row was ever born for this session/agent. This case used to fall
+# back to the fence and PASS on a well-formed one; the retirement makes it a
+# rejection, and this test is the inversion that proves it end to end.
 # ---------------------------------------------------------------------------
 
-def test_no_dispatch_row_falls_back_to_fence_through_the_real_hook(default_db):
+def test_no_dispatch_row_rejects_through_the_real_hook_however_good_the_fence(default_db):
+    """The strongest form of the retirement: a flawless fenced envelope in the
+    final message, and no persisted row. Before, this passed the close on the
+    strength of the fence alone -- which is exactly the turn that never wrote
+    a contract presenting itself as one that did."""
     envelope = _complete_envelope()
     agent_output = (
         "All done.\n\n```agent_contract_handoff\n"
@@ -229,5 +233,7 @@ def test_no_dispatch_row_falls_back_to_fence_through_the_real_hook(default_db):
     event = _subagent_stop_event(adapter, agent_output=agent_output, stop_reason="end_turn")
     response = adapter.adapt_subagent_stop(event)
 
-    assert response.output.get("contract_rejected") is not True
-    assert response.output.get("contract_gate_source") == "fence"
+    assert response.output.get("contract_rejected") is True
+    assert response.output.get("contract_gate_source") == "row_missing"
+    assert response.exit_code == 2
+    assert "gaia contract finalize" in response.output.get("contract_rejection_reason", "")

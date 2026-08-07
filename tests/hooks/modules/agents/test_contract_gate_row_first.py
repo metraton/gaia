@@ -1,21 +1,12 @@
-"""Row-first SubagentStop gate (source-of-truth inversion, step 1).
+"""Row-only SubagentStop gate (source-of-truth migration, step 2).
 
-Brief context: today the gate parses ONLY the fenced ``agent_contract_handoff``
-block out of the agent's final message; the persisted
-``agent_contract_handoffs`` row is a parallel, unconsulted record. Measured
-consequences: a well-formed fence passes the gate even when the agent never
-ran ``gaia contract finalize`` at all, and a fence can silently diverge from
-the row because the fence is retyped from memory while the row is the actual
-sequence of ``gaia contract`` calls the turn ran.
-
-``resolve_subagent_stop_gate`` (hooks/adapters/claude_code.py) inverts the
-source of truth: the turn's OWN dispatch row is looked up first; when it was
-cleanly closed by the agent's own finalize, ITS persisted envelope decides
-pass/reject through the identical core (``evaluate_contract_gate`` ->
-``gaia.contract.crosscheck.validate`` + ``_blind_verification_required``) the
-fence used to go through alone. The fence remains the backup path, used only
-when no dispatch row is reachable at all (or one exists unfinalized but the
-stop was a harness truncation, which is not the agent's violation).
+Step 1 inverted the gate: the turn's own ``agent_contract_handoffs`` row became
+authoritative whenever it was reachable and cleanly finalized, with the fenced
+``agent_contract_handoff`` block in the final message kept as a fallback. This
+step removes the fallback. ``resolve_subagent_stop_gate``
+(hooks/adapters/claude_code.py) no longer accepts an envelope from the response
+text at all: it reads the persisted row, and a turn whose row is unreachable or
+unfinalized fails the close on that basis alone.
 
 These tests exercise the REAL writer functions
 (``insert_dispatched_handoff``, ``finalize_agent_contract_handoff``,
@@ -38,8 +29,8 @@ for _p in (_HOOKS_DIR, _REPO_ROOT):
         sys.path.insert(0, _p)
 
 from adapters.claude_code import (  # noqa: E402
-    GATE_SOURCE_FENCE,
     GATE_SOURCE_ROW,
+    GATE_SOURCE_ROW_MISSING,
     GATE_SOURCE_ROW_UNFINALIZED,
     STOP_REASON_TRUNCATION,
     STOP_REASON_VIOLATION,
@@ -81,14 +72,6 @@ def _complete_envelope(agent_id: str = AGENT_ID) -> dict:
     env["evidence_report"]["verification"] = {
         "method": "test", "result": "pass", "details": "suite green",
     }
-    return env
-
-
-def _malformed_agent_id_envelope() -> dict:
-    """A COMPLETE envelope, verification-passing, EXCEPT agent_id does not
-    match ^a[0-9a-f]{16,}$ -- AGENT_ID_FORMAT rejects it under full-verdict."""
-    env = _complete_envelope()
-    env["agent_status"]["agent_id"] = "BADID"
     return env
 
 
@@ -153,16 +136,15 @@ def db(tmp_path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# 1. A cleanly-finalized, well-formed row passes with NO fence at all.
+# 1. A cleanly-finalized, well-formed row passes on its own evidence.
 # ---------------------------------------------------------------------------
 
-def test_row_finalized_well_formed_passes_with_no_fence(db):
+def test_row_finalized_well_formed_passes(db):
     contract_id = _birth_row(db, contract_suffix="case1")
     _finalize_row(db, contract_id, _complete_envelope())
     bound_row = _resolved_row(db)
 
     verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=None,  # no fence at all -- absent, not merely incomplete
         agent_type="gaia-system",
         plan_task_id=None,
         stop_reason_classification=STOP_REASON_VIOLATION,
@@ -175,42 +157,36 @@ def test_row_finalized_well_formed_passes_with_no_fence(db):
     assert verdict.rejected is False
 
 
-def test_row_finalized_well_formed_passes_even_with_incomplete_fence(db):
-    """The SAME property, with a fence present but incomplete -- absence and
-    incompleteness are both irrelevant once the row is authoritative."""
+def test_gate_refuses_an_envelope_from_the_response_text(db):
+    """The retirement, stated as a signature: there is no longer a parameter
+    through which the final message's fenced block can reach the gate. This
+    is the assertion that replaces step 1's 'the row outranks the fence'
+    cases -- outranking implied the fence was still an input."""
     contract_id = _birth_row(db, contract_suffix="case1b")
     _finalize_row(db, contract_id, _complete_envelope())
     bound_row = _resolved_row(db)
 
-    incomplete_fence = {"agent_status": {"agent_state": "COMPLETE"}}  # no agent_id, no next_action
-
-    verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=incomplete_fence,
-        agent_type="gaia-system",
-        plan_task_id=None,
-        stop_reason_classification=STOP_REASON_VIOLATION,
-        ramp_enabled=True,
-        bound_dispatch_row=bound_row,
-        db_path=str(db),
-    )
-
-    assert source == GATE_SOURCE_ROW
-    assert verdict.rejected is False
+    with pytest.raises(TypeError):
+        resolve_subagent_stop_gate(
+            parsed_contract=_complete_envelope(),
+            agent_type="gaia-system",
+            plan_task_id=None,
+            stop_reason_classification=STOP_REASON_VIOLATION,
+            ramp_enabled=True,
+            bound_dispatch_row=bound_row,
+            db_path=str(db),
+        )
 
 
 # ---------------------------------------------------------------------------
-# 2. A row that exists but was never cleanly finalized must NOT pass silently,
-#    however perfect the fence looks.
+# 2. A row that exists but was never cleanly finalized rejects.
 # ---------------------------------------------------------------------------
 
-def test_row_unfinalized_rejects_despite_a_perfect_fence(db):
+def test_row_unfinalized_rejects(db):
     _birth_row(db, contract_suffix="case2")  # never finalized -- stays DISPATCHED
     bound_row = _resolved_row(db)
 
-    perfect_fence = _complete_envelope()
-
     verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=perfect_fence,
         agent_type="gaia-system",
         plan_task_id=None,
         stop_reason_classification=STOP_REASON_VIOLATION,
@@ -225,16 +201,15 @@ def test_row_unfinalized_rejects_despite_a_perfect_fence(db):
     assert "gaia contract finalize" in verdict.rejection_reason
 
 
-def test_row_unfinalized_excused_by_truncation_falls_back_to_fence(db):
-    """The one carve-out: a max_tokens truncation is not the agent's
-    violation, so an unfinalized row does not itself reject -- the fence
-    (already truncation-aware) decides instead, exactly as before this
-    migration."""
+def test_row_unfinalized_excused_by_truncation(db):
+    """The one carve-out, unchanged in effect but no longer routed through the
+    fence: a max_tokens truncation is not the agent's violation, so an
+    unfinalized row does not reject. The verdict is now produced directly,
+    marked salvaged_truncation, with the row still named as the source."""
     _birth_row(db, contract_suffix="case2b")
     bound_row = _resolved_row(db)
 
     verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=_malformed_agent_id_envelope(),
         agent_type="gaia-system",
         plan_task_id=None,
         stop_reason_classification=STOP_REASON_TRUNCATION,
@@ -243,27 +218,21 @@ def test_row_unfinalized_excused_by_truncation_falls_back_to_fence(db):
         db_path=str(db),
     )
 
-    assert source == GATE_SOURCE_FENCE
+    assert source == GATE_SOURCE_ROW_UNFINALIZED
     assert verdict.rejected is False
     assert verdict.salvaged_truncation is True
 
 
 # ---------------------------------------------------------------------------
-# 3. Row and fence diverge -> the row wins, in both directions.
+# 3. A finalized but malformed row rejects on its own content.
 # ---------------------------------------------------------------------------
 
-def test_divergent_malformed_row_rejects_despite_well_formed_fence(db):
-    """The row is finalized but MALFORMED (missing next_action); the fence is
-    a flawless COMPLETE that would have passed on its own. The row still
-    wins: reject."""
+def test_malformed_row_rejects(db):
     contract_id = _birth_row(db, contract_suffix="case3")
     _finalize_row(db, contract_id, _missing_next_action_envelope())
     bound_row = _resolved_row(db)
 
-    flawless_fence = _complete_envelope()
-
     verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=flawless_fence,
         agent_type="gaia-system",
         plan_task_id=None,
         stop_reason_classification=STOP_REASON_VIOLATION,
@@ -280,12 +249,12 @@ def test_divergent_malformed_row_rejects_despite_well_formed_fence(db):
 
 
 # ---------------------------------------------------------------------------
-# 4. Backup path: no dispatch row reachable at all -- fence decides, both ways.
+# 4. No dispatch row reachable at all -- formerly the fence's branch, now a
+#    rejection in its own right.
 # ---------------------------------------------------------------------------
 
-def test_no_row_falls_back_to_fence_and_accepts_a_valid_one(db):
+def test_no_row_rejects(db):
     verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=_complete_envelope(),
         agent_type="gaia-system",
         plan_task_id=None,
         stop_reason_classification=STOP_REASON_VIOLATION,
@@ -293,19 +262,41 @@ def test_no_row_falls_back_to_fence_and_accepts_a_valid_one(db):
         bound_dispatch_row=None,
         db_path=str(db),
     )
-    assert source == GATE_SOURCE_FENCE
-    assert verdict.rejected is False
-
-
-def test_no_row_falls_back_to_fence_and_rejects_a_malformed_one(db):
-    verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=_malformed_agent_id_envelope(),
-        agent_type="gaia-system",
-        plan_task_id=None,
-        stop_reason_classification=STOP_REASON_VIOLATION,
-        ramp_enabled=True,
-        bound_dispatch_row=None,
-        db_path=str(db),
-    )
-    assert source == GATE_SOURCE_FENCE
+    assert source == GATE_SOURCE_ROW_MISSING
     assert verdict.rejected is True
+    assert "No persisted contract row" in verdict.rejection_reason
+    codes = {a["code"] for a in verdict.anomalies}
+    assert "ROW_NOT_FOUND" in codes
+
+
+def test_no_row_names_the_repair_command(db):
+    """A rejection has to be recoverable, or it is a dead end rather than a
+    failed close: the message must name finalize (for a turn that was given a
+    contract) and init (for one that never was)."""
+    verdict, _source = resolve_subagent_stop_gate(
+        agent_type="gaia-system",
+        plan_task_id=None,
+        stop_reason_classification=STOP_REASON_VIOLATION,
+        ramp_enabled=True,
+        bound_dispatch_row=None,
+        db_path=str(db),
+    )
+    assert "gaia contract finalize" in verdict.rejection_reason
+    assert "gaia contract init" in verdict.rejection_reason
+
+
+def test_no_row_excused_by_truncation(db):
+    """A harness cut that left no reachable row is still not the agent's
+    violation. Before the retirement this case reached the fence, which was
+    itself truncation-aware; the excuse now lives at the gate."""
+    verdict, source = resolve_subagent_stop_gate(
+        agent_type="gaia-system",
+        plan_task_id=None,
+        stop_reason_classification=STOP_REASON_TRUNCATION,
+        ramp_enabled=True,
+        bound_dispatch_row=None,
+        db_path=str(db),
+    )
+    assert source == GATE_SOURCE_ROW_MISSING
+    assert verdict.rejected is False
+    assert verdict.salvaged_truncation is True

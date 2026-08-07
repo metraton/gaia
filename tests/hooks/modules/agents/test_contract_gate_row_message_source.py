@@ -1,16 +1,16 @@
 """The gate's rejection message must say WHERE the envelope was read from.
 
-Brief context: ``resolve_subagent_stop_gate`` (hooks/adapters/claude_code.py)
-now validates the turn's own persisted ``agent_contract_handoffs`` row when
-one is reachable, using the row's ``raw_handoff_json`` instead of the fence.
-Before this fix, ``gaia.contract.validator.validate_form``'s None-envelope
-path and its canonical repair message were worded as if the envelope always
-came from the agent's final response text ("your response must carry an
-agent_contract_handoff envelope"). That collapses two distinct, real failure
-modes into one wrong sentence: no fence in the response at all, versus a
-persisted row whose ``raw_handoff_json`` failed to parse as JSON. This module
-proves the message now distinguishes them, end to end through the row-first
-gate.
+``gaia.contract.validator.validate_form`` serves two callers with different
+sources. The SubagentStop gate (``resolve_subagent_stop_gate``,
+hooks/adapters/claude_code.py) reads the turn's persisted
+``agent_contract_handoffs`` row and passes ``source="row"``; the CLI's
+validate-on-write reads an envelope handed to it directly and keeps the
+default ``source="declaration"``. Its canonical repair message used to be
+worded as if the envelope always came from the agent's final response text
+("your response must carry an agent_contract_handoff envelope"), which
+collapsed two distinct failure modes into one wrong sentence. This module
+proves the message forks on source -- at the unit level for both, and end to
+end through the gate for the row.
 """
 
 from __future__ import annotations
@@ -28,8 +28,8 @@ for _p in (_HOOKS_DIR, _REPO_ROOT):
         sys.path.insert(0, _p)
 
 from adapters.claude_code import (  # noqa: E402
-    GATE_SOURCE_FENCE,
     GATE_SOURCE_ROW,
+    GATE_SOURCE_ROW_MISSING,
     STOP_REASON_VIOLATION,
     resolve_subagent_stop_gate,
 )
@@ -161,7 +161,6 @@ def test_gate_rejection_for_unreadable_finalized_row_names_the_row(db):
     bound_row = _resolved_row(db)
 
     verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=None,  # no fence either -- irrelevant once the row wins
         agent_type="gaia-system",
         plan_task_id=None,
         stop_reason_classification=STOP_REASON_VIOLATION,
@@ -176,12 +175,14 @@ def test_gate_rejection_for_unreadable_finalized_row_names_the_row(db):
     assert _DECLARATION_ONLY_PHRASE not in verdict.rejection_reason
 
 
-def test_gate_rejection_for_missing_fence_with_no_row_still_names_the_response(db):
-    """Control: the genuinely-original case (no row reachable at all, no
-    fence either) keeps its original wording -- the fix must not bleed the
-    row-specific phrasing into the fence's own, still-valid, failure mode."""
+def test_gate_rejection_with_no_row_never_names_the_response(db):
+    """Inverted by the fence retirement. This case used to fall to the fence
+    and therefore keep the declaration wording ("your response must carry an
+    agent_contract_handoff envelope"). With the fence gone the gate has no
+    envelope from the response text to fail on, so a no-row rejection must
+    point at the missing ROW instead -- telling the agent to fix its response
+    text would now be advice it cannot act on."""
     verdict, source = resolve_subagent_stop_gate(
-        parsed_contract=None,
         agent_type="gaia-system",
         plan_task_id=None,
         stop_reason_classification=STOP_REASON_VIOLATION,
@@ -190,7 +191,7 @@ def test_gate_rejection_for_missing_fence_with_no_row_still_names_the_response(d
         db_path=str(db),
     )
 
-    assert source == GATE_SOURCE_FENCE
+    assert source == GATE_SOURCE_ROW_MISSING
     assert verdict.rejected is True
-    assert _DECLARATION_ONLY_PHRASE in verdict.rejection_reason
-    assert _ROW_ONLY_PHRASE not in verdict.rejection_reason
+    assert _DECLARATION_ONLY_PHRASE not in verdict.rejection_reason
+    assert "No persisted contract row" in verdict.rejection_reason

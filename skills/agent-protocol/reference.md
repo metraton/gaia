@@ -324,20 +324,21 @@ already carries the session attribution, and an invented value (the literal
 `unknown`, say) corrupts it.
 
 **The gate at the wall.** `_resolve_subagent_stop_gate_full` in
-`hooks/adapters/claude_code.py` resolves this turn's own dispatch row first and
-decides in three cases:
+`hooks/adapters/claude_code.py` resolves this turn's own dispatch row and
+decides in three cases, all of them about the row -- nothing in the agent's
+final-message text is read:
 
 1. Row reachable and cleanly finalized -> its persisted envelope is validated
-   (`GATE_SOURCE_ROW`). The row wins over the fence unconditionally, in both
-   directions.
-2. Row reachable but not cleanly finalized, and the stop was not a harness
-   truncation -> reject (`GATE_SOURCE_ROW_UNFINALIZED`), regardless of what the
-   fenced block in the final message says.
-3. No row reachable at all -> the fenced `agent_contract_handoff` block is the
-   fallback (`GATE_SOURCE_FENCE`).
+   (`GATE_SOURCE_ROW`).
+2. Row reachable but not cleanly finalized -> reject
+   (`GATE_SOURCE_ROW_UNFINALIZED`), softened to a non-rejecting
+   `salvaged_truncation` verdict only when the stop was a harness truncation.
+3. No row reachable at all -> reject (`GATE_SOURCE_ROW_MISSING`), softened the
+   same way on a harness truncation.
 
 The fenced block in the final message is therefore still required output, but
-it decides the close only in case 3.
+it no longer decides the close in any case -- the row is the only source the
+gate reads.
 
 **The reaper is not a second way to close.** A turn that stops after its last
 `fill` leaves the row where the draft left it: open. The SubagentStop persister

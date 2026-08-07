@@ -242,13 +242,19 @@ def test_approval_mirrored_onto_unfinalized_row_survives_with_no_fence(default_d
 
 
 # ---------------------------------------------------------------------------
-# Control: NO dispatch row reachable at all -- the gate's own residual
-# fallback case. Nonce preservation must still read the fence here, exactly
-# as it did before this fix -- degrading to the declaration only in the same
-# case the gate itself does.
+# NO dispatch row reachable at all. This used to be the gate's fence fallback,
+# and nonce preservation degraded to the fence with it. Both are retired, so
+# nothing in the response text keeps an approval alive.
+#
+# The cost of that is bounded to nearly nothing, which is why it is acceptable:
+# cleanup_approval only EXPIRES pendings already past the 24h TTL
+# (modules/security/approval_cleanup.py -- the P-3d23 invariant), so a nonce
+# minted during the turn that just ended is never young enough to be swept.
+# preserve_nonces protects an AGED pending, and an approval that has been
+# waiting a day is not one this turn is about to hand back.
 # ---------------------------------------------------------------------------
 
-def test_no_row_at_all_still_reads_the_fence_for_nonce_preservation(default_db, monkeypatch):
+def test_no_row_at_all_no_longer_reads_the_fence_for_nonce_preservation(default_db, monkeypatch):
     approval_id = _mint_pending_approval("fence-fallback")
     envelope = _approval_request_envelope(approval_id)
     agent_output = (
@@ -261,8 +267,30 @@ def test_no_row_at_all_still_reads_the_fence_for_nonce_preservation(default_db, 
 
     preserved = _run_and_capture_preserved_nonces(monkeypatch, adapter, event)
 
-    assert preserved is not None
-    assert approval_id in preserved
+    assert preserved is None or approval_id not in preserved
+
+
+def test_fresh_pending_survives_cleanup_even_with_no_preserved_nonce(default_db, monkeypatch):
+    """The reason the assertion above is safe to invert: the pending is still
+    PENDING after the very cleanup that preserved nothing. Preservation is a
+    guard against the TTL sweep, not the thing that keeps a fresh approval
+    alive."""
+    approval_id = _mint_pending_approval("fence-fallback-survives")
+    envelope = _approval_request_envelope(approval_id)
+    agent_output = (
+        "Blocked -- awaiting your approval.\n\n```agent_contract_handoff\n"
+        + json.dumps(envelope) + "\n```\n"
+    )
+
+    adapter = ClaudeCodeAdapter()
+    event = _subagent_stop_event(adapter, agent_output=agent_output, stop_reason="end_turn")
+    adapter.adapt_subagent_stop(event)
+
+    from gaia.approvals.store import get_by_id
+
+    row = get_by_id(approval_id)
+    assert row is not None
+    assert row.get("status") == "pending"
 
 
 # ---------------------------------------------------------------------------

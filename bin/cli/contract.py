@@ -9,26 +9,39 @@ single combined entry point, ``gaia.contract.crosscheck.validate()`` (layer 1
 form + layer 2 cross-check), before persisting anything -- so a rejected
 write NEVER lands, NO false-pass.
 
-Subcommands (the 6 verbs + the ``fill --json`` batch mode):
+Subcommands (the 6 draft verbs + the ``fill --json`` batch mode, plus
+``reconcile``, which operates on a persisted ROW rather than a draft):
     init     [--agent-id ID]      [--draft-id ID]  Create a new draft; mints
                                                    and prints the agent_id
                                                    when --agent-id is omitted
     set      FIELD VALUE          [--draft-id ID]  Set a scalar field (dotted path)
     add      FIELD VALUE          [--draft-id ID]  Append a value to a list field
     view     [--field DOTTED_PATH][--draft-id ID]  Print the contract envelope (NEVER writes), or ONLY a
-             [--harness-id ID]                     dotted-path subtree; --harness-id resolves by the
-                                                     harness's per-run agentId instead (cut-turn recovery).
-                                                     Both addressing modes are safe for a historical/cut row
-                                                     found via `contract list --cut --json` (use its
-                                                     contract_id for --draft-id, harness_agent_id for
-                                                     --harness-id when the row was stamped, v40+) -- see
-                                                     cmd_view's own docstring for the write-on-read defect
-                                                     this used to have and no longer does.
+             [--harness-id ID] [--json]            dotted-path subtree named by the SAME schema keys the
+                                                     envelope itself uses (e.g. evidence_report.open_gaps,
+                                                     agent_status.agent_state, update_contracts) -- no
+                                                     second taxonomy to learn. A path that EXISTS exits 0
+                                                     printing the value verbatim, even an empty [] or null;
+                                                     a path that does NOT exit 1 with a distinct stderr
+                                                     error -- empty and absent are never the same response.
+                                                     --harness-id resolves by the harness's per-run agentId
+                                                     instead (cut-turn recovery). Both addressing modes, plus
+                                                     --field, are safe for a historical/cut row found via
+                                                     `contract list --cut --json` (use its contract_id for
+                                                     --draft-id, harness_agent_id for --harness-id when the
+                                                     row was stamped, v40+) -- see cmd_view's own docstring
+                                                     for the write-on-read defect this used to have and no
+                                                     longer does.
     validate                      [--draft-id ID]  Validate the draft WITHOUT mutating it
     finalize                      [--draft-id ID]  Validate and persist/converge the handoff row
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
              --json-file PATH                      ... or read the patch from a file (avoids shell
                                                      quoting a payload that carries report prose)
+    reconcile --contract-id ID | --harness-id ID   Clear the cut mark on a hook-written residue row
+              [--superseded-by CONTRACT_ID]        (see the section header above cmd_reconcile for why
+                                                     this is a separate door and not a looser finalize).
+                                                     Reads no draft, validates no envelope, and NEVER
+                                                     touches agent_state.
 
 All subcommands exit 0 on success, 1 on a rejected write / validation
 failure or a usage error (never a raw traceback).
@@ -751,6 +764,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
     """
     from gaia.store.writer import list_agent_contract_handoffs
 
+    as_json = bool(getattr(args, "json", False))
     rows = list_agent_contract_handoffs(harness_agent_id=harness_id, limit=1)
     if not rows:
         _print_error(
@@ -759,7 +773,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
             f"that version, or one whose start never reached the stamping "
             f"seam, is only reachable by session/date via 'gaia contract "
             f"list'.",
-            as_json=False,
+            as_json=as_json,
         )
         return 1
     row = rows[0]
@@ -772,13 +786,13 @@ def _view_by_harness_id(args, harness_id: str) -> int:
             _print_error(
                 f"row {row.get('id')} has no readable envelope to take "
                 f"--field from.",
-                as_json=False,
+                as_json=as_json,
             )
             return 1
         try:
             subtree = _get_nested(envelope, field)
         except ValueError as exc:
-            _print_error(str(exc), as_json=False)
+            _print_error(str(exc), as_json=as_json)
             return 1
         print(json.dumps(subtree, indent=2))
         return 0
@@ -1329,6 +1343,187 @@ def cmd_fill(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# reconcile -- the closure path for a hook-written residue row
+# ---------------------------------------------------------------------------
+#
+# WHY THIS IS A SEPARATE VERB AND NOT A RELAXATION OF `finalize`.
+# `finalize` is the AGENT's clean close of ITS OWN turn: it loads a draft,
+# validates the full envelope, and enforces identity coherence between
+# `agent_status.agent_id` and the draft id's `{agent_id}.{token}` prefix. A
+# residue row satisfies none of those premises -- it has no draft on disk, no
+# agent authored it, and the SubagentStop backstop keys it
+# `hook-backstop.{agent_id}.{session_id}`, whose first dot-segment is the
+# literal `hook-backstop`. That made the row unclosable by construction, and by
+# every route: `_maybe_adopt_draft` refuses the prefix (it fails
+# AGENT_ID_PATTERN_TEXT) so no draft can even be materialized, and were one
+# materialized anyway, `cmd_finalize`'s coherence check would demand
+# `agent_status.agent_id == "hook-backstop"` while the validator forbids exactly
+# that value. No value satisfies both.
+#
+# Widening either check to admit the synthetic shape would widen the agent's own
+# clean-close door for every turn, to serve rows no agent ever wrote. The honest
+# fix is a door of the row's own kind: this verb never loads a draft, never
+# validates an envelope, and NEVER TOUCHES agent_state -- so it cannot promote
+# anything to COMPLETE and cannot widen the SubagentStop gate or the state enum.
+# What it changes is the CUT MARK, which is the only thing wrong with a residue
+# row: the turn's real verdict already lives on another row, and leaving the
+# duplicate marked cut turns `contract list --cut` -- the orchestrator's signal
+# for degraded work -- into mostly false positives.
+#
+# The semantics are the ones `close_born_dispatch_row` already established for a
+# SUPERSEDED scaffold (hooks/modules/agents/handoff_persister.py): record
+# `superseded_by_contract_id` as a pure link to where the verdict is, and clear
+# `cut_reason`, because nothing about that turn was degraded. This verb is that
+# same closure, reachable by hand for the rows already accumulated.
+# ---------------------------------------------------------------------------
+
+# Envelope markers written ONLY by the hook-side capture paths
+# (handoff_persister: `_capture` and the reaped branch of
+# `close_born_dispatch_row`). Requiring one is what keeps this verb off a row an
+# agent authored: a turn's own cut row (never_finalized on its real contract)
+# carries no `auto_captured`, so it stays in `--cut` where it belongs.
+_HOOK_WRITTEN_MARKERS = ("auto_captured", "reaped")
+
+
+def _reconcilable_row(row: dict) -> "tuple[bool, str]":
+    """Whether this row is hook-written residue this verb may close.
+
+    Returns ``(ok, reason)``; ``reason`` is the refusal text when ok is False.
+    """
+    if not row.get("cut_reason"):
+        return False, (
+            "the row carries no cut_reason -- it is already closed clean and "
+            "there is nothing to reconcile."
+        )
+    try:
+        envelope = json.loads(row.get("raw_handoff_json") or "null")
+    except (TypeError, ValueError):
+        envelope = None
+    if not isinstance(envelope, dict) or not any(
+        envelope.get(marker) for marker in _HOOK_WRITTEN_MARKERS
+    ):
+        return False, (
+            "the row carries no hook-capture marker "
+            f"({'/'.join(_HOOK_WRITTEN_MARKERS)}), so it is a turn's OWN cut "
+            "row, not backstop residue. A genuinely cut turn must stay visible "
+            "in 'gaia contract list --cut'."
+        )
+    return True, ""
+
+
+def cmd_reconcile(args) -> int:
+    """Close a hook-written residue row against the row holding the real verdict.
+
+    Addressed by ``--contract-id`` (the synthetic ``hook-backstop.*`` key such a
+    row carries) or ``--harness-id`` (the same bridge ``view`` uses). Never
+    changes ``agent_state``; it stamps ``superseded_by_contract_id`` into the
+    envelope and clears ``cut_reason`` so the row leaves the ``--cut`` signal.
+    """
+    from gaia.store.writer import list_agent_contract_handoffs, reconcile_cut_row
+
+    as_json = bool(getattr(args, "json", False))
+    contract_id = getattr(args, "contract_id", None)
+    harness_id = getattr(args, "harness_id", None)
+
+    # Neither coordinate is NOT a resolution fallback here: a bare
+    # `contract_id=None` lookup returns whatever row sorts first, which is the
+    # class of accidental-target bug this whole change exists to remove.
+    if not contract_id and not harness_id:
+        _print_error(
+            "reconcile addresses ONE row explicitly: pass --contract-id or "
+            "--harness-id. There is no default target.",
+            as_json,
+        )
+        return 1
+
+    if harness_id and not contract_id:
+        rows = list_agent_contract_handoffs(harness_agent_id=harness_id, limit=2)
+        if not rows:
+            _print_error(
+                f"no contract row carries harness_agent_id={harness_id!r}.",
+                as_json,
+            )
+            return 1
+        if len(rows) > 1:
+            _print_error(
+                f"harness_agent_id={harness_id!r} matches {len(rows)} rows; "
+                f"address the one you mean with --contract-id "
+                f"({', '.join(str(r.get('contract_id')) for r in rows)}).",
+                as_json,
+            )
+            return 1
+        row = rows[0]
+        contract_id = row.get("contract_id")
+    else:
+        row = _lookup_handoff_row_by_contract_id(contract_id)
+        if row is None:
+            _print_error(
+                f"no agent_contract_handoffs row exists for contract_id="
+                f"{contract_id!r}.",
+                as_json,
+            )
+            return 1
+
+    ok, reason = _reconcilable_row(row)
+    if not ok:
+        _print_error(f"refusing to reconcile {contract_id!r}: {reason}", as_json)
+        return 1
+
+    superseded_by = getattr(args, "superseded_by", None)
+    if superseded_by:
+        if _lookup_handoff_row_by_contract_id(superseded_by) is None:
+            _print_error(
+                f"--superseded-by names {superseded_by!r}, which has no "
+                f"agent_contract_handoffs row. The pointer must name the row "
+                f"that actually holds this turn's verdict.",
+                as_json,
+            )
+            return 1
+
+    try:
+        envelope = json.loads(row.get("raw_handoff_json") or "null")
+    except (TypeError, ValueError):
+        envelope = None
+    if not isinstance(envelope, dict):
+        envelope = {}
+    envelope = dict(envelope)
+    envelope["reconciled"] = True
+    if superseded_by:
+        envelope["superseded_by_contract_id"] = superseded_by
+
+    outcome = reconcile_cut_row(
+        contract_id, raw_handoff_json=json.dumps(envelope),
+    )
+    if outcome.get("status") != "applied":
+        _print_error(
+            f"reconcile did not apply to {contract_id!r} "
+            f"(reason={outcome.get('reason')}).",
+            as_json,
+        )
+        return 1
+
+    result = {
+        "status": "reconciled",
+        "contract_id": contract_id,
+        "handoff_id": outcome.get("handoff_id"),
+        "agent_state": row.get("agent_state"),
+        "cut_reason_before": row.get("cut_reason"),
+        "cut_reason_after": None,
+        "superseded_by_contract_id": superseded_by,
+    }
+    if as_json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(
+            f"OK: reconciled {contract_id} (handoff_id={outcome.get('handoff_id')}); "
+            f"cut_reason {row.get('cut_reason')} -> cleared, agent_state "
+            f"{row.get('agent_state')} unchanged"
+            + (f", superseded_by={superseded_by}" if superseded_by else "")
+        )
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Argparse wiring (shared by register() and the standalone shim)
 # ---------------------------------------------------------------------------
 
@@ -1427,9 +1622,18 @@ def _build_subcommands(sub) -> None:
         metavar="DOTTED_PATH",
         default=None,
         help=(
-            "Print ONLY this dotted-path subtree of the draft "
-            "(e.g. evidence_report.files_checked) instead of the full "
-            "envelope; same dotted-path scheme as 'set'"
+            "Print ONLY this dotted-path subtree instead of the full "
+            "envelope -- the SAME schema names the envelope itself uses "
+            "and the SAME dotted-path scheme 'set'/'add' use (e.g. "
+            "agent_status.agent_state, evidence_report.open_gaps, "
+            "evidence_report.verification, update_contracts). Combines "
+            "with --draft-id, --agent-id (default resolution), or "
+            "--harness-id exactly like a full view -- including a "
+            "historical or cut row found via 'contract list --cut'. Exit "
+            "0 and print the value verbatim (even an empty [] or null) "
+            "when the path EXISTS; exit 1 with an explicit stderr message "
+            "when it does NOT -- an existing-but-empty field and an "
+            "absent one are never the same response."
         ),
     )
     _add_common_draft_arg(p_view)
@@ -1445,6 +1649,17 @@ def _build_subcommands(sub) -> None:
             "recovery lane for a turn cut before it finalized. Prints the "
             "stamped row and its envelope (on-disk draft when present, else "
             "the row's own raw_handoff_json)."
+        ),
+    )
+    p_view.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "JSON-shaped error reporting (no-draft / ambiguous-draft / "
+            "unreadable-envelope messages) for a machine consumer. Success "
+            "output is already valid JSON either way -- the full envelope "
+            "or a --field subtree -- so this only changes how an ERROR is "
+            "printed, matching every other contract subcommand's --json."
         ),
     )
     p_view.set_defaults(func=cmd_view)
@@ -1609,6 +1824,46 @@ def _build_subcommands(sub) -> None:
     _add_agent_scope_arg(p_fill)
     p_fill.set_defaults(func=cmd_fill)
 
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="Clear the cut mark on a hook-written backstop/residue row",
+        description=(
+            "Close a residue row the SubagentStop backstop wrote for a turn "
+            "whose real verdict lives on ANOTHER row. Addresses the row by "
+            "--contract-id (the synthetic 'hook-backstop.*' key) or "
+            "--harness-id. Clears cut_reason so the duplicate leaves "
+            "'gaia contract list --cut', and records --superseded-by as the "
+            "pointer to the row that holds the verdict. NEVER changes "
+            "agent_state, and refuses any row an agent authored itself."
+        ),
+    )
+    p_reconcile.add_argument(
+        "--contract-id",
+        dest="contract_id",
+        metavar="CONTRACT_ID",
+        default=None,
+        help="The residue row's contract_id (as reported by 'contract list --cut')",
+    )
+    p_reconcile.add_argument(
+        "--harness-id",
+        dest="harness_id",
+        metavar="HARNESS_AGENT_ID",
+        default=None,
+        help="Address the row by harness_agent_id instead (must match exactly one row)",
+    )
+    p_reconcile.add_argument(
+        "--superseded-by",
+        dest="superseded_by",
+        metavar="CONTRACT_ID",
+        default=None,
+        help=(
+            "contract_id of the row that holds this turn's real verdict; "
+            "recorded on the residue row as superseded_by_contract_id"
+        ),
+    )
+    p_reconcile.add_argument("--json", action="store_true", help="JSON output")
+    p_reconcile.set_defaults(func=cmd_reconcile)
+
 
 def _contract_default(args) -> int:
     print("Usage: gaia contract SUBCOMMAND [options]")
@@ -1617,10 +1872,16 @@ def _contract_default(args) -> int:
     print("  set FIELD VALUE           -- set a scalar field by dotted path")
     print("  add FIELD VALUE           -- append a value to a list field")
     print("  view [--field PATH]       -- print a turn's contract envelope (never writes); --draft-id or")
-    print("                               --harness-id both recover a historical/cut row found via 'list'")
+    print("                               --harness-id both recover a historical/cut row found via 'list'.")
+    print("                               --field PATH (schema names, e.g. evidence_report.open_gaps) reads")
+    print("                               ONLY that subtree: exit 0 with the value (even empty) if it")
+    print("                               exists, exit 1 with a clean error if it does not.")
     print("  validate                  -- validate the draft without mutating it")
     print("  finalize                  -- validate + persist/converge the row; only COMPLETE is terminal")
     print("  fill --json JSON          -- batch-merge a JSON patch into the draft")
+    print("  reconcile --contract-id ID -- clear the cut mark on a hook-written residue row")
+    print("                               (--superseded-by points at the row holding the verdict);")
+    print("                               never changes agent_state, refuses an agent's own cut row")
     print("")
     print("Run 'gaia contract --help' for more information.")
     return 0

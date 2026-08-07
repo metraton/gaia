@@ -19,7 +19,8 @@ This suite proves:
   * The reconstructed envelope passes the full-verdict contract gate that the
     bare (fence-less) output would have failed.
   * The shared resolver ``resolve_minted_agent_id`` prefers the envelope's
-    agent_id and falls back to task_info, and its private alias still resolves.
+    agent_id, and returns None -- never the harness id -- when nothing minted
+    is recoverable; its private alias still resolves to the same function.
   * The minted id recovered from the transcript is the turn's OWN -- taken
     from its ``gaia contract init`` mint report, never from a peer's draft id
     the turn merely mentioned afterwards -- and ambiguity fails closed.
@@ -51,7 +52,11 @@ from gaia.contract.drafts import (  # noqa: E402
     resolve_draft_id,
     save_draft,
 )
-from gaia.store.writer import finalize_agent_contract_handoff  # noqa: E402
+from gaia.store.writer import (  # noqa: E402
+    finalize_agent_contract_handoff,
+    insert_dispatched_handoff,
+    stamp_harness_agent_id,
+)
 from modules.agents.handoff_persister import (  # noqa: E402
     _resolve_minted_agent_id,
     resolve_minted_agent_id,
@@ -105,12 +110,33 @@ def _complete_envelope() -> dict:
 
 
 def _task_info(db_path: Path) -> dict:
+    """The SubagentStop view of the turn.
+
+    ``agent_id`` is the HARNESS id and is deliberately NOT ``VALID_AGENT_ID``.
+    This file used to put the minted handle here, which made every lane appear
+    to resolve without ever crossing between the two identifier spaces -- the
+    exact masking the space confusion below is about.
+    """
     return {
-        "agent_id": VALID_AGENT_ID,
+        "agent_id": HARNESS_AGENT_ID,
         "agent": "gaia-system",
         "workspace": WORKSPACE,
         "db_path": str(db_path),
     }
+
+
+def _born_and_stamped(draft_id: str, db_path: Path) -> None:
+    """Reproduce the dispatch lifecycle a turn's row really goes through: the
+    row is born under the MINTED identity, then SubagentStart stamps the
+    HARNESS id onto it. That row is the only artifact holding both, and so the
+    only route from what SubagentStop knows to the draft key."""
+    insert_dispatched_handoff(
+        contract_id=draft_id,
+        agent_id=VALID_AGENT_ID,
+        workspace=WORKSPACE,
+        db_path=db_path,
+    )
+    stamp_harness_agent_id(draft_id, HARNESS_AGENT_ID, db_path=db_path)
 
 
 def _finalize(draft_id: str, envelope: dict, db_path: Path) -> None:
@@ -137,12 +163,13 @@ def test_resolver_prefers_envelope_agent_id():
     assert resolve_minted_agent_id(parsed, {"agent_id": "aother9"}) == "aff0091"
 
 
-def test_resolver_falls_back_to_task_info_when_no_fence():
-    # Fence absent and nothing else available -> the harness agent_id is
-    # returned as a last-resort LABEL (resolution order step 4). It belongs to
-    # the other identifier space and resolves no draft; it exists only so the
-    # backstop has a non-empty identity to stamp a degraded row with.
-    assert resolve_minted_agent_id(None, {"agent_id": VALID_AGENT_ID}) == VALID_AGENT_ID
+def test_resolver_returns_none_rather_than_the_harness_id_when_no_fence():
+    # Fence absent and nothing else available -> None. This USED to return the
+    # harness agent_id as a "last-resort LABEL", which is worse than nothing:
+    # being non-empty it satisfies every `if not minted_agent_id` guard
+    # downstream and carries a value that can never key a draft, so the rescue
+    # paths failed silently instead of reporting that they could not resolve.
+    assert resolve_minted_agent_id(None, {"agent_id": HARNESS_AGENT_ID}) is None
 
 
 def test_private_alias_is_the_same_shared_resolver():
@@ -157,7 +184,8 @@ def test_reconstructs_envelope_from_finalized_draft(db):
     draft_id = mint_draft_id(VALID_AGENT_ID)
     env = _complete_envelope()
     save_draft(draft_id, env)
-    _finalize(draft_id, env, db)  # the agent DID finalize -- row now exists
+    _born_and_stamped(draft_id, db)
+    _finalize(draft_id, env, db)  # the agent DID finalize -- row now converged
 
     recon = _adapter()._reconstruct_contract_from_finalized_draft(
         task_info=_task_info(db),
@@ -187,6 +215,7 @@ def test_reconstructed_envelope_passes_the_gate(db):
     draft_id = mint_draft_id(VALID_AGENT_ID)
     env = _complete_envelope()
     save_draft(draft_id, env)
+    _born_and_stamped(draft_id, db)
     _finalize(draft_id, env, db)
 
     # Missing fence -> parse yields None -> gate rejects.
@@ -217,7 +246,10 @@ def test_no_reconstruction_when_draft_not_finalized(db):
     # missing its fence; it is salvage/backstop territory. Do NOT reconstruct.
     draft_id = mint_draft_id(VALID_AGENT_ID)
     save_draft(draft_id, _complete_envelope())
-    # deliberately NOT calling _finalize
+    _born_and_stamped(draft_id, db)
+    # deliberately NOT calling _finalize -- the row stays DISPATCHED, so the
+    # draft IS findable and the refusal comes from the finalized check, not
+    # from an unresolvable identity.
 
     recon = _adapter()._reconstruct_contract_from_finalized_draft(
         task_info=_task_info(db), parsed_contract=None,
@@ -377,9 +409,10 @@ def test_no_reconstruction_when_transcript_holds_no_minted_id(db, tmp_path):
     )
 
     task_info = _harness_task_info(db, transcript)
-    # This is precisely the PRE-FIX resolution: the harness id is all there is,
-    # and globbing '{harness-id}.*' matches the finalized draft not at all.
-    assert resolve_minted_agent_id(None, task_info) == HARNESS_AGENT_ID
+    # No mint report AND no dispatch row to bridge through: the resolver has
+    # nothing, and says so. It must NOT hand back the harness id, which globs
+    # '{harness-id}.*' and matches the finalized draft not at all.
+    assert resolve_minted_agent_id(None, task_info) is None
     assert resolve_draft_id(explicit=None, agent_id=HARNESS_AGENT_ID) is None
 
     recon = _adapter()._reconstruct_contract_from_finalized_draft(

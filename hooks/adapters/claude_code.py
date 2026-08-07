@@ -228,8 +228,8 @@ def classify_stop_reason(stop_reason: Optional[str]) -> str:
 # EVERYTHING else exit 0 + a bare anomaly, never delivering the rich repair
 # message. T16 replaces that with a FULL-VERDICT gate driven by the SINGLE
 # portable core (gaia.contract.crosscheck.validate == form + cross-check), so
-# the gate, the CLI validate-on-write, the finalize writer, and the fence
-# fallback all agree on ONE verdict.
+# the gate, the CLI validate-on-write, and the finalize writer all agree on ONE
+# verdict.
 #
 # It is guarded by a RAMP FLAG that now DEFAULTS ON (cutover from the original
 # default-OFF staging):
@@ -250,7 +250,7 @@ def classify_stop_reason(stop_reason: Optional[str]) -> str:
 # exit 0 and recovery fell to the orchestrator via SendMessage. Full-verdict
 # closes that gap; a handoff built through the `gaia contract` CLI already
 # passed this SAME core at finalize, so the correct-path agent is never
-# rejected -- only a genuinely broken fence is.
+# rejected -- only a genuinely broken persisted envelope is.
 #
 # stop_reason (T10/T11) decides salvage-vs-violation: a max_tokens truncation
 # is NOT hard-rejected here (the T11 fast-path / T9 backstop already capture a
@@ -267,7 +267,7 @@ GATE_MODE_FULL_VERDICT = "full_verdict"
 
 # Dotted event category written to harness_events when the gate REJECTS a turn.
 # A rejection is invisible everywhere else: it is not observable in PostToolUse
-# (a subagent that repairs comes back carrying a valid fence, and one that never
+# (a subagent that repairs comes back with a closed row, and one that never
 # repairs is indistinguishable from a harness cut, which agent.cut already
 # claims), so the verdict is only knowable where the gate runs. Severity is
 # error -- strictly above info -- because the triage reader
@@ -314,7 +314,7 @@ def full_verdict_gate_enabled() -> bool:
     Reads ``GAIA_CONTRACT_FULL_VERDICT_GATE``. Unset / empty / any value that is
     NOT an explicit falsy token -> True -> the full-verdict gate, driven by the
     SINGLE portable core (gaia.contract.crosscheck) that also backs the CLI
-    validate-on-write, finalize, and the fence fallback. One of
+    validate-on-write and finalize. One of
     {"0","false","no","off"} (case-insensitive) -> False -> the legacy 3-case
     Option B gate, still fully supported as the one-env-var rollback path (T17).
 
@@ -384,7 +384,7 @@ def _gate_anomaly(agent_type: str, code: str, field: str, detail: str) -> Dict[s
 #
 # Deliberately NOT part of validate_form / crosscheck.validate: those are the
 # portability core (gaia.contract.validator / gaia.contract.crosscheck), shared
-# by the CLI, the finalize writer, and the fence fallback -- they enforce SHAPE
+# by the CLI and the finalize writer -- they enforce SHAPE
 # only and must never learn "who is allowed to say COMPLETE" (that would break
 # the portability contract tested by tests/contract/test_validator_portable.py).
 # The blind-verification check is an adapter-layer concern -- it lives HERE,
@@ -470,12 +470,13 @@ def _three_case_verdict(
 
     if parsed_contract is None:
         reason = (
-            "[CONTRACT REJECTED] No parseable agent_contract_handoff block found in agent response.\n"
-            "The agent must end its response with a ```agent_contract_handoff``` fenced block "
-            "whose body is VALID JSON (it is parsed with json.loads). A block written in YAML, "
-            "with comments, trailing commas, or unquoted keys will fail to parse and is treated "
-            "as missing.\n"
-            "Reissue the response with a complete agent_contract_handoff block whose body is valid JSON."
+            "[CONTRACT REJECTED] This turn's persisted contract row carries no "
+            "parseable envelope: agent_contract_handoffs.raw_handoff_json did "
+            "not parse as JSON (it is read with json.loads).\n"
+            "The response text is not consulted by this gate, so re-emitting a "
+            "fenced block will not change this verdict. Rebuild the contract via "
+            "'gaia contract set/add/fill' and close it with "
+            "'gaia contract finalize --draft-id <contract_id>'."
         )
         return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
 
@@ -542,12 +543,14 @@ def _contract_gate_verdict(
             False, returns the legacy 3-case verdict. When True, returns the
             full-verdict verdict from the single portable core.
         db_path: optional gaia.db path for the layer-2 cross-check.
-        envelope_source: where ``parsed_contract`` was actually read from --
-            ``"declaration"`` (default) for the agent's final fence, ``"row"``
-            for the turn's persisted dispatch row. Forwarded to
-            ``gaia.contract.crosscheck.validate`` so a row-sourced envelope
-            that fails to parse is reported as the row failing, not as "no
-            fence in the response" (see ``resolve_subagent_stop_gate``).
+        envelope_source: where ``parsed_contract`` was actually read from.
+            The SubagentStop gate always passes ``"row"`` (the turn's
+            persisted dispatch row) since the fence was retired as an input to
+            the close; ``"declaration"`` remains the default for the CLI's
+            validate-on-write, which does validate an envelope handed to it
+            directly. Forwarded to ``gaia.contract.crosscheck.validate`` so a
+            row-sourced envelope that fails to parse is reported as the row
+            failing, not as "no fence in the response".
 
     Returns:
         ContractGateVerdict.
@@ -739,37 +742,51 @@ def evaluate_contract_gate(
 
 
 # ---------------------------------------------------------------------------
-# Row-first SubagentStop gate (source-of-truth inversion, step 1 of the
-# agreed migration toward dropping the fence entirely).
+# Row-only SubagentStop gate (step 2 of the source-of-truth migration: the
+# fence is retired as an input to the close).
 #
-# Before this: the gate above validated ONLY the fence -- the
+# Originally the gate validated ONLY the fence -- the
 # ```agent_contract_handoff``` block the model re-types from memory into its
 # final message -- while the finalized ``agent_contract_handoffs`` row (the
 # actual sequence of ``gaia contract`` calls the turn ran) was a parallel,
-# unconsulted record. Two measured defects followed: (1) a well-formed fence
-# passed the gate even when the agent never ran ``gaia contract finalize`` at
-# all (32 such rows: complete envelope, row never closed); (2) the fence can
-# diverge from the row, because only the row is the turn's actual sequence of
-# acts.
+# unconsulted record. Step 1 inverted that and kept the fence as a fallback.
+# This step removes the fallback: the PERSISTED row is now the only thing this
+# gate consults.
 #
-# After this: the row is authoritative whenever it is reachable AND was
-# cleanly closed by the agent's own finalize (see _row_cleanly_finalized) --
-# its PERSISTED envelope is run through the exact same core
-# (gaia.contract.crosscheck.validate + _blind_verification_required) the
-# fence used to be validated against, so accept/reject is identical either
-# way; only the SOURCE of the envelope changes. A row that EXISTS but was
-# never cleanly finalized is a distinct, known case -- not "no row" -- and is
-# rejected outright regardless of the fence (see _row_unfinalized_verdict),
-# except when the harness itself cut the turn (max_tokens truncation), which
-# is not the agent's violation and already falls to salvage elsewhere. Only
-# when NO dispatch row is reachable at all does the fence still decide, byte-
-# for-byte the same gate this module ran before this change -- the agreed
-# backup path, not a second source of truth.
+# WHY THE FALLBACK WENT. It never rescued WORK -- work is in the row if the
+# turn checkpointed and absent if it did not, and no fence can supply an
+# investigation that was never written. All it ever supplied was the CLOSING
+# ENVELOPE for a turn that failed to write one, which is precisely how a
+# non-compliant turn presented itself as compliant at the last second. It also
+# sits at the END of the final message, so a truncated message loses it first
+# -- it was weakest in the very case cited to justify it. The gap between a
+# turn's last checkpoint and a cut is recovered by RESUMING the agent (which
+# keeps its transcript), not by re-reading its last paragraph.
+#
+# Three exhaustive cases, all row-sourced:
+#   - the row is reachable and was cleanly closed by the agent's own finalize
+#     (see _row_cleanly_finalized): its persisted envelope goes through the
+#     exact same core (gaia.contract.crosscheck.validate +
+#     _blind_verification_required) the fence used to go through, so
+#     accept/reject is unchanged -- only the SOURCE of the envelope changed.
+#   - the row is reachable but was never cleanly finalized: reject
+#     (_row_unfinalized_verdict).
+#   - no row is reachable at all: reject (_row_missing_verdict). A turn that
+#     did not close itself SHOULD read as not closed.
+# A harness truncation still excuses all three: it is not the agent's
+# violation and the T11 salvage / T9 backstop already capture that turn.
+#
+# NOTE on what the fence is still read for, deliberately: it remains one of
+# four identity lanes in ``resolve_minted_agent_id`` -- i.e. a hint about
+# WHICH row is this turn's own. That cannot make an unclosed turn read as
+# closed (the row it points at must still be cleanly finalized on its own
+# evidence), and removing it would strand a born-but-unclaimed turn with no
+# reachable row at all.
 # ---------------------------------------------------------------------------
 
 GATE_SOURCE_ROW = "row"
 GATE_SOURCE_ROW_UNFINALIZED = "row_unfinalized"
-GATE_SOURCE_FENCE = "fence"
+GATE_SOURCE_ROW_MISSING = "row_missing"
 
 
 def _row_gate_candidate(
@@ -779,8 +796,8 @@ def _row_gate_candidate(
     binding, or None when no binding was resolvable at all.
 
     ``bound_dispatch_row`` (from :func:`ClaudeCodeAdapter._resolve_dispatch_row`,
-    which already joins on session_id + agent_id -- never harness_agent_id --
-    across the ADOPTED/LEGACY/UNADOPTED lanes) only carries
+    whose harness-stamped lane returns a FULL row while its identity lanes
+    return only the projection) carries at minimum
     ``{id, contract_id, agent_id, agent_state, plan_task_id}``, enough for the
     blind-verification binding it was built for but not the two columns the
     row-first gate needs: ``raw_handoff_json`` (the persisted envelope) and
@@ -837,13 +854,13 @@ def _row_unfinalized_verdict(
     agent_type: str, full_row: Dict[str, Any], gate_mode: str,
 ) -> ContractGateVerdict:
     """The turn's OWN dispatch row exists but was never cleanly closed by
-    ``gaia contract finalize`` -- reject regardless of what the fence says.
+    ``gaia contract finalize`` -- reject.
 
     This is the fix for the measured gap this migration exists to close: a
     fence that types a clean COMPLETE from memory is not evidence the agent
     actually ran finalize -- the row is that evidence, and its absence (or its
     ``cut_reason`` marking a reap/backstop/salvage instead of a clean close)
-    is authoritative. A well-formed fence never overrides it.
+    is authoritative.
     """
     contract_id = full_row.get("contract_id")
     cut_reason = full_row.get("cut_reason") or "unknown"
@@ -852,9 +869,9 @@ def _row_unfinalized_verdict(
         f"[CONTRACT REJECTED] This turn's own dispatch row (contract_id="
         f"{contract_id!r}) exists but was never cleanly closed by "
         f"'gaia contract finalize' (row agent_state={row_state!r}, "
-        f"cut_reason={cut_reason!r}). The persisted row is now the source of "
+        f"cut_reason={cut_reason!r}). The persisted row is the ONLY source of "
         f"truth for this gate -- a fenced agent_contract_handoff block in "
-        f"your response text cannot substitute for it, however complete. "
+        f"your response text is not consulted here, however complete. "
         f"Run 'gaia contract finalize --draft-id {contract_id}' with your "
         f"real closing state (COMPLETE, NEEDS_VERIFICATION, BLOCKED, "
         f"NEEDS_INPUT, or APPROVAL_REQUEST) before ending the turn."
@@ -867,39 +884,76 @@ def _row_unfinalized_verdict(
     return ContractGateVerdict(True, reason, anomalies, gate_mode)
 
 
+def _row_missing_verdict(agent_type: str, gate_mode: str) -> ContractGateVerdict:
+    """No dispatch row is reachable for this turn at all -- reject.
+
+    Formerly the fence's branch: with no row to read, the gate validated the
+    ```agent_contract_handoff``` block in the response text instead. That is
+    the exact substitution this migration removes, so the case now rejects on
+    its own terms.
+
+    It is a REJECTION, not a dead end. The turn repairs it the same way it
+    repairs any other: run ``gaia contract finalize --draft-id <contract_id>``
+    on the draft the dispatch kernel named. That converges the born row, and
+    ``ClaudeCodeAdapter._resolve_dispatch_row`` reaches it on the retry --
+    through the harness-stamped lane, or through the identity lane that reads
+    the ``agent_id`` the turn itself declares. A turn that received no kernel
+    at all runs ``gaia contract init`` first, whose mint report the transcript
+    lane recovers.
+    """
+    reason = (
+        "[CONTRACT REJECTED] No persisted contract row could be located for "
+        "this turn, so there is no record that it closed. The persisted "
+        "agent_contract_handoffs row is the ONLY source of truth for this "
+        "gate -- a fenced agent_contract_handoff block in your response text "
+        "is not consulted here. Run 'gaia contract finalize --draft-id "
+        "<contract_id>' on the draft your dispatch kernel named (# Your "
+        "Contract), with your real closing state (COMPLETE, "
+        "NEEDS_VERIFICATION, BLOCKED, NEEDS_INPUT, or APPROVAL_REQUEST). If "
+        "no contract was ever opened for you, run 'gaia contract init' first."
+    )
+    anomalies: Tuple[Dict[str, Any], ...] = ()
+    if gate_mode == GATE_MODE_FULL_VERDICT:
+        anomalies = (
+            _gate_anomaly(agent_type, "ROW_NOT_FOUND", "dispatch_row", reason),
+        )
+    return ContractGateVerdict(True, reason, anomalies, gate_mode)
+
+
 def _select_gate_source(
     *,
     bound_dispatch_row: Optional[dict],
-    stop_reason_classification: str,
     db_path: Optional[Path] = None,
 ) -> Tuple[str, Optional[dict]]:
-    """Decide which source is authoritative for this turn and fetch it once.
+    """Classify this turn's persisted row and fetch it once.
 
-    This is the ONE place the row-vs-fence decision is made; both
+    This is the ONE place the row lookup happens; both
     :func:`_resolve_subagent_stop_gate_full` (the gate's own verdict) and
     nonce preservation (``ClaudeCodeAdapter.adapt_subagent_stop``, which reads
     the envelope for a wholly different purpose -- which pending approval_id
     to keep alive -- but must agree on WHERE that envelope came from) call
-    this instead of each re-implementing the lookup, so the two can never
-    diverge on which turn's row counts.
+    this instead of each re-implementing it, so the two can never diverge on
+    which turn's row counts.
 
     Returns ``(source, full_row)`` where ``source`` is one of
     :data:`GATE_SOURCE_ROW`, :data:`GATE_SOURCE_ROW_UNFINALIZED`,
-    :data:`GATE_SOURCE_FENCE`, and ``full_row`` is the fetched dispatch row
-    when source is one of the two ROW variants, else None.
+    :data:`GATE_SOURCE_ROW_MISSING`, and ``full_row`` is the fetched dispatch
+    row for the first two, else None.
+
+    It takes no ``stop_reason_classification``: truncation used to select the
+    fence here and now only softens the VERDICT, which keeps this function a
+    pure statement about the row.
     """
     full_row = _row_gate_candidate(bound_dispatch_row=bound_dispatch_row, db_path=db_path)
-    if full_row is not None:
-        if _row_cleanly_finalized(full_row):
-            return GATE_SOURCE_ROW, full_row
-        if stop_reason_classification != STOP_REASON_TRUNCATION:
-            return GATE_SOURCE_ROW_UNFINALIZED, full_row
-    return GATE_SOURCE_FENCE, None
+    if full_row is None:
+        return GATE_SOURCE_ROW_MISSING, None
+    if _row_cleanly_finalized(full_row):
+        return GATE_SOURCE_ROW, full_row
+    return GATE_SOURCE_ROW_UNFINALIZED, full_row
 
 
 def _resolve_subagent_stop_gate_full(
     *,
-    parsed_contract: Any,
     agent_type: str = "unknown",
     plan_task_id: Optional[int] = None,
     stop_reason_classification: str = STOP_REASON_UNKNOWN,
@@ -907,40 +961,40 @@ def _resolve_subagent_stop_gate_full(
     bound_dispatch_row: Optional[dict] = None,
     db_path: Optional[str] = None,
 ) -> Tuple[ContractGateVerdict, str, Any]:
-    """The row-first SubagentStop gate: locate the turn's own dispatch row,
-    validate ITS persisted envelope when cleanly finalized, and use the fence
-    only as the backup path. Returns ``(verdict, source, envelope_used)``
-    where ``source`` is one of :data:`GATE_SOURCE_ROW`,
-    :data:`GATE_SOURCE_ROW_UNFINALIZED`, :data:`GATE_SOURCE_FENCE`, and
-    ``envelope_used`` is the envelope this call actually treated as
-    authoritative for the turn (the row's parsed ``raw_handoff_json`` for
-    either ROW source, ``parsed_contract`` for FENCE) -- exposed so a caller
-    with a DIFFERENT reason to read the envelope (nonce preservation) reads
-    from the exact same place the verdict did, instead of re-deriving its own
-    notion of "authoritative" and risking the two disagreeing. ``source`` is
-    otherwise for logging/telemetry only, never branched on by a caller.
+    """The row-only SubagentStop gate: locate the turn's own dispatch row and
+    validate ITS persisted envelope. Nothing in the agent's response text is
+    read. Returns ``(verdict, source, envelope_used)`` where ``source`` is one
+    of :data:`GATE_SOURCE_ROW`, :data:`GATE_SOURCE_ROW_UNFINALIZED`,
+    :data:`GATE_SOURCE_ROW_MISSING`, and ``envelope_used`` is the envelope
+    this call treated as authoritative (the row's parsed ``raw_handoff_json``,
+    or None when no row was reachable) -- exposed so a caller with a DIFFERENT
+    reason to read the envelope (nonce preservation) reads from the exact same
+    place the verdict did, instead of re-deriving its own notion of
+    "authoritative" and risking the two disagreeing. ``source`` is otherwise
+    for logging/telemetry only, never branched on by a caller.
     :func:`resolve_subagent_stop_gate` is the stable 2-tuple public wrapper.
 
-    Three cases, in order:
+    Three exhaustive cases:
 
       1. A dispatch row is reachable (``bound_dispatch_row``, resolved by the
-         caller via session_id + agent_id -- see
-         ``ClaudeCodeAdapter._resolve_dispatch_row``) AND it was cleanly
-         finalized (:func:`_row_cleanly_finalized`): its OWN persisted
-         envelope is validated through the identical core the fence used to
-         go through (:func:`evaluate_contract_gate`). The row wins over the
-         fence unconditionally, in both directions.
-      2. A dispatch row is reachable but was NOT cleanly finalized, and the
-         stop was not a harness truncation: reject via
-         :func:`_row_unfinalized_verdict`, regardless of fence content. This
-         is the case a well-formed fence must never paper over -- and the
-         case where an approval mirrored onto the row via `gaia contract
-         fill` (but never closed by `finalize`) still counts as this turn's
-         own record, not a lost one.
-      3. No dispatch row is reachable at all, OR one exists unfinalized but
-         the stop was a max_tokens truncation (not the agent's violation --
-         handled by salvage elsewhere): fall back to the fence, byte-for-byte
-         the gate this module ran before this migration.
+         caller -- see ``ClaudeCodeAdapter._resolve_dispatch_row``) AND it was
+         cleanly finalized (:func:`_row_cleanly_finalized`): its persisted
+         envelope is validated through the identical core the fence used to go
+         through (:func:`evaluate_contract_gate`).
+      2. A dispatch row is reachable but was NOT cleanly finalized: reject via
+         :func:`_row_unfinalized_verdict`. This is the case a well-formed
+         fence used to paper over -- and the case where an approval mirrored
+         onto the row via ``gaia contract fill`` (but never closed by
+         ``finalize``) still counts as this turn's own record, not a lost one.
+      3. No dispatch row is reachable at all: reject via
+         :func:`_row_missing_verdict`.
+
+    A harness truncation (``STOP_REASON_TRUNCATION``) softens cases 2 and 3 to
+    a non-rejecting, ``salvaged_truncation`` verdict: the cut is not the
+    agent's violation and the T11 salvage / T9 backstop already capture the
+    turn, so rejecting would double-signal it. That is the SAME excuse
+    :func:`_contract_gate_verdict` already applies to an invalid envelope in
+    case 1, applied at the one seam where the row itself is what is missing.
     """
     if ramp_enabled is None:
         ramp_enabled = full_verdict_gate_enabled()
@@ -949,7 +1003,6 @@ def _resolve_subagent_stop_gate_full(
     db_path_obj = Path(db_path) if db_path else None
     source, full_row = _select_gate_source(
         bound_dispatch_row=bound_dispatch_row,
-        stop_reason_classification=stop_reason_classification,
         db_path=db_path_obj,
     )
 
@@ -966,27 +1019,27 @@ def _resolve_subagent_stop_gate_full(
         )
         return verdict, GATE_SOURCE_ROW, row_envelope
 
+    row_envelope = _parse_row_envelope(full_row) if full_row is not None else None
+
+    if stop_reason_classification == STOP_REASON_TRUNCATION:
+        return (
+            ContractGateVerdict(False, "", (), gate_mode, salvaged_truncation=True),
+            source,
+            row_envelope,
+        )
+
     if source == GATE_SOURCE_ROW_UNFINALIZED:
         verdict = _row_unfinalized_verdict(agent_type, full_row, gate_mode)
-        _record_contract_rejection_defect(
-            verdict, agent_type=agent_type, plan_task_id=plan_task_id
-        )
-        return verdict, GATE_SOURCE_ROW_UNFINALIZED, _parse_row_envelope(full_row)
-
-    verdict = evaluate_contract_gate(
-        parsed_contract,
-        agent_type=agent_type,
-        plan_task_id=plan_task_id,
-        stop_reason_classification=stop_reason_classification,
-        ramp_enabled=ramp_enabled,
-        db_path=db_path,
+    else:
+        verdict = _row_missing_verdict(agent_type, gate_mode)
+    _record_contract_rejection_defect(
+        verdict, agent_type=agent_type, plan_task_id=plan_task_id
     )
-    return verdict, GATE_SOURCE_FENCE, parsed_contract
+    return verdict, source, row_envelope
 
 
 def resolve_subagent_stop_gate(
     *,
-    parsed_contract: Any,
     agent_type: str = "unknown",
     plan_task_id: Optional[int] = None,
     stop_reason_classification: str = STOP_REASON_UNKNOWN,
@@ -1002,7 +1055,6 @@ def resolve_subagent_stop_gate(
     directly instead of re-deriving the same lookup a second time.
     """
     verdict, source, _envelope_used = _resolve_subagent_stop_gate_full(
-        parsed_contract=parsed_contract,
         agent_type=agent_type,
         plan_task_id=plan_task_id,
         stop_reason_classification=stop_reason_classification,
@@ -2207,53 +2259,76 @@ class ClaudeCodeAdapter(HookAdapter):
         a different coordinate depending on what the turn did with the
         identity minted for it:
 
-          1. ADOPTED -- the turn ran ``gaia contract init`` under the injected
+          1. HARNESS-STAMPED -- ``harness_agent_id`` (v40,
+             ``gaia.store.writer.stamp_harness_agent_id``, written at the
+             SubagentStart claim) joined against ``task_info['agent_id']``,
+             which at SubagentStop time is the identical value. This is FIRST
+             because it is the only coordinate the runtime itself stamps for
+             THIS exact dispatch: it does not depend on the turn emitting a
+             fence, on it running ``gaia contract init``, or on the row still
+             being 'DISPATCHED', and it cannot reach a sibling's row the way a
+             shared agent NAME or a mentioned-but-not-owned draft id can. It is
+             also the shape a turn that stops emitting the fence always has, so
+             ordering it first is what makes fence-less resolution deterministic
+             rather than a fallthrough. The lane DECLINES an ambiguous match
+             (2+ rows under one harness id) instead of taking the most recent --
+             same refusal, and for the same reason, as the writer's
+             ``find_dispatched_row_by_agent_name``.
+          2. ADOPTED -- the turn ran ``gaia contract init`` under the injected
              identity (or the fence names it), so its own ``agent_id`` IS the
              row's. Looked up state-agnostically: an adopted turn's
              ``finalize`` CONVERGES the born row, so by now it is no longer
              'DISPATCHED' and a DISPATCHED-only query would report the turn as
              unbound and silently drop the gate.
-          2. LEGACY -- rows born before the identity was minted carry the agent
+          3. LEGACY -- rows born before the identity was minted carry the agent
              NAME in ``agent_id``. Still queried so an in-flight turn dispatched
              under the old shape keeps its binding.
-          3. UNADOPTED -- the turn minted its own unrelated handle, so it shares
+          4. UNADOPTED -- the turn minted its own unrelated handle, so it shares
              no identifier with its row; the dispatched NAME recorded in the birth
              envelope is the last coordinate left. That lane refuses to guess
              between concurrent same-name dispatches (see the writer's
              ``find_dispatched_row_by_agent_name``), so it resolves nothing rather
              than binding a turn to a sibling's row.
-          4. HARNESS-STAMPED -- the case lanes 1-3 all miss: the turn ADOPTED
-             the identity injected for it at dispatch (never ran ``gaia
-             contract init`` itself, so no mint report exists to scan) AND the
-             fence is absent (nothing for ``resolve_minted_agent_id`` to read
-             ``agent_status.agent_id`` from) AND the row has already converged
-             to a TERMINAL state (lanes 2/3 are DISPATCHED-only). This is the
-             single most common shape for a turn closing itself cleanly via
-             the CLI with no fence at all -- MEASURED live (handoff 11263):
-               lane 1 never fires because ``resolve_minted_agent_id`` falls
-               all the way back to the harness agent NAME (no fence, no mint
-               report), which equals ``agent_type`` and so fails the
-               ``minted != agent_type`` guard; lanes 2/3 never fire because the
-               row is already COMPLETE, not DISPATCHED. ``harness_agent_id``
-               (v40, ``ClaudeCodeAdapter.stamp_harness_agent_id`` at
-               SubagentStart claim) is the one coordinate that still joins:
-               it is the harness's OWN per-run id for THIS exact dispatch --
-               ``task_info['agent_id']`` at SubagentStop time is the identical
-               value -- so the join can never pick up a sibling turn's row the
-               way a mentioned-but-not-owned draft id could.
+
+        WHY THE HARNESS LANE MOVED FROM LAST TO FIRST. It was added as a fourth
+        lane on the belief that lanes 1-3 would simply miss when no fence was
+        emitted. They do not always miss -- they can HIT THE WRONG ROW, which is
+        worse. ``resolve_minted_agent_id`` used to fall back to the harness
+        ``agent_id`` itself, and the backstop capture stamps that same value
+        into the ``agent_id`` COLUMN of the contention row it writes
+        (``handoff_persister.persist_handoff``); the adopted lane then queried
+        ``agent_id = <harness id>`` and ``dispatch_row_for_identity`` returned
+        the most recent match -- the contention row -- instead of the turn's own
+        cleanly-closed row. MEASURED live: the gate rejected a turn whose real
+        work was correctly recorded. That fallback is gone from the resolver, and
+        ordering the exact per-dispatch coordinate first means a later
+        reintroduction of any inexact one cannot outrank it again.
 
         Returns the row dict, or None when no lane resolves -- which every caller
-        must read as "unbound", never as an error.
+        must read as "unbound", never as an error. A full miss is LOGGED: it was
+        previously indistinguishable from an unbound turn, so the resolution
+        defects above lived without a trace.
         """
         from gaia.store.writer import (
             dispatch_row_for_identity,
             find_dispatched_row_by_agent_name,
             find_orphaned_dispatched_handoff,
-            list_agent_contract_handoffs,
         )
-        from modules.agents.handoff_persister import resolve_minted_agent_id
+        from modules.agents.handoff_persister import (
+            dispatch_row_by_harness_id,
+            resolve_minted_agent_id,
+        )
 
-        minted = resolve_minted_agent_id(parsed_contract, task_info)
+        harness_agent_id = task_info.get("agent_id")
+        harness_row = dispatch_row_by_harness_id(
+            task_info, session_id=session_id, db_path=db_path,
+        )
+        if harness_row is not None:
+            return harness_row
+
+        minted = resolve_minted_agent_id(
+            parsed_contract, task_info, session_id=session_id,
+        )
         if minted and str(minted) != str(agent_type):
             row = dispatch_row_for_identity(
                 session_id, str(minted), db_path=db_path,
@@ -2273,17 +2348,12 @@ class ClaudeCodeAdapter(HookAdapter):
         if unadopted is not None:
             return unadopted
 
-        harness_agent_id = task_info.get("agent_id")
-        if harness_agent_id and str(harness_agent_id) != "unknown":
-            harness_rows = list_agent_contract_handoffs(
-                harness_agent_id=str(harness_agent_id),
-                session_id=session_id,
-                limit=1,
-                db_path=db_path,
-            )
-            if harness_rows:
-                return harness_rows[0]
-
+        logger.warning(
+            "Dispatch-row resolution: NO lane resolved a row for agent=%s "
+            "session=%s harness_agent_id=%s minted=%s. The turn will be treated "
+            "as unbound -- no plan-task binding and no row for the gate to read.",
+            agent_type, session_id, harness_agent_id, minted,
+        )
         return None
 
     def _adapt_send_message(
@@ -3138,22 +3208,27 @@ class ClaudeCodeAdapter(HookAdapter):
 
             parsed_contract = parse_contract(agent_output)
 
-            # M4 fence footgun (Option A): a turn that finalized its draft via
-            # `gaia contract finalize` (valid terminal row written) but forgot
-            # to echo the fenced agent_contract_handoff in its response text
-            # would be hard-rejected by the full-verdict gate below -- the gate
-            # parses the fence from TEXT, not the DB row. When the fence is
-            # missing but the agent's own draft was already finalized,
-            # reconstruct the envelope from that draft so the gate parses the
-            # completed contract instead of rejecting persisted work. Placed
-            # BEFORE agent_state resolution and the gate so both see the
-            # reconstructed envelope. Non-fatal: returns None -> gate unchanged.
+            # A turn that finalized its draft but emitted no fenced block
+            # leaves `parsed_contract` empty, so everything DOWNSTREAM of the
+            # gate that describes the turn -- agent_state resolution, episode
+            # metrics, key_outputs, the update_contracts channel -- would see
+            # nothing and record a working turn as a blank one. Reconstruct the
+            # envelope from the finalized draft so those readers get the real
+            # contract.
+            #
+            # This began as a rescue for the gate itself, back when the gate
+            # parsed the fence from TEXT. It no longer serves that purpose (the
+            # gate reads the row directly) and is kept for the descriptive
+            # readers alone. Non-fatal: returns None -> callers see whatever
+            # the fence gave them.
             if not (
                 isinstance(parsed_contract, dict)
                 and isinstance(parsed_contract.get("agent_status"), dict)
             ):
                 _reconstructed = self._reconstruct_contract_from_finalized_draft(
-                    task_info=task_info, parsed_contract=parsed_contract,
+                    task_info=task_info,
+                    parsed_contract=parsed_contract,
+                    session_id=session_id,
                 )
                 if _reconstructed is not None:
                     parsed_contract = _reconstructed
@@ -3207,17 +3282,15 @@ class ClaudeCodeAdapter(HookAdapter):
             # rejection flow into the anomaly-signal block and the exit-code
             # assembly below.
             #
-            # Row-first inversion (step 1 of the agreed fence-removal
-            # migration): the gate now validates the turn's OWN persisted
-            # ``agent_contract_handoffs`` row when one is reachable and was
-            # cleanly finalized, and only falls back to the fence when no row
-            # is reachable at all (or one exists unfinalized but the stop was
-            # a harness truncation). See ``resolve_subagent_stop_gate`` for the
-            # full three-case ordering. The fence is not removed -- it remains
-            # the backup path and every downstream use of ``parsed_contract``
-            # in this function (episode writing, key_outputs, update_contracts,
-            # etc.) is UNCHANGED by this inversion, which touches only which
-            # envelope decides pass/reject.
+            # Fence retirement (step 2): the gate validates the turn's OWN
+            # persisted ``agent_contract_handoffs`` row and nothing else. A
+            # row that is unreachable, or reachable but never cleanly
+            # finalized, REJECTS on that basis alone -- the response text is
+            # not read. See ``resolve_subagent_stop_gate`` for the full
+            # three-case ordering. Every OTHER use of ``parsed_contract`` in
+            # this function (episode writing, key_outputs, update_contracts,
+            # response-contract metrics) is unchanged: those describe the
+            # turn, they do not close it.
             #
             # Robustness: the gate is evaluated defensively. A raise inside the
             # gate (e.g. an import failure in a lazily-imported dependency) must
@@ -3235,10 +3308,11 @@ class ClaudeCodeAdapter(HookAdapter):
             # NEEDS_VERIFICATION and lets an unbound turn self-COMPLETE. Best-effort
             # and non-fatal -- an unresolvable binding (no born-at-dispatch row, or
             # a DB read error) leaves plan_task_id None, i.e. treated as unbound.
-            # The SAME resolved row (session_id + agent_id, NOT harness_agent_id --
-            # see ClaudeCodeAdapter._resolve_dispatch_row) is reused below as the
-            # row-first gate's candidate, so the binding lookup and the gate's row
-            # lookup can never disagree on WHICH row is this turn's own.
+            # The SAME resolved row (see ClaudeCodeAdapter._resolve_dispatch_row
+            # for the lane order -- harness_agent_id first, then the identity
+            # lanes) is reused below as the row-first gate's candidate, so the
+            # binding lookup and the gate's row lookup can never disagree on
+            # WHICH row is this turn's own.
             _bound_plan_task_id: Optional[int] = None
             _bound_dispatch_row: Optional[dict] = None
             try:
@@ -3258,15 +3332,16 @@ class ClaudeCodeAdapter(HookAdapter):
                     "(session=%s) -- treating turn as unbound.",
                     agent_type, session_id, exc_info=True,
                 )
-            _gate_source = GATE_SOURCE_FENCE
-            # Degrades to the fence by construction: an exception below leaves
-            # this at its pre-gate value (parsed_contract), the SAME envelope
-            # GATE_SOURCE_FENCE would have used, so a gate failure never
-            # silently drops a nonce that a working gate call would have found.
-            _authoritative_envelope: Any = parsed_contract
+            _gate_source = GATE_SOURCE_ROW_MISSING
+            # An exception below leaves this at its pre-gate value (None), the
+            # same value GATE_SOURCE_ROW_MISSING carries: a gate failure
+            # preserves no nonce, exactly as a turn with no reachable row
+            # preserves none. The pre-retirement code degraded to the fence
+            # here instead, which is the one substitution this migration
+            # removes.
+            _authoritative_envelope: Any = None
             try:
                 _gate, _gate_source, _authoritative_envelope = _resolve_subagent_stop_gate_full(
-                    parsed_contract=parsed_contract,
                     agent_type=agent_type,
                     plan_task_id=_bound_plan_task_id,
                     stop_reason_classification=_stop_reason_classification,
@@ -3285,18 +3360,19 @@ class ClaudeCodeAdapter(HookAdapter):
             # Preserve a pending approval this turn's own record still
             # references via APPROVAL_REQUEST. Cleanup must not destroy an
             # approval the user is being asked to act on -- and "this turn's
-            # own record" is now, correctly, the SAME source the gate above
-            # just treated as authoritative (_authoritative_envelope: the
-            # persisted dispatch row's envelope whenever a row was reachable
-            # at all -- cleanly finalized or not, see GATE_SOURCE_ROW /
-            # GATE_SOURCE_ROW_UNFINALIZED -- degrading to the fence
-            # (parsed_contract) only in the identical residual case the gate
-            # itself falls back to it (no row reachable, or an unfinalized row
-            # excused by a harness truncation). Reading ONLY parsed_contract
-            # here (the pre-inversion behavior) silently dropped the nonce for
-            # any turn whose approval was recorded on the row but never echoed
-            # in a final fenced declaration -- exactly the row-first gate's own
-            # central case.
+            # own record" is the SAME source the gate above just treated as
+            # authoritative (_authoritative_envelope: the persisted dispatch
+            # row's envelope whenever a row was reachable at all -- cleanly
+            # finalized or not, see GATE_SOURCE_ROW /
+            # GATE_SOURCE_ROW_UNFINALIZED -- and None when none was, see
+            # GATE_SOURCE_ROW_MISSING). Reading the fence here (the
+            # pre-inversion behavior) silently dropped the nonce for any turn
+            # whose approval was recorded on the row but never echoed in a
+            # final fenced declaration. Losing the fence as a fallback costs
+            # almost nothing in the other direction: cleanup_approval only
+            # EXPIRES pendings already past the 24h TTL, so a nonce minted
+            # during the turn that just ended is never young enough to be at
+            # risk.
             preserved_nonces: set = set()
             if isinstance(_authoritative_envelope, dict):
                 _nonce_agent_status = _authoritative_envelope.get("agent_status") or {}
@@ -3874,6 +3950,7 @@ class ClaudeCodeAdapter(HookAdapter):
         *,
         task_info: dict,
         parsed_contract,
+        session_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """M4 missing-fence footgun (Option A): rebuild the envelope from a
         FINALIZED draft when the agent forgot to echo the fence.
@@ -3891,11 +3968,11 @@ class ClaudeCodeAdapter(HookAdapter):
         It closes the hole only as far as the draft is FINDABLE, and finding it
         is the fragile half. With no fence there is no envelope to read the
         minted agent id from, so the draft is located through
-        ``resolve_minted_agent_id``, which must recover that id from the turn's
-        transcript -- the harness ``agent_id`` is a DIFFERENT identifier space
-        and resolves nothing (see that resolver's docstring). A turn with no
-        readable transcript, or one that never ran ``gaia contract init``, still
-        gets no reconstruction and is rejected as before.
+        ``resolve_minted_agent_id`` -- which, for the CURRENT dispatch shape,
+        can only get there by the ``harness_agent_id`` bridge on the row, since
+        a turn born with its draft already open never runs ``gaia contract
+        init`` and so leaves no mint report in its transcript. ``session_id`` is
+        threaded in for exactly that bridge; without it the join is unscoped.
 
         Fires ONLY when ``parsed_contract`` lacks a usable ``agent_status`` (no
         fence). "Finalized" is discriminated by the EXISTENCE of the terminal
@@ -3906,6 +3983,13 @@ class ClaudeCodeAdapter(HookAdapter):
         OPTIMIZATION, never a gate: every failure is swallowed and returns None,
         leaving the gate to reject as before. Returns the reconstructed envelope
         dict (tagged like ``parse_contract`` output) or None.
+
+        EVERY MISS LOGS. This used to return None silently at four separate
+        points, and that silence is why the resolver defect it depends on lived
+        undetected: a turn whose ``update_contracts`` proposal was dropped
+        (measured, handoff row 11304) looked exactly like a turn that had no
+        proposal to begin with. The log lines below are the only difference
+        between a diagnosable miss and an invisible one.
         """
         # A usable fence is already present -> nothing to reconstruct.
         if isinstance(parsed_contract, dict) and isinstance(
@@ -3920,16 +4004,31 @@ class ClaudeCodeAdapter(HookAdapter):
             logger.debug("M4 reconstruction: core import failed (non-fatal): %s", exc)
             return None
 
-        # Fence absent -> the minted id comes from the turn's transcript (the
-        # only place it survives without an envelope); the harness agent_id is
-        # a different id space and would resolve no draft.
-        minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
+        # Fence absent -> the minted id comes from the transcript's mint report
+        # or, for a turn born with its draft already open, from the row itself
+        # via the harness_agent_id bridge. The harness agent_id is a different
+        # id space and is never used as a draft key.
+        minted_agent_id = resolve_minted_agent_id(
+            parsed_contract, task_info, session_id=session_id,
+        )
         if not minted_agent_id:
+            logger.warning(
+                "M4 reconstruction: fence missing AND no minted agent id "
+                "resolvable (agent=%s session=%s) -- no draft can be located, "
+                "so a finalized turn's envelope (including any update_contracts "
+                "it carried) is NOT recovered.",
+                task_info.get("agent"), session_id,
+            )
             return None
 
         try:
             draft_id = resolve_draft_id(explicit=None, agent_id=str(minted_agent_id))
             if not draft_id:
+                logger.warning(
+                    "M4 reconstruction: no draft resolves for minted agent id %s "
+                    "(agent=%s session=%s); nothing to reconstruct from.",
+                    minted_agent_id, task_info.get("agent"), session_id,
+                )
                 return None
             db_path_str = task_info.get("db_path")
             db_path = Path(db_path_str) if db_path_str else None
@@ -3941,11 +4040,22 @@ class ClaudeCodeAdapter(HookAdapter):
             # NOT finalized, so use the terminal-row check (not "any row exists")
             # -- a born-but-orphaned row must not be mistaken for a completed one.
             if not _writer.agent_contract_handoff_finalized(draft_id, db_path=db_path):
+                logger.info(
+                    "M4 reconstruction: draft %s exists but its row is not "
+                    "finalized -- salvage/backstop territory, not a completed "
+                    "turn missing only its fence.",
+                    draft_id,
+                )
                 return None
             envelope = load_draft(draft_id)
             if not isinstance(envelope, dict) or not isinstance(
                 envelope.get("agent_status"), dict
             ):
+                logger.warning(
+                    "M4 reconstruction: draft %s is finalized but its on-disk "
+                    "envelope is unusable (%s) -- cannot rebuild the fence.",
+                    draft_id, type(envelope).__name__,
+                )
                 return None
             recon = dict(envelope)
             # Tag it exactly like parse_contract output so every downstream
@@ -4012,7 +4122,9 @@ class ClaudeCodeAdapter(HookAdapter):
         # resolver, so salvage, the T9 backstop, and the M4 reconstruction path
         # all resolve the SAME draft (hence the SAME contract_id).
         from modules.agents.handoff_persister import resolve_minted_agent_id
-        minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
+        minted_agent_id = resolve_minted_agent_id(
+            parsed_contract, task_info, session_id=session_id,
+        )
         if not minted_agent_id:
             return None
 

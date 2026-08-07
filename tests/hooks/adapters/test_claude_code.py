@@ -625,19 +625,22 @@ class TestAdaptSubagentStopSessionId:
 
 
 # ============================================================================
-# Phase 2: adapt_subagent_stop must preserve pending nonces still referenced
-# by the agent's final APPROVAL_REQUEST contract
+# Phase 2: which APPROVAL_REQUEST envelope adapt_subagent_stop reads when
+# deciding the nonces to preserve
 # ============================================================================
 
 
 class TestAdaptSubagentStopPreservesApprovalRequest:
-    """adapt_subagent_stop must not delete pending files that the agent's
-    final contract still references via agent_state=APPROVAL_REQUEST.
+    """adapt_subagent_stop must not delete pendings that this turn's OWN
+    record still references via agent_state=APPROVAL_REQUEST -- and "own
+    record" means the persisted dispatch row, never the fenced block in the
+    final message.
 
-    The user needs those files to act on the [ACTIONABLE] block; cleaning
-    them up at SubagentStop would silently void the approval request and
-    leave the agent stuck in a loop on the next dispatch (regenerating a
-    new nonce instead of resuming the one the user already saw).
+    The positive case (an APPROVAL_REQUEST on a reachable row keeps its nonce)
+    is owned by tests/hooks/test_subagent_stop_nonce_preservation.py, which
+    runs against a real database rather than these stubs. What remains here is
+    the negative: a fence that names an approval_id with no row behind it no
+    longer keeps anything alive, because the fence is not read.
     """
 
     def _install_module_stubs(self, monkeypatch, captured, parsed_contract):
@@ -748,11 +751,19 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
             distribution=HostDistribution(channel="npm"),
         )
 
-    def test_approval_request_contract_preserves_its_nonce(
+    def test_fence_only_approval_request_no_longer_preserves_its_nonce(
         self, adapter, subagent_stop_payload, monkeypatch
     ):
-        """A contract with agent_state=APPROVAL_REQUEST and an approval_id
-        must produce preserve_nonces={approval_id} in the cleanup call.
+        """Inverted by the fence retirement. This used to assert that an
+        APPROVAL_REQUEST read out of the final message produced
+        preserve_nonces={approval_id}; with no persisted row behind it there
+        is now nothing for the adapter to read, so it preserves nothing.
+
+        Safe because preserve_nonces only shields a pending from the TTL sweep
+        (modules/security/approval_cleanup.py expires at 24h and never revokes
+        by session membership), so a pending minted during this turn is not at
+        risk either way. session_id must still reach cleanup -- that half of
+        the Bug-B contract is untouched by the retirement.
         """
         captured = {}
         parsed_contract = {
@@ -777,11 +788,10 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
 
         adapter.adapt_subagent_stop(self._build_event(subagent_stop_payload))
 
-        assert captured.get("cleanup_preserve_nonces") == {"preserved-nonce-deadbeef"}, (
-            "adapt_subagent_stop must extract approval_id from an "
-            "APPROVAL_REQUEST contract and pass it as preserve_nonces to "
-            "cleanup. Without this, the pending file is destroyed at "
-            "SubagentStop and the user can no longer approve it."
+        assert not captured.get("cleanup_preserve_nonces"), (
+            "adapt_subagent_stop must not resurrect the fence as a source of "
+            "preserved nonces: with no reachable dispatch row, this turn has "
+            "no record naming an approval_id, whatever its final message says."
         )
         assert captured.get("cleanup_session_id") == "sess-ghi789", (
             "Cleanup must also receive the session_id from the event "

@@ -141,7 +141,101 @@ def _minted_agent_id_from_transcript(task_info: dict):
         return None
 
 
-def resolve_minted_agent_id(parsed_contract, task_info: dict):
+def dispatch_row_by_harness_id(task_info: dict, session_id=None, db_path=None):
+    """THE bridge between the two identifier spaces: the row that holds both.
+
+    A dispatch row is the only artifact that knows both halves. ``agent_id`` is
+    the minted handle it was born under (``insert_dispatched_handoff``);
+    ``harness_agent_id`` is the harness's own per-run id for the SAME dispatch
+    (``gaia.store.writer.stamp_harness_agent_id``, written at the SubagentStart
+    claim). ``task_info['agent_id']`` at SubagentStop time IS that harness id.
+
+    THE JOIN IS ON harness_agent_id ALONE, and the session is a CONSISTENCY
+    CHECK rather than a SQL filter. The harness mints that id per dispatch run,
+    so it already identifies one turn; adding ``session_id`` to the WHERE clause
+    cannot make the match more exact, but it CAN lose a correct row whose
+    session attribution is absent or recorded differently. Checking it after the
+    fact keeps both properties: a mismatch is refused out loud, an unknown or
+    absent session is not treated as a mismatch.
+
+    Ambiguity is DECLINED, never resolved by recency -- the same refusal, for
+    the same reason, as ``gaia.store.writer.find_dispatched_row_by_agent_name``.
+    A recency tiebreak here is precisely what bound a turn to a residue row
+    instead of its own.
+
+    Returns the full row dict, or None. Fully guarded: this runs inside a stop
+    hook, so an unavailable store degrades to None, never to a raise.
+    """
+    harness_agent_id = task_info.get("agent_id")
+    if not harness_agent_id or str(harness_agent_id) == "unknown":
+        return None
+    try:
+        from pathlib import Path as _Path
+
+        from gaia.store.writer import list_agent_contract_handoffs
+
+        db_path_str = task_info.get("db_path")
+        rows = list_agent_contract_handoffs(
+            harness_agent_id=str(harness_agent_id),
+            limit=2,
+            db_path=db_path or (_Path(db_path_str) if db_path_str else None),
+        )
+        if not rows:
+            return None
+        if len(rows) > 1:
+            logger.warning(
+                "Dispatch-row bridge declined: harness_agent_id=%s matches %d "
+                "rows; refusing to guess which is this turn's.",
+                harness_agent_id, len(rows),
+            )
+            return None
+        row = rows[0]
+        row_session = row.get("session_id")
+        if session_id and row_session and str(row_session) != str(session_id):
+            logger.warning(
+                "Dispatch-row bridge declined: harness_agent_id=%s resolves row "
+                "contract_id=%s, but its session_id=%r disagrees with this "
+                "turn's %r.",
+                harness_agent_id, row.get("contract_id"), row_session, session_id,
+            )
+            return None
+        return row
+    except Exception as exc:
+        logger.debug("Dispatch-row bridge failed: %s", exc)
+        return None
+
+
+def _minted_agent_id_from_dispatch_row(task_info: dict, session_id):
+    """The minted handle carried by this turn's own dispatch row, or None.
+
+    Accepted ONLY when it satisfies ``AGENT_ID_PATTERN_TEXT``. A legacy row born
+    before the identity was minted carries the agent NAME in ``agent_id``, and
+    returning that would recreate, one lane lower, exactly the space confusion
+    this resolver exists to prevent.
+    """
+    row = dispatch_row_by_harness_id(task_info, session_id)
+    if row is None:
+        return None
+    try:
+        import re as _re
+
+        from gaia.contract.validator import AGENT_ID_PATTERN_TEXT
+
+        candidate = row.get("agent_id")
+        if candidate and _re.match(AGENT_ID_PATTERN_TEXT, str(candidate)):
+            return str(candidate)
+        logger.warning(
+            "Minted-id bridge found row contract_id=%s but its agent_id=%r is "
+            "not a minted handle; not usable as a draft key.",
+            row.get("contract_id"), candidate,
+        )
+        return None
+    except Exception as exc:
+        logger.debug("Minted-id validation on the bridged row failed: %s", exc)
+        return None
+
+
+def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None):
     """Best available minted agent id (``gaia.contract.validator.
     AGENT_ID_PATTERN_TEXT``) used to key drafts.
 
@@ -164,14 +258,28 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict):
       3. The transcript itself (``agent_transcript_path``), scanned for the
          turn's own ``gaia contract init`` mint report -- the one appearance of
          a draft id that proves the turn OWNS it, rather than merely mentions
-         another agent's. This is the case the rescues depend on: the fence is
-         MISSING, so there is no envelope to read the minted id from, and the
-         transcript is the only place where the two spaces meet.
-      4. The harness ``agent_id`` / agent name -- a last-resort LABEL only. It
-         will not resolve a draft (see above); it exists so the backstop still
-         has a non-empty identity to stamp a degraded row with.
+         another agent's.
+      4. The DISPATCH ROW, joined by ``harness_agent_id``
+         (:func:`_minted_agent_id_from_dispatch_row`). This is the lane the
+         CURRENT dispatch shape needs and the three above cannot serve: a turn
+         born with its draft already open never runs ``gaia contract init``, so
+         there is no mint report for lanes 2/3 to find, and a turn that stops
+         emitting the fence leaves nothing for lane 1 either. The row knows both
+         identities; this crosses between them instead of guessing.
 
-    Returns None when nothing usable is present.
+    Returns None -- and says so in the log -- when nothing usable is present.
+    THE ABSENT LAST RESORT IS THE POINT. This used to fall back to the harness
+    ``agent_id``/agent name as a "label", which is not merely useless as a draft
+    key: being non-empty, it SATISFIES every ``if not minted_agent_id`` guard
+    downstream and carries the wrong value forward. Measured cost (handoff row
+    11304): the M4 reconstruction globbed a draft under the harness id, found
+    nothing, and returned None without a single log line, so a complete
+    ``update_contracts`` proposal in that turn's envelope was never processed
+    and nothing reported it. A last resort that returns something incorrect
+    converts a detectable failure into a silent one; returning None keeps the
+    failure visible, and the callers that genuinely need a non-empty label for a
+    degraded row (``persist_handoff``'s ``agent_id`` column,
+    :func:`dispatch_identity_candidates`) already supply their own fallback.
 
     SHARED helper: the SINGLE resolver reused by the T9 backstop
     (``persist_handoff`` below), the truncation salvage
@@ -192,7 +300,18 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict):
     recovered = _minted_agent_id_from_transcript(task_info)
     if recovered:
         return str(recovered)
-    return task_info.get("agent_id") or task_info.get("agent") or None
+    bridged = _minted_agent_id_from_dispatch_row(task_info, session_id)
+    if bridged:
+        return bridged
+    logger.warning(
+        "Minted agent id UNRESOLVED for this turn (agent=%s harness_agent_id=%s "
+        "session=%s): no fence agent_status.agent_id, no precomputed mint, no "
+        "mint report in the transcript, and no dispatch row reachable by "
+        "harness_agent_id. Every draft-keyed rescue (M4 reconstruction, "
+        "truncation salvage, backstop step 1a) is unavailable for this turn.",
+        task_info.get("agent"), task_info.get("agent_id"), session_id,
+    )
+    return None
 
 
 # Backward-compatible private alias (pre-factorization name). Kept so any
@@ -464,8 +583,14 @@ def persist_handoff(
             CUT_REASON_REAPED,
         )
 
-        minted_agent_id = resolve_minted_agent_id(parsed_contract, task_info)
-        # agent_id stored in the NOT NULL row column.
+        minted_agent_id = resolve_minted_agent_id(
+            parsed_contract, task_info, session_id=session_id,
+        )
+        # agent_id stored in the NOT NULL row column. The resolver no longer
+        # substitutes the harness id when it cannot resolve a minted one, so
+        # this fallback -- the agent NAME -- is what a genuinely unresolved turn
+        # stamps a degraded row with, and it can never be mistaken for a draft
+        # key the way an a+hex harness id silently was.
         agent_id = minted_agent_id or task_info.get("agent") or "unknown"
 
         workspace = (

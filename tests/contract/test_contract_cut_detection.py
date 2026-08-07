@@ -65,6 +65,7 @@ from gaia.store.writer import (  # noqa: E402
     finalize_agent_contract_handoff,
     insert_dispatched_handoff,
     mirror_partial_contract_handoff,
+    stamp_harness_agent_id,
 )
 from modules.agents.handoff_persister import (  # noqa: E402
     close_born_dispatch_row,
@@ -81,6 +82,8 @@ _INDEX_NAME = "idx_agent_contract_handoffs_cut"
 
 WORKSPACE = "me"
 AGENT_ID = valid_agent_id("cut-detection")
+# The harness's own per-run agent id: same shape, different identifier space.
+HARNESS_AGENT_ID = "a00000000000000ff"
 AGENT_NAME = "gaia-system"
 PLAN_ID = 47
 TASK_ID = 199
@@ -210,8 +213,12 @@ def _cut_rows(db_path: Path) -> list:
 
 
 def _task_info(db_path: Path) -> dict:
+    """The SubagentStop view. ``agent_id`` is the HARNESS's per-run id, NOT the
+    minted handle drafts are keyed by -- the two are deliberately different
+    values here, because equating them makes every resolution lane appear to
+    work whether or not it crosses between the spaces correctly."""
     return {
-        "agent_id": AGENT_ID,
+        "agent_id": HARNESS_AGENT_ID,
         "agent": AGENT_NAME,
         "workspace": WORKSPACE,
         "db_path": str(db_path),
@@ -331,6 +338,11 @@ def test_contract_cut_detection_truncation_salvage_is_marked(db):
     _seed_binding_targets(db)
     draft_id = mint_draft_id(AGENT_ID)
     save_draft(draft_id, _partial_envelope(files=["half-done.py"]))
+    # The turn was born with this draft open and cut before it could finalize,
+    # so the ONLY route from the harness id to the minted one is the row that
+    # holds both -- the same bridge production depends on.
+    _born(db, draft_id)
+    stamp_harness_agent_id(draft_id, HARNESS_AGENT_ID, db_path=db)
 
     out = ClaudeCodeAdapter()._salvage_truncated_draft(
         parsed_contract=None,

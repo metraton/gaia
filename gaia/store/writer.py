@@ -8525,6 +8525,87 @@ def stamp_harness_agent_id(
     return _retry_on_locked(_work)
 
 
+def reconcile_cut_row(
+    contract_id: "str | None",
+    *,
+    raw_handoff_json: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Clear the cut mark on a row whose turn is accounted for elsewhere.
+
+    The narrow counterpart of :func:`stamp_harness_agent_id`: it writes
+    ``cut_reason`` (always to NULL) and optionally ``raw_handoff_json``, and
+    NOTHING else -- never ``agent_state``, never the binding, never the
+    attribution. It therefore cannot promote a turn to COMPLETE, cannot alter
+    what any gate reads, and cannot change which plan task a row answers for.
+
+    WHY IT MAY TOUCH A TERMINAL ROW WHERE :func:`finalize_agent_contract_handoff`
+    MAY NOT. That guard protects the VERDICT -- a COMPLETE row's outcome is
+    never rewritten. ``cut_reason`` is not the verdict; it is the structural
+    mark of HOW the row was closed, and the SubagentStop backstop can stamp it
+    onto a row that carries a perfectly good COMPLETE envelope
+    (``CUT_REASON_BACKSTOP_CAPTURE`` on a fence-only turn). Routing this through
+    finalize would silently no-op on exactly those rows and leave them
+    permanently cut, so the operation gets its own statement with its own,
+    narrower scope.
+
+    Refuses a row that is NOT marked cut (``cut_reason IS NULL``): there is
+    nothing to reconcile, and the refusal keeps this from becoming a general
+    "edit any row" door.
+
+    Returns ``{"status": "applied", "handoff_id": int, "contract_id": str}`` or
+    ``{"status": "skipped", "reason": ...}`` (``no_contract_id`` / ``no_row`` /
+    ``not_cut``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                if raw_handoff_json is None:
+                    cur = con.execute(
+                        "UPDATE agent_contract_handoffs SET cut_reason = NULL "
+                        "WHERE contract_id = ? AND cut_reason IS NOT NULL "
+                        "RETURNING id",
+                        (contract_id,),
+                    )
+                else:
+                    cur = con.execute(
+                        "UPDATE agent_contract_handoffs "
+                        "   SET cut_reason = NULL, raw_handoff_json = ? "
+                        " WHERE contract_id = ? AND cut_reason IS NOT NULL "
+                        "RETURNING id",
+                        (raw_handoff_json, contract_id),
+                    )
+                returned = cur.fetchone()
+                con.commit()
+                if returned is None:
+                    exists = con.execute(
+                        "SELECT 1 FROM agent_contract_handoffs "
+                        "WHERE contract_id = ? LIMIT 1",
+                        (contract_id,),
+                    ).fetchone()
+                    reason = "not_cut" if exists is not None else "no_row"
+                    return {"status": "skipped", "reason": reason}
+                return {
+                    "status": "applied",
+                    "handoff_id": returned["id"],
+                    "contract_id": contract_id,
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
 def dispatch_row_for_identity(
     session_id: "str | None",
     agent_id: "str | None",

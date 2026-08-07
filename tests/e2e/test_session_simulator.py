@@ -548,6 +548,50 @@ def _close_dispatched_row(
     return row["agent_id"]
 
 
+def _open_and_close_own_contract(
+    sim: "SessionSimulator",
+    agent_id: str,
+    agent_state: str,
+    *,
+    next_action: str = "done",
+) -> None:
+    """Open a contract with ``gaia contract init`` and close it, for a turn
+    that was never given one.
+
+    The companion to :func:`_close_dispatched_row`, for the dispatch shapes
+    that birth no row -- a verifier whose prompt names no resolvable
+    ``parent_handoff_id`` is the one this file exercises. Under the row-only
+    SubagentStop gate such a turn has nothing to close and rejects, and
+    ``init`` is the documented route out (it is what the rejection message
+    itself names). Run through the real CLI as subprocesses, like every other
+    call this simulator makes.
+    """
+    env = os.environ.copy()
+
+    def _cli(*args: str) -> subprocess.CompletedProcess:
+        result = subprocess.run(
+            [sys.executable, str(CONTRACT_CLI), *args],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"gaia contract {args[0]} failed: {result.stderr}"
+        )
+        return result
+
+    init_out = _cli("init", "--agent-id", agent_id, "--json").stdout
+    draft_id = json.loads(init_out)["draft_id"]
+
+    patch = json.dumps({
+        "evidence_report": {
+            "verification": {"method": "e2e-simulator", "result": "pass", "details": "ok"},
+        },
+    })
+    _cli("fill", "--draft-id", draft_id, "--json", patch)
+    _cli("set", "--draft-id", draft_id, "agent_status.next_action", next_action)
+    _cli("set", "--draft-id", draft_id, "agent_status.agent_state", agent_state)
+    _cli("finalize", "--draft-id", draft_id, "--session-id", sim.session_id)
+
+
 # ============================================================================
 # Helper: build blocked command strings without triggering hook scanners
 # ============================================================================
@@ -683,9 +727,12 @@ class TestScenario1HappyPath:
         # for a verifier dispatch, and this prompt names none, so
         # _maybe_birth_dispatched_row's own binding validation refuses the
         # birth (best-effort, non-blocking; see modules.agents.dispatch_
-        # binding). With no row reachable at all, the row-first gate takes
-        # its backup path and the fence decides -- unchanged by this
-        # migration for this specific turn.
+        # binding). Once the fence was retired as an input to the close, that
+        # leaves this turn with nothing to close, so it opens its own contract
+        # with `gaia contract init` -- the route the row-missing rejection
+        # message names, exercised here end to end rather than asserted.
+        _open_and_close_own_contract(sim, "a9f9f90f1e2d3c4b5", "COMPLETE")
+
         verifier_output = _build_valid_agent_output(
             agent_state="COMPLETE",
             summary="Verificado: el pod crashea por OOMKilled.",
@@ -829,52 +876,57 @@ class TestScenario4IncompleteContract:
 
 
 class TestScenario5InvalidPlanStatus:
-    """Agent response with agent_contract_handoff but invalid agent_state should be rejected (exit=2)."""
+    """An invalid agent_state is refused -- at the seam that now owns it.
 
-    def test_invalid_plan_status_rejected(self, tmp_path):
+    This scenario used to drive the property through SubagentStop: an
+    envelope carrying agent_state='RANDOM_STATUS' in the final message's
+    fenced block made the gate reject with exit 2. With the fence retired as
+    an input to the close, the gate reads only the persisted row -- and a row
+    can never carry RANDOM_STATUS, because ``gaia contract set``/``finalize``
+    validate through the SAME core before persisting anything.
+
+    So the property did not weaken, it MOVED: it is now enforced one step
+    earlier, when the agent tries to write the bad state into its contract.
+    The scenario follows it there rather than asserting a rejection the gate
+    can no longer produce for this reason.
+    """
+
+    def test_invalid_plan_status_refused_at_the_write(self, tmp_path):
         sim = SessionSimulator(tmp_path)
 
-        # Start session
         result = sim.start_session()
         assert result["exit_code"] == 0
 
-        # Deliberately NO invoke_agent() here. This scenario isolates ONE
-        # property -- an invalid agent_state in the FENCE is rejected -- and
-        # under the row-first gate a dispatched-but-unfinalized row would
-        # reject FIRST, for an unrelated reason, before the fence's own
-        # PLAN_STATUS defect is ever reached (a genuinely finalized row can
-        # never carry RANDOM_STATUS in the first place: `gaia contract
-        # finalize` validates the SAME core before persisting). With no
-        # dispatch row born for this session/agent at all, the gate takes
-        # its backup path and the fence decides, exactly as this scenario
-        # means to test.
+        result = sim.invoke_agent("developer", "refactoriza el modulo")
+        assert result["exit_code"] == 0
 
-        # Agent responds with an agent_contract_handoff block but INVALID plan_status
-        agent_output = _build_valid_agent_output(
-            agent_state="RANDOM_STATUS",
-            agent_id="a5e6f70f1e2d3c4b5",
-            summary="Refactoring done.",
+        from gaia.store.writer import find_dispatched_row_by_agent_name
+
+        db_path = Path(os.environ["GAIA_DATA_DIR"]) / "gaia.db"
+        row = find_dispatched_row_by_agent_name(
+            sim.session_id, "developer", db_path=db_path,
         )
-        result = sim.agent_responds("developer", "a5e6f70f1e2d3c4b5", agent_output)
-        assert result["exit_code"] == 2, (
-            f"Invalid plan_status should trigger rejection (exit=2): exit={result['exit_code']}, "
-            f"stderr: {result['stderr']}"
+        assert row is not None, "invoke_agent() must birth a DISPATCHED row"
+
+        write = subprocess.run(
+            [
+                sys.executable, str(CONTRACT_CLI), "set",
+                "--draft-id", row["contract_id"],
+                "agent_status.agent_state", "RANDOM_STATUS",
+            ],
+            capture_output=True, text=True, env=os.environ.copy(), timeout=30,
         )
 
-        stop_data = result["stdout_json"]
-        assert stop_data is not None, (
-            f"SubagentStop returned no JSON. stdout: {result['stdout_raw']}"
+        assert write.returncode != 0, (
+            "writing an out-of-enum agent_state into the contract must fail: "
+            f"stdout={write.stdout} stderr={write.stderr}"
         )
-
-        # contract_rejected should be True
-        assert stop_data.get("contract_rejected") is True, (
-            f"Expected contract_rejected=True for invalid plan_status. Got: {stop_data}"
+        combined = write.stdout + write.stderr
+        assert "RANDOM_STATUS" in combined, (
+            f"Expected the refusal to name 'RANDOM_STATUS'. Got: {combined}"
         )
-
-        # Rejection reason should mention the invalid status
-        reason = stop_data.get("contract_rejection_reason", "")
-        assert "RANDOM_STATUS" in reason, (
-            f"Expected rejection reason to mention 'RANDOM_STATUS'. Got: {reason}"
+        assert "PLAN_STATUS" in combined, (
+            f"Expected the refusal to carry the PLAN_STATUS code. Got: {combined}"
         )
 
 
@@ -905,6 +957,17 @@ class TestScenario6EmptyEvidenceAdvisory:
         result = sim.invoke_agent("gaia-verifier", "diagnostica el pod")
         assert result["exit_code"] == 0
 
+        # Close a contract through the real CLI, leaving every evidence LIST
+        # at its empty default and supplying only the verification the honesty
+        # rule requires. Since the fence retirement this is what the gate
+        # actually reads, so this -- not the block below -- is where the
+        # scenario's property now has to hold: an evidence_report whose lists
+        # are all empty must still finalize and still pass the close.
+        # `init` rather than the born row, because a verifier dispatch naming
+        # no parent_handoff_id births none (see scenario 1).
+        verifier_agent_id = "ab12cd0f1e2d3c4b5"
+        _open_and_close_own_contract(sim, verifier_agent_id, "COMPLETE")
+
         # Build agent output with valid plan_status but ALL evidence *lists*
         # empty. The scenario isolates ONE property: empty evidence lists are
         # advisory, not blocking. Under the M4 full-verdict gate
@@ -921,7 +984,7 @@ class TestScenario6EmptyEvidenceAdvisory:
             {
                 "agent_status": {
                     "agent_state": "COMPLETE",
-                    "agent_id": "ab12cd0f1e2d3c4b5",
+                    "agent_id": verifier_agent_id,
                     "pending_steps": [],
                     "next_action": "done",
                 },
@@ -951,7 +1014,7 @@ class TestScenario6EmptyEvidenceAdvisory:
             f"{bt}{bt}{bt}\n\n"
         )
 
-        result = sim.agent_responds("gaia-verifier", "ab12cd0f1e2d3c4b5", agent_output)
+        result = sim.agent_responds("gaia-verifier", verifier_agent_id, agent_output)
         assert result["exit_code"] == 0, (
             f"Empty evidence with valid plan_status should be advisory (exit=0): "
             f"exit={result['exit_code']}, stderr: {result['stderr']}"
