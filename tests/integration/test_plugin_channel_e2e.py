@@ -7,13 +7,14 @@ Validates the full lifecycle when CLAUDE_PLUGIN_ROOT is set:
   2. hooks.json paths resolve to real scripts on disk
   3. PreToolUse Bash: safe command allowed (exit 0)
   4. PreToolUse Bash: destructive command blocked (exit 2)
-  5. PreToolUse Agent: context injection enriches prompt
-  6. No double context injection (# Project Context appears exactly once)
-  7. Hook state written after successful pre_tool_use invocation
+  5. PreToolUse Agent: no preloaded context (the kernel is claimed at
+     SubagentStart; the cache bridge never carries a snapshot)
+  6. Hook state written after successful pre_tool_use invocation
 
 Existing tests only verify allow/block decisions in isolation. These tests
-exercise the full hook invocation -> context injection -> state written ->
-state readable pipeline under the PLUGIN channel.
+exercise the full adapter invocation -> state written -> state readable
+pipeline under the PLUGIN channel (tests/fixtures/pretool_adapter drives
+adapt_pre_tool_use, the same method the stdin entry point calls).
 """
 
 import json
@@ -37,6 +38,30 @@ from adapters.types import HostDistribution
 from modules.core.paths import clear_path_cache
 from modules.core.state import get_hook_state, STATE_FILE_NAME
 
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from tests.fixtures.pretool_adapter import (  # noqa: E402
+    compat_shape,
+    run_pre_tool_use,
+    run_subagent_bash,
+)
+
+
+def _is_allowed(result) -> bool:
+    """True when the compat-shaped result is an allow (None or allow dict).
+
+    The real subagent lane may allow WITH updatedInput (the dispatch identity
+    env stamp), so an allow is not always None.
+    """
+    if result is None:
+        return True
+    if isinstance(result, dict):
+        return (
+            result.get("hookSpecificOutput", {}).get("permissionDecision")
+            == "allow"
+        )
+    return False
+
 
 # ============================================================================
 # FIXTURES
@@ -54,6 +79,10 @@ def plugin_env(monkeypatch, tmp_path):
 
     # Point CLAUDE_PLUGIN_ROOT at the real repo root (hooks, agents, etc.)
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(REPO_ROOT))
+
+    # Isolate the substrate: T3 denials persist pending approvals and Task
+    # dispatches birth handoff rows; neither may land on the real ~/.gaia.
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia_data"))
 
     # Create a minimal project directory with .claude/ for state storage
     project_dir = tmp_path / "project"
@@ -225,33 +254,17 @@ class TestPluginPreToolUseBashAllowed:
     """Safe Bash commands must be allowed under the PLUGIN channel."""
 
     def test_safe_command_allowed(self, plugin_env):
-        """A safe command like 'ls -la' should be allowed (return None or dict)."""
-        import importlib.util
-
-        pre_hook_path = plugin_env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location("pre_tool_use_e2e_allow", str(pre_hook_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        result = mod.pre_tool_use_hook("Bash", {"command": "ls -la"})
-
-        # None means allowed without modification
-        assert result is None, (
-            f"Expected None (allowed) for 'ls -la', got: {result}"
+        """A safe command like 'ls -la' should be allowed."""
+        result = compat_shape(run_subagent_bash("ls -la"))
+        assert _is_allowed(result), (
+            f"Expected allow for 'ls -la', got: {result}"
         )
 
     def test_read_only_kubectl_allowed(self, plugin_env):
         """kubectl get pods should be allowed as a T0 read-only command."""
-        import importlib.util
-
-        pre_hook_path = plugin_env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location("pre_tool_use_e2e_kubectl", str(pre_hook_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        result = mod.pre_tool_use_hook("Bash", {"command": "kubectl get pods"})
-        assert result is None, (
-            f"Expected None (allowed) for 'kubectl get pods', got: {result}"
+        result = compat_shape(run_subagent_bash("kubectl get pods"))
+        assert _is_allowed(result), (
+            f"Expected allow for 'kubectl get pods', got: {result}"
         )
 
 
@@ -263,15 +276,8 @@ class TestPluginPreToolUseBashBlocked:
     """Destructive Bash commands must be blocked under the PLUGIN channel."""
 
     def test_destructive_command_blocked(self, plugin_env):
-        """'rm -rf /' must be blocked (return a non-None error string/dict)."""
-        import importlib.util
-
-        pre_hook_path = plugin_env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location("pre_tool_use_e2e_block", str(pre_hook_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        result = mod.pre_tool_use_hook("Bash", {"command": "rm -rf /"})
+        """'rm -rf /' must be blocked (error string or deny/block decision)."""
+        result = compat_shape(run_subagent_bash("rm -rf /"))
 
         assert result is not None, "Expected 'rm -rf /' to be blocked, got None (allowed)"
         # The result should be either a string (error message) or a dict with block decision
@@ -287,225 +293,50 @@ class TestPluginPreToolUseBashBlocked:
 
     def test_git_push_force_blocked(self, plugin_env):
         """'git push --force' must be blocked or require approval."""
-        import importlib.util
-
-        pre_hook_path = plugin_env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location("pre_tool_use_e2e_gpf", str(pre_hook_path))
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        result = mod.pre_tool_use_hook("Bash", {"command": "git push --force origin main"})
+        result = compat_shape(run_subagent_bash("git push --force origin main"))
 
         # git push --force should not be silently allowed
-        assert result is not None, (
-            "Expected 'git push --force' to be blocked or require approval, got None"
+        assert not _is_allowed(result), (
+            "Expected 'git push --force' to be blocked or require approval"
         )
 
 
 # ============================================================================
-# TEST 5: PreToolUse Agent - context injection
+# TEST 5: PreToolUse Agent - no preloaded context
 # ============================================================================
 
-class TestPluginPreToolUseAgentContextInjection:
-    """Agent tool invocations cache context for SubagentStart under PLUGIN channel."""
+class TestPluginAgentDispatchCarriesNoPreloadedContext:
+    """Agent dispatch returns no payload; the cache bridge never carries a
+    preloaded project-context snapshot (the kernel is claimed at
+    SubagentStart and project context is pulled on demand via the CLI)."""
 
-    def test_agent_context_cached_for_subagent_start(self, plugin_env_with_context):
-        """PreToolUse for a project agent caches context (not returned as additionalContext)."""
-        import importlib.util
+    def test_agent_dispatch_returns_none_and_caches_no_snapshot(
+        self, plugin_env_with_context,
+    ):
+        session_marker = "sess-plugin-e2e-agent"
+        result = compat_shape(run_pre_tool_use(
+            "Agent",
+            {
+                "subagent_type": "cloud-troubleshooter",
+                "prompt": "Check pod health in namespace test",
+            },
+            session_id=session_marker,
+        ))
 
-        env = plugin_env_with_context
-        pre_hook_path = env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location(
-            "pre_tool_use_e2e_ctx", str(pre_hook_path)
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        # Mock subprocess call to context_provider.py since we control the output
-        mock_context_payload = {
-            "project_knowledge": {
-                "cluster_details": {"kubernetes_version": "1.28.5"},
-                "infrastructure": {"cloud_providers": [{"name": "gcp"}]},
-            },
-            "metadata": {
-                "cloud_provider": "gcp",
-                "contract_version": "3.0",
-            },
-            "write_permissions": {
-                "readable_sections": ["cluster_details", "infrastructure"],
-                "writable_sections": ["cluster_details"],
-            },
-            "investigation_brief": {
-                "agent_role": "primary",
-                "primary_surface": "live_runtime",
-            },
-            "surface_routing": {
-                "primary_surface": "live_runtime",
-                "active_surfaces": ["live_runtime"],
-                "dispatch_mode": "single_surface",
-                "recommended_agents": ["cloud-troubleshooter"],
-            },
-        }
-
-        with patch("tools.context.context_provider.build_context_payload",
-                    return_value=mock_context_payload):
-            result = mod.pre_tool_use_hook(
-                "Agent",
-                {
-                    "subagent_type": "cloud-troubleshooter",
-                    "prompt": "Check pod health in namespace test",
-                },
-            )
-
-        # PreToolUse should NOT return additionalContext (goes to orchestrator)
+        # PreToolUse must NOT return additionalContext (it would land on the
+        # orchestrator, not the subagent).
         assert result is None, (
-            f"PreToolUse:Agent should return None (context cached for SubagentStart), got: {result}"
+            f"PreToolUse:Agent should return no payload, got: {result}"
         )
 
-        # Verify context was cached to disk for SubagentStart
         cache_dir = Path("/tmp/gaia-context-cache")
-        cache_files = list(cache_dir.glob("*.json"))
-        assert len(cache_files) > 0, (
-            "Context should be cached for SubagentStart to consume"
-        )
-
-        cached = json.loads(cache_files[-1].read_text())
-        assert "# Project Context" in cached["context"], (
-            "Cached context must contain '# Project Context' section"
-        )
-        assert "cluster_details" in cached["context"], (
-            "Cached context must contain injected project knowledge"
-        )
-
-        # Clean up cache files
-        for f in cache_files:
-            f.unlink(missing_ok=True)
-
-
-# ============================================================================
-# TEST 6: No double context injection
-# ============================================================================
-
-class TestPluginNoDoubleContextInjection:
-    """'# Project Context' must appear exactly once in cached context."""
-
-    def test_project_context_cached_once(self, plugin_env_with_context):
-        """Verify that cached context contains '# Project Context' exactly once."""
-        import importlib.util
-
-        env = plugin_env_with_context
-        pre_hook_path = env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location(
-            "pre_tool_use_e2e_dedup", str(pre_hook_path)
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        mock_context_payload = {
-            "project_knowledge": {
-                "cluster_details": {"kubernetes_version": "1.28.5"},
-            },
-            "metadata": {"cloud_provider": "gcp"},
-            "write_permissions": {
-                "readable_sections": ["cluster_details"],
-                "writable_sections": ["cluster_details"],
-            },
-            "investigation_brief": {},
-            "surface_routing": {},
-        }
-
-        with patch("tools.context.context_provider.build_context_payload",
-                    return_value=mock_context_payload):
-            result = mod.pre_tool_use_hook(
-                "Agent",
-                {
-                    "subagent_type": "cloud-troubleshooter",
-                    "prompt": "Investigate cluster health",
-                },
+        for f in cache_dir.glob(f"{session_marker}-*.json"):
+            cached = json.loads(f.read_text())
+            assert "# Project Context" not in cached.get("context", ""), (
+                "The cache bridge must not carry a preloaded project-context snapshot"
             )
-
-        # PreToolUse should return None (context cached for SubagentStart)
-        assert result is None, f"Expected None, got: {result}"
-
-        # Verify cached context has exactly one '# Project Context'
-        cache_dir = Path("/tmp/gaia-context-cache")
-        cache_files = list(cache_dir.glob("*.json"))
-        assert len(cache_files) > 0, "Context should be cached"
-
-        cached = json.loads(cache_files[-1].read_text())
-        count = cached["context"].count("# Project Context")
-        assert count == 1, (
-            f"'# Project Context' should appear exactly once in cached context, "
-            f"found {count} occurrences"
-        )
-
-        # Clean up
-        for f in cache_files:
             f.unlink(missing_ok=True)
 
-    def test_context_built_even_when_prompt_has_project_context(self, plugin_env_with_context):
-        """Context is always built fully, even if the prompt already contains '# Project Context'.
-
-        With cache-and-forward, the cached context is the ONLY way context
-        reaches the subagent.  The prompt may contain '# Project Context'
-        because the orchestrator's own system context bleeds into the
-        Agent tool's prompt field.  We must still build and cache the full
-        context regardless.
-        """
-        import importlib.util
-
-        env = plugin_env_with_context
-        pre_hook_path = env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location(
-            "pre_tool_use_e2e_dedup2", str(pre_hook_path)
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        # Prompt that already has context from the orchestrator's bleed-through
-        pre_enriched_prompt = (
-            "# Task\n\nInvestigate cluster health\n\n"
-            "# Project Context\n\n{\"cluster_details\": {}}\n"
-        )
-
-        mock_context_payload = {
-            "project_knowledge": {"cluster_details": {"status": "RUNNING"}},
-            "metadata": {"cloud_provider": "gcp"},
-            "write_permissions": {
-                "readable_sections": ["cluster_details"],
-                "writable_sections": ["cluster_details"],
-            },
-            "investigation_brief": {},
-            "surface_routing": {},
-        }
-
-        with patch("tools.context.context_provider.build_context_payload",
-                    return_value=mock_context_payload):
-            result = mod.pre_tool_use_hook(
-                "Agent",
-                {
-                    "subagent_type": "cloud-troubleshooter",
-                    "prompt": pre_enriched_prompt,
-                },
-            )
-
-        # No dedup guard: context is built and cached even though prompt
-        # already contained '# Project Context'.
-        assert result is None, f"Expected None (context cached), got: {result}"
-
-        # Verify full context was cached (not truncated)
-        cache_dir = Path("/tmp/gaia-context-cache")
-        cache_files = list(cache_dir.glob("*.json"))
-        assert len(cache_files) > 0, "Context should be cached even with pre-enriched prompt"
-
-        cached = json.loads(cache_files[-1].read_text())
-        assert "cluster_details" in cached["context"], (
-            "Cached context should contain full project knowledge"
-        )
-
-        # Clean up
-        for f in cache_files:
-            f.unlink(missing_ok=True)
 
 
 # ============================================================================
@@ -517,17 +348,8 @@ class TestPluginStateWrittenAfterHook:
 
     def test_state_written_for_bash_command(self, plugin_env):
         """After allowing 'ls -la', a state file should exist with correct fields."""
-        import importlib.util
-
-        pre_hook_path = plugin_env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location(
-            "pre_tool_use_e2e_state", str(pre_hook_path)
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        result = mod.pre_tool_use_hook("Bash", {"command": "ls -la"})
-        assert result is None, f"Expected 'ls -la' to be allowed, got: {result}"
+        result = compat_shape(run_subagent_bash("ls -la"))
+        assert _is_allowed(result), f"Expected 'ls -la' to be allowed, got: {result}"
 
         # Verify state file was written
         state_file = plugin_env["claude_dir"] / STATE_FILE_NAME
@@ -539,8 +361,10 @@ class TestPluginStateWrittenAfterHook:
         assert state_data["tool_name"] == "Bash", (
             f"Expected tool_name='Bash', got '{state_data['tool_name']}'"
         )
-        assert state_data["command"] == "ls -la", (
-            f"Expected command='ls -la', got '{state_data['command']}'"
+        # The subagent lane records the EFFECTIVE command (the dispatch
+        # identity env stamp may prefix it).
+        assert state_data["command"].endswith("ls -la"), (
+            f"Expected command ending in 'ls -la', got '{state_data['command']}'"
         )
         assert state_data["pre_hook_result"] == "allowed"
         assert state_data["tier"] != "unknown", (
@@ -551,17 +375,7 @@ class TestPluginStateWrittenAfterHook:
 
     def test_state_readable_via_get_hook_state(self, plugin_env):
         """State written by save_hook_state must be readable via get_hook_state."""
-        import importlib.util
-
-        pre_hook_path = plugin_env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location(
-            "pre_tool_use_e2e_state2", str(pre_hook_path)
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        # Run a safe command to trigger state write
-        mod.pre_tool_use_hook("Bash", {"command": "echo hello"})
+        run_subagent_bash("echo hello")
 
         # Read state back via the module API
         state = get_hook_state()
@@ -572,22 +386,13 @@ class TestPluginStateWrittenAfterHook:
 
     def test_state_not_written_for_blocked_command(self, plugin_env):
         """Blocked commands should not write hook state (state reflects last allowed)."""
-        import importlib.util
-
-        pre_hook_path = plugin_env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location(
-            "pre_tool_use_e2e_nostate", str(pre_hook_path)
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
         # Ensure no prior state
         state_file = plugin_env["claude_dir"] / STATE_FILE_NAME
         if state_file.exists():
             state_file.unlink()
         clear_path_cache()
 
-        result = mod.pre_tool_use_hook("Bash", {"command": "rm -rf /"})
+        result = compat_shape(run_subagent_bash("rm -rf /"))
         assert result is not None, "Expected 'rm -rf /' to be blocked"
 
         # State file should NOT exist (blocked commands skip save_hook_state)
@@ -597,36 +402,14 @@ class TestPluginStateWrittenAfterHook:
 
     def test_state_written_for_agent_task(self, plugin_env_with_context):
         """After allowing an Agent task, state should record the agent dispatch."""
-        import importlib.util
-
-        env = plugin_env_with_context
-        pre_hook_path = env["hooks_dir"] / "pre_tool_use.py"
-        spec = importlib.util.spec_from_file_location(
-            "pre_tool_use_e2e_agent_state", str(pre_hook_path)
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        mock_context_payload = {
-            "project_knowledge": {"cluster_details": {}},
-            "metadata": {"cloud_provider": "gcp"},
-            "write_permissions": {
-                "readable_sections": ["cluster_details"],
-                "writable_sections": ["cluster_details"],
+        result = compat_shape(run_pre_tool_use(
+            "Agent",
+            {
+                "subagent_type": "cloud-troubleshooter",
+                "prompt": "Check pods",
             },
-            "investigation_brief": {},
-            "surface_routing": {},
-        }
-
-        with patch("tools.context.context_provider.build_context_payload",
-                    return_value=mock_context_payload):
-            result = mod.pre_tool_use_hook(
-                "Agent",
-                {
-                    "subagent_type": "cloud-troubleshooter",
-                    "prompt": "Check pods",
-                },
-            )
+        ))
+        assert result is None, f"Expected Agent dispatch to be allowed, got: {result}"
 
         # Verify state was written for the agent task
         state = get_hook_state()

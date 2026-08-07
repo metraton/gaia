@@ -137,14 +137,8 @@ def _pending_rows(make_con):
 # AC-8 core: a chain of 2 T3 sub-commands mints ONE COMMAND_SET pending.
 # ===========================================================================
 
-class TestChainTwoT3MintsOneCommandSet:
-    """``a && b`` where both are T3 -> ONE pending carrying command_set (2).
-
-    Note: cloud CLIs (terraform/kubectl/gcloud/aws/helm/flux) are rejected by
-    cloud_pipe_validator BEFORE the compound path with a "one-command-per-step"
-    corrective deny, so they never reach the COMMAND_SET intake. The chains that
-    DO reach it are non-cloud T3 verbs -- git push, docker push, npm publish.
-    """
+class TestLegacyCompoundCommandSetDisabled:
+    """Compound T3 text is denied without minting any approval."""
 
     CHAIN = "git push origin main && docker push registry/app:1.0"
 
@@ -153,11 +147,8 @@ class TestChainTwoT3MintsOneCommandSet:
             self.CHAIN, is_subagent=True, session_id=SESSION,
         )
         assert not result.allowed
-        out = _hook_output(result)
-        assert out["permissionDecision"] == "deny", (
-            f"chain of T3 sub-commands must DENY with a Gaia approval, got: {out}"
-        )
-        assert "approval_id:" in out["permissionDecisionReason"]
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "Compound T3 execution is disabled" in result.reason
 
     def test_two_t3_chain_persists_exactly_one_command_set_pending(self, chain_db):
         result = validate_bash_command(
@@ -165,25 +156,7 @@ class TestChainTwoT3MintsOneCommandSet:
         )
         assert not result.allowed
 
-        rows = _pending_rows(chain_db)
-        # The double-approval bug minted ONE single-signature pending here and
-        # would mint a SECOND on the next sub-command's retry. The fix mints
-        # exactly ONE pending that already carries BOTH commands.
-        assert len(rows) == 1, (
-            f"chain must produce exactly ONE pending, got {len(rows)}: "
-            f"{[r['id'] for r in rows]}"
-        )
-        payload = json.loads(rows[0]["payload_json"])
-        cmd_set = payload.get("command_set")
-        assert isinstance(cmd_set, list) and len(cmd_set) == 2, (
-            "the single pending must be a COMMAND_SET over BOTH T3 sub-commands, "
-            f"got command_set={cmd_set}"
-        )
-        commands = [it["command"] for it in cmd_set]
-        assert commands == [
-            "git push origin main",
-            "docker push registry/app:1.0",
-        ], f"command_set must carry the chain's T3 sub-commands in order: {commands}"
+        assert _pending_rows(chain_db) == []
 
     def test_semicolon_chain_also_groups_into_command_set(self, chain_db):
         result = validate_bash_command(
@@ -192,10 +165,7 @@ class TestChainTwoT3MintsOneCommandSet:
             session_id=SESSION,
         )
         assert not result.allowed
-        rows = _pending_rows(chain_db)
-        assert len(rows) == 1
-        payload = json.loads(rows[0]["payload_json"])
-        assert len(payload.get("command_set") or []) == 2
+        assert _pending_rows(chain_db) == []
 
 
 # ===========================================================================
@@ -203,42 +173,15 @@ class TestChainTwoT3MintsOneCommandSet:
 # sub-commands on retry (each consumed by its own byte-for-byte signature).
 # ===========================================================================
 
-class TestOneApprovalCoversWholeChain:
-    """Intake -> approve (activate) -> retry: BOTH sub-commands now run under
-    the ONE grant, with NO second approval required."""
+class TestCompoundCannotEnterApprovalLifecycle:
 
     def test_one_approval_then_both_subcommands_allowed(self, chain_db):
-        from modules.security.approval_grants import activate_db_pending_by_prefix
-
         chain = "git push origin main && docker push registry/app:1.0"
-        # 1. INTAKE: chain blocks, mints one COMMAND_SET pending.
         result = validate_bash_command(chain, is_subagent=True, session_id=SESSION)
         assert not result.allowed
-        approval_id = re.search(
-            r"approval_id:\s*([\w-]+)", _hook_output(result)["permissionDecisionReason"]
-        ).group(1)
-
-        # 2. APPROVE: user approves -> activation creates ONE COMMAND_SET grant
-        # (the activation branches on payload.command_set, independent of how the
-        # pending was minted).
-        nonce_prefix = approval_id[2:10]  # strip 'P-' then first 8 hex
-        activation = activate_db_pending_by_prefix(
-            nonce_prefix, current_session_id=SESSION,
-        )
-        assert activation.success, f"activation failed: {activation.reason}"
-
-        # 3. RETRY: the WHOLE chain now validates -- each sub-command matches the
-        # COMMAND_SET grant by its own signature; no re-block, no second approval.
         retry = validate_bash_command(chain, is_subagent=True, session_id=SESSION)
-        assert retry.allowed, (
-            "after ONE approval the whole chain must run; a re-block here is the "
-            f"double-approval gap. reason={retry.reason}"
-        )
-
-        # Note: the retry above already consumed both indexes; a fresh isolated
-        # run of one sub-command would be a SECOND consumption. We assert the
-        # full-chain retry was allowed (the user-facing behaviour) rather than
-        # double-consuming here.
+        assert not retry.allowed
+        assert _pending_rows(chain_db) == []
 
 
 # ===========================================================================
@@ -246,7 +189,7 @@ class TestOneApprovalCoversWholeChain:
 # ===========================================================================
 
 class TestControlsUnchanged:
-    def test_single_t3_in_chain_keeps_singular_pending(self, chain_db):
+    def test_single_t3_in_chain_is_categorical_deny(self, chain_db):
         # Only the second component is T3 (echo is safe).
         result = validate_bash_command(
             "echo starting && git push origin main",
@@ -254,16 +197,8 @@ class TestControlsUnchanged:
             session_id=SESSION,
         )
         assert not result.allowed
-        out = _hook_output(result)
-        assert out["permissionDecision"] == "deny"
-        rows = _pending_rows(chain_db)
-        assert len(rows) == 1
-        payload = json.loads(rows[0]["payload_json"])
-        # Singular path: NO command_set key (single semantic-signature pending).
-        assert payload.get("command_set") is None, (
-            "a single T3 sub-command must NOT mint a COMMAND_SET; the singular "
-            f"hook-block path owns it. payload={payload}"
-        )
+        assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert _pending_rows(chain_db) == []
 
     def test_chain_with_no_t3_is_allowed_and_mints_no_pending(self, chain_db):
         result = validate_bash_command(

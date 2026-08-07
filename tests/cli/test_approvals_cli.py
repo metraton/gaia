@@ -148,19 +148,9 @@ class TestCmdList:
 # ---------------------------------------------------------------------------
 
 class TestCmdShow:
-    def test_show_not_found_returns_1(self, capsys):
-        from bin.cli.approvals import cmd_show
-
-        mock_writer = MagicMock()
-        mock_writer.list_approval_grants.return_value = []
-
-        with patch("bin.cli.approvals._import_writer", return_value=mock_writer), \
-             patch("bin.cli.approvals._import_approval_grants", return_value={
-                 "load_pending_by_nonce_prefix": lambda *a: None,
-             }):
-            rc = cmd_show(_make_args(approval_id="nonexistent-id"))
-
-        assert rc == 1
+    # test_show_not_found_returns_1 lived here as a verbatim duplicate of
+    # tests/cli/test_approvals.py::TestCmdShow::test_show_not_found_returns_1
+    # (same mock, same rc == 1 assertion). Removed in favor of that copy.
 
     def test_show_db_grant_found(self, tmp_db, capsys):
         from gaia.store.writer import insert_approval_grant

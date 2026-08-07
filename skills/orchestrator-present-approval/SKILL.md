@@ -1,205 +1,117 @@
 ---
 name: orchestrator-present-approval
-description: Use when processing APPROVAL_REQUEST with approval_id from a subagent -- enforces showing values before asking for user consent
+description: Use when presenting a returned APPROVAL_REQUEST for informed user consent
 ---
 
-# Orchestrator Present Approval
+# Present Approval — Orchestrator Branch
+
+Present trusted contract data exactly. Do not execute, derive, shorten, reorder,
+or silently expand it.
+
+## The Approve label format is mandatory -- for every request, singular or set
+
+**The activation channel is the label text itself, not the question body, and
+this applies identically whether you are presenting one command or a
+COMMAND_SET.** The Approve option's `label` MUST match `^Approve\b.*\[P-{hex}]`
+-- it must begin with the literal English word `Approve` and contain the
+approval id's leading hex characters in square brackets, `[P-{nonce8}]` by
+convention (first 8 hex chars after `P-`). This is what the hook parses
+(`extract_nonce_from_label`, `hooks/modules/security/approval_grants.py`) to
+find the pending row and create the grant (`activate_db_pending_by_prefix`);
+the question body's full id, a `description` field, or a translated verb do
+not substitute for it. A label without that tag produces no grant, the ledger
+stays `pending`, and the user's consent is silently inert -- this is what
+happened in the incident this skill exists to prevent, and it is exactly as
+possible on a single-command approval as on a COMMAND_SET.
+
+**Literal example -- GOOD vs BROKEN, side by side, in the tool's real shape**
+(`AskUserQuestion` takes `questions[]`, each with `options[]` of `{label,
+description}` objects -- not a bare list of strings). The GOOD label activated
+live on 2026-08-03T06:52:34Z, confirmed by the ledger transitioning to
+`approved` and the push executing:
 
 ```
-The user approves EXACT VALUES, not summaries.
-Every AskUserQuestion shows the literal command, every option label
-names the specific action. No exceptions. No brevity shortcuts.
+AskUserQuestion(
+  questions=[
+    {
+      "question": "APPROVAL REQUIRED -- P-cf8eb08e...\n\n"
+                   "OPERACION: push rama flux-system\n"
+                   "COMANDO:   git push origin flux-system\n"
+                   "SCOPE:     remote origin, branch flux-system\n"
+                   "RIESGO:    MEDIUM -- pushes to a shared branch\n"
+                   "ROLLBACK:  git push origin --force-with-lease "
+                   "origin/flux-system@{1}:flux-system",
+      "header": "Approve push",
+      "multiSelect": false,
+      "options": [
+        {
+          "label": "Approve -- push rama flux-system [P-cf8eb08e]",  # GOOD -- activates
+          "description": "git push origin flux-system"
+        },
+        {
+          "label": "Reject",
+          "description": "Do not push; leave the local branch as is."
+        }
+      ]
+    }
+  ]
+)
 ```
 
-`orchestrator-present-approval` is the discipline the orchestrator follows when
-an approval needs the user's consent: relay the sealed fields into
-AskUserQuestion -- mandatory fields in the question, mandatory nonce in the
-option label. The orchestrator has no shell, so it never dispatches a subagent
-to derive or verify an approval it already holds; it presents from a trusted
-source -- either the same-turn relay it already has, or, when it does not,
-a gaia-operator dispatch that fetches (never derives or verifies) the payload
-on its behalf (Step 0). For the subagent side that produced the payload see
-`subagent-request-approval`; for the data contract itself see
-`agent-approval-protocol`.
+A label of `"Aprobar"` (or any translated verb, paraphrase, or the bare
+approval id with no brackets) fails the regex outright regardless of what the
+`description` or question body says -- this exact shape is what produced the
+original incident: two legitimate user approvals that never created a grant,
+silently.
 
-## Mental Model
+## Singular vs COMMAND_SET presentation
 
-The orchestrator sits between the subagent and the user. The user cannot make
-an informed decision on data they have not seen -- a summary, a reference to
-"the plan above", or an offer to show details on request all push the decision
-without the data needed to decide. The job is **verbatim relay, not
-re-authoring**: rewriting any of the sealed fields would change the consent
-surface from what was recorded. Integrity of the payload is enforced at grant
-**activation** (`verify_fingerprint` in `gaia/approvals/chain.py`, called when
-the user selects the Approve label), not at presentation -- so presentation
-itself never needs a verify-dispatch.
+For a single request show the exact command, affected scope, risk, rollback (or
+explicitly `none supplied`), verification, and full approval id.
 
-## Step 0 -- Present from a trusted source; never dispatch to verify or derive
+For COMMAND_SET show:
 
-The orchestrator has no shell. It MUST NOT dispatch a subagent solely to derive
-or verify an approval before presenting -- that dispatch is both unnecessary
-(the integrity check runs at activation, below) and harmful (its SubagentStop
-can sweep the very pending being verified). This bans re-checking a payload
-you already hold, not fetching one you don't: source 2 below (an explicit,
-later-turn user lookup) still requires a dispatch, because the orchestrator
-has no shell to run `gaia approvals show` itself -- that dispatch is a fetch,
-never a verify/derive. Approvals are **in-loop and single-session**: there is
-no per-turn feed of previously-seen pendings anymore. Present from one of two
-**trusted**, in-session sources:
+1. the full approval id and bounded goal;
+2. total command count;
+3. every command verbatim, indexed from `0` through `N-1`, in execution order;
+4. scope/effect for the set and any item-specific scope;
+5. risks, including partial completion if a later command fails;
+6. rollback for completed items, or explicitly that no rollback was supplied;
+7. the desired-state verification to run after execution; and
+8. Approve and Reject options following the label format above -- one Approve
+   option covers the whole set, never one per command.
 
-1. **The subagent's same-turn relayed `approval_request`.** This is the normal
-   case: the pending was freshly minted THIS turn by a trusted dispatch, and
-   integrity is enforced at grant **activation** (`verify_fingerprint` fires
-   when the user selects the Approve label), not at presentation -- so no
-   pre-presentation verify dispatch is needed.
-2. **An explicit, user-invoked lookup.** If the user asks again later in the
-   same session ("ver P-XXXX", "aprobar P-XXXX" without a fresh relay in this
-   turn), you do not already hold the payload, and you have no shell of your
-   own -- dispatch gaia-operator to run `gaia approvals show P-XXXX` per
-   `pending-approvals` and relay the result back to you. This is a fetch of
-   data you do not have, not the verify/derive dispatch forbidden below --
-   that one re-checks a payload you already hold; this one retrieves one you
-   don't. Either way it is still a direct, user-driven query, not a proactive
-   feed.
+Do not call a COMMAND_SET atomic: consent is grouped, execution is separate,
+ordered, and fail-fast. Do not claim verification has happened; this is the
+pre-execution consent point.
 
-There is no automatic resurfacing of pendings across turns or sessions; do not
-look for or expect an injected verified-pendings block.
+Approval activation verifies the REQUESTED fingerprint. Presentation must still
+be exact because informed consent depends on what the human sees. If the
+contract is incomplete, reordered, mismatched, or ambiguous, do not repair it;
+route back to the producer.
 
-**The singular in-loop path is the clean case.** When the hook blocks one T3
-command, the subagent receives the `approval_id` in the `[T3_BLOCKED]` message
-and relays it in its `approval_request`. You present directly from that relay --
-the id is right there, no shell and no block needed.
+## Who activates, who executes
 
-**A `command_set` batch arrives the same way.** When a subagent chains >= 2 T3
-sub-commands in one Bash call (e.g. `git add -A && git commit -m 'v1.2.0' &&
-git push origin main`) and the hook classifies >= 2 of them as ungranted T3, it
-mints ONE `COMMAND_SET` pending at block time
-(`bash_validator._validate_compound_command`) with a content-derived
-`approval_id` (`derive_command_set_id` in `gaia/approvals/store.py`,
-`P-<first 32 hex of sha256(canonical(command list))>`), and denies the Bash
-call with the same `[T3_BLOCKED]` shape as a singular block. The subagent
-relays that `approval_id` in its `approval_request` -- exactly like the
-singular path, no shell and no derive step needed on your side. There is no
-plan-first declaration to wait for: the batch id is always already in the
-relay you received this turn.
+If the user approves, the orchestrator dispatches a fresh owning specialist
+with the grant context and `execution` skill; the orchestrator never runs the
+commands itself. `gaia approvals approve` is a separate, CLI-only admin verb
+that writes the DB directly and does **not** create a hook-side grant -- it is
+not the activation path, and it is not available to the orchestrator: the
+trusted-CLI role guard (`hooks/modules/security/gaia_cli_only_guard.py`,
+`EXPLICITLY_DENIED_PHRASES`) categorically denies `approvals approve` /
+`revoke` / `reject` / `reject-all` / `clean` / `replay` for the orchestrator
+role, non-approvable -- the orchestrator may only *read* approval state
+(`approvals list` / `show` / `pending` / `history` / `stats`, in
+`ALLOWED_READ_PHRASES`). Reads are the orchestrator's; approval decisions are
+not -- they happen exclusively through the label the user selects.
 
-## Mandatory presentation -- 5 labeled fields + nonce-suffixed label
-
-The AskUserQuestion `question` MUST contain these 5 labeled fields, extracted
-verbatim from `sealed_payload`:
-
-```
-APPROVAL REQUIRED
-
-OPERACION:  {sealed_payload.operation}
-COMANDO:    {sealed_payload.exact_content}     <-- verbatim, never paraphrased
-SCOPE:      {sealed_payload.scope}
-RIESGO:     {sealed_payload.risk_level} -- {sealed_payload.rationale}
-ROLLBACK:   {sealed_payload.rollback_hint or "NOT REVERSIBLE"}
-```
-
-The COMANDO line above is the **single-command** form. `exact_content` is a
-singular field -- for a `COMMAND_SET` it holds command **[0]** only -- so when
-the payload covers N >= 2 commands that one line is replaced by the indexed
-`COMANDOS (N)` block from `template.md`, listing **all N**. The other four
-fields are identical either way. Rule 4 below and `template.md` are the same
-requirement stated twice: N commands covered means N commands shown.
-
-The Approve option label MUST follow `"Approve -- {specific_action} [P-{nonce8}]"`,
-where `nonce8` is the first 8 hex chars of `approval_id` after `P-`. The label
-regex in `extract_nonce_from_label` (`hooks/modules/security/approval_grants.py`)
-requires the leading `Approve` and the `[P-<hex>]` tag;
-`activate_db_pending_by_prefix` matches the captured prefix against pending rows
-whose `id` starts with `P-{prefix}`. Without the suffix no grant is created.
-
-See `template.md` for the canonical layout and `reference.md` -> "GOOD vs BAD
-Examples" for full presentations.
-
-Fields above are extracted from your trusted source -- the subagent's relayed
-`approval_request` (or, for a later-turn user query, the `gaia approvals show`
-result). In the `approval_request` the rollback field arrives under the key
-`rollback`; from `gaia approvals show` it arrives as `rollback_hint`. Map
-either to ROLLBACK the same way. Either way you copy values verbatim; you do
-not re-author them.
-
-## Rules
-
-1. **Copy `exact_content` byte-for-byte.** Grants match by statement signature.
-   A redirect, a `cd` prefix, a `time` wrapper, or an unapproved flag is a
-   different statement and an immediate re-block on the retry. The runtime grant match is semantic (see `execution`), but the discipline at presentation is verbatim — any drift you tolerate at relay can become a re-block at retry.
-
-2. **Single-use, consumed at match, 5-minute TTL.** Approval inserts one
-   `SCOPE_SEMANTIC_SIGNATURE` grant that is consumed **at the moment the
-   retried command matches it** -- before it executes, not after
-   (`consume_db_semantic_grant` in `gaia/store/writer.py`) -- and lives for a
-   5-minute TTL. A second invocation, or a retry after the command executed and
-   failed, is a new APPROVAL_REQUEST. The one case the grant survives is a
-   dispatch that dies before reaching the command: a re-dispatch within the
-   5 minutes reuses the still-alive grant.
-
-3. **Approving IS the order to execute.** When the user selects the Approve
-   label, the ElicitationResult hook activates the grant and the orchestrator
-   **immediately re-dispatches the verbatim command** -- there is no separate
-   "should I run it now?" turn. Approve and execute are one coupled action.
-
-4. **Batch grant is `COMMAND_SET` -- one consent, N commands, id arrives in the
-   same relay.** Legacy `verb_family` was removed; its replacement,
-   `COMMAND_SET`, is wired end-to-end in the hook layer (intake, activation,
-   consume). When a subagent chains >= 2 T3 sub-commands in one Bash call and
-   the hook classifies >= 2 of them as ungranted T3,
-   `bash_validator._validate_compound_command` mints ONE pending `COMMAND_SET`
-   **at block time**, with a content-derived `approval_id`, and denies the
-   Bash call with the same `[T3_BLOCKED]` shape as a singular block. The
-   subagent relays that `approval_id` -- together with the `commands` /
-   `command_set` fields the hook built -- in the same `approval_request` it
-   would use for one command; there is no separate no-`approval_id` shape to
-   wait for. You present a single approval: list **all N commands** in the
-   question body -- the indexed `COMANDOS (N)` block in `template.md`, never
-   the singular `exact_content`, which is only command [0] -- but use **one**
-   Approve label with **one** `[P-{nonce8}]` suffix (the `({N} commands)` text
-   in the label sits before the `[P-...]` tag, so nonce extraction is
-   unaffected) -- one consent covers the whole batch. On approval,
-   `activate_db_pending_by_prefix` Step 3b creates a single `COMMAND_SET` grant
-   (5-minute TTL, aligned to the singular grant); each command is consumed
-   byte-for-byte at its match, before it executes. `batch_scope` is still ignored
-   (the signal is `command_set`). See `reference.md` -> "On batch intents".
-
-   You present the batch the subagent's chained command produced; you do not
-   prescribe the shape of its command in either direction -- neither steering it
-   to chain, nor telling it to split a chain into separate calls. What you hand
-   the subagent is the approval constraint, never the command it should have
-   written. Whether grouping is warranted is the subagent's
-   judgment made before it attempts the chain (see `subagent-request-approval`).
-   A singular approval arriving where you imagined a batch is not a defect to
-   correct: the default is just-in-time, and a batch a subagent would have
-   manufactured by chaining unrelated commands asks the user to consent to
-   work that does not need to run together.
-
-5. **Re-dispatch, do not resume.** `mode` does not survive a SendMessage resume:
-   the resume runs in `default` and re-blocks the next protected operation even
-   after the Gaia grant activated. The automatic execute-on-approve of Rule 3 is
-   therefore always a fresh re-dispatch with the same `mode` and the verbatim
-   `exact_content`, never a SendMessage resume; the DB grant lives in the session
-   and is found by the re-dispatched subagent. See `reference.md` ->
-   "Re-dispatch instead of resume" for the underlying mechanism (mode is
-   per-dispatch).
-
-## Traps
-
-Each row names a distinct way the consent surface goes false. For BAD-vs-GOOD
-wording, see `reference.md` -> "GOOD vs BAD Examples", "Option Label Patterns",
-"Cosmetic drift", and "Scope Mismatch".
-
-| If you're thinking... | The reality is... |
-|---|---|
-| **Show specifics on both surfaces** -- "I can summarize / the label is enough" | The COMANDO field in the question body must be the verbatim command (not a summary, not "the above"); the option label must name the specific action (not just "Approve"). The user sees both surfaces; missing specificity on either is a blind-consent failure. |
-| **"The payload has `exact_content`, so I'll render that"** | For a `COMMAND_SET` `exact_content` is command **[0]** only. Rendering it alone shows 1 command while the grant activates N -- consent obtained for a surface the user never saw. Count the covered commands first (`command_set`, else `commands`); N >= 2 means the indexed `COMANDOS (N)` block from `template.md`. |
-| "I'll skip the [P-...] suffix, it's cosmetic" | The hook extracts the nonce from the label to find the right pending row; without it, targeted activation fails and no grant is created. |
-| "Similar command, slightly different path -- I'll reuse / wrap it" | Grants match the statement signature byte-for-byte. Any wrapper, redirect, flag, or path drift is a different signature and a fresh re-block. |
-| "The same command emitted a new approval_id" | Grants are single-use, consumed at match (before execution). A second run -- or a retry after the command executed and failed -- is a new APPROVAL_REQUEST. Approve again. |
-| "After they approve, I'll ask whether to run it" | Approving IS the order to execute. On the Approve label the orchestrator immediately re-dispatches the verbatim command -- no intermediate confirmation turn. |
-| "I'll set batch_scope to approve many at once" | `batch_scope` is ignored -- but a real batch path exists: a subagent chaining >= 2 T3 sub-commands in one Bash call gets blocked with ONE pending `COMMAND_SET` and one `approval_id`, same as a singular block. Present that single approval (N commands shown, one `[P-...]` nonce, one consent), not N separate approvals. |
-| "I can paraphrase a field before relaying" | The fingerprint covers all sealed fields and is checked at grant **activation** (`verify_fingerprint`, when the user selects the Approve label); a paraphrase there raises `ChainTamperError` and the grant never forms. Relay verbatim so activation succeeds. |
-| "I'll wait for the pending to resurface next turn / next session" | There is no cross-turn or cross-session resurfacing anymore -- no `[ACTIONABLE]` SessionStart block, no per-turn verified-pendings feed. Approvals are in-loop and single-session: present from the subagent's same-turn relayed `approval_request` (or a user's explicit `gaia approvals show`), and resolve within the session. |
-| **"I'll dispatch a subagent to verify or derive the approval before presenting"** | The orchestrator must NEVER dispatch a subagent to verify or derive an approval, singular or `COMMAND_SET`. Present from the subagent's same-turn relayed `approval_request`; integrity is enforced at grant **activation** (`verify_fingerprint`), not at presentation, so a pre-presentation verify is unnecessary. A `COMMAND_SET`'s content-derived `approval_id` arrives in the same relay as a singular block -- there is nothing to derive. |
-| **"I'll pack several approvals into one AskUserQuestion to save a turn"** | The hook extracts ONE nonce per answered label (`extract_nonce_from_label`), so packing N pendings into one question activates one grant and orphans N−1. One AskUserQuestion per approval -- the only multi-command consent is the hook-minted `COMMAND_SET` batch, which arrives as ONE pending with ONE nonce. |
+**Prefix length note:** the regex captures `[a-f0-9]+` (one or more hex
+characters), not a fixed 8 -- the 8-char convention is presentation discipline,
+not an enforced minimum. `activate_db_pending_by_prefix` matches the FIRST
+pending row (oldest first) whose id starts with `P-{captured_prefix}` and does
+not detect or reject a multi-row match. A shorter prefix in the label therefore
+carries a real, if small, collision risk: two pending approvals sharing a short
+prefix would silently activate the wrong one, with no ambiguity error the way
+`gaia approvals show` gives on the CLI side. Always use the full 8-char nonce
+(or the id's genuinely distinguishing prefix) in the label -- never truncate it
+further to save space.

@@ -183,3 +183,21 @@ class TestCompoundCdRelativeScriptResolution:
             chain, is_subagent=True, session_id="t", agent_type="developer",
         )
         assert result.allowed is False
+
+    def test_real_mutation_behind_cd_still_classifies_t3(self, tmp_path):
+        """Inverse of the false-T3 fix: the cwd fold must only DE-escalate a
+        false positive, never remove a real block. A relative script that IS
+        genuinely mutative resolves correctly against the `cd` target and
+        still classifies (and blocks) T3.
+        """
+        repo = tmp_path / "repo"
+        (repo / "engine").mkdir(parents=True)
+        (repo / "engine" / "build-data.mjs").write_text(
+            'const fs = require("fs");\nfs.rmSync("/tmp/t", { recursive: true });\n'
+        )
+        chain = f"cd {repo} && node engine/build-data.mjs"
+        result = self._validator().validate(
+            chain, is_subagent=True, session_id="t", agent_type="developer",
+        )
+        assert result.allowed is False
+        assert result.tier.value == "T3"

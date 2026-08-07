@@ -1,151 +1,82 @@
 ---
 name: agent-approval-protocol
-description: Use when constructing or interpreting the approval handoff envelope between subagent and orchestrator -- sealed_payload schema, approval_id format, APPROVAL_REQUEST contract shape, and reading a granted approval from the DB
+description: Use for approval_request, COMMAND_SET, approval identifiers, fingerprints, and progress data
 ---
 
 # Agent Approval Protocol
 
-`agent-approval-protocol` is the data contract that flows from a subagent,
-through the hook layer, to the orchestrator when a T3 command is blocked: the
-`sealed_payload` fields, the `approval_id` format, the `APPROVAL_REQUEST` shape,
-the status and event vocabularies, and how to confirm a grant is active. The
-tables below are the canonical schema -- relay them verbatim, do not author them.
+This is the approval data reference. Producer, presenter, and executor workflows
+live in their branch skills. Never author or derive security data that the
+runtime returns.
 
-The orchestrator presents this contract to the user from a **trusted source**,
-never by dispatching a subagent to verify or derive it (it has no shell for
-that). Approvals are **in-loop and single-session**: the source is the
-subagent's same-turn relayed `approval_request` (there is no cross-turn or
-cross-session resurfacing of pendings -- no injected verified-pendings block).
-The **integrity boundary is grant activation**, not presentation:
-`verify_fingerprint` (`gaia/approvals/chain.py`) runs when the user selects the
-Approve label, so a tampered payload fails to form a grant regardless of how it
-was presented. See `Skill('orchestrator-present-approval')` for the presentation
-discipline.
+## Identity and placement
 
-For the universal response envelope (`agent_state` states, `evidence_report`),
-see `agent-protocol`. For the deep mechanics -- fingerprint canonicalization,
-the hash chain, grant activation, reading a granted approval from Python -- see
-`reference.md`.
+- Contract `agent_id`: `^a[0-9a-f]{16,}$`.
+- Approval id: `P-` plus 32 lowercase hexadecimal characters. Relay it exactly;
+  agents never mint it.
+- All consent data belongs inside top-level `approval_request`, not beside it or
+  duplicated in `evidence_report`.
+- The fenced contract remains compatibility output; the DB is the durable
+  source for lookup and reconciliation.
 
-**Build this payload the same way as the rest of the contract: `gaia contract`
-first, fence always.** Per `agent-protocol`, the primary path is `gaia contract
-set approval_request.<field> <value>` (or `fill --json`) as each sealed_payload
-field becomes known, then `finalize`. But the SubagentStop gate parses the
-fenced `agent_contract_handoff` block out of your response text, not the
-finalized DB row -- so the `approval_request` below is REQUIRED output in your
-final fenced block regardless of whether you built it via the CLI or composed
-it directly. An `APPROVAL_REQUEST` that only exists in a finalized draft, with
-no matching fence in the response text, gives the orchestrator nothing to
-parse and the turn is rejected.
+## Single command
 
-## approval_id format
+The runtime-sealed request carries `operation`, verbatim `exact_content`,
+`scope`, `risk_level`, `rollback_hint`, and `rationale`. The contract maps
+`rollback_hint` to `rollback` and adds the verification method and returned
+`approval_id`.
 
-For a **singular** T3 approval (the hook-block path),
-`store._generate_approval_id()` returns `P-{uuid4().hex}` (e.g.
-`P-b1bdfbb0b9474bf5b3f86b1f6a213f7a`) -- a random, unique id the subagent relays
-verbatim. For a **`COMMAND_SET`** (a chain of >= 2 T3 sub-commands blocked in one
-Bash call) the id is instead **content-derived** by `store.derive_command_set_id()`:
-`P-<first 32 hex of sha256(canonical(command strings))>`. The two share the `P-`
-prefix and 32-hex length and, critically, share the same delivery path: both
-arrive in the same `[T3_BLOCKED]` denial the hook returns at block time
-(`bash_validator._validate_compound_command` mints the COMMAND_SET the moment it
-classifies >= 2 chained sub-commands as ungranted T3), and the subagent relays
-whichever `approval_id` it receives verbatim into its `approval_request` --
-there is no separate derivation step for either shape. The `P-` prefix is
-mandatory in both cases: without it the PostToolUse hook cannot do targeted
-grant activation. The first 8 hex chars after `P-` are the nonce prefix shown in
-option labels: `[P-b1bdfbb0]`.
+## Plan-first COMMAND_SET
 
-## APPROVAL_REQUEST contract shape
-
-`bash_validator._build_sealed_payload()` builds 7 fields and passes them to
-`store.insert_requested()`. The agent relays them verbatim into `approval_request`
--- it never authors them. Note the key rename: `rollback_hint` in the hook
-becomes `rollback` in the contract; `commands` (`[exact_content]`) and
-`verification`/`approval_id` exist only at the contract level.
+`gaia approvals request-set` accepts two or more ordered exact T3 commands. Its
+`approval_request` carries:
 
 ```json
 {
-  "agent_status": {
-    "agent_state": "APPROVAL_REQUEST",
-    "agent_id": "<a + 5+ hex chars>",
-    "pending_steps": ["<blocked command description>"],
-    "next_action": "awaiting user approval"
-  },
-  "approval_request": {
-    "operation":     "string -- e.g. 'MUTATIVE command intercepted: push'",
-    "exact_content": "string -- the verbatim blocked command",
-    "scope":         "string -- command.split()[0]: the leading CLI/resource token",
-    "risk_level":    "string -- 'high' (DESTRUCTIVE) or 'medium' -- never low/critical",
-    "rollback":      "null -- hook hardcodes this; it computes no inverse (sealed_payload field: rollback_hint)",
-    "rationale":     "string -- why this T3 needs approval (built from agent + verb)",
-    "verification":  "how to confirm success after execution",
-    "approval_id":   "P-{uuid4_hex}"
-  }
+  "request_type": "COMMAND_SET",
+  "operation": "Execute an ordered T3 command set",
+  "exact_content": "<all exact commands in order>",
+  "commands": ["<exact command 0>", "<exact command 1>"],
+  "command_set": [
+    {"command": "<exact command 0>", "fingerprint": "<sha256>", "rationale": ""},
+    {"command": "<exact command 1>", "fingerprint": "<sha256>", "rationale": ""}
+  ],
+  "request_fingerprint": "<order-sensitive sha256>",
+  "scope": "COMMAND_SET",
+  "risk_level": "high",
+  "rollback": null,
+  "rationale": "<bounded goal>",
+  "verification": "<desired-state check>",
+  "approval_id": "P-<32 hex>"
 }
 ```
 
-There is no `batch_scope` field: the `verb_family` grant was removed. For a
-single blocked command, each gets its own single-use `SCOPE_SEMANTIC_SIGNATURE`
-grant. For a chain of >= 2 T3 sub-commands blocked in one Bash call, the hook
-mints a single `COMMAND_SET` grant at block time and returns its
-content-derived `approval_id` in the same `[T3_BLOCKED]` denial shape -- the
-agent relays it exactly like a singular `approval_id`; it never emits a
-`command_set` without one. See `Skill('orchestrator-present-approval')` for the
-orchestrator side.
+Commands are atomic strings, never compound shell. The runtime validates that
+each is exact T3, non-interactive, not permanently blocked, and outside
+protected paths. Fingerprints bind exact bytes and order; activation verifies
+the stored REQUESTED fingerprint before forming the grant. Presentation is not
+the integrity boundary.
 
-## Status vocabularies -- distinct columns, opposite casing, never collapse
+## Progress and status
 
-| Table | Column | Values | Source |
-|-------|--------|--------|--------|
-| `approvals` | `status` | lowercase: `pending` `approved` `rejected` `revoked` `expired` | schema.sql `CREATE TABLE approvals` CHECK |
-| `approval_grants` | `status` | UPPERCASE: `PENDING` `CONSUMED` `REVOKED` `EXPIRED` | schema.sql `CREATE TABLE approval_grants` |
+The grant store exposes ordered progress: `next_index`,
+`consumed_indexes_json`, `failed_index`, `failure_reason`, plus status
+`PENDING`, `CONSUMED`, `FAILED`, `REVOKED`, or `EXPIRED`. A reservation binds
+the exact next command to one session/tool call. Success advances it. Failure
+sets terminal/frozen `FAILED`: completed indexes remain consumed, the failed
+index and reason remain evidence, and every later index remains unconsumed but
+unusable under this grant. Grouped consent is not transactional execution.
 
-## Event chain
+The approvals table uses lowercase `pending`, `approved`, `rejected`,
+`revoked`, `expired`. Event types are `REQUESTED`, `SHOWN`, `APPROVED`,
+`REJECTED`, `EXECUTED`, `FAILED`, `NOOP`, `REVOKED`, and `REVERTED`.
 
-The `approval_events.event_type` CHECK admits nine values: `REQUESTED` `SHOWN`
-`APPROVED` `REJECTED` `EXECUTED` `FAILED` `NOOP` `REVOKED` `REVERTED`. These are
-written by production code today:
+## Discovery rule
 
-| Event | Who writes it | When |
-|-------|--------------|------|
-| `REQUESTED` | `bash_validator` via `store.insert_requested()` | Hook intercepts a T3 Bash command in subagent context |
-| `SHOWN` | ElicitationResult hook via `activate_db_pending_by_prefix()` | User selects an Approve `[P-xxx]` label |
-| `APPROVED` | ElicitationResult hook (same call as `SHOWN`) | Immediately after `SHOWN` |
-| `REJECTED` / `REVOKED` | `gaia approvals` CLI via `store.reject()` / `store.revoke()` | User rejects or admin cancels |
-| `EXECUTED` | PostToolUse adapter (`_record_t3_outcome_event`) via `store.record_event()` | An approved T3 command exits cleanly -- PostToolUse fires and appends `EXECUTED` |
-| `FAILED` | Stop-hook reconciliation (`_reconcile_dangling_t3_on_stop`) via `store.record_event()` | An approved T3 command exits non-zero -- the host does NOT fire PostToolUse, so the still-dangling grant is reconciled to `FAILED` at Stop, with the failure detail read from the transcript's bare-string `toolUseResult` |
+Pending approvals are not automatically resurfaced into a later conversation.
+Cross-session recovery is explicit: the user names an id or asks to list/search
+pending approvals, and `pending-approvals` performs the DB-first lookup. Legacy
+filesystem fallback, where still supported, is documented in `reference.md`.
 
-The audit cycle is closed across two hook events. PreToolUse stashes the
-consumed grant's `approval_id` in `HookState`, keyed by `(session_id,
-tool_use_id)`. On a clean exit PostToolUse fires and appends `EXECUTED`. On a
-non-zero exit the host does NOT fire PostToolUse, so no terminal event is
-written there; instead the Stop hook's `_reconcile_dangling_t3_on_stop` sweeps
-the still-dangling keyed state and appends `FAILED` -- reading the real failure
-detail from the session transcript's bare-string `toolUseResult` (falling back
-to a generic message when the transcript entry is absent) -- through the same
-`record_event()` writer, continuing the hash chain. A double-record guard
-(`_t3_terminal_event_exists`) skips the append when a terminal event already
-exists. `store.get_executed_payload()` and `gaia approvals replay` read the
-`EXECUTED` payload to re-present the commands that ran. `NOOP` and `REVERTED`
-remain valid
-in the CHECK but are **inert** -- no production code writes them (the revert
-feature was removed). Do not assume an `EXECUTED` event exists for an approval
-whose command never ran, or that ran through the redirect-sanitized path.
-
-## Key invariants
-
-- One `REQUESTED` event per `approval_id`; the hook never reuses one.
-- `SHOWN` precedes `APPROVED`; the activation path writes them together.
-- `approval_events` is append-only -- the `bu_approval_events_immutable` and
-  `bd_approval_events_immutable` triggers `RAISE(ABORT)` on UPDATE/DELETE.
-- The payload's integrity is enforced at grant **activation**, not at
-  presentation: `chain.verify_fingerprint(approval_id, payload_json, con)` runs
-  when the user selects the Approve label, and a mismatch raises
-  `ChainTamperError` so the grant never forms. The orchestrator presents from
-  the subagent's same-turn relayed `approval_request` (approvals are in-loop and
-  single-session -- no injected verified-pendings block) and never dispatches a
-  subagent to verify or derive the approval.
-
-For the grant activation walk-through, fingerprint internals, reading a granted
-approval from Python, and the retry-blocked-again diagnosis, see `reference.md`.
+See `reference.md` for store fields, legacy compatibility, event-chain details,
+and exact activation/reconciliation seams.

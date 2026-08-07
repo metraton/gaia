@@ -5,66 +5,46 @@ description: Use when executing any bash command, CLI tool, or shell operation
 
 # Command Execution
 
-```
-ONE COMMAND. ONE RESULT. ONE EXIT CODE.
-Reach for the native flag before the pipe; the file tool before the shell.
-```
+One command, one result, one exit code. This skill owns invocation discipline;
+`security-tiers` owns classification and the approval branch owns T3 payloads.
 
-The runtime hard-blocks pipes, redirects, and chaining for cloud/infra CLIs (gcloud, kubectl, terraform, and others across the cloud/k8s/iac families -- the authoritative, current set is `NATIVE_OUTPUT_FLAG_CLIS` in `hooks/modules/security/mutative_verbs.py`, not reproduced here since a hand-copied enumeration is exactly what went stale before) and blocks redirects and background `&` for every command — but the discipline applies to everything you run, not only what the hook catches.
+## Before the call
 
-## Mental Model
+1. Prefer a native CLI flag to a pipe and a file tool to shell file I/O.
+2. Use an absolute path or the CLI's native working-directory flag.
+3. Run one atomic command. Never chain with `&&`, `||`, `;`, pipes, redirects,
+   background execution, substitutions, `bash -c`, `sh -c`, or `eval`.
+4. Classify the exact string with `security-tiers`. T0/T1 reads and validation
+   proceed. Bounded local T2 follows its policy. T3 routes to the approval branch
+   in `agent-protocol`; do not duplicate a sealed payload here.
+5. Never write under `.claude/`. Gaia components are edited in the `gaia/`
+   source tree and propagated by install.
 
-When you reach for a pipe, you have not looked for the flag yet.
-CLIs have `--format`, `--filter`, `--limit` flags that do what pipes
-do — without hiding exit codes or triggering extra permission prompts.
+For a plan-first COMMAND_SET, each tool call contains only the next exact item
+in the approved order. Consent to a set is not permission to combine its items
+into one shell call.
 
-When you want to chain with `&&`, stop. Run one command, verify the
-exit code, then run the next. Two verified commands beat one fragile chain.
+## After the call
 
-For file I/O, always use Claude Code tools over Bash:
+Record the exact command and one result. On success, verify the desired state
+with a separate read-only command or file inspection. On failure, preserve the
+exact exit status, stderr/stdout excerpt, affected component, and remaining
+uncertainty. Do not paraphrase away the failure and do not run a differently
+spelled equivalent.
 
-| Bash | Claude Code tool |
-|---|---|
-| `cat`, `head`, `tail` | Read |
-| `echo >`, heredocs | Write |
-| `sed -i`, `awk` | Edit |
-| `grep -r`, `rg` | Grep |
-| `find` | Glob |
+In an approved COMMAND_SET, fail fast: stop on the first non-zero or mismatched
+result, checkpoint the failed index/evidence, and leave later items unexecuted.
+The grant is now terminal/frozen `FAILED`; it cannot authorize a retry or any
+remaining index. Continuing requires fresh investigation followed by a new
+request-set and new approval for every retry/remainder command still needed.
 
-The agent cwd resets between Bash calls, so a relative path resolves against an unknown directory — pass absolute paths or the CLI's `-chdir`.
+For git, choose the canonical form once:
+`git -C /absolute/repository <verb> <fixed arguments>`. A post-grant retry must
+be byte-identical to the approved command.
 
-## Rules
+## Examples
 
-1. **No pipes** — find the CLI's native flag first.
-2. **One command per step** — no `&&` or `;`.
-2b. **No indirect-execution wrappers** — no `bash -c`, `sh -c`, `eval`, or similar. They hide the real command inside a string, which the classifier cannot see and which trips the runtime's indirect-execution guardrail (an "ask" dialog even for commands that would otherwise pass). Run the discrete command directly, or put multi-step logic in a committed script file and invoke it directly (`python3 script.py`, `./script.sh`) instead of wrapping it in an interpreter's `-c`/`-e` flag. This is standing guidance for how to structure multi-step logic, not an escape hatch: reaching for the script-file form right after the inline form was just blocked seeks the same effect via a route the guardrail happens not to scan — forbidden by the no-elusion rule (`security-tiers`) even though it passes.
-2c. **No fabricated `.claude/` fixtures** — never hand-roll `.claude/` directories or files to simulate install/sandbox behavior (e.g. `mkdir fake-sandbox/.claude`). `.claude/` paths are protected by a native sensitive-path guard, so a fabricated fixture both trips that guard and is not a faithful reproduction. To exercise install/sandbox behavior, run the real tooling (`bin/validate-sandbox.sh`) under proper isolation — an ephemeral temp workspace with `GAIA_DATA_DIR=<tmp>` — never a substitute you construct by hand. If the real tooling is T3-gated, request approval (`APPROVAL_REQUEST`) rather than dodging it with a fabricated fixture.
-3. **Tools over Bash** — for file I/O, always.
-4. **Absolute paths** — agent cwd resets between calls; relative paths break silently.
-5. **Quote variables** — unquoted `${VAR}` with spaces becomes multiple arguments.
-6. **No redirects or background** — `>`/`>>` and trailing `&` are the part the runtime enforces on every command; redirects bypass the Write tool, `&` hides the exit code.
-7. **Git in a subagent: one canonical form, byte-identical on retry** — always target the repo with `git -C /absolute/path <verb> <fixed args>`. Two forces make this the only reliable form: the cwd resets between Bash calls, so `cd` then `git` cannot work; and a T3 grant matches only when the *whole* command string reproduces byte-for-byte (the semantic signature binds every non-flag token AND every flag token, path included, via `matches_approval_signature`). Pick the fully-specified form once and reuse it VERBATIM across block → approval → retry. Mutating the string between attempts (`git push` → `git push origin main` → `git -C /repo push`) yields a different signature each time, so the grant the user approved never matches the retry — that is the approval loop. The `-C /abs` classifies identically to the bare verb (the T3 gate parses `-C` as a flag; no bypass), so it is safe to standardize on. Rewording after a block is not just a signature problem to route around: the block already withheld this effect, so seeking it via any other spelling is forbidden regardless of whether the reword would itself re-block — the no-elusion rule (`security-tiers`). A byte-identical retry of the SAME string after a grant is the same route repeated, not elusion.
-
-## Traps
-
-| If you're thinking... | The reality is... |
-|---|---|
-| "I'll pipe to filter / parse / it's read-only so it's safe" | The flag exists: `--filter`, `--format`, `-o jsonpath`. A pipe hides the exit code regardless of intent |
-| "I'll chain with && for efficiency" | Chaining collapses two exit codes into one — run separately and verify each |
-| "I'll wrap this in bash -c / eval to run it in one call" | Wrapping hides the real command from the classifier and trips the indirect-execution guardrail — run it as a discrete command or a script file instead |
-| "It got blocked as `bash -c`, I'll move the same logic into a script file and run that" | That's the withheld effect by another route, not a fix — the script form is legitimate only when chosen up front, never as the next move after a block (no-elusion rule, `security-tiers`) |
-| "I'll just mkdir a fake `.claude/` to simulate the sandbox" | `.claude/` is a protected path — a hand-rolled fixture trips the sensitive-path guard and isn't a faithful repro; run `bin/validate-sandbox.sh` under isolation (temp workspace + `GAIA_DATA_DIR`) instead |
-| "Let me cat/head this file (or use a heredoc)" | File I/O is a tool, not a shell call — use Read/Write; heredocs also break in batch |
-| "Let me cd first, then run" | The cwd resets between calls — use an absolute path or `-chdir` |
-| "Redirect output to a file / run it in background" | Redirect and `&` are the universal wall — use the Write tool; `&` hides the exit code, blocked for every command |
-| "It got blocked, I'll re-word the git command and try again" | Re-wording seeks the withheld effect by another route — forbidden on its own terms, not only because it breaks the signature and re-blocks. Retry the SAME `git -C /abs <verb>` string byte-for-byte — same route, now permitted, not elusion |
-
-## Anti-Patterns
-
-- `kubectl get pods | grep Error` → use `-l` label selectors or `--field-selector`
-- `cd dir && terraform plan` → `terraform -chdir=/absolute/path plan`
-- `cat file | wc -l` → Read tool
-- `bash -c "mv a b"` → run `mv a b` directly, or put it in a script file and invoke that
-- `mkdir fake-sandbox/.claude` to simulate `validate-sandbox.sh` → run the real script under a temp workspace with `GAIA_DATA_DIR` set
-
-Enforced at runtime by `validate_cloud_pipe` (`cloud_pipe_validator.py`): pipes/redirects/chaining are blocked for cloud CLIs; redirects and background `&` are blocked for every command. A quoted `git commit -m "$(cat <<'EOF' …)"` passes because the body is quote-stripped before scanning and `git` is non-cloud — not a special case. See `reference.md` for mutation rules and cloud examples.
+- Use `kubectl get pods -o json` instead of a filtering pipe.
+- Use `terraform -chdir=/absolute/path plan` instead of `cd ... && terraform`.
+- Use Read/Edit/Write or apply_patch for files, not `cat`, heredocs, or `sed -i`.
+- Run two commands as two calls and inspect both results.

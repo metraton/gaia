@@ -101,13 +101,13 @@ from ..security.composition_rules import (
 )
 from .shell_parser import get_shell_parser
 from .cloud_pipe_validator import validate_cloud_pipe
-from .hook_response import build_hook_permission_response
-from .stage_decomposer import StageDecomposer, DecomposedCommand
-from adapters.claude_code import (
+from .hook_response import (
+    build_hook_permission_response,
     inject_updated_input,
     read_permission_decision,
     read_permission_reason,
 )
+from .stage_decomposer import StageDecomposer, DecomposedCommand
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +134,7 @@ class BashValidationResult:
     # FAILED by the Stop-hook reconciliation on a non-zero exit (the host does
     # not fire PostToolUse then). None for non-T3 / no-grant paths.
     consumed_approval_id: Optional[str] = None
+    command_set_reservation: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
         if self.suggestions is None:
@@ -822,6 +823,7 @@ class BashValidator:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type,
+                tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
@@ -857,6 +859,7 @@ class BashValidator:
         session_id: str = "",
         agent_type: str = "",
         cwd: Optional[str] = None,
+        tool_use_id: str = "",
     ) -> BashValidationResult:
         """Validate a single command (no operators).
 
@@ -892,28 +895,37 @@ class BashValidator:
         # against the workspace the chain navigated to, not the hook's own cwd.
         result = detect_mutative_command(command, cwd=cwd)
         if result.is_mutative:
-            # Check for a DB-backed command_set grant first (M3 path).
-            # Byte-for-byte match per D10: no normalization.
-            cs_match = match_command_set_grant(command)
-            if cs_match is not None:
-                cs_approval_id, cs_index = cs_match
+            from gaia.store.writer import pending_plan_command_exists
+            if not session_id or not tool_use_id:
                 try:
-                    from gaia.store.writer import mark_command_set_item_consumed
-                    mark_command_set_item_consumed(cs_approval_id, cs_index)
-                except Exception as _cs_err:
-                    logger.warning(
-                        "command_set item consumption failed (non-fatal): %s", _cs_err
+                    pending_set = pending_plan_command_exists(command)
+                except Exception as exc:
+                    return BashValidationResult(
+                        allowed=False, tier=SecurityTier.T3_BLOCKED,
+                        reason=f"COMMAND_SET persistence failed closed: {exc}",
                     )
-                logger.info(
-                    "T3 command allowed via command_set grant: %s "
-                    "(approval_id=%s, index=%d)",
-                    command[:80], cs_approval_id[:12], cs_index,
+                if pending_set:
+                    return BashValidationResult(
+                        allowed=False, tier=SecurityTier.T3_BLOCKED,
+                        reason="COMMAND_SET denied: adapter lacks stable tool-call correlation",
+                    )
+            try:
+                from gaia.store.writer import reserve_plan_command
+                cs_match = reserve_plan_command(
+                    command, session_id=session_id, tool_use_id=tool_use_id
                 )
+            except Exception as exc:
                 return BashValidationResult(
-                    allowed=True,
+                    allowed=False,
                     tier=SecurityTier.T3_BLOCKED,
-                    reason="Command-set grant matched",
-                    consumed_approval_id=cs_approval_id,
+                    reason=f"COMMAND_SET persistence failed closed: {exc}",
+                )
+            if cs_match is not None:
+                return BashValidationResult(
+                    allowed=True, tier=SecurityTier.T3_BLOCKED,
+                    reason="Ordered COMMAND_SET command reserved",
+                    consumed_approval_id=cs_match["approval_id"],
+                    command_set_reservation=cs_match,
                 )
 
             # DB-primary + filesystem-fallback grant check.
@@ -1036,27 +1048,23 @@ class BashValidator:
                     # never honoured and the command re-blocks unconditionally on
                     # every retry (the flag path never reaches the matcher).  The
                     # consume + return semantics replicate the verb branch exactly.
-                    cs_match = match_command_set_grant(command)
-                    if cs_match is not None:
-                        cs_approval_id, cs_index = cs_match
-                        try:
-                            from gaia.store.writer import mark_command_set_item_consumed
-                            mark_command_set_item_consumed(cs_approval_id, cs_index)
-                        except Exception as _cs_err:
-                            logger.warning(
-                                "command_set item consumption failed (non-fatal): %s",
-                                _cs_err,
-                            )
-                        logger.info(
-                            "T3 flag-path command allowed via command_set grant: %s "
-                            "(approval_id=%s, index=%d)",
-                            command[:80], cs_approval_id[:12], cs_index,
+                    try:
+                        from gaia.store.writer import reserve_plan_command
+                        cs_match = reserve_plan_command(
+                            command, session_id=session_id, tool_use_id=tool_use_id
                         )
+                    except Exception as exc:
                         return BashValidationResult(
-                            allowed=True,
+                            allowed=False,
                             tier=SecurityTier.T3_BLOCKED,
-                            reason="Command-set grant matched",
-                            consumed_approval_id=cs_approval_id,
+                            reason=f"COMMAND_SET persistence failed closed: {exc}",
+                        )
+                    if cs_match is not None:
+                        return BashValidationResult(
+                            allowed=True, tier=SecurityTier.T3_BLOCKED,
+                            reason="Ordered COMMAND_SET command reserved",
+                            consumed_approval_id=cs_match["approval_id"],
+                            command_set_reservation=cs_match,
                         )
 
                     grant = check_approval_grant(command, session_id=session_id)
@@ -1235,56 +1243,38 @@ class BashValidator:
         """
         logger.info(f"Compound command detected with {len(components)} components")
 
-        # NON-MINTING pre-pass: which components are ungranted T3? (AC-8)
-        # Fold cwd per index so the T3 probe honors a leading `cd` exactly as
-        # the real classification pass below does -- otherwise a clean relative
-        # script behind a `cd` would be mis-probed as T3 and pulled into the
-        # batch.  cwd_by_idx[i] is the cwd in effect BEFORE component i runs.
-        cwd_by_idx: List[Optional[str]] = []
-        _pre_cwd: Optional[str] = None
+        # Fold the effective cwd across components for THIS scan too, mirroring
+        # the loop below: a leading `cd X` component must resolve a later
+        # relative script (`node rel.mjs`) against X, not the hook's own cwd.
+        # Without this fold a clean chain with zero real T3 operations reads
+        # its script under the wrong cwd, finds it unreadable, and the
+        # conservative `script-file-unreadable` default falsely trips has_t3
+        # -- denying the whole chain for a mutation that was never there.
+        has_t3 = False
+        scan_cwd: Optional[str] = None
         for comp in components:
-            cwd_by_idx.append(_pre_cwd)
-            _pre_cwd = cwd_after_component(comp, _pre_cwd)
-        if is_subagent:
-            ungranted_t3_idx = [
-                idx
-                for idx, comp in enumerate(components)
-                if self._is_ungranted_t3_component(
-                    comp, session_id, cwd=cwd_by_idx[idx]
-                )
-            ]
-            if len(ungranted_t3_idx) >= 2:
-                chain_set = [
-                    {"command": components[idx].strip(), "rationale": ""}
-                    for idx in ungranted_t3_idx
-                ]
-                first_cmd = chain_set[0]["command"]
-                first_detect = detect_mutative_command(
-                    first_cmd, cwd=cwd_by_idx[ungranted_t3_idx[0]]
-                )
-                verb = first_detect.verb or "command"
-                category = first_detect.category or "MUTATIVE"
-                native_ask_reason = (
-                    f"[T3_APPROVAL_REQUIRED] Chain of {len(chain_set)} T3 commands.\n"
-                    f"Commands:\n"
-                    + "\n".join(f"  - {it['command']}" for it in chain_set)
-                )
-                logger.info(
-                    "Chain COMMAND_SET intake: %d T3 sub-commands grouped under "
-                    "one consent (chain=%s)",
-                    len(chain_set),
-                    " && ".join(it["command"][:30] for it in chain_set),
-                )
-                return decide_t3_outcome(
-                    first_cmd,
-                    verb=verb,
-                    category=category,
-                    has_orchestrator_above=True,
-                    native_ask_reason=native_ask_reason,
-                    session_id=session_id,
-                    agent_type=agent_type,
-                    command_set=chain_set,
-                )
+            detected = detect_mutative_command(comp, cwd=scan_cwd)
+            flagged = classify_by_flags(comp)
+            scan_cwd = cwd_after_component(comp, scan_cwd)
+            if detected.is_mutative or (
+                flagged is not None
+                and flagged.outcome == FLAG_MUTATIVE
+                and not flagged.command_family.startswith("git_")
+            ):
+                has_t3 = True
+                break
+        if has_t3:
+            reason = (
+                "Compound T3 execution is disabled. Create a plan-first "
+                "request-set and issue each command as a separate Bash call."
+            )
+            decision = "deny" if is_subagent else "ask"
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=reason,
+                block_response=build_hook_permission_response(decision, reason),
+            )
 
         component_results: List[BashValidationResult] = []
         # Fold the effective cwd across components: a `cd X` component sets the

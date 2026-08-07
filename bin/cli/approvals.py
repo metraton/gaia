@@ -20,6 +20,8 @@ All subcommands exit 0 on success, 1 on error.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import sys
@@ -277,6 +279,12 @@ def _grant_to_display(g: dict) -> dict:
         "command_count": command_count,
         "first_command": first_cmd,
         "command_set": command_set,
+        "completed_indexes": json.loads(g.get("consumed_indexes_json") or "[]"),
+        "next_index": g.get("next_index", 0),
+        "failed_index": g.get("failed_index"),
+        "failure_reason": g.get("failure_reason"),
+        "request_fingerprint": g.get("request_fingerprint"),
+        "source": g.get("source", "legacy"),
     }
 
 
@@ -1241,7 +1249,29 @@ def cmd_approve(args) -> int:
     session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-session"
     try:
         store = _import_approval_store()
-        store.approve(raw_id, approver_session=session_id)
+        payload = json.loads(approval.get("payload_json") or "{}")
+        if payload.get("request_type") == "COMMAND_SET":
+            from gaia.store.writer import insert_plan_command_set
+            con = store._open_db()
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                applied = insert_plan_command_set(
+                    raw_id, payload["command_set"],
+                    request_fingerprint=payload["request_fingerprint"],
+                    agent_id=approval.get("agent_id"),
+                    session_id=approval.get("session_id"), con=con,
+                )
+                if applied.get("status") != "applied":
+                    raise RuntimeError(applied.get("reason", "grant persistence failed"))
+                store.approve(raw_id, approver_session=session_id, con=con)
+                con.commit()
+            except Exception:
+                con.rollback()
+                raise
+            finally:
+                con.close()
+        else:
+            store.approve(raw_id, approver_session=session_id)
     except ValueError as exc:
         _print_error(str(exc), args)
         return 1
@@ -1253,6 +1283,152 @@ def cmd_approve(args) -> int:
         print(json.dumps({"status": "approved", "approval_id": raw_id}))
     else:
         print(f"Approved {raw_id}")
+    return 0
+
+
+def cmd_request_set(args) -> int:
+    """Validate and persist a plan-first COMMAND_SET approval request."""
+    try:
+        from gaia.approvals.command_set import request_fingerprint, validate_request_set
+        store = _import_approval_store()
+        items = validate_request_set(list(args.command))
+        fingerprint = request_fingerprint(item["command"] for item in items)
+        payload = {
+            "request_type": "COMMAND_SET",
+            "operation": "Execute an ordered T3 command set",
+            "exact_content": "\n".join(item["command"] for item in items),
+            "commands": [item["command"] for item in items],
+            "command_set": items,
+            "request_fingerprint": fingerprint,
+            "scope": "COMMAND_SET",
+            "risk_level": "high",
+            "rollback_hint": None,
+            "rationale": args.rationale or "Plan-first ordered execution",
+        }
+        approval_id = store.insert_requested(
+            payload,
+            agent_id=args.agent_id,
+            session_id=args.session_id,
+        )
+    except Exception as exc:
+        _print_error(f"COMMAND_SET request rejected: {exc}", args)
+        return 1
+    result = {"status": "pending", "approval_id": approval_id, "command_set": items}
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(f"Requested {approval_id} for {len(items)} ordered T3 commands")
+    return 0
+
+
+def _opencode_binding(args) -> tuple[dict | None, str | None]:
+    """Verify that a native OpenCode permission owns this approval decision."""
+    approval_id = _resolve_approval_id(args.approval_id)
+    session_id = args.session_id.strip()
+    call_id = args.call_id.strip()
+    token = args.token.strip()
+    if not session_id or not call_id or not token:
+        return None, "session ID, call ID, and token are required"
+
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(approval_id)
+    except Exception as exc:
+        return None, f"Failed to load approval: {exc}"
+
+    if approval is None:
+        return None, f"No approval found for id: {approval_id}"
+    if approval.get("status") != "pending":
+        return None, f"Approval {approval_id} is not pending"
+    if approval.get("session_id") != session_id:
+        return None, "OpenCode session does not own this approval"
+
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    try:
+        events = store.get_history(approval_id)
+    except Exception as exc:
+        return None, f"Failed to load approval history: {exc}"
+    for event in reversed(events):
+        if event.get("event_type") != "SHOWN":
+            continue
+        try:
+            metadata = json.loads(event.get("metadata_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            metadata.get("host") == "opencode"
+            and metadata.get("call_id") == call_id
+            and hmac.compare_digest(metadata.get("token_sha256", ""), token_hash)
+        ):
+            return approval, None
+    return None, "No matching OpenCode permission presentation exists"
+
+
+def cmd_opencode_present(args) -> int:
+    """Record an OpenCode-native presentation before requesting user consent."""
+    approval, error = _opencode_binding(args)
+    if approval is not None:
+        # A matching event already exists. Presentation is idempotent so plugin
+        # reloads do not create a second UI request for the same tool call.
+        if getattr(args, "json", False):
+            print(json.dumps({"status": "presented", "approval_id": approval["id"]}))
+        return 0
+    if error != "No matching OpenCode permission presentation exists":
+        _print_error(error or "Invalid OpenCode approval presentation", args)
+        return 1
+
+    approval_id = _resolve_approval_id(args.approval_id)
+    session_id = args.session_id.strip()
+    call_id = args.call_id.strip()
+    token = args.token.strip()
+    try:
+        store = _import_approval_store()
+        approval = store.get_by_id(approval_id)
+        if approval is None or approval.get("status") != "pending":
+            raise ValueError(f"Approval {approval_id} is not pending")
+        if approval.get("session_id") != session_id:
+            raise ValueError("OpenCode session does not own this approval")
+        store.record_event(
+            approval_id,
+            "SHOWN",
+            agent_id="opencode-plugin",
+            session_id=session_id,
+            metadata_json=json.dumps(
+                {
+                    "host": "opencode",
+                    "call_id": call_id,
+                    "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                },
+                sort_keys=True,
+            ),
+        )
+    except Exception as exc:
+        _print_error(f"OpenCode presentation failed: {exc}", args)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps({"status": "presented", "approval_id": approval_id}))
+    return 0
+
+
+def cmd_opencode_decide(args) -> int:
+    """Apply a native OpenCode permission reply to its bound Gaia approval."""
+    approval, error = _opencode_binding(args)
+    if error:
+        _print_error(error, args)
+        return 1
+    try:
+        store = _import_approval_store()
+        if args.reply == "reject":
+            store.reject(approval["id"], args.session_id, agent_id="opencode-plugin")
+            status = "rejected"
+        else:
+            store.approve(approval["id"], args.session_id, agent_id="opencode-plugin")
+            status = "approved"
+    except Exception as exc:
+        _print_error(f"OpenCode approval decision failed: {exc}", args)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps({"status": status, "approval_id": approval["id"]}))
     return 0
 
 
@@ -1355,8 +1531,8 @@ def cmd_replay(args) -> int:
         finally:
             con.close()
     except Exception as exc:
-        # Non-fatal for replay -- warn but continue.
-        print(f"Warning: fingerprint validation failed: {exc}", file=sys.stderr)
+        _print_error(f"Replay fingerprint validation failed: {exc}", args)
+        return 1
 
     commands = payload.get("commands") or []
     exact_content = payload.get("exact_content") or ""
@@ -1395,25 +1571,12 @@ def cmd_replay(args) -> int:
             print("Replay cancelled.")
             return 0
 
-    # Execute the commands sequentially.
-    import subprocess
-    all_ok = True
-    for cmd in commands:
-        print(f"Executing: {cmd}")
-        try:
-            proc = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            if proc.returncode == 0:
-                print(f"  OK")
-            else:
-                print(f"  FAILED (exit {proc.returncode})")
-                if proc.stderr:
-                    print(f"  stderr: {proc.stderr.strip()}")
-                all_ok = False
-        except Exception as exc:
-            print(f"  ERROR: {exc}")
-            all_ok = False
-
-    return 0 if all_ok else 1
+    _print_error(
+        "Replay does not execute shell text. Create a new request-set and issue "
+        "each approved command as a separate Bash tool call in recorded order.",
+        args,
+    )
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -1528,6 +1691,30 @@ def register(subparsers) -> None:
     p_approve.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
     p_approve.add_argument("--json", action="store_true", help="JSON output")
     p_approve.set_defaults(func=cmd_approve)
+
+    p_request_set = sub.add_parser(
+        "request-set", help="Create a governed plan-first COMMAND_SET request"
+    )
+    p_request_set.add_argument("--command", action="append", required=True)
+    p_request_set.add_argument("--rationale")
+    p_request_set.add_argument("--agent-id")
+    p_request_set.add_argument("--session-id")
+    p_request_set.add_argument("--json", action="store_true")
+    p_request_set.set_defaults(func=cmd_request_set)
+
+    for name, handler, help_text in (
+        ("opencode-present", cmd_opencode_present, "Record an OpenCode approval presentation"),
+        ("opencode-decide", cmd_opencode_decide, "Apply an OpenCode approval reply"),
+    ):
+        p_opencode = sub.add_parser(name, help=help_text)
+        p_opencode.add_argument("approval_id", metavar="APPROVAL_ID")
+        p_opencode.add_argument("--session-id", required=True)
+        p_opencode.add_argument("--call-id", required=True)
+        p_opencode.add_argument("--token", required=True)
+        p_opencode.add_argument("--json", action="store_true", help="JSON output")
+        if name == "opencode-decide":
+            p_opencode.add_argument("--reply", choices=("once", "always", "reject"), required=True)
+        p_opencode.set_defaults(func=handler)
 
     # history (T3.4) -- temporal view or per-approval chain
     p_history = sub.add_parser(

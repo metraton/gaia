@@ -1378,12 +1378,23 @@ def activate_db_pending_by_prefix(
         raw_command_set = payload.get("command_set")
         command_set_items: list = []
         if isinstance(raw_command_set, list):
+            # ``fingerprint`` is recomputed here rather than trusted from the
+            # payload -- it is sha256(command), so recomputing from the
+            # command string this loop already validated is self-consistent
+            # regardless of whether the producer included it. This is what
+            # lets ``reserve_plan_command`` (gaia.store.writer) match at
+            # retry: it compares the retried command's freshly computed
+            # fingerprint against ``item["fingerprint"]`` for the exact same
+            # index, and a missing/empty key never matches by construction.
+            from gaia.approvals.command_set import command_fingerprint
+
             for _item in raw_command_set:
                 if isinstance(_item, dict) and _item.get("command"):
                     command_set_items.append(
                         {
                             "command": _item["command"],
                             "rationale": _item.get("rationale", ""),
+                            "fingerprint": command_fingerprint(_item["command"]),
                         }
                     )
         is_command_set = len(command_set_items) > 1
@@ -1522,19 +1533,86 @@ def activate_db_pending_by_prefix(
 
         # Step 3b: COMMAND_SET branch. When the approved payload carries a set
         # of more than one command, create ONE COMMAND_SET grant covering the
-        # whole batch instead of a singular SCOPE_SEMANTIC_SIGNATURE grant. The
-        # set is consumed item-by-item (byte-for-byte) by bash_validator's
-        # match_command_set_grant / mark_command_set_item_consumed path -- the
-        # consume side is unchanged; this is the create side that was orphaned.
+        # whole batch instead of a singular SCOPE_SEMANTIC_SIGNATURE grant.
         #
-        # Precondition: ``command_set`` in the payload is already pre-filtered to
-        # mutative commands by the compound-command intake in bash_validator
-        # (``_validate_compound_command`` -> ``decide_t3_outcome(command_set=...)``,
-        # the only producer of these pending records in production). Activation
-        # therefore assumes every item is consumable and does NOT re-filter here;
-        # do not add a filtering step at this site -- it would silently drop items
-        # the user already consented to under one grant.
+        # Two producers, two consume-side shapes -- branch on which produced
+        # this payload:
+        #
+        # 1. Plan-first (``request_type == "COMMAND_SET"``, carries
+        #    ``request_fingerprint``): the ONLY producer in production today is
+        #    ``gaia approvals request-set`` (``cmd_request_set`` in
+        #    ``bin/cli/approvals.py``). Its execution-time check is
+        #    ``reserve_plan_command`` / ``settle_plan_command``
+        #    (``gaia.store.writer``), which matches ONLY rows with
+        #    ``source='plan-first'`` -- exactly what ``insert_plan_command_set``
+        #    writes and ``create_command_set_grant`` (below) does not. Before
+        #    this branch existed, EVERY command_set payload -- including this
+        #    one -- was routed through ``create_command_set_grant``, so an
+        #    AskUserQuestion approval of a ``request-set`` pending reported
+        #    success but the retried command re-blocked anyway (confirmed live:
+        #    see the COMMAND_SET activation-gap tests). Reuses the identical
+        #    call ``cmd_approve``'s CLI-only admin path already makes, so the
+        #    two entry points now activate a request-set pending identically.
+        # 2. Legacy (no ``request_fingerprint``): the chain-intake producer this
+        #    shape was originally built for (``_validate_compound_command`` ->
+        #    ``decide_t3_outcome(command_set=...)``) is unreachable in production
+        #    as of the "Compound T3 execution is disabled" change -- but this
+        #    branch is kept as a defensive fallback rather than deleted, since
+        #    ``create_command_set_grant`` / ``match_command_set_grant`` /
+        #    ``mark_command_set_item_consumed`` still have other consumers
+        #    (tests exercising the create-side and consume-side of this shape
+        #    directly) that this change does not touch.
         if is_command_set:
+            request_fingerprint_value = payload.get("request_fingerprint")
+            is_plan_first = (
+                payload.get("request_type") == "COMMAND_SET"
+                and isinstance(request_fingerprint_value, str)
+                and bool(request_fingerprint_value)
+            )
+
+            if is_plan_first:
+                from gaia.store.writer import insert_plan_command_set
+
+                applied = insert_plan_command_set(
+                    approval_id,
+                    command_set_items,
+                    request_fingerprint=request_fingerprint_value,
+                    agent_id=agent_id,
+                    session_id=current_session_id,
+                )
+                if applied.get("status") != "applied":
+                    logger.error(
+                        "activate_db_pending_by_prefix: plan-first COMMAND_SET "
+                        "grant creation failed for approval_id=%s (items=%d): %s",
+                        approval_id[:16], len(command_set_items),
+                        applied.get("reason", "unknown"),
+                    )
+                    return ApprovalActivationResult(
+                        success=False,
+                        status=ACTIVATION_ERROR,
+                        reason=(
+                            "Failed to create plan-first COMMAND_SET grant from "
+                            f"approved payload: {applied.get('reason', 'unknown')}"
+                        ),
+                    )
+                logger.info(
+                    "activate_db_pending_by_prefix: plan-first COMMAND_SET grant "
+                    "created (source=plan-first): approval_id=%s, items=%d, "
+                    "originating_session=%s, current_session=%s",
+                    approval_id[:16], len(command_set_items),
+                    (originating_session or "")[:12],
+                    current_session_id[:12],
+                )
+                return ApprovalActivationResult(
+                    success=True,
+                    status=ACTIVATION_ACTIVATED,
+                    reason=(
+                        "DB pending approval activated as a plan-first COMMAND_SET "
+                        f"grant ({len(command_set_items)} commands under one consent)."
+                    ),
+                    grant_path=None,
+                )
+
             created = create_command_set_grant(
                 command_set_items,
                 approval_id,

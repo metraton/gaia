@@ -1,209 +1,69 @@
 ---
 name: pending-approvals
-description: Use when the user invokes approvals directly -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX", "approve P-", "reject P-"
+description: Use when the user asks to list, inspect, approve, reject, or revoke pending approvals
 ---
 
 # Pending Approvals
 
-`pending-approvals` is the workflow the orchestrator follows when the *user*
-drives an approval -- "ver pendientes", "aprobar P-XXXX", "rechazar P-XXXX".
-Approvals are **in-loop and single-session**: a pending is raised and resolved
-within the same session, and there is no proactive surfacing of it outside
-that flow -- no `[ACTIONABLE]` block at SessionStart, no per-turn resurfacing.
-The orchestrator's role here is to translate an explicit user ask into the
-right `gaia approvals` subcommand against the right store, then get it run.
-See "Approvals do not resurface across sessions" below for what does and does
-not survive cross-session.
+Pending approvals are not automatically resurfaced in later sessions. Recovery
+is explicit: the user asks to list/search pendings or supplies an approval id.
 
-**Execution: dispatch, don't run directly.** The orchestrator carries no
-shell. Every `gaia approvals` subcommand named in this skill (`show`,
-`approve`, `revoke`, `reject`, `reject-all`, `clean`, `pending`) is executed
-by dispatching a subagent -- gaia-operator by default, the general-purpose
-executor -- with the exact command; the subagent returns the output for the
-orchestrator to relay, verify, or build the `AskUserQuestion` payload from.
-Wherever this skill says "run" or "call" a `gaia approvals` subcommand, read
-it as "dispatch gaia-operator to run" -- the orchestrator's job is choosing
-the right subcommand and store and acting on what comes back, never executing
-it itself.
+Use the unified CLI and treat the DB as primary:
 
-For the universal envelope of an approval payload see `agent-approval-protocol`;
-for how the orchestrator relays a *subagent-initiated* APPROVAL_REQUEST into
-AskUserQuestion see `orchestrator-present-approval` -- that skill owns the
-verbatim-COMANDO, `[P-{nonce8}]` label, and single-use grant discipline; this
-skill does not restate them.
+- `gaia approvals list --status pending`
+- `gaia approvals show <approval_id>`
+- `gaia approvals approve <approval_id>`
+- `gaia approvals reject <approval_id>`
+- `gaia approvals revoke <approval_id>`
 
-## The DB / filesystem store gap
+Lookup by full id may cross session boundaries. Always re-present exact content,
+risk, rollback, and verification before an approve decision; for COMMAND_SET,
+show the full indexed ordered set. Never infer approval from conversational
+language alone or select a similarly prefixed id.
 
-There are two stores for pending approvals, and the CLI subcommands do not
-cover them symmetrically. Misreading this surface is what makes the orchestrator
-report "rejected" when nothing actually changed.
+**These five verbs are not all the orchestrator's to run.** The trusted-CLI
+role guard (`hooks/modules/security/gaia_cli_only_guard.py`) splits them
+along a read/write line, not a T3 line: `approvals list` / `show` / `pending`
+/ `history` / `stats` are in `ALLOWED_READ_PHRASES` -- the orchestrator reads
+these directly. `approvals approve` / `revoke` / `reject` / `reject-all` /
+`clean` / `replay` are in `EXPLICITLY_DENIED_PHRASES` -- categorically denied
+for the orchestrator role, not approvable, regardless of mode. **Reads are the
+orchestrator's; decisions are not.** A decision is dispatched to a specialist
+(or, for the CLI-only admin case below, made explicitly by the user) -- never
+run bare by the orchestrator itself.
 
-| Subcommand | Store | Backed by |
-|------------|-------|-----------|
-| `gaia approvals pending` | DB only | `store.list_pending` |
-| `gaia approvals history` | DB only | `store.list_all` |
-| `gaia approvals approve P-xxx` | DB only | `store.approve` |
-| `gaia approvals revoke P-xxx` | DB only | `store.revoke` (falls back to legacy) |
-| `gaia approvals show P-xxx` | DB first, then filesystem | `cmd_show_v2` in `bin/cli/approvals.py` |
-| `gaia approvals list` | DB grants + filesystem pendings | `cmd_list` (mixed) |
-| `gaia approvals reject NONCE` | filesystem only | `reject_pending` in `hooks/modules/security/approval_grants.py` |
-| `gaia approvals reject-all` | filesystem only | loops `reject_pending` |
-| `gaia approvals clean` | DB (cross-session stale pendings) + filesystem | `cmd_clean` in `bin/cli/approvals.py`: calls `store.list_pending(all_sessions=True)`, transitions every pending older than `DEFAULT_PENDING_TTL_MINUTES` (24 h) to `revoked` via `store.revoke()`, then calls `cleanup_expired_grants` for filesystem files |
+**`gaia approvals approve <approval_id>` is an admin verb, not the AskUserQuestion
+activation path -- for a SINGULAR approval.** It writes `APPROVED` directly to
+the `approvals` row, but it does **not** call `activate_db_pending_by_prefix`
+and does **not** create a hook-side grant -- so on its own it does not make
+the originally blocked command executable, and it does not trigger the
+automatic re-dispatch that follows a real approval. The path that creates the
+grant is the AskUserQuestion flow in `orchestrator-present-approval`: the user
+selects a label matching `Approve -- <action> [P-{nonce8}]`, which the hook's
+nonce regex parses to activate the grant. Use the bare `approve` CLI verb only
+for the audit/CLI-only case -- e.g. marking a row from a different session as
+decided when the command it covers will not be re-run -- never as a substitute
+for AskUserQuestion when the blocked command still needs to execute.
 
-The practical consequence: `revoke` is the DB-aware single-id verb; `reject` and
-`reject-all` only touch the legacy filesystem queue. If you need to mark a DB
-row as terminated, use `revoke`. Bulk DB cleanup currently has no first-class
-CLI -- it requires a Python loop over `store.revoke()`.
+**COMMAND_SET is the opposite today, and this matters for any live
+`request-set` approval.** For a `request_type: "COMMAND_SET"` pending (minted
+by `gaia approvals request-set`), the AskUserQuestion path is currently
+*broken*: `activate_db_pending_by_prefix` still routes every multi-command
+payload through the legacy `create_command_set_grant()`, which the runtime's
+actual execution check (`reserve_plan_command`, keyed on `source='plan-first'`)
+never looks at -- so a correctly labeled Approve reports success and then the
+retried commands re-block anyway. The only path currently wired end-to-end for
+a COMMAND_SET is the CLI admin verb, `gaia approvals approve <approval_id>`
+(its COMMAND_SET branch calls `insert_plan_command_set`, which the execution
+check does find). See the COMMAND_SET audit for the full trace and the live
+repro; do not treat this note as resolved just because the singular path is
+fine.
 
-## Approvals do not resurface across sessions
+Legacy filesystem records may still be read as a compatibility fallback for
+older singular approvals; new COMMAND_SET requests and grants are DB-backed.
+See `reference.md` for current precedence, legacy locations, ambiguity handling,
+expiry, and batch rejection rules. Never edit the DB or legacy files directly.
 
-Pendings are in-loop: they are raised by a blocked T3 command in the current
-session and expected to be resolved in that same session, by the user acting
-on the block message or asking directly ("ver pendientes", "aprobar P-XXXX").
-There is no automatic resumption surface -- no `[ACTIONABLE]` block injected
-at SessionStart, no per-turn feed of verified pendings. If the user does not
-act on a pending in the session where it was raised, it is not re-presented
-later; it simply ages toward expiry.
-
-Two things survive cross-session, and neither is surfacing:
-
-- **Hygiene.** `gaia approvals clean` (and the periodic grant-expiry sweep)
-  still drains orphaned pendings and expired grants regardless of which
-  session created them. This is housekeeping, not a resumption prompt to the
-  user -- it never asks "do you want to resume P-XXXX?".
-- **Session-agnostic grant matching.** The DB lookup that checks whether a
-  retried command has an active grant (`check_db_semantic_grant`) is not
-  scoped to a single session_id, because the block -> approve -> re-dispatch
-  cycle can legitimately span the subagent's session and the orchestrator's
-  session inside the SAME user-facing turn. This is an implementation detail
-  of one in-loop approval, not a mechanism for reaching back into a prior
-  session's unresolved pendings.
-
-When the user explicitly asks to see pendings from another session (e.g.
-`gaia approvals pending --all-sessions`), that is a deliberate, user-invoked
-query -- distinct from proactive resurfacing, and still supported.
-
-## When user says "ver P-XXXX"
-
-1. Dispatch gaia-operator to run `gaia approvals show P-XXXX` -- `cmd_show_v2`
-   checks the DB row first, then falls back to the filesystem pending. Either
-   path returns the verbatim command and the context fields.
-2. Relay the detail to the user. Do not paraphrase the command.
-3. Ask whether to approve or reject.
-
-## When user says "aprobar P-XXXX"
-
-1. If you have not already, dispatch gaia-operator to run
-   `gaia approvals show P-XXXX` to load the verbatim command and context
-   fields (`cmd_show_v2` checks the DB then the filesystem).
-2. Present the approval via `AskUserQuestion` following
-   `orchestrator-present-approval` -- 5 labeled fields and the `[P-{nonce8}]`
-   option label. The same presentation works for both stores; the nonce-prefix
-   matcher (`activate_db_pending_by_prefix` in
-   `hooks/modules/security/approval_grants.py`) covers DB rows and the legacy
-   path covers filesystem pendings.
-3. On `"Approve"`, the ElicitationResult hook writes `SHOWN` + `APPROVED`
-   events and activates a single-use grant (5-minute TTL) in the current
-   session.
-4. Approving IS the order to execute -- there is no separate "should I run it
-   now" step. The orchestrator immediately re-dispatches a one-shot agent with
-   the verbatim command using the dispatch template in `reference.md`
-   (preflight + recovery, `mode` per target).
-
-The grant is consumed **at match** -- the moment the retried command
-authorizes against the grant, before it executes -- not after the command
-finishes. This has two consequences:
-
-- If the re-dispatched subagent dies before it reaches the command (crash,
-  turn limit, disconnect), the grant is still alive; a re-dispatch within the
-  5-minute TTL reuses it without a new approval.
-- If the command reached the point of match and then executed and failed, the
-  grant was already consumed. Do not retry inside the window expecting it to
-  still work -- report the failure and request a fresh approval.
-
-The CLI `gaia approvals approve P-XXXX` is the explicit, user-invoked admin
-path: it inserts `APPROVED` directly in the DB and does **not** create a
-hook-side grant, so it does **not** trigger the approve-executes-automatically
-flow above. Use it only when the user explicitly wants the CLI-only path
-(audit, marking a row from a different session as decided) -- dispatch
-gaia-operator to run it, the same as every other `gaia approvals` subcommand
-in this skill. For any approval that needs to execute the blocked command in
-this session, AskUserQuestion is the only path that activates the grant and
-the automatic re-dispatch.
-
-## When user says "rechazar P-XXXX" / "reject P-XXXX"
-
-Single rejection has two routes; pick by which store owns the row. Both are
-dispatched to gaia-operator, never run by the orchestrator directly.
-
-- **DB row**: dispatch gaia-operator to run `gaia approvals revoke P-XXXX
-  --yes` -- `store.revoke` inserts a `REVOKED` event and updates
-  `approvals.status` to `revoked`.
-- **Filesystem pending**: dispatch gaia-operator to run `gaia approvals reject
-  P-XXXX` -- `reject_pending` rewrites the JSON file with
-  `status: "rejected"` (no `rm`, which would itself be T3).
-
-Confirm to the user: "P-XXXX rechazado." If `revoke` returns `not_found`,
-dispatch gaia-operator to fall back to `reject` before declaring failure --
-the row may have been a legacy filesystem pending.
-
-## Bulk cleanup
-
-Offer bulk cleanup when the user says "limpia todos los pendings", "borra los
-pendientes", or when the user explicitly checks `gaia approvals pending
---all-sessions` and finds a backlog of orphaned rows. This is never something
-the orchestrator surfaces proactively -- there is no SessionStart scan that
-counts stale pendings and offers to clean them; the user has to ask, or to
-have already looked.
-
-Dispatch gaia-operator to run these, same as every other `gaia approvals`
-subcommand -- the orchestrator carries no shell.
-
-- `gaia approvals reject-all` -- bulk soft-reject across the **filesystem** queue.
-  Returns "0 rejected" when the queue is empty. Does not touch DB rows.
-- `gaia approvals clean` -- the first-class cross-session bulk drain for stale
-  DB pendings: `cmd_clean` calls `store.list_pending(all_sessions=True)` and
-  transitions every pending older than 24 h (`DEFAULT_PENDING_TTL_MINUTES`) to
-  `revoked` via `store.revoke()`, then runs `cleanup_expired_grants` to clean
-  expired filesystem grant files. Runs without a T3 prompt (consent-reducing,
-  listed in `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS`). This is hygiene, not
-  surfacing: it drains orphans without presenting them for resumption. Use it
-  when `gaia approvals pending --all-sessions` shows a backlog of stale rows.
-
-Do not report "bulk cleanup done" after `reject-all` alone -- it only clears
-the filesystem queue. Dispatch gaia-operator to run `gaia approvals clean` to
-drain the DB backlog, then confirm with `gaia approvals pending
---all-sessions`.
-
-Do not offer `reject-all` when there are active same-session pendings the user
-may still want to approve.
-
-## Anti-patterns
-
-- Approving without showing the exact COMANDO -- the user consents on the
-  verbatim string, not a summary. The full presentation discipline lives in
-  `orchestrator-present-approval`; this skill does not restate it.
-- Treating `gaia approvals reject-all` as a full cleanup -- it operates on the
-  filesystem queue only; DB rows survive the call. Use `gaia approvals clean`
-  to drain the DB backlog.
-- Reporting "rechazado" without verifying the store -- `revoke` returns
-  `not_found` for filesystem-only pendings; the inverse happens for `reject` on
-  DB rows. Pick the verb by store, or be ready to fall back.
-- Dispatching execution before AskUserQuestion returns "Approve" -- the grant
-  does not activate until the ElicitationResult hook fires.
-- Asking the user a second time whether to execute after they selected
-  "Approve" -- approving already is the order to execute; re-dispatch the
-  verbatim command immediately, do not insert an extra confirmation turn.
-- Retrying a T3 command inside the 5-minute grant window after it already
-  executed and failed -- the grant was consumed at match, before execution;
-  a failed run needs a fresh approval, not a retry.
-- Presenting a pending as resumed from a prior session via an `[ACTIONABLE]`
-  block or a per-turn feed -- that surfacing no longer exists. A pending not
-  resolved in the session where it was raised is not re-presented; only an
-  explicit user query (`gaia approvals pending --all-sessions`) or the
-  hygiene sweep (`gaia approvals clean`) touches it afterward.
-- Using `rm` on a `pending-*.json` file -- deletion itself is T3 and blocks.
-  The legacy soft-reject path rewrites the file in place; use it.
-
-For the dispatch template (preflight, recovery, mode selection) and the
-filesystem pending JSON schema, read `reference.md`.
+A COMMAND_SET grant in `FAILED` is not pending or resumable. Show its completed,
+failed, and untouched indexes as history; require a new request and approval for
+all retry/remainder work.

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """End-to-end approval relay tests for nonce-based T3 execution.
 
-These tests exercise the real pre_tool_use hook path across:
-  1. Bash T3 block -> pending approval persisted
-  2. SendMessage with APPROVE:<nonce> -> pending activates to grant
+These tests exercise the real PreToolUse path (adapt_pre_tool_use, subagent
+context) across:
+  1. Bash T3 block -> deny with approval_id, pending approval persisted
+  2. Grant activation (activate_db_pending_by_prefix) -> pending becomes grant
   3. Bash retry -> allowed only for the same approved command scope
 
 They read the DB pending plane (gaia.approvals.store.get_pending) as the
@@ -38,10 +39,12 @@ def isolated_nonce_env(tmp_path, monkeypatch):
     # (activate_db_pending_by_prefix / list_command_set_grants_agnostic) never
     # filters on session, so a session env var would be dead weight here.
 
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
     import modules.core.paths as core_paths
     import modules.core.state as core_state
     import modules.security.approval_grants as approval_grants
-    import pre_tool_use
+    from tests.fixtures import pretool_adapter
 
     core_paths.clear_path_cache()
     approval_grants._grants_dir_created = False
@@ -81,7 +84,16 @@ def isolated_nonce_env(tmp_path, monkeypatch):
                 consumed_at           TEXT,
                 revoked_at            TEXT,
                 multi_use             INTEGER NOT NULL DEFAULT 0,
-                confirmed             INTEGER NOT NULL DEFAULT 0
+                confirmed             INTEGER NOT NULL DEFAULT 0,
+                request_fingerprint   TEXT,
+                next_index            INTEGER NOT NULL DEFAULT 0,
+                reservation_index     INTEGER,
+                reservation_session_id TEXT,
+                reservation_tool_use_id TEXT,
+                reservation_at        TEXT,
+                failed_index          INTEGER,
+                failure_reason        TEXT,
+                source                TEXT NOT NULL DEFAULT 'legacy'
             );
             """
         )
@@ -97,7 +109,7 @@ def isolated_nonce_env(tmp_path, monkeypatch):
 
     return {
         "claude_dir": claude_dir,
-        "pre_tool_use": pre_tool_use,
+        "pretool_adapter": pretool_adapter,
         "core_state": core_state,
         "approval_grants": approval_grants,
     }
@@ -118,129 +130,117 @@ def _has_pending() -> bool:
 
 
 class TestNonceApprovalRelayE2E:
-    """T3 approval cycle tests using the new flow.
+    """T3 approval cycle tests on the real subagent lane.
 
-    The bash_validator now returns 'ask' for orchestrator T3 commands and
-    'deny' for subagent T3 commands. The nonce relay via SendMessage was
-    removed -- grants are activated by the UserPromptSubmit hook.
-
-    These tests exercise the direct grant management APIs to verify the
-    full deny -> activate -> retry cycle.
+    A subagent's blocked T3 produces 'deny' carrying an approval_id, and the
+    hook itself persists the pending approval; activation
+    (activate_db_pending_by_prefix, as the ElicitationResult /
+    UserPromptSubmit flow does) turns it into a grant the byte-identical
+    retry consumes.
     """
 
+    SESSION = "e2e-relay-session"
+
     def test_same_command_can_retry_after_grant_activation(self, isolated_nonce_env):
-        """T3 command gets 'ask' from orchestrator; grant passthrough works after activation.
+        """Subagent T3 gets 'deny' + pending; retry passes after activation.
 
         Note: git commit removed from MUTATIVE_VERBS in v5; uses git push instead.
         """
-        pre_tool_use = isolated_nonce_env["pre_tool_use"]
+        adapter_fx = isolated_nonce_env["pretool_adapter"]
         core_state = isolated_nonce_env["core_state"]
         approval_grants = isolated_nonce_env["approval_grants"]
 
         command = "git push origin feat/relay"
 
-        # T3 command returns "ask" (orchestrator context, no agent_id)
-        block = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
-        assert isinstance(block, dict)
-        assert block["hookSpecificOutput"]["permissionDecision"] == "ask"
-
-        # No pending approval is created by the hook in orchestrator mode
-        assert not _has_pending()
-
-        # Manually create a DB pending approval and activate it (simulates subagent flow)
-        from tests.fixtures.db_helpers import seed_db_pending
-        nonce = approval_grants.generate_nonce()
-        seed_db_pending(
-            command=command,
-            session_id="e2e-relay-session",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            nonce=nonce,
+        block = adapter_fx.compat_shape(
+            adapter_fx.run_subagent_bash(command, session_id=self.SESSION)
         )
+        assert isinstance(block, dict)
+        assert block["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+        # The hook itself persisted the pending approval for this command.
+        from gaia.approvals.store import get_pending
+        pending = get_pending(all_sessions=True)
+        assert pending, "subagent T3 deny must persist a pending approval"
+        approval_id = pending[-1]["id"]
+        assert approval_id.startswith("P-")
+
+        # Activation is keyed by the nonce prefix AFTER the 'P-' marker
+        # (activate_db_pending_by_prefix matches id LIKE 'P-<prefix>%').
         activation = approval_grants.activate_db_pending_by_prefix(
-            nonce[:8], current_session_id="e2e-relay-session",
+            approval_id[2:10], current_session_id=self.SESSION,
         )
         assert activation.success, f"Activation should succeed: {activation.reason}"
         assert not _has_pending()
 
-        # After grant activation, retry is auto-allowed (passthrough)
-        retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": command})
-        assert retry is None
+        # After grant activation, the byte-identical retry is auto-allowed.
+        # The real subagent lane allows WITH updatedInput: the dispatch
+        # identity (GAIA_DISPATCH_AGENT) is stamped onto the command's env.
+        retry = adapter_fx.compat_shape(
+            adapter_fx.run_subagent_bash(command, session_id=self.SESSION)
+        )
+        assert isinstance(retry, dict)
+        retry_out = retry["hookSpecificOutput"]
+        assert retry_out["permissionDecision"] == "allow"
+        effective = retry_out.get("updatedInput", {}).get("command", "")
+        assert effective.endswith(command)
 
         retry_state = core_state.get_hook_state()
         assert retry_state is not None
-        assert retry_state.command == command
+        assert retry_state.command.endswith(command)
 
     def test_approved_nonce_does_not_bleed_into_different_command(self, isolated_nonce_env):
         """Grant for one command does not cover a different command."""
-        pre_tool_use = isolated_nonce_env["pre_tool_use"]
+        adapter_fx = isolated_nonce_env["pretool_adapter"]
         approval_grants = isolated_nonce_env["approval_grants"]
 
         deploy_cmd = "kubectl apply -f deployment.yaml"
         push_cmd = "git push origin main"
 
-        # T3 command returns "ask"
-        block = pre_tool_use.pre_tool_use_hook("Bash", {"command": deploy_cmd})
-        assert isinstance(block, dict)
-        assert block["hookSpecificOutput"]["permissionDecision"] == "ask"
-
-        # Create and activate a grant for deploy directly
-        from tests.fixtures.db_helpers import seed_db_pending
-        nonce = approval_grants.generate_nonce()
-        seed_db_pending(
-            command=deploy_cmd,
-            session_id="e2e-relay-session",
-            danger_verb="apply",
-            danger_category="MUTATIVE",
-            nonce=nonce,
+        block = adapter_fx.compat_shape(
+            adapter_fx.run_subagent_bash(deploy_cmd, session_id=self.SESSION)
         )
+        assert isinstance(block, dict)
+        assert block["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+        from gaia.approvals.store import get_pending
+        pending = get_pending(all_sessions=True)
+        assert pending
+        approval_id = pending[-1]["id"]
         activation = approval_grants.activate_db_pending_by_prefix(
-            nonce[:8], current_session_id="e2e-relay-session",
+            approval_id[2:10], current_session_id=self.SESSION,
         )
         assert activation.success
 
-        # Different command should still be blocked with "ask"
-        push_block = pre_tool_use.pre_tool_use_hook("Bash", {"command": push_cmd})
+        # A different command is still denied -- the grant does not bleed.
+        push_block = adapter_fx.compat_shape(
+            adapter_fx.run_subagent_bash(push_cmd, session_id=self.SESSION)
+        )
         assert isinstance(push_block, dict)
-        assert push_block["hookSpecificOutput"]["permissionDecision"] == "ask"
+        assert push_block["hookSpecificOutput"]["permissionDecision"] == "deny"
 
-    def test_compound_command_reuses_component_nonce_on_retry(self, isolated_nonce_env):
-        """Compound with T3 component returns 'ask'; grant passthrough works after activation.
+    def test_compound_with_t3_component_is_refused_without_pending(self, isolated_nonce_env):
+        """A compound carrying a T3 component is refused categorically.
 
-        The T3 component must NOT be a cloud/infra CLI. `chaining` is a
-        cloud-scoped rule in cloud_pipe_validator.VIOLATIONS, so any `&&`
-        alongside a NATIVE_OUTPUT_FLAG_CLIS stage (terraform, kubectl, ...) is
-        refused categorically with a non-approvable `deny` before tier
-        classification ever offers an approvable `ask`. `git` is outside that
-        set, so `git push` is a T3 component that reaches the approval flow
-        this test exists to measure.
+        Compound T3 execution is disabled at the validator: the deny is not
+        approvable (no pending approval is persisted) and instructs a
+        plan-first request-set with one command per Bash call. This pins the
+        production semantics that replaced the old approve-the-compound flow.
         """
-        pre_tool_use = isolated_nonce_env["pre_tool_use"]
-        approval_grants = isolated_nonce_env["approval_grants"]
+        adapter_fx = isolated_nonce_env["pretool_adapter"]
 
         component = "git push origin feat/compound"
         compound = f"ls -la && {component}"
 
-        # Compound T3 command returns "ask"
-        block = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
+        block = adapter_fx.compat_shape(
+            adapter_fx.run_subagent_bash(compound, session_id=self.SESSION)
+        )
         assert isinstance(block, dict)
-        assert block["hookSpecificOutput"]["permissionDecision"] == "ask"
-
-        # Create and activate a grant for the T3 component directly
-        from tests.fixtures.db_helpers import seed_db_pending
-        nonce = approval_grants.generate_nonce()
-        seed_db_pending(
-            command=component,
-            session_id="e2e-relay-session",
-            danger_verb="push",
-            danger_category="MUTATIVE",
-            nonce=nonce,
+        assert block["hookSpecificOutput"]["permissionDecision"] == "deny"
+        reason = _permission_reason(block)
+        assert "request-set" in reason, (
+            f"compound T3 refusal should instruct a plan-first request-set: {reason}"
         )
-        activation = approval_grants.activate_db_pending_by_prefix(
-            nonce[:8], current_session_id="e2e-relay-session",
-        )
-        assert activation.success
 
-        # After grant activation, retry is auto-allowed (passthrough)
-        retry = pre_tool_use.pre_tool_use_hook("Bash", {"command": compound})
-        assert retry is None
+        # No pending approval: the refusal is categorical, not approvable.
+        assert not _has_pending()
