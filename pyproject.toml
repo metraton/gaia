@@ -33,6 +33,13 @@ include = ["gaia*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "tools/scan/tests"]
+# -n auto: package.json's `test`/`test:layer1` scripts and CI already run
+# under pytest-xdist; this makes that the default for a bare `pytest tests/`
+# invocation too, instead of running ~8700 cases serially. `test:layer2` /
+# `test:layer3` (LLM/e2e, budget-bounded) inherit it as well since they pass
+# no conflicting `-n` of their own -- their own `-m llm` / `-m e2e` selector
+# flags are unaffected.
+addopts = "-n auto"
 markers = [
     "parity: JS-Python CLI parity comparison tests",
     "ci_subset: budget-bounded subset of L2/L3 (LLM) tests run in CI under a controlled token budget (brief #89 AC-6)",
