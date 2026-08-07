@@ -22,6 +22,13 @@ import pytest
 # Worktree root where hooks live (same pattern as test_hook_e2e.py)
 WORKTREE = Path(__file__).resolve().parents[2]
 HOOKS_DIR = WORKTREE / "hooks"
+CONTRACT_CLI = WORKTREE / "bin" / "cli" / "contract.py"
+
+# Only ``gaia.store.writer`` is imported in-process (a read-only row lookup,
+# never the gate itself) -- the repo root must be importable for the bare
+# ``gaia`` package.
+if str(WORKTREE) not in sys.path:
+    sys.path.insert(0, str(WORKTREE))
 
 
 # ============================================================================
@@ -476,6 +483,72 @@ def _build_valid_agent_output(
 
 
 # ============================================================================
+# Helper: close the dispatch-birthed row through the REAL `gaia contract` CLI
+# ============================================================================
+#
+# The row-first SubagentStop gate (hooks/adapters/claude_code.py::
+# resolve_subagent_stop_gate) trusts the turn's OWN persisted row over its
+# fence whenever that row is reachable -- and `invoke_agent()` above always
+# births one (every Task/Agent dispatch does, via `_maybe_birth_dispatched_
+# row`). A "happy path" scenario that never closes that row is no longer a
+# happy path under the new gate: it is exactly the un-finalized-row case the
+# migration exists to catch. This helper makes the simulated agent do what a
+# genuine one now must -- fill and finalize its OWN born row through the real
+# CLI -- before it reports back via SubagentStop.
+
+
+def _close_dispatched_row(
+    sim: "SessionSimulator",
+    agent_type: str,
+    agent_state: str,
+    *,
+    next_action: str = "done",
+) -> str:
+    """Discover the DISPATCHED row born for ``agent_type`` in ``sim``'s
+    session and close it via ``gaia contract fill``/``set``/``finalize`` --
+    the real CLI, run as real subprocesses, exactly like every other call
+    this simulator makes. Returns the row's minted ``agent_id`` so the
+    caller's own fence can echo the identity it was actually born under.
+    """
+    from gaia.store.writer import find_dispatched_row_by_agent_name
+
+    db_path = Path(os.environ["GAIA_DATA_DIR"]) / "gaia.db"
+    row = find_dispatched_row_by_agent_name(sim.session_id, agent_type, db_path=db_path)
+    assert row is not None, (
+        f"no DISPATCHED row found for agent_type={agent_type!r} in session "
+        f"{sim.session_id!r} -- invoke_agent() must run first"
+    )
+    contract_id = row["contract_id"]
+    env = os.environ.copy()
+
+    def _cli(*args: str) -> subprocess.CompletedProcess:
+        result = subprocess.run(
+            [sys.executable, str(CONTRACT_CLI), *args],
+            capture_output=True, text=True, env=env, timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"gaia contract {args[0]} failed: {result.stderr}"
+        )
+        return result
+
+    # Fill first (adopts the born row's draft), THEN set next_action, THEN
+    # set agent_state LAST -- the validator's own documented build order
+    # (a terminal agent_state set before its dependency fields are filled
+    # triggers a cross-field defect on that same write).
+    patch = json.dumps({
+        "evidence_report": {
+            "verification": {"method": "e2e-simulator", "result": "pass", "details": "ok"},
+        },
+    })
+    _cli("fill", "--draft-id", contract_id, "--json", patch)
+    _cli("set", "--draft-id", contract_id, "agent_status.next_action", next_action)
+    _cli("set", "--draft-id", contract_id, "agent_status.agent_state", agent_state)
+    _cli("finalize", "--draft-id", contract_id, "--session-id", sim.session_id)
+
+    return row["agent_id"]
+
+
+# ============================================================================
 # Helper: build blocked command strings without triggering hook scanners
 # ============================================================================
 
@@ -551,6 +624,17 @@ class TestScenario1HappyPath:
             f"PostToolUse failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
 
+        # 5b. Under the row-first SubagentStop gate, the turn `invoke_agent()`
+        # birthed in step 3 must be CLOSED through the real CLI before the
+        # agent reports back -- a fence alone no longer suffices (that is
+        # exactly the property this migration exists to enforce). This is
+        # what a genuine agent does under `agent-protocol`: fill, then
+        # `gaia contract finalize`.
+        cloud_agent_id = _close_dispatched_row(
+            sim, "cloud-troubleshooter", "NEEDS_VERIFICATION",
+            next_action="awaiting verification",
+        )
+
         # 6. Agent responds -- proposes NEEDS_VERIFICATION, not COMPLETE.
         # Updated for plan 34 (finalize gate keyed on plan_task_id, not role):
         # a plan-task-bound producer turn may not self-COMPLETE -- the gate
@@ -568,9 +652,9 @@ class TestScenario1HappyPath:
         agent_output = _build_valid_agent_output(
             agent_state="NEEDS_VERIFICATION",
             summary="El pod crashea por OOMKilled.",
-            agent_id="a1f2c30f1e2d3c4b5",
+            agent_id=cloud_agent_id,
         )
-        result = sim.agent_responds("cloud-troubleshooter", "a1f2c30f1e2d3c4b5", agent_output)
+        result = sim.agent_responds("cloud-troubleshooter", cloud_agent_id, agent_output)
         assert result["exit_code"] == 0, (
             f"SubagentStop failed: exit={result['exit_code']}, stderr={result['stderr']}"
         )
@@ -594,6 +678,14 @@ class TestScenario1HappyPath:
             f"stderr={result['stderr']}"
         )
 
+        # NOTE: unlike cloud-troubleshooter's turn, no row is born here at all
+        # -- extract_dispatch_binding requires a resolvable parent_handoff_id
+        # for a verifier dispatch, and this prompt names none, so
+        # _maybe_birth_dispatched_row's own binding validation refuses the
+        # birth (best-effort, non-blocking; see modules.agents.dispatch_
+        # binding). With no row reachable at all, the row-first gate takes
+        # its backup path and the fence decides -- unchanged by this
+        # migration for this specific turn.
         verifier_output = _build_valid_agent_output(
             agent_state="COMPLETE",
             summary="Verificado: el pod crashea por OOMKilled.",
@@ -746,9 +838,16 @@ class TestScenario5InvalidPlanStatus:
         result = sim.start_session()
         assert result["exit_code"] == 0
 
-        # Invoke agent
-        result = sim.invoke_agent("developer", "refactoriza el modulo X")
-        assert result["exit_code"] == 0
+        # Deliberately NO invoke_agent() here. This scenario isolates ONE
+        # property -- an invalid agent_state in the FENCE is rejected -- and
+        # under the row-first gate a dispatched-but-unfinalized row would
+        # reject FIRST, for an unrelated reason, before the fence's own
+        # PLAN_STATUS defect is ever reached (a genuinely finalized row can
+        # never carry RANDOM_STATUS in the first place: `gaia contract
+        # finalize` validates the SAME core before persisting). With no
+        # dispatch row born for this session/agent at all, the gate takes
+        # its backup path and the fence decides, exactly as this scenario
+        # means to test.
 
         # Agent responds with an agent_contract_handoff block but INVALID plan_status
         agent_output = _build_valid_agent_output(

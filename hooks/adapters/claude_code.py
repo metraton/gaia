@@ -728,6 +728,207 @@ def evaluate_contract_gate(
     return verdict
 
 
+# ---------------------------------------------------------------------------
+# Row-first SubagentStop gate (source-of-truth inversion, step 1 of the
+# agreed migration toward dropping the fence entirely).
+#
+# Before this: the gate above validated ONLY the fence -- the
+# ```agent_contract_handoff``` block the model re-types from memory into its
+# final message -- while the finalized ``agent_contract_handoffs`` row (the
+# actual sequence of ``gaia contract`` calls the turn ran) was a parallel,
+# unconsulted record. Two measured defects followed: (1) a well-formed fence
+# passed the gate even when the agent never ran ``gaia contract finalize`` at
+# all (32 such rows: complete envelope, row never closed); (2) the fence can
+# diverge from the row, because only the row is the turn's actual sequence of
+# acts.
+#
+# After this: the row is authoritative whenever it is reachable AND was
+# cleanly closed by the agent's own finalize (see _row_cleanly_finalized) --
+# its PERSISTED envelope is run through the exact same core
+# (gaia.contract.crosscheck.validate + _blind_verification_required) the
+# fence used to be validated against, so accept/reject is identical either
+# way; only the SOURCE of the envelope changes. A row that EXISTS but was
+# never cleanly finalized is a distinct, known case -- not "no row" -- and is
+# rejected outright regardless of the fence (see _row_unfinalized_verdict),
+# except when the harness itself cut the turn (max_tokens truncation), which
+# is not the agent's violation and already falls to salvage elsewhere. Only
+# when NO dispatch row is reachable at all does the fence still decide, byte-
+# for-byte the same gate this module ran before this change -- the agreed
+# backup path, not a second source of truth.
+# ---------------------------------------------------------------------------
+
+GATE_SOURCE_ROW = "row"
+GATE_SOURCE_ROW_UNFINALIZED = "row_unfinalized"
+GATE_SOURCE_FENCE = "fence"
+
+
+def _row_gate_candidate(
+    *, bound_dispatch_row: Optional[dict], db_path: Optional[Path] = None,
+) -> Optional[dict]:
+    """The FULL ``agent_contract_handoffs`` row for this turn's dispatch
+    binding, or None when no binding was resolvable at all.
+
+    ``bound_dispatch_row`` (from :func:`ClaudeCodeAdapter._resolve_dispatch_row`,
+    which already joins on session_id + agent_id -- never harness_agent_id --
+    across the ADOPTED/LEGACY/UNADOPTED lanes) only carries
+    ``{id, contract_id, agent_id, agent_state, plan_task_id}``, enough for the
+    blind-verification binding it was built for but not the two columns the
+    row-first gate needs: ``raw_handoff_json`` (the persisted envelope) and
+    ``cut_reason`` (whether the agent's OWN finalize closed it, vs. a reap /
+    backstop / salvage). Re-fetched here by the SAME ``contract_id`` (the
+    UNIQUE idempotency key), one extra read, so ``_resolve_dispatch_row``
+    itself never has to widen its SELECT for a concern only this caller has.
+    """
+    if not bound_dispatch_row:
+        return None
+    contract_id = bound_dispatch_row.get("contract_id")
+    if not contract_id:
+        return None
+    from gaia.store.writer import list_agent_contract_handoffs
+
+    rows = list_agent_contract_handoffs(contract_id=contract_id, limit=1, db_path=db_path)
+    return rows[0] if rows else None
+
+
+def _row_cleanly_finalized(full_row: Dict[str, Any]) -> bool:
+    """True iff this row was closed by the agent's OWN ``gaia contract
+    finalize`` -- the schema's own definition (schema.sql, agent_contract_
+    handoffs.cut_reason column comment): ``cut_reason IS NULL`` means the turn
+    closed cleanly under its own finalize; ``insert_dispatched_handoff`` stamps
+    ``'never_finalized'`` at BIRTH and only ``finalize_agent_contract_handoff``
+    called WITHOUT a ``cut_reason`` argument clears it (verified empirically:
+    a nascent row reads ``agent_state='DISPATCHED'``,
+    ``cut_reason='never_finalized'``; the agent's own finalize is the only
+    writer that lands ``cut_reason=NULL``). The ``agent_state != 'DISPATCHED'``
+    check is a belt-and-braces sanity check that should never diverge from
+    ``cut_reason`` -- the writer sets both together in the same UPSERT.
+    """
+    return (
+        full_row.get("agent_state") != "DISPATCHED"
+        and full_row.get("cut_reason") is None
+    )
+
+
+def _parse_row_envelope(full_row: Dict[str, Any]) -> Any:
+    """Best-effort JSON parse of a row's ``raw_handoff_json``.
+
+    Returns None on a missing/unparseable value -- validate_form already
+    reports a non-dict envelope as a single MISSING_FIELD
+    (``agent_contract_handoff``), so an unreadable persisted envelope is
+    correctly REJECTED by the core, never silently treated as "no row".
+    """
+    try:
+        return json.loads(full_row.get("raw_handoff_json") or "null")
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_unfinalized_verdict(
+    agent_type: str, full_row: Dict[str, Any], gate_mode: str,
+) -> ContractGateVerdict:
+    """The turn's OWN dispatch row exists but was never cleanly closed by
+    ``gaia contract finalize`` -- reject regardless of what the fence says.
+
+    This is the fix for the measured gap this migration exists to close: a
+    fence that types a clean COMPLETE from memory is not evidence the agent
+    actually ran finalize -- the row is that evidence, and its absence (or its
+    ``cut_reason`` marking a reap/backstop/salvage instead of a clean close)
+    is authoritative. A well-formed fence never overrides it.
+    """
+    contract_id = full_row.get("contract_id")
+    cut_reason = full_row.get("cut_reason") or "unknown"
+    row_state = full_row.get("agent_state") or "unknown"
+    reason = (
+        f"[CONTRACT REJECTED] This turn's own dispatch row (contract_id="
+        f"{contract_id!r}) exists but was never cleanly closed by "
+        f"'gaia contract finalize' (row agent_state={row_state!r}, "
+        f"cut_reason={cut_reason!r}). The persisted row is now the source of "
+        f"truth for this gate -- a fenced agent_contract_handoff block in "
+        f"your response text cannot substitute for it, however complete. "
+        f"Run 'gaia contract finalize --draft-id {contract_id}' with your "
+        f"real closing state (COMPLETE, NEEDS_VERIFICATION, BLOCKED, "
+        f"NEEDS_INPUT, or APPROVAL_REQUEST) before ending the turn."
+    )
+    anomalies: Tuple[Dict[str, Any], ...] = ()
+    if gate_mode == GATE_MODE_FULL_VERDICT:
+        anomalies = (
+            _gate_anomaly(agent_type, "ROW_NOT_FINALIZED", "dispatch_row", reason),
+        )
+    return ContractGateVerdict(True, reason, anomalies, gate_mode)
+
+
+def resolve_subagent_stop_gate(
+    *,
+    parsed_contract: Any,
+    agent_type: str = "unknown",
+    plan_task_id: Optional[int] = None,
+    stop_reason_classification: str = STOP_REASON_UNKNOWN,
+    ramp_enabled: Optional[bool] = None,
+    bound_dispatch_row: Optional[dict] = None,
+    db_path: Optional[str] = None,
+) -> Tuple[ContractGateVerdict, str]:
+    """The row-first SubagentStop gate: locate the turn's own dispatch row,
+    validate ITS persisted envelope when cleanly finalized, and use the fence
+    only as the backup path. Returns ``(verdict, source)`` where ``source`` is
+    one of :data:`GATE_SOURCE_ROW`, :data:`GATE_SOURCE_ROW_UNFINALIZED`,
+    :data:`GATE_SOURCE_FENCE` -- for logging/telemetry only, never branched on
+    by a caller.
+
+    Three cases, in order:
+
+      1. A dispatch row is reachable (``bound_dispatch_row``, resolved by the
+         caller via session_id + agent_id -- see
+         ``ClaudeCodeAdapter._resolve_dispatch_row``) AND it was cleanly
+         finalized (:func:`_row_cleanly_finalized`): its OWN persisted
+         envelope is validated through the identical core the fence used to
+         go through (:func:`evaluate_contract_gate`). The row wins over the
+         fence unconditionally, in both directions.
+      2. A dispatch row is reachable but was NOT cleanly finalized, and the
+         stop was not a harness truncation: reject via
+         :func:`_row_unfinalized_verdict`, regardless of fence content. This
+         is the case a well-formed fence must never paper over.
+      3. No dispatch row is reachable at all, OR one exists unfinalized but
+         the stop was a max_tokens truncation (not the agent's violation --
+         handled by salvage elsewhere): fall back to the fence, byte-for-byte
+         the gate this module ran before this migration.
+    """
+    if ramp_enabled is None:
+        ramp_enabled = full_verdict_gate_enabled()
+    gate_mode = GATE_MODE_FULL_VERDICT if ramp_enabled else GATE_MODE_THREE_CASE
+
+    db_path_obj = Path(db_path) if db_path else None
+    full_row = _row_gate_candidate(bound_dispatch_row=bound_dispatch_row, db_path=db_path_obj)
+
+    if full_row is not None:
+        if _row_cleanly_finalized(full_row):
+            row_envelope = _parse_row_envelope(full_row)
+            verdict = evaluate_contract_gate(
+                row_envelope,
+                agent_type=agent_type,
+                plan_task_id=plan_task_id,
+                stop_reason_classification=stop_reason_classification,
+                ramp_enabled=ramp_enabled,
+                db_path=db_path,
+            )
+            return verdict, GATE_SOURCE_ROW
+        if stop_reason_classification != STOP_REASON_TRUNCATION:
+            verdict = _row_unfinalized_verdict(agent_type, full_row, gate_mode)
+            _record_contract_rejection_defect(
+                verdict, agent_type=agent_type, plan_task_id=plan_task_id
+            )
+            return verdict, GATE_SOURCE_ROW_UNFINALIZED
+
+    verdict = evaluate_contract_gate(
+        parsed_contract,
+        agent_type=agent_type,
+        plan_task_id=plan_task_id,
+        stop_reason_classification=stop_reason_classification,
+        ramp_enabled=ramp_enabled,
+        db_path=db_path,
+    )
+    return verdict, GATE_SOURCE_FENCE
+
+
 def _is_anomalous_dispatch_binding_rejection(
     reason: str, binding: Dict[str, Any],
 ) -> bool:
@@ -1915,16 +2116,19 @@ class ClaudeCodeAdapter(HookAdapter):
         """Locate the born-at-dispatch row for the turn that is ENDING.
 
         The binding stamped at birth (``plan_task_id`` above all) lives on that
-        row, and the blind-verification gate reads it to decide whether this turn
-        is a plan-task-bound producer. Three lanes, most exact first, because the
-        row is reachable by a different coordinate depending on what the turn did
-        with the identity minted for it:
+        row, and the blind-verification gate -- and, since the row-first
+        migration, the SubagentStop contract gate itself
+        (``resolve_subagent_stop_gate``) -- reads it to decide the turn's own
+        outcome. Four lanes, most exact first, because the row is reachable by
+        a different coordinate depending on what the turn did with the
+        identity minted for it:
 
           1. ADOPTED -- the turn ran ``gaia contract init`` under the injected
-             identity, so its own ``agent_id`` IS the row's. Looked up
-             state-agnostically: an adopted turn's ``finalize`` CONVERGES the born
-             row, so by now it is no longer 'DISPATCHED' and a DISPATCHED-only
-             query would report the turn as unbound and silently drop the gate.
+             identity (or the fence names it), so its own ``agent_id`` IS the
+             row's. Looked up state-agnostically: an adopted turn's
+             ``finalize`` CONVERGES the born row, so by now it is no longer
+             'DISPATCHED' and a DISPATCHED-only query would report the turn as
+             unbound and silently drop the gate.
           2. LEGACY -- rows born before the identity was minted carry the agent
              NAME in ``agent_id``. Still queried so an in-flight turn dispatched
              under the old shape keeps its binding.
@@ -1934,6 +2138,25 @@ class ClaudeCodeAdapter(HookAdapter):
              between concurrent same-name dispatches (see the writer's
              ``find_dispatched_row_by_agent_name``), so it resolves nothing rather
              than binding a turn to a sibling's row.
+          4. HARNESS-STAMPED -- the case lanes 1-3 all miss: the turn ADOPTED
+             the identity injected for it at dispatch (never ran ``gaia
+             contract init`` itself, so no mint report exists to scan) AND the
+             fence is absent (nothing for ``resolve_minted_agent_id`` to read
+             ``agent_status.agent_id`` from) AND the row has already converged
+             to a TERMINAL state (lanes 2/3 are DISPATCHED-only). This is the
+             single most common shape for a turn closing itself cleanly via
+             the CLI with no fence at all -- MEASURED live (handoff 11263):
+               lane 1 never fires because ``resolve_minted_agent_id`` falls
+               all the way back to the harness agent NAME (no fence, no mint
+               report), which equals ``agent_type`` and so fails the
+               ``minted != agent_type`` guard; lanes 2/3 never fire because the
+               row is already COMPLETE, not DISPATCHED. ``harness_agent_id``
+               (v40, ``ClaudeCodeAdapter.stamp_harness_agent_id`` at
+               SubagentStart claim) is the one coordinate that still joins:
+               it is the harness's OWN per-run id for THIS exact dispatch --
+               ``task_info['agent_id']`` at SubagentStop time is the identical
+               value -- so the join can never pick up a sibling turn's row the
+               way a mentioned-but-not-owned draft id could.
 
         Returns the row dict, or None when no lane resolves -- which every caller
         must read as "unbound", never as an error.
@@ -1942,6 +2165,7 @@ class ClaudeCodeAdapter(HookAdapter):
             dispatch_row_for_identity,
             find_dispatched_row_by_agent_name,
             find_orphaned_dispatched_handoff,
+            list_agent_contract_handoffs,
         )
         from modules.agents.handoff_persister import resolve_minted_agent_id
 
@@ -1959,9 +2183,24 @@ class ClaudeCodeAdapter(HookAdapter):
         if legacy is not None:
             return legacy
 
-        return find_dispatched_row_by_agent_name(
+        unadopted = find_dispatched_row_by_agent_name(
             session_id, agent_type, db_path=db_path,
         )
+        if unadopted is not None:
+            return unadopted
+
+        harness_agent_id = task_info.get("agent_id")
+        if harness_agent_id and str(harness_agent_id) != "unknown":
+            harness_rows = list_agent_contract_handoffs(
+                harness_agent_id=str(harness_agent_id),
+                session_id=session_id,
+                limit=1,
+                db_path=db_path,
+            )
+            if harness_rows:
+                return harness_rows[0]
+
+        return None
 
     def _adapt_send_message(
         self, tool_name: str, parameters: dict, session_id: str = "",
@@ -2884,6 +3123,18 @@ class ClaudeCodeAdapter(HookAdapter):
             # rejection flow into the anomaly-signal block and the exit-code
             # assembly below.
             #
+            # Row-first inversion (step 1 of the agreed fence-removal
+            # migration): the gate now validates the turn's OWN persisted
+            # ``agent_contract_handoffs`` row when one is reachable and was
+            # cleanly finalized, and only falls back to the fence when no row
+            # is reachable at all (or one exists unfinalized but the stop was
+            # a harness truncation). See ``resolve_subagent_stop_gate`` for the
+            # full three-case ordering. The fence is not removed -- it remains
+            # the backup path and every downstream use of ``parsed_contract``
+            # in this function (episode writing, key_outputs, update_contracts,
+            # etc.) is UNCHANGED by this inversion, which touches only which
+            # envelope decides pass/reject.
+            #
             # Robustness: the gate is evaluated defensively. A raise inside the
             # gate (e.g. an import failure in a lazily-imported dependency) must
             # never take down the SubagentStop hygiene that follows it --
@@ -2900,6 +3151,10 @@ class ClaudeCodeAdapter(HookAdapter):
             # NEEDS_VERIFICATION and lets an unbound turn self-COMPLETE. Best-effort
             # and non-fatal -- an unresolvable binding (no born-at-dispatch row, or
             # a DB read error) leaves plan_task_id None, i.e. treated as unbound.
+            # The SAME resolved row (session_id + agent_id, NOT harness_agent_id --
+            # see ClaudeCodeAdapter._resolve_dispatch_row) is reused below as the
+            # row-first gate's candidate, so the binding lookup and the gate's row
+            # lookup can never disagree on WHICH row is this turn's own.
             _bound_plan_task_id: Optional[int] = None
             _bound_dispatch_row: Optional[dict] = None
             try:
@@ -2919,13 +3174,15 @@ class ClaudeCodeAdapter(HookAdapter):
                     "(session=%s) -- treating turn as unbound.",
                     agent_type, session_id, exc_info=True,
                 )
+            _gate_source = GATE_SOURCE_FENCE
             try:
-                _gate = evaluate_contract_gate(
-                    parsed_contract,
+                _gate, _gate_source = resolve_subagent_stop_gate(
+                    parsed_contract=parsed_contract,
                     agent_type=agent_type,
                     plan_task_id=_bound_plan_task_id,
                     stop_reason_classification=_stop_reason_classification,
                     ramp_enabled=_full_verdict,
+                    bound_dispatch_row=_bound_dispatch_row,
                     db_path=task_info.get("db_path"),
                 )
             except Exception:
@@ -3434,6 +3691,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 "contract_attempts": contract_attempts,
                 "stop_reason": _raw_stop_reason,
                 "stop_reason_classification": _stop_reason_classification,
+                "contract_gate_source": _gate_source,
             }
 
             if _salvage:

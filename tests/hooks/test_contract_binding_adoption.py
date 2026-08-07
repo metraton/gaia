@@ -687,6 +687,46 @@ def test_adopted_turn_still_reads_as_plan_task_bound_at_subagent_stop(db_path):
     assert resolved["contract_id"] == identity["contract_id"]
 
 
+def test_adopted_turn_with_no_fence_resolves_via_harness_stamp(db_path):
+    """The exact shape MEASURED live (handoff 11263): a turn ADOPTED the
+    identity injected for it at dispatch (never ran `gaia contract init`
+    itself), closed cleanly via `gaia contract finalize`, and its final
+    message carries NO fence at all -- no envelope to read the minted
+    agent_id from, and no `gaia contract init` mint report in the transcript
+    either (there was none to scan for). Lane 1 (ADOPTED) resolves nothing
+    real: with no fence, ``resolve_minted_agent_id`` falls all the way back to
+    ``task_info['agent_id']`` -- the harness placeholder ``_task_info`` sets,
+    which belongs to neither identity space -- so the lookup misses. Lanes 2/3
+    are DISPATCHED-only and the row is already terminal. Only the
+    harness_agent_id join (stamped at SubagentStart claim, v40) still finds
+    it -- this is the fix for the gap the fence-absent case exposed.
+    """
+    from adapters.claude_code import ClaudeCodeAdapter
+    from gaia.store.writer import stamp_harness_agent_id
+
+    identity = ClaudeCodeAdapter._maybe_birth_dispatched_row(
+        {"prompt": "diagnostica el estado del cluster"}, "gaia-system", "sess-no-fence",
+    )
+    assert identity is not None
+    _adopt(identity)
+    task_info = _task_info(db_path)
+    stamp_harness_agent_id(identity["contract_id"], task_info["agent_id"], db_path=db_path)
+    assert _finalize(identity, "sess-no-fence").returncode == 0
+
+    resolved = ClaudeCodeAdapter._resolve_dispatch_row(
+        session_id="sess-no-fence",
+        agent_type="gaia-system",
+        task_info=task_info,
+        parsed_contract=None,
+        db_path=db_path,
+    )
+    assert resolved is not None, (
+        "the harness-stamp lane must still find a cleanly-finalized row when "
+        "no fence and no mint report are available"
+    )
+    assert resolved["contract_id"] == identity["contract_id"]
+
+
 def test_bound_producer_cannot_self_complete_under_the_adopted_id(db_path):
     """The CLI anti-leak recovers the binding BY the adopted contract_id."""
     from adapters.claude_code import ClaudeCodeAdapter
