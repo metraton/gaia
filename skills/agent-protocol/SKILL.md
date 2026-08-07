@@ -11,7 +11,7 @@ written -- during the turn, while the work is still happening. The check at the 
 reads the finished contract, so its shape is already guaranteed by something other
 than you. What no check can see is how the turn ran: a turn that wrote nothing until
 its last second and then closed perfectly passes every validation. That is what this
-skill owns, and it is why each principle below carries its consequence.
+skill owns.
 
 ```
 Ground   what already governs this -- injected context, memory, the code, the skills
@@ -28,17 +28,20 @@ Close    declare a state, finalize, degrade honestly
 Ground.
 
 **A resumed turn** arrives as a message from the orchestrator inside a turn that
-already began. The kernel is injected once, at dispatch, and never again; your
-contract is the one you already adopted, still open, still holding everything you
-wrote before the interruption. Read it back (`gaia contract view --draft-id
-<contract_id>`) rather than re-deriving it, and pick the cycle up at the phase your
-last write left.
+already began. There is no second kernel: `# Your Contract` is rendered once, at
+dispatch. What arrives instead is a `# Contract Draft (resumed)` block naming your
+draft id and stating that the draft was not reset -- it is the contract you already
+adopted, still open, still holding everything you wrote before the interruption. Read
+it back (`gaia contract view --draft-id <contract_id>`) rather than re-deriving it,
+and pick the cycle up at the phase your last write left.
 
 ## 1. Your contract is the delivery; your final message is only the signal that the turn ended
 
 Finishing means leaving the contract written. The gate validates your persisted
 contract, and an unfinalized one rejects the close however complete your message
-reads.
+reads. Still end the message with the envelope in a fenced `agent_contract_handoff`
+block: that fence is what the gate falls back to for a turn whose contract it cannot
+reach.
 
 ## 2. You were born with a contract -- adopt it, do not create another
 
@@ -75,8 +78,8 @@ before it is exercised is read downstream as established.
 
 ## 4. Local and reversible work just happens; what goes out into the world is gathered and asked once
 
-Commit, write files, leave the PRs ready -- none of that needs a signature. Pushes,
-applies and every other exit into the world go into one ordered set with a single
+Commit, write files, branch -- none of that needs a signature. Pushes, opening the
+PR, applies and every other exit into the world go into one ordered set with a single
 signature: a COMMAND_SET. Build it from what the plan already implies and can be
 written out exactly in advance, never from what you discover as you go. Keep it small
 and coherent -- one bounded operation.
@@ -101,11 +104,10 @@ more than recording it, and before any step whose outcome you cannot predict -- 
 synthesis with no tool calls in it, an approval handoff, a mutation, the final message
 -- confirm you are already complete enough to be resumed from.
 
-The same reason is why the close is not where the record gets composed. A summary
-written from memory at the end is a second telling of work already done, produced
-under the pressure that ends the turn, and it drops fields. The contract does not, and
-whoever needs this turn queries it at the granularity they need, whenever they need
-it.
+The same reason is why the close is not where the record gets composed: a summary
+written from memory at the end is a second telling, produced under the pressure that
+ends the turn, and it drops fields. What the contract already holds gets queried
+later, at whatever granularity the question needs.
 
 ## 6. The phase is declared before doing that phase's work
 
@@ -139,13 +141,16 @@ what failed, and the two pull opposite ways:
 ## 8. Before declaring yourself blocked, ask
 
 Three doors come first: is the answer already in the goal you received? is it in
-context, or in memory you can query? can the orchestrator answer it -- the one channel
-where you initiate?
+context, or in memory you can query? is it a material choice only the user can make --
+then close `NEEDS_INPUT` naming the concrete options, which is how the question
+reaches them.
 
-Blocking is the fourth option and the only one that costs the whole turn. A blocked
-turn dies and must be dispatched again from zero -- new context, files re-read,
-findings re-derived -- while an asked question is answered and the turn continues with
-everything it has already gathered intact.
+Blocking is the fourth door and the costliest. It and `NEEDS_INPUT` both end the turn,
+but not alike: an answered question comes back to you, and the resume hands your own
+draft back unreset, so the turn continues with everything it gathered. `BLOCKED` says
+an external obstacle stands in the way, so the orchestrator routes it to whoever owns
+that obstacle -- a different agent, from zero, with none of what you found. Take it
+when no answer would unblock you, not when you have not asked.
 
 ## 9. The producer does not verify its own production
 
@@ -161,8 +166,8 @@ verifier promotes it.
 `IN_PROGRESS` (work can continue), `BLOCKED`, `NEEDS_INPUT`, `APPROVAL_REQUEST`,
 `NEEDS_VERIFICATION`, `COMPLETE`. Only `COMPLETE` is terminal. Set the closing state
 in the contract, then `gaia contract finalize --draft-id <contract_id>` as your last
-tool call. If the contract is rejected, reissue it complete without re-investigating
--- two attempts, maximum, for the reason in principle 7's table.
+tool call. A rejection at this seam is a form problem, repaired the way principle 7
+says a rejected contract is.
 
 ## 11. Degrading honestly costs less than faking
 
@@ -189,7 +194,7 @@ reader who catches one has no way to bound how many others there are.
 | A close whose persisted contract is unfinalized, however complete the final message | `_resolve_subagent_stop_gate_full` (`hooks/adapters/claude_code.py`) |
 | `finalize` on a draft still declaring `IN_PROGRESS` | `cmd_finalize` (`bin/cli/contract.py`) |
 
-Unqualified names above are `FormErrorCode` members raised by `validate_form` in
+Unqualified names above are `FormErrorCode` members returned by `validate_form` in
 `gaia/contract/validator.py`.
 
 ## Where to go next

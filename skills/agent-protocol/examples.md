@@ -6,10 +6,17 @@ See `agent-contract-handoff` for the schema definition and field rules, and
 
 Each example below is the envelope **as the row holds it** -- the shape your
 `set`/`add`/`fill --json` calls build up one field at a time, and the shape
-`gaia contract view` prints back. None of it is something you paste into your
-final message. The row is the handoff, and whoever needs this turn queries it
-(`SKILL.md`, principle 1). Read these as the target you are filling toward,
-not as output.
+`gaia contract view` prints back. The row is the handoff, and whoever needs
+this turn queries it (`SKILL.md`, principle 1). Read these as the target you
+are filling toward.
+
+The same envelope is also what the closing fence carries. The final message
+still ends with the envelope in a fenced block tagged `agent_contract_handoff`
+(not `json` -- the tag is how the gate finds it). The fenced copy is the
+gate's fallback, decisive only for a turn whose own persisted contract is
+unreachable (`reference.md`, "The gate at the wall", case 3); when the
+contract is reachable and cleanly finalized, the gate reads it and the fence
+is not consulted. Emit it either way -- you do not know which case you are in.
 
 ## 0. Building example 1 via the CLI, from first write to close
 
@@ -35,17 +42,25 @@ gaia contract fill --json '{
 gaia contract fill --json '{"evidence_report": {"verification": {"method": "test", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}' --draft-id <contract_id>
 gaia contract set agent_status.agent_state COMPLETE --draft-id <contract_id>
 gaia contract validate --draft-id <contract_id>   # confirm the verdict before finalizing
-gaia contract finalize --draft-id <contract_id> --plan-task-id 4821   # writes the sole, idempotent agent_contract_handoffs row
+gaia contract finalize --draft-id <contract_id>   # writes the sole, idempotent agent_contract_handoffs row
 ```
+
+No `--plan-task-id` here, and not by omission: `cmd_finalize` refuses a
+`COMPLETE` whose turn is bound to a plan task (`reason:
+blind_verification_required`), whether the binding arrives as that flag or is
+recovered from the born row. A plan-task-bound turn walks these same calls but
+sets `NEEDS_VERIFICATION` instead of `COMPLETE` (example 9), and passes
+`--plan-task-id <id>` to finalize.
 
 Order matters here: `verification` is filled in BEFORE `agent_state` is set to `COMPLETE` (`reference.md`, "Build order for a terminal state"). Reversing those two calls rejects with `VERIFICATION_RESULT` on the `set agent_state COMPLETE` step, because validate-on-write checks the FULL envelope at that point, not just the field being set.
 
 The draft this produces is byte-for-byte the same envelope as example 1
 below, and `finalize` writing that row is where the turn ends. The stop gate
 resolves this turn's own persisted row and validates the envelope THAT row
-holds; nothing is echoed after it. What the turn says in its final message is
-an account for whoever is reading -- the detail behind it is queried from the
-row, at whatever granularity the question needs, whenever it is asked.
+holds. What the turn says in its final message is an account for whoever is
+reading, closing with the fenced envelope -- the detail behind it is queried
+from the row, at whatever granularity the question needs, whenever it is
+asked.
 
 ## 1. COMPLETE (verified result, happy path)
 
@@ -55,7 +70,7 @@ Standard terminal envelope after a successful increment. `verification` is requi
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "ab7e4d2",
+    "agent_id": "ab7e4d2c9f10a3b5e",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -87,7 +102,7 @@ Escalation envelope -- the agent identified a gap it cannot close on its own sur
 {
   "agent_status": {
     "agent_state": "BLOCKED",
-    "agent_id": "ac3a1f9",
+    "agent_id": "ac3a1f906d2b4e871",
     "pending_steps": ["validate IAM binding", "apply terraform change"],
     "next_action": "User must grant roles/container.admin to SA"
   },
@@ -114,7 +129,7 @@ Escalation envelope -- the agent identified a gap it cannot close on its own sur
 {
   "agent_status": {
     "agent_state": "NEEDS_INPUT",
-    "agent_id": "ad9f2b1",
+    "agent_id": "ad9f2b13c705e6a9f",
     "pending_steps": ["create namespace manifest", "configure HelmRelease"],
     "next_action": "User must choose: Option A (shared namespace) or Option B (dedicated namespace)"
   },
@@ -141,7 +156,7 @@ Hook produced `approval_id` -- pass it through verbatim. The orchestrator presen
 {
   "agent_status": {
     "agent_state": "APPROVAL_REQUEST",
-    "agent_id": "af1d9b7",
+    "agent_id": "af1d9b72e4c806d13",
     "pending_steps": ["execute git push", "verify Flux reconciliation"],
     "next_action": "Hook blocked git push -- awaiting user approval"
   },
@@ -176,7 +191,7 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and offers i
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "a2e8c14",
+    "agent_id": "a2e8c1479b0d3f562",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -216,7 +231,7 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "af4b2e8",
+    "agent_id": "af4b2e805c19d7a34",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -232,7 +247,7 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
       "method": "dry-run",
       "checks": ["terragrunt plan shows no changes", "kustomization references match cluster name"],
       "result": "pass",
-      "details": "Plan: 0 to add, 0 to change, 0 to destroy. Kustomization sourceRef matches cluster af4b2e8."
+      "details": "Plan: 0 to add, 0 to change, 0 to destroy. Kustomization sourceRef matches cluster dev-gke-01."
     }
   },
   "consolidation_report": {
@@ -259,7 +274,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "a19a3d7",
+    "agent_id": "a19a3d76b28e40cf5",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -297,7 +312,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "a4e8b21",
+    "agent_id": "a4e8b21fd0356c7a9",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -335,7 +350,7 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
 {
   "agent_status": {
     "agent_state": "COMPLETE",
-    "agent_id": "a7c1d93",
+    "agent_id": "a7c1d938e56420bf1",
     "pending_steps": [],
     "next_action": "done"
   },
@@ -377,7 +392,7 @@ Harness R2: the producer believes the increment is done and MAY propose `evidenc
 {
   "agent_status": {
     "agent_state": "NEEDS_VERIFICATION",
-    "agent_id": "a5f3c07",
+    "agent_id": "a5f3c07a92d18b4e6",
     "pending_steps": ["verifier confirms HelmRelease reconciliation"],
     "next_action": "Hand off to verifier -- change believed complete, awaiting independent confirmation"
   },
