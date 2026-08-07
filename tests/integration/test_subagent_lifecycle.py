@@ -250,50 +250,53 @@ class TestPhase1SkillsInjection:
                 assert len(content) > 100, \
                     f"Skill '{skill}' content too short for agent '{agent}'"
 
-    def test_pre_tool_use_caches_context_for_subagent_start(self, test_project):
+    def test_pre_tool_use_task_injects_nothing_and_preloads_no_context(
+        self, test_project, monkeypatch,
+    ):
         """
-        pre_tool_use should cache project context for SubagentStart (not return
-        additionalContext directly, which would go to the orchestrator).
+        Dispatch-kernel contract: PreToolUse:Task returns no additionalContext (the
+        subagent's payload is the dispatch kernel claimed at SubagentStart),
+        and whatever the cache bridge carries is never a preloaded
+        project-context snapshot.
         """
         tmp_path, claude_dir = test_project
 
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia_data"))
         original_cwd = os.getcwd()
         os.chdir(tmp_path)
         try:
-            import importlib.util
-            pre_hook_path = claude_dir / "hooks" / "pre_tool_use.py"
-            spec = importlib.util.spec_from_file_location("pre_tool_use_contract", str(pre_hook_path))
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            import sys as _sys
+            repo_root = Path(__file__).resolve().parents[2]
+            if str(repo_root) not in _sys.path:
+                _sys.path.insert(0, str(repo_root))
+            from tests.fixtures.pretool_adapter import (
+                compat_shape,
+                run_pre_tool_use,
+            )
 
-            result = mod.pre_tool_use_hook(
+            session_marker = "sess-lifecycle-cache-contract"
+            response = run_pre_tool_use(
                 "Task",
                 {
                     "subagent_type": "cloud-troubleshooter",
                     "prompt": "Diagnose pod health in namespace test",
                 },
+                session_id=session_marker,
             )
 
-            # PreToolUse should NOT return additionalContext (that goes to orchestrator)
-            assert result is None, \
-                "PreToolUse:Agent should return None (context cached for SubagentStart)"
+            # PreToolUse must NOT return additionalContext (it would land on
+            # the orchestrator, not the subagent).
+            assert compat_shape(response) is None, \
+                "PreToolUse:Agent should return no payload (kernel is claimed at SubagentStart)"
 
-            # Verify context was cached
-            from pathlib import Path
-            cache_dir = Path("/tmp/gaia-context-cache")
-            cache_files = list(cache_dir.glob("*.json"))
-            assert len(cache_files) > 0, \
-                "Context should be cached for SubagentStart to consume"
-
+            # Whatever bridge entries exist for this session, none preloads
+            # project context.
             import json
-            cached = json.loads(cache_files[-1].read_text())
-            assert "# Project Context" in cached["context"], \
-                "Cached context should contain project context"
-            assert "AGENT_STATUS" not in cached["context"], \
-                "Hook should not inline agent-protocol skill text into context"
-
-            # Clean up cache files
-            for f in cache_files:
+            cache_dir = Path("/tmp/gaia-context-cache")
+            for f in cache_dir.glob(f"{session_marker}-*.json"):
+                cached = json.loads(f.read_text())
+                assert "# Project Context" not in cached.get("context", ""), \
+                    "The cache bridge must not carry a preloaded project-context snapshot"
                 f.unlink(missing_ok=True)
         finally:
             os.chdir(original_cwd)
