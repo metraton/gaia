@@ -254,6 +254,157 @@ class TestTaskCrud:
         with pytest.raises(ValueError):
             reorder_tasks("me", "test-brief", [[1, 99]], db_path=seeded_db)
 
+    def test_update_task_goal_in_place(self, seeded_db):
+        from gaia.store.writer import update_task
+        res = update_task("me", "test-brief", 1, goal="T1 revised",
+                          db_path=seeded_db)
+        assert res["action"] == "updated"
+        assert res["fields"] == ["goal"]
+        con = sqlite3.connect(str(seeded_db))
+        try:
+            row = con.execute(
+                "SELECT goal FROM tasks WHERE plan_id IN "
+                "(SELECT id FROM plans WHERE brief_id IN "
+                " (SELECT id FROM briefs WHERE name='test-brief')) "
+                "AND order_num=1"
+            ).fetchone()
+        finally:
+            con.close()
+        assert row[0] == "T1 revised"
+
+    def test_update_task_preserves_id_and_gates(self, seeded_db):
+        """The central property: editing a task's goal must never destroy its
+        task_gates rows -- unlike remove_task_from_plan + add_task_to_plan,
+        which cascades them away (task_gates.task_id ON DELETE CASCADE)."""
+        from gaia.store.writer import update_task, list_task_gates
+
+        con = sqlite3.connect(str(seeded_db))
+        con.row_factory = sqlite3.Row
+        try:
+            task_id_before = con.execute(
+                "SELECT id FROM tasks WHERE order_num=1"
+            ).fetchone()["id"]
+        finally:
+            con.close()
+
+        gates_before = list_task_gates("me", "test-brief", 1, db_path=seeded_db)
+        assert len(gates_before) == 1
+
+        update_task("me", "test-brief", 1, goal="scope adjusted",
+                   db_path=seeded_db)
+
+        con = sqlite3.connect(str(seeded_db))
+        con.row_factory = sqlite3.Row
+        try:
+            task_id_after = con.execute(
+                "SELECT id FROM tasks WHERE order_num=1"
+            ).fetchone()["id"]
+        finally:
+            con.close()
+        assert task_id_after == task_id_before
+
+        gates_after = list_task_gates("me", "test-brief", 1, db_path=seeded_db)
+        assert len(gates_after) == 1
+        assert gates_after[0]["id"] == gates_before[0]["id"]
+        assert gates_after[0]["evidence_shape"] == gates_before[0]["evidence_shape"]
+
+    def test_update_task_empty_goal_raises(self, seeded_db):
+        from gaia.store.writer import update_task
+        with pytest.raises(ValueError, match="cannot be empty"):
+            update_task("me", "test-brief", 1, goal="", db_path=seeded_db)
+
+    def test_update_task_missing_raises(self, seeded_db):
+        from gaia.store.writer import update_task
+        with pytest.raises(ValueError, match="not found"):
+            update_task("me", "test-brief", 99, goal="x", db_path=seeded_db)
+
+
+# ---------------------------------------------------------------------------
+# T5.3b -- Gate CRUD writer: update_gate (in-place, partial)
+# ---------------------------------------------------------------------------
+
+class TestGateCrud:
+
+    def _seeded_gate_id(self, seeded_db) -> int:
+        con = sqlite3.connect(str(seeded_db))
+        con.row_factory = sqlite3.Row
+        try:
+            return con.execute(
+                "SELECT tg.id FROM task_gates tg JOIN tasks t ON t.id = tg.task_id "
+                "WHERE t.order_num = 1"
+            ).fetchone()["id"]
+        finally:
+            con.close()
+
+    def test_update_gate_partial(self, seeded_db):
+        from gaia.store.writer import update_gate
+        gate_id = self._seeded_gate_id(seeded_db)
+        res = update_gate("me", "test-brief", 1, gate_id,
+                          evidence_shape="pytest tests/ -k revised",
+                          db_path=seeded_db)
+        assert res["action"] == "updated"
+        assert res["fields"] == ["evidence_shape"]
+        assert res["gate_id"] == gate_id
+
+    def test_update_gate_preserves_id_and_untouched_fields(self, seeded_db):
+        from gaia.store.writer import update_gate, list_task_gates
+        gate_id = self._seeded_gate_id(seeded_db)
+        before = [g for g in list_task_gates("me", "test-brief", 1, db_path=seeded_db)
+                 if g["id"] == gate_id][0]
+
+        update_gate("me", "test-brief", 1, gate_id,
+                   artifact_path="/tmp/new-evidence.txt", db_path=seeded_db)
+
+        after = [g for g in list_task_gates("me", "test-brief", 1, db_path=seeded_db)
+                if g["id"] == gate_id][0]
+        assert after["id"] == before["id"]
+        assert after["artifact_path"] == "/tmp/new-evidence.txt"
+        # Untouched fields survive verbatim.
+        assert after["verification_type"] == before["verification_type"]
+        assert after["evidence_shape"] == before["evidence_shape"]
+        assert after["status"] == before["status"]
+
+    def test_update_gate_no_fields_raises(self, seeded_db):
+        from gaia.store.writer import update_gate
+        gate_id = self._seeded_gate_id(seeded_db)
+        with pytest.raises(ValueError, match="at least one field"):
+            update_gate("me", "test-brief", 1, gate_id, db_path=seeded_db)
+
+    def test_update_gate_missing_gate_raises(self, seeded_db):
+        from gaia.store.writer import update_gate
+        with pytest.raises(ValueError, match="not found"):
+            update_gate("me", "test-brief", 1, 999999,
+                       evidence_shape="x", db_path=seeded_db)
+
+    def test_update_gate_missing_task_raises(self, seeded_db):
+        from gaia.store.writer import update_gate
+        gate_id = self._seeded_gate_id(seeded_db)
+        with pytest.raises(ValueError, match="not found"):
+            update_gate("me", "test-brief", 99, gate_id,
+                       evidence_shape="x", db_path=seeded_db)
+
+    def test_update_gate_never_touches_status(self, seeded_db):
+        """update_gate carries no `status` parameter at all -- a gate already
+        marked pass/fail must survive a content edit unchanged."""
+        from gaia.store.writer import update_gate, set_gate_status, list_task_gates
+        gate_id = self._seeded_gate_id(seeded_db)
+        set_gate_status("me", "test-brief", 1, gate_id, "pass", db_path=seeded_db)
+
+        update_gate("me", "test-brief", 1, gate_id,
+                   evidence_type="new-type", db_path=seeded_db)
+
+        gate = [g for g in list_task_gates("me", "test-brief", 1, db_path=seeded_db)
+               if g["id"] == gate_id][0]
+        assert gate["status"] == "pass"
+        assert gate["evidence_type"] == "new-type"
+
+    def test_update_gate_rejects_invalid_verification_type(self, seeded_db):
+        from gaia.store.writer import update_gate
+        gate_id = self._seeded_gate_id(seeded_db)
+        with pytest.raises(ValueError):
+            update_gate("me", "test-brief", 1, gate_id,
+                       verification_type="not-a-real-type", db_path=seeded_db)
+
 
 # ---------------------------------------------------------------------------
 # T5.4 -- Brief metadata patching whitelist

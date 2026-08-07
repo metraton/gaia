@@ -376,8 +376,11 @@ def bootstrap_m4_schema(db_path: Path) -> None:
 
     -- approval_grants table (v7 / M3, needed as FK for handoff_approvals)
     -- Column set kept in lockstep with gaia/store/schema.sql (asserted by
-    -- tests/system/test_fixture_precondition_audit.py); multi_use/confirmed
-    -- are the v-later BOOLEAN flags production carries.
+    -- tests/system/test_fixture_precondition_audit.py, allowed_missing={} --
+    -- must match production exactly); multi_use/confirmed are the v-later
+    -- BOOLEAN flags production carries, request_fingerprint/next_index/
+    -- reservation_*/failed_index/failure_reason/source are the later
+    -- reservation-lifecycle columns.
     CREATE TABLE IF NOT EXISTS approval_grants (
         approval_id          TEXT PRIMARY KEY,
         agent_id             TEXT,
@@ -391,7 +394,16 @@ def bootstrap_m4_schema(db_path: Path) -> None:
         consumed_at          TEXT,
         revoked_at           TEXT,
         multi_use            INTEGER NOT NULL DEFAULT 0,
-        confirmed            INTEGER NOT NULL DEFAULT 0
+        confirmed            INTEGER NOT NULL DEFAULT 0,
+        request_fingerprint  TEXT,
+        next_index           INTEGER NOT NULL DEFAULT 0,
+        reservation_index    INTEGER,
+        reservation_session_id TEXT,
+        reservation_tool_use_id TEXT,
+        reservation_at       TEXT,
+        failed_index         INTEGER,
+        failure_reason       TEXT,
+        source                TEXT NOT NULL DEFAULT 'legacy'
     );
 
     CREATE INDEX IF NOT EXISTS idx_approval_grants_agent   ON approval_grants(agent_id);
@@ -400,22 +412,43 @@ def bootstrap_m4_schema(db_path: Path) -> None:
 
     -- agent_contract_handoffs table (v9/M4; contract_id added v28/T7;
     -- v37 born-at-dispatch: binding columns + task_status renamed agent_state,
-    -- CHECK widened with DISPATCHED)
+    -- CHECK widened with DISPATCHED; v39 cut_reason; v40 harness_agent_id;
+    -- v43 dispatch_* + claimed_at/context_anchors/kernel_sections; v44
+    -- dispatch_project -- kept in lockstep with gaia/store/schema.sql, though
+    -- (unlike approval_grants above) this table is not in
+    -- tests/system/test_fixture_precondition_audit.py's audited registry, so
+    -- this parity is manual, not guarded. plan_task_id/plan_id/
+    -- parent_handoff_id deliberately carry NO FK here (unlike production):
+    -- this is the MINIMAL schema and tasks/plans are not among its tables, so
+    -- declaring those FKs would make every INSERT into this table fail with
+    -- "no such table: tasks" even for a NULL value (SQLite resolves an FK
+    -- target's schema eagerly, before checking the value) -- a strictly worse
+    -- outcome than the columns existing unconstrained.
     CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
-        id                INTEGER PRIMARY KEY AUTOINCREMENT,
-        contract_id       TEXT,
-        agent_id          TEXT NOT NULL,
-        session_id        TEXT,
-        workspace         TEXT NOT NULL,
-        brief_id          INTEGER,
-        plan_task_id      INTEGER,
-        plan_id           INTEGER,
-        parent_handoff_id INTEGER,
-        kind              TEXT,
-        agent_state       TEXT NOT NULL
-                          CHECK (agent_state IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION', 'DISPATCHED')),
-        raw_handoff_json  TEXT NOT NULL,
-        created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        contract_id          TEXT,
+        agent_id             TEXT NOT NULL,
+        session_id           TEXT,
+        workspace            TEXT NOT NULL,
+        brief_id             INTEGER,
+        plan_task_id         INTEGER,
+        plan_id              INTEGER,
+        parent_handoff_id    INTEGER,
+        kind                 TEXT,
+        agent_state          TEXT NOT NULL
+                             CHECK (agent_state IN ('IN_PROGRESS', 'APPROVAL_REQUEST', 'COMPLETE', 'BLOCKED', 'NEEDS_INPUT', 'NEEDS_VERIFICATION', 'DISPATCHED')),
+        cut_reason           TEXT,
+        harness_agent_id     TEXT,
+        dispatch_prompt_id   TEXT,
+        dispatch_tool_use_id TEXT,
+        dispatch_description TEXT,
+        dispatch_prompt      TEXT,
+        claimed_at           TEXT,
+        context_anchors      TEXT,
+        kernel_sections      TEXT,
+        dispatch_project     TEXT,
+        raw_handoff_json     TEXT NOT NULL,
+        created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
         FOREIGN KEY (workspace) REFERENCES workspaces(name),
         FOREIGN KEY (brief_id)  REFERENCES briefs(id)
     );

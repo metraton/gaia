@@ -727,6 +727,20 @@ CREATE INDEX IF NOT EXISTS idx_episode_anomalies_episode    ON episode_anomalies
 --   status  -- lifecycle marker for class=thread rows ({open,carry_forward,
 --              graduated,closed}). NULL for class=anchor/log rows.
 --
+-- Schema v45 (added 2026-08-06): audience -- orthogonal to class/status/type.
+--   audience -- which AGENT ROLE the row's content is FOR: 'orchestrator'
+--               (routing/model-choice/report-style instructions, the
+--               orchestrator-operator pair's own preferences), 'executor'
+--               (preferences that apply to ANY dispatched specialist --
+--               corroborate live, plain logging, intent-over-literal), or
+--               'any' (unclassified / applies regardless -- the default, and
+--               the value every pre-v45 row keeps). Kernel injection (wave 2,
+--               out of scope here) will use this to select executor-only rows
+--               for a subagent's kernel without leaking orchestrator-only
+--               instructions. Never auto-tagged: the orchestrator classifies
+--               a row's audience explicitly (a subagent cannot write curated
+--               memory at all -- see _assert_dispatch_can_write_memory).
+--
 CREATE TABLE IF NOT EXISTS memory (
     workspace         TEXT NOT NULL,  -- FK -> workspaces.name
     name              TEXT NOT NULL,
@@ -740,6 +754,7 @@ CREATE TABLE IF NOT EXISTS memory (
     project_ref       TEXT,  -- remote-stable project anchor for project-scoped memory (projects.project_identity); NULL until populated. Column added v25 (scan-v2 SV1); populated/used in SV3.
     deleted_at        TEXT,  -- tombstone marker (scan-v2 SV3). NULL = live row; non-NULL ISO8601 = soft-deleted. delete_memory() sets this instead of DELETE so the row + body survive; hard DELETE is reserved for explicit human curation (delete_memory(hard=True)). All read paths filter `deleted_at IS NULL`. Column added v26.
     initiative        TEXT,  -- canonical project/initiative grouping key (clean, vantage-independent). Distinct from project_ref (the git-common-dir path): initiative is the human-facing key that unifies git projects (basename of project_ref sans .git -> 'gaia', 'balance') AND logical initiatives that are NOT git repos ('branchkinect', 'buildwiz', 'axisio', ...). NULL when no initiative can be resolved without guessing. Populated at write time (upsert_memory / gaia memory add: --project -> basename(project_ref); --initiative -> normalized key). Column added v32; existing rows backfilled by scripts/migrations/v31_to_v32.sql.
+    audience          TEXT CHECK (audience IN ('orchestrator', 'executor', 'any')) DEFAULT 'any',  -- v45: which agent role the row is for (see note above). Column added v45; existing rows default/backfill to 'any' (no behavior change on migration).
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -820,6 +835,8 @@ CREATE TABLE IF NOT EXISTS memory_history (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     workspace          TEXT NOT NULL,  -- FK -> workspaces.name (current workspace at time of change)
     name               TEXT NOT NULL,  -- memory slug (current name at time of change)
+    before_name        TEXT,
+    after_name         TEXT,
     before_workspace   TEXT,
     after_workspace    TEXT,
     before_body        TEXT,
@@ -830,6 +847,12 @@ CREATE TABLE IF NOT EXISTS memory_history (
     after_description  TEXT,
     before_status      TEXT,
     after_status       TEXT,
+    before_class       TEXT,
+    after_class        TEXT,
+    before_project_ref TEXT,
+    after_project_ref  TEXT,
+    before_initiative  TEXT,
+    after_initiative   TEXT,
     before_deleted_at  TEXT,
     after_deleted_at   TEXT,
     changed_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
@@ -854,29 +877,41 @@ CREATE INDEX IF NOT EXISTS idx_memory_history_workspace_name ON memory_history(w
 -- trigger's columns).
 CREATE TRIGGER IF NOT EXISTS trg_memory_history
 AFTER UPDATE ON memory
-WHEN OLD.body IS NOT NEW.body
+WHEN OLD.name IS NOT NEW.name
+   OR OLD.body IS NOT NEW.body
    OR OLD.workspace IS NOT NEW.workspace
    OR OLD.type IS NOT NEW.type
    OR OLD.description IS NOT NEW.description
    OR OLD.status IS NOT NEW.status
+   OR OLD.class IS NOT NEW.class
+   OR OLD.project_ref IS NOT NEW.project_ref
+   OR OLD.initiative IS NOT NEW.initiative
    OR OLD.deleted_at IS NOT NEW.deleted_at
 BEGIN
     INSERT INTO memory_history (
         workspace, name,
+        before_name, after_name,
         before_workspace, after_workspace,
         before_body, after_body,
         before_type, after_type,
         before_description, after_description,
         before_status, after_status,
+        before_class, after_class,
+        before_project_ref, after_project_ref,
+        before_initiative, after_initiative,
         before_deleted_at, after_deleted_at,
         changed_at
     ) VALUES (
         NEW.workspace, NEW.name,
+        OLD.name, NEW.name,
         OLD.workspace, NEW.workspace,
         OLD.body, NEW.body,
         OLD.type, NEW.type,
         OLD.description, NEW.description,
         OLD.status, NEW.status,
+        OLD.class, NEW.class,
+        OLD.project_ref, NEW.project_ref,
+        OLD.initiative, NEW.initiative,
         OLD.deleted_at, NEW.deleted_at,
         strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
     );
@@ -1063,12 +1098,21 @@ CREATE TABLE IF NOT EXISTS approval_grants (
     scope                TEXT NOT NULL DEFAULT 'COMMAND_SET',  -- grant scope type
     created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     expires_at           TEXT,                       -- ISO8601 or NULL (TTL enforced at query time)
-    status               TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING|CONSUMED|REVOKED|EXPIRED
+    status               TEXT NOT NULL DEFAULT 'PENDING',  -- PENDING|CONSUMED|FAILED|REVOKED|EXPIRED
     consumed_indexes_json TEXT,                      -- JSON array of consumed command_set indexes
     consumed_at          TEXT,                       -- ISO8601 when all items consumed
     revoked_at           TEXT,                       -- ISO8601 when explicitly revoked
     multi_use            INTEGER NOT NULL DEFAULT 0, -- 1 = multi-use grant, 0 = single-use (BOOLEAN)
-    confirmed            INTEGER NOT NULL DEFAULT 0  -- 1 = grant confirmed by user, 0 = pending (BOOLEAN)
+    confirmed            INTEGER NOT NULL DEFAULT 0, -- 1 = grant confirmed by user, 0 = pending (BOOLEAN)
+    request_fingerprint  TEXT,
+    next_index           INTEGER NOT NULL DEFAULT 0,
+    reservation_index    INTEGER,
+    reservation_session_id TEXT,
+    reservation_tool_use_id TEXT,
+    reservation_at       TEXT,
+    failed_index         INTEGER,
+    failure_reason       TEXT,
+    source               TEXT NOT NULL DEFAULT 'legacy'
 );
 
 CREATE INDEX IF NOT EXISTS idx_approval_grants_agent   ON approval_grants(agent_id);
@@ -1160,6 +1204,26 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
     -- stamping seam, carry NULL. No CHECK, mirroring `kind`/`cut_reason`
     -- (ALTER TABLE ADD COLUMN carries no CHECK on the migrated path).
     harness_agent_id TEXT,
+    -- v43: dispatch correlation + kernel payload. All stamped by
+    -- insert_dispatched_handoff at birth (from the PreToolUse:Task payload)
+    -- except claimed_at, which claim_dispatch_row sets exactly once when a
+    -- SubagentStart correlates itself to this row. All NULLABLE: legacy rows
+    -- and any birth whose payload lacked a coordinate carry NULLs. No CHECKs,
+    -- mirroring kind/cut_reason/harness_agent_id (ALTER TABLE ADD COLUMN on
+    -- the migrated path carries no CHECK).
+    dispatch_prompt_id   TEXT,                    -- host prompt_id of the dispatching PreToolUse event
+    dispatch_tool_use_id TEXT,                    -- host tool_use_id of the Task tool call
+    dispatch_description TEXT,                    -- Task tool `description` parameter
+    dispatch_prompt      TEXT,                    -- Task tool `prompt` parameter (the turn's goal)
+    claimed_at           TEXT,                    -- ISO8601; set once by claim_dispatch_row
+    context_anchors      TEXT,                    -- JSON list of context anchors computed at dispatch
+    kernel_sections      TEXT,                    -- JSON object {role, surface, can_read, can_write}
+    -- v44: the project the dispatch ran from ("name (/abs/path)"), resolved at
+    -- birth against the workspace's project_identity section and rendered into
+    -- the kernel's `project:` field. NULLABLE: legacy rows, and any dispatch
+    -- whose cwd matched no known project, carry NULL. No CHECK, mirroring the
+    -- v43 columns above.
+    dispatch_project     TEXT,
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note
@@ -1198,6 +1262,10 @@ CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_cut ON agent_contract_han
 -- serves is "recover the contract row for the harness agentId the parent
 -- holds", which only ever targets non-NULL values.
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_harness ON agent_contract_handoffs(harness_agent_id) WHERE harness_agent_id IS NOT NULL;
+-- v43: PARTIAL index over the unclaimed side only -- claim_dispatch_row's
+-- candidate query targets rows that are still DISPATCHED and unclaimed, a
+-- transient minority of the contract history.
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_unclaimed ON agent_contract_handoffs(dispatch_prompt_id) WHERE claimed_at IS NULL;
 
 -- ---------------------------------------------------------------------------
 -- agent_contract_handoff_approvals: approval decisions linked to handoffs (v9/M4)

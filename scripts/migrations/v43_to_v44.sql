@@ -1,0 +1,33 @@
+-- Migration v43 -> v44: dispatch project on agent_contract_handoffs.
+--
+-- WHAT CHANGES
+--   One nullable column on agent_contract_handoffs, stamped at birth
+--   (insert_dispatched_handoff):
+--
+--     dispatch_project  TEXT  -- "name (/abs/path)" of the project the dispatch
+--                              -- ran from, resolved at birth against the
+--                              -- workspace's project_identity section
+--
+--   No backfill: a historical row has no dispatch cwd to recover, and a
+--   guessed project is worse than a NULL.
+--
+-- WHY
+--   Wave 2A of the dispatch redesign stops preloading project context into the
+--   subagent. The kernel (# Your Contract) instead names the project the
+--   dispatch belongs to -- `project: <name> (<path>)` -- so the turn knows
+--   which project to pull context for on demand (gaia context get). Resolution
+--   happens once, at birth, where the dispatching PreToolUse payload still
+--   carries the cwd; persisting it on the row is what lets the claim-side
+--   kernel render it without re-resolving.
+--
+--   No CHECK constraint, mirroring the v43 columns: ALTER TABLE ADD COLUMN
+--   carries no CHECK, so declaring one only in schema.sql would leave a
+--   migrated DB and a fresh install with different shapes.
+--
+-- IDEMPOTENCY
+--   Same contract as v42->v43: one `ALTER TABLE ... ADD COLUMN ...` per LINE
+--   so the bootstrap runner's guard (_filter_add_column_idempotent) can
+--   neutralise already-present columns and its Section 1.5 pre-schema
+--   reconcile can add them to an existing DB before schema.sql replays.
+
+ALTER TABLE agent_contract_handoffs ADD COLUMN dispatch_project TEXT;

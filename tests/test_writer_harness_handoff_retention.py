@@ -20,9 +20,7 @@ Two format subtleties these tests pin:
 
 from __future__ import annotations
 
-import os
 import sqlite3
-import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -44,24 +42,16 @@ from gaia.store.writer import (  # noqa: E402
 
 
 @pytest.fixture()
-def bootstrapped_db(tmp_path, monkeypatch):
-    """Bootstrap a real gaia.db (full schema incl. all tables + triggers)."""
-    bootstrap = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+def bootstrapped_db(tmp_path, monkeypatch, bootstrapped_db_template):
+    """Real gaia.db (full schema incl. all tables + triggers), copied from the
+    session-scoped ``bootstrapped_db_template`` instead of re-running
+    ``scripts/bootstrap_database.sh`` per test. Each test still gets its own
+    independent, mutable DB file -- isolation is unchanged.
+    """
+    from tests.conftest import copy_bootstrapped_db
+
     db_path = tmp_path / "gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
-    env["WORKSPACE"] = str(tmp_path)
-    res = subprocess.run(
-        ["bash", str(bootstrap)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    assert res.returncode == 0, (
-        f"bootstrap failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
-    )
+    copy_bootstrapped_db(bootstrapped_db_template, db_path)
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     # Keep prunes deterministic: never auto-fire the probabilistic gates unless
     # a test explicitly forces the rate to 1. (Rate very high => ~never.)

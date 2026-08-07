@@ -76,7 +76,7 @@ class TestSchemaCompatibility:
         return contexts
 
     def test_surface_routing_has_all_surfaces(self, surface_routing_config):
-        """surface-routing.json must contain all expected surfaces."""
+        """The DB-backed routing table must contain all expected surfaces."""
         surfaces = surface_routing_config.get("surfaces", {})
         for surface in [
             "live_runtime",
@@ -91,7 +91,7 @@ class TestSchemaCompatibility:
             )
 
     def test_surface_routing_has_all_agents(self, surface_routing_config):
-        """surface-routing.json must map all expected agents."""
+        """The DB-backed routing table must map all expected agents."""
         surfaces = surface_routing_config.get("surfaces", {})
         agents_found = {cfg.get("primary_agent") for cfg in surfaces.values()}
         for agent in [
@@ -134,14 +134,14 @@ class TestSchemaCompatibility:
             )
 
     def test_identity_references_routing(self, identity_content):
-        """Identity must tell orchestrator about routing and agent-response.
-
-        The routing reference is now "Surface Routing Recommendation" (the
-        injected block name) rather than "routing suggestion" — updated in the
-        substrate v6 refactor to match the actual additionalContext header.
-        """
-        assert "Surface Routing Recommendation" in identity_content
+        """Identity must tell orchestrator about routing and agent-response."""
+        assert "routing" in identity_content.lower()
         assert "agent-response" in identity_content
+
+    def test_user_prompt_hook_does_not_inject_routing_recommendation(self, package_root):
+        content = (package_root / "hooks" / "user_prompt_submit.py").read_text()
+        assert "Surface Routing Recommendation" not in content
+        assert "_build_routing_recommendation" not in content
 
     def test_fixture_contexts_have_expected_structure(self, fixture_contexts):
         if not fixture_contexts:

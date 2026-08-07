@@ -189,6 +189,41 @@ def test_trigger_does_not_fire_on_unrelated_column_change(fresh_db: Path) -> Non
         con.close()
 
 
+def test_trigger_archives_semantic_ownership_and_lifecycle_fields(
+    fresh_db: Path,
+) -> None:
+    con = sqlite3.connect(str(fresh_db))
+    con.row_factory = sqlite3.Row
+    try:
+        con.execute("INSERT INTO workspaces (name) VALUES ('me')")
+        con.execute(
+            "INSERT INTO memory "
+            "(workspace, name, type, body, class, status, project_ref, initiative) "
+            "VALUES ('me', 'project_x', 'project', 'b', 'thread', 'open', "
+            "'/repos/old/.git', 'old')"
+        )
+        con.commit()
+
+        con.execute(
+            "UPDATE memory SET name='project_y', class='anchor', status=NULL, "
+            "project_ref='/repos/new/.git', initiative='new' "
+            "WHERE workspace='me' AND name='project_x'"
+        )
+        con.commit()
+
+        row = con.execute("SELECT * FROM memory_history").fetchone()
+        assert row["before_name"] == "project_x"
+        assert row["after_name"] == "project_y"
+        assert row["before_class"] == "thread"
+        assert row["after_class"] == "anchor"
+        assert row["before_project_ref"] == "/repos/old/.git"
+        assert row["after_project_ref"] == "/repos/new/.git"
+        assert row["before_initiative"] == "old"
+        assert row["after_initiative"] == "new"
+    finally:
+        con.close()
+
+
 # ---------------------------------------------------------------------------
 # Group 2: standalone migration file applied to a synthetic v25-shaped DB
 # ---------------------------------------------------------------------------

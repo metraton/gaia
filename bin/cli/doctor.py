@@ -51,6 +51,7 @@ References:
     use-time, repair is reinstall.
 """
 
+import argparse
 import json
 import os
 import shutil
@@ -243,7 +244,7 @@ def _package_root() -> Path:
 # in lock-step with the INSERT it adds to bootstrap_database.sh. If a user
 # upgrades the CLI past a schema bump but does not re-run `gaia install`,
 # `check_schema_version` raises a warning telling them how to repair.
-EXPECTED_SCHEMA_VERSION = 40
+EXPECTED_SCHEMA_VERSION = 45
 
 # Locations the doctor reads outside the workspace.
 _INSTALL_ERROR_MARKER = Path("~/.gaia/last-install-error.json").expanduser()
@@ -1688,11 +1689,10 @@ def check_agent_resolution(project_root: Path) -> dict:
     seeded from each agent's ``routing:`` frontmatter block by
     ``tools/scan/seed_surface_routing.py`` at install time. This check reads
     that table through the SAME loader
-    (``tools.context.surface_router.load_surface_routing_config``) that the
-    UserPromptSubmit hook (via ``hooks/modules/session/session_manifest.py``)
-    uses to compute the live "Surface Routing Recommendation" injected on
-    every user turn, so a workspace where routing demonstrably works reports
-    PASS here too instead of a misleading "file not found".
+    (``tools.context.surface_router.load_surface_routing_config``) used by
+    routing diagnostics and dispatch support. Routing is no longer injected
+    into every user turn, but a workspace where the registry works should
+    still report PASS here instead of a misleading "file not found".
 
     Verifies that each surface's ``primary_agent`` and the top-level
     ``reconnaissance_agent`` map to an ``agents/<name>.md`` that exists. A
@@ -2429,13 +2429,23 @@ def register(subparsers):
     """Register the doctor subcommand."""
     sub = subparsers.add_parser(
         "doctor",
-        help="Run Gaia health checks",
-        description="Validate the local installation and report drift.",
+        help="Run Gaia health checks (read-only unless --fix)",
+        description=(
+            "Validate the local installation and report drift.\n"
+            "\n"
+            "Read-only: every check inspects state and prints an inline fix\n"
+            "hint. Nothing is written UNLESS --fix is passed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub.add_argument("--json", action="store_true", default=False,
                      help="Emit JSON. bool.")
     sub.add_argument("--fix", action="store_true", default=False,
-                     help="Attempt auto-fix for common issues. bool.")
+                     help="MUTATES. Auto-fixes two checks: it sets the "
+                          "orchestrator agent field in .claude/"
+                          "settings.local.json and rebuilds the episodes_fts "
+                          "index in gaia.db. Denied in the orchestrator's CLI "
+                          "lane; plain `doctor` is allowed there. bool.")
     sub.add_argument("--workspace", metavar="PATH", default=None,
                      help="Check this workspace's .claude/ instead of auto-deriving. "
                           "Skips realpath derivation entirely.")

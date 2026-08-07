@@ -1,0 +1,53 @@
+-- Migration v44 -> v45: audience column on memory (kernel-injection redesign,
+-- wave 1).
+--
+-- WHAT CHANGES
+--   One nullable-by-CHECK, defaulted column on memory:
+--
+--     audience  TEXT CHECK (audience IN ('orchestrator', 'executor', 'any'))
+--               DEFAULT 'any'
+--
+--   audience is orthogonal to the existing type/class/status/project_ref/
+--   initiative columns: it names WHICH AGENT ROLE the row's content is FOR --
+--   'orchestrator' (routing, model-choice, report-style instructions),
+--   'executor' (preferences that apply to any dispatched specialist),
+--   or 'any' (unclassified / applies regardless -- the default). Kernel
+--   injection (wave 2, a separate change) will read this column to select
+--   executor-only rows for a subagent's kernel without leaking
+--   orchestrator-only instructions into it. This migration only adds the
+--   column and its read/write CLI surface; it does NOT tag any row and does
+--   NOT touch the kernel builder or the event injector.
+--
+-- WHY a plain ALTER TABLE ADD COLUMN (not a table rebuild, unlike
+-- v20_to_v21.sql / v34_to_v35.sql): those rebuilds exist to WIDEN a CHECK
+-- constraint SQLite already applies to an EXISTING column -- SQLite has no
+-- `ALTER TABLE ... ALTER COLUMN` / `DROP CONSTRAINT`, so changing an existing
+-- CHECK requires the create-copy-drop-rename procedure. Adding a brand-new
+-- column WITH a CHECK is a different operation: SQLite's `ALTER TABLE ...
+-- ADD COLUMN` fully supports a CHECK constraint on the new column, as long as
+-- the CHECK expression does not reference any other column (verified: a row
+-- inserted before the ALTER receives the DEFAULT and the DEFAULT satisfies
+-- the CHECK; an INSERT/UPDATE naming an out-of-enum value is rejected by the
+-- CHECK exactly as if the column had existed in CREATE TABLE from the start).
+-- No rebuild is needed, and this migration's ADD COLUMN line is byte-for-byte
+-- the same clause schema.sql declares, so a migrated DB and a fresh install
+-- land on an identical shape.
+--
+-- (Recent columns on agent_contract_handoffs -- kind/cut_reason/dispatch_* --
+-- were added WITHOUT a CHECK specifically to avoid a schema.sql/migration
+-- shape mismatch for THOSE columns' use case; that is a design choice for
+-- columns that did not need enum enforcement, not a SQLite limitation. Here
+-- the column genuinely needs an enum, and mirroring the exact clause in both
+-- places keeps the two shapes identical, so the CHECK is included.)
+--
+-- IDEMPOTENCY (required by the floor model -- this file is replayed on every
+-- fresh install). On a fresh install schema.sql has already created
+-- memory.audience with this exact shape (CHECK + DEFAULT), so replaying this
+-- ADD COLUMN would abort with "duplicate column name" -- exactly the failure
+-- mode `_filter_add_column_idempotent` (bootstrap_database.sh Section 3c /
+-- bootstrap_database.py) exists to neutralise: it detects the column already
+-- exists and turns the line into a no-op comment before execution. One
+-- `ALTER TABLE ... ADD COLUMN ...` per LINE, matching the assumption both
+-- runners rely on.
+
+ALTER TABLE memory ADD COLUMN audience TEXT CHECK (audience IN ('orchestrator', 'executor', 'any')) DEFAULT 'any';

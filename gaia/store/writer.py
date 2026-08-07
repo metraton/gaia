@@ -1715,6 +1715,13 @@ def mark_scheduled_task_state(
 
 VALID_MEMORY_TYPES = ("project", "user", "feedback", "atom", "decision", "negative")
 
+# v45: which agent role a curated memory row's content is FOR. Orthogonal to
+# type/class/status/project_ref/initiative -- see the schema.sql comment on
+# memory.audience for the full rationale. 'any' is the default and the value
+# every pre-v45 row keeps; kernel injection (a separate, later change) selects
+# 'executor' rows for a subagent's kernel without leaking 'orchestrator' ones.
+VALID_MEMORY_AUDIENCES = ("orchestrator", "executor", "any")
+
 
 # ---------------------------------------------------------------------------
 # Structural enforcement: curated memory is owned by the orchestrator-operator
@@ -2064,6 +2071,7 @@ def upsert_memory(
     origin_session_id: str | None = None,
     project_ref: str | None = None,
     initiative: str | None = None,
+    audience: str | None = None,
     db_path: Path | None = None,
     workspace_path: Path | None = None,
 ) -> dict:
@@ -2071,11 +2079,12 @@ def upsert_memory(
 
     Archive-on-upsert (scan-v2 SV3): when this overwrites an existing row, the
     ``memory_au``... no -- the ``trg_memory_history`` AFTER UPDATE trigger fires
-    on the ON CONFLICT DO UPDATE below and archives the PREVIOUS ``body`` (and
-    workspace/type/description/status/deleted_at) into ``memory_history`` before
-    the new value lands. The prior version is never lost; no explicit archival
-    code is needed here because the guarantee is enforced at the SQL layer for
-    every write path, not just this one.
+    on the ON CONFLICT DO UPDATE below and archives the tracked before/after
+    fields (name, body, workspace, type, description, class, status,
+    project_ref, initiative, and deleted_at) into ``memory_history`` before the
+    new value lands. No explicit archival code is needed here because ordinary
+    updates share the SQL-layer trigger; hard deletion and workspace cascade
+    remain outside that recovery guarantee.
 
     Resurrection: re-adding a slug that was soft-deleted clears ``deleted_at``
     (the row returns to the live set). The clearing is captured by the same
@@ -2110,6 +2119,14 @@ def upsert_memory(
     :func:`initiative_from_project_ref` so every project-anchored write gets a
     key for free; pass an explicit ``initiative`` (already-normalized or raw --
     it is normalized here) to set a logical-initiative key with no git anchor.
+
+    ``audience`` -- v45, orthogonal to type/class/status. Same coalesce-or-
+    omit discipline as ``project_ref``/``initiative``: ``None`` (the default)
+    never touches an existing row's audience on update, so a plain correction
+    upsert cannot silently reset a row that was explicitly tagged
+    'executor'/'orchestrator' back to 'any'. On INSERT of a brand-new row,
+    ``None`` resolves to the schema's own default ('any') rather than NULL.
+    Must be one of :data:`VALID_MEMORY_AUDIENCES` when set.
     """
     _assert_dispatch_can_write_memory()
 
@@ -2123,6 +2140,11 @@ def upsert_memory(
     if type not in VALID_MEMORY_TYPES:
         raise ValueError(
             f"invalid memory type {type!r}; must be one of {list(VALID_MEMORY_TYPES)}"
+        )
+    if audience is not None and audience not in VALID_MEMORY_AUDIENCES:
+        raise ValueError(
+            f"invalid memory audience {audience!r}; must be one of "
+            f"{list(VALID_MEMORY_AUDIENCES)}"
         )
     if not body or not body.strip():
         raise ValueError("memory body cannot be empty")
@@ -2150,8 +2172,8 @@ def upsert_memory(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
-                                    updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    updated_at, audience)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'))
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2160,10 +2182,19 @@ def upsert_memory(
                     initiative        = COALESCE(excluded.initiative, initiative),
                     origin_session_id = excluded.origin_session_id,
                     updated_at        = excluded.updated_at,
-                    deleted_at        = NULL
+                    deleted_at        = NULL,
+                    audience          = COALESCE(?, audience)
                 """,
+                # `audience` is bound twice deliberately: once for the INSERT
+                # branch (COALESCE(?, 'any') -- a brand-new row with no
+                # explicit audience gets the schema default) and once for the
+                # UPDATE branch (COALESCE(?, audience) -- referencing the raw
+                # parameter, NOT `excluded.audience`, so an upsert that does
+                # not mention audience preserves the row's EXISTING value
+                # instead of resetting it to 'any').
                 (workspace, name, type, description, body,
-                 project_ref, initiative, origin_session_id, now),
+                 project_ref, initiative, origin_session_id, now, audience,
+                 audience),
             )
             con.commit()
             return {
@@ -2322,10 +2353,9 @@ def reanchor_memory_project_ref(
     resolves to a concrete identity), but the writer allows it so a caller can
     correct a wrongly-anchored row.
 
-    Note: the ``trg_memory_history`` trigger does not track ``project_ref``
-    (it captures body/workspace/type/description/status/deleted_at), so a
-    re-anchor is a metadata correction and is intentionally not mirrored into
-    ``memory_history``.
+    Schema v41 includes ``project_ref`` in ``trg_memory_history``. A real
+    re-anchor records its before/after anchor automatically; a no-op update is
+    skipped here and creates no history row.
 
     Raises:
         ValueError: the ``(workspace, name)`` row does not exist.
@@ -2356,6 +2386,78 @@ def reanchor_memory_project_ref(
             "name": name,
             "before_project_ref": before,
             "after_project_ref": project_ref,
+            "updated_at": now,
+        }
+    finally:
+        con.close()
+
+
+def set_memory_audience(
+    workspace: str,
+    name: str,
+    audience: str,
+    *,
+    db_path: Path | None = None,
+) -> dict:
+    """PATCH the ``audience`` column of an existing curated memory row (v45).
+
+    This is the dedicated correction path for ``audience`` -- mirroring
+    :func:`reanchor_memory_project_ref` rather than
+    :func:`update_memory_field`: ``audience`` is an enum-constrained
+    classification, not free text, so it does not belong in
+    ``_MEMORY_PATCHABLE_FIELDS`` (which applies text append/overwrite
+    semantics that make no sense for an enum). ``gaia memory edit
+    --audience=<value>`` calls this unconditionally -- unlike
+    :func:`upsert_memory`'s coalesce-preserving ``audience`` parameter, this
+    function always sets the value the caller passed.
+
+    Args:
+        workspace: Workspace name (FK -> workspaces.name).
+        name:      Curated memory slug; the row must already exist.
+        audience:  New value. Must be one of :data:`VALID_MEMORY_AUDIENCES`.
+        db_path:   Optional explicit DB path (used by tests).
+
+    Returns:
+        ``{"status": "applied", "name": name, "before_audience": ...,
+           "after_audience": audience, "updated_at": ...}``.
+
+    Raises:
+        ValueError: the ``(workspace, name)`` row does not exist, or
+                    ``audience`` is not a valid enum value.
+        MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
+    """
+    _assert_dispatch_can_write_memory()
+
+    if audience not in VALID_MEMORY_AUDIENCES:
+        raise ValueError(
+            f"invalid memory audience {audience!r}; must be one of "
+            f"{list(VALID_MEMORY_AUDIENCES)}"
+        )
+
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT audience FROM memory WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"memory '{name}' not found in workspace '{workspace}'"
+            )
+
+        before = row["audience"]
+        now = _now_iso()
+        con.execute(
+            "UPDATE memory SET audience = ?, updated_at = ? "
+            "WHERE workspace = ? AND name = ?",
+            (audience, now, workspace, name),
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "name": name,
+            "before_audience": before,
+            "after_audience": audience,
             "updated_at": now,
         }
     finally:
@@ -3113,7 +3215,8 @@ def get_memory(
     try:
         sql = (
             "SELECT workspace, name, type, description, body, project_ref, "
-            "       initiative, origin_session_id, updated_at, deleted_at "
+            "       initiative, origin_session_id, updated_at, deleted_at, "
+            "       audience "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
         if not include_deleted:
@@ -3130,14 +3233,23 @@ def list_memory(
     workspace: str,
     *,
     type: str | None = None,
+    audience: str | None = None,
     include_deleted: bool = False,
     db_path: Path | None = None,
 ) -> list[dict]:
-    """List curated memory rows, optionally filtered by ``type``.
+    """List curated memory rows, optionally filtered by ``type``/``audience``.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
-    default; pass ``include_deleted=True`` to include them.
+    default; pass ``include_deleted=True`` to include them. ``audience``
+    (v45) filters to rows tagged with exactly that value -- it must be one of
+    :data:`VALID_MEMORY_AUDIENCES` when set; ``None`` (the default) applies no
+    audience filter.
     """
+    if audience is not None and audience not in VALID_MEMORY_AUDIENCES:
+        raise ValueError(
+            f"invalid memory audience {audience!r}; must be one of "
+            f"{list(VALID_MEMORY_AUDIENCES)}"
+        )
     con = _connect(db_path)
     try:
         where = ["workspace = ?"]
@@ -3145,10 +3257,13 @@ def list_memory(
         if type is not None:
             where.append("type = ?")
             params.append(type)
+        if audience is not None:
+            where.append("audience = ?")
+            params.append(audience)
         if not include_deleted:
             where.append("deleted_at IS NULL")
         sql = (
-            "SELECT name, type, description, updated_at "
+            "SELECT name, type, description, updated_at, audience "
             "FROM memory WHERE " + " AND ".join(where) + " ORDER BY name"
         )
         rows = con.execute(sql, params).fetchall()
@@ -4021,6 +4136,59 @@ def remove_task_from_plan(
         con.close()
 
 
+def update_task(
+    workspace: str,
+    brief_name: str,
+    order_num: int,
+    *,
+    goal: str,
+    db_path: Path | None = None,
+) -> dict:
+    """Update ``goal`` IN PLACE for the task at ``order_num`` in the plan
+    attached to ``brief_name``.
+
+    Preserves ``tasks.id`` and, critically, every child ``task_gates`` row:
+    ``task_gates.task_id`` carries ``ON DELETE CASCADE`` from ``tasks.id``
+    (schema.sql), so the only prior way to edit a goal -- ``remove_task_from_plan``
+    followed by ``add_task_to_plan`` -- deletes the task row and cascades away
+    every gate attached to it. Adjusting a task's scope is not the same
+    operation as replacing the task, and this writer is what lets a caller do
+    the former without paying for the latter.
+
+    ``status`` is untouched here; the state machine stays the exclusive
+    province of :func:`set_task_status`. ``order_num`` and ``id`` are the
+    resolution keys, never rewritten by this call.
+
+    Raises ValueError on missing brief/plan/task or an empty ``goal``.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("tasks")
+
+    if not goal or not goal.strip():
+        raise ValueError("task goal cannot be empty")
+
+    con = _connect(db_path)
+    try:
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, order_num
+        )
+        con.execute(
+            "UPDATE tasks SET goal = ? WHERE id = ?",
+            (goal, task_id),
+        )
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "updated",
+            "brief_name": brief_name,
+            "order_num": order_num,
+            "task_id": task_id,
+            "fields": ["goal"],
+        }
+    finally:
+        con.close()
+
+
 def reorder_tasks(
     workspace: str,
     brief_name: str,
@@ -4166,6 +4334,51 @@ def list_plan_tasks(
                 (plan_id, status),
             ).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def get_task_by_order(
+    workspace: str,
+    brief_name: str,
+    order_num: int,
+    *,
+    db_path: Path | None = None,
+) -> dict | None:
+    """Return the single task row at ``order_num`` in the plan attached to
+    ``brief_name``, or None if no task sits at that order_num.
+
+    Read surface for ``gaia task show``. Same row shape as
+    :func:`list_plan_tasks` (id, plan_id, order_num, goal, status,
+    evidence_path) -- ``id`` is ``tasks.id``, the row id the dispatch contract's
+    ``task_id=<N>`` token requires, which is NEVER the same value as
+    ``order_num`` (the plan-position ordinal a human reads/types). Raises
+    ValueError on a missing brief or a brief with no plan attached (mirroring
+    list_plan_tasks's contract), so a caller can tell "no task at this
+    order_num" (returns None) apart from "no plan to look in" (raises).
+    """
+    con = _connect(db_path)
+    try:
+        brief_id = _resolve_brief_id(con, workspace, brief_name)
+        if brief_id is None:
+            raise ValueError(
+                f"brief '{brief_name}' not found in workspace '{workspace}'"
+            )
+        plan_row = con.execute(
+            "SELECT id FROM plans WHERE brief_id = ?", (brief_id,)
+        ).fetchone()
+        if plan_row is None:
+            raise ValueError(
+                f"no plan attached to brief '{brief_name}'"
+            )
+        plan_id = plan_row["id"]
+
+        row = con.execute(
+            "SELECT id, plan_id, order_num, goal, status, evidence_path "
+            "FROM tasks WHERE plan_id = ? AND order_num = ?",
+            (plan_id, order_num),
+        ).fetchone()
+        return dict(row) if row is not None else None
     finally:
         con.close()
 
@@ -4514,6 +4727,92 @@ def remove_gate_from_task(
             "brief_name": brief_name,
             "task_order_num": task_order_num,
             "gate_id": gate_id,
+        }
+    finally:
+        con.close()
+
+
+def update_gate(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    gate_id: int,
+    *,
+    verification_type: str | None = None,
+    evidence_type: str | None = None,
+    evidence_shape: str | None = None,
+    artifact_path: str | None = None,
+    db_path: Path | None = None,
+) -> dict:
+    """Update fields of an existing task_gates row IN PLACE, preserving its id.
+
+    Partial update, mirroring :func:`gaia.briefs.store.update_ac`: only the
+    keyword fields passed as non-None are written; the rest of the row is left
+    untouched. ``task_gates.id`` is the resolution key, never rewritten, and
+    ``.status`` is deliberately not a parameter here -- gate status transitions
+    stay the exclusive job of :func:`set_gate_status` (and, through it, the
+    verifier-only closure path), never a side effect of a content edit.
+
+    Persists the edited fields AS GIVEN: like :func:`add_gate_to_task`, this
+    writer does NOT invoke ``gaia.state.gate_validation.validate_gate`` --
+    structural validation is a separate, independently-invokable pure
+    function, out of scope for what a writer blocks at persist time. Holding
+    edit to that same (lack of) check is deliberate: an edited gate must never
+    be rejectable by a rule that ``add`` would not also have enforced.
+
+    Raises ValueError when no field is given, on missing brief/plan/task, or
+    when ``gate_id`` does not belong to that task.
+    """
+    from gaia.state.permissions import _assert_dispatch_can_advance_state
+    _assert_dispatch_can_advance_state("tasks")
+
+    updates: dict[str, Any] = {}
+    if verification_type is not None:
+        updates["verification_type"] = verification_type
+    if evidence_type is not None:
+        updates["evidence_type"] = evidence_type
+    if evidence_shape is not None:
+        updates["evidence_shape"] = evidence_shape
+    if artifact_path is not None:
+        updates["artifact_path"] = artifact_path
+
+    if not updates:
+        raise ValueError("at least one field must be specified for update")
+
+    con = _connect(db_path)
+    try:
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, task_order_num
+        )
+        existing = con.execute(
+            "SELECT id FROM task_gates WHERE id = ? AND task_id = ?",
+            (gate_id, task_id),
+        ).fetchone()
+        if existing is None:
+            raise ValueError(
+                f"gate id={gate_id} not found on task order_num={task_order_num} "
+                f"in plan for brief '{brief_name}'"
+            )
+
+        set_clauses = ", ".join(f"{k} = ?" for k in updates.keys())
+        values = list(updates.values()) + [gate_id]
+        try:
+            con.execute(
+                f"UPDATE task_gates SET {set_clauses} WHERE id = ?",
+                values,
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"could not update gate id={gate_id}: {exc}"
+            ) from exc
+        con.commit()
+        return {
+            "status": "applied",
+            "action": "updated",
+            "brief_name": brief_name,
+            "task_order_num": task_order_num,
+            "gate_id": gate_id,
+            "fields": list(updates.keys()),
         }
     finally:
         con.close()
@@ -5586,6 +5885,178 @@ def insert_approval_grant(
         return _applied()
     except Exception as exc:
         return {"status": "error", "reason": str(exc)}
+    finally:
+        con.close()
+
+
+def insert_plan_command_set(
+    approval_id: str,
+    command_set: list[dict],
+    *,
+    request_fingerprint: str,
+    agent_id: str | None = None,
+    session_id: str | None = None,
+    db_path: Path | None = None,
+    con: sqlite3.Connection | None = None,
+) -> dict:
+    """Persist an approved plan-first COMMAND_SET, failing closed on any error."""
+    connection = con if con is not None else _connect(db_path)
+    owned = con is None
+    try:
+        if owned:
+            connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            """
+            INSERT INTO approval_grants
+                (approval_id, agent_id, session_id, command_set_json, scope,
+                 created_at, status, consumed_indexes_json, confirmed,
+                 request_fingerprint, next_index, source)
+            VALUES (?, ?, ?, ?, 'COMMAND_SET', ?, 'PENDING', '[]', 1, ?, 0,
+                    'plan-first')
+            """,
+            (approval_id, agent_id, session_id, _json.dumps(command_set), _now_iso(), request_fingerprint),
+        )
+        if owned:
+            connection.commit()
+        return _applied()
+    except Exception as exc:
+        if owned:
+            connection.rollback()
+        return {"status": "error", "reason": str(exc)}
+    finally:
+        if owned:
+            connection.close()
+
+
+def reserve_plan_command(
+    command: str,
+    *,
+    session_id: str,
+    tool_use_id: str,
+    db_path: Path | None = None,
+) -> dict | None:
+    """Reserve the exact next command for one correlated Bash tool call."""
+    if not session_id or not tool_use_id:
+        return None
+    from gaia.approvals.command_set import command_fingerprint
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        rows = con.execute(
+            "SELECT * FROM approval_grants WHERE scope='COMMAND_SET' "
+            "AND source='plan-first' AND status='PENDING' ORDER BY created_at, approval_id"
+        ).fetchall()
+        for row in rows:
+            grant = dict(row)
+            items = _json.loads(grant["command_set_json"])
+            index = int(grant.get("next_index") or 0)
+            if index >= len(items):
+                continue
+            item = items[index]
+            if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
+                continue
+            if grant.get("reservation_tool_use_id"):
+                con.rollback()
+                return None
+            changed = con.execute(
+                "UPDATE approval_grants SET reservation_index=?, reservation_session_id=?, "
+                "reservation_tool_use_id=?, reservation_at=? WHERE approval_id=? "
+                "AND reservation_tool_use_id IS NULL AND next_index=?",
+                (index, session_id, tool_use_id, _now_iso(), grant["approval_id"], index),
+            ).rowcount
+            if changed != 1:
+                con.rollback()
+                return None
+            con.commit()
+            return {"approval_id": grant["approval_id"], "index": index}
+        con.rollback()
+        return None
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+def pending_plan_command_exists(command: str, *, db_path: Path | None = None) -> bool:
+    """Return whether ``command`` is the exact next item of an active request-set."""
+    from gaia.approvals.command_set import command_fingerprint
+
+    con = _connect(db_path)
+    try:
+        try:
+            rows = con.execute(
+                "SELECT command_set_json, next_index FROM approval_grants "
+                "WHERE scope='COMMAND_SET' AND source='plan-first' AND status='PENDING'"
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such column" in str(exc):
+                return False
+            raise
+        for row in rows:
+            items = _json.loads(row[0])
+            index = int(row[1] or 0)
+            if index < len(items):
+                item = items[index]
+                if item.get("command") == command and item.get("fingerprint") == command_fingerprint(command):
+                    return True
+        return False
+    finally:
+        con.close()
+
+
+def settle_plan_command(
+    approval_id: str,
+    *,
+    session_id: str,
+    tool_use_id: str,
+    success: bool,
+    failure_reason: str | None = None,
+    db_path: Path | None = None,
+) -> bool:
+    """Commit or release an exact reservation; a failure leaves the remainder."""
+    if not session_id or not tool_use_id:
+        return False
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        row = con.execute(
+            "SELECT * FROM approval_grants WHERE approval_id=?", (approval_id,)
+        ).fetchone()
+        if row is None:
+            con.rollback()
+            return False
+        grant = dict(row)
+        if (grant.get("reservation_session_id"), grant.get("reservation_tool_use_id")) != (session_id, tool_use_id):
+            con.rollback()
+            return False
+        index = int(grant["reservation_index"])
+        if success:
+            items = _json.loads(grant["command_set_json"])
+            consumed = _json.loads(grant.get("consumed_indexes_json") or "[]")
+            consumed.append(index)
+            next_index = index + 1
+            status = "CONSUMED" if next_index == len(items) else "PENDING"
+            con.execute(
+                "UPDATE approval_grants SET next_index=?, consumed_indexes_json=?, status=?, "
+                "consumed_at=CASE WHEN ?='CONSUMED' THEN ? ELSE consumed_at END, "
+                "reservation_index=NULL, reservation_session_id=NULL, "
+                "reservation_tool_use_id=NULL, reservation_at=NULL WHERE approval_id=?",
+                (next_index, _json.dumps(consumed), status, status, _now_iso(), approval_id),
+            )
+        else:
+            con.execute(
+                "UPDATE approval_grants SET status='FAILED', failed_index=?, failure_reason=?, "
+                "reservation_index=NULL, reservation_session_id=NULL, "
+                "reservation_tool_use_id=NULL, reservation_at=NULL WHERE approval_id=?",
+                (index, failure_reason, approval_id),
+            )
+        con.commit()
+        return True
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
 
@@ -6801,6 +7272,17 @@ def finalize_agent_contract_handoff(
             "-- it is the idempotency key the UNIQUE constraint UPSERTs on."
         )
 
+    # A placeholder session id is NO session id. The UPSERT below merges
+    # session_id with COALESCE(excluded, existing) so "a caller that DOES carry
+    # a value still wins" -- which turned an agent's invented
+    # `gaia contract finalize --session-id unknown` (the subagent is never told
+    # its harness session id) into a write that CLOBBERED the real attribution
+    # stamped on the row at birth (measured: handoff 10915). Normalizing the
+    # placeholder to None keeps the COALESCE semantics intact for every caller
+    # that carries a real value while making the placeholder unable to erase one.
+    if session_id is not None and session_id.strip().lower() in ("", "unknown"):
+        session_id = None
+
     _assert_dispatch_can_write_handoff()
 
     def _work() -> dict:
@@ -7033,6 +7515,13 @@ def insert_dispatched_handoff(
     session_id: str | None = None,
     brief_id: int | None = None,
     agent_name: str | None = None,
+    dispatch_prompt_id: str | None = None,
+    dispatch_tool_use_id: str | None = None,
+    dispatch_description: str | None = None,
+    dispatch_prompt: str | None = None,
+    context_anchors: "list | None" = None,
+    kernel_sections: "dict | None" = None,
+    dispatch_project: str | None = None,
     db_path: "Path | None" = None,
 ) -> dict:
     """Birth a nascent ``agent_contract_handoffs`` row (agent_state='DISPATCHED').
@@ -7066,6 +7555,24 @@ def insert_dispatched_handoff(
                            its born row found and closed. Ignored when an explicit
                            ``raw_handoff_json`` is supplied (the caller then owns
                            the envelope).
+        dispatch_prompt_id:   Host prompt_id of the dispatching PreToolUse event
+                              (v43). The primary correlation key
+                              :func:`claim_dispatch_row` matches on.
+        dispatch_tool_use_id: Host tool_use_id of the Task tool call (v43).
+        dispatch_description: Task tool ``description`` parameter (v43); the
+                              secondary claim correlation key.
+        dispatch_prompt:      Task tool ``prompt`` parameter (v43) -- the turn's
+                              goal, rendered into the dispatch kernel.
+        context_anchors:      List of context anchors computed at dispatch
+                              (v43); JSON-serialized into the column.
+        kernel_sections:      Dict with the kernel render payload (role /
+                              surface / can_read / can_write, v43);
+                              JSON-serialized into the column.
+        dispatch_project:     The project the dispatch ran from, as the display
+                              string ``"name (/abs/path)"`` (v44), resolved at
+                              birth against the workspace's project_identity
+                              section; rendered into the kernel's ``project:``
+                              field at claim time.
         db_path:           Optional explicit DB path (used by tests).
 
     Returns:
@@ -7095,6 +7602,13 @@ def insert_dispatched_handoff(
             birth_envelope[BIRTH_AGENT_NAME_KEY] = str(agent_name)
         raw_handoff_json = json.dumps(birth_envelope)
 
+    context_anchors_json = (
+        json.dumps(list(context_anchors)) if context_anchors else None
+    )
+    kernel_sections_json = (
+        json.dumps(dict(kernel_sections)) if kernel_sections else None
+    )
+
     def _work() -> dict:
         con = _connect(db_path)
         try:
@@ -7115,8 +7629,11 @@ def insert_dispatched_handoff(
                     INSERT INTO agent_contract_handoffs
                         (contract_id, agent_id, session_id, workspace, brief_id,
                          plan_task_id, plan_id, parent_handoff_id, kind,
+                         dispatch_prompt_id, dispatch_tool_use_id,
+                         dispatch_description, dispatch_prompt,
+                         context_anchors, kernel_sections, dispatch_project,
                          agent_state, cut_reason, raw_handoff_json, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCHED', ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DISPATCHED', ?, ?, ?)
                     ON CONFLICT(contract_id) DO NOTHING
                     RETURNING id
                     """,
@@ -7130,6 +7647,13 @@ def insert_dispatched_handoff(
                         plan_id,
                         parent_handoff_id,
                         kind,
+                        dispatch_prompt_id,
+                        dispatch_tool_use_id,
+                        dispatch_description,
+                        dispatch_prompt,
+                        context_anchors_json,
+                        kernel_sections_json,
+                        dispatch_project,
                         CUT_REASON_NEVER_FINALIZED,
                         raw_handoff_json,
                         _now_iso(),
@@ -7434,6 +7958,262 @@ def find_dispatched_row_by_agent_name(
         }
     finally:
         con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: claim_dispatch_row (v43 -- atomic dispatch->start correlation)
+# ---------------------------------------------------------------------------
+#
+# SubagentStart holds the host's own coordinates (prompt_id, task_description,
+# agent_type) but not the contract_id the row was born under. This claim is the
+# DB-backed bridge that replaces guessing: it correlates the starting subagent
+# to its born row by the dispatch coordinates persisted at birth and CLAIMS it
+# atomically (claimed_at, UPDATE ... WHERE claimed_at IS NULL), so two
+# concurrent starts can never both take the same row.
+#
+# Correlation is layered, and the layers only ever NARROW -- never invent:
+#   (a) EXACT -- dispatch_prompt_id and/or dispatch_description equality
+#       (always additionally scoped by the birth-envelope agent name when the
+#       caller provides one);
+#   (b) FIFO -- several candidates that are INDISTINGUISHABLE by (a) are claimed
+#       oldest-first (ORDER BY created_at ASC, id ASC), but ONLY when their
+#       material signatures all agree (identical dispatches: any assignment is
+#       equivalent);
+#   (c) GUARD -- several candidates whose material signatures DIVERGE mean the
+#       correlation would be a guess between genuinely different turns. Nothing
+#       is claimed; a critical `dispatch_correlation_ambiguous` anomaly and a
+#       warning harness_event are written so the miss is loud, and the turn
+#       starts without a kernel (the protocol's bare-init fallback).
+#
+# A signature is (kind, plan_task_id, plan_id, parent_handoff_id, brief_id,
+# sha256(dispatch_prompt)) -- the coordinates that make two dispatches
+# materially different even when their correlation keys collide.
+# ---------------------------------------------------------------------------
+
+# The anomaly/event identifiers the (c) guard writes under. Named here so tests
+# and readers key on the constant, not on a prose string.
+DISPATCH_CORRELATION_AMBIGUOUS_ANOMALY = "dispatch_correlation_ambiguous"
+DISPATCH_CORRELATION_AMBIGUOUS_EVENT = "dispatch.correlation_ambiguous"
+
+_DISPATCH_SIGNATURE_COLUMNS = (
+    "kind",
+    "plan_task_id",
+    "plan_id",
+    "parent_handoff_id",
+    "brief_id",
+)
+
+# Columns returned to the claimer -- everything the dispatch kernel renders
+# from, plus the identity/binding coordinates the caller stamps or logs.
+_CLAIM_ROW_COLUMNS = (
+    "id",
+    "contract_id",
+    "agent_id",
+    "session_id",
+    "workspace",
+    "brief_id",
+    "plan_task_id",
+    "plan_id",
+    "parent_handoff_id",
+    "kind",
+    "dispatch_prompt_id",
+    "dispatch_tool_use_id",
+    "dispatch_description",
+    "dispatch_prompt",
+    "claimed_at",
+    "context_anchors",
+    "kernel_sections",
+    "dispatch_project",
+    "created_at",
+)
+
+
+def _dispatch_signature(row: sqlite3.Row) -> tuple:
+    """Material signature of a born row -- see the module comment above."""
+    prompt = row["dispatch_prompt"] or ""
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return tuple(row[col] for col in _DISPATCH_SIGNATURE_COLUMNS) + (digest,)
+
+
+def _record_claim_ambiguity(
+    candidates: "list[sqlite3.Row]",
+    *,
+    agent_name: "str | None",
+    dispatch_prompt_id: "str | None",
+    dispatch_description: "str | None",
+    db_path: "Path | None",
+) -> None:
+    """Write the critical anomaly + warning event for a divergent-signature
+    claim. Best-effort: the guard's REFUSAL is the load-bearing behavior; a
+    failed telemetry write must not turn it into an exception."""
+    workspace = candidates[0]["workspace"] if candidates else "global"
+    contract_ids = [c["contract_id"] for c in candidates]
+    payload = {
+        "agent_name": agent_name,
+        "dispatch_prompt_id": dispatch_prompt_id,
+        "dispatch_description": dispatch_description,
+        "candidate_contract_ids": contract_ids,
+    }
+    message = (
+        f"claim_dispatch_row: {len(candidates)} unclaimed DISPATCHED rows match "
+        f"the correlation keys but their material signatures diverge -- "
+        f"refusing to claim (candidates: {', '.join(contract_ids)})"
+    )
+    try:
+        # episode_anomalies is a child of episodes (FK), so the anomaly needs a
+        # minimal parent episode to hang off; the guard mints one per refusal.
+        episode_id = f"claim-ambiguous-{os.urandom(8).hex()}"
+        insert_episode(
+            workspace,
+            episode_id,
+            {"type": "dispatch_correlation", "agent": agent_name,
+             "title": "ambiguous dispatch claim"},
+            db_path=db_path,
+        )
+        insert_episode_anomaly(
+            workspace,
+            episode_id,
+            {
+                "type": DISPATCH_CORRELATION_AMBIGUOUS_ANOMALY,
+                "severity": "critical",
+                "message": message,
+                "payload": payload,
+            },
+            db_path=db_path,
+        )
+    except Exception:
+        pass  # telemetry must never turn the guard's refusal into an error
+    try:
+        write_harness_event(
+            event_type=DISPATCH_CORRELATION_AMBIGUOUS_EVENT,
+            source="store",
+            agent=agent_name,
+            result=message,
+            severity="warning",
+            meta=payload,
+            workspace=workspace,
+            db_path=db_path,
+        )
+    except Exception:
+        pass  # same contract as the anomaly write above
+
+
+def claim_dispatch_row(
+    *,
+    agent_name: "str | None" = None,
+    dispatch_prompt_id: "str | None" = None,
+    dispatch_description: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """Atomically claim the born row this subagent start correlates to.
+
+    See the module comment above for the (a)/(b)/(c) correlation ladder.
+    Requires at least one correlation key (``dispatch_prompt_id`` or
+    ``dispatch_description``): with neither there is nothing exact to match and
+    a claim would be a guess, so the function returns None and the turn
+    starts without a kernel (the protocol's bare-init fallback).
+
+    Args:
+        agent_name:           The dispatched agent's NAME (birth-envelope
+                              coordinate); scopes every layer when provided.
+        dispatch_prompt_id:   Host prompt_id observed at SubagentStart.
+        dispatch_description: Host task_description observed at SubagentStart.
+        db_path:              Optional explicit DB path (used by tests).
+
+    Returns:
+        The claimed row as a dict (``_CLAIM_ROW_COLUMNS``, with ``claimed_at``
+        set and ``context_anchors``/``kernel_sections`` still JSON strings), or
+        None when nothing was claimed -- no candidate, an ambiguity refusal, or
+        a lost race. None always means "fall back", never an error.
+    """
+    if not dispatch_prompt_id and not dispatch_description:
+        return None
+
+    def _candidates(con: sqlite3.Connection) -> "list[sqlite3.Row]":
+        select = (
+            f"SELECT {', '.join(_CLAIM_ROW_COLUMNS)} "
+            "FROM agent_contract_handoffs "
+            "WHERE agent_state = 'DISPATCHED' AND claimed_at IS NULL"
+        )
+        name_clause = f" AND {_BIRTH_AGENT_NAME_SQL} = ?" if agent_name else ""
+        order = " ORDER BY created_at ASC, id ASC"
+
+        def _query(clause: str, params: tuple) -> "list[sqlite3.Row]":
+            full_params = params + ((str(agent_name),) if agent_name else ())
+            return con.execute(
+                select + clause + name_clause + order, full_params
+            ).fetchall()
+
+        # Layer (a), most exact first: prompt_id + description together, then
+        # each alone. The first non-empty result set wins -- narrower keys are
+        # never diluted by a broader retry.
+        if dispatch_prompt_id and dispatch_description:
+            rows = _query(
+                " AND dispatch_prompt_id = ? AND dispatch_description = ?",
+                (dispatch_prompt_id, dispatch_description),
+            )
+            if rows:
+                return rows
+        if dispatch_prompt_id:
+            rows = _query(
+                " AND dispatch_prompt_id = ?", (dispatch_prompt_id,)
+            )
+            if rows:
+                return rows
+        if dispatch_description:
+            rows = _query(
+                " AND dispatch_description = ?", (dispatch_description,)
+            )
+            if rows:
+                return rows
+        return []
+
+    def _work() -> "dict | None":
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                rows = _candidates(con)
+                if not rows:
+                    con.commit()
+                    return None
+                if len(rows) > 1:
+                    signatures = {_dispatch_signature(r) for r in rows}
+                    if len(signatures) > 1:
+                        # Layer (c): divergent turns behind one key -- refuse.
+                        con.commit()
+                        _record_claim_ambiguity(
+                            rows,
+                            agent_name=agent_name,
+                            dispatch_prompt_id=dispatch_prompt_id,
+                            dispatch_description=dispatch_description,
+                            db_path=db_path,
+                        )
+                        return None
+                # Layer (b): single candidate, or identical siblings -- FIFO.
+                chosen = rows[0]
+                claimed_at = _now_iso()
+                cur = con.execute(
+                    "UPDATE agent_contract_handoffs SET claimed_at = ? "
+                    "WHERE id = ? AND claimed_at IS NULL",
+                    (claimed_at, chosen["id"]),
+                )
+                if cur.rowcount != 1:
+                    # Lost a race with a concurrent claimer -- fall back rather
+                    # than retry into someone else's row.
+                    con.commit()
+                    return None
+                con.commit()
+                claimed = {col: chosen[col] for col in _CLAIM_ROW_COLUMNS}
+                claimed["claimed_at"] = claimed_at
+                return claimed
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
 
 
 def is_born_at_dispatch_row(
@@ -7958,6 +8738,8 @@ def list_agent_contract_handoffs(
     agent_state: str | None = None,
     contract_id: str | None = None,
     harness_agent_id: str | None = None,
+    cut_reason: str | None = None,
+    any_cut: bool = False,
     limit: int = 100,
     db_path: "Path | None" = None,
 ) -> list[dict]:
@@ -7975,6 +8757,15 @@ def list_agent_contract_handoffs(
             stamped at SubagentStart -- see stamp_harness_agent_id). This is
             the recovery coordinate for a cut turn: the parent's Task result
             carries this id even when the subagent never finalized.
+        cut_reason:  Filter by the exact v39 cut marker (never_finalized /
+            reaped / backstop_capture / salvaged_truncation -- gaia.state.CUT_REASONS).
+        any_cut:     Filter to every row that did NOT close cleanly, whatever the
+            reason (``cut_reason IS NOT NULL``). Ignored when ``cut_reason`` names
+            a specific reason. Both forms are SQL-side on purpose: the cut
+            population is a minority of the table, so filtering after ``limit``
+            would silently return a handful of rows and read as "almost nothing
+            was cut". Served by idx_agent_contract_handoffs_cut, the partial
+            index over exactly this population.
         limit:       Maximum rows to return (default 100).
         db_path:     Optional explicit DB path (used by tests).
 
@@ -8008,6 +8799,11 @@ def list_agent_contract_handoffs(
         if harness_agent_id is not None:
             clauses.append("harness_agent_id = ?")
             params.append(harness_agent_id)
+        if cut_reason is not None:
+            clauses.append("cut_reason = ?")
+            params.append(cut_reason)
+        elif any_cut:
+            clauses.append("cut_reason IS NOT NULL")
 
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
