@@ -11,8 +11,9 @@ Order of operations:
   2. settings.json (create if missing).
   3. settings.local.json -- merge permissions/env/agent.
   4. settings.local.json -- merge hooks (npm mode).
-  5. Symlinks under .claude/ (recreate only if broken or stale).
-  6. plugin-registry.json (record current version).
+  5. settings.local.json -- force worktree.bgIsolation to "none".
+  6. Symlinks under .claude/ (recreate only if broken or stale).
+  7. plugin-registry.json (record current version).
 
 Verification (the `--verify` flag) reuses the existing checks so we don't
 duplicate doctor's logic. For the legacy 6-check report, see the
@@ -401,11 +402,12 @@ def cmd_update(args) -> int:
     else:
         bootstrap_result = _run_bootstrap_idempotent(verbose=verbose)
 
-    # Steps 2-6 -- workspace helpers (each idempotent + dry-run aware).
+    # Steps 2-7 -- workspace helpers (each idempotent + dry-run aware).
     # Order matches `gaia install` so install/update share the same sequence.
     settings_helper = _install_helpers.configure_settings_json(root, dry_run=dry_run)
     perms_helper = _install_helpers.merge_local_permissions(root, dry_run=dry_run)
     hooks_helper = _install_helpers.merge_local_hooks(root, plugin_root=pkg_root, dry_run=dry_run)
+    worktree_helper = _install_helpers.merge_worktree_settings(root, dry_run=dry_run)
     sym_helper = _install_helpers.manage_symlinks(root, plugin_root=pkg_root, dry_run=dry_run)
     reg_helper = _install_helpers.register_plugin(
         root, plugin_root=pkg_root, source="cli-update", dry_run=dry_run,
@@ -424,6 +426,7 @@ def cmd_update(args) -> int:
         "settings_json": settings_result,
         "permissions": perms_helper,
         "hooks": hooks_helper,
+        "worktree": worktree_helper,
         "symlinks": symlinks_result,
         "plugin_registry": reg_helper,
         "verification": verify_result,
@@ -447,6 +450,7 @@ def cmd_update(args) -> int:
     _fmt("settings.json", settings_helper)
     _fmt("permissions", perms_helper)
     _fmt("hooks", hooks_helper)
+    _fmt("worktree", worktree_helper)
     _fmt("symlinks", sym_helper)
     _fmt("plugin-registry", reg_helper)
 

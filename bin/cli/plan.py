@@ -70,6 +70,10 @@ def _cmd_save(args) -> int:
     The ``plan_id`` assigned on the first insert is permanent -- subsequent
     saves do not change it.
 
+    ``--status`` is optional. Omitted on an INSERT it means ``draft``;
+    omitted on an UPDATE it means "keep the status this plan already has",
+    so saving new content never changes where the plan is in its lifecycle.
+
     Scope of the upsert
     -------------------
     ``gaia plan save`` only touches ``plans.status`` and ``plans.content``.
@@ -100,13 +104,22 @@ def _cmd_save(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     brief_name = getattr(args, "brief", None)
     content = getattr(args, "content", None)
-    status = getattr(args, "status", None) or "draft"
+    status = getattr(args, "status", None)
     as_json = getattr(args, "json", False)
 
     if not brief_name:
         return _err("--brief is required", as_json=as_json)
     if content is None or content == "":
         return _err("--content is required", as_json=as_json)
+
+    if not status:
+        # 'draft' is the default for a NEW plan only. On an update, the live
+        # status is preserved: applying the insert default to both paths made
+        # every content save silently demote an 'active' plan back to 'draft',
+        # and the repair verb (`gaia plan set-status`) is curator-only -- the
+        # planner broke a state it had no permission to restore.
+        existing = get_plan(workspace, brief_name)
+        status = (existing or {}).get("status") or "draft"
 
     try:
         res = upsert_plan(workspace, brief_name, content=content, status=status)
@@ -162,6 +175,8 @@ def _cmd_list(args) -> int:
     brief_name = getattr(args, "brief", None)
     status = getattr(args, "status", None)
     fmt = getattr(args, "format", None) or "table"
+    if getattr(args, "json", False):
+        fmt = "json"
 
     plans = list_plans(workspace, brief_name=brief_name, status=status)
 
@@ -340,6 +355,8 @@ def register(subparsers) -> None:
     list_p.add_argument("--format", default="table",
                         choices=("table", "json", "count"),
                         help="Output shape. Default: table.")
+    list_p.add_argument("--json", action="store_true", default=False,
+                        help="Alias for --format=json.")
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
 

@@ -1,4 +1,4 @@
-"""
+r"""
 Capability classes for shell commands.
 
 A *capability class* is a group of CLI binaries that share the same risk
@@ -52,11 +52,16 @@ as follows:
    write-capable dot-commands above are caught first and never downgraded;
    ``.dump`` / ``.output`` / ``.once`` / ``.backup`` are deliberately left
    out of the read-only set (conservative) and fall through to MUTATIVE.
-4. If a flag override matches (e.g. ``-readonly``), classify as READ_ONLY.
-5. If the command exposes an inline payload via a recognised flag pair
+4. If the CLI is ``psql`` and every inline payload is read-only with at
+   least one being a read-only backslash meta-command (``\l``, ``\dt``,
+   ``\du``, ``\d*``, ``\z``, ...), classify as READ_ONLY.  Meta-commands
+   that execute or write (``\i``, ``\o``, ``\copy``, ``\!``) are absent from
+   the allow-list and fall through.
+5. If a flag override matches (e.g. ``-readonly``), classify as READ_ONLY.
+6. If the command exposes an inline payload via a recognised flag pair
    (``-c``, ``-e``, ``--eval``) and the payload matches the read-only
    regex, classify as READ_ONLY.
-6. Otherwise return ``default_intent`` (MUTATIVE).
+7. Otherwise return ``default_intent`` (MUTATIVE).
 
 A future Nivel 2 (`sql_payload_analyzer.py`) will parse external SQL files
 and inline payloads into an AST and downgrade more cases -- e.g., a file
@@ -89,6 +94,68 @@ _SQL_READONLY_PREFIX = re.compile(
     r"foreign_key_list|quick_check|integrity_check|user_version|"
     r"compile_options|encoding|page_count|page_size))\b",
     re.IGNORECASE,
+)
+
+#: Characters an inline psql meta-command argument may NOT contain.
+#:
+#: Two groups, for two different reasons:
+#:
+#:   * ``\;|&`$<>`` -- shell metacharacters and psql's own statement
+#:     separator.  ``psql -c '\dt; DROP TABLE t'`` must not read as read-only.
+#:   * ``\x00-\x1f\x7f\x85\u2028\u2029`` -- every C0 control (which is where
+#:     ``\n``, ``\r``, ``\v`` and ``\f`` live), DEL, the C1 NEL, and the
+#:     unicode line/paragraph separators.  A LINE BREAK is a statement
+#:     separator exactly as ``;`` is: psql's lexer terminates a meta-command
+#:     at ``newline [\n\r]`` (``psqlscan.l``), and since PostgreSQL 10 one
+#:     ``-c`` string may mix meta-commands with SQL and run BOTH.
+#:
+#: The second group is written as a RANGE rather than an enumeration of the
+#: break characters someone thought of, so a splitter nobody listed cannot
+#: appear in the argument at all.  Non-ASCII printable text is still allowed:
+#: a table named ``a\u00f1o`` is a legitimate ``\dt`` pattern.
+#:
+#: Spelled with escapes on purpose -- U+2028 / U+2029 are invisible in a
+#: source file and must never be pasted literally into one.
+_PSQL_META_ARG_FORBIDDEN = r"\\;|&`$<>\x00-\x1f\x7f\x85\u2028\u2029"
+
+#: Pattern for a psql BACKSLASH META-COMMAND that only introspects.  psql's
+#: meta-commands are not SQL, so ``_SQL_READONLY_PREFIX`` never matches them
+#: and every ``psql -c '\dt'`` fell through to the MUTATIVE default.
+#:
+#: The allowed set is:
+#:   * the whole ``\d`` family (``\d``, ``\dt``, ``\du``, ``\dn``, ``\di``,
+#:     ``\df``, ``\dRp``, ...) -- every ``\d*`` command in psql is a DESCRIBE,
+#:     including the ``+`` verbose suffix;
+#:   * ``\l`` / ``\list`` (list databases), ``\z`` (access privileges),
+#:     ``\sf`` / ``\sv`` (show a function / view definition),
+#:     ``\conninfo``, and the help forms ``\?`` / ``\h`` / ``\help``.
+#:
+#: Everything that executes or writes is absent by construction (allow-list,
+#: not deny-list): ``\i`` / ``\ir`` (run a script), ``\o`` (redirect output to
+#: a file or a command), ``\copy`` (bulk load/unload), ``\!`` (shell), ``\g``
+#: with a target, ``\gexec`` / ``\gset`` / ``\watch``.
+#:
+#: An OPTIONAL argument is allowed (``\dt public.*``) but is constrained by
+#: ``_PSQL_META_ARG_FORBIDDEN``.
+#:
+#: WHITESPACE RUNS ARE HORIZONTAL-ONLY (``[ \t]``, never ``\s``), and that is
+#: the load-bearing half of the line-break defense -- not the character class.
+#: Python's ``\s`` matches ``\n``, ``\r``, ``\v``, ``\f``, ``\x85``, U+2028 and
+#: U+2029, so a ``\s+`` separator swallows the break ITSELF, after which the
+#: argument class only has to absorb ordinary text.  Measured: with ``\s+``
+#: retained, excluding the break characters from the class closes NONE of the
+#: break payloads -- ``\s+`` is greedy and eats ``" \n"`` in one bite.
+#:
+#: The terminating anchor is ``\Z``, not ``$``: without ``re.MULTILINE`` a
+#: ``$`` still matches BEFORE a trailing newline.  The caller strips the
+#: payload first, so this is defense in depth -- the pattern must hold alone.
+#:
+#: Still allowed, and correct: text after the command on the SAME line
+#: (``\dt DROP TABLE users``).  psql reads it as the meta-command's pattern
+#: argument, never as a statement -- the same behaviour as ``\dt public.*``.
+_PSQL_READONLY_META_COMMAND = re.compile(
+    r"^[ \t]*\\(?:d[a-zA-Z]*\+?|l(?:ist)?\+?|z\+?|sf\+?|sv\+?|conninfo|\?|h|help)"
+    rf"(?:[ \t]+[^{_PSQL_META_ARG_FORBIDDEN}]*)?[ \t]*\Z"
 )
 
 #: Pattern for mongosh / nodejs-style payloads that only read.  ``find``,
@@ -290,6 +357,28 @@ def _has_sqlite_load_dot_command(tokens: Tuple[str, ...]) -> bool:
     return False
 
 
+def _psql_inline_payloads_readonly(payloads: Tuple[str, ...]) -> bool:
+    """Return True when ``psql`` inline payloads are read-only AND at least
+    one of them is a backslash meta-command.
+
+    Requiring EVERY payload to be read-only is what keeps
+    ``psql -c '\\dt' -c 'DROP TABLE t'`` mutative: psql accepts repeated
+    ``-c``, so a single read-only meta-command must never launder the rest of
+    the invocation.  Returns False when no meta-command is present so a plain
+    SQL payload keeps going through the ordinary inline-payload rule.
+    """
+    saw_meta_command = False
+    for payload in payloads:
+        stripped = payload.strip()
+        if stripped.startswith("\\"):
+            if not _PSQL_READONLY_META_COMMAND.match(stripped):
+                return False
+            saw_meta_command = True
+        elif not _SQL_READONLY_PREFIX.match(stripped):
+            return False
+    return saw_meta_command
+
+
 def _has_sqlite_readonly_dot_command(tokens: Tuple[str, ...]) -> bool:
     """Return True when ALL dot-commands present in the tokens are
     strictly read-only schema/metadata commands.
@@ -318,7 +407,7 @@ def _has_sqlite_readonly_dot_command(tokens: Tuple[str, ...]) -> bool:
 # ============================================================================
 
 def classify_capability(semantics: CommandSemantics) -> CapabilityResult:
-    """Classify a command via its capability class, when applicable.
+    r"""Classify a command via its capability class, when applicable.
 
     Returns :data:`_NO_MATCH` (``matched=False``) when the base CLI is not
     in any capability class -- the caller should fall through to the
@@ -336,6 +425,10 @@ def classify_capability(semantics: CommandSemantics) -> CapabilityResult:
         1b so write-capable dot-commands are never downgraded; ``.dump`` /
         ``.output`` / ``.once`` / ``.backup`` are excluded (conservative)
         and fall through to the default.
+    1d. psql read-only backslash meta-command (``\l`` / ``\dt`` / ``\du`` /
+        ``\d*`` / ``\z`` / ...) in EVERY inline payload -> READ_ONLY.
+        Execute/write meta-commands (``\i`` / ``\o`` / ``\copy`` / ``\!``)
+        are not in the allow-list and fall through to the default.
     2. Flag override -> READ_ONLY.
     3. Inline-payload override -> READ_ONLY.
     4. Default -> ``default_intent`` (always MUTATIVE today).
@@ -390,6 +483,24 @@ def classify_capability(semantics: CommandSemantics) -> CapabilityResult:
                 "introspection command (.schema / .tables / .databases / ...)"
             ),
         )
+
+    # --- Rule 1d: psql read-only meta-commands -> READ_ONLY -----------------
+    # Only the inline payloads are inspected (never bare positionals): for
+    # psql a positional is the dbname/username, not a command, so widening the
+    # candidate set would let an unrelated token decide the tier.
+    if base_cmd == "psql":
+        psql_payloads = _extract_inline_payloads(tokens, payload_flags)
+        if _psql_inline_payloads_readonly(psql_payloads):
+            return CapabilityResult(
+                matched=True,
+                capability_class=class_name,
+                intent=CATEGORY_READ_ONLY,
+                reason=(
+                    f"{class_name}: psql meta-command is read-only "
+                    "introspection (\\l / \\dt / \\du / \\d* / \\z / ...)"
+                ),
+                inline_payload=psql_payloads[0] if psql_payloads else "",
+            )
 
     # --- Rule 2: flag-based overrides ---------------------------------------
     flag_overrides = [

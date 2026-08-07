@@ -377,6 +377,16 @@ class TestActivateDbPendingByPrefix:
         assert not result.success
         assert result.status == ACTIVATION_NOT_FOUND
 
+    # NOTE: the true full-path singular regression test (extract_nonce_from_label
+    # -> activate_db_pending_by_prefix -> bash_validator._validate_single_command)
+    # lives in tests/integration/test_command_set_runtime_v2_e2e.py, NOT here.
+    # This file's isolated_grants_dir autouse fixture (below) monkeypatches
+    # gaia.store.writer._connect to a hand-rolled inline approval_grants schema
+    # that predates the plan-first columns (no source/next_index/reservation_*),
+    # so reserve_plan_command's query fails closed with "no such column: source"
+    # for ANY test here that reaches it -- unrelated to the fix in
+    # approval_grants.py, a pre-existing test-infra gap in this file's fixture.
+
 
 # ---------------------------------------------------------------------------
 # Test 2: check/write alignment

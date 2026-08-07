@@ -150,7 +150,7 @@ def _make_args(**overrides) -> argparse.Namespace:
         workspace="me",
         since=None,
         until=None,
-        last=20,
+        last=None,
         agent=None,
         type=None,
         command_like=None,
@@ -332,6 +332,90 @@ def test_query_count_without_group_by_returns_total(tmp_db, tmp_path,
     assert rc == 0, capsys.readouterr()
     out = json.loads(capsys.readouterr().out)
     assert out == [{"count": 3}]
+
+
+def _seed_episodes(tmp_db, n: int, prefix: str = "ep_bulk") -> None:
+    for i in range(n):
+        _seed_episode(tmp_db, f"{prefix}_{i}", agent="developer",
+                      timestamp=f"2026-05-07T10:{i:02d}:00Z")
+
+
+class TestCountIsNotCappedByLast:
+    """A count must count everything, not the last 20 of everything.
+
+    ``--last`` defaulted to 20 for every output shape, so ``gaia query --count``
+    answered "how many of the most recent 20" while reading as a total. The
+    cap belongs to row LISTING; an aggregate is a different question.
+    """
+
+    def test_count_exceeds_the_default_row_cap(self, tmp_db, tmp_path,
+                                               monkeypatch, capsys):
+        from cli.query import cmd_query
+
+        monkeypatch.chdir(tmp_path)
+        _seed_episodes(tmp_db, 25)
+
+        rc = cmd_query(_make_args(surface="episodes", count=True, format="json"))
+        assert rc == 0, capsys.readouterr()
+        out = json.loads(capsys.readouterr().out)
+        assert out == [{"count": 25}], (
+            "a count with no --last must count every matching row"
+        )
+
+    def test_format_count_exceeds_the_default_row_cap(self, tmp_db, tmp_path,
+                                                      monkeypatch, capsys):
+        """--format=count is the same question by another spelling."""
+        from cli.query import cmd_query
+
+        monkeypatch.chdir(tmp_path)
+        _seed_episodes(tmp_db, 25)
+
+        rc = cmd_query(_make_args(surface="episodes", format="count"))
+        assert rc == 0, capsys.readouterr()
+        assert capsys.readouterr().out.strip() == "25"
+
+    def test_group_by_buckets_cover_every_row(self, tmp_db, tmp_path,
+                                              monkeypatch, capsys):
+        """--group-by aggregates too; capped buckets would not sum to the
+        total the unbucketed count reports."""
+        from cli.query import cmd_query
+
+        monkeypatch.chdir(tmp_path)
+        _seed_episodes(tmp_db, 25)
+
+        rc = cmd_query(_make_args(surface="episodes", group_by="agent",
+                                  format="json"))
+        assert rc == 0, capsys.readouterr()
+        out = json.loads(capsys.readouterr().out)
+        assert sum(r["count"] for r in out) == 25
+
+    def test_explicit_last_still_caps_a_count(self, tmp_db, tmp_path,
+                                              monkeypatch, capsys):
+        """Uncapping is the DEFAULT, not a ceiling removal: an explicit --last
+        is an instruction and still applies."""
+        from cli.query import cmd_query
+
+        monkeypatch.chdir(tmp_path)
+        _seed_episodes(tmp_db, 25)
+
+        rc = cmd_query(_make_args(surface="episodes", count=True,
+                                  format="json", last=5))
+        assert rc == 0, capsys.readouterr()
+        out = json.loads(capsys.readouterr().out)
+        assert out == [{"count": 5}]
+
+    def test_row_listing_keeps_the_default_cap(self, tmp_db, tmp_path,
+                                               monkeypatch, capsys):
+        """The listing cap is untouched -- only the aggregate shapes changed."""
+        from cli.query import cmd_query
+
+        monkeypatch.chdir(tmp_path)
+        _seed_episodes(tmp_db, 25)
+
+        rc = cmd_query(_make_args(surface="episodes", format="json"))
+        assert rc == 0, capsys.readouterr()
+        rows = json.loads(capsys.readouterr().out)
+        assert len(rows) == 20
 
 
 def test_query_group_by_day_truncates_timestamp(tmp_db, tmp_path,

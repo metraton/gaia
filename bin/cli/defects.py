@@ -9,8 +9,8 @@ Rows come from the two channels a defect can reach the substrate through and
 are merged into a single listing (see ``gaia.store.reader.read_defects``):
 
     subagent      -- episode_anomalies, the raw defect floor
-    orchestrator  -- harness_events graded above ``info``, the failures
-                     observed from outside a subagent turn
+    orchestrator  -- the hook event log (``harness_events``) graded above
+                     ``info``: failures observed from outside a subagent turn
 
 Output columns are the same for both origins:
 
@@ -135,7 +135,7 @@ Examples:
   gaia defects                                     # newest defects, both origins
   gaia defects --type=skipped_verification         # every instance of one class
   gaia defects --type=agent.contract_rejected      # rejected handoff contracts
-  gaia defects --origin=orchestrator --since=7d    # harness-observed failures
+  gaia defects --origin=orchestrator --since=7d    # failures seen in the hook log
   gaia defects --severity=critical --limit=50
   gaia defects --agent=gaia-system --json
 
@@ -147,11 +147,13 @@ def register(subparsers) -> None:
     """Register the ``defects`` subcommand."""
     p = subparsers.add_parser(
         "defects",
-        help="List individual defects for triage (row-level, not aggregated)",
+        help="List failures one by one for triage (read-only, never aggregated)",
         description=(
-            "List individual defect rows across the subagent defect floor "
-            "(episode_anomalies) and orchestrator-origin harness observations "
-            "(harness_events above info severity), with triage filters."
+            "Read-only. List individual failures, one row each, from the two "
+            "channels a defect reaches the substrate through: anomalies "
+            "recorded inside a subagent turn (episode_anomalies), and "
+            "failures observed from outside one in the hook event log "
+            "(harness_events graded above `info`). Writes nothing."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=_DEFECTS_EPILOG,

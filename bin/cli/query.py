@@ -29,6 +29,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+#: Per-surface row cap applied when ``--last`` is omitted and rows are listed.
+DEFAULT_ROW_CAP = 20
+
+#: SQLite reads a negative LIMIT as "no limit" -- used when ``--last`` is
+#: omitted and the output is an aggregate, so a count counts everything.
+UNCAPPED_ROWS = -1
+
 
 def _resolve_workspace(explicit: str | None) -> str | None:
     """Resolve workspace; ``None`` means 'no workspace filter'."""
@@ -173,13 +180,21 @@ def cmd_query(args) -> int:
 
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     surface = getattr(args, "surface", None) or "all"
-    last = getattr(args, "last", 20)
+    last = getattr(args, "last", None)
     fmt = getattr(args, "format", None) or "table"
     as_json = getattr(args, "json", False) or fmt == "json"
     group_by = getattr(args, "group_by", None)
     do_count = bool(getattr(args, "count", False))
     do_snippets = bool(getattr(args, "snippets", False))
     do_metrics = bool(getattr(args, "metrics", False))
+
+    if last is None:
+        # The row cap protects a LISTING from scrolling forever; an aggregate
+        # is a different question. `gaia query --count` capped at 20 answered
+        # "how many of the last 20", which reads as a total and is not one.
+        # An explicit --last still caps every output shape, including counts.
+        aggregating = do_count or bool(group_by) or fmt == "count"
+        last = UNCAPPED_ROWS if aggregating else DEFAULT_ROW_CAP
 
     # --metrics projects context_metrics telemetry, which only lives on the
     # episodes surface -- scope the query to it so the projection applies.
@@ -305,8 +320,9 @@ def register(subparsers) -> None:
         help="Upper bound. Same format as --since. Default: none.",
     )
     p.add_argument(
-        "--last", type=int, default=20, metavar="N",
-        help="Per-surface row cap. int. Default: 20.",
+        "--last", type=int, default=None, metavar="N",
+        help="Per-surface row cap. int. Default: 20 when listing rows, "
+             "uncapped for --count / --group-by / --format=count.",
     )
     p.add_argument(
         "--agent", default=None, metavar="NAME",

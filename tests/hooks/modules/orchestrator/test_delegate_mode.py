@@ -184,10 +184,10 @@ class TestCheckDelegateMode(unittest.TestCase):
 
     # -- Orchestrator context: blocked tools --
 
-    def test_blocks_bash_for_orchestrator(self):
+    def test_allows_guarded_bash_for_orchestrator(self):
         result = check_delegate_mode("Bash", self._orchestrator_payload("Bash"))
-        self.assertTrue(result.blocked)
-        self.assertIn("DELEGATION REQUIRED", result.reason)
+        self.assertFalse(result.blocked)
+        self.assertIsNone(result.reason)
 
     def test_allows_read_for_orchestrator(self):
         """Read is the one direct evidence tool granted to the orchestrator."""
@@ -279,9 +279,9 @@ class TestCheckDelegateMode(unittest.TestCase):
 
     def test_tool_name_case_insensitive(self):
         """Tool names are matched case-insensitively."""
-        # "BASH" should still be blocked
+        # "BASH" should still receive the orchestrator's narrow grant
         result = check_delegate_mode("BASH", self._orchestrator_payload("BASH"))
-        self.assertTrue(result.blocked)
+        self.assertFalse(result.blocked)
 
         # "agent" (lowercase) should be allowed
         result = check_delegate_mode("agent", self._orchestrator_payload("agent"))
@@ -310,9 +310,13 @@ class TestAllowedToolsCompleteness(unittest.TestCase):
 
     def test_investigation_tools_absent(self):
         """Ensure investigation tools are NOT in the allowed set."""
-        for tool in ("bash", "edit", "write", "glob", "grep",
+        for tool in ("edit", "write", "glob", "grep",
                      "notebookedit"):
             self.assertNotIn(tool, ORCHESTRATOR_ALLOWED_TOOLS)
+
+    def test_bash_present_for_gaia_memory_lane(self):
+        result = check_delegate_mode("Bash", {"tool_name": "Bash", "agent_type": "gaia-orchestrator"})
+        self.assertFalse(result.blocked)
 
     def test_read_present(self):
         self.assertIn("read", ORCHESTRATOR_ALLOWED_TOOLS)

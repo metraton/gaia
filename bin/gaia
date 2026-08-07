@@ -193,6 +193,92 @@ def _load_single_plugin(stem):
         return None
 
 
+# ---------------------------------------------------------------------------
+# Top-level epilog: the three lanes
+# ---------------------------------------------------------------------------
+#
+# An alphabetical subcommand list answers "what exists" and leaves the reader
+# with the question that actually matters: "which of these may I run myself?"
+# A measured incident made the cost concrete -- an orchestrator blind-resumed
+# four cut subagents while `gaia contract list --state DISPATCHED` (the exact
+# verb that would have named them) sat inside its own allowlist, and read the
+# absence of a known event reader as an absence of capability while `gaia
+# query` and `gaia defects` were both available to it. Nothing was missing;
+# nothing was discoverable.
+#
+# So the epilog is organized by LANE, not by name: what reads, what the
+# coordinator itself may write, and what must be delegated -- with the owner
+# named on every delegated line, because "you may not run this" is only
+# actionable next to "they can". The read + coordinator-write lanes mirror
+# ALLOWED_READ_PHRASES / ALLOWED_WRITE_PHRASES in
+# hooks/modules/security/gaia_cli_only_guard.py; that guard is closed by
+# default, so this text is a map OF the enforcement, never a second source of
+# truth for it. When the allowlist changes, this epilog changes with it.
+_EPILOG = """\
+lanes -- what runs where, and who owns the rest:
+
+READ -- changes nothing. The orchestrator runs these itself.
+  contract       view | list | validate
+                 `contract list --state DISPATCHED` names the turns that were
+                 dispatched and never came back with a contract -- the way to
+                 see cut subagents instead of blind-resuming them.
+  query          THE event reader: one read-only query across curated memory,
+                 agent episodes, and harness_events -- the hook event log,
+                 one append-only row per hook firing.
+  defects        row-level triage: subagent anomalies (episode_anomalies) and
+                 the hook-log failures graded above `info`.
+  doctor         health checks, read-only. `doctor --fix` MUTATES and is NOT
+                 in this lane -- see `gaia doctor --help`.
+  status         workspace status: agents, hooks, contracts.
+  history        recent agent sessions.
+  metrics        dashboard: tiers, commands, agents, anomalies.
+  context        show | get
+  workspace      current | info
+  evidence       show | list
+  schedule       list | show | status
+  brief          show | list | deps | search | verify
+  plan           show | list
+  task           list | gate list
+  memory         search | show | list | stats | get-relevant | conflicts |
+                 episode-show | story
+  notifications  list | show
+  approvals      list | pending | show | history | stats
+
+WRITE the orchestrator owns -- coordination state, in bounded shapes.
+  brief          new | edit | set-status | ac add|edit|remove
+  plan           set-status
+  task           set-status
+  notifications  ack
+  memory         add | append | reclassify | link | checkpoint
+  scan           re-index this workspace's repos into (workspace, project)
+                 rows -- how the coordinator keeps its own context current.
+                 `scan --dry-run` previews the same result without writing.
+  context scan   re-run the project scanner behind `context show`/`get`.
+  paths          report the resolved storage paths (data, db, snapshot, logs,
+                 events) and materialize the ~/.gaia layout if it is missing.
+                 It reads like a read and is not one: all three handlers call
+                 ensure_layout(), which creates those directories at 0700.
+
+WRITE a specialist owns -- DELEGATE; do not run it here.
+  gaia-operator  context wipe|prune-workspaces|move-contracts|move-memory|
+                 move-project (destructive surgery on the substrate) |
+                 workspace merge | schedule register|remove|sync
+  gaia-system    install | update | uninstall | cleanup | dev | release
+  consent flow   approvals approve|revoke|reject|reject-all|clean|replay|
+                 request-set -- consent is granted by the user, not by a
+                 CLI call
+  owning agent   ac | milestone | evidence add | plan save|delete |
+                 task add|remove|reorder | task gate add|remove|set-status |
+                 contract set|add|fill|finalize
+
+The READ lane and the orchestrator-WRITE lane above are the same set the
+orchestrator CLI guard allows (hooks/modules/security/gaia_cli_only_guard.py).
+That guard is closed by default: a verb absent from those two lanes is denied
+for the orchestrator exactly like one that does not exist yet. Denial there is
+not a missing feature -- it is work that belongs to the named owner.
+"""
+
+
 def _build_parser(plugin_entries):
     """Build the top-level ArgumentParser and register the given plugins.
 
@@ -202,13 +288,28 @@ def _build_parser(plugin_entries):
     parser = argparse.ArgumentParser(
         prog="gaia",
         description="Gaia unified CLI -- manage and inspect your Gaia installation.",
+        epilog=_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--json",
+        dest="global_json",
         action="store_true",
         default=False,
-        help="Output results as JSON (machine-readable)",
+        help=(
+            "Force JSON output for the invoked subcommand. Deliberately a "
+            "DIFFERENT dest than any subcommand's own --json/--format: "
+            "argparse's SubParsersAction parses each level into a FRESH "
+            "namespace and then unconditionally overwrites the parent "
+            "namespace's same-name attributes with the child's -- so a dest "
+            "shared with a subcommand's own --json would silently reset a "
+            "top-level `gaia --json <subcmd>` back to False the moment the "
+            "subcommand parser applies its own (unset) default. Folded into "
+            "the invoked subcommand's own output-shape flag by "
+            "_apply_global_json() after parsing, which also fails loudly "
+            "instead of silently doing nothing when the resolved subcommand "
+            "exposes neither --json nor --format."
+        ),
     )
     parser.add_argument(
         "--version",
@@ -224,6 +325,49 @@ def _build_parser(plugin_entries):
             mod.register(subparsers)
 
     return parser
+
+
+def _apply_global_json(args, argv):
+    """Fold the top-level --json (parsed into args.global_json) into the
+    invoked subcommand's own output-shape attribute.
+
+    Returns an error message string when the resolved subcommand cannot honor
+    --json at all -- caller prints it to stderr and exits non-zero. Returns
+    None when nothing needs doing (global_json not set) or the merge
+    succeeded. A subcommand's own trailing ``--json``/``--format=json``
+    already works without this function; this only repairs the case where
+    ``--json`` was given BEFORE the subcommand name, which argparse's
+    subparser dispatch would otherwise silently drop (see the --json
+    argument's own help text in _build_parser for why the dests are kept
+    apart).
+
+    ``argv`` (the raw arg list, not just ``args.subcommand``) is used only to
+    phrase the error: it names the full verb chain the user typed (e.g.
+    "task gate list"), not just the top-level subcommand name, which is all
+    ``args.subcommand`` itself carries.
+    """
+    if not getattr(args, "global_json", False):
+        return None
+
+    if hasattr(args, "json"):
+        args.json = True
+        return None
+
+    verb_chain = " ".join(a for a in argv if not a.startswith("-"))
+
+    if hasattr(args, "format"):
+        if args.format in (None, "json"):
+            args.format = "json"
+            return None
+        return (
+            f"gaia: --json conflicts with --format={args.format} for "
+            f"'gaia {verb_chain}' -- pass only one."
+        )
+
+    return (
+        f"gaia: 'gaia {verb_chain}' has no JSON output surface; --json is "
+        f"not supported for this subcommand."
+    )
 
 
 def _run_with_plugins(argv, plugins):
@@ -245,6 +389,11 @@ def _run_with_plugins(argv, plugins):
     if args.subcommand is None:
         parser.print_help()
         return 0
+
+    json_error = _apply_global_json(args, argv)
+    if json_error is not None:
+        print(json_error, file=sys.stderr)
+        return 2
 
     # Lazy, non-invasive DB bootstrap -- replaces the removed npm postinstall.
     # Runs once, only when ~/.gaia/gaia.db is absent, and never for the

@@ -350,8 +350,12 @@ def register(subparsers):
     """Register the status subcommand."""
     sub = subparsers.add_parser(
         "status",
-        help="Show Gaia system status",
-        description="Print workspace status: agents, hooks, contracts.",
+        help="Show what Gaia has wired into this workspace (read-only)",
+        description=(
+            "Read-only. Print what Gaia has wired into this workspace: "
+            "installed agents, registered hooks, and context contracts. "
+            "Writes nothing."
+        ),
     )
     sub.add_argument("--json", action="store_true", default=False,
                      help="Emit JSON. bool.")

@@ -1,5 +1,5 @@
 """
-gaia paths -- Inspect canonical Gaia storage paths.
+gaia paths -- Report canonical Gaia storage paths; materializes the layout if missing.
 
 Subcommands:
   paths              Print all resolved paths (key=value):
@@ -83,9 +83,11 @@ def register(subparsers):
     """Register the paths subcommand with nested actions."""
     paths_parser = subparsers.add_parser(
         "paths",
-        help="Inspect canonical Gaia storage paths",
+        help="Report canonical Gaia storage paths -- WRITES; materializes the layout if missing",
         description=(
-            "Print resolved Gaia storage paths.\n\n"
+            "Report resolved Gaia storage paths. WRITES: every subcommand\n"
+            "calls ensure_layout() first, so the ~/.gaia layout (six\n"
+            "directories, mode 0700) is materialized if missing.\n\n"
             "No subcommand: print all paths (data, db, snapshot, state,\n"
             "  workspaces, logs, events, cache) as key=value pairs.\n"
             "data: print data_dir() only.\n"

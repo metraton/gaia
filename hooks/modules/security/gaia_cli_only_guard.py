@@ -8,15 +8,11 @@ exist today is denied exactly like one that does.
 
 Why this exists
 ----------------
-Delegate mode (``modules.orchestrator.delegate_mode``) already keeps the
-orchestrator off most tools (Bash is not in ``ORCHESTRATOR_ALLOWED_TOOLS``
-today). The day the orchestrator is granted a narrow Bash lane to run its own
-CLI directly (checking a contract, listing tasks, reading memory) without a
-full specialist dispatch, that lane must not become a general shell. This
-module is the gate for that lane: it says what "only the gaia CLI" actually
-means at the command-string level, so the day it is wired in, it enforces the
-same restriction the identity implies -- the orchestrator delegates; it does
-not run arbitrary commands.
+Delegate mode keeps the orchestrator off most tools while granting a
+role-scoped Bash lane for its own coordination CLI. That lane must not become
+a general shell. This module enforces what "only the gaia CLI" means at the
+command-string level: trusted package provenance, explicit verb authority,
+and bounded shapes for coordinator-owned writes.
 
 Design decision 1 -- keyed by ROLE, never by agent NAME
 ---------------------------------------------------------
@@ -203,6 +199,46 @@ process-substitution opener) and denies the whole command outright if either
 is found -- duplicated logic, deliberately, rather than a shared file edited
 under a task that forbids editing it.
 
+Design decision 4 -- flag-level policy, because a phrase cannot express it
+--------------------------------------------------------------------------------
+A phrase matches by PREFIX (see ``match_allowed_phrase``): everything after
+the matched tokens is gaia's own argument grammar and is not re-validated.
+That is the right default -- ids, search strings and per-command flags are
+not this guard's business -- but it means a phrase tuple is structurally
+incapable of saying "this verb, but not with that flag". And one admitted
+verb needs exactly that: ``gaia doctor`` is a read-only diagnostic EXCEPT
+under ``--fix``, which rewrites the settings file and rebuilds the memory
+FTS index.
+
+``_READ_PHRASE_FORBIDDEN_FLAGS`` is that missing expressiveness, applied by
+``_validate_read_flags`` in ``_check_stage`` BEFORE the write-shape gate, so
+a forbidden flag is refused whichever allowlist the phrase came from.
+
+Two properties of the flag scan are load-bearing, and both were measured
+against argparse rather than assumed:
+
+  * A forbidden flag matches by PREFIX of the flag, not by equality.
+    ``allow_abbrev`` defaults to True and gaia's parsers do not disable it,
+    so ``gaia doctor --fi`` and ``gaia doctor --f`` both parse to
+    ``fix=True``. An equality check on ``"--fix"`` would have failed open on
+    the two shortest spellings of the flag it exists to stop -- the same
+    shape of hole as a classification entry that is present but unreachable.
+  * The ``--flag=value`` form is split on its first ``=`` before matching, so
+    ``--fix=true`` is recognized as ``--fix`` (argparse itself rejects that
+    spelling for a store_true option, but the guard must not be the layer
+    that depends on that), while ``--workspace=--fix`` is recognized as
+    ``--workspace`` carrying a value and is NOT a false positive.
+
+Deliberately NOT built here: the mirror table of REQUIRED flags. An earlier
+design admitted ``gaia scan`` only with ``--dry-run``, which needed one --
+and needed it to survive ``gaia scan --workspace me -- --dry-run``, where a
+bare ``--`` demotes the flag to a positional and the command writes anyway.
+That whole class of parsing subtlety disappeared with the policy it served:
+``scan`` refreshes the workspace substrate the orchestrator coordinates
+from, its identity already authorizes the CLI, and a narrower allowlist
+would have removed a capability it needs without adding any safety. The
+verb is admitted whole, as a write, in ``ALLOWED_WRITE_PHRASES``.
+
 Scope of the check (categorical, NOT approvable)
 --------------------------------------------------
 Like ``subagent_memory_write_guard`` / ``gaia_db_write_guard``, this is a
@@ -214,12 +250,8 @@ consent for a wider shell.
 This module IS wired into ``bash_validator.py``: ``BashValidator.validate()``
 calls ``check()`` here as Phase 0, the very first statement of ``validate()``,
 ahead of the empty-command check, footer stripping, the three write guards,
-and normalization. It is inert today for a different reason -- not because
-the wiring is missing, but because the orchestrator has not yet been granted
-a Bash lane at all (``delegate_mode`` keeps Bash out of
-``ORCHESTRATOR_ALLOWED_TOOLS``), so Phase 0 never sees an orchestrator-role
-invocation to evaluate. The day that lane opens, this guard is already live
-with no further wiring change required.
+and normalization. The guard is live: delegate mode grants Bash only to the
+orchestrator role, and Phase 0 evaluates its raw command.
 
 Public API:
     TRUSTED_PACKAGE_NAME: Optional[str]
@@ -374,10 +406,33 @@ def is_trusted_gaia_binary(token: str) -> bool:
 # gaia's own argument grammar and is not re-validated here.
 
 ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
+    # `contract view`/`list`/`validate` were verified read-only by following
+    # what `bin/cli/contract.py`'s `cmd_view`/`cmd_list`/`cmd_validate` CALL:
+    # no INSERT/UPDATE/DELETE and no commit() reachable from any of the
+    # three. `view`'s case needed a second look, and it used to fail it: with
+    # no draft file on disk, `cmd_view`'s default `_load_target_draft(args)`
+    # (`allow_adopt=True`) reached `_maybe_adopt_draft`, which SAVED a fresh
+    # `_initial_envelope` to `contract_drafts/<id>.json` -- a real write to
+    # disk, performed by a verb this allowlist classified as a read. Fixed:
+    # `cmd_view` now resolves with `allow_adopt=False` and never calls
+    # `_maybe_adopt_draft` at all; when no draft file exists it recovers the
+    # row's `raw_handoff_json` through `_freshest_envelope` (read-only,
+    # shared with `--harness-id` addressing) instead of fabricating and
+    # persisting a blank one. `view` is pure read again, and this comment
+    # reflects that fixed state, not the one measured before it.
     ("contract", "view"),
     ("contract", "list"),
     ("contract", "validate"),
     ("task", "list"),
+    # `task show` is the single-task complement of `task list`: a mechanical
+    # read of a task row, which the orchestrator's own identity already says
+    # is its own to perform (a brief/plan/task/gate/contract/approval/
+    # notification/memory row read never merits a subagent). It is also the
+    # one place that legibly prints tasks.id -- the value the dispatch
+    # contract's task_id=<N> token requires and that ORDER_NUM (the plan
+    # position) must never be confused with. Read-only: bin/cli/task.py's
+    # `_cmd_show` calls only gaia.store.writer.get_task_by_order, no write.
+    ("task", "show"),
     ("task", "gate", "list"),
     ("plan", "show"),
     ("plan", "list"),
@@ -385,6 +440,7 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("brief", "list"),
     ("brief", "deps"),
     ("brief", "search"),
+    ("brief", "verify"),
     ("notifications", "list"),
     ("notifications", "show"),
     ("memory", "search"),
@@ -397,24 +453,74 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("memory", "story"),
     ("history",),
     ("metrics",),
-    # approvals read verbs: reading an approval grants nothing and revokes
-    # nothing -- these five are T0 by security-tiers' own classification
-    # (get/list/describe/show semantics, no state mutated). Without them the
-    # orchestrator had to burn a whole specialist dispatch just to have
-    # something ELSE read back a grant it cannot itself change. The asymmetry
-    # with EXPLICITLY_DENIED_PHRASES below is deliberate: approve/replay
-    # GRANT capability, revoke/reject/reject-all DISCARD it, and clean
-    # mutates the approval store's own rows -- all six change what the
-    # approval system can later do, which is exactly why they stay denied
-    # while these five, which only observe, are let through.
     ("approvals", "list"),
     ("approvals", "pending"),
     ("approvals", "show"),
     ("approvals", "history"),
     ("approvals", "stats"),
+    # Substrate and installation diagnostics. Each was verified read-only by
+    # following what it CALLS, not by grepping the module it lives in: no
+    # INSERT/UPDATE/DELETE and no commit() in bin/cli/{doctor,status,defects,
+    # query}.py, and the read handlers of the four grouped commands
+    # (context._cmd_show/_cmd_get, workspace._cmd_current/_cmd_info,
+    # evidence._cmd_show/_cmd_list, schedule._cmd_list/_cmd_show/_cmd_status)
+    # reach the substrate only through gaia.store.reader / gaia.store.provider.
+    # Grepping alone is not enough here: `paths` has no mutation marker in its
+    # own module and still writes, one call down, which is why it sits in the
+    # WRITE set below.
+    #
+    # ``doctor`` is the one exception to "the verb decides": it is read-only
+    # EXCEPT under --fix, which is why it also appears in
+    # _READ_PHRASE_FORBIDDEN_FLAGS below. Prefix matching cannot express that
+    # on its own -- see Design decision 4.
+    ("doctor",),
+    ("status",),
+    ("defects",),
+    ("query",),
+    ("context", "show"),
+    ("context", "get"),
+    ("workspace", "current"),
+    ("workspace", "info"),
+    ("evidence", "show"),
+    ("evidence", "list"),
+    ("schedule", "list"),
+    ("schedule", "show"),
+    ("schedule", "status"),
 })
 
 ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
+    # ``scan`` refreshes the (workspace, project) rows that ARE the
+    # orchestrator's coordination context -- keeping that substrate current is
+    # its own job, not a specialist's. It is listed as a WRITE because it is
+    # one: bin/cli/scan.py calls classify_scan(root, workspace,
+    # apply=not dry_run), so its DEFAULT mode persists. It is admitted
+    # deliberately and without a flag condition (the orchestrator's identity
+    # is what authorizes the CLI; a narrower allowlist would only remove a
+    # capability it needs), and it carries no bounded-shape check in
+    # _validate_orchestrator_write -- gaia's own argparse owns its grammar.
+    ("scan",),
+    # The same scan by its other spelling: context._cmd_scan delegates
+    # in-process to bin/cli/scan.py's cmd_scan. Admitting one and denying the
+    # other would gate a route, not an effect.
+    ("context", "scan"),
+    # ``paths`` only PRINTS resolved paths, and still belongs here rather than
+    # in the read set: all three of its handlers call ensure_layout(), which
+    # os.makedirs() the ~/.gaia layout (data, workspaces, logs, events, cache,
+    # scratch) at mode 0700. Idempotent, confined to gaia's own state root,
+    # deleting nothing and downgrading no permission -- and the same root is
+    # already created by gaia.store.writer._connect for every DB-touching verb
+    # in this lane, so refusing `paths` over it would be incoherent. It is
+    # admitted; what is not admitted is calling it a read.
+    ("paths",),
+    ("brief", "new"),
+    ("brief", "edit"),
+    ("brief", "set-status"),
+    ("brief", "ac", "add"),
+    ("brief", "ac", "edit"),
+    ("brief", "ac", "remove"),
+    ("plan", "set-status"),
+    ("task", "set-status"),
+    ("notifications", "ack"),
     ("memory", "add"),
     ("memory", "append"),
     ("memory", "reclassify"),
@@ -430,13 +536,10 @@ ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRI
 # "just let the orchestrator ack a notification too" kind of change. Keeping
 # them enumerated, with the reason attached, is the tripwire that makes that
 # future edit a deliberate decision instead of an accidental widening.
-# Mutating task state, granting/replaying/discarding approval grants, editing
-# or deleting memory, and every contract-authoring verb (set/add/fill/
-# finalize) are mutations that belong to a specialist's own governed path (or
-# to the orchestrator's OWN existing curated-memory writer path, not to a bare
-# CLI invocation slipped past this guard) -- none of them are "read my own
-# state" or the five narrow memory-curation writes this guard exists to
-# allow.
+# Task/gate design, approval mutation, destructive brief/plan operations,
+# memory correction/deletion, and contract authorship belong to specialist or
+# consent-governed paths. Coordinator-owned brief and lifecycle writes are
+# separately allowlisted and shape-checked below.
 #
 # The approvals six split cleanly along the read/write line this guard
 # enforces, and that line is NOT the same line security-tiers draws for T3:
@@ -455,13 +558,15 @@ ALLOWED_PHRASES: FrozenSet[Tuple[str, ...]] = ALLOWED_READ_PHRASES | ALLOWED_WRI
 # those six is still a write to state this guard's allowlist does not open,
 # even the ones security-tiers itself does not gate behind approval.
 EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
-    ("task", "set-status"),
     ("task", "add"),
     ("task", "remove"),
     ("task", "reorder"),
     ("task", "gate", "add"),
     ("task", "gate", "remove"),
     ("task", "gate", "set-status"),
+    ("brief", "delete"),
+    ("plan", "save"),
+    ("plan", "delete"),
     ("approvals", "approve"),
     ("approvals", "replay"),
     ("approvals", "revoke"),
@@ -474,6 +579,40 @@ EXPLICITLY_DENIED_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("contract", "add"),
     ("contract", "fill"),
     ("contract", "finalize"),
+    # Destructive substrate surgery. Admitting `context show`/`context get`
+    # above opens the `context` namespace to the reader's eye; these are the
+    # siblings in that same namespace that delete or relocate rows, and they
+    # are named here so the next person widening `context` has to step over
+    # them on purpose. (`context scan` is deliberately NOT here: it is the
+    # same substrate refresh as top-level `scan`, which the orchestrator owns,
+    # and it is allowlisted alongside it above.)
+    ("context", "wipe"),
+    ("context", "prune-workspaces"),
+    ("context", "move-contracts"),
+    ("context", "move-memory"),
+    ("context", "move-project"),
+    ("workspace", "merge"),
+    ("evidence", "add"),
+    # Schedule's desired state and its materialization into the OS scheduler:
+    # `list`/`show`/`status` read it, these three write it (and `sync` reaches
+    # outside gaia entirely, into crontab).
+    ("schedule", "register"),
+    ("schedule", "remove"),
+    ("schedule", "sync"),
+    # `release check` reads as a verification verb and is not one: it runs
+    # `npm pack`, installs into a sandbox, runs `claude plugin validate` and
+    # `npm test`, and finishes with a convergence write. `release publish`
+    # ships to the registry. Both belong to a governed release path.
+    ("release", "check"),
+    ("release", "publish"),
+    # Installation lifecycle: these rewrite the installed plugin, the settings
+    # files, and the on-disk substrate. The orchestrator coordinates; it does
+    # not re-install the system it is running inside.
+    ("install",),
+    ("update",),
+    ("uninstall",),
+    ("cleanup",),
+    ("dev",),
 })
 
 
@@ -572,7 +711,16 @@ def _find_composition_hazard(command: str) -> Optional[str]:
             return "process substitution (`<(` / `>(`) detected"
 
         if ch == "&":
+            prev = command[i - 1] if i > 0 else ""
             nxt = command[i + 1] if i + 1 < n else ""
+            if prev == ">":
+                # File-descriptor duplication (`>&`, e.g. `2>&1`), not
+                # background execution -- mirrors the same exclusion in
+                # `bash_validator._FD_DUP_RE` and the lookbehind/lookahead in
+                # `cloud_pipe_validator.UNIVERSAL_VIOLATIONS`'s "background"
+                # entry (`(?<![>&])&(?!&)`).
+                i += 1
+                continue
             if nxt == "&":
                 i += 2
                 continue
@@ -691,12 +839,35 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
         )
 
     rest = args[1:]
+
+    # Bare `gaia` (no subcommand at all) and `-h`/`--help` ANYWHERE in the
+    # remaining tokens are unconditionally read -- see _is_help_or_bare_stage
+    # for why this is provably safe rather than merely convenient, including
+    # on an otherwise-mutative verb (`gaia install --help`): argparse's own
+    # help action fires eagerly during parsing and exits before any
+    # subcommand handler ever runs, so the underlying write never executes
+    # either way. Checked BEFORE the allowlist/deny-list so the orchestrator's
+    # own contract (mechanical reads, including "what can I even run") is
+    # never blocked by the verb it is trying to look up -- and so the error
+    # message below, which recommends `gaia --help`, never recommends a
+    # command that is itself denied.
+    if _is_help_or_bare_stage(rest):
+        return True, None
+
     i = 0
     while i < len(rest) and rest[i].startswith("-"):
         i += 1
+    leading_flags = tuple(rest[:i])
     candidate = tuple(rest[i:])
 
-    if match_allowed_phrase(candidate, ALLOWED_PHRASES) is not None:
+    allowed_phrase = match_allowed_phrase(candidate, ALLOWED_PHRASES)
+    if allowed_phrase is not None:
+        invalid = _validate_read_flags(candidate, allowed_phrase, leading_flags)
+        if invalid is not None:
+            return False, invalid
+        invalid = _validate_orchestrator_write(candidate, allowed_phrase)
+        if invalid is not None:
+            return False, invalid
         return True, None
 
     denied = match_allowed_phrase(candidate, EXPLICITLY_DENIED_PHRASES)
@@ -712,6 +883,236 @@ def _check_stage(stage) -> Tuple[bool, Optional[str]]:
     return False, (
         f"GAIA CLI ONLY: 'gaia {shown}' is not on the orchestrator's verb "
         f"allowlist. Closed by default -- a verb absent from the allowlist "
-        f"is denied exactly like one that does not exist yet. Denied "
-        f"outright, not approvable."
+        f"is denied exactly like one that does not exist yet. Run "
+        f"'gaia --help' to see the read lane that IS available: the wall is "
+        f"not the map, and the capability you want may already be there "
+        f"under another verb. Denied outright, not approvable."
     )
+
+
+_HELP_LONG_FLAG = "--help"
+
+
+def _is_help_token(token: str) -> bool:
+    """True iff *token* is, or unambiguously abbreviates, `-h`/`--help`.
+
+    Mirrors `_forbidden_flag_hit`'s already-verified-against-argparse
+    abbreviation handling (`allow_abbrev` defaults True and gaia's parsers
+    never disable it) rather than inventing a second one: `--hel`/`--he`
+    parse to the help action exactly as `--fi`/`--f` parse to `--fix` there.
+    The `=value` split via `_option_name` also means a token like
+    `--description=--help` (a VALUE that merely looks like the flag, verified
+    empirically to NOT trigger argparse's help action) correctly does not
+    match here either.
+    """
+    if token == "-h":
+        return True
+    name = _option_name(token)
+    if not name.startswith("--") or len(name) <= 2:
+        return False
+    return _HELP_LONG_FLAG.startswith(name)
+
+
+def _is_help_or_bare_stage(rest: Tuple[str, ...]) -> bool:
+    """True iff *rest* (the stage's tokens after the trusted binary) is a
+    bare invocation or carries `-h`/`--help` anywhere.
+
+    Both are unconditionally safe to allow, on ANY verb, mutative or not:
+    argparse's `-h`/`--help` action fires the moment it is encountered during
+    parsing and exits the process before any subcommand handler runs (a
+    SystemExit either printing help, code 0, or -- if `-h`/`--help` could not
+    be consumed as another option's value, which argparse also refuses to do,
+    verified empirically -- a parse error, code 2). Either way the write the
+    verb would otherwise perform never executes. A bare `gaia` (no tokens at
+    all) is the same case: bin/gaia's own dispatcher prints top-level help
+    and returns 0 without ever reaching a plugin handler.
+    """
+    if not rest:
+        return True
+    return any(_is_help_token(token) for token in rest)
+
+
+# ---------------------------------------------------------------------------
+# Flag-level policy for admitted read verbs (Design decision 4)
+# ---------------------------------------------------------------------------
+# A phrase is matched by PREFIX, so admitting ("doctor",) admits every token
+# that follows it -- including a flag that changes what the verb DOES. This
+# table is how a read verb that becomes a writer under one flag is expressed.
+_READ_PHRASE_FORBIDDEN_FLAGS: Dict[Tuple[str, ...], FrozenSet[str]] = {
+    ("doctor",): frozenset({"--fix"}),
+}
+
+# Why each forbidden flag is forbidden, so the denial teaches instead of just
+# refusing. A phrase missing from here still denies -- the message is only
+# less specific -- so this mapping can never silently weaken the table above.
+_READ_PHRASE_FORBIDDEN_FLAG_RATIONALE: Dict[Tuple[str, ...], str] = {
+    ("doctor",): (
+        "'gaia doctor' is admitted as a read-only diagnostic, and --fix is "
+        "the one flag that makes it write: it rewrites the settings file "
+        "(_apply_agent_fix) and rebuilds the memory FTS index "
+        "(_apply_fts5_backfill), both gated behind 'if args.fix' in "
+        "bin/cli/doctor.py. Repairing an installation is a specialist's "
+        "governed path, not a coordination read"
+    ),
+}
+
+
+def _option_name(token: str) -> str:
+    """The option NAME of *token*, with any ``=value`` suffix removed.
+
+    ``--fix=true`` and ``--fix`` are the same option to argparse's eye, and
+    ``--workspace=--fix`` is the option ``--workspace`` carrying a value that
+    merely LOOKS like a flag -- splitting on the first ``=`` is what keeps
+    those three apart.
+    """
+    return token.split("=", 1)[0]
+
+
+def _forbidden_flag_hit(token: str, forbidden: FrozenSet[str]) -> Optional[str]:
+    """The flag in *forbidden* that *token* would reach, or None.
+
+    Matching is by PREFIX of the forbidden flag, not equality, because
+    argparse abbreviates long options (``allow_abbrev`` defaults to True and
+    nothing in gaia's parsers turns it off). Measured, not assumed: for
+    ``gaia doctor`` both ``--fi`` and ``--f`` parse to ``fix=True``, so an
+    equality check on ``"--fix"`` would fail OPEN on the two shortest
+    spellings of the very flag it exists to stop.
+
+    Only a ``--`` prefixed token can abbreviate: argparse resolves a
+    single-dash token against options that start with THAT token, and no
+    long option starts with a single dash, so ``-fix`` is rejected outright
+    by argparse and matches nothing here. A bare ``--`` (the end-of-options
+    separator) is length 2 and is excluded, or it would prefix every flag.
+    """
+    name = _option_name(token)
+    if not name.startswith("--") or len(name) <= 2:
+        return None
+    for flag in forbidden:
+        if flag.startswith(name):
+            return flag
+    return None
+
+
+def _validate_read_flags(
+    candidate: Tuple[str, ...],
+    phrase: Tuple[str, ...],
+    leading_flags: Tuple[str, ...] = (),
+) -> Optional[str]:
+    """Deny an admitted read phrase carrying a flag that makes it a writer.
+
+    Mirrors :func:`_validate_orchestrator_write`: the phrase allowlist
+    establishes authority over the VERB, and this gate withholds the one
+    argument that changes what that verb does. Returns None when clean, or
+    the denial reason.
+
+    *leading_flags* are the flag tokens that appeared BEFORE the subcommand
+    (``gaia --fix doctor``) and were skipped when *candidate* was built. Today
+    gaia's root parser rejects such a token outright, so nothing would run --
+    but the guard must not depend on a property of another file's parser to
+    stay closed, so those tokens are scanned too.
+    """
+    forbidden = _READ_PHRASE_FORBIDDEN_FLAGS.get(phrase)
+    if not forbidden:
+        return None
+
+    for token in leading_flags + candidate[len(phrase):]:
+        hit = _forbidden_flag_hit(token, forbidden)
+        if hit is None:
+            continue
+        rationale = _READ_PHRASE_FORBIDDEN_FLAG_RATIONALE.get(
+            phrase,
+            f"'gaia {' '.join(phrase)}' is admitted to the orchestrator's "
+            f"lane as a read, and {hit} makes it write",
+        )
+        return (
+            f"GAIA CLI ONLY: '{token}' reaches the forbidden flag {hit} on "
+            f"'gaia {' '.join(phrase)}'. {rationale}. The verb itself stays "
+            f"allowed -- rerun it without that flag, or dispatch a specialist "
+            f"for the repair. Denied outright, not approvable."
+        )
+    return None
+
+
+_BRIEF_STATUSES = frozenset({"draft", "open", "in-progress", "closed", "archived"})
+_PLAN_STATUSES = frozenset({"draft", "active", "closed"})
+_TASK_STATUSES = frozenset({"pending", "done", "skipped"})
+
+
+def _validate_orchestrator_write(
+    candidate: Tuple[str, ...], phrase: Tuple[str, ...]
+) -> Optional[str]:
+    """Validate the narrow write shapes the orchestrator itself owns.
+
+    The phrase allowlist establishes authority; this second gate prevents an
+    interactive editor, a destructive variant, or an unbounded status value
+    from riding behind an otherwise-authorized prefix. Gaia's argparse and
+    security-tier layers remain authoritative after this structural check.
+    """
+    if phrase not in ALLOWED_WRITE_PHRASES:
+        return None
+
+    args = candidate[len(phrase):]
+    reason = (
+        "GAIA CLI ONLY: orchestrator write does not match its bounded "
+        "coordination shape"
+    )
+
+    if phrase == ("brief", "new"):
+        valid = "--headless" in args and any(a.startswith("--title=") for a in args)
+    elif phrase == ("brief", "edit"):
+        valid = bool(args) and not args[0].startswith("-") and "--headless" in args
+    elif phrase == ("brief", "set-status"):
+        valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _BRIEF_STATUSES
+    elif phrase[:2] == ("brief", "ac"):
+        valid = bool(args) and not args[0].startswith("-") and any(a.startswith("--id=") for a in args[1:])
+    elif phrase == ("plan", "set-status"):
+        valid = len(args) >= 2 and not args[0].startswith("-") and args[1] in _PLAN_STATUSES
+    elif phrase == ("task", "set-status"):
+        positional = [arg for arg in args if not arg.startswith("-")]
+        flags = [arg for arg in args if arg.startswith("-")]
+        allowed_flags = {"--json"}
+        workspace_flags = [
+            arg for arg in flags if arg == "--workspace" or arg.startswith("--workspace=")
+        ]
+        forbidden_override = any(
+            arg == "--override" or arg.startswith("--override=")
+            or arg == "--reason" or arg.startswith("--reason=")
+            for arg in flags
+        )
+        unknown_flags = [
+            arg for arg in flags
+            if arg not in allowed_flags
+            and arg != "--workspace"
+            and not arg.startswith("--workspace=")
+        ]
+        # A standalone --workspace consumes the following token, which is not
+        # a task positional. Normalize that one documented option before
+        # checking the exact BRIEF TASK_ID STATUS shape.
+        workspace_pair_valid = True
+        if "--workspace" in args:
+            wi = args.index("--workspace")
+            workspace_pair_valid = wi + 1 < len(args) and not args[wi + 1].startswith("-")
+            positional = [
+                arg for i, arg in enumerate(args)
+                if not arg.startswith("-") and i != wi + 1
+            ]
+        valid = (
+            not forbidden_override
+            and not unknown_flags
+            and len(workspace_flags) <= 1
+            and workspace_pair_valid
+            and len(positional) == 3
+            and positional[1].isdigit()
+            and positional[2] in _TASK_STATUSES
+        )
+    elif phrase == ("notifications", "ack"):
+        valid = (len(args) == 1 and (args[0].isdigit() or args[0] == "--all"))
+    else:
+        # Memory's curator verbs, the two `scan` spellings and `paths` retain
+        # their own mature CLI validation -- there is no coordination-shaped
+        # subset of them for this guard to enforce.
+        return None
+
+    if valid:
+        return None
+    return f"{reason}: 'gaia {' '.join(candidate)}'. Denied outright, not approvable."

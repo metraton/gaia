@@ -54,8 +54,8 @@ Distinguishing the three roles is a true statement about the harness's shape
 and stays. What to DO with a NAMED_SPECIALIST main thread is a separate
 decision: this module denies it, same as the orchestrator, because a
 ``--agent <specialist>`` session runs OUTSIDE the real dispatch path. The
-per-agent, filtered project-context injection is built only when the
-orchestrator actually dispatches (`modules.context.context_injector`) --
+dispatch kernel a turn runs under (born row + `modules.context.kernel_builder`)
+is built only when the orchestrator actually dispatches --
 a `--agent` session never enters that path, so a named specialist granted
 tools here would run WITH tools but WITHOUT the context a genuine dispatch
 provides, which is worse than being blocked. Gaia's own design treats this

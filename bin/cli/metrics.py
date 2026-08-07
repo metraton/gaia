@@ -55,6 +55,7 @@ Flags:
                      via schema_version)
 """
 
+import argparse
 import fnmatch
 import json
 import os
@@ -1990,14 +1991,20 @@ def register(subparsers):
     """Register the 'metrics' subcommand."""
     p = subparsers.add_parser(
         "metrics",
-        help="Show system metrics dashboard (tiers, commands, agents, anomalies)",
+        help="Aggregate dashboard: tiers, commands, agents, anomalies (read-only)",
         description=(
-            "Display Gaia system metrics dashboard.\n"
+            "Read-only. Aggregate Gaia activity over a time window into one\n"
+            "dashboard: security tiers, commands run, per-agent totals, and\n"
+            "anomalies. Writes nothing.\n"
+            "\n"
+            "Aggregated counts; for the individual rows behind them use\n"
+            "`gaia defects` (anomalies) or `gaia query` (raw events).\n"
             "\n"
             "Data sources:\n"
             "  ~/.gaia/gaia.db  (episodes + episode_anomalies tables)\n"
             "  .claude/logs/audit-*.jsonl  (security tier events)\n"
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--agent",

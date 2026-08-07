@@ -19,14 +19,12 @@ on disk. The DB row IS the brief: there is no `brief.md`, no
 `<status>_<slug>/` directory, no frontmatter on disk. When in doubt, there
 is no file to write -- there is a CLI command to run.
 
-**Execution: you co-create, gaia-operator persists.** This skill is loaded
-inline by the orchestrator, which carries no shell -- every `gaia brief`
-command below (`new`, `ac add`, `ac remove`, `show`, `edit`, `set-status`,
-`delete`, `list`, `search`) is executed by dispatching gaia-operator with the
-exact command; gaia-operator relays the printed row or slug back to you.
-Wherever this skill says "run" a `gaia brief` command, read it as "dispatch
-gaia-operator to run" -- you own the conversation (the questions, the
-confirmation), never the CLI execution itself.
+**Execution follows authority.** The orchestrator co-creates the brief and may
+use its trusted Gaia CLI lane for bounded reads and user-confirmed
+`new`/headless `edit`/`set-status`/AC writes. `gaia-operator` remains the
+alternative for batching or operational separation. Destructive deletion is
+outside the direct lane. The orchestrator owns the questions, confirmation,
+and content whichever executor carries the command.
 
 If you find code, docs, or skills that still describe a filesystem layout
 under `.claude/project-context/briefs/`, that is legacy: flag it in
@@ -44,9 +42,8 @@ Tu trabajo:
    no re-descubrirlos desde cero.
 2. Preguntar sólo lo que falte para convertir los acuerdos en AC
    reproducibles (evidence types, surface type).
-3. Materializar el brief en la DB despachando a gaia-operator para que
-   ejecute `gaia brief new --headless` (tú no tienes shell), y presentarlo
-   al usuario para validar.
+3. Materializar el brief en la DB con `gaia brief new --headless`, y
+   presentarlo al usuario para validar.
 
 ## Process
 
@@ -65,7 +62,7 @@ Tu trabajo:
    a declared evidence type and every question above has an answer or
    an explicit "N/A".
 
-2. **Create the brief in the DB (headless)** -- Dispatch gaia-operator to run:
+2. **Create the brief in the DB (headless)** -- Run through the trusted Gaia CLI lane:
 
    ```bash
    gaia brief new --headless \
@@ -79,8 +76,7 @@ Tu trabajo:
    ```
 
    The slug is derived from `--title` (kebab-case). The CLI writes a row to
-   the `briefs` table and prints the slug back to gaia-operator, which
-   relays it to you. **Do not write any file in
+   the `briefs` table and prints the slug back. **Do not write any file in
    `.claude/project-context/briefs/`.** No directory, no `brief.md`, no
    frontmatter on disk. The DB row IS the brief.
 
@@ -88,8 +84,7 @@ Tu trabajo:
    the user is ready to plan against it.
 
 3. **Add Acceptance Criteria** -- ACs are rows in the `acceptance_criteria`
-   table, added one at a time. Dispatch gaia-operator to run `gaia brief ac
-   add` per AC:
+   table, added one at a time with `gaia brief ac add` per AC:
 
    ```bash
    gaia brief ac add <slug> \
@@ -109,14 +104,14 @@ Tu trabajo:
    the `## Acceptance Criteria` section that `gaia brief show` renders is the
    human summary of these rows.
 
-4. **Confirm with the user** -- dispatch gaia-operator to run `gaia brief
-   show <slug>`, which prints the full row. Read it back and ask: "Does this
+4. **Confirm with the user** -- run `gaia brief show <slug>`, which prints the
+   full row. Read it back and ask: "Does this
    capture what you want?" When confirmed, suggest dispatching to
    gaia-planner.
 
 ## How to update a brief
 
-For a single field, dispatch gaia-operator to run the headless patch --
+For a single field, run the headless patch --
 scriptable, no editor:
 
 ```bash
@@ -131,7 +126,7 @@ form to dispatch; use the headless form always in this flow.
 
 ## How to change status
 
-Dispatch gaia-operator to run `gaia brief set-status <name> <new-status>`.
+Run `gaia brief set-status <name> <new-status>`.
 The CLI validates the state machine and rejects illegal transitions:
 
 ```
@@ -162,8 +157,7 @@ anything you might want to read later.
 
 ## How to read briefs
 
-Dispatch gaia-operator to run any of these; it relays the printed output back
-to you.
+Run any of these directly through the trusted Gaia CLI lane.
 
 | Need | Command |
 |------|---------|
@@ -314,8 +308,8 @@ because a directory tree cannot be the source of truth for a brief:
 
 ## After Brief -- you own the plan the planner returns
 
-Dispatch gaia-operator to run `gaia brief show <slug>`, which prints the full
-brief; it relays that back to you. Present it. Ask: "Does this capture what
+Run `gaia brief show <slug>`, which prints the full
+brief. Present it. Ask: "Does this capture what
 you want?" When confirmed, dispatch to gaia-planner to create a plan.
 
 The brief settles *whether* the work is worth doing -- that was agreed
@@ -357,7 +351,7 @@ planner; do not silently accept a gate that does not fit its task.
 - **Writing `brief.md` to disk** -- the DB is the source of truth; any file
   on disk is either build output or stale legacy that will be deleted.
 - **Renaming directories to change status** -- there are no directories;
-  status is a column. Dispatch gaia-operator to run `gaia brief set-status`.
+  status is a column. Run `gaia brief set-status`.
 - **Skipping `--status=draft` on creation** -- creating directly in `open`
   bypasses the review window where the user confirms ACs.
 - **Hard-deleting a brief that has plan history** -- prefer

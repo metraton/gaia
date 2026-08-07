@@ -499,31 +499,26 @@ class TestCheckProjectContext:
     fixture is no longer load-bearing for this check.
     """
 
-    def _seed_contracts_for_project_root(self, tmp_path: Path, project_root: Path, monkeypatch) -> None:
-        """Bootstrap a temp gaia.db and seed >= 3 project_context_contracts rows.
+    def _seed_contracts_for_project_root(
+        self, tmp_path: Path, project_root: Path, monkeypatch, bootstrapped_db_template: Path,
+    ) -> None:
+        """Seed a gaia.db (copied from the session bootstrap template) with
+        >= 3 project_context_contracts rows.
 
-        Sets GAIA_DATA_DIR so that gaia.paths.db_path() resolves to the temp DB.
+        Copies the session-scoped ``bootstrapped_db_template`` instead of
+        re-running ``scripts/bootstrap_database.sh`` per test (measured
+        27-32s of real subprocess work for a DB this check only needs
+        pre-seeded, not exercised) -- see ``tests/conftest.py``'s
+        ``bootstrapped_db_template``/``copy_bootstrapped_db``, the same
+        mechanism already used by ``tests/cli/test_m4_integration.py`` and
+        others. Sets GAIA_DATA_DIR so gaia.paths.db_path() resolves to it.
         """
         import sqlite3
-        import subprocess as _sp
-        import os as _os
+
+        from tests.conftest import copy_bootstrapped_db
 
         db_path = tmp_path / "gaia.db"
-        bootstrap = REPO_ROOT / "scripts" / "bootstrap_database.sh"
-        env = _os.environ.copy()
-        env["GAIA_DB"] = str(db_path)
-        env["WORKSPACE"] = str(tmp_path)
-        res = _sp.run(
-            ["bash", str(bootstrap)],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        assert res.returncode == 0, (
-            f"bootstrap failed: {res.stderr}"
-        )
+        copy_bootstrapped_db(bootstrapped_db_template, db_path)
 
         # Resolve workspace identity the same way check_project_context does.
         from gaia.project import current as _project_current
@@ -545,9 +540,11 @@ class TestCheckProjectContext:
 
         monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
 
-    def test_valid_context(self, healthy_project, tmp_path, monkeypatch):
+    def test_valid_context(self, healthy_project, tmp_path, monkeypatch, bootstrapped_db_template):
         """Should pass when >= 3 project_context_contracts rows exist in DB."""
-        self._seed_contracts_for_project_root(tmp_path, healthy_project, monkeypatch)
+        self._seed_contracts_for_project_root(
+            tmp_path, healthy_project, monkeypatch, bootstrapped_db_template,
+        )
         r = doctor_mod.check_project_context(healthy_project)
         assert r["severity"] in ("pass", "info")
         assert r["ok"] is True
@@ -633,24 +630,24 @@ class TestCheckEpisodesGrowth:
     reclaimable freelist.
     """
 
-    def _bootstrap(self, tmp_path):
-        import subprocess as _sp
-        import os as _os
+    def _bootstrap(self, tmp_path, bootstrapped_db_template):
+        """Seed a gaia.db by copying the session bootstrap template.
+
+        Replaces a per-test real ``scripts/bootstrap_database.sh`` subprocess
+        (measured 20-28s) -- this check only needs a pre-seeded DB, not the
+        bootstrap mechanism itself, which stays real-exercised in
+        ``tests/cli/test_bootstrap_migrations.py``.
+        """
+        from tests.conftest import copy_bootstrapped_db
 
         db_path = tmp_path / "gaia.db"
-        bootstrap = REPO_ROOT / "scripts" / "bootstrap_database.sh"
-        env = _os.environ.copy()
-        env["GAIA_DB"] = str(db_path)
-        env["WORKSPACE"] = str(tmp_path)
-        res = _sp.run(
-            ["bash", str(bootstrap)],
-            env=env, capture_output=True, text=True, check=False, timeout=60,
-        )
-        assert res.returncode == 0, res.stderr
+        copy_bootstrapped_db(bootstrapped_db_template, db_path)
         return db_path
 
-    def test_reports_file_and_table_and_freelist_separately(self, tmp_path, monkeypatch):
-        db_path = self._bootstrap(tmp_path)
+    def test_reports_file_and_table_and_freelist_separately(
+        self, tmp_path, monkeypatch, bootstrapped_db_template,
+    ):
+        db_path = self._bootstrap(tmp_path, bootstrapped_db_template)
         monkeypatch.setenv("GAIA_DB", str(db_path))
 
         r = doctor_mod.check_episodes_growth()
@@ -1006,34 +1003,26 @@ class TestCmdDoctorJson:
             assert "ok" in check
             assert "detail" in check
 
-    def test_json_healthy_status(self, healthy_project, tmp_path, monkeypatch, capsys):
+    def test_json_healthy_status(
+        self, healthy_project, tmp_path, monkeypatch, capsys, bootstrapped_db_template,
+    ):
         """Healthy project should report status=healthy.
 
         check_project_context (M1) reads from project_context_contracts in gaia.db,
         not from the filesystem. Seed >= 3 contracts in a temp DB so the check
         resolves to 'pass' and does not drag the overall status to 'degraded'.
         """
-        # Seed project_context_contracts in a temp DB so check_project_context passes.
+        # Seed project_context_contracts in a temp DB (copied from the
+        # session bootstrap template, not a fresh real bootstrap subprocess --
+        # this test only needs a pre-seeded DB) so check_project_context passes.
         import sqlite3
-        import subprocess as _sp
-        import os as _os
+
+        from tests.conftest import copy_bootstrapped_db
 
         db_dir = tmp_path / "gaia_data"
         db_dir.mkdir(parents=True, exist_ok=True)
         db_path = db_dir / "gaia.db"
-        bootstrap = REPO_ROOT / "scripts" / "bootstrap_database.sh"
-        env = _os.environ.copy()
-        env["GAIA_DB"] = str(db_path)
-        env["WORKSPACE"] = str(db_dir)
-        res = _sp.run(
-            ["bash", str(bootstrap)],
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=60,
-        )
-        assert res.returncode == 0, f"bootstrap failed: {res.stderr}"
+        copy_bootstrapped_db(bootstrapped_db_template, db_path)
 
         from gaia.project import current as _project_current
         ws = _project_current(cwd=healthy_project)

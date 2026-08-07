@@ -17,6 +17,7 @@ Flags:
   --json               Machine-readable output
 """
 
+import argparse
 import json
 import os
 import sys
@@ -213,15 +214,17 @@ def register(subparsers):
     """Register the 'history' subcommand."""
     p = subparsers.add_parser(
         "history",
-        help="Show recent agent session history",
+        help="List recent agent sessions and how each ended (read-only)",
         description=(
-            "Display recent agent sessions with task descriptions, statuses, and token usage.\n"
+            "Read-only. List recent agent sessions with their task\n"
+            "description, end status, and token usage. Writes nothing.\n"
             "\n"
             "Data sources (in priority order):\n"
             "  ~/.gaia/gaia.db  (substrate SQLite)\n"
             "  .claude/project-context/episodic-memory/index.json  (legacy fallback)\n"
             "  .claude/project-context/workflow-episodic-memory/metrics.jsonl  (legacy fallback)\n"
         ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument(
         "--today", "-t",

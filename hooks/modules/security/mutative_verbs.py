@@ -460,6 +460,20 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # remove`). Writing desired state is cheap; imprinting it on the machine
     # requires consent -- that asymmetry is the whole design.
     ("gaia", "schedule"): CATEGORY_READ_ONLY,
+    # `gaia memory <verb>` (add/edit/append/reclassify/link/checkpoint/search/
+    # show/list/stats/conflicts): curated-memory bookkeeping in gaia.db --
+    # reversible, local-only, no external effects, exactly like brief/ac/plan.
+    # Two false positives motivated this, both measured: `edit` is a generic
+    # MUTATIVE_VERB, so EVERY `gaia memory edit <id>` demanded T3 to correct a
+    # note; and the verb scan reads the ATOM'S OWN TEXT, so a payload that is
+    # itself a mutative word (`--body apply`) gated the write on the content
+    # of the note. An atom body is data -- no verb spelled inside it executes.
+    # `gaia memory delete` stays T3 through the global deny-verb guard
+    # (tombstoning a curated atom is the one destructive verb in this group),
+    # and the orthogonal subagent_memory_write_guard still denies memory
+    # WRITES from a dispatched subagent regardless of tier -- this exception
+    # changes the tier, never who is allowed to write.
+    ("gaia", "memory"): CATEGORY_READ_ONLY,
 }
 
 # Verbs that stay gated even under an excepted group above.  The exception

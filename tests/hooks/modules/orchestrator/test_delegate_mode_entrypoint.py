@@ -55,12 +55,12 @@ def _run_pre_tool_use(payload: dict, tmp_path: Path):
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def _bash_payload(**identity) -> dict:
+def _bash_payload(command: str = "echo delegate-probe", **identity) -> dict:
     return {
         "hook_event_name": "PreToolUse",
         "session_id": "delegate-entrypoint-probe",
         "tool_name": "Bash",
-        "tool_input": {"command": "echo delegate-probe"},
+        "tool_input": {"command": command},
         **identity,
     }
 
@@ -84,21 +84,29 @@ def _decision(stdout: str):
         pytest.param({"agent_type": "gaia-orchestrator"}, id="named-orchestrator"),
     ],
 )
-def test_orchestrator_still_cannot_run_bash(identity, tmp_path):
-    """The barrier holds: the orchestrator's Bash is denied either way it arrives.
+def test_orchestrator_non_memory_bash_reaches_cli_only_guard(identity, tmp_path):
+    """Non-memory Bash is denied by Phase 0 for either orchestrator spelling.
 
     An unnamed main thread and one carrying ``agent_type: gaia-orchestrator``
     (what `agent:` in settings.local.json produces) are both the orchestrator.
     """
     code, stdout, stderr = _run_pre_tool_use(_bash_payload(**identity), tmp_path)
 
-    assert _decision(stdout) == "deny", (
-        f"orchestrator Bash must be denied; got exit={code} stdout={stdout!r} "
+    assert code == 2 and _decision(stdout) is None, (
+        f"orchestrator non-memory Bash must be a plain denial; got exit={code} stdout={stdout!r} "
         f"stderr={stderr!r}"
     )
-    assert DELEGATION_MARKER in stdout, (
-        "the denial must be the delegate-mode block, not some other refusal"
+    assert "GAIA CLI ONLY" in stdout + stderr
+
+
+@pytest.mark.parametrize("identity", [{}, {"agent_type": "gaia-orchestrator"}])
+def test_orchestrator_can_run_trusted_memory_read(identity, tmp_path):
+    command = f"{WORKTREE / 'bin' / 'gaia'} memory stats"
+    code, stdout, stderr = _run_pre_tool_use(
+        _bash_payload(command=command, **identity), tmp_path
     )
+    assert code == 0, f"stdout={stdout!r} stderr={stderr!r}"
+    assert "GAIA CLI ONLY" not in stdout + stderr
 
 
 def test_named_specialist_main_thread_denied_with_its_own_reason(tmp_path):
