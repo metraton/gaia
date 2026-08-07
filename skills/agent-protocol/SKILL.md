@@ -13,10 +13,11 @@ work, verify, close -- and each carries its rule and what goes wrong without it.
 
 ## 1. Your contract is the delivery; your final message is only the signal that the turn ended
 
-The gate validates your persisted contract, and an unfinalized one rejects the close however complete
-your message reads (`_resolve_subagent_stop_gate_full`). Still end the message with the envelope in a
-fenced `agent_contract_handoff` block: that fence is what the gate falls back to for a turn whose
-contract it cannot reach.
+The gate validates only your persisted contract: an unfinalized one rejects the close however
+complete your message reads (`_resolve_subagent_stop_gate_full`). Still end the message with the
+envelope in a fenced `agent_contract_handoff` block -- not because the gate falls back to it, but
+because `parse_contract` still feeds it to the turn's descriptive readers: episode metrics,
+`key_outputs`, `update_contracts`, response-contract anomalies, and the T9 backstop.
 
 ## 2. You were born with a contract -- adopt it, do not create another
 
@@ -91,8 +92,7 @@ field is worth nothing, because a reader who catches one cannot bound how many o
 
 ## Where to go next
 
-- `reference.md` -- the argument behind each principle, keyed by number, plus the state machines, the
-  kernel, storage and recovery, what the gate rejects, and the edge cases.
+- `reference.md` -- the argument behind each principle, keyed by number, plus the state machines, the kernel, storage and recovery, what the gate rejects, and the edge cases.
 - `agent-contract-handoff` -- envelope fields and rules; `examples.md` -- filled envelopes, state by state.
 - `investigation` -- evidence and mutation forecasting; `security-tiers` then `command-execution` -- one operation.
 - `subagent-request-approval` (payload `agent-approval-protocol`) then `execution` -- a COMMAND_SET.

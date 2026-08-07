@@ -12,11 +12,12 @@ are filling toward.
 
 The same envelope is also what the closing fence carries. The final message
 still ends with the envelope in a fenced block tagged `agent_contract_handoff`
-(not `json` -- the tag is how the gate finds it). The fenced copy is the
-gate's fallback, decisive only for a turn whose own persisted contract is
-unreachable (`reference.md`, "The gate at the wall", case 3); when the
-contract is reachable and cleanly finalized, the gate reads it and the fence
-is not consulted. Emit it either way -- you do not know which case you are in.
+(not `json` -- the tag is how `parse_contract` finds it). The gate itself
+never reads this copy, in any of its three cases (`reference.md`, "The gate
+at the wall") -- only the turn's own persisted row decides the close. The
+fence stays required because `parse_contract` still feeds it to the turn's
+descriptive readers: episode metrics, `key_outputs`, `update_contracts`,
+response-contract anomalies, and the T9 backstop. Emit it every time.
 
 ## 0. Building example 1 via the CLI, from first write to close
 
