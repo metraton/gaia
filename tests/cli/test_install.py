@@ -93,6 +93,15 @@ class TestRegisterSubcommand(unittest.TestCase):
         args = parser.parse_args(["install", "--db-path", "/tmp/test.db"])
         self.assertEqual(args.db_path, "/tmp/test.db")
 
+    def test_opencode_host_flag(self):
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="subcommand")
+        register(subparsers)
+
+        args = parser.parse_args(["install", "--host", "opencode"])
+
+        self.assertEqual(args.host, "opencode")
+
 
 class TestHelpOutput(unittest.TestCase):
     def test_help_lists_install_subcommand(self):
@@ -279,7 +288,12 @@ class TestBootstrapScriptIntegration(unittest.TestCase):
             capture_output=True,
             text=True,
             check=False,
-            timeout=30,
+            # 120s, matching the `bootstrapped_db_template` fixture's timeout
+            # for the same script (conftest.py). 30s assumed an idle machine;
+            # under xdist parallelism (many workers spawning the script's
+            # ~31 sqlite3 subprocesses concurrently) it expired intermittently
+            # even though the script itself was healthy (serial runs: 196/196).
+            timeout=120,
         )
 
     def test_bootstrap_runs_cleanly_on_fresh_db(self):
