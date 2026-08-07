@@ -446,6 +446,49 @@ def mint_agent_id() -> str:
     return "a" + secrets.token_hex(_AGENT_HEX_BYTES)
 
 
+def initial_envelope(agent_id: str) -> dict:
+    """The starting shape for a fresh draft -- the SSOT every creator shares.
+
+    Deliberately a genuinely SHAPE-VALID envelope (not a stub needing a
+    special-cased pass): agent_state defaults to IN_PROGRESS, pending_steps is
+    present (empty list), next_action is a non-empty placeholder the agent
+    overwrites, and evidence_report carries all seven required keys.
+    ``failure_report`` / ``memory_delta`` / ``work_phase`` /
+    ``consolidation_report`` / ``approval_request`` are seeded ``None``:
+    discoverable in ``gaia contract view`` without being required
+    (``gaia.contract.validator.validate_form`` only runs their shape checks
+    when present and non-null).
+
+    Shared by ``bin/cli/contract.py`` (``init`` and the implicit adoption on a
+    first ``set``/``add``/``fill``) and by the dispatch-side birth
+    (``hooks/modules/agents/dispatch_binding.py``), which pre-creates the
+    on-disk draft so a dispatched turn starts with its draft already open and
+    never needs ``gaia contract init``.
+    """
+    return {
+        "agent_status": {
+            "agent_state": "IN_PROGRESS",
+            "agent_id": agent_id,
+            "pending_steps": [],
+            "next_action": "pending",
+        },
+        "evidence_report": {
+            "patterns_checked": [],
+            "files_checked": [],
+            "commands_run": [],
+            "key_outputs": [],
+            "verbatim_outputs": [],
+            "cross_layer_impacts": [],
+            "open_gaps": [],
+        },
+        "consolidation_report": None,
+        "approval_request": None,
+        "failure_report": None,
+        "memory_delta": None,
+        "work_phase": None,
+    }
+
+
 def draft_path(draft_id: str) -> Path:
     return drafts_dir() / f"{draft_id}{_DRAFT_SUFFIX}"
 

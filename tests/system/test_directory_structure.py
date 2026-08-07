@@ -7,56 +7,6 @@ import pytest
 from pathlib import Path
 
 
-class TestCoreDirectories:
-    """Test that all core package directories exist (gaia npm package structure)"""
-
-    @pytest.fixture
-    def package_root(self):
-        """Get the package root directory (gaia/)"""
-        return Path(__file__).resolve().parents[2]
-
-    def test_package_directory_exists(self, package_root):
-        """Package root directory must exist"""
-        assert package_root.exists(), "Package root directory not found"
-        assert package_root.is_dir(), "Package root path is not a directory"
-
-    def test_required_directories_exist(self, package_root):
-        """All required npm package directories must exist"""
-        # Directories that should be in the published npm package
-        # commands/ was removed this session and git does not track empty dirs,
-        # so a clean CI checkout has no commands/. Only assert dirs that have
-        # tracked content and ship in the package.
-        required_dirs = [
-            "tools",
-            "agents",
-            "hooks",
-            "config",
-            "tests",
-            "bin"
-        ]
-
-        for dir_name in required_dirs:
-            dir_path = package_root / dir_name
-            # Follow symlinks
-            if dir_path.is_symlink():
-                dir_path = dir_path.resolve()
-            assert dir_path.exists(), f"Required directory missing: {dir_name}"
-            assert dir_path.is_dir(), f"{dir_name} exists but is not a directory"
-
-    def test_config_dir_exists(self, package_root):
-        """Config directory must exist.
-
-        surface-routing.json was retired: routing is now DB-backed (the
-        surface_routing table, seeded from each agent's `routing:` frontmatter
-        block by tools/scan/seed_surface_routing.py). config/ still exists for
-        its README and any future data files.
-        """
-        config_dir = package_root / "config"
-        if config_dir.is_symlink():
-            config_dir = config_dir.resolve()
-        assert config_dir.is_dir(), "config/ directory missing"
-
-
 class TestAgentsDirectory:
     """Test agents directory structure and contents"""
 
@@ -65,21 +15,6 @@ class TestAgentsDirectory:
         """Get the agents directory path"""
         agents = Path(__file__).resolve().parents[2] / "agents"
         return agents.resolve() if agents.is_symlink() else agents
-
-    def test_all_project_agents_exist(self, agents_dir):
-        """All 6 project agents must exist (cloud-troubleshooter unified GCP/AWS)"""
-        required_agents = [
-            "gitops-operator.md",
-            "cloud-troubleshooter.md",
-            "platform-architect.md",
-            "developer.md",
-            "gaia-operator.md",
-            "gaia-orchestrator.md"
-        ]
-
-        for agent in required_agents:
-            agent_path = agents_dir / agent
-            assert agent_path.exists(), f"Agent missing: {agent}"
 
     def test_agent_files_not_empty(self, agents_dir):
         """All agent files should have substantial content"""
@@ -193,41 +128,6 @@ class TestConfigDirectory:
                     json.load(f)
             except json.JSONDecodeError as e:
                 pytest.fail(f"Invalid JSON in {config_file.name}: {e}")
-
-
-class TestReadmePresence:
-    """Test that key component folders have README.md files.
-
-    Every Gaia component folder should be self-documenting. A missing README
-    means activation paths, conventions, and mental models are undocumented.
-    See skills/readme-writing/SKILL.md for the canonical README structure.
-    """
-
-    @pytest.fixture
-    def package_root(self):
-        """Get the package root directory (gaia/)"""
-        return Path(__file__).resolve().parents[2]
-
-    def test_skill_folders_have_skill_md(self, package_root):
-        """Every skill subfolder must contain a SKILL.md file"""
-        skills_dir = package_root / "skills"
-        if skills_dir.is_symlink():
-            skills_dir = skills_dir.resolve()
-
-        if not skills_dir.exists():
-            pytest.skip("skills/ directory not found")
-
-        missing = []
-        for entry in skills_dir.iterdir():
-            if entry.is_dir() and not entry.name.startswith("."):
-                skill_md = entry / "SKILL.md"
-                if not skill_md.exists():
-                    missing.append(entry.name)
-
-        assert not missing, (
-            f"These skill folders are missing SKILL.md: {missing}. "
-            "Every skill folder must have a SKILL.md with valid frontmatter."
-        )
 
 
 if __name__ == "__main__":

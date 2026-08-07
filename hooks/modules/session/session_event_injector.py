@@ -2,8 +2,13 @@
 
 Subsystem 4 of the pre_tool_use Task/Agent path.
 
-Filters events by agent domain and injects them into agent prompts.
-Includes the hardcoded agent-to-event mapping.
+Kernel injection is agnostic to the receiving agent: every dispatch gets the
+same digest -- the most recent events, bounded, with no filter keyed to the
+agent's name or type. This module used to carry a per-agent event-type
+allowlist (``AGENT_EVENT_FILTERS``) plus an upstream "known project agent"
+gate; both branched on agent identity, which is exactly the shape the kernel
+must not take. An agent absent from every registry now receives the same
+digest a named specialist receives.
 """
 from __future__ import annotations
 
@@ -13,42 +18,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Agent-to-event-type mapping: which events each agent should see
-AGENT_EVENT_FILTERS = {
-    "platform-architect": ["git_commit", "infrastructure_change"],
-    "gitops-operator": ["git_commit", "git_push", "infrastructure_change"],
-    "developer": ["git_commit", "file_modifications"],
-    "cloud-troubleshooter": "*",  # All events (needs full history for diagnosis)
-    "gaia-system": "*",  # All events (workflow analysis)
-    "gaia-operator": ["git_commit", "file_modifications", "infrastructure_change"],
-    "gaia-planner": ["git_commit", "file_modifications"],
-}
+# Max events any dispatch receives, regardless of who it is.
+_MAX_EVENTS = 10
 
 
-def filter_events_for_agent(events: list, agent: str) -> list:
-    """
-    Filter events relevant to agent domain.
-
-    Args:
-        events: List of critical events from session
-        agent: Agent type (e.g., "gitops-operator")
-
-    Returns:
-        Filtered list of events relevant to agent
-    """
-    agent_filter = AGENT_EVENT_FILTERS.get(agent, [])
-
-    # Return all events for wildcard agents
-    if agent_filter == "*":
-        return events[-10:]  # Last 10 events
-
-    # Filter by event type and return max 10
-    filtered = [
-        e for e in events[-20:]  # Search last 20
-        if e.get("event_type") in agent_filter
-    ]
-
-    return filtered[:10]  # Return max 10
+def recent_events(events: list) -> list:
+    """Bound the event list to the most recent ``_MAX_EVENTS``, agent-agnostic."""
+    return events[-_MAX_EVENTS:]
 
 
 def format_events_summary(events: list) -> str:
@@ -94,31 +70,23 @@ def format_events_summary(events: list) -> str:
     return "\n".join(lines) if lines else "No recent events"
 
 
-def build_session_events(
-    parameters: dict,
-    project_agents: list,
-) -> str | None:
+def build_session_events(parameters: dict) -> str | None:
     """
     Build session events string for agent context without mutating parameters.
 
-    Filters events by agent domain to avoid noise.
-    Returns the events string suitable for additionalContext injection,
-    or None if no events to inject.
+    Every dispatch receives the identical last-``_MAX_EVENTS`` digest --
+    unfiltered by event type, agent name, or agent type. Returns the events
+    string suitable for additionalContext injection, or None if no events to
+    inject.
 
     Args:
-        parameters: Task tool parameters (read-only).
-        project_agents: List of valid project agent names.
+        parameters: Task tool parameters (read-only; kept for API
+            continuity with the PreToolUse:Task call site, unused here now
+            that injection no longer keys off ``subagent_type``).
 
     Returns:
         Session events string, or None if nothing to inject.
     """
-    subagent_type = parameters.get("subagent_type", "")
-
-    # Only inject for project agents
-    if subagent_type not in project_agents:
-        logger.debug(f"Skipping session events for non-project agent: {subagent_type}")
-        return None
-
     # Get session events
     from ..core.paths import get_session_dir
     context_path = get_session_dir() / "context.json"
@@ -135,26 +103,21 @@ def build_session_events(
             logger.debug("No critical events in session")
             return None
 
-        # Filter by agent domain
-        filtered = filter_events_for_agent(events, subagent_type)
-
-        if not filtered:
-            logger.debug(f"No relevant events for {subagent_type}")
+        bounded = recent_events(events)
+        if not bounded:
             return None
 
         # Format events summary
-        events_summary = format_events_summary(filtered)
+        events_summary = format_events_summary(bounded)
 
         events_string = (
-            "# Recent Session Events (Auto-Injected, Last 24h)\n"
+            "# Recent Session Events (last 24h)\n"
             f"{events_summary}"
         )
-        logger.info(f"Session events built for {subagent_type} ({len(filtered)} events)")
+        logger.info(f"Session events built ({len(bounded)} events)")
 
         return events_string
 
     except Exception as e:
         logger.warning(f"Failed to build session events: {e}")
         return None
-
-

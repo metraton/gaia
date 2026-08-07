@@ -20,7 +20,8 @@ from typing import Dict, List, Any, Optional
 
 # Ensure the package root is on sys.path so that `tools.memory.scoring` and
 # `gaia.store.reader` resolve when this module is imported in-process by hooks
-# (e.g. context_injector) or invoked via the CLI entry point.
+# (the dispatch-kernel path in hooks/adapters/claude_code.py) or invoked via
+# the CLI entry point.
 # Pattern: same as hooks/pre_tool_use.py line 22.
 _PACKAGE_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 if _PACKAGE_ROOT not in sys.path:
@@ -184,6 +185,163 @@ def load_provider_contracts(agent_name: str, cloud_provider: str, db_path: Optio
 
 
 # ============================================================================
+# DISPATCH KERNEL DATA (no routing, no preloaded context)
+# ============================================================================
+
+def build_kernel_sections(
+    agent_name: str,
+    workspace: Optional[str] = None,
+    *,
+    turn_role: Optional[str] = None,
+    db_path: Optional[Path] = None,
+) -> Optional[Dict[str, Any]]:
+    """Derive the kernel_sections payload for a dispatch WITHOUT surface routing.
+
+    Routing is the orchestrator's dispatch reasoning; by the time a subagent
+    starts, that decision is already taken -- the subagent IS its result. So
+    nothing here classifies the prompt:
+
+      * ``can_read`` / ``can_write`` come ONLY from the agent's own
+        ``agent_contract_permissions`` rows (via :func:`load_provider_contracts`,
+        provider-scoped exactly as the retired telemetry path was, so the set
+        is identical to what ``get_context_update_contract`` produced).
+      * ``surface`` is the agent's own declared surface -- the ``surface_routing``
+        row whose ``primary_agent`` is this agent -- a fact of the assignment,
+        not a classification of it. Empty for an agent that owns no surface.
+      * ``role`` is dispatch data: ``verifier`` when the binding says so,
+        ``primary`` otherwise (the orchestrator dispatched this agent as the
+        owner of the task).
+
+    Returns None when nothing resolves (unknown agent with no permissions and
+    no surface) -- callers splice the payload only when it is real.
+    """
+    if not agent_name:
+        return None
+    if workspace is None:
+        try:
+            from gaia.project import current as _project_current
+            workspace = _project_current() or "global"
+        except Exception:
+            workspace = "global"
+
+    project_context = load_project_context(workspace, db_path=db_path)
+    cloud_provider = detect_cloud_provider(project_context.get("sections", {}))
+    provider_contracts = load_provider_contracts(
+        agent_name, cloud_provider, db_path=db_path
+    )
+    agent_contract = provider_contracts.get("agents", {}).get(agent_name, {})
+
+    surface = ""
+    try:
+        routing_config = load_surface_routing_config(db_path=db_path)
+        for surface_name, cfg in routing_config.get("surfaces", {}).items():
+            if cfg.get("primary_agent") == agent_name:
+                surface = surface_name
+                break
+    except Exception:
+        surface = ""
+
+    sections = {
+        "role": "verifier" if turn_role == "verifier" else "primary",
+        "surface": surface,
+        "can_read": agent_contract.get("read", []),
+        "can_write": agent_contract.get("write", []),
+    }
+    if not any((sections["surface"], sections["can_read"], sections["can_write"])):
+        return None
+    return sections
+
+
+def _project_identity_entries(
+    workspace: str,
+    db_path: Optional[Path] = None,
+) -> dict:
+    """Return the workspace's ``project_identity`` section, or {} when absent."""
+    sections = load_project_context(workspace, db_path=db_path).get("sections", {})
+    identity = sections.get("project_identity")
+    return identity if isinstance(identity, dict) else {}
+
+
+def resolve_project_by_name(
+    workspace: str,
+    name: Optional[str],
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """Resolve a project NAMED at dispatch, as ``"name (/abs/path)"``.
+
+    The ``project=<name>`` dispatch token names the project the orchestrator
+    already knows the turn is about; this matches it (case-insensitively)
+    against the ``name`` of each ``project_identity`` entry. A name the
+    substrate does not know yet still returns verbatim -- the orchestrator's
+    assertion is dispatch data, and a bare name beats a dropped one -- just
+    without the ``(path)`` suffix only a known entry can supply.
+    """
+    if not workspace or not name:
+        return None
+    wanted = str(name).strip()
+    if not wanted:
+        return None
+    for entry in _project_identity_entries(workspace, db_path=db_path).values():
+        if not isinstance(entry, dict):
+            continue
+        entry_name = entry.get("name")
+        if entry_name and str(entry_name).lower() == wanted.lower():
+            local_path = entry.get("local_path")
+            if local_path:
+                return f"{entry_name} ({local_path})"
+            return str(entry_name)
+    return wanted
+
+
+def resolve_dispatch_project(
+    workspace: str,
+    cwd: Optional[str],
+    db_path: Optional[Path] = None,
+) -> Optional[str]:
+    """Resolve which PROJECT a dispatch ran from, as ``"name (/abs/path)"``.
+
+    Matches ``cwd`` against the ``local_path`` of each entry in the workspace's
+    ``project_identity`` section (deepest path wins, so a nested project beats
+    its parent). Returns None when the cwd is under no known project -- a NULL
+    is more honest than a guess, and the kernel simply omits the line.
+
+    This is the FALLBACK lane: the orchestrator dispatches from the workspace
+    root, so the cwd rarely lands inside a project. The primary lane is the
+    ``project=<name>`` dispatch token (:func:`resolve_project_by_name`).
+    """
+    if not workspace or not cwd:
+        return None
+    try:
+        target = Path(cwd).resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    identity = _project_identity_entries(workspace, db_path=db_path)
+    if not identity:
+        return None
+
+    best: Optional[tuple] = None
+    for entry in identity.values():
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        local_path = entry.get("local_path")
+        if not name or not local_path:
+            continue
+        try:
+            root = Path(local_path).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if target == root or root in target.parents:
+            depth = len(root.parts)
+            if best is None or depth > best[0]:
+                best = (depth, str(name), str(local_path))
+    if best is None:
+        return None
+    return f"{best[1]} ({best[2]})"
+
+
+# ============================================================================
 # CONTEXT EXTRACTION
 # ============================================================================
 
@@ -199,7 +357,8 @@ def get_relevant_sections(
         sections: All available sections from project_context_contracts (keyed by contract name).
         contract_keys: The agent's permitted read keys (from agent_contract_permissions).
         surface_routing: The routing result from classify_surfaces().
-        routing_config: The full surface-routing.json config (has contract_sections per surface).
+        routing_config: The DB-backed routing registry shape (contract sections
+            derive from agent frontmatter and are seeded into surface_routing).
 
     Returns:
         Filtered dict of sections. Falls back to all readable sections when:
@@ -530,8 +689,8 @@ def build_context_payload(
 ) -> Dict[str, Any]:
     """Build and return a context payload dict for an agent.
 
-    This is the programmatic entry point used by context_injector.py (in-process
-    call, no subprocess). The ``main()`` function wraps this for CLI usage.
+    This is the programmatic entry point for in-process callers (no
+    subprocess). The ``main()`` function wraps this for CLI usage.
 
     Args:
         agent_name: The agent being dispatched (e.g. "cloud-troubleshooter").

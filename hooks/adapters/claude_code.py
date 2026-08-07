@@ -728,41 +728,6 @@ def evaluate_contract_gate(
     return verdict
 
 
-def _append_workspace_memory(context: str) -> str:
-    """Append the curated workspace memory block to a subagent context string.
-
-    Calls the same primitive the orchestrator uses at SessionStart --
-    ``session_manifest.build_workspace_memory_block`` -- but scoped to the
-    ``anchor`` section only. A dispatched subagent receives just
-    ``## Memory — About you / What I know`` (durable, identity-level anchors),
-    NOT ``## Memory — For this session`` (carry_forward) nor
-    ``## Memory — Open threads`` (thread/open): those are session-scoped state
-    that belongs to the orchestrator's turn, not to a one-shot subagent. The
-    orchestrator's own SessionStart assembler (``session_manifest.build_session_context``)
-    now calls the primitive TWICE -- once with no ``sections`` for the
-    transversal digest, once more with ``sections=["anchor"]`` for these same
-    durable anchors -- so this is no longer a subagent-only cut; it is the
-    same ``["anchor"]`` call the orchestrator itself makes, just reused here
-    for the dispatched subagent's context. The two DB classes queried
-    (``thread`` for the digest, ``anchor`` here) are disjoint, so neither the
-    orchestrator's two SessionStart calls nor this subagent call duplicate
-    each other's content.
-    Joins with a blank-line separator when context is non-empty. Returns the
-    original context unchanged on any error (fail-safe: dispatch must never
-    fail because memory injection misbehaved).
-    """
-    try:
-        from modules.session.session_manifest import build_workspace_memory_block
-        block = build_workspace_memory_block(sections=["anchor"])
-        if not block:
-            return context
-        separator = "\n\n" if context else ""
-        return context + separator + block
-    except Exception as exc:
-        logger.debug("_append_workspace_memory failed (non-fatal): %s", exc)
-        return context
-
-
 def _is_anomalous_dispatch_binding_rejection(
     reason: str, binding: Dict[str, Any],
 ) -> bool:
@@ -936,6 +901,20 @@ class ClaudeCodeAdapter(HookAdapter):
             exit_code = 2
 
         return HookResponse(output=output, exit_code=exit_code)
+
+    def read_permission_decision(self, output: Dict[str, object]) -> Optional[str]:
+        """Read Claude Code's nested permission decision."""
+        return read_permission_decision(output)
+
+    def read_permission_reason(self, output: Dict[str, object]) -> str:
+        """Read Claude Code's nested permission reason."""
+        return read_permission_reason(output)
+
+    def inject_updated_input(
+        self, output: Dict[str, object], updated_input: Dict[str, object]
+    ) -> Dict[str, object]:
+        """Attach rewritten input using Claude Code's hook response shape."""
+        return inject_updated_input(output, updated_input)
 
     # ------------------------------------------------------------------ #
     # format_completion_response: CompletionResult -> HookResponse
@@ -1359,7 +1338,7 @@ class ClaudeCodeAdapter(HookAdapter):
             cleanup_expired_grants,
         )
         from modules.tools.bash_validator import BashValidator
-        from modules.tools.task_validator import TaskValidator, AVAILABLE_AGENTS, META_AGENTS
+        from modules.tools.task_validator import TaskValidator
         hook_data = event.payload
         tool_name = hook_data.get("tool_name") or ""
         tool_input = hook_data.get("tool_input", {})
@@ -1400,11 +1379,10 @@ class ClaudeCodeAdapter(HookAdapter):
             if tool_name.lower() == "bash":
                 return self._adapt_bash(tool_name, tool_input, hook_data=hook_data)
             elif tool_name.lower() in ("task", "agent"):
-                hooks_dir = Path(__file__).parent.parent
-                project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
                 return self._adapt_task(
-                    tool_name, tool_input, project_agents, hooks_dir,
+                    tool_name, tool_input,
                     session_id=event.session_id,
+                    hook_data=hook_data,
                 )
             elif tool_name.lower() == "sendmessage":
                 return self._adapt_send_message(
@@ -1513,12 +1491,30 @@ class ClaudeCodeAdapter(HookAdapter):
             tool_use_id=tool_use_id,
             allowed=True,
             consumed_approval_id=result.consumed_approval_id,
+            command_set_reservation=result.command_set_reservation,
         )
         # Keyed by (session_id, tool_use_id) when both are present; degrades to
         # the legacy global file otherwise (create_pre_hook_state/save_hook_state
         # share the same key resolution, so PostToolUse retrieves the exact
         # entry this call wrote).
-        save_hook_state(state)
+        state_saved = save_hook_state(state)
+        if result.command_set_reservation and not state_saved:
+            # Deny fail-closed: without the correlation state, PostToolUse/Stop
+            # could never settle the reserved COMMAND_SET item. The settle here
+            # is best-effort -- the denial stands even if it fails.
+            try:
+                from gaia.store.writer import settle_plan_command
+                settle_plan_command(
+                    result.command_set_reservation["approval_id"],
+                    session_id=session_id, tool_use_id=tool_use_id, success=False,
+                    failure_reason="PreToolUse correlation state could not be persisted",
+                )
+            except Exception as exc:
+                logger.debug("reservation settle on state failure errored: %s", exc)
+            return HookResponse(
+                output="COMMAND_SET denied: host correlation state unavailable",
+                exit_code=2,
+            )
 
         # Dispatch-identity injection (fail-closed guards, M1). A subagent's
         # DB writes (memory / evidence / brief+plan content / state transitions /
@@ -1568,31 +1564,35 @@ class ClaudeCodeAdapter(HookAdapter):
         self,
         tool_name: str,
         parameters: dict,
-        project_agents: list,
-        hooks_dir: Path,
         session_id: str = "",
+        hook_data: Optional[dict] = None,
     ) -> HookResponse:
         """Handle Task/Agent tool validation within the adapter.
 
-        Builds project context and caches it for SubagentStart to forward.
-        PreToolUse no longer returns additionalContext directly -- that would
-        inject it into the orchestrator instead of the subagent.
+        The subagent's payload is the dispatch KERNEL, not a preloaded
+        project-context snapshot. This method therefore no longer builds
+        project context, computes surface routing, appends the workspace
+        memory block, or renders the legacy identity block -- the born row
+        (claimed at SubagentStart) carries everything the kernel renders, and
+        the turn pulls project context on demand through the CLI. What still
+        happens here: task validation, session-events digest, the birth of the
+        nascent row, and the cache bridge that carries the events digest to
+        SubagentStart.
+
+        The session-events digest is agent-agnostic (no project-agent
+        allowlist gate): every dispatched agent, registered or not, receives
+        the same last-events digest.
+
+        ``hook_data`` is the raw PreToolUse payload: the birth path mines its
+        top-level ``prompt_id`` / ``tool_use_id`` / ``cwd`` (dispatch
+        correlation coordinates, v43/v44) which ``parameters`` (the
+        tool_input) does not carry.
         """
         from modules.core.state import create_pre_hook_state, save_hook_state
         from modules.tools.task_validator import TaskValidator
-        from modules.context.context_injector import build_project_context
         from modules.session.session_event_injector import build_session_events
 
-        context_text, telemetry = build_project_context(
-            parameters, project_agents, hooks_dir,
-        )
-        # Context anchors (for hit-rate tracking) are computed here, where the
-        # context_payload exists, but can only be SAVED once the host assigns
-        # this dispatch its agent_id -- which happens at SubagentStart, not
-        # here. Carried forward through the same cache bridge as the context
-        # text itself (see _cache_context_for_subagent below).
-        anchors = telemetry.get("anchors") if telemetry else None
-        events_text = build_session_events(parameters, project_agents)
+        events_text = build_session_events(parameters)
 
         # Standard task validation (runs against ORIGINAL prompt -- no workaround needed)
         validator = TaskValidator()
@@ -1613,58 +1613,23 @@ class ClaudeCodeAdapter(HookAdapter):
 
         logger.info("ALLOWED Task: %s", result.agent_name)
 
-        # Cache context for SubagentStart to pick up and forward to the subagent.
-        # PreToolUse:Agent additionalContext goes to the orchestrator (wrong target).
-        additional = "\n".join(filter(None, [context_text, events_text]))
-
-        # Fallback: if build_project_context returned None because the
-        # orchestrator already embedded context in the prompt (dedup guard),
-        # extract the embedded context so SubagentStart can still inject it
-        # via additionalContext.
-        if not additional:
-            prompt = parameters.get("prompt", "")
-            marker = "# Project Context"
-            if marker in prompt:
-                # Extract everything from the marker onwards as context.
-                # The orchestrator copied its own injected context into the
-                # Agent tool prompt; we forward it to SubagentStart instead.
-                idx = prompt.index(marker)
-                additional = prompt[idx:]
-                logger.info(
-                    "Extracted embedded context from prompt for caching "
-                    "(len=%d, agent=%s)",
-                    len(additional), result.agent_name,
-                )
-
-        # Append curated workspace memory (atoms, decisions, negatives) so
-        # subagents receive the same curated memory sections the orchestrator
-        # gets at SessionStart. Reuses session_manifest.build_workspace_memory_block
-        # as the single source of truth for the primitive. Fail-safe.
-        additional = _append_workspace_memory(additional)
-
         # Born-at-dispatch (v37, plan 34 task 6): stamp the nascent
         # agent_contract_handoffs row FROM the dispatch metadata, validated for
         # referential integrity. Best-effort and STRICTLY non-blocking -- a
         # dispatch is never blocked by a binding that fails to resolve or a birth
         # that errors; the row simply is not born (the SubagentStop backstop/reaper
         # still guarantees exactly-one row).
-        #
-        # It runs HERE, before the context is cached, because the identity it
-        # mints has to ride along in that same cache: the row is adoptable only
-        # if the agent learns which id it was born under, and the context cache
-        # is the one bridge from this hook into the subagent's own payload.
-        identity = self._maybe_birth_dispatched_row(
+        self._maybe_birth_dispatched_row(
             parameters, result.agent_name, session_id,
+            hook_data=hook_data,
         )
-        if identity:
-            from modules.agents.dispatch_identity import render_identity_block
 
-            identity_block = render_identity_block(
-                identity.get("agent_id", ""), identity.get("contract_id", ""),
-            )
-            if identity_block:
-                additional = "\n\n".join(filter(None, [additional, identity_block]))
-
+        # Cache bridge to SubagentStart: only the session-events digest rides
+        # it now (see _cache_context_for_subagent for why the bridge survives
+        # at all). The born row's identity does NOT ride it -- SubagentStart
+        # resolves the row via claim_dispatch_row, so an empty digest needs no
+        # cache entry.
+        additional = events_text or ""
         if additional:
             effective_session_id = session_id or "unknown"
             agent_type = result.agent_name or "unknown"
@@ -1672,9 +1637,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 effective_session_id,
                 agent_type,
                 additional,
-                anchors=anchors,
                 task_description=parameters.get("description", ""),
-                contract_id=(identity or {}).get("contract_id"),
             )
             logger.info(
                 "Cached context for SubagentStart: agent=%s, session=%s",
@@ -1695,19 +1658,104 @@ class ClaudeCodeAdapter(HookAdapter):
         return HookResponse(output={}, exit_code=0)
 
     @staticmethod
+    def _resolve_dispatch_workspace(
+        parameters: dict, hook_data: Optional[dict],
+    ) -> str:
+        """Resolve the REAL workspace for a dispatch birth.
+
+        The historical chain (``parameters['workspace']`` -> GAIA_WORKSPACE ->
+        literal ``"global"``) landed every birth on ``"global"`` in practice:
+        the Task tool_input never carries a workspace key and GAIA_WORKSPACE
+        is not set by the harness, so the literal fallback always won -- which
+        broke the workspace scoping of everything keyed to the row (injected
+        memory above all). The explicit overrides keep their priority, but the
+        fallback is now the canonical path-based resolver
+        (``gaia.project.current``) anchored at the payload's ``cwd``, the same
+        resolver every other workspace consumer uses; its own last resort is
+        still ``"global"``.
+        """
+        explicit = (
+            parameters.get("workspace")
+            or os.environ.get("GAIA_WORKSPACE")
+        )
+        if explicit:
+            return explicit
+        try:
+            from modules.install_detector import resolve_workspace
+
+            return resolve_workspace((hook_data or {}).get("cwd") or None)
+        except Exception:
+            return "global"
+
+    @staticmethod
+    def _kernel_dispatch_facts(
+        agent_name: str,
+        workspace: str,
+        *,
+        turn_role: Optional[str] = None,
+        cwd: Optional[str] = None,
+        project_token: Optional[str] = None,
+    ) -> "tuple[Optional[Dict[str, Any]], Optional[str]]":
+        """Derive (kernel_sections, dispatch_project) for a birth -- no routing.
+
+        Surface routing left the subagent dispatch path, so the kernel
+        payload is derived from the agent's OWN declarations --
+        ``agent_contract_permissions`` for can_read/can_write, the agent's own
+        ``surface_routing`` row (primary_agent match) for its surface, the
+        dispatch binding for its role.
+
+        The project is DISPATCH DATA first: a ``project=<name>``
+        token in the dispatch prompt (``project_token``, extracted by
+        ``extract_dispatch_binding``) resolves by NAME against the workspace's
+        project_identity (``resolve_project_by_name``). Only when the dispatch
+        named no project does the cwd-based resolution run as fallback
+        (``resolve_dispatch_project``) -- the orchestrator dispatches from the
+        workspace root, so the cwd lane alone left dispatch_project NULL in
+        practice.
+
+        Fail-safe: any error degrades to ``(None, None)`` -- a birth without a
+        kernel payload, never a blocked dispatch.
+        """
+        try:
+            from modules.core.paths import ensure_package_root_importable
+
+            ensure_package_root_importable()
+            from tools.context.context_provider import (
+                build_kernel_sections,
+                resolve_dispatch_project,
+                resolve_project_by_name,
+            )
+
+            sections = build_kernel_sections(
+                agent_name, workspace, turn_role=turn_role,
+            )
+            project = resolve_project_by_name(workspace, project_token)
+            if not project:
+                project = resolve_dispatch_project(workspace, cwd)
+            return sections, project
+        except Exception:
+            logger.debug(
+                "kernel dispatch facts derivation failed (non-fatal)",
+                exc_info=True,
+            )
+            return None, None
+
+    @staticmethod
     def _maybe_birth_dispatched_row(
         parameters, agent_name, session_id,
+        hook_data: Optional[dict] = None,
     ) -> Optional[Dict[str, str]]:
         """Best-effort born-at-dispatch row birth (plan 34 task 6; plan 49
         task 1 -- degrade-not-drop, D1).
 
         Mints a REAL, adoptable identity for the turn (see
         ``modules.agents.dispatch_identity``) and births the nascent row under
-        it, returning ``{"agent_id": ..., "contract_id": ...}`` on success so
-        the caller can inject that same identity into the subagent's context.
+        it, returning ``{"agent_id": ..., "contract_id": ...}`` on success.
         Returns None only when NO row was born at all -- a writer error, or an
-        extraction gap -- so "no identity to inject" and "no row to adopt"
-        stay the same condition and can never disagree.
+        extraction gap. The identity no longer travels to the subagent from
+        here: SubagentStart recovers it by claiming the row itself
+        (``claim_dispatch_row``), so the return value is a birth signal for
+        callers and tests, not a payload.
 
         D1 (gate 499): an ATTEMPTED task_execution binding (``task_id=`` WAS
         present) whose ``plan_task_id`` fails to RESOLVE
@@ -1715,17 +1763,30 @@ class ClaudeCodeAdapter(HookAdapter):
         still born via :func:`~modules.agents.dispatch_binding.birth_degraded_row`
         -- ``plan_task_id`` NULL in the column (referential integrity is not
         weakened), the rejection reason and the failed token recorded INSIDE
-        the birth envelope. The identity is still returned so it is still
-        injected and the turn still runs -- degrade, not block. A verifier
+        the birth envelope. The identity is still returned and the turn still
+        runs -- degrade, not block. A verifier
         turn's unresolved binding (``verifier_requires_parent_handoff_id`` /
         ``parent_handoff_id_unresolved``) is NOT in ``DEGRADABLE_BINDING_REASONS``
         and keeps today's behavior exactly: no row, no identity.
+
+        ``hook_data`` (the raw PreToolUse payload) enriches the birth with the
+        v43/v44 dispatch coordinates -- prompt_id/tool_use_id/description/
+        prompt, the kernel_sections payload (derived without routing; see
+        ``_kernel_dispatch_facts``), and the dispatch project -- and anchors
+        the workspace resolution at the payload's cwd
+        (see _resolve_dispatch_workspace). Optional: a caller without it
+        births exactly as before, with NULL coordinates.
+
+        ``session_id`` is stamped as-is when present and NULL when absent --
+        never a placeholder string. A NULL leaves the column open for a later,
+        truer attribution (finalize merges it with COALESCE); the old
+        ``"unknown"`` literal baked a lie into the column that nothing could
+        correct.
 
         Never raises: every failure path is swallowed so a dispatch is never
         blocked. See _adapt_task for the rationale.
         """
         try:
-            import os as _os
             from modules.agents.dispatch_binding import (
                 DEGRADABLE_BINDING_REASONS,
                 DispatchBindingError,
@@ -1741,12 +1802,32 @@ class ClaudeCodeAdapter(HookAdapter):
             from modules.agents.dispatch_binding import extract_dispatch_binding
             binding = extract_dispatch_binding(meta)
 
-            workspace = (
-                parameters.get("workspace")
-                or _os.environ.get("GAIA_WORKSPACE")
-                or "global"
+            workspace = ClaudeCodeAdapter._resolve_dispatch_workspace(
+                parameters, hook_data,
             )
-            sid = session_id or "unknown"
+            # Dispatch coordinates (v43/v44): prompt/description live in the
+            # Task tool_input; prompt_id/tool_use_id/cwd are top-level payload
+            # fields. kernel_sections and the project are derived here, at
+            # birth, with NO surface routing (see _kernel_dispatch_facts).
+            payload = hook_data or {}
+            kernel_sections, dispatch_project = (
+                ClaudeCodeAdapter._kernel_dispatch_facts(
+                    agent_name or "",
+                    workspace,
+                    turn_role=binding.get("turn_role"),
+                    cwd=payload.get("cwd") or None,
+                    project_token=binding.get("project"),
+                )
+            )
+            dispatch_fields = {
+                "dispatch_prompt_id": payload.get("prompt_id") or None,
+                "dispatch_tool_use_id": payload.get("tool_use_id") or None,
+                "dispatch_description": parameters.get("description") or None,
+                "dispatch_prompt": parameters.get("prompt") or None,
+                "kernel_sections": kernel_sections,
+                "dispatch_project": dispatch_project,
+            }
+            sid = session_id or None
             agent = agent_name or "unknown"
             ptid = binding.get("plan_task_id")
             # The identity is MINTED, not derived from (session, agent, task).
@@ -1775,6 +1856,7 @@ class ClaudeCodeAdapter(HookAdapter):
                     # shares with its own row (see the writer's
                     # find_dispatched_row_by_agent_name).
                     agent_name=agent,
+                    **dispatch_fields,
                 )
                 logger.info(
                     "Born-at-dispatch: nascent row stamped (agent=%s, task=%s, "
@@ -1804,6 +1886,7 @@ class ClaudeCodeAdapter(HookAdapter):
                             plan_id=binding.get("plan_id"),
                             session_id=sid,
                             agent_name=agent,
+                            **dispatch_fields,
                         )
                         logger.info(
                             "Born-at-dispatch: DEGRADED row stamped (agent=%s, "
@@ -2283,6 +2366,17 @@ class ClaudeCodeAdapter(HookAdapter):
                     pre_state.metadata.get("consumed_approval_id") if pre_state else None
                 )
                 if consumed_approval_id:
+                    reservation = pre_state.metadata.get("command_set_reservation")
+                    if reservation:
+                        from gaia.store.writer import settle_plan_command
+                        if not settle_plan_command(
+                            consumed_approval_id,
+                            session_id=post_session_id,
+                            tool_use_id=tool_use_id,
+                            success=success,
+                            failure_reason=None if success else str(output),
+                        ):
+                            raise RuntimeError("COMMAND_SET reservation correlation failed")
                     self._record_t3_outcome_event(
                         consumed_approval_id,
                         command=parameters.get("command", ""),
@@ -2455,6 +2549,16 @@ class ClaudeCodeAdapter(HookAdapter):
                     else None
                 )
                 if consumed_approval_id:
+                    reservation = state.metadata.get("command_set_reservation")
+                    if reservation:
+                        from gaia.store.writer import settle_plan_command
+                        settle_plan_command(
+                            consumed_approval_id,
+                            session_id=session_id,
+                            tool_use_id=tool_use_id,
+                            success=False,
+                            failure_reason="command failed; reconciled at Stop",
+                        )
                     if not self._t3_terminal_event_exists(consumed_approval_id):
                         # Recover the failure detail from the transcript. Fall
                         # back to a generic message when it cannot be found so
@@ -2623,7 +2727,6 @@ class ClaudeCodeAdapter(HookAdapter):
         from modules.agents.contract_validator import (
             extract_commands_from_evidence,
             parse_contract,
-            requires_consolidation_report,
             validate as validate_contract,
             validate_approval_request,
             validate_verbatim_outputs_consistency,
@@ -2980,10 +3083,14 @@ class ClaudeCodeAdapter(HookAdapter):
                 transcript_analysis=transcript_analysis,
             )
 
+            # consolidation_required is False unconditionally: its signal
+            # (the preloaded injected-context payload) retired with the
+            # dispatch-kernel migration, so no task can be identified as
+            # multi-surface at this seam anymore.
             response_contract = validate_response_contract(
                 agent_output,
                 task_agent_id=resolve_agent_id(task_info),
-                consolidation_required=requires_consolidation_report(task_info),
+                consolidation_required=False,
                 parsed_contract=parsed_contract,
             )
             save_validation_result(task_info, response_contract)
@@ -3689,30 +3796,27 @@ class ClaudeCodeAdapter(HookAdapter):
 
     def _cache_context_for_subagent(
         self, session_id: str, agent_type: str, context: str,
-        anchors: Optional[List[str]] = None,
         task_description: str = "",
-        contract_id: Optional[str] = None,
     ) -> Path:
-        """Write built context to a cache file for SubagentStart consumption.
+        """Write the session-events digest to a cache file for SubagentStart.
 
-        ``anchors`` (context anchors for hit-rate tracking, when any were
-        extracted) rides alongside the context text: PreToolUse:Task computes
-        them but cannot save them (no agent_id yet), so they travel through
-        this SAME cache to SubagentStart, where adapt_subagent_start saves
-        them once the host-assigned agent_id is available.
+        This bridge survives for ONE cargo: the session-events digest
+        (``build_session_events``), which is computed at PreToolUse:Task from
+        the dispatch parameters and cannot be recomputed at SubagentStart --
+        that event's payload carries neither the Task tool_input nor the
+        project-agent roster the digest is derived from. Everything else that
+        once rode here is gone: the born row's contract identity is recovered
+        at SubagentStart by ``claim_dispatch_row`` (a DB fact needs no cache),
+        and context anchors died with the preloaded-context path. What would
+        kill the bridge entirely: carrying the digest on the born row's
+        kernel payload (so the claim delivers it), or a host that lets
+        SubagentStart see the dispatch parameters.
 
         ``task_description`` is the Task tool's own ``description`` parameter,
         stored purely as a CORRELATION key: SubagentStart's payload carries a
         field of the same name, so when the two agree the bridge can pair a
         start with the dispatch that produced it instead of guessing by recency
         (see ``_read_cached_context``). It is never injected into the subagent.
-
-        ``contract_id`` is the born-at-dispatch row's key, riding the same
-        bridge as ``anchors`` and for the same reason: PreToolUse:Task births
-        the row but the host has not assigned the dispatch its agent_id yet.
-        SubagentStart, holding both, stamps the harness id onto the row
-        (``stamp_harness_agent_id``) so a cut turn stays recoverable by the id
-        the parent's Task result reports.
 
         Returns the path to the cache file.
         """
@@ -3723,9 +3827,7 @@ class ClaudeCodeAdapter(HookAdapter):
             "context": context,
             "agent_type": agent_type,
             "session_id": session_id,
-            "anchors": anchors or [],
             "task_description": task_description or "",
-            "contract_id": contract_id or "",
             "created_at": time.time(),
         }
         cache_file.write_text(json.dumps(payload))
@@ -3992,35 +4094,119 @@ class ClaudeCodeAdapter(HookAdapter):
         return render_resume_hint(draft_id, envelope)
 
     # ------------------------------------------------------------------ #
+    # v43 dispatch kernel: claim the born row, render the kernel blocks
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _maybe_claim_dispatch_kernel(raw: dict) -> Optional[str]:
+        """Claim the born row this start correlates to, stamp it, render its kernel.
+
+        The correlation keys are the host's own SubagentStart coordinates:
+        ``prompt_id`` (matched against the ``dispatch_prompt_id`` stamped at
+        birth) and ``task_description`` (against ``dispatch_description``),
+        scoped by ``agent_type``. ``claim_dispatch_row`` owns the ladder and
+        the divergent-signature guard.
+
+        The harness agent id is stamped onto the claimed row HERE, right after
+        the claim resolves, because the claim is where both identifier spaces
+        first meet: the row carries the CLI-minted contract_id and ``raw``
+        carries the host-assigned ``agent_id``. Stamping at the claim (instead
+        of from a contract_id carried by the context cache) covers BOTH start
+        lanes -- cache hit and cache miss -- where the cache-borne stamp
+        silently lost the cache-miss lane, exactly the cut-turn traceability
+        the stamp exists for. SubagentStop cannot be the seam: it never fires
+        on a harness cut. The stamp runs before rendering so a render failure
+        cannot lose it; both are best-effort and never block the start.
+
+        Returns the joined kernel blocks, or None when nothing was claimed or
+        rendering failed -- callers read None as "keep the legacy path",
+        never as an error. Best-effort by contract: a start is never blocked
+        by the kernel.
+        """
+        try:
+            from gaia.store.writer import claim_dispatch_row, stamp_harness_agent_id
+            from modules.context.kernel_builder import build_kernel_context
+
+            agent_type = raw.get("agent_type", "")
+            row = claim_dispatch_row(
+                agent_name=agent_type or None,
+                dispatch_prompt_id=raw.get("prompt_id") or None,
+                dispatch_description=raw.get("task_description") or None,
+            )
+            if row is None:
+                return None
+            try:
+                _stamp = stamp_harness_agent_id(
+                    row.get("contract_id") or None,
+                    raw.get("agent_id", "") or None,
+                )
+                if _stamp.get("status") == "applied":
+                    logger.info(
+                        "Harness agent id stamped: contract_id=%s harness_agent_id=%s",
+                        row.get("contract_id"), raw.get("agent_id"),
+                    )
+            except Exception as exc:
+                logger.debug("Harness agent id stamp failed (non-fatal): %s", exc)
+            kernel = build_kernel_context(row, agent_name=agent_type)
+            if kernel:
+                logger.info(
+                    "Dispatch kernel injected (contract_id=%s, agent=%s)",
+                    row.get("contract_id"), agent_type or "unknown",
+                )
+            return kernel
+        except Exception as exc:
+            logger.debug("dispatch claim/kernel failed (non-fatal): %s", exc)
+            return None
+
+    # ------------------------------------------------------------------ #
     # P2: adapt_subagent_start
     # ------------------------------------------------------------------ #
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
-        """Parse SubagentStart event and forward cached context to the subagent.
+        """Parse SubagentStart event and inject the dispatch kernel.
 
-        Three contributions, all optional, joined when present:
+        What a freshly dispatched subagent receives is the KERNEL
+        rendered from its claimed born row (# Your Contract / # Your CLI /
+        # How the user works) plus, when present, the cached session-events
+        digest. Project context is NOT preloaded (pulled on demand via the
+        CLI) and surface routing is neither computed nor injected.
+
+        Contributions, all optional, joined when present:
         1. Cache hit (normal start via Task/Agent tool): PreToolUse:Agent
-           caches context, this method reads and forwards it verbatim (no
-           draft-resume contribution applies here -- a freshly dispatched
-           agent has no prior draft under its brand-new agent_id).
-        2. Cache miss (resume via SendMessage): No PreToolUse:Agent fires,
-           so no cache exists. If agent_type is present in the payload and
-           is a known project agent, rebuild project context on-demand.
-        3. Cache miss + resume-mapping hit (T6, AC-18/AC-20): the CC session
+           cached the events digest; this method forwards it, then claims the
+           born row and injects the kernel.
+        2. Cache miss + resume-mapping hit (T6, AC-18/AC-20): the CC session
            resuming this agent was recorded by
            ``_adapt_send_message``/``_cache_resume_mapping``; if that
            session_id (or, failing that, the most recent resume) maps to an
            agent_id with a live ``gaia.contract.drafts`` draft, surface a
            minimal summary of it so the resumed agent continues its own
            draft instead of re-emitting the contract block.
+        3. Cache miss on a FRESH dispatch (the cache raced its 60s TTL): the
+           born row is a DB fact, so the claim still resolves and the kernel
+           is still injected.
+
+        On every lane the claim is also the stamping seam: resolving the row
+        is what joins the CLI-minted contract identity with the harness's own
+        ``agent_id`` (see ``_maybe_claim_dispatch_kernel``).
+
+        CLAIM-FAILURE FALLBACK (explicit, by design): when no kernel can be
+        injected -- the claim found no row, refused an ambiguous correlation,
+        or lost a race -- the turn starts WITHOUT a ``# Your Contract`` block.
+        That is the agent-protocol skill's documented fallback shape: the
+        agent runs a bare ``gaia contract init`` and works under the identity
+        it mints. The born row (if one exists) stays unadopted and is closed
+        by the SubagentStop persister -- superseded when the turn finalized
+        its own row, reaped otherwise -- so no path leaves the turn without a
+        contract or the row without a closure. The retired legacy identity
+        block is NOT re-rendered as a fallback.
         """
         session_id = raw.get("session_id", "")
 
         # agent_type / task_description are passed as CORRELATION keys only:
-        # they decide WHICH cached dispatch this start belongs to. That matters
-        # now that the cached payload carries the dispatch's minted contract
-        # identity -- handing the wrong entry to a subagent would have it adopt
-        # a row bound to a different dispatch.
+        # they decide WHICH cached dispatch this start belongs to, so a
+        # concurrent dispatch of another agent type never receives this
+        # dispatch's events digest.
         cached = self._read_cached_context(
             session_id,
             agent_type=raw.get("agent_type", ""),
@@ -4032,109 +4218,27 @@ class ClaudeCodeAdapter(HookAdapter):
                 cached.get("agent_type", "unknown"),
                 session_id,
             )
-            # Save context anchors now: this is the first point in the
-            # dispatch lifecycle where the host has assigned agent_id (see
-            # anchor_tracker.py's module docstring). PreToolUse:Task computed
-            # the anchors and carried them here via the cache (see
-            # _cache_context_for_subagent); a missing agent_id degrades to a
-            # skipped save, never a crash.
-            cached_anchors = cached.get("anchors") or []
-            if cached_anchors:
-                try:
-                    from modules.context.anchor_tracker import save_anchors
-                    save_anchors(
-                        session_id,
-                        cached.get("agent_type", "unknown"),
-                        raw.get("agent_id", ""),
-                        set(cached_anchors),
-                    )
-                except Exception as exc:
-                    logger.debug("Anchor save at SubagentStart failed (non-fatal): %s", exc)
-            # Stamp the harness's per-run agent id onto the born-at-dispatch
-            # row. This is the ONE seam where both identifier spaces coexist
-            # before the turn can be cut: the minted contract_id rode the cache
-            # from PreToolUse:Task, and the host has just assigned agent_id.
-            # SubagentStop cannot do this -- it never fires on a harness cut,
-            # the very turn the stamp exists to make recoverable. Best-effort:
-            # a failed stamp never blocks the start.
-            try:
-                from gaia.store.writer import stamp_harness_agent_id
-
-                _stamp = stamp_harness_agent_id(
-                    cached.get("contract_id") or None,
-                    raw.get("agent_id", "") or None,
-                )
-                if _stamp.get("status") == "applied":
-                    logger.info(
-                        "Harness agent id stamped: contract_id=%s harness_agent_id=%s",
-                        cached.get("contract_id"), raw.get("agent_id"),
-                    )
-            except Exception as exc:
-                logger.debug(
-                    "Harness agent id stamp failed (non-fatal): %s", exc
-                )
+            # A failed or refused claim leaves only the cached digest -- the
+            # turn then follows the bare-init fallback (see docstring).
+            context_text = cached["context"]
+            kernel_context = self._maybe_claim_dispatch_kernel(raw)
+            if kernel_context:
+                context_text = "\n\n".join(filter(None, [
+                    context_text, kernel_context,
+                ]))
             return ContextResult(
                 context_injected=True,
-                additional_context=cached["context"],
+                additional_context=context_text,
                 sections_provided=[],
             )
 
-        # Resume path: SendMessage skips PreToolUse:Agent so no cache is
-        # written. If agent_type is present in the payload, rebuild context
-        # on-demand so the resumed agent has its project context and tools.
+        # Cache-miss path (a SendMessage resume, or a fresh start that raced
+        # the cache TTL). No project-context rebuild here -- the resumed turn
+        # pulls context on demand exactly like a fresh one, and the
+        # contributions below (draft hint, kernel claim) carry everything the
+        # start needs.
         agent_type = raw.get("agent_type", "")
         resume_parts: List[str] = []
-        if agent_type:
-            try:
-                from modules.context.context_injector import build_project_context
-                from modules.session.session_event_injector import build_session_events
-                from modules.tools.task_validator import AVAILABLE_AGENTS, META_AGENTS
-
-                project_agents = [a for a in AVAILABLE_AGENTS if a not in META_AGENTS]
-
-                if agent_type in project_agents:
-                    hooks_dir = Path(__file__).parent.parent
-                    task_description = raw.get("task_description", "")
-                    parameters = {
-                        "subagent_type": agent_type,
-                        "prompt": task_description or f"resume {agent_type}",
-                    }
-
-                    context_text, resume_telemetry = build_project_context(
-                        parameters, project_agents, hooks_dir,
-                    )
-                    events_text = build_session_events(parameters, project_agents)
-                    additional = "\n".join(filter(None, [context_text, events_text]))
-
-                    if additional:
-                        logger.info(
-                            "SubagentStart: rebuilt context on resume for "
-                            "agent=%s (session=%s)",
-                            agent_type, session_id,
-                        )
-                        resume_parts.append(additional)
-
-                        # Already inside SubagentStart -- agent_id (when the
-                        # host provides one on a resume) is available directly
-                        # from raw, no cache bridge needed here.
-                        resume_anchors = (resume_telemetry or {}).get("anchors") or []
-                        if resume_anchors:
-                            try:
-                                from modules.context.anchor_tracker import save_anchors
-                                save_anchors(
-                                    session_id, agent_type,
-                                    raw.get("agent_id", ""), set(resume_anchors),
-                                )
-                            except Exception as exc:
-                                logger.debug(
-                                    "Anchor save at SubagentStart (resume) failed "
-                                    "(non-fatal): %s", exc,
-                                )
-            except Exception as exc:
-                logger.warning(
-                    "SubagentStart: resume context rebuild failed for "
-                    "agent=%s: %s", agent_type, exc,
-                )
 
         try:
             draft_context = self._build_resume_draft_context(session_id)
@@ -4150,6 +4254,15 @@ class ClaudeCodeAdapter(HookAdapter):
                 session_id, agent_type or "unknown",
             )
             resume_parts.append(draft_context)
+
+        # v43 dispatch kernel, cache-miss lane: the born row is a DB fact that
+        # outlives the 60s context cache, so a start that lost the cache race
+        # can still claim its row and receive its kernel. A resume never
+        # matches (its row is already claimed or was never born), so this is a
+        # no-op there.
+        kernel_context = self._maybe_claim_dispatch_kernel(raw)
+        if kernel_context:
+            resume_parts.append(kernel_context)
 
         if resume_parts:
             return ContextResult(

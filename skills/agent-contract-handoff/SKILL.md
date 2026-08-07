@@ -1,234 +1,145 @@
 ---
 name: agent-contract-handoff
-description: Use when you need the exact field schema, required/conditional/optional status, or the trigger for any field of the agent_contract_handoff envelope -- input or output, top-level field, sub-field table, agent_state enum, or the JSON-not-YAML rule
+description: Use for the exact input/output schema and validation rules of agent_contract_handoff
 ---
 
-# Agent Contract Handoff
-
-The `agent_contract_handoff` is the uniform structured block every subagent emits at the end of its turn and the orchestrator consumes to decide the next dispatch. This skill is its field dictionary: every field, whether it is required, when a conditional field triggers, and which code symbol owns the rule.
-
-## The name collision: INPUT vs OUTPUT
-
-`agent_contract_handoff` names two different things, and this is where the distinction is owned. The runtime injects an INPUT envelope before the turn; the subagent emits an OUTPUT envelope after it. Same name, two directions.
-
-### INPUT envelope (what the subagent receives)
-
-The orchestrator-side context the runtime injects before a turn. Detection of `consolidation_required` reads from here -- see `requires_consolidation_report` in `contract_validator.py`. Five named sections:
-
-| Section | Carries | Use |
-|---------|---------|-----|
-| `project_knowledge` | indexed workspace facts (`project_context_contracts`) | read before scanning the filesystem |
-| `surface_routing` | routed surface(s), `multi_surface` flag, adjacent agents | know whether you are primary or assisting |
-| `agent_contract_handoff` (input sub-block) | goal, acceptance criteria, scope, plus `consolidation_required` / `cross_check_required` flags | decides whether your OUTPUT must carry `consolidation_report` |
-| `write_permissions` | exact `writable_sections` you may emit `update_contracts` clauses for | writing outside the list is rejected by the hook |
-| `metadata` | session id, provider, contract version | traceability, not control flow |
-
-### OUTPUT contract (what the subagent emits)
-
-The `agent_contract_handoff` envelope, built BY-VALUE across the turn with the `gaia contract` CLI (`init`/`set`/`add`/`fill --json`, then `finalize`) rather than composed once and re-emitted as a single fenced block. Every write validates the FULL resulting envelope through one combined entry point, `gaia.contract.crosscheck.validate()` -- layer 1 (`gaia.contract.validator.validate_form`, pure/stdlib SHAPE check) plus layer 2 (`gaia.contract.crosscheck`, gaia.db cross-check for `approval_id`) -- before persisting anything, so a rejected write never lands (no false-pass). `gaia.contract.validator.py` is the single source of truth for shape, including the canonical rich repair message (`CANONICAL_REPAIR_MESSAGE`) both this path and the fence fallback return.
-
-A still-emitted fenced `agent_contract_handoff` block is a supported migration fallback: `parse_contract` (regex `_RE_HANDOFF`, tag `_TAG_HANDOFF`) in `hooks/modules/agents/contract_validator.py` extracts the dict from the raw text, and `_validate_from_handoff` there hands SHAPE validation to the SAME `validate_form` core -- it is not a second, divergent validator. `contract_validator.py`'s `validate()` is explicitly the migration-only entry point for this path (see its docstring); it never re-implements the shape rules. The rest of this skill specifies the envelope either path must satisfy.
-
-## OUTPUT top-level field table
-
-| Field | Status | Trigger / consequence |
-|-------|--------|-----------------------|
-| `agent_status` | Required | always; container for the four status fields below; absent -> named code `MISSING_FIELD` (field `agent_status`) |
-| `agent_status.agent_state` | Required | always; enum (see state machine); absent -> `MISSING_FIELD`; present but out-of-enum -> named code `PLAN_STATUS` |
-| `agent_status.agent_id` | Required | always; must match `^a[0-9a-f]{16,}$` -- the value `gaia contract init` minted and printed for this turn, not one you invent; absent -> `MISSING_FIELD`; present but malformed or shorter than 16 hex -> named code `AGENT_ID_FORMAT` -- so contract-repair can route back to you |
-| `agent_status.pending_steps` | Required | presence-only check (`[]` is valid); missing -> `MISSING_FIELD` (field `agent_status.pending_steps`); on `COMPLETE`, a PRESENT but non-empty value -> named code `COMPLETE_SHAPE` (R4) |
-| `agent_status.next_action` | Required | must be present and non-empty; missing -> `MISSING_FIELD` (field `agent_status.next_action`); on `COMPLETE`, a PRESENT value other than exactly `"done"` -> named code `COMPLETE_SHAPE` (R4) |
-| `evidence_report` | Required | always present for every valid `agent_state`; see sub-field table |
-| `consolidation_report` | Conditional | required when INPUT set `consolidation_required` / `cross_check_required` / `surface_routing.multi_surface` (`requires_consolidation_report`); else may be `null` |
-| `approval_request` | Conditional | required (non-null) when `agent_state` is `APPROVAL_REQUEST`, else `APPROVAL_REQUEST_SHAPE` (R4); see sub-field table for which sub-fields that code also gates |
-| `loop_state` | Conditional | agentic-loop turns only; `_check_loop_state_blocking` blocks `COMPLETE` when `iteration < max_iterations AND metric < threshold` |
-| `failure_report` | Optional | a top-level object, sibling of `consolidation_report` and `approval_request`, seeded `null` by `gaia contract init`. Advisory on every `agent_state` -- absent or explicit `null` triggers no check at all; present triggers the full shape and rejects with `FAILURE_REPORT_SHAPE` on a defect. See its own section below. |
-| `user_facing_summary` | Optional | a brief prose summary written ONCE for the human reader; `parse_user_facing_summary`. The only human-audience field in the contract -- every other field is machine-audience for the orchestrator. On a single-agent `COMPLETE` (N=1) the orchestrator relays it near-verbatim (adapted to the user's language) instead of re-synthesizing `key_outputs`. Absent, or N>1 (multi-agent), the orchestrator falls back to synthesizing `key_outputs`. Purely additive: never required, never rejected. |
-| `memorialize_suggestions` | Optional | structured memory candidates for the user to triage; `parse_memorialize_suggestions` |
-| `memory_suggestions` | Optional | advisory text-only notes (array of strings); `parse_memory_suggestions` |
-| `update_contracts` | Optional | array of `{contract, payload}` for project-context writes; `parse_update_contracts`; see sub-field table |
-| `rollback_executed` | Optional | advisory string; `parse_rollback_executed`; never rejected |
-| `context_consumption` | Optional | advisory `{tokens_used, pct_window}`; `parse_context_consumption`; never rejected |
-
-## Named shape-error codes (SSOT)
-
-Eight stable, named codes (`FormErrorCode` in `gaia/contract/validator.py`) are the SSOT for every SHAPE rejection, whichever path produced it -- the `gaia contract` CLI's write-time validation, the SubagentStop hook gate, and the fence fallback all resolve to the same set. Five were the original AC-1 set; `VERIFICATION_SHAPE` was added additively in R3; `APPROVAL_REQUEST_SHAPE` and `COMPLETE_SHAPE` were added additively in R4 to close two pure-shape cross-field conditionals the form layer had previously left unchecked; `FAILURE_REPORT_SHAPE` was added additively in plan 38 for the optional `failure_report` block:
-
-| Code | Fires when |
-|------|------------|
-| `AGENT_ID_FORMAT` | `agent_status.agent_id` is present but does not match `^a[0-9a-f]{16,}$` (including a handle you invented that is shorter than 16 hex) |
-| `PLAN_STATUS` | `agent_status.agent_state` is present but outside the canonical enum |
-| `VERIFICATION_RESULT` | `agent_state` is `COMPLETE` and `evidence_report.verification.result` is missing or not `"pass"` |
-| `VERIFICATION_SHAPE` | `evidence_report.verification.type` declares a known type (SSOT: `gaia.state.VALID_VERIFICATION_TYPES`) but the field that type requires is missing/empty -- a by-TYPE SHAPE check, independent of `agent_state` and DISTINCT from `VERIFICATION_RESULT` (see the `verification` sub-field note below). Absent `type` == no check. |
-| `MISSING_FIELD` | a required field is absent (`agent_status`, one of its four sub-fields, `evidence_report`, or one of its seven keys) |
-| `APPROVAL_REQUEST_SHAPE` (R4) | `agent_state` is `APPROVAL_REQUEST` and the top-level `approval_request` object is absent/null, OR present but its `exact_content` is missing/blank. Deliberately does NOT require `approval_id` (see "approval_request" sub-field table below for why). |
-| `COMPLETE_SHAPE` (R4) | `agent_state` is `COMPLETE` and (`agent_status.next_action` is present but not exactly `"done"`) OR (`agent_status.pending_steps` is present and non-empty). Pure cross-field coherence, independent of `VERIFICATION_RESULT`; each half only fires when the field in question is itself present -- the `MISSING_FIELD` checks already own the absent case, so this never stacks with `MISSING_FIELD` on the same field. |
-| `FAILURE_REPORT_SHAPE` (plan 38) | the top-level `failure_report` is present (not `null`) but malformed -- not an object, or missing/blank `attempted`/`symptom`, or `evidence` not a list with at least one non-empty entry, or a `severity` outside its enum. Checked on EVERY `agent_state`, not gated on `COMPLETE` or any other status -- a defect is a defect regardless of how the turn ended. Absent or explicit `null` triggers no check at all; this is what keeps the code additive over already-persisted history. See "failure_report" sub-field table below. |
-
-Each rejection carries `{code, field, detail}` (dotted `field` path, human `detail`) plus the byte-stable `repair_message` -- ALWAYS `CANONICAL_REPAIR_MESSAGE`, the single source of truth for the reissued fenced template, so a caller that injects it keeps a cache-stable surface regardless of which specific code fired. Read it at `gaia/contract/validator.py::CANONICAL_REPAIR_MESSAGE`; it is never duplicated inline elsewhere.
-
-**Legacy token relabeling (fence-fallback path only).** `hooks/modules/agents/contract_validator.py`'s migration-only `validate()` still surfaces the OLDER uppercase token vocabulary (`AGENT_ID`, `PLAN_STATUS`, `PENDING_STEPS`, `NEXT_ACTION`, `VERIFICATION_RESULT_MUST_BE_PASS`, `VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE`, `VERIFICATION_SHAPE`, per-key evidence tokens) in its `missing` list, for backward compatibility with pre-existing callers. `_legacy_tokens_for_form_error` is a pure relabeling of the SSOT codes above -- it does not re-derive validity. `VERIFICATION_SHAPE`, `APPROVAL_REQUEST_SHAPE`, and `COMPLETE_SHAPE` are all additive and have no legacy predecessor, so each relabels to its own value via the function's exhaustive fallback (`return [error.code.value]`). The `gaia contract` CLI and the hook gate's full-verdict path speak the SSOT codes directly; only the legacy fence-`validate()` caller sees the older tokens.
-
-## Sub-field tables
-
-### evidence_report
-
-The required keys are EXACTLY 7 (`REQUIRED_EVIDENCE_FIELDS` in `gaia/contract/validator.py` -- the SSOT both the CLI and the fence fallback resolve against; relabeled to the legacy `_EVIDENCE_REQUIRED_FIELDS` / `EVIDENCE_FIELDS` uppercase tokens only on the fence-fallback path, see "Named shape-error codes" above). Each key must be present; its value may be `[]`. A missing key (not an empty list) is a `MISSING_FIELD` (field `evidence_report.<key>`), relabeled to the uppercase key name in `missing` on the fence-fallback path.
-
-| Key | Holds |
-|-----|-------|
-| `patterns_checked` | search patterns / queries you ran |
-| `files_checked` | files you read |
-| `commands_run` | commands executed (string or `{command, result}`) |
-| `key_outputs` | distilled findings |
-| `verbatim_outputs` | raw output excerpts |
-| `cross_layer_impacts` | adjacent components your change invalidates -- flag, do not silently edit |
-| `open_gaps` | what remains unresolved |
-
-`verification` is a SEPARATE field, NOT one of the 7. It is required ONLY when `agent_state` is `COMPLETE`: it must be a dict and `verification.result` must equal `"pass"`. Either failure (missing/malformed, or present but not `"pass"`) is the single named code `VERIFICATION_RESULT` on the CLI/core path; the fence-fallback path relabels the same rejection to the legacy tokens `VERIFICATION_RESULT_REQUIRED_FOR_COMPLETE` (missing) / `VERIFICATION_RESULT_MUST_BE_PASS` (non-pass) for backward compatibility. For non-COMPLETE statuses `verification` may be absent.
-
-**Optional `verification.type` (type-conditional SHAPE, any status).** `verification` may ALSO carry a `type` naming the KIND of check -- an enum whose SSOT is `gaia.state.VALID_VERIFICATION_TYPES` (mirrored with a byte-identical stdlib fallback in `gaia/contract/validator.py`, exactly as `VALID_PLAN_STATUSES` is). When `type` is present and names a known value, the field that type requires must be present and non-empty, else the rejection is `VERIFICATION_SHAPE` (DISTINCT from `VERIFICATION_RESULT`; both may fire on one block, as two invalidities). The initial enum and its required field:
-
-| `verification.type` | Meaning | Required field |
-|---------------------|---------|----------------|
-| `command` / `code` | deterministic oracle a third-party verifier runs | non-empty `command` (the command/oracle) |
-| `semantic` | needs human / rubric validation; contract stays open | truthy `requires_human` marker |
-| `self_review` | agent states what it checked and observed | non-empty `reviewed` statement |
-
-This is fully backward-compatible: an ABSENT `verification.type` (or a value outside the enum) adds NO requirement -- behaviour is identical to pre-R3. The enum is extensible: it is an envelope field, NOT a DB state machine, so it is deliberately absent from `STATE_MACHINE_REGISTRY` and triggers no schema migration.
-
-**Audience boundary.** `key_outputs` and every other `evidence_report` key are written for the **orchestrator** -- distilled findings it reasons over to route the next turn. The optional top-level `user_facing_summary` is the **single** field written for the **human**. Keeping the two distinct is what lets the orchestrator relay a human-shaped summary on N=1 without re-synthesizing machine-shaped evidence, and lets it still synthesize from `key_outputs` when the summary is absent or when multiple agents must be consolidated.
-
-### consolidation_report
-
-Required keys when present (`_CONSOLIDATION_REQUIRED_FIELDS`):
-
-| Key | Holds |
-|-----|-------|
-| `ownership_assessment` | enum `owned_here` \| `cross_surface_dependency` \| `not_my_surface` (`VALID_OWNERSHIP_ASSESSMENTS`); invalid -> `OWNERSHIP_ASSESSMENT:<x>` |
-| `confirmed_findings` | findings you verified |
-| `suspected_findings` | findings you suspect but did not confirm |
-| `conflicts` | contradictions found across surfaces |
-| `open_gaps` | unresolved items needing another surface |
-| `next_best_agent` | which agent should take the next round |
-
-### approval_request
-
-Present when `agent_state` is `APPROVAL_REQUEST`. As of R4, enforcement is layered and each layer's actual reach is named below -- this reconciles a prior version of this section that overclaimed `rollback` and `verification` as uniformly "BLOCKING" (naming two phantom codes, `APPROVAL_REQUEST_ROLLBACK` and `APPROVAL_REQUEST_VERIFICATION`, that do not exist in the implementation) when the real behavior was, and remains, split across layers:
-
-- **FORM-blocking, on every path (`gaia/contract/validator.py`, code `APPROVAL_REQUEST_SHAPE`, R4).** The `approval_request` object itself must be present and non-null, and its `exact_content` must be non-empty -- the verbatim content the user must see to give informed consent (the `orchestrator-present-approval` iron law). This is the SSOT floor: the CLI's write-time validation, the SubagentStop hook gate, and the fence fallback all reject on it identically.
-- **Legacy-path-blocking only, NOT part of the FORM SSOT (`hooks/modules/agents/contract_validator.py`'s migration-only `validate()`, token `APPROVAL_REQUEST_VERIFICATION_REQUIRED`).** When `approval_request` is present, a missing/falsy `verification` is rejected -- but only on that one fence-fallback caller, not by `validate_form` itself.
-- **Fully advisory, never rejected, on any path.** `rollback` is logged with a warning when missing/null, never added to the blocking set: the hook hardcodes `rollback_hint=None` by design (`bash_validator._build_sealed_payload` computes no inverse), so a well-formed request always relays `rollback: null` -- treating that as blocking previously produced roughly 600 of 678 recorded false-positive anomalies (AC-5), which is why it stays advisory.
-- **Documented convention, unenforced by any layer.** `operation`, `scope`, `risk_level` are relayed verbatim from the hook's sealed payload by convention, but no layer currently validates their presence or shape.
-- **Deliberately optional, by design (not merely unenforced).** `approval_id` is NOT required even by the R4 FORM floor: `agent-response` documents a legitimate `approval_request` with no `approval_id` yet -- an agent presenting a T3 plan before the hook has blocked anything and minted a grant (`agent-response`'s "absent -> present the plan with options" branch). Requiring it would reject that documented, in-use protocol state, so R4 stops at `exact_content`.
-
-| Key | Status | Holds |
-|-----|--------|-------|
-| `operation` | documented convention (unenforced) | what the command does |
-| `exact_content` | **FORM-blocking** (`APPROVAL_REQUEST_SHAPE`) | the command verbatim the user approves |
-| `scope` | documented convention (unenforced) | what it touches |
-| `risk_level` | documented convention (unenforced) | enum `LOW` \| `MEDIUM` \| `HIGH` \| `CRITICAL` (`VALID_RISK_LEVELS`) |
-| `rollback` | advisory only (never rejected) | how to undo |
-| `verification` | legacy-path-blocking only (fence fallback, not FORM SSOT) | how success is confirmed |
-| `approval_id` | optional, by design | the id the hook produced, when one was issued -- absent on the "plan not yet blocked" flavor |
-
-For the full sealed-payload schema and the approval lifecycle, see `agent-approval-protocol`.
-
-### failure_report
-
-Optional top-level object, sibling of `consolidation_report` and `approval_request` -- seeded `null` by `gaia contract init`. It reports a concrete failure the agent suffered (an operation that did not work, with the observed proof), never a certification of the turn: its presence or absence has no bearing on whether the turn may be `COMPLETE`, and it is checked identically on every `agent_state` (`IN_PROGRESS`, `BLOCKED`, `COMPLETE`, ...). Absent, or explicitly `null`, triggers no check at all -- the same advisory pattern `verification.type` uses (opt in to declare it; once declared, it must be well-formed). What it is NOT: a place for prose or opinion. A "report" that cites nothing observed does not qualify -- `evidence` is required and non-empty for exactly that reason.
-
-| Key | Status | Holds |
-|-----|--------|-------|
-| `attempted` | required | non-empty string naming the operation that was attempted |
-| `symptom` | required | non-empty string stating what broke, as observed |
-| `evidence` | required | a list with at least one non-empty entry -- verbatim excerpts (error text, exit status, output) that show the failure. An empty list, or a list of only blank/non-string entries, fails the same as a missing list. |
-| `component` | optional | the file/module/surface involved, when known |
-| `severity` | optional | one of `info` \| `warning` \| `error` (`VALID_FAILURE_SEVERITIES`); any other value rejects |
-
-Any malformation of a present block -- not an object, a missing/blank required field, an `evidence` list with no usable entry, or an off-enum `severity` -- rejects with `FAILURE_REPORT_SHAPE` (`gaia/contract/validator.py::_failure_report_shape_errors`); several defects in one block report as several `FAILURE_REPORT_SHAPE` errors, not several codes.
-
-**Construction trap.** The whole block validates as one unit the moment it is present -- there is no partial-write grace period. Building it field-by-field with `gaia contract set failure_report.attempted "..."` alone leaves the block with only `attempted` set; validation on that write sees the incomplete block and rejects, so nothing persists. Build it in ONE call instead: `gaia contract fill --json '{"failure_report": {"attempted": "...", "symptom": "...", "evidence": ["..."]}}'`. An agent that does not know this loses the report entirely, not just the missing sub-fields.
-
-**Reading seam for consumers.** `parse_failure_report()` in `hooks/modules/agents/contract_validator.py` is how a downstream reader gets the normalized block: it returns `None` for absent, explicit `null`, or anything `FAILURE_REPORT_SHAPE` would reject (delegating to the same `validate_form` check, so there is one definition of "well-formed," never a second one that could drift), or the normalized dict `{"attempted", "symptom", "evidence", "component", "severity"}` on success.
-
-### memorialize_suggestions entry
-
-`parse_memorialize_suggestions`; malformed entries are skipped with warnings and never fail the contract.
-
-| Key | Status | Notes |
-|-----|--------|-------|
-| `description` | required | `MEMORIALIZE_REQUIRED_FIELDS` |
-| `body` | required | `MEMORIALIZE_REQUIRED_FIELDS` |
-| `slug` | optional | -- |
-| `type` | optional | enum `atom` \| `decision` \| `negative` \| `feedback` (`MEMORIALIZE_VALID_TYPES`); off-enum kept with a warning. `feedback` is the declared type for a defect or correction the system must remember -- proposing it grants no write: a direct `gaia memory add` from a dispatched subagent other than `gaia-operator` stays categorically blocked |
-| `class` | optional | enum `anchor` \| `thread` \| `log` (`MEMORIALIZE_VALID_CLASSES`); off-enum kept with a warning |
-| `rationale` | optional | -- |
-
-### update_contracts entry
-
-Each entry is one `{contract, payload}` pair (`parse_update_contracts`). The `contract` must match a name in the INPUT `write_permissions.writable_sections`; a write to a contract outside that list is rejected by the hook. `payload` is the dict merged under that contract. Combine all deltas for one contract into a single payload; include only keys to add or update.
-
-| Key | Status | Holds |
-|-----|--------|-------|
-| `contract` | required | a contract name from your `writable_sections`; off-list -> rejected |
-| `payload` | required | the dict merged under that contract; keys you omit are preserved |
-
-**Merge semantics** (how the runtime applies `payload` -- at the key level the field is additive, never destructive):
-
-| Operation | Behavior |
-|-----------|----------|
-| ADD | new keys inserted into the section |
-| MERGE | existing dicts recursively merged |
-| OVERWRITE | any non-dict value replaces the stored one -- including a LIST, replaced wholesale, never unioned |
-| NO-DELETE | keys you do not mention are preserved |
-
-Enforced by `apply_update` (`hooks/modules/context/context_writer.py`), which reads the stored section, deep-merges your payload into it (`_merge_section_payload`), and writes the result back inside one transaction. So a payload naming one key of a five-key section leaves the other four intact, and the section's other writer -- `tools/scan/promote.py`, which refreshes only its scan-owned keys -- does not clobber your enrichment either. Two consequences to write against: **a list is atomic**, so restate it in full (a partial list write drops the elements you omit; if you can only ever know one element, key it under a dict instead of listing it); and **there is no delete anywhere** -- see "A stale key" below. The one case where a write is NOT a merge is a stored payload that is corrupt JSON or not an object: it has no keys to preserve, so it is replaced (`write_mode: "replace"` in the audit record, and `trg_pcc_history` still captures the before/after pair).
-
-**A stale key: correct it, or mark it -- you cannot delete it.** No mechanism in Gaia removes a single key from a section: not a payload, and not the operator CLI. `_merge_section_payload` carries no tombstone and no sentinel -- every value in your delta is a value to STORE, so no spelling means "remove this key". The `gaia context` surface (`show`, `scan`, `get`, `dump`, `query`, `wipe`, `prune-workspaces`, `move-contracts`, `move-memory`, `move-project`) has no key-level delete either; its only removal is `wipe`, which drops every row of a workspace (CASCADE) -- a rebuild, not a correction. What to do instead, by case:
-
-| The stale key... | Do this |
-|------------------|---------|
-| holds a WRONG value (the common case) | overwrite it -- write the correct value under the same key (the OVERWRITE row above). Nothing needs deleting |
-| names a fact that STOPPED BEING TRUE | mark it, keeping the key. This is the system's posture, not a workaround -- see below |
-| must genuinely CEASE TO EXIST | you cannot express it, and neither can the operator short of `wipe` + rescan. Report it in `open_gaps`. Do NOT approximate it by writing `null`, `""`, or a placeholder -- that stores a new wrong fact over a stale one |
-
-Marking is how Gaia already handles a fact that expired. When a project's repo leaves the disk, `tools/scan/promote.py::_mark_missing` stamps `MISSING_MARK_KEY` (`missing_since`, `gaia/identity_shape.py`) on the entry and leaves every other key untouched; `hooks/modules/session/session_manifest.py` RENDERS that mark in the SessionStart Projects block; and `_apply_scan_owned` pops it when the repo comes back. At row level the same posture spells as `superseded_by` (`gaia/store/schema.sql`) -- a pointer to the successor, never a hard delete. A fact that stopped being true is itself information, and hiding it is the silence the mark exists to end.
-
-The absence of a delete is deliberate, and it was decided once already: a targeted delete verb (`delete_projects` + `gaia context delete-projects`) existed and was REMOVED, on the grounds that "agents must never hold the power to hard-delete project rows; it was a one-time reconciliation tool, not a standing capability" (`tests/test_writer_surgical_reconciliation.py`). A sentinel in the merge would hand that power back at the surface where the mistake is cheapest to make: a delta is computed from partial knowledge, so a writer that merely did not OBSERVE a key would be one keystroke from declaring it gone.
-
-**Well-formed payload (index, not snapshot).** A payload indexes what statically exists in the project -- identifiers, names, relationships, semi-stable metadata. It must not carry live-state: cloud runtime status (pod counts, instance status, VPC IDs), API-discovered facts that change without a rescan (load-balancer DNS, IP addresses, OIDC-derived IAM bindings), or any field whose scanner needs a live cloud API call. Stale live-state in context gives the next agent false confidence; obtain it on demand via the cloud CLI instead. For the produce-side judgment of *when* to emit and *what* to prioritize, see `agent-protocol`.
-
-**Cross-repo resource references.** When a payload value points at a resource living in *another* repository, reference it as `host/owner/repo:table/name` (e.g. `github.com/org/bildwiz-iac:tf_modules/gcp-gke`). The `host/owner/repo` prefix is the canonical workspace identity (normalized by `normalize_remote_url` in `gaia/project.py`); the `:table/name` suffix names the domain table and resource within that workspace. Use this form so the reference is unambiguous in multi-repo setups instead of a bare local name.
-
-## agent_state enum + state machine
-
-The six canonical values (`VALID_PLAN_STATUSES` in `gaia.state`, re-exported by `response_contract.py`):
-
-| Value | Meaning |
-|-------|---------|
-| `IN_PROGRESS` | mid-loop; default during retry / verify-fail |
-| `APPROVAL_REQUEST` | a T3 command was blocked; `approval_request` populated |
-| `COMPLETE` | increment finished and verification passed; the finalize gate is keyed on the dispatch binding's `plan_task_id`, NOT on the emitting agent's role (`hooks/adapters/claude_code.py`, `_blind_verification_required` / `BLIND_VERIFICATION_REQUIRED`) -- a turn whose binding carries a `plan_task_id` is a plan-task-bound producer that may NOT self-`COMPLETE`: it reports `NEEDS_VERIFICATION` and the orchestrator dispatches `gaia-verifier` (bound to the producer via `parent_handoff_id`, carrying no `plan_task_id` of its own, hence UNBOUND) to independently promote it to `COMPLETE`. A turn with NO `plan_task_id` (investigation / memory / a free-standing turn) may self-`COMPLETE` directly. Also requires `next_action == "done"` and `pending_steps == []` (R4, code `COMPLETE_SHAPE`) -- the cross-field coherence this skill has always taught (`agent-protocol`: "a finished turn still emits pending_steps: [] and next_action: 'done'") is, as of R4, enforced at the FORM layer rather than left to convention alone |
-| `BLOCKED` | cannot continue alone; name the gap in `open_gaps` |
-| `NEEDS_INPUT` | a user decision is required; list options in `next_action` |
-| `NEEDS_VERIFICATION` | producer proposes the increment is done and MAY propose `evidence_report.verification.result`, but this is a proposal, not a completion -- a verifier confirms (`-> COMPLETE`) or rejects (`-> IN_PROGRESS`); harness R2 |
-
-Legal transitions between these and the retry cap live in `state_tracker.py` -- `_LEGAL_TRANSITIONS` and `_MAX_IN_PROGRESS_RETRIES` (= 2). The runtime enforces them; this skill does not reproduce the transition table.
-
-## Draft lifecycle: persistence, resume, and the `degraded` flag
-
-The `gaia contract` draft is addressed by its own contract id -- the one injected as `# Contract Identity (born at dispatch)` and adopted via `init --agent-id ... --draft-id ...`, or minted by a bare `init` when no identity was injected, never a harness session id. That block is injected whenever the dispatch births a row, which today is virtually every dispatch -- a resolvable `task_id=<N>` (bound, `kind=task_execution`), a resolvable `parent_handoff_id=<N>` for a verifier (`kind=verifier`), or no binding token at all (a free `investigation`/`memory` turn, `plan_task_id` NULL, plan 49 task 1) all birth normally and inject the block -- see `agent-protocol` for the narrower cases where birth still fails and the block is absent. It persists on disk across a resume AND, once adopted, is mirrored onto its DB row by every `set`/`add`/`fill` (`gaia.store.writer.mirror_partial_contract_handoff`), so partial evidence is queryable before `finalize` rather than living only in the draft file: `set`/`add`/`fill` on a resumed turn continue the SAME draft rather than starting over, and `agent_state` legitimately stays `IN_PROGRESS` across N resumes -- the SubagentStop gate does not reject a mid-conversation `IN_PROGRESS`. The orchestrator can have that in-progress draft inspected -- by dispatching gaia-operator to run `gaia contract view` (or `gaia contract view --field <dotted-path>` for ONLY one subtree of the envelope, addressed with the same dotted-path scheme `set` uses) and relay it back, since the orchestrator carries no shell of its own -- between messages without the agent re-emitting anything; the view injected into a resumed prompt is deliberately MINIMAL and byte-stable (not the full variable envelope re-inserted above the prompt) so the resume stays cache-safe.
-
-`finalize` is the SOLE, idempotent writer of the terminal `agent_contract_handoffs` row. If a turn ends without a `finalize` call (crash, forgotten call, truncation), the SubagentStop hook backstops the row: it finalizes whatever draft exists (or writes a minimal row when none does), marking it `degraded=true` / `auto_captured`, via the same idempotent UPSERT keyed on the draft's contract id -- so exactly one row survives even under a race between the agent's own `finalize` and the hook's backstop (never-lost, exactly-once). **"Verified-via-finalize" means `agent_state == 'COMPLETE'` AND the row carries NO `degraded` flag** -- a downstream reader (episodic memory, metrics) must check both, not `agent_state` alone, to distinguish an agent-verified `COMPLETE` from a hook-backstopped degraded capture of the same nominal status.
-
-## The JSON rule
-
-On the fence-fallback path, the block body must be valid JSON: `parse_contract` runs it through `json.loads`; YAML, comments, trailing commas, or unquoted keys raise `JSONDecodeError`, the parser returns `None`, and the runtime treats the block as missing (forced reissue). On the CLI path, `gaia contract set`/`add` accept a JSON-typed VALUE when it parses as JSON and fall back to a plain string otherwise, and `fill --json` requires a valid JSON object outright (a malformed patch is rejected before any merge). Either way, emit JSON, not the YAML it resembles.
-
-## Handoffs
-
-- `agent-protocol` -- how to produce the contract (workflow, judgment, when to emit each status).
-- `agent-response` -- how the orchestrator interprets the contract.
-- `agent-approval-protocol` -- the full APPROVAL_REQUEST sealed-payload schema.
-- `gaia/contract/validator.py` -- the SSOT for shape validation and `CANONICAL_REPAIR_MESSAGE`; `bin/README.md` documents the `gaia contract` CLI surface.
+# Agent Contract Handoff Reference
+
+This skill owns schema, not workflow. Use `agent-protocol` to produce a turn and
+`agent-response` to consume it. The fenced body is JSON, never YAML.
+
+**Two senses of "contract" -- do not collapse them.** This skill's "contract"
+is the *handoff* envelope: one row per turn, born at dispatch under the
+injected `# Your Contract` block, mutated by `gaia contract set/add/fill`,
+closed by `gaia contract finalize`. A *project context contract* is a
+different thing -- a slice of project knowledge stored per workspace
+(`project_context_contracts`, seeded by `seed_contract_permissions.py`). It
+is NOT injected: the kernel's `can_read` / `can_write` lists (from
+`agent_contract_permissions`) name which of those slices the turn may pull
+on demand (`gaia context get --section <s>`) and which it may propose
+updates to via `update_contracts`. When a message says "contract" without
+qualifying it, ask which one it means before assuming.
+
+## Draft creation is implicit
+
+A turn born at dispatch already has a row in `agent_contract_handoffs` AND a
+pre-created on-disk draft (`dispatch_binding._precreate_draft` writes
+`gaia.contract.drafts.initial_envelope` at birth) before it runs anything --
+no prior `gaia contract init` call is required. Should the draft file be
+missing anyway, the first `gaia contract set/add/fill/view --draft-id
+<draft_id>` against that same, already-born `contract_id` materializes it
+(`bin/cli/contract.py::_maybe_adopt_draft`). Two conditions gate it, and both must
+hold: the id's agent-id prefix matches `AGENT_ID_PATTERN_TEXT`, and a row
+already exists for that exact `contract_id`
+(`gaia.store.writer.agent_contract_handoff_exists`). Neither condition mints
+anything -- a well-formed id with no row behind it still fails with the same
+"No draft found... run init" error as before this existed. `gaia contract
+init` remains, unchanged, the explicit path for a turn that received no
+injected identity at all. `gaia contract validate` never triggers this: it is
+documented as never mutating the draft, so it never materializes one either.
+See `agent-protocol` for when in the turn's cycle this first write happens.
+
+## Input context
+
+The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
+role/surface, `project`, `can_read`/`can_write`, and -- on a plan-task-bound
+turn -- the acceptance gates), `# Your CLI`, and `# What I know about you`.
+Project context is NOT preloaded and no surface routing arrives: pull the
+sections you need on demand (`gaia context get --section <s>`), within the
+`can_read` menu, before querying anything wider. Only sections in `can_write`
+may appear in `update_contracts`.
+
+## Minimal increment
+
+Every draft, including a mid-turn checkpoint, contains:
+
+- `agent_status.agent_state`, `agent_status.agent_id`, `pending_steps`, and a
+  non-empty `next_action`;
+- `evidence_report` with all seven keys: `patterns_checked`, `files_checked`,
+  `commands_run`, `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, and
+  `open_gaps` (empty lists are valid);
+- `consolidation_report` and `approval_request`, normally `null`.
+
+`agent_id` matches `^a[0-9a-f]{16,}$`. The canonical states are
+`IN_PROGRESS`, `APPROVAL_REQUEST`, `BLOCKED`, `NEEDS_INPUT`,
+`NEEDS_VERIFICATION`, and `COMPLETE`. Only `COMPLETE` is terminal.
+
+## State-conditional close requirements
+
+- `APPROVAL_REQUEST`: `approval_request` is non-null and
+  `approval_request.exact_content` is non-blank. All approval-set data stays in
+  this object; see `agent-approval-protocol`.
+- `COMPLETE`: `pending_steps` is `[]`, `next_action` is exactly `done`, and
+  `evidence_report.verification.result` is `pass`.
+- plan-task-bound producers do not self-complete. They close their increment as
+  `NEEDS_VERIFICATION`; the verifier is bound through `parent_handoff_id`.
+- `consolidation_report` is required when input marks consolidation,
+  cross-check, or multi-surface work.
+
+`finalize` persists any valid state and converges the row born at dispatch. It
+does not turn a non-terminal state into `COMPLETE`. `validate` is read-only.
+
+## Optional typed verification and progress
+
+`evidence_report.verification.type` may be `command`, `code`, `semantic`, or
+`self_review`. `command`/`code` require `command`; `semantic` requires
+`requires_human`; `self_review` requires `reviewed`. These typed fields are
+optional unless declared. Use typed COMMAND_SET progress fields only when the
+runtime returns them; do not invent schema. The v42 store exposes ordered
+`next_index`, `consumed_indexes_json`, `failed_index`, and `failure_reason`.
+
+## work_phase -- the observable WORK cycle, orthogonal to agent_state
+
+`work_phase` is an optional top-level field naming where the producer is in
+the WORK cycle: `framing`, `investigating`, `planning`, `executing`,
+`verifying`. It is deliberately a second, separate axis from
+`agent_status.agent_state`: `agent_state` is the COMMUNICATION state machine
+(how this turn currently reports back) that feeds routing and the blind
+finalize/verification gate -- a pure function of `(agent_state,
+plan_task_id)` -- and that gate must never grow a second dimension.
+`work_phase` never widens or narrows it.
+
+Seeded `null` by `gaia contract init` (same discoverability convention as
+`consolidation_report`/`approval_request`/`failure_report`); absence or an
+explicit `null` reaches no check on any `agent_state`. Presence is validated
+in full: a value outside the five names above is a `WORK_PHASE_SHAPE`
+rejection. See `agent-protocol` for the work-cycle discipline that writes
+it at each transition, and for the trivial-turn exemption (a turn with no
+distinguishable phase never sets it).
+
+## Conditional objects
+
+`consolidation_report` contains `ownership_assessment` (`owned_here`,
+`cross_surface_dependency`, or `not_my_surface`), `confirmed_findings`,
+`suspected_findings`, `conflicts`, `open_gaps`, and `next_best_agent`.
+
+`approval_request` contains the consent data reference: `operation`,
+`exact_content`, `scope`, `risk_level`, `rollback`, `verification`, and when
+minted, `approval_id`. COMMAND_SET adds its ordered command set and request
+fingerprint as specified by `agent-approval-protocol`.
+
+`failure_report` is optional. When present it atomically contains non-empty
+`attempted`, `symptom`, and `evidence`; optional `component`; and optional
+`severity` (`info`, `warning`, `error`). Add it with one `fill --json` call.
+
+## Other optional fields
+
+- `user_facing_summary`: human prose.
+- `memory_delta`, `memorialize_suggestions`, `memory_suggestions`: proposals,
+  never write authority.
+- `update_contracts`: `{contract, payload}` entries, deep-merged only into the
+  input write allowlist; lists replace whole and no delete sentinel exists.
+- `rollback_executed`, `context_consumption`, `loop_state`: advisory or
+  workflow-specific fields.
+
+## Validator ownership
+
+`gaia/contract/validator.py` owns form codes: `MISSING_FIELD`, `PLAN_STATUS`,
+`AGENT_ID_FORMAT`, `VERIFICATION_RESULT`, `VERIFICATION_SHAPE`,
+`APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, `FAILURE_REPORT_SHAPE`, and
+`WORK_PHASE_SHAPE`. `gaia.contract.crosscheck.validate` adds DB cross-checks.
+Do not reproduce those rules elsewhere.
+
+The CLI draft is primary managed data. The final fenced
+`agent_contract_handoff` remains a stop-gate compatibility requirement and must
+echo the same envelope, not a separately composed variant.

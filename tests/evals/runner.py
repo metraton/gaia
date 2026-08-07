@@ -216,7 +216,7 @@ class RoutingSimBackend:
             return self.simulator
 
         # Lazy import: keep the runner importable in environments that
-        # cannot construct the simulator (missing surface-routing.json
+        # cannot construct the simulator (missing DB-backed routing
         # during scaffold-only smoke tests, for instance).
         tools_dir = self.repo_root / "tools"
         if str(tools_dir) not in sys.path:

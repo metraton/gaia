@@ -405,20 +405,21 @@ class TestTaskValidatorConsistency:
     def test_approval_mechanism_in_approval_protocol_skill(self):
         """The approval mechanism is documented in the skill that now OWNS it.
 
-        The mechanism (ElicitationResult / AskUserQuestion / canonical
-        APPROVE:<nonce> token) migrated out of the execution skill into
-        agent-approval-protocol; execution now delegates the pre-execution
-        handoff to it ("For the approval handoff that precedes this phase,
-        see agent-approval-protocol"). Assert the token where it lives.
+        The presentation mechanism (ElicitationResult / AskUserQuestion) has
+        moved on again since this test was first pinned to
+        agent-approval-protocol: it now lives in orchestrator-present-approval
+        (the orchestrator's own presentation step), with pending-approvals as
+        the sibling that inspects/approves/rejects a named pending. Assert
+        the token where it actually lives today.
         """
-        approval_skill = SKILLS_DIR / "agent-approval-protocol" / "SKILL.md"
+        approval_skill = SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
         if not approval_skill.exists():
-            pytest.skip("agent-approval-protocol/SKILL.md not found")
+            pytest.skip("orchestrator-present-approval/SKILL.md not found")
 
         content = approval_skill.read_text().lower()
         assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            "agent-approval-protocol must reference the approval mechanism "
-            "(ElicitationResult, AskUserQuestion, or canonical token)"
+            "orchestrator-present-approval must reference the approval "
+            "mechanism (ElicitationResult, AskUserQuestion, or canonical token)"
         )
 
 
@@ -447,15 +448,35 @@ class TestSkillsCrossReferences:
             )
 
     def test_approval_protocol_skill_references_approval_mechanism(self):
-        """The approval mechanism lives in agent-approval-protocol, not execution.
+        """The approval mechanism lives in orchestrator-present-approval and
+        pending-approvals, not agent-approval-protocol or execution.
 
-        execution delegates the approval handoff to agent-approval-protocol;
-        the mechanism token (ElicitationResult / AskUserQuestion / canonical
-        APPROVE:<nonce>) is owned there. Assert against the owning skill.
+        execution delegates the approval handoff onward; the presentation
+        mechanism (AskUserQuestion / ElicitationResult) is owned by
+        orchestrator-present-approval, and pending-approvals (the sibling
+        that inspects/approves/rejects a named pending) references the same
+        flow. Assert against the owning skills, not the retired one.
         """
-        content = (SKILLS_DIR / "agent-approval-protocol" / "SKILL.md").read_text().lower()
-        assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            "agent-approval-protocol must reference the approval mechanism "
+        present_content = (
+            SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
+        ).read_text().lower()
+        pending_content = (
+            SKILLS_DIR / "pending-approvals" / "SKILL.md"
+        ).read_text().lower()
+
+        def _has_mechanism(content: str) -> bool:
+            return (
+                "elicitationresult" in content
+                or "askuserquestion" in content
+                or CANONICAL_APPROVAL_TOKEN.lower() in content
+            )
+
+        assert _has_mechanism(present_content), (
+            "orchestrator-present-approval must reference the approval "
+            "mechanism (ElicitationResult, AskUserQuestion, or canonical token)"
+        )
+        assert _has_mechanism(pending_content), (
+            "pending-approvals must reference the approval mechanism "
             "(ElicitationResult, AskUserQuestion, or canonical token)"
         )
 

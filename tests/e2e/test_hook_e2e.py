@@ -246,14 +246,29 @@ class TestPreToolUseAgent:
 
 
 class TestPreToolUsePassthrough:
-    """Non-Bash, non-Agent tools should pass through (exit 0)."""
+    """Non-Bash, non-Agent tools should pass through (exit 0, no output).
+
+    A bare ``code == 0`` assertion was vacuous: ``adapt_pre_tool_use`` returns
+    ``HookResponse(output={}, exit_code=0)`` for an unrecognized tool name,
+    and pre_tool_use.py's own dispatch only prints when ``response.output``
+    is a NON-EMPTY dict or string (see the ``and response.output`` guard) --
+    an empty dict is falsy, so nothing is printed at all and stdout stays
+    empty. That is the real observable: a genuine passthrough emits no JSON
+    whatsoever, unlike an allow/ask/deny decision which always prints a
+    ``hookSpecificOutput`` body. A regression that started attaching a
+    permissionDecision to Read (or any other unrecognized tool) would flip
+    this from ``None`` to a parsed dict and fail here.
+    """
 
     HOOK = "pre_tool_use.py"
 
     def test_read_tool_passthrough(self):
-        """Read tool should pass through without validation (exit 0)."""
+        """Read tool passes through: exit 0 and no stdout at all."""
         code, response, stderr = run_hook(self.HOOK, PRETOOL_READ)
         assert code == 0, f"Expected exit 0 for passthrough, got {code}. stderr: {stderr}"
+        assert response is None, (
+            f"Expected no stdout JSON for a genuine passthrough, got: {response}"
+        )
 
 
 # ============================================================================
@@ -262,19 +277,53 @@ class TestPreToolUsePassthrough:
 
 
 class TestPostToolUseE2E:
-    """PostToolUse hook should process results without errors."""
+    """PostToolUse hook should record the tool's real outcome in the audit log.
+
+    A bare ``exit == 0`` assertion here was vacuous: this hook never blocks
+    (see adapt_post_tool_use), so it exits 0 regardless of whether the
+    underlying tool call succeeded or failed. The real observable effect is
+    the audit record log_execution() writes -- assert on ITS exit_code,
+    isolated to a per-test data dir via CLAUDE_PLUGIN_DATA so the assertion
+    reads the record this test produced, not ambient audit history.
+    """
 
     HOOK = "post_tool_use.py"
 
-    def test_successful_command(self):
-        """Successful command result should exit 0."""
-        code, response, stderr = run_hook(self.HOOK, POSTTOOL_BASH)
-        assert code == 0, f"Expected exit 0, got {code}. stderr: {stderr}"
+    def _read_last_audit_record(self, data_dir: Path) -> dict:
+        """Read the last JSONL record from today's audit log under data_dir."""
+        from datetime import datetime, timezone
 
-    def test_failed_command(self):
-        """Failed command result should still exit 0 (post-hook never blocks)."""
-        code, response, stderr = run_hook(self.HOOK, POSTTOOL_BASH_FAILED)
+        log_file = (
+            data_dir / "logs" / f"audit-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.jsonl"
+        )
+        assert log_file.exists(), f"Expected audit log at {log_file}"
+        lines = [ln for ln in log_file.read_text().splitlines() if ln.strip()]
+        assert lines, f"Audit log {log_file} is empty"
+        return json.loads(lines[-1])
+
+    def test_successful_command_recorded_with_exit_code_0(self, tmp_path):
+        """A successful Bash result (dict tool_response) must audit exit_code 0."""
+        code, response, stderr = run_hook(
+            self.HOOK, POSTTOOL_BASH, env_extras={"CLAUDE_PLUGIN_DATA": str(tmp_path)}
+        )
         assert code == 0, f"Expected exit 0, got {code}. stderr: {stderr}"
+        record = self._read_last_audit_record(tmp_path)
+        assert record["tool_name"] == "Bash"
+        assert record["exit_code"] == 0, (
+            f"Expected the audited exit_code to be 0 for a successful command, got {record}"
+        )
+
+    def test_failed_command_recorded_with_exit_code_1(self, tmp_path):
+        """A failed Bash result (bare-string tool_response) must audit exit_code 1."""
+        code, response, stderr = run_hook(
+            self.HOOK, POSTTOOL_BASH_FAILED, env_extras={"CLAUDE_PLUGIN_DATA": str(tmp_path)}
+        )
+        assert code == 0, f"Expected exit 0 (post-hook never blocks), got {code}. stderr: {stderr}"
+        record = self._read_last_audit_record(tmp_path)
+        assert record["tool_name"] == "Bash"
+        assert record["exit_code"] == 1, (
+            f"Expected the audited exit_code to be 1 for a failed command, got {record}"
+        )
 
 
 # ============================================================================
@@ -367,12 +416,24 @@ def _hook_script_is_nonempty(script_name: str) -> bool:
 
 
 class TestStopE2E:
-    """Stop hook runs and exits 0."""
+    """Stop hook exits 0 AND emits a real quality verdict.
+
+    A bare ``code == 0`` assertion here was vacuous: ``_handle_stop`` calls
+    ``sys.exit(0)`` unconditionally (see stop_hook.py), so the exit code can
+    never distinguish a working quality assessment from a silently broken
+    one. The real observable effect is ``format_quality_response``'s output
+    (see adapters/claude_code.py): a dict carrying ``quality_sufficient``,
+    ``score``, and ``recommendation``. Asserting on those catches a
+    regression that made ``adapt_stop``/``format_quality_response`` raise,
+    return the wrong shape, or drop a required key -- exactly the class of
+    break the old assertion could never see (mirrors the fix documented on
+    TestPostToolUseE2E above).
+    """
 
     HOOK = "stop_hook.py"
 
     def test_stop_event_runs(self):
-        """Stop hook exits 0."""
+        """Stop hook returns a well-formed quality verdict."""
         if not _hook_script_is_nonempty(self.HOOK):
             pytest.skip(f"{self.HOOK} not found or empty (stub only)")
 
@@ -380,9 +441,13 @@ class TestStopE2E:
         assert code == 0, (
             f"Expected exit 0 for Stop hook, got {code}. stderr: {stderr}"
         )
+        assert response is not None, f"Expected a JSON quality verdict. stderr: {stderr}"
+        assert isinstance(response.get("quality_sufficient"), bool), response
+        assert isinstance(response.get("score"), (int, float)), response
+        assert isinstance(response.get("recommendation"), str) and response["recommendation"], response
 
     def test_stop_event_with_reason_runs(self):
-        """Stop hook with stop_reason exits 0."""
+        """Stop hook with stop_reason still returns the same verdict shape."""
         if not _hook_script_is_nonempty(self.HOOK):
             pytest.skip(f"{self.HOOK} not found or empty (stub only)")
 
@@ -390,6 +455,10 @@ class TestStopE2E:
         assert code == 0, (
             f"Expected exit 0 for Stop hook, got {code}. stderr: {stderr}"
         )
+        assert response is not None, f"Expected a JSON quality verdict. stderr: {stderr}"
+        assert isinstance(response.get("quality_sufficient"), bool), response
+        assert isinstance(response.get("score"), (int, float)), response
+        assert isinstance(response.get("recommendation"), str) and response["recommendation"], response
 
 
 # ============================================================================
@@ -398,12 +467,18 @@ class TestStopE2E:
 
 
 class TestTaskCompletedE2E:
-    """TaskCompleted hook runs and exits 0."""
+    """TaskCompleted hook exits 0 AND emits a real verification verdict.
+
+    Same defect class as TestStopE2E: ``_handle_task_completed`` also exits 0
+    unconditionally. The observable effect is
+    ``format_verification_response``'s output -- ``criteria_met`` and
+    ``block_completion`` -- not the exit code.
+    """
 
     HOOK = "task_completed.py"
 
     def test_task_completed_runs(self):
-        """TaskCompleted hook exits 0."""
+        """TaskCompleted returns a well-formed verification verdict."""
         if not _hook_script_is_nonempty(self.HOOK):
             pytest.skip(f"{self.HOOK} not found or empty (stub only)")
 
@@ -411,9 +486,12 @@ class TestTaskCompletedE2E:
         assert code == 0, (
             f"Expected exit 0 for TaskCompleted hook, got {code}. stderr: {stderr}"
         )
+        assert response is not None, f"Expected a JSON verification verdict. stderr: {stderr}"
+        assert isinstance(response.get("criteria_met"), bool), response
+        assert isinstance(response.get("block_completion"), bool), response
 
     def test_task_completed_with_output_runs(self):
-        """TaskCompleted with output exits 0."""
+        """TaskCompleted with task_output still returns the same verdict shape."""
         if not _hook_script_is_nonempty(self.HOOK):
             pytest.skip(f"{self.HOOK} not found or empty (stub only)")
 
@@ -421,6 +499,9 @@ class TestTaskCompletedE2E:
         assert code == 0, (
             f"Expected exit 0 for TaskCompleted hook, got {code}. stderr: {stderr}"
         )
+        assert response is not None, f"Expected a JSON verification verdict. stderr: {stderr}"
+        assert isinstance(response.get("criteria_met"), bool), response
+        assert isinstance(response.get("block_completion"), bool), response
 
 
 # ============================================================================
@@ -429,12 +510,25 @@ class TestTaskCompletedE2E:
 
 
 class TestSubagentStartE2E:
-    """SubagentStart hook runs and exits 0."""
+    """SubagentStart hook exits 0 AND returns the documented response shape.
+
+    Neither fixture here is preceded by a PreToolUse:Agent dispatch, so there
+    is no cached context and no born dispatch-kernel row to claim --
+    ``adapt_subagent_start`` takes its cache-miss/no-draft/no-kernel lane.
+    ``format_context_response`` (adapters/claude_code.py) then emits ONLY
+    ``{"hookSpecificOutput": {"hookEventName": "SubagentStart"}}`` -- no
+    ``additionalContext`` key, since Claude Code only appends that key to
+    the subagent's prompt when it is present. A bare ``code == 0`` assertion
+    could not tell this genuine no-injection response apart from a broken
+    handler that crashed before printing (subagent_start.py catches nothing
+    itself) or, worse, one that leaked a STALE ``additionalContext`` from an
+    unrelated dispatch. Asserting the exact shape catches both.
+    """
 
     HOOK = "subagent_start.py"
 
     def test_subagent_start_runs(self):
-        """SubagentStart hook exits 0."""
+        """No prior dispatch -> hookEventName only, no additionalContext."""
         if not _hook_script_is_nonempty(self.HOOK):
             pytest.skip(f"{self.HOOK} not found or empty (stub only)")
 
@@ -442,13 +536,25 @@ class TestSubagentStartE2E:
         assert code == 0, (
             f"Expected exit 0 for SubagentStart hook, got {code}. stderr: {stderr}"
         )
+        assert response is not None, f"Expected a JSON response. stderr: {stderr}"
+        hook_output = response.get("hookSpecificOutput", {})
+        assert hook_output.get("hookEventName") == "SubagentStart", response
+        assert "additionalContext" not in hook_output, (
+            f"Expected no additionalContext with no prior dispatch: {response}"
+        )
 
     def test_subagent_start_devops_runs(self):
-        """SubagentStart for developer exits 0."""
+        """Same no-injection shape for a different agent_type/task_description."""
         if not _hook_script_is_nonempty(self.HOOK):
             pytest.skip(f"{self.HOOK} not found or empty (stub only)")
 
         code, response, stderr = run_hook(self.HOOK, SUBAGENT_START_DEVOPS)
         assert code == 0, (
             f"Expected exit 0 for SubagentStart hook, got {code}. stderr: {stderr}"
+        )
+        assert response is not None, f"Expected a JSON response. stderr: {stderr}"
+        hook_output = response.get("hookSpecificOutput", {})
+        assert hook_output.get("hookEventName") == "SubagentStart", response
+        assert "additionalContext" not in hook_output, (
+            f"Expected no additionalContext with no prior dispatch: {response}"
         )

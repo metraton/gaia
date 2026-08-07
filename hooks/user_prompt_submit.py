@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UserPromptSubmit hook — injects routing recommendations, first-run welcome, and agentic-loop resume context."""
+"""UserPromptSubmit hook — refreshes session liveness and emits sparse notices."""
 
 import os
 import sys
@@ -44,56 +44,6 @@ def _extract_user_prompt(raw_input: str) -> str:
     except (json.JSONDecodeError, TypeError, AttributeError):
         pass
     return ""
-
-
-def _build_routing_recommendation(prompt_text: str) -> str:
-    """Run surface classification and format as a routing recommendation block.
-
-    Returns empty string if classification fails or produces no active surfaces.
-    This is advisory — never raises exceptions.
-    """
-    try:
-        # Import surface_router from tools/context
-        tools_dir = Path(__file__).resolve().parent.parent / "tools" / "context"
-        if str(tools_dir) not in sys.path:
-            sys.path.insert(0, str(tools_dir))
-
-        from surface_router import classify_surfaces
-
-        routing = classify_surfaces(prompt_text)
-
-        active_surfaces = routing.get("active_surfaces", [])
-        if not active_surfaces:
-            logger.info("Surface routing: no active surfaces for prompt")
-            return ""
-
-        agents = routing.get("recommended_agents", [])
-        dispatch_mode = routing.get("dispatch_mode", "single_surface")
-        confidence = routing.get("confidence", 0.0)
-        matched_signals = routing.get("matched_signals", {})
-
-        # Flatten matched signals into a single list for display
-        all_signals = []
-        for surface_signals in matched_signals.values():
-            all_signals.extend(surface_signals)
-
-        lines = [
-            "\n\n## Surface Routing Recommendation",
-            f"- Recommended agents: {agents}",
-            f"- Dispatch mode: {dispatch_mode}",
-            f"- Confidence: {confidence}",
-            f"- Matched signals: {json.dumps(all_signals)}",
-        ]
-
-        logger.info(
-            "Surface routing: agents=%s mode=%s confidence=%.2f signals=%s",
-            agents, dispatch_mode, confidence, all_signals,
-        )
-        return "\n".join(lines)
-
-    except Exception as e:
-        logger.warning("Surface routing failed (advisory, skipping): %s", e)
-        return ""
 
 
 def _build_notifications_counter() -> str:
@@ -263,7 +213,8 @@ if __name__ == "__main__":
         # Ensure registry + permissions exist (idempotent, no mark).
         setup_msg = run_first_time_setup(mark_done=False)
 
-        # Build additionalContext: welcome + routing.
+        # Build sparse additionalContext. DB-backed routing remains available
+        # to diagnostic tools but is no longer injected into each user turn.
         # Identity now lives in agents/gaia-orchestrator.md (agent definition).
         # Agentic-loop resume and pending approvals moved to SessionStart
         # via session_manifest (Phase 4) -- they are session-scoped, not
@@ -279,22 +230,18 @@ if __name__ == "__main__":
             mark_initialized()  # Mark AFTER building the welcome
             logger.info("First-run welcome prepended")
 
-        # Append deterministic surface routing recommendation.
+        # Prompt extraction is retained for liveness diagnostics only.
         prompt_text = _extract_user_prompt(raw_input)
 
         # NOTE: Approval activation moved to ElicitationResult hook.
         # AskUserQuestion responses trigger ElicitationResult, not
         # UserPromptSubmit, so approval detection lives there now.
 
-        if prompt_text:
-            routing_block = _build_routing_recommendation(prompt_text)
-            if routing_block:
-                context_parts.append(routing_block)
-        else:
-            logger.info("Could not extract user prompt from stdin, skipping routing")
+        if not prompt_text:
+            logger.info("Could not extract user prompt")
 
         # Unread headless-task notifications counter. Cheap (one COUNT) and
-        # zero-token when there are none, like the routing recommendation.
+        # zero-token when there are none.
         notif_counter = _build_notifications_counter()
         if notif_counter:
             context_parts.append(notif_counter)

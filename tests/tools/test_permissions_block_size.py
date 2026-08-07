@@ -1,10 +1,11 @@
-"""FIX (c) proof: the subagent Permissions block collapses from ~70KB to a
+"""FIX (c) proof: a rendered Permissions block collapses from ~70KB to a
 few hundred bytes once readable/writable sections are deduped.
 
-Renders the Permissions block the way context_injector does (writable / readable
-/ context_update_required as annotated YAML-KV) from BEFORE (raw duplicated rows,
-the field state) vs AFTER (deduped by load_provider_contracts), and asserts the
-size collapse plus one-entry-per-section.
+Renders a Permissions block (writable / readable / context_update_required as
+annotated YAML-KV) from BEFORE (raw duplicated rows, the field state) vs AFTER
+(deduped by load_provider_contracts), and asserts the size collapse plus
+one-entry-per-section. The dedup under test lives in load_provider_contracts,
+which every context renderer shares.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ from context_provider import load_provider_contracts
 
 
 def _render_permissions_block(readable: list[str], writable: list[str]) -> str:
-    """Mirror context_injector's Permissions block payload (the write_perms_dict
-    rendered as lines). We only need the section lists to measure the bloat."""
+    """Render a minimal Permissions block from the section lists. We only
+    need the section lists to measure the bloat."""
     lines = ["# Permissions", "", "writable:"]
     for s in writable:
         lines.append(f"  - {s}")

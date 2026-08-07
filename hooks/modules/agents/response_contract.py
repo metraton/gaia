@@ -167,6 +167,19 @@ class MemorializeSuggestionsBlock:
     warnings: List[str]
 
 
+MEMORY_DELTA_VERSION = 1
+MEMORY_DELTA_OPERATIONS = {"create", "append", "reclassify", "link"}
+
+
+@dataclass(frozen=True)
+class MemoryDeltaBlock:
+    """Versioned, proposal-only memory operations for curator adjudication."""
+    marker_present: bool
+    version: int
+    proposals: List[Dict[str, Any]]
+    warnings: List[str]
+
+
 @dataclass(frozen=True)
 class ResponseContractValidation:
     valid: bool
@@ -367,6 +380,51 @@ def _extract_memorialize_suggestions(contract: dict) -> MemorializeSuggestionsBl
     )
 
 
+def _extract_memory_delta(contract: dict) -> MemoryDeltaBlock:
+    """Parse memory_delta, normalizing legacy memorialize entries as creates."""
+    raw = contract.get("memory_delta")
+    if raw is None:
+        legacy = _extract_memorialize_suggestions(contract)
+        proposals = [
+            {"operation": "create", "create": suggestion}
+            for suggestion in legacy.suggestions
+        ]
+        return MemoryDeltaBlock(
+            marker_present=legacy.marker_present,
+            version=MEMORY_DELTA_VERSION,
+            proposals=proposals,
+            warnings=legacy.warnings,
+        )
+    if not isinstance(raw, dict):
+        return MemoryDeltaBlock(True, 0, [], ["memory_delta: expected object"])
+    version = raw.get("version")
+    if version != MEMORY_DELTA_VERSION:
+        return MemoryDeltaBlock(
+            True, int(version) if isinstance(version, int) else 0, [],
+            [f"memory_delta.version: expected {MEMORY_DELTA_VERSION}"],
+        )
+    entries = raw.get("proposals")
+    if not isinstance(entries, list):
+        return MemoryDeltaBlock(True, version, [], ["memory_delta.proposals: expected array"])
+    proposals: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            warnings.append(f"memory_delta.proposals[{index}]: not an object")
+            continue
+        operation = entry.get("operation")
+        if operation not in MEMORY_DELTA_OPERATIONS:
+            warnings.append(f"memory_delta.proposals[{index}].operation: invalid")
+            continue
+        if not isinstance(entry.get(operation), dict):
+            warnings.append(
+                f"memory_delta.proposals[{index}].{operation}: expected object"
+            )
+            continue
+        proposals.append(dict(entry))
+    return MemoryDeltaBlock(True, version, proposals, warnings)
+
+
 # ============================================================================
 # Public parse helpers (operate on agent_output string via parse_contract)
 # ============================================================================
@@ -420,6 +478,17 @@ def parse_memorialize_suggestions(
             marker_present=False, suggestions=[], warnings=[],
         )
     return _extract_memorialize_suggestions(contract)
+
+
+def parse_memory_delta(
+    agent_output: str,
+    parsed_contract: Optional[dict] = None,
+) -> MemoryDeltaBlock:
+    """Parse proposal-only memory_delta with legacy compatibility."""
+    contract = parsed_contract if parsed_contract is not None else parse_contract(agent_output)
+    if contract is None:
+        return MemoryDeltaBlock(False, MEMORY_DELTA_VERSION, [], [])
+    return _extract_memory_delta(contract)
 
 
 def parse_user_facing_summary(
@@ -692,6 +761,7 @@ __all__ = [
     "EvidenceReportBlock",
     "ConsolidationReportBlock",
     "MemorializeSuggestionsBlock",
+    "MemoryDeltaBlock",
     "ResponseContractValidation",
     "VALID_PLAN_STATUSES",
     "EVIDENCE_REQUIRED_PLAN_STATUSES",
@@ -709,6 +779,7 @@ __all__ = [
     "parse_evidence_report",
     "parse_consolidation_report",
     "parse_memorialize_suggestions",
+    "parse_memory_delta",
     "parse_user_facing_summary",
     "validate_response_contract",
     "save_validation_result",

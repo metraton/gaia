@@ -140,7 +140,7 @@ skills: [alpha, beta, gamma]
 
 
 class TestRoutingSimulator:
-    """Tests for RoutingSimulator using real surface-routing.json."""
+    """Tests for RoutingSimulator using the real DB-backed routing registry."""
 
     def test_kubectl_routes_to_cloud_troubleshooter(self, simulator):
         result = simulator.simulate("kubectl get pods")
@@ -173,14 +173,10 @@ class TestRoutingSimulator:
         # iac surface should include terraform-related sections
         assert len(result.context_sections) > 0
 
-    @pytest.mark.skip(
-        reason="context-contracts.json retired in B3 — RoutingSimulator falls back to "
-               "empty contracts when the file is absent. Re-enable once contracts are "
-               "migrated to the new DB-backed permissions API."
-    )
-    def test_contracts_populated(self, simulator):
-        result = simulator.simulate("kubectl get pods")
-        assert len(result.contracts["read"]) > 0
+    # test_contracts_populated was retired: context-contracts.json is gone
+    # (B3) and RoutingSimulator falls back to empty contracts with no
+    # migration to the DB-backed permissions API planned. Confirmed retired
+    # functionality with no re-activation plan -- deleted, not skipped.
 
     def test_agent_type_override(self, simulator):
         result = simulator.simulate("some generic task", agent_type="gaia-system")

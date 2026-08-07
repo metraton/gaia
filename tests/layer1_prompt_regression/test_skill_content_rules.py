@@ -4,11 +4,8 @@ have correct structure and document required schema fields.
 """
 
 import pytest
-from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from conftest import parse_frontmatter
+from tests.conftest import parse_frontmatter
 
 
 class TestAllSkillsCommon:
@@ -191,10 +188,16 @@ class TestContextUpdaterSkill:
         return (skills_dir / "agent-contract-handoff" / "SKILL.md").read_text()
 
     def test_has_context_update_format(self, content):
-        """Must document the update_contracts clause and writable contracts."""
+        """Must document the update_contracts clause and writable contracts.
+
+        ``write_permissions`` was retired -- it no longer exists anywhere in
+        gaia/, hooks/, or bin/. The live equivalent is the kernel's
+        `can_write` menu (from `agent_contract_permissions`), which is what
+        actually gates which sections may appear in `update_contracts`.
+        """
         assert "update_contracts" in content, \
             "agent-contract-handoff must document the update_contracts clause"
-        assert ("write_permissions" in content or "writable" in content), \
+        assert ("can_write" in content or "writable" in content), \
             "agent-contract-handoff should reference writable contracts as SSOT"
 
 

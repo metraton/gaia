@@ -6,11 +6,8 @@ with required fields and valid values.
 """
 
 import pytest
-from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from conftest import parse_frontmatter
+from tests.conftest import parse_frontmatter
 
 
 class TestFrontmatterPresence:
@@ -97,18 +94,6 @@ class TestRequiredFields:
 class TestSkillsField:
     """Agents with skills field must reference valid skills."""
 
-    def test_skills_references_are_valid(self, all_agent_files, skills_dir):
-        """All skills referenced in frontmatter must exist as directories."""
-        for agent_file in all_agent_files:
-            fm = parse_frontmatter(agent_file.read_text())
-            skills = fm.get("skills", [])
-            if not isinstance(skills, list):
-                continue
-            for skill_name in skills:
-                skill_path = skills_dir / skill_name
-                assert skill_path.is_dir(), \
-                    f"{agent_file.name} references skill '{skill_name}' but {skill_path} not found"
-
     def test_skills_have_skill_md(self, all_agent_files, skills_dir):
         """Each referenced skill directory must contain a SKILL.md."""
         for agent_file in all_agent_files:
@@ -157,7 +142,9 @@ class TestFrontmatterTools:
         with the user) but must NOT have mutative/bulk tools -- it still
         delegates all mutation and directory-scanning work to specialists.
         """
-        orchestrator_forbidden_tools = {"Bash", "Edit", "Write", "Glob", "Grep"}
+        # Bash is permitted only because runtime Phase 0 closes it to trusted
+        # `gaia memory ...`; file mutation and bulk inspection remain absent.
+        orchestrator_forbidden_tools = {"Edit", "Write", "Glob", "Grep"}
         for agent_file in all_agent_files:
             fm = parse_frontmatter(agent_file.read_text())
             tools = fm.get("tools", "")

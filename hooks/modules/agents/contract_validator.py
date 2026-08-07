@@ -16,8 +16,8 @@ hook gate validate against. This module owns only fence extraction (the one
 migration-only piece the core deliberately does not do, since it takes an
 already-parsed dict, never raw text); it does not re-implement shape
 validation. ``validate()`` / ``validate_response_contract()`` add only the
-task-context-dependent checks the form layer cannot own (consolidation_report,
-approval/loop-state blocking) on top of that shared core.
+checks the form layer deliberately does not own (approval-request and
+loop-state blocking) on top of that shared core.
 
 Both fence regexes require the closing ``` `` `` to start its own line
 (preceded by a real newline) and be followed only by whitespace/end-of-string.
@@ -32,7 +32,6 @@ Provides:
                         fenced block
     - validate(): Check agent output against contract requirements -> ValidationResult
     - extract_commands_from_evidence(): Parse COMMANDS_RUN field
-    - requires_consolidation_report(): Check if consolidation is needed
     - extract_plan_status_from_output(): Extract agent_state string
     - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS
     - parse_loop_state(): Parse loop_state clause (blocking check on COMPLETE)
@@ -42,6 +41,9 @@ Provides:
     - parse_memory_suggestions(): Parse memory_suggestions clause (advisory)
     - parse_user_facing_summary(): Parse user_facing_summary clause (advisory)
     - parse_failure_report(): Parse the optional failure_report clause (advisory)
+
+memory_delta is parsed by response_contract.parse_memory_delta, not here; the
+form layer deliberately leaves that proposal-only field advisory.
 """
 
 import json
@@ -76,12 +78,6 @@ _LITERAL_NONE_COMMANDS = {"none", "not run", "not executed", "n/a", "skipped"}
 _EVIDENCE_REQUIRED_FIELDS = [
     "PATTERNS_CHECKED", "FILES_CHECKED", "COMMANDS_RUN", "KEY_OUTPUTS",
     "VERBATIM_OUTPUTS", "CROSS_LAYER_IMPACTS", "OPEN_GAPS",
-]
-
-# Required consolidation fields
-_CONSOLIDATION_REQUIRED_FIELDS = [
-    "OWNERSHIP_ASSESSMENT", "CONFIRMED_FINDINGS", "SUSPECTED_FINDINGS",
-    "CONFLICTS", "OPEN_GAPS", "NEXT_BEST_AGENT",
 ]
 
 
@@ -278,24 +274,25 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
     that uniformly as a MISSING_FIELD, so the "no contract" and "malformed
     contract" cases funnel through one call.
 
-    What stays HERE, additively, because it is task-context-dependent or
-    otherwise out of the form layer's scope by design (see
-    gaia/contract/validator.py's "NO TASK CONTEXT" design note):
-    - consolidation_report (needs task_info to know if it's required)
+    What stays HERE, additively, because it is out of the form layer's scope
+    by design (see gaia/contract/validator.py's "NO TASK CONTEXT" design
+    note):
     - approval_request.verification blocking check
     - loop_state blocking check (T2.3)
 
     Args:
         contract: Parsed dict from parse_contract(), or None when no fenced
             block was found at all.
-        task_info: Task metadata including injected_context for multi-surface detection.
+        task_info: Task metadata (kept for signature stability; the
+            injected-context-driven consolidation check retired with the
+            preloaded-context payload).
 
     Returns:
         ValidationResult with is_valid, missing fields list, and error_message.
     """
     all_missing: List[str] = []
 
-    # 1 & 2. agent_status + evidence_report SHAPE -- delegated to the SSOT core.
+    # agent_status + evidence_report SHAPE -- delegated to the SSOT core.
     form_result = validate_form(contract)
     for error in form_result.errors:
         for token in _legacy_tokens_for_form_error(error):
@@ -312,19 +309,7 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
         if effective_status not in _FORM_VALID_PLAN_STATUSES:
             effective_status = ""
 
-    # 3. Check consolidation_report (only when required) -- task-context
-    # dependent, not a form-layer concern.
-    if isinstance(contract, dict) and requires_consolidation_report(task_info):
-        consolidation = contract.get("consolidation_report")
-        if not consolidation or not isinstance(consolidation, dict):
-            all_missing.append("CONSOLIDATION_REPORT")
-        else:
-            for field in _CONSOLIDATION_REQUIRED_FIELDS:
-                key_lower = field.lower()
-                if not consolidation.get(key_lower) and not consolidation.get(field):
-                    all_missing.append(field)
-
-    # 4b. approval_request.verification must be present (blocking).
+    # approval_request.verification must be present (blocking).
     # approval_request.rollback is advisory only (non-blocking): the hook
     # hardcodes rollback_hint=None by design (bash_validator.py
     # _build_sealed_payload), so a well-formed APPROVAL_REQUEST always
@@ -340,7 +325,7 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
         if not approval_req.get("verification"):
             all_missing.append("APPROVAL_REQUEST_VERIFICATION_REQUIRED")
 
-    # 5. Loop-state blocking check (T2.3)
+    # Loop-state blocking check (T2.3)
     loop_anomaly = _check_loop_state_blocking(contract, effective_status) if isinstance(contract, dict) else None
     if loop_anomaly:
         all_missing.append(loop_anomaly)
@@ -387,16 +372,14 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
     Checks:
     1. AGENT_STATUS block with agent_state and agent_id (SSOT core)
     2. EVIDENCE_REPORT with required fields, when status requires it (SSOT core)
-    3. CONSOLIDATION_REPORT (when multi-surface task requires it) -- additive,
-       task-context dependent, not a form-layer concern
-    4. Blocking promotions: verification.result=pass for COMPLETE (SSOT core);
+    3. Blocking promotions: verification.result=pass for COMPLETE (SSOT core);
        approval_request.verification when present -- additive
-    5. Loop-state blocking: iteration < max_iterations with metric below
+    4. Loop-state blocking: iteration < max_iterations with metric below
        threshold -- additive
 
     Args:
         agent_output: Complete output from agent execution.
-        task_info: Task metadata including injected_context for multi-surface detection.
+        task_info: Task metadata (see ``_validate_from_handoff``).
 
     Returns:
         ValidationResult with is_valid, missing fields list, and error_message.
@@ -441,41 +424,6 @@ def extract_commands_from_evidence(agent_output: str) -> List[str]:
             if not _NOT_RUN_INDICATORS.search(cmd):
                 commands.append(cmd)
     return commands
-
-
-def requires_consolidation_report(task_info: Dict[str, Any]) -> bool:
-    """Determine whether runtime should require a CONSOLIDATION_REPORT block.
-
-    Checks injected_context for agent_contract_handoff.consolidation_required,
-    agent_contract_handoff.cross_check_required, or surface_routing.multi_surface.
-    Also checks the legacy ``investigation_brief`` key for backward compatibility.
-
-    Falls back to reading from the transcript if injected_context was not
-    pre-extracted.
-    """
-    payload = task_info.get("injected_context") or {}
-    if not payload:
-        # Fallback: read from transcript if injected_context was not pre-extracted
-        from .transcript_reader import extract_injected_context_payload_from_transcript
-        payload = extract_injected_context_payload_from_transcript(
-            task_info.get("agent_transcript_path", ""),
-            task_info.get("agent", ""),
-        )
-    if not payload:
-        return False
-
-    # New field name (T2.1a) -- check first
-    agent_contract_handoff = payload.get("agent_contract_handoff", {}) or {}
-    # Legacy field name -- backward compatibility during dual-mode window
-    investigation_brief = payload.get("investigation_brief", {}) or {}
-    surface_routing = payload.get("surface_routing", {}) or {}
-    return bool(
-        agent_contract_handoff.get("consolidation_required")
-        or agent_contract_handoff.get("cross_check_required")
-        or investigation_brief.get("consolidation_required")
-        or investigation_brief.get("cross_check_required")
-        or surface_routing.get("multi_surface")
-    )
 
 
 # ============================================================================
@@ -842,11 +790,10 @@ def extract_plan_status_from_output(agent_output: str) -> str:
 
 
 def extract_exit_code_from_output(agent_output: str) -> int:
-    """Derive exit code from the LAST AGENT_STATUS block in agent output.
+    """Derive exit code from the agent_state in the handoff envelope.
 
-    Looks for PLAN_STATUS in the final assistant message.  If the status
-    contains COMPLETE -> 0, BLOCKED or ERROR -> 1.  Falls back to 0 when
-    no AGENT_STATUS is found (optimistic default).
+    A status containing COMPLETE -> 0, BLOCKED or ERROR -> 1. Falls back
+    to 0 when no envelope is found (optimistic default).
     """
     status_value = extract_plan_status_from_output(agent_output)
     if status_value:
@@ -953,11 +900,6 @@ def validate_verbatim_outputs_consistency(
             f"Commands: {', '.join(c[:60] for c in real_commands[:3])}"
         ),
     }
-
-
-# ============================================================================
-# False pending-approval detection
-# ============================================================================
 
 
 # ============================================================================

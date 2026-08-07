@@ -10,8 +10,6 @@ verification.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -23,18 +21,16 @@ if str(_REPO_ROOT) not in sys.path:
 
 
 @pytest.fixture()
-def db(tmp_path):
-    """Bootstrap a fresh DB (applies the v30 migration) and return its path."""
-    bootstrap = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+def db(tmp_path, bootstrapped_db_template):
+    """Fresh DB (applies the v30 migration), copied from the session-scoped
+    ``bootstrapped_db_template`` instead of re-running
+    ``scripts/bootstrap_database.sh`` per test. Each test still gets its own
+    independent, mutable DB file -- isolation is unchanged.
+    """
+    from tests.conftest import copy_bootstrapped_db
+
     db_path = tmp_path / "gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
-    env["WORKSPACE"] = str(tmp_path)
-    res = subprocess.run(
-        ["bash", str(bootstrap)],
-        env=env, capture_output=True, text=True, check=False, timeout=90,
-    )
-    assert res.returncode == 0, f"bootstrap failed:\n{res.stdout}\n{res.stderr}"
+    copy_bootstrapped_db(bootstrapped_db_template, db_path)
     return db_path
 
 

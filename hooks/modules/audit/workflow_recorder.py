@@ -4,10 +4,12 @@ Workflow metrics capture and persistence.
 Renamed from metrics_recorder.py for clarity. T4 of brief
 ``episodic-workflow-to-db`` removed the JSONL file writers from this module
 -- ``run-snapshots.jsonl`` and ``metrics.jsonl`` are no longer produced. The
-signals those files captured (tier, context_snapshot, default_skills_snapshot,
-plus the full metrics dict) are now persisted on the ``episodes`` table by
+signals those files captured (tier, default_skills_snapshot, plus the full
+metrics dict) are now persisted on the ``episodes`` table by
 ``hooks/modules/memory/episode_writer.write()`` via ``store_episode()``, which
-calls ``gaia.store.writer.insert_episode()``.
+calls ``gaia.store.writer.insert_episode()``. The ``context_snapshot`` signal
+retired with the preloaded-context payload (dispatch-kernel migration); old
+episodes still carry it, and ``bin/cli/metrics.py`` tolerates its absence.
 
 Provides:
     - get_workflow_memory_dir(): Resolve workflow memory directory (kept for
@@ -21,7 +23,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..context.context_injector import build_context_telemetry_snapshot
 from ..core.paths import get_plugin_data_dir
 
 logger = logging.getLogger(__name__)
@@ -210,9 +211,6 @@ def record(
 
     commands_executed = commands_executed or []
     context_update_result = context_update_result or {}
-    context_snapshot = build_context_telemetry_snapshot(
-        task_info.get("injected_context") or {}
-    )
     default_skills_snapshot = load_agent_runtime_profile(task_info.get("agent", "unknown"))
 
     metrics = {
@@ -231,7 +229,6 @@ def record(
         "prompt": task_info.get("description", ""),  # Store for episodic
         "commands_executed": commands_executed,
         "commands_executed_count": len(commands_executed),
-        "context_snapshot": context_snapshot,
         "context_updated": bool(context_update_result.get("updated", False)),
         "context_sections_updated": context_update_result.get("sections_updated", []),
         "context_rejected_sections": context_update_result.get("rejected", []),
@@ -259,7 +256,7 @@ def record(
 
     # T4 of brief episodic-workflow-to-db removed the run-snapshots.jsonl
     # and metrics.jsonl writers. The signals those files captured (tier,
-    # context_snapshot, default_skills_snapshot, plan_status, agent,
+    # default_skills_snapshot, plan_status, agent,
     # commands_executed, exit_code) are persisted on the ``episodes`` row
     # written by hooks/modules/memory/episode_writer.write() via
     # store_episode(), which the audit pipeline calls with this dict as

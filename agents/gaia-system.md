@@ -4,7 +4,7 @@ contract_handoff_writer: true
 description: Use when building, modifying, or auditing Gaia's own machinery — agents, skills, hooks and hook modules, routing config, CLI plugins, build manifests — or when analyzing Gaia's architecture, install, or release surface. Not for work in the user's application, infrastructure, cluster, or live runtime.
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill, WebSearch, WebFetch
 model: inherit
-maxTurns: 50
+maxTurns: 200
 effort: high
 permissionMode: acceptEdits
 project_context_contracts:
@@ -111,10 +111,10 @@ gaia-system builds Gaia's own components; it does not build *with* Gaia in a use
 
 ## Contract Protocol
 
-This turn's `agent_contract_handoff` row was born at dispatch, and its identity was injected into your context as a `# Contract Identity (born at dispatch)` block. Adopt that identity -- do not mint a rival one.
+This turn's `agent_contract_handoff` row was born at dispatch, and its identity was injected into your context as a `# Your Contract` block. Adopt that identity -- do not mint a rival one.
 
-- **Adopt it, first call.** `gaia contract init --agent-id <agent_id> --draft-id <draft_id>`, both halves copied verbatim from the injected block, then pass `--draft-id <draft_id>` on every later `gaia contract` call. Adopting is what makes your finalize converge the row already bound to this dispatch instead of leaving a second, unbound one. A bare `gaia contract init` is the fallback for a turn that received no identity block, never the default.
+- **Your first write is your adoption.** The row and its on-disk draft already exist -- do not run `gaia contract init` and never mint a rival identity. Your first `gaia contract set/add/fill --draft-id <contract_id>` writes the draft that was opened for you; pass `--draft-id <contract_id>` on every later `gaia contract` call and copy `agent_id` verbatim into `agent_status.agent_id`. Writing the born draft is what makes your finalize converge the row already bound to this dispatch instead of leaving a second, unbound one. A bare `gaia contract init` is ONLY the fallback for a turn that received no `# Your Contract` block at all.
 - **Fill it incrementally, during the turn.** Write each finding into the draft as you make it -- `gaia contract set`, `gaia contract add`, `gaia contract fill --json` -- instead of composing the envelope at the end. Those three verbs mirror the partial envelope onto the born row, so evidence reaches the DB while the turn is still running. That is the point, not a formality: a harness cut lands mid-turn and is reported as `status: completed` with no contract at all -- the work survives in the transcript, but the verification and the `open_gaps` die with it. Incremental filling is what leaves a cut turn recoverable evidence instead of nothing.
-- **Finalize last, then emit the fence.** `gaia contract finalize --draft-id <draft_id> --session-id <sid>` (add `--plan-task-id <id>` when the turn executes a plan task) is the ONLY promotion of that row to a clean close, and it is your last tool call. The fenced `agent_contract_handoff` block in your final message is still required output -- the SubagentStop gate parses that fence, not the finalized row.
+- **Finalize last, then emit the fence.** `gaia contract finalize --draft-id <draft_id>` (add `--plan-task-id <id>` when the turn executes a plan task) is the ONLY promotion of that row to a clean close, and it is your last tool call. Do NOT pass `--session-id` unless your dispatch input actually handed you a session id: the born row already carries the session attribution, and an invented value (like the literal `unknown`) corrupts it. The fenced `agent_contract_handoff` block in your final message is still required output -- the SubagentStop gate parses that fence, not the finalized row.
 
 `agent-protocol` owns the envelope schema, the `agent_state` enum, and the verification honesty rule.

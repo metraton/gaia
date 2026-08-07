@@ -138,6 +138,39 @@ def _import_writer():
     return _writer
 
 
+def _import_drafts():
+    """Import ``gaia.contract.drafts`` (installed package or repo sibling).
+
+    Same resolution dance as :func:`_import_writer`, for the same reason.
+    """
+    try:
+        from gaia.contract import drafts as _drafts  # noqa: WPS433
+    except ImportError:
+        _repo_root = _pl.Path(__file__).resolve().parent.parent.parent.parent
+        if str(_repo_root) not in _sys.path:
+            _sys.path.insert(0, str(_repo_root))
+        from gaia.contract import drafts as _drafts  # noqa: WPS433
+    return _drafts
+
+
+def _precreate_draft(contract_id: str, agent_id: str) -> None:
+    """Best-effort creation of the on-disk draft the row was born under.
+
+    The dispatched turn no longer runs ``gaia contract init``: its draft must
+    already exist when its first ``gaia contract set/add/fill`` lands. An
+    already-existing draft is never overwritten (a re-dispatch must not blank
+    accumulated evidence), and any failure is swallowed -- the DB row is the
+    authoritative birth; a missing draft file degrades to the CLI's own
+    adoption path (``_maybe_adopt_draft``), not to a failed dispatch.
+    """
+    try:
+        drafts = _import_drafts()
+        if not drafts.draft_exists(contract_id):
+            drafts.save_draft(contract_id, drafts.initial_envelope(agent_id))
+    except Exception:
+        logger.debug("draft pre-creation failed (non-fatal)", exc_info=True)
+
+
 def _connect(db_path: "_pl.Path | None"):
     """Open a read connection through the store's own connect helper.
 
@@ -271,6 +304,13 @@ def birth_dispatched_row(
     session_id: "Optional[str]" = None,
     brief_id: "Optional[int]" = None,
     agent_name: "Optional[str]" = None,
+    dispatch_prompt_id: "Optional[str]" = None,
+    dispatch_tool_use_id: "Optional[str]" = None,
+    dispatch_description: "Optional[str]" = None,
+    dispatch_prompt: "Optional[str]" = None,
+    context_anchors: "Optional[list]" = None,
+    kernel_sections: "Optional[dict]" = None,
+    dispatch_project: "Optional[str]" = None,
     db_path: "_pl.Path | None" = None,
 ) -> dict:
     """Validate the binding, then BIRTH the nascent DISPATCHED row.
@@ -286,6 +326,15 @@ def birth_dispatched_row(
     that does not ADOPT its minted identity still shares with its own row, so it
     is what lets such a row be found and closed at SubagentStop.
 
+    The ``dispatch_*`` / ``context_anchors`` / ``kernel_sections`` fields (v43)
+    and ``dispatch_project`` (v44) are the dispatch coordinates
+    ``claim_dispatch_row`` correlates on and the payload the dispatch kernel
+    renders from -- pass-through to the writer, all optional.
+
+    Birth also PRE-CREATES the on-disk draft under the same identity
+    (:func:`_precreate_draft`): the dispatched turn starts with its contract
+    already open and never runs ``gaia contract init``.
+
     Returns the writer's result dict (``status`` / ``created`` / ``handoff_id`` /
     ``contract_id``). Idempotency is inherited from the writer: a re-dispatch for
     the SAME contract_id is a no-op that never births a second row.
@@ -298,7 +347,7 @@ def birth_dispatched_row(
         db_path=db_path,
     )
     writer = _import_writer()
-    return writer.insert_dispatched_handoff(
+    result = writer.insert_dispatched_handoff(
         contract_id=contract_id,
         agent_id=agent_id,
         workspace=workspace,
@@ -309,8 +358,17 @@ def birth_dispatched_row(
         session_id=session_id,
         brief_id=brief_id,
         agent_name=agent_name,
+        dispatch_prompt_id=dispatch_prompt_id,
+        dispatch_tool_use_id=dispatch_tool_use_id,
+        dispatch_description=dispatch_description,
+        dispatch_prompt=dispatch_prompt,
+        context_anchors=context_anchors,
+        kernel_sections=kernel_sections,
+        dispatch_project=dispatch_project,
         db_path=db_path,
     )
+    _precreate_draft(contract_id, agent_id)
+    return result
 
 
 def birth_degraded_row(
@@ -325,6 +383,13 @@ def birth_degraded_row(
     session_id: "Optional[str]" = None,
     brief_id: "Optional[int]" = None,
     agent_name: "Optional[str]" = None,
+    dispatch_prompt_id: "Optional[str]" = None,
+    dispatch_tool_use_id: "Optional[str]" = None,
+    dispatch_description: "Optional[str]" = None,
+    dispatch_prompt: "Optional[str]" = None,
+    context_anchors: "Optional[list]" = None,
+    kernel_sections: "Optional[dict]" = None,
+    dispatch_project: "Optional[str]" = None,
     db_path: "_pl.Path | None" = None,
 ) -> dict:
     """Birth a nascent row for an ATTEMPTED binding that failed to resolve --
@@ -365,7 +430,7 @@ def birth_degraded_row(
     if agent_name:
         birth_envelope[writer.BIRTH_AGENT_NAME_KEY] = str(agent_name)
 
-    return writer.insert_dispatched_handoff(
+    result = writer.insert_dispatched_handoff(
         contract_id=contract_id,
         agent_id=agent_id,
         workspace=workspace,
@@ -376,8 +441,17 @@ def birth_degraded_row(
         raw_handoff_json=_json.dumps(birth_envelope),
         session_id=session_id,
         brief_id=brief_id,
+        dispatch_prompt_id=dispatch_prompt_id,
+        dispatch_tool_use_id=dispatch_tool_use_id,
+        dispatch_description=dispatch_description,
+        dispatch_prompt=dispatch_prompt,
+        context_anchors=context_anchors,
+        kernel_sections=kernel_sections,
+        dispatch_project=dispatch_project,
         db_path=db_path,
     )
+    _precreate_draft(contract_id, agent_id)
+    return result
 
 
 def _classify_free_kind(prompt: str) -> str:
@@ -426,7 +500,8 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
     must not introduce.
 
     Returns a dict with keys ``plan_id``, ``plan_task_id``, ``kind``,
-    ``turn_role``, ``parent_handoff_id`` -- any of which may be None.
+    ``turn_role``, ``parent_handoff_id``, ``project`` -- any of which may be
+    None.
     """
     import re as _re
 
@@ -444,6 +519,16 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
 
     plan_id = _int_token(r"plan_id\s*=\s*(\d+)")
     plan_task_id = _int_token(r"task_id\s*=\s*(\d+)")
+    # ``project=<name>`` (v44 follow-up): the orchestrator KNOWS which project
+    # a dispatch is about; the cwd does not (it dispatches from the workspace
+    # root, so path-based resolution never matches). The name travels in the
+    # same token channel as task_id=/plan_id= -- the only structured channel a
+    # Task dispatch has -- and is resolved to "name (/abs/path)" at birth,
+    # with cwd resolution kept only as the fallback. Deliberately NOT a
+    # binding coordinate: it never gates a birth, so it plays no part in the
+    # kind classification below.
+    project_match = _re.search(r"\bproject\s*=\s*([A-Za-z0-9._\-]+)", prompt)
+    project = project_match.group(1) if project_match else None
     # A verifier dispatch names the PRODUCER handoff it verifies via a
     # ``parent_handoff_id=<N>`` token in its prompt. Without this the verifier
     # branch of validate_dispatch_binding (which REQUIRES a resolvable
@@ -484,4 +569,5 @@ def extract_dispatch_binding(metadata: "Mapping[str, Any]") -> dict:
         "kind": kind,
         "turn_role": turn_role,
         "parent_handoff_id": parent_handoff_id,
+        "project": project,
     }

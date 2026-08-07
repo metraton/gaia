@@ -122,7 +122,7 @@ def _load_agent_skills(agents_dir: Path) -> dict[str, list[str]]:
 class RoutingSimulator:
     """Simulates the gaia routing pipeline for a given prompt.
 
-    Loads surface-routing.json, context-contracts.json, and agent frontmatter
+    Loads the DB-backed surface routing registry, context-contracts.json, and agent frontmatter
     to predict: which surfaces activate, which agent handles, what skills and
     context sections are injected, and what contract permissions apply.
     """
@@ -131,17 +131,16 @@ class RoutingSimulator:
         """Initialize the simulator with config and agents directories.
 
         Args:
-            config_dir: Path to the config/ directory containing
-                       surface-routing.json and context-contracts.json.
+            config_dir: Path to the config/ directory containing legacy/generic
+                        simulator fixtures such as context-contracts.json.
             agents_dir: Path to the agents/ directory containing agent .md files.
         """
         self._config_dir = config_dir
         self._agents_dir = agents_dir
 
-        # Load routing config from the DB-backed surface_routing table (the
-        # retired config/surface-routing.json is no longer read). The loader
-        # resolves gaia.db via gaia.paths (honoring GAIA_DATA_DIR), so tests
-        # point it at a seeded temp DB.
+        # Load routing from the surface_routing table seeded from agent
+        # frontmatter. The loader resolves gaia.db via gaia.paths (honoring
+        # GAIA_DATA_DIR), so tests point it at a seeded temp DB.
         self._routing_config = load_surface_routing_config()
 
         # Load contracts

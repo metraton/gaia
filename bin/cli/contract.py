@@ -15,10 +15,17 @@ Subcommands (the 6 verbs + the ``fill --json`` batch mode):
                                                    when --agent-id is omitted
     set      FIELD VALUE          [--draft-id ID]  Set a scalar field (dotted path)
     add      FIELD VALUE          [--draft-id ID]  Append a value to a list field
-    view     [--field DOTTED_PATH][--draft-id ID]  Print the draft envelope, or ONLY a dotted-path subtree
-             [--harness-id ID]                     ... or resolve by the harness's per-run agentId (cut-turn recovery)
+    view     [--field DOTTED_PATH][--draft-id ID]  Print the contract envelope (NEVER writes), or ONLY a
+             [--harness-id ID]                     dotted-path subtree; --harness-id resolves by the
+                                                     harness's per-run agentId instead (cut-turn recovery).
+                                                     Both addressing modes are safe for a historical/cut row
+                                                     found via `contract list --cut --json` (use its
+                                                     contract_id for --draft-id, harness_agent_id for
+                                                     --harness-id when the row was stamped, v40+) -- see
+                                                     cmd_view's own docstring for the write-on-read defect
+                                                     this used to have and no longer does.
     validate                      [--draft-id ID]  Validate the draft WITHOUT mutating it
-    finalize                      [--draft-id ID]  Validate the draft as final
+    finalize                      [--draft-id ID]  Validate and persist/converge the handoff row
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
              --json-file PATH                      ... or read the patch from a file (avoids shell
                                                      quoting a payload that carries report prose)
@@ -33,7 +40,9 @@ Validate-on-write, no false-pass (AC-4):
     draft is left untouched at its last-known-good state, the concrete
     errors (including the enum text for an out-of-range agent_state) are
     printed to stderr, and the process exits non-zero -- never a crash.
-    ``validate`` and ``finalize`` never mutate; they only report the verdict.
+    ``validate`` never mutates; it only reports the verdict. ``finalize`` does
+    not mutate the draft file, but it DOES persist/converge the DB handoff row.
+    It accepts any valid state; only ``COMPLETE`` is terminal.
 
 Incremental fill is MIRRORED to the row, not only to disk:
     ``set``/``add``/``fill`` persist the draft to
@@ -61,6 +70,17 @@ Attribution vs. harness-agnosticism (they are not in conflict):
     ``session_id`` and ``plan_task_id`` NULL and could not be attributed to the
     session or plan task that produced it -- purity was being paid for with
     unattributable history, which was never the point of the rule.
+
+Implicit adoption:
+    ``set``/``add``/``fill`` no longer require a prior ``gaia contract init``
+    when the turn's identity was born at dispatch: their first call against an
+    EXPLICIT, already-born ``--draft-id`` materializes the on-disk draft from
+    the SAME identity the row was born under -- recovering the row's real
+    evidence when any was already mirrored, never fabricating a blank over it.
+    Guards, recovery, and the fallback role ``init`` keeps are documented on
+    ``_maybe_adopt_draft``. ``validate`` and ``view`` deliberately do NOT
+    auto-adopt -- neither may mutate anything on disk; ``cmd_view``'s docstring
+    carries the write-on-read defect that rule closed.
 
 Draft identity (T5 -- decisions #1, #3, #8):
     This CLI mints its OWN contract id and NEVER reads ``CLAUDE_SESSION_ID``
@@ -116,6 +136,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -126,6 +147,14 @@ from typing import Any, Optional
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+# SSOT for the agent-id shape a draft_id's prefix must satisfy to be a
+# candidate for implicit adoption (see _maybe_adopt_draft). Imported from the
+# portable validator rather than re-spelled, so this floor can never drift
+# from the one the envelope itself is checked against.
+from gaia.contract.validator import AGENT_ID_PATTERN_TEXT  # noqa: E402
+
+_AGENT_ID_RE = re.compile(AGENT_ID_PATTERN_TEXT)
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +192,12 @@ def _save_draft(draft_id: str, envelope: dict) -> None:
     save_draft(draft_id, envelope)
 
 
+def _draft_exists(draft_id: str) -> bool:
+    from gaia.contract.drafts import draft_exists
+
+    return draft_exists(draft_id)
+
+
 # ---------------------------------------------------------------------------
 # Envelope construction / mutation helpers
 # ---------------------------------------------------------------------------
@@ -170,40 +205,13 @@ def _save_draft(draft_id: str, envelope: dict) -> None:
 def _initial_envelope(agent_id: str) -> dict:
     """The starting shape for a freshly-init'd draft.
 
-    Deliberately a genuinely SHAPE-VALID envelope (not a stub that would
-    later need a special-cased pass) so init's own validate-on-write is a
-    real check, not a smuggled-through no-op: agent_state defaults to
-    IN_PROGRESS, pending_steps is present (empty list), next_action is a
-    non-empty placeholder the agent overwrites via `set`/`add`, and
-    evidence_report carries all seven required keys.
-
-    ``failure_report`` is seeded ``None`` for the same reason
-    ``consolidation_report``/``approval_request`` already are: seeding the
-    slot makes it discoverable in `gaia contract view` without making it
-    required -- ``gaia.contract.validator.validate_form`` only runs the
-    FAILURE_REPORT_SHAPE check when the block is present and non-null, so a
-    seeded ``None`` reaches no check at all, exactly like an omitted key.
+    Delegates to ``gaia.contract.drafts.initial_envelope`` -- the SSOT shared
+    with the dispatch-side birth, which pre-creates the on-disk draft under
+    the same shape (see that function's docstring for the shape rationale).
     """
-    return {
-        "agent_status": {
-            "agent_state": "IN_PROGRESS",
-            "agent_id": agent_id,
-            "pending_steps": [],
-            "next_action": "pending",
-        },
-        "evidence_report": {
-            "patterns_checked": [],
-            "files_checked": [],
-            "commands_run": [],
-            "key_outputs": [],
-            "verbatim_outputs": [],
-            "cross_layer_impacts": [],
-            "open_gaps": [],
-        },
-        "consolidation_report": None,
-        "approval_request": None,
-        "failure_report": None,
-    }
+    from gaia.contract.drafts import initial_envelope
+
+    return initial_envelope(agent_id)
 
 
 def _parse_value_arg(raw: str) -> Any:
@@ -444,8 +452,115 @@ def _write_if_valid(
     return 0
 
 
+def _maybe_adopt_draft(draft_id: str) -> Optional[dict]:
+    """Materialize the on-disk draft for an EXPLICIT, already-BORN contract_id.
+
+    A turn whose identity was born at dispatch (``insert_dispatched_handoff``
+    in ``gaia.store.writer``) has a real ``agent_contract_handoffs`` row before
+    it ever runs a CLI command, but that birth never writes the on-disk draft
+    file -- ``init`` used to be the only thing that did. This lets the first
+    ``set``/``add``/``fill`` against that SAME id recreate the file itself,
+    from exactly the identity the row was born under, instead of requiring a
+    separate ``gaia contract init`` call first.
+
+    NOT called by ``cmd_view`` (nor ``cmd_validate``): a read verb may never
+    materialize a write as a side effect. This function stays scoped to the
+    three MUTATING verbs, whose first call is legitimately about to write
+    something real; ``view``'s own read-only recovery lives in
+    :func:`_freshest_envelope`.
+
+    Two guards keep this from ever minting anything: the ``draft_id``'s
+    agent-id prefix must satisfy ``AGENT_ID_PATTERN_TEXT`` (the same floor
+    ``gaia contract init`` mints to), AND a row must already exist for this
+    EXACT ``contract_id`` (``agent_contract_handoff_exists``) -- an id that is
+    merely well-formed but never born still returns None, so the caller falls
+    through to the same "No draft found... run init" error as before. This
+    function converges an already-born identity; it never invents one.
+
+    A blank ``_initial_envelope`` is correct ONLY for a genuinely fresh row --
+    one that carries nothing but the birth marker
+    (``{"agent_state": "DISPATCHED", "born_at_dispatch": True[, agent_name]}``,
+    see ``insert_dispatched_handoff``). A row whose draft file was lost
+    mid-turn AFTER real evidence was already mirrored onto it (via
+    ``gaia.store.writer.mirror_partial_contract_handoff``) carries a full
+    validated envelope instead -- and every validated envelope has an
+    ``evidence_report`` key (``gaia.contract.validator`` requires it), while the
+    bare birth marker never does. That is the same "fabricate blank over real
+    evidence" defect ``cmd_view`` used to have, through the write door instead
+    of the read one: fabricating blank here would not only lose the evidence on
+    disk, it would MIRROR the blanked envelope straight back onto the row on
+    the caller's next write, destroying it a second time. So this reuses
+    :func:`_freshest_envelope` -- the SAME read-only recovery ``cmd_view``
+    already relies on -- to recover the row's real envelope when one exists,
+    and falls back to the blank starting shape only when nothing but the birth
+    marker is there to recover.
+
+    Returns the (recovered-and-saved, or freshly-initial-and-saved) envelope,
+    or None when this is not an adoption case (malformed id, no born row, or a
+    DB read failure -- any doubt degrades to None, never to a fabricated
+    draft).
+
+    Callers only reach this when :func:`_draft_exists` already read False, so
+    a draft file that exists but failed to PARSE (corrupt, not merely absent)
+    is never silently overwritten by this path -- that stays a distinct
+    "unreadable draft" failure, not an adoption case.
+    """
+    agent_id = draft_id.split(".", 1)[0]
+    if not _AGENT_ID_RE.match(agent_id):
+        return None
+    try:
+        from gaia.store.writer import agent_contract_handoff_exists
+
+        if not agent_contract_handoff_exists(draft_id):
+            return None
+    except Exception:
+        return None
+
+    try:
+        row = _lookup_handoff_row_by_contract_id(draft_id)
+    except Exception:
+        row = None
+    if row is not None:
+        recovered, _source = _freshest_envelope(draft_id, row)
+        if isinstance(recovered, dict) and "evidence_report" in recovered:
+            _save_draft(draft_id, recovered)
+            return recovered
+
+    envelope = _initial_envelope(agent_id)
+    _save_draft(draft_id, envelope)
+    return envelope
+
+
+def _resolve_target_draft_id(args, as_json: bool) -> Optional[str]:
+    """Resolve --draft-id (or --agent-id scope) to one concrete draft id.
+
+    The pure-resolution prefix of :func:`_load_target_draft`, split out so a
+    caller that must decide FOR ITSELF what to do when no draft FILE exists
+    (``cmd_view``'s read-only recovery, see :func:`_lookup_handoff_row_by_contract_id`)
+    can resolve the id without also triggering adoption or the "no draft
+    found" error for a case it is about to handle differently. Prints and
+    returns None on the two errors that are unconditionally terminal
+    regardless of what the caller does next: an ambiguous ``--draft-id``/
+    ``--agent-id`` combination, or nothing resolvable at all.
+    """
+    from gaia.contract.drafts import AmbiguousDraftError
+
+    try:
+        draft_id = _resolve_draft_id(
+            getattr(args, "draft_id", None),
+            getattr(args, "agent_id", None),
+        )
+    except AmbiguousDraftError as exc:
+        _print_ambiguous_draft_error(exc, as_json)
+        return None
+    if draft_id is None:
+        _no_draft_error(as_json)
+        return None
+    return draft_id
+
+
 def _load_target_draft(
-    args, force_json: bool = False
+    args, force_json: bool = False, allow_adopt: bool = True
 ) -> "tuple[Optional[str], Optional[dict], bool]":
     """Resolve --draft-id and load it. Returns (draft_id, envelope, as_json).
 
@@ -459,21 +574,26 @@ def _load_target_draft(
     errors (no draft / ambiguous draft), matching that caller's documented
     "always speaks JSON" contract instead of silently falling back to
     plain text because ``args`` has no ``json`` attribute under that name.
-    """
-    from gaia.contract.drafts import AmbiguousDraftError
 
+    ``allow_adopt`` (default True) tries :func:`_maybe_adopt_draft` when NO
+    draft file exists yet (checked via :func:`_draft_exists`, not merely a
+    failed load, so a file that exists but is corrupt is never mistaken for
+    "absent, adopt me") for an EXPLICIT id -- this is what makes a first
+    ``set``/``add``/``fill`` against a born identity succeed with no prior
+    ``init``. Both ``cmd_validate`` and ``cmd_view`` pass False: neither may
+    mutate anything on disk. ``cmd_view`` does not even call this helper for
+    its ``--draft-id`` addressing path any more -- see its own docstring for
+    why materializing ``_initial_envelope`` was never safe for a READ verb,
+    and how it recovers real evidence instead without writing.
+    """
     as_json = force_json or bool(getattr(args, "json", False))
-    try:
-        draft_id = _resolve_draft_id(
-            getattr(args, "draft_id", None),
-            getattr(args, "agent_id", None),
-        )
-    except AmbiguousDraftError as exc:
-        _print_ambiguous_draft_error(exc, as_json)
-        return None, None, as_json
+    draft_id = _resolve_target_draft_id(args, as_json)
     if draft_id is None:
-        _no_draft_error(as_json)
         return None, None, as_json
+    if allow_adopt and not _draft_exists(draft_id):
+        adopted = _maybe_adopt_draft(draft_id)
+        if adopted is not None:
+            return draft_id, adopted, as_json
     envelope = _load_draft(draft_id)
     if envelope is None:
         _no_draft_error(as_json, draft_id)
@@ -510,6 +630,16 @@ def cmd_init(args) -> int:
     and echoes it, so the agent reuses a value it never had to invent. An
     explicit ``--agent-id`` still works unchanged (subject to the same
     format floor), which is what keeps every existing caller valid.
+
+    No longer the required first step for a turn whose identity was born at
+    dispatch: ``set``/``add``/``fill`` now adopt that identity implicitly on
+    their own first call (see ``_maybe_adopt_draft``). ``view`` recovers a
+    born identity too, but read-only -- it never adopts/materializes a draft
+    file (see ``cmd_view``'s docstring). This command remains the FALLBACK
+    for the one case that still needs it -- a turn that received no injected
+    ``# Your Contract`` block at all (a resumed session, or a dispatch
+    outside this harness) -- where a bare ``gaia contract init`` (no
+    ``--agent-id``) mints a fresh identity to reuse.
     """
     as_json = bool(getattr(args, "json", False))
     agent_id = getattr(args, "agent_id", None)
@@ -563,6 +693,49 @@ def cmd_add(args) -> int:
     return _write_if_valid(envelope, draft_id, as_json, mirror=True)
 
 
+def _lookup_handoff_row_by_contract_id(contract_id: str) -> Optional[dict]:
+    """The persisted ``agent_contract_handoffs`` row for this contract id, or
+    None when no row was ever born under it. Plain SELECT, T0 -- no adoption,
+    no write, shared by every recovery lane that needs the row itself rather
+    than only its envelope.
+    """
+    from gaia.store.writer import list_agent_contract_handoffs
+
+    rows = list_agent_contract_handoffs(contract_id=contract_id, limit=1)
+    return rows[0] if rows else None
+
+
+def _freshest_envelope(contract_id: Optional[str], row: dict) -> "tuple[Optional[Any], str]":
+    """The freshest recoverable envelope for an ALREADY-RESOLVED row, without
+    ever writing anything itself.
+
+    Reads the SAME two sources in the SAME priority (on-disk draft first, it
+    may carry writes newer than the last DB mirror; else the row's own
+    ``raw_handoff_json``, populated by ``gaia contract set/add/fill``'s
+    best-effort mirror -- see ``gaia.store.writer.mirror_partial_contract_handoff``)
+    and returns whichever is real, or ``None`` when neither is. This function
+    never touches disk or the DB either way -- it is a pure read used by two
+    callers with different obligations once they have the result: ``cmd_view``
+    only ever prints what this returns (a read verb may never materialize a
+    write as a side effect); :func:`_maybe_adopt_draft` (a MUTATING verb's
+    adoption path) uses it to recover real evidence when the row already
+    carries any, and persists it, rather than fabricating a blank
+    ``_initial_envelope`` over evidence that was already there.
+
+    Returns ``(envelope, source)`` where ``source`` is ``"draft"`` or
+    ``"db_row"`` -- labelled even when ``envelope`` comes back None, so a
+    caller can still report WHICH source it looked at and found empty.
+    """
+    envelope = _load_draft(contract_id) if contract_id else None
+    if envelope is not None:
+        return envelope, "draft"
+    try:
+        envelope = json.loads(row.get("raw_handoff_json") or "null")
+    except (TypeError, ValueError):
+        envelope = None
+    return envelope, "db_row"
+
+
 def _view_by_harness_id(args, harness_id: str) -> int:
     """Resolve and print a turn's contract by the HARNESS's per-run agent id.
 
@@ -572,9 +745,9 @@ def _view_by_harness_id(args, harness_id: str) -> int:
     id onto the born row (``agent_contract_handoffs.harness_agent_id``), so
     the row -- and through its ``contract_id``, the on-disk draft when one
     still exists -- is reachable directly, with no date search or content
-    grep. The freshest source wins: the draft on disk when present (it may
-    carry writes newer than the last DB mirror), else the row's own
-    ``raw_handoff_json``.
+    grep. The freshest source wins -- see :func:`_freshest_envelope`, which
+    this and ``cmd_view``'s own ``--draft-id`` recovery lane both call, so the
+    two addressing modes recover identically once a row is in hand.
     """
     from gaia.store.writer import list_agent_contract_handoffs
 
@@ -591,15 +764,7 @@ def _view_by_harness_id(args, harness_id: str) -> int:
         return 1
     row = rows[0]
     contract_id = row.get("contract_id")
-
-    envelope = _load_draft(contract_id) if contract_id else None
-    source = "draft"
-    if envelope is None:
-        source = "db_row"
-        try:
-            envelope = json.loads(row.get("raw_handoff_json") or "null")
-        except (TypeError, ValueError):
-            envelope = None
+    envelope, source = _freshest_envelope(contract_id, row)
 
     field = getattr(args, "field", None)
     if field is not None:
@@ -634,27 +799,93 @@ def _view_by_harness_id(args, harness_id: str) -> int:
 
 
 def cmd_view(args) -> int:
-    """Print the current draft envelope, or ONLY a dotted-path subtree of it
-    (``--field``), without mutating anything.
-
-    With no ``--field`` this prints the FULL envelope exactly as before
-    (``{"draft_id": ..., "envelope": ...}``). With ``--field <dotted-path>``
-    it resolves that subtree via the same ``_split_path`` addressing ``set``
-    uses and prints ONLY that subtree as JSON -- an invalid/absent path is a
-    clean error to stderr with a non-zero exit, never a raw traceback.
+    """Print a turn's contract envelope, or ONLY a dotted-path subtree of it
+    (``--field``). NEVER writes -- not the draft file, not the DB row.
 
     ``--harness-id`` switches the lookup to the harness's per-run agent id
     (see ``_view_by_harness_id``) -- the id the parent holds for a turn that
-    was cut before it could finalize.
+    was cut before it could finalize. Both addressing modes are equally safe
+    to point at a historical or cut row: neither ever adopts/materializes a
+    draft file. ``gaia contract list --cut --json`` reports both coordinates
+    on every row it returns -- ``contract_id`` (for ``--draft-id``) and
+    ``harness_agent_id`` when the row was stamped at SubagentStart (v40) --
+    so either is a safe next step from that list.
+
+    FIXED (was a live defect): with no ``--field``, ``--draft-id`` addressing
+    used to resolve through :func:`_load_target_draft`'s DEFAULT
+    ``allow_adopt=True``. When no draft FILE existed yet for an EXPLICIT,
+    already-born id -- exactly the shape of a historical or cut row reached
+    via ``contract list`` -- that adoption path (:func:`_maybe_adopt_draft`)
+    materialized a genuinely BLANK ``_initial_envelope`` (every
+    ``evidence_report`` list empty) and PERSISTED it to disk, from a READ
+    verb, discarding whatever real evidence the row's own
+    ``raw_handoff_json`` still carried (populated by that turn's own
+    ``set``/``add``/``fill`` calls before it was cut -- see
+    ``gaia.store.writer.mirror_partial_contract_handoff``). The blank
+    envelope then read back as "this turn recorded nothing", indistinguishable
+    from an honestly empty turn, and the damage was PERMANENT: once the blank
+    draft file existed, every later ``view`` of the SAME id loaded it instead
+    of ever looking at ``raw_handoff_json`` again.
+
+    This resolves ``--draft-id`` with ``allow_adopt=False`` (mirroring
+    ``cmd_validate``, which already never mutates) and, only when no draft
+    file exists, recovers via :func:`_freshest_envelope` -- the SAME
+    freshest-source-wins recovery ``--harness-id`` addressing already used --
+    instead of fabricating one. When NOTHING is recoverable at all (no draft
+    file AND no row, or a row whose ``raw_handoff_json`` is itself
+    missing/unparseable), that is reported as an explicit error naming the
+    reason, never as a silent blank envelope: a turn that genuinely recorded
+    nothing and a turn whose evidence could not be read back must never look
+    the same.
     """
     harness_id = getattr(args, "harness_id", None)
     if harness_id:
         return _view_by_harness_id(args, harness_id)
-    draft_id, envelope, as_json = _load_target_draft(args)
-    if envelope is None:
+
+    as_json = bool(getattr(args, "json", False))
+    draft_id = _resolve_target_draft_id(args, as_json)
+    if draft_id is None:
         return 1
+
+    source = "draft"
+    row = None
+    draft_file_present = _draft_exists(draft_id)
+    envelope = _load_draft(draft_id) if draft_file_present else None
+    if envelope is None:
+        if draft_file_present:
+            # The draft file exists but failed to PARSE -- distinct from "no
+            # file at all", and not the case this fix targets. Keep the
+            # pre-existing behavior (a clean error, never a fabricated
+            # envelope and never a fallback to raw_handoff_json for a file
+            # that is sitting right there, just unreadable).
+            _no_draft_error(as_json, draft_id)
+            return 1
+        row = _lookup_handoff_row_by_contract_id(draft_id)
+        if row is None:
+            _no_draft_error(as_json, draft_id)
+            return 1
+        envelope, source = _freshest_envelope(draft_id, row)
+        if envelope is None:
+            _print_error(
+                f"contract row {row.get('id')} exists for draft_id "
+                f"{draft_id!r} but nothing is recoverable: no on-disk draft "
+                f"file remains, and the row's own raw_handoff_json is "
+                f"missing or unparseable. This is NOT the same as a turn "
+                f"that recorded no evidence -- it means the evidence itself "
+                f"could not be read back.",
+                as_json,
+            )
+            return 1
+
     field = getattr(args, "field", None)
     if field is not None:
+        if not isinstance(envelope, dict):
+            _print_error(
+                f"draft_id {draft_id!r} has no readable envelope to take "
+                f"--field from.",
+                as_json,
+            )
+            return 1
         try:
             subtree = _get_nested(envelope, field)
         except ValueError as exc:
@@ -662,13 +893,30 @@ def cmd_view(args) -> int:
             return 1
         print(json.dumps(subtree, indent=2))
         return 0
-    print(json.dumps({"draft_id": draft_id, "envelope": envelope}, indent=2))
+
+    payload = {"draft_id": draft_id, "envelope": envelope}
+    if source != "draft":
+        # Recovered from the persisted row's raw_handoff_json, not the live
+        # draft file -- labelled so a consumer can tell "the in-flight
+        # draft" from "reconstructed evidence for a historical/cut row",
+        # exactly as --harness-id addressing already labels its own recovery.
+        payload["envelope_source"] = source
+        if row is not None:
+            payload["handoff_id"] = row.get("id")
+            payload["agent_state"] = row.get("agent_state")
+            payload["cut_reason"] = row.get("cut_reason")
+    print(json.dumps(payload, indent=2))
     return 0
 
 
 def cmd_validate(args) -> int:
-    """Validate the draft WITHOUT mutating it."""
-    draft_id, envelope, as_json = _load_target_draft(args)
+    """Validate the draft WITHOUT mutating it.
+
+    Passes ``allow_adopt=False``: implicit adoption (see
+    ``_maybe_adopt_draft``) materializes a fresh draft file, which is exactly
+    the mutation this verb promises never to perform.
+    """
+    draft_id, envelope, as_json = _load_target_draft(args, allow_adopt=False)
     if envelope is None:
         return 1
     result = _validate_envelope(envelope)
@@ -694,16 +942,67 @@ def cmd_validate(args) -> int:
 # Columns rendered by the default table view, in order. The full row is
 # available via --json; the table keeps the coordinates needed to identify a
 # turn and walk the plan-task -> producer -> verifier chain.
+#
+# `agent_name` is DERIVED, not a column of the table -- see _birth_agent_name.
+# `cut_reason` (v39) is a real column and answers "why did this turn not close
+# cleanly" without opening each row: a stuck row is legible from the list alone.
 _LIST_TABLE_COLUMNS = (
     "id",
     "created_at",
     "agent_id",
+    "agent_name",
     "agent_state",
+    "cut_reason",
     "kind",
     "session_id",
     "plan_task_id",
     "parent_handoff_id",
 )
+
+# Sentinel for the valueless form of --cut ("any non-NULL cut_reason"), kept
+# distinct from a reason a user could actually type.
+_CUT_ANY = "*"
+
+
+def _birth_agent_name(row: dict) -> "str | None":
+    """The dispatched agent's NAME for this row, or None when it is not recorded.
+
+    THERE IS NO agent-name COLUMN. ``agent_id`` holds the minted a<hex> handle,
+    and the readable name is dispatch metadata recorded INSIDE the birth
+    envelope under ``writer.BIRTH_AGENT_NAME_KEY`` by
+    ``insert_dispatched_handoff``. This reads exactly that and nothing else --
+    no inference from ``agent_id``, ``kind`` or the session.
+
+    Deliberately, honestly empty for three populations, because for them the
+    fact is NOT recorded anywhere the row can reach:
+
+    * legacy rows born before the minted-identity change, whose ``agent_id``
+      column happens to carry an agent name. Reading a name back out of that
+      column would mean deciding by SHAPE which handles are names, and the live
+      table mixes real names (``cloud-troubleshooter``) with fixture handles
+      (``aworkspace1``) -- a guess, not a projection;
+    * rows finalized cleanly, since ``finalize_agent_contract_handoff`` replaces
+      ``raw_handoff_json`` wholesale with the contract envelope, which carries no
+      agent name (only ``mirror_partial_contract_handoff`` preserves the marker,
+      via ``_merge_birth_markers``);
+    * rows written by a non-dispatch writer (the hook backstop's own row).
+
+    That leaves it populated exactly where the recovery question is asked: rows
+    still born-and-open (DISPATCHED) and rows carrying mirrored partial evidence.
+    """
+    raw = row.get("raw_handoff_json")
+    if not raw:
+        return None
+    try:
+        envelope = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+    from gaia.store.writer import BIRTH_AGENT_NAME_KEY
+
+    name = envelope.get(BIRTH_AGENT_NAME_KEY)
+    return str(name) if name else None
 
 
 def _row_in_date_range(row: dict, since: Optional[str], until: Optional[str]) -> bool:
@@ -727,6 +1026,7 @@ def cmd_list(args) -> int:
     """List persisted agent_contract_handoffs rows (read-only, SELECT only)."""
     from gaia.store.writer import list_agent_contract_handoffs
 
+    cut = getattr(args, "cut", None)
     rows = list_agent_contract_handoffs(
         workspace=args.workspace,
         agent_id=args.agent_id,
@@ -734,10 +1034,18 @@ def cmd_list(args) -> int:
         agent_state=args.state,
         contract_id=args.contract_id,
         harness_agent_id=getattr(args, "harness_id", None),
+        cut_reason=None if cut in (None, _CUT_ANY) else cut,
+        any_cut=cut == _CUT_ANY,
         limit=args.limit,
     )
     if args.since or args.until:
         rows = [r for r in rows if _row_in_date_range(r, args.since, args.until)]
+
+    # The derived name rides alongside the real columns in BOTH renderings, so a
+    # --json consumer does not have to parse raw_handoff_json to learn which
+    # specialist a stuck row belongs to.
+    for row in rows:
+        row["agent_name"] = _birth_agent_name(row)
 
     if args.json:
         print(json.dumps({"count": len(rows), "handoffs": rows}, indent=2, default=str))
@@ -807,7 +1115,7 @@ def cmd_finalize(args) -> int:
     when supplied, making the finalized contract findable by that coordinate
     pair. They are arguments, never environment reads -- see the module
     docstring. When the turn ADOPTED the identity born for it at dispatch (the
-    draft id came from the injected ``# Contract Identity`` block), this write
+    draft id came from the injected ``# Your Contract`` block), this write
     lands on that very row: the UPSERT keys on the SAME contract_id, so it
     converges the nascent row and closes it, binding intact -- no second row and
     nothing for SubagentStop to supersede. Only an UNADOPTED turn leaves the born
@@ -847,6 +1155,38 @@ def cmd_finalize(args) -> int:
             f"'gaia contract init' for a fresh draft under the id you want.",
             as_json,
         )
+        return 1
+
+    # Closing-state floor (live finding: handoff row 10955). finalize is the
+    # turn's CLEAN close -- it clears cut_reason and ends the row's life. A
+    # draft still carrying IN_PROGRESS at that seam produces a limbo row:
+    # closed clean (cut_reason NULL) yet declaring the turn never ended --
+    # invisible to `contract list --cut` AND to every terminal-state read.
+    # Every real end of a turn has a closing state (COMPLETE / NEEDS_
+    # VERIFICATION / BLOCKED / NEEDS_INPUT / APPROVAL_REQUEST); IN_PROGRESS is
+    # the one state that asserts the turn continues, so it is the one state a
+    # close may not carry. Scoped to THIS CLI seam on purpose: the rescue
+    # lanes (SubagentStop persister / reaper / salvage) write through
+    # gaia.store.writer directly and record IN_PROGRESS deliberately, as the
+    # honest verdict of a turn that was cut -- those stamp a cut lane, never a
+    # clean close.
+    if agent_state == "IN_PROGRESS":
+        msg = (
+            "agent_status.agent_state is IN_PROGRESS, but finalize is the "
+            "turn's clean CLOSE: declare the state your turn actually ends in "
+            "first (gaia contract set agent_status.agent_state "
+            "COMPLETE|NEEDS_VERIFICATION|BLOCKED|NEEDS_INPUT|APPROVAL_REQUEST"
+            "), then finalize. A row closed clean while declaring IN_PROGRESS "
+            "is neither cut nor closed -- a limbo nothing can route."
+        )
+        if as_json:
+            print(json.dumps({
+                "status": "rejected",
+                "reason": "closing_state_required",
+                "error": msg,
+            }))
+        else:
+            print(f"Rejected: {msg}", file=sys.stderr)
         return 1
 
     # Blind-verification anti-leak at the CLI seam (plan 34 task 8). The
@@ -1067,7 +1407,20 @@ def _build_subcommands(sub) -> None:
     p_add.add_argument("--json", action="store_true", help="JSON output")
     p_add.set_defaults(func=cmd_add)
 
-    p_view = sub.add_parser("view", help="Print the current draft envelope (or one --field subtree)")
+    p_view = sub.add_parser(
+        "view",
+        help="Print a turn's contract envelope, or one --field subtree -- never writes",
+        description=(
+            "Print a turn's contract envelope. NEVER writes -- not the draft "
+            "file, not the DB row -- so it is safe to point at ANY row, "
+            "including a historical or cut one found via 'gaia contract list "
+            "--cut --json': pass that row's contract_id as --draft-id, or its "
+            "harness_agent_id (v40+) as --harness-id. Either addressing mode "
+            "recovers real accumulated evidence from raw_handoff_json when no "
+            "on-disk draft file remains, and reports explicitly (never as a "
+            "silent blank envelope) when nothing is recoverable at all."
+        ),
+    )
     p_view.add_argument(
         "--field",
         dest="field",
@@ -1099,13 +1452,22 @@ def _build_subcommands(sub) -> None:
     p_list = sub.add_parser(
         "list",
         help="List persisted agent_contract_handoffs rows (read-only)",
+        description=(
+            "List persisted agent_contract_handoffs rows (read-only). Each "
+            "row's --json output carries both 'contract_id' and (when "
+            "stamped, v40+) 'harness_agent_id' -- feed either straight into "
+            "'gaia contract view --draft-id' / '--harness-id' to recover a "
+            "historical or cut row's real evidence; view never writes and "
+            "recovers from raw_handoff_json when no draft file remains."
+        ),
     )
     p_list.add_argument(
         "--agent-id", "--agent", dest="agent_id", metavar="AGENT_ID", default=None,
         help=(
             "Filter by the exact persisted agent_id (normally the minted "
             "a<hex> handle). Dispatch agent type/name is not stored on legacy "
-            "rows and cannot be inferred by this filter."
+            "rows and cannot be inferred by this filter; the agent_name column "
+            "shows the dispatched name where the birth envelope recorded it."
         ),
     )
     p_list.add_argument(
@@ -1113,12 +1475,25 @@ def _build_subcommands(sub) -> None:
         help="Filter by agent_state (COMPLETE, DISPATCHED, BLOCKED, ...)",
     )
     p_list.add_argument(
+        "--cut", dest="cut", metavar="REASON", nargs="?", const=_CUT_ANY,
+        default=None,
+        help=(
+            "Filter to turns that did NOT close cleanly. Bare --cut takes every "
+            "cut reason; --cut REASON takes one (never_finalized, reaped, "
+            "backstop_capture, salvaged_truncation)"
+        ),
+    )
+    p_list.add_argument(
         "--session", dest="session_id", metavar="SESSION_ID", default=None,
         help="Filter by session_id",
     )
     p_list.add_argument(
         "--contract-id", dest="contract_id", metavar="CONTRACT_ID", default=None,
-        help="Filter by contract_id (the draft/dispatch idempotency key)",
+        help=(
+            "Filter by contract_id (the draft/dispatch idempotency key). "
+            "This is the SAME value 'gaia contract view --draft-id' expects "
+            "-- not the numeric 'id' column shown in the default table view."
+        ),
     )
     p_list.add_argument(
         "--harness-id", dest="harness_id", metavar="HARNESS_AGENT_ID",
@@ -1148,7 +1523,11 @@ def _build_subcommands(sub) -> None:
     p_list.add_argument("--json", action="store_true", help="JSON output")
     p_list.set_defaults(func=cmd_list)
 
-    p_validate = sub.add_parser("validate", help="Validate the draft WITHOUT mutating it")
+    p_validate = sub.add_parser(
+        "validate",
+        help="Validate the draft WITHOUT mutating it",
+        description="Validate the draft only; do not write or converge a handoff row.",
+    )
     _add_common_draft_arg(p_validate)
     _add_agent_scope_arg(p_validate)
     p_validate.add_argument("--json", action="store_true", help="JSON output")
@@ -1156,7 +1535,17 @@ def _build_subcommands(sub) -> None:
 
     p_finalize = sub.add_parser(
         "finalize",
-        help="Validate the draft as final and write it to the store (idempotent, exactly-once)",
+        help=(
+            "Validate and persist/converge the handoff row (idempotent); "
+            "finalize does not imply terminal COMPLETE"
+        ),
+        description=(
+            "Validate the draft and idempotently persist/converge its handoff row. "
+            "Any CLOSING agent_state may be finalized (COMPLETE, "
+            "NEEDS_VERIFICATION, BLOCKED, NEEDS_INPUT, APPROVAL_REQUEST); "
+            "IN_PROGRESS is rejected -- declare the state the turn ends in "
+            "before closing. Only COMPLETE is terminal."
+        ),
     )
     _add_common_draft_arg(p_finalize)
     _add_agent_scope_arg(p_finalize)
@@ -1227,9 +1616,10 @@ def _contract_default(args) -> int:
     print("  init [--agent-id AGENT_ID]  -- create a new draft; mints and prints the agent_id when omitted")
     print("  set FIELD VALUE           -- set a scalar field by dotted path")
     print("  add FIELD VALUE           -- append a value to a list field")
-    print("  view [--field PATH]       -- print the draft envelope, or only a dotted-path subtree")
+    print("  view [--field PATH]       -- print a turn's contract envelope (never writes); --draft-id or")
+    print("                               --harness-id both recover a historical/cut row found via 'list'")
     print("  validate                  -- validate the draft without mutating it")
-    print("  finalize                  -- validate as final + write the row (idempotent, exactly-once)")
+    print("  finalize                  -- validate + persist/converge the row; only COMPLETE is terminal")
     print("  fill --json JSON          -- batch-merge a JSON patch into the draft")
     print("")
     print("Run 'gaia contract --help' for more information.")

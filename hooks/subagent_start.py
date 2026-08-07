@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """SubagentStart hook — logs agent dispatch, records skill snapshots,
-and forwards cached project context into the subagent.
+and injects the dispatch kernel into the subagent.
 
-PreToolUse:Agent builds and caches the context; this hook reads the
-cache and returns it as additionalContext so it reaches the subagent
-(not the orchestrator)."""
+PreToolUse:Agent births the row and caches the bridge payload (events
+digest + minted contract_id); this hook claims the born row, renders the
+kernel blocks, and returns them as additionalContext so they reach the
+subagent (not the orchestrator)."""
 
 import sys
 import json
@@ -28,12 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 def _handle_subagent_start(event) -> None:
-    """Record skill snapshot and log the agent dispatch."""
+    """Claim the born row, render the kernel, and emit it as additionalContext."""
     adapter = get_adapter()
 
     context_result = adapter.adapt_subagent_start(event.payload)
     agent_type = event.payload.get("agent_type", "unknown")
-    task_description = event.payload.get("task_description", "")
 
     logger.info(
         "SubagentStart: agent_type=%s, context_injected=%s",

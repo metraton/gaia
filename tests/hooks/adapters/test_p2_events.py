@@ -16,7 +16,6 @@ Run: python3 -m pytest tests/hooks/adapters/test_p2_events.py -v --tb=short
 import sys
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -177,23 +176,24 @@ class TestAdaptTaskCompleted:
 class TestAdaptSubagentStart:
     """Test adapt_subagent_start method."""
 
-    def test_extracts_agent_type(self, adapter, subagent_start_payload):
-        """SubagentStart extracts agent_type and injects context for project agents."""
-        stub_context = "# Context stub for cloud-troubleshooter"
-        with patch(
-            "modules.context.context_injector.build_project_context",
-            return_value=(stub_context, {}),
-        ), patch(
-            "modules.session.session_event_injector.build_session_events",
-            return_value="",
-        ):
-            result = adapter.adapt_subagent_start(subagent_start_payload)
+    def test_extracts_agent_type(self, adapter, subagent_start_payload, tmp_path, monkeypatch):
+        """SubagentStart correlates the cached events digest and forwards it."""
+        monkeypatch.setattr(
+            type(adapter), "CONTEXT_CACHE_DIR", tmp_path / "ctx-cache",
+        )
+        adapter._cache_context_for_subagent(
+            subagent_start_payload["session_id"],
+            subagent_start_payload["agent_type"],
+            "# Recent Session Events (last 24h)\n- one event",
+            task_description=subagent_start_payload["task_description"],
+        )
+
+        result = adapter.adapt_subagent_start(subagent_start_payload)
 
         assert isinstance(result, ContextResult)
-        # Project agents get context injected (via cache or on-demand rebuild)
         assert result.context_injected is True
         assert result.additional_context is not None
-        assert isinstance(result.additional_context, str)
+        assert "# Recent Session Events" in result.additional_context
         assert result.sections_provided == []
 
     def test_empty_payload(self, adapter):

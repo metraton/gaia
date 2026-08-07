@@ -38,17 +38,19 @@ SECOND, INDEPENDENT RESPONSIBILITY -- closing the born-at-dispatch row:
     separate job from the capture above, and it is unconditional: it runs on
     EVERY turn, not only on a crash.
 
-    When it IS the finalize path's job, and when it falls here. The dispatch now
+    When it IS the finalize path's job, and when it falls here. The dispatch
     mints a REAL, adoptable identity for the row (``dispatch_identity``: an
-    ``a``+hex ``agent_id`` and a ``{agent_id}.{token}`` ``contract_id``) and
-    injects both halves into the subagent's context. A turn that ADOPTS them
-    (``gaia contract init --agent-id ... --draft-id ...``) finalizes under the
-    same ``contract_id`` the row was born with, so its own finalize CONVERGES the
+    ``a``+hex ``agent_id`` and a ``{agent_id}.{token}`` ``contract_id``),
+    pre-creates the on-disk draft under it (``dispatch_binding._precreate_draft``),
+    and SubagentStart hands both halves to the turn inside the dispatch kernel
+    (``# Your Contract``). A turn that writes that draft (its first
+    ``gaia contract set/add/fill --draft-id ...``) finalizes under the same
+    ``contract_id`` the row was born with, so its own finalize CONVERGES the
     born row -- there is one row, already closed, and nothing here to supersede.
-    The closure below is for the turn that did NOT adopt: no identity block
-    reached it, or it minted a rival id anyway, so its verdict landed on a
-    DIFFERENT row and the born one is left behind -- with a corrected fence or
-    without one, crash or no crash. THIS MODULE IS THE ONLY LAYER THAT HOLDS BOTH
+    The closure below is for the turn that did NOT adopt: no kernel reached it
+    (the claim failed or was refused), or it minted a rival id anyway, so its
+    verdict landed on a DIFFERENT row and the born one is left behind -- with a
+    corrected fence or without one, crash or no crash. THIS MODULE IS THE ONLY LAYER THAT HOLDS BOTH
     IDENTITIES, which is why that exit belongs here and nowhere else. (Earlier
     revisions of this docstring claimed the backstop "is also the REAPER" that
     converges the nascent row on a crash. It never could: it looked the orphan up

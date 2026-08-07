@@ -11,11 +11,26 @@ Path resolution follows two base directories:
 
 import os
 import logging
+import sys
 from pathlib import Path
 from functools import lru_cache
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_package_root_importable() -> None:
+    """Make sibling top-level packages (``tools``, ``gaia``) importable in-process.
+
+    The hooks live under ``hooks/``; the ``tools`` and ``gaia`` packages sit
+    as siblings at the same level. Adding the package root to sys.path lets
+    ``from tools.context.context_provider import ...`` (and the gaia-substrate
+    imports the kernel path needs) resolve regardless of cwd -- the dispatch
+    path imports them in-process rather than as a subprocess.
+    """
+    pkg_root = str(Path(__file__).resolve().parents[3])
+    if pkg_root not in sys.path:
+        sys.path.insert(0, pkg_root)
 
 
 @lru_cache(maxsize=1)

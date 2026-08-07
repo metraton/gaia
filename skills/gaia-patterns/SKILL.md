@@ -12,18 +12,26 @@ Construction patterns for building Gaia components. Every component type follows
 ```
 1. User sends prompt
    |
-2. Orchestrator routes to agent (DB-backed surface_routing table)
+2. Orchestrator routes to agent (DB-backed surface_routing table --
+   the routing is the ORCHESTRATOR's reasoning; it is never injected
+   into the subagent)
    |
 3. Pre-Tool Hook (pre_tool_use.py)
-   +-- Inject project context (from ~/.gaia/gaia.db via context_provider.py)
-   +-- Load skills from frontmatter
-   +-- Validate permissions
+   +-- Validate the Task dispatch, load skills from frontmatter
+   +-- Birth the agent_contract_handoffs row (identity, kernel data,
+       dispatch_project resolved from cwd)
    |
-4. Agent executes -> returns agent_contract_handoff
+4. SubagentStart hook claims the born row and injects the KERNEL:
+   "# Your Contract" (incl. project + can_read/can_write menu),
+   "# Your CLI", "# What I know about you". Project context is NOT
+   preloaded -- the agent pulls sections on demand via
+   `gaia context get --section <s>` within its can_read menu.
    |
-5. Post-Tool Hook -> audit + metrics
+5. Agent checkpoints/finalizes the DB-backed agent_contract_handoff
    |
-6. Orchestrator processes agent_state (APPROVAL_REQUEST / NEEDS_INPUT / COMPLETE)
+6. Post-Tool Hook -> audit + metrics
+   |
+7. Orchestrator processes agent_state; only COMPLETE is terminal
 ```
 
 ## Hook Patterns
@@ -61,7 +69,7 @@ skills:
 
 **Identity** (1-2 paragraphs): domain, output format. **Scope**: CAN DO / CANNOT DO -> DELEGATE table. **Domain Errors**: agent-specific errors only.
 
-Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + project-context (filtered by DB-backed contracts from `project_context_contracts`) + orchestrator request.
+Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # What I know about you, rendered from the born row) + orchestrator request. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand via `gaia context get --section <s>`.
 
 ## Routing Patterns
 
@@ -96,5 +104,5 @@ When you modify any Gaia component (hook, skill, agent definition, routing confi
 ## Key Principles
 
 - **Skills teach process. Agents teach identity. Runtime enforces contracts.** Never duplicate across these layers.
-- **Delegation first.** The orchestrator routes; it cannot run commands or edit code, and it reads a file directly only to triangulate evidence with the user (a document or an image validated together) -- never as a substitute for a specialist's investigation.
+- **Coordination before execution.** The orchestrator cannot edit code or run general commands. Its guarded Gaia CLI lane reads coordination state and persists only decisions it owns; domain evidence and execution still belong to specialists.
 - **Consolidation loop.** For multi-surface work, the orchestrator may dispatch multiple agent rounds, stopping when gaps are no longer actionable.

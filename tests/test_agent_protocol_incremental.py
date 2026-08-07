@@ -18,8 +18,10 @@ rather than to a wording preference:
   * the verbs each definition calls "incremental" are cross-checked against the
     ``gaia contract`` subcommands that actually pass ``mirror=True`` in
     ``bin/cli/contract.py``;
-  * the adoption flags are cross-checked against the ones the injected block
-    itself prints.
+  * adoption is the FIRST WRITE against the born draft: a definition
+    must instruct ``gaia contract set/add/fill --draft-id ...`` and must NOT
+    carry the retired ``gaia contract init --agent-id ... --draft-id ...``
+    command, nor an invented ``--session-id <sid>`` on finalize.
 
 ``missing_protocol_clauses`` is exercised against a stub with none of the
 clauses, so a check that can no longer fail is itself a failure.
@@ -40,7 +42,6 @@ if _HOOKS_DIR not in sys.path:
 
 from modules.agents.dispatch_identity import (  # noqa: E402
     IDENTITY_BLOCK_HEADING,
-    render_identity_block,
 )
 
 AGENTS_DIR = _REPO_ROOT / "agents"
@@ -52,15 +53,24 @@ NON_SPECIALIST = {"gaia-orchestrator"}
 
 EXPECTED_SPECIALIST_COUNT = 8
 
-# The heading is a full sentence in the module ("# Contract Identity (born at
-# dispatch)"); a definition may cite it with or without the parenthetical, so the
-# anchor is its stable prefix -- still imported, never retyped.
+# The anchor is the heading's stable prefix (any parenthetical suffix a future
+# rename might add is tolerated) -- still imported, never retyped. v43: the
+# heading is "# Your Contract", the dispatch kernel's own marker.
 IDENTITY_ANCHOR = IDENTITY_BLOCK_HEADING.split("(")[0].strip()
 
+# Adoption is the FIRST WRITE against the born draft, not an init. The retired
+# `gaia contract init --agent-id ... --draft-id ...` command is now a
+# contradiction a definition must NOT carry.
 _ADOPT_RE = re.compile(
+    r"gaia contract set/add/fill\s+--draft-id\s+\S+"
+)
+_RETIRED_ADOPT_INIT_RE = re.compile(
     r"gaia contract init\s+--agent-id\s+\S+\s+--draft-id\s+\S+"
 )
 _FINALIZE_RE = re.compile(r"gaia contract finalize\s+--draft-id\s+\S+")
+# The invented-session-id instruction that clobbered real birth attribution
+# (measured: handoff 10915). A definition must not instruct a placeholder.
+_FINALIZE_SESSION_PLACEHOLDER = "--session-id <sid>"
 _INIT_MENTION_RE = re.compile(r"^.*gaia contract init.*$", re.MULTILINE)
 _INCREMENTAL_TIMING_RE = re.compile(
     r"incrementall?y|as you (?:make|discover|go|reach)|during the turn",
@@ -115,7 +125,12 @@ def missing_protocol_clauses(text: str, mirror_verbs: "set[str]") -> "list[str]"
         missing.append(f"does not name the injected {IDENTITY_ANCHOR!r} block")
     if not _ADOPT_RE.search(text):
         missing.append(
-            "no adoption command (gaia contract init --agent-id ... --draft-id ...)"
+            "no first-write adoption (gaia contract set/add/fill --draft-id ...)"
+        )
+    if _RETIRED_ADOPT_INIT_RE.search(text):
+        missing.append(
+            "retired adopt-with-init instruction "
+            "(gaia contract init --agent-id ... --draft-id ...)"
         )
 
     for verb in sorted(mirror_verbs):
@@ -128,6 +143,11 @@ def missing_protocol_clauses(text: str, mirror_verbs: "set[str]") -> "list[str]"
 
     if not _FINALIZE_RE.search(text):
         missing.append("no finalize command carrying --draft-id")
+    if _FINALIZE_SESSION_PLACEHOLDER in text:
+        missing.append(
+            "instructs an invented --session-id on finalize "
+            "(the born row already carries the session attribution)"
+        )
     if not _FINALIZE_LAST_RE.search(text):
         missing.append("does not place finalize last in the turn")
     if not _SOLE_PROMOTION_RE.search(text):
@@ -135,11 +155,14 @@ def missing_protocol_clauses(text: str, mirror_verbs: "set[str]") -> "list[str]"
 
     # The one contradiction that survives an additive edit: an older line that
     # still tells the agent to run a bare `gaia contract init`. Legitimate only
-    # where it is explicitly the no-identity-block fallback.
+    # where it is explicitly the no-contract-block fallback, or where the line
+    # itself forbids running init.
     for line in _INIT_MENTION_RE.findall(text):
-        if "--agent-id" in line:
-            continue
-        if re.search(r"fallback|no identity block", line, re.IGNORECASE):
+        if re.search(
+            r"fallback|no identity block|no `# Your Contract` block|do not run",
+            line,
+            re.IGNORECASE,
+        ):
             continue
         missing.append(f"stale bare-init instruction: {line.strip()!r}")
 
@@ -167,16 +190,15 @@ def test_agent_protocol_incremental_definition_instructs_the_flow(definition):
     assert not missing, f"{definition.name}: " + "; ".join(missing)
 
 
-def test_agent_protocol_incremental_adoption_flags_match_the_injected_block():
-    """The flags the definitions instruct are the ones the block itself prints."""
-    block = render_identity_block("a" + "0" * 16, "a" + "0" * 16 + ".tok")
-    assert block is not None
-    for flag in ("--agent-id", "--draft-id"):
-        assert flag in block
+def test_agent_protocol_incremental_adoption_addresses_the_born_draft():
+    """Definitions instruct the --draft-id discipline and never the retired
+    adopt-with-init command (the first write IS the adoption)."""
     for definition in specialist_definitions():
         text = definition.read_text(encoding="utf-8")
-        for flag in ("--agent-id", "--draft-id"):
-            assert flag in text, f"{definition.name} omits {flag}"
+        assert "--draft-id" in text, f"{definition.name} omits --draft-id"
+        assert not _RETIRED_ADOPT_INIT_RE.search(text), (
+            f"{definition.name} still instructs adopt-with-init"
+        )
 
 
 def test_agent_protocol_incremental_check_rejects_a_definition_without_the_flow():

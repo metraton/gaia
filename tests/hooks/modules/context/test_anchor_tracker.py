@@ -528,7 +528,7 @@ class TestSaveLoadCompareFlow:
             },
         }
 
-        # 2. Extract anchors (same as context_injector does)
+        # 2. Extract anchors from the context payload
         anchors = extract_anchors(context_payload)
         assert len(anchors) > 0
         assert "qxo-monorepo/terraform" in anchors

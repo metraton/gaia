@@ -1189,97 +1189,17 @@ class TestScenario8FullApprovalCycle:
 # ============================================================================
 
 
-_CONTEXT_INJECTION_SKIP_REASON = (
-    "Retired in substrate v6 (B3): context injection round-trip relies on "
-    "context_provider.py being able to load context-contracts.json, which was "
-    "removed. The pre_tool_use cache and SubagentStart consumption flow now "
-    "needs to be re-validated against the DB-backed context payload pipeline."
-)
-
-
 class TestScenario9ContextInjection:
-    """Context injection: invoke_agent caches context, start_agent reads it."""
+    """Context injection: invoke_agent caches context, start_agent reads it.
 
-    @pytest.mark.skip(reason=_CONTEXT_INJECTION_SKIP_REASON)
-    def test_context_injection_round_trip(self, tmp_path):
-        """invoke_agent() caches context; start_agent() returns it as additionalContext."""
-        sim = SessionSimulator(tmp_path)
-
-        # 1. Start session
-        result = sim.start_session()
-        assert result["exit_code"] == 0, (
-            f"SessionStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
-        )
-
-        # 2. invoke_agent for a project agent -- this caches context
-        result = sim.invoke_agent("developer", "refactoriza el modulo X")
-        assert result["exit_code"] == 0, (
-            f"Agent invoke failed: exit={result['exit_code']}, stderr={result['stderr']}"
-        )
-
-        # 2a. Verify the cache file was written
-        cache_dir = Path("/tmp/gaia-context-cache")
-        cache_files = list(cache_dir.glob(f"{sim.session_id}-*.json"))
-        assert len(cache_files) > 0, (
-            f"Expected context cache files for session {sim.session_id} in {cache_dir}. "
-            f"Found: {list(cache_dir.glob('*.json'))}"
-        )
-
-        # 3. start_agent for the same project agent -- reads the cache
-        result = sim.start_agent("developer")
-        assert result["exit_code"] == 0, (
-            f"SubagentStart failed: exit={result['exit_code']}, stderr={result['stderr']}"
-        )
-
-        # 3a. Verify additionalContext is present in hookSpecificOutput
-        start_json = result["stdout_json"]
-        assert start_json is not None, (
-            f"SubagentStart returned no JSON. stdout: {result['stdout_raw']}"
-        )
-        hook_output = start_json.get("hookSpecificOutput", {})
-        additional_context = hook_output.get("additionalContext", "")
-        assert additional_context, (
-            f"Expected additionalContext in hookSpecificOutput. Got: {hook_output}"
-        )
-
-        # 3b. Verify expected sections in the injected context
-        assert "# Project Context" in additional_context, (
-            "Expected '# Project Context' header in additionalContext"
-        )
-        assert "# Brief" in additional_context, (
-            "Expected '# Brief' header in additionalContext"
-        )
-        assert "# Permissions" in additional_context, (
-            "Expected '# Permissions' header in additionalContext"
-        )
-        assert "project_identity" in additional_context, (
-            "Expected 'project_identity' data in additionalContext"
-        )
-
-    @pytest.mark.skip(reason=_CONTEXT_INJECTION_SKIP_REASON)
-    def test_cache_consumed_after_start_agent(self, tmp_path):
-        """Cache file should be deleted after SubagentStart reads it."""
-        sim = SessionSimulator(tmp_path)
-        sim.start_session()
-
-        # invoke_agent caches context
-        sim.invoke_agent("developer", "refactoriza")
-
-        # Verify cache exists before start_agent
-        cache_dir = Path("/tmp/gaia-context-cache")
-        cache_files_before = list(cache_dir.glob(f"{sim.session_id}-*.json"))
-        assert len(cache_files_before) > 0, "Cache should exist before start_agent"
-
-        # start_agent consumes the cache
-        result = sim.start_agent("developer")
-        assert result["exit_code"] == 0
-
-        # Verify cache was consumed (deleted)
-        cache_files_after = list(cache_dir.glob(f"{sim.session_id}-*.json"))
-        assert len(cache_files_after) == 0, (
-            f"Cache should be consumed after start_agent. "
-            f"Remaining files: {cache_files_after}"
-        )
+    The two round-trip tests that used to live here (context injection
+    round-trip, cache consumed after start_agent) were retired in substrate
+    v6 (B3): both relied on context_provider.py loading
+    context-contracts.json, which was removed, with no re-activation plan
+    against the DB-backed context payload pipeline that replaced it. Deleted
+    outright rather than left skipped -- confirmed retired functionality,
+    not a pending fix.
+    """
 
     def test_meta_agent_no_context_injection(self, tmp_path):
         """Meta-agents (e.g. Explore) should NOT receive context injection.
@@ -1355,70 +1275,108 @@ def _assert_t3_denied(result: Dict[str, Any], command: str) -> None:
     )
 
 
+def _assert_compound_t3_disabled(result: Dict[str, Any], command: str) -> None:
+    """Assert a compound command carrying an ungranted T3 sub-command is
+    denied outright by the plan-first COMMAND_SET contract.
+
+    Mirrors ``tests/integration/test_command_set_chain_ac8.py::
+    test_two_t3_chain_denies_with_single_approval_id``: once ANY component of
+    a ``&&``/``;``/pipe-joined chain classifies T3
+    (``bash_validator._validate_compound_command``), the whole chain is
+    denied with "Compound T3 execution is disabled..." -- never with a
+    legacy single approval_id, since a compound command can no longer enter
+    the single-command approval lifecycle at all.
+    """
+    assert result["exit_code"] == 0, (
+        f"Expected exit 0 (deny) for compound '{command}', "
+        f"got {result['exit_code']}. stderr: {result['stderr']}"
+    )
+    assert result["stdout_json"] is not None, (
+        f"Expected JSON deny response for '{command}'. "
+        f"stdout: {result['stdout_raw']}"
+    )
+    hook_output = result["stdout_json"].get("hookSpecificOutput", {})
+    assert hook_output.get("permissionDecision") == "deny", (
+        f"Expected permissionDecision='deny' for '{command}', "
+        f"got '{hook_output.get('permissionDecision')}'. "
+        f"Full: {result['stdout_json']}"
+    )
+    reason = hook_output.get("permissionDecisionReason", "")
+    assert "Compound T3 execution is disabled" in reason, (
+        f"Expected the plan-first COMMAND_SET denial for compound '{command}'. "
+        f"Got: {reason}"
+    )
+
+
 class TestScenario10RmConcatenation:
-    """Test that all rm concatenation patterns are blocked as T3."""
+    """Every rm-reaching pattern is denied as T3 -- via the single-command
+    approval_id path when it is one command, or via the plan-first
+    COMMAND_SET denial when the pattern is a compound (&&/;/pipe) chain.
+    Collapsed from 13 near-duplicate test methods into one parametrized
+    case per pattern so each command's own rationale (why THIS shape matters)
+    travels with it as the test id, instead of living only in a docstring.
+    """
 
-    def test_simple_rm(self, simulator):
-        """rm -rf /tmp/test should be T3 denied."""
-        result = simulator.execute_bash("rm -rf /tmp/test")
-        _assert_t3_denied(result, "rm -rf /tmp/test")
-
-    def test_cd_and_rm(self, simulator):
-        """cd /tmp && rm -rf test should be T3 denied."""
-        result = simulator.execute_bash("cd /tmp && rm -rf test")
-        _assert_t3_denied(result, "cd /tmp && rm -rf test")
-
-    def test_chained_rm(self, simulator):
-        """rm -f file1 && rm -f file2 should be T3 denied."""
-        result = simulator.execute_bash("rm -f file1 && rm -f file2")
-        _assert_t3_denied(result, "rm -f file1 && rm -f file2")
-
-    def test_chained_rm_rf(self, simulator):
-        """rm -rf dir1 && rm -rf dir2 should be T3 denied."""
-        result = simulator.execute_bash("rm -rf dir1 && rm -rf dir2")
-        _assert_t3_denied(result, "rm -rf dir1 && rm -rf dir2")
-
-    def test_cd_and_rm_multiple_targets(self, simulator):
-        """cd /tmp && rm -rf a b c should be T3 denied."""
-        result = simulator.execute_bash("cd /tmp && rm -rf a b c")
-        _assert_t3_denied(result, "cd /tmp && rm -rf a b c")
-
-    def test_semicolon_rm(self, simulator):
-        """cd /tmp; rm -rf test should be T3 denied."""
-        result = simulator.execute_bash("cd /tmp; rm -rf test")
-        _assert_t3_denied(result, "cd /tmp; rm -rf test")
-
-    def test_pipe_xargs_rm(self, simulator):
-        """find . | xargs rm -rf should be T3 denied."""
-        result = simulator.execute_bash("find . | xargs rm -rf")
-        _assert_t3_denied(result, "find . | xargs rm -rf")
-
-    def test_subshell_rm(self, simulator):
-        """(rm -rf /tmp/test) should be T3 denied."""
-        result = simulator.execute_bash("(rm -rf /tmp/test)")
-        _assert_t3_denied(result, "(rm -rf /tmp/test)")
-
-    def test_python_os_remove(self, simulator):
-        """python3 -c "import os; os.remove('file')" should be T3 denied."""
-        result = simulator.execute_bash('python3 -c "import os; os.remove(\'file\')"')
-        _assert_t3_denied(result, "python3 -c os.remove")
-
-    def test_python_shutil_rmtree(self, simulator):
-        """python3 -c "import shutil; shutil.rmtree('dir')" should be T3 denied."""
-        result = simulator.execute_bash('python3 -c "import shutil; shutil.rmtree(\'dir\')"')
-        _assert_t3_denied(result, "python3 -c shutil.rmtree")
-
-    def test_triple_chain(self, simulator):
-        """echo start && rm -rf test && echo done should be T3 denied."""
-        result = simulator.execute_bash("echo start && rm -rf test && echo done")
-        _assert_t3_denied(result, "echo start && rm -rf test && echo done")
-
-    def test_rm_f_without_recursive(self, simulator):
-        """rm -f file.txt should be T3 denied."""
-        result = simulator.execute_bash("rm -f file.txt")
-        _assert_t3_denied(result, "rm -f file.txt")
-
-    def test_plain_rm(self, simulator):
-        """rm file.txt should be T3 denied."""
-        result = simulator.execute_bash("rm file.txt")
-        _assert_t3_denied(result, "rm file.txt")
+    @pytest.mark.parametrize(
+        "command, is_compound",
+        [
+            pytest.param(
+                "rm -rf /tmp/test", False,
+                id="simple_rm-absolute_path_recursive_force",
+            ),
+            pytest.param(
+                "cd /tmp && rm -rf test", True,
+                id="cd_and_rm-relative_target_after_cd_is_still_t3",
+            ),
+            pytest.param(
+                "rm -f file1 && rm -f file2", True,
+                id="chained_rm-two_independent_deletes_one_chain",
+            ),
+            pytest.param(
+                "rm -rf dir1 && rm -rf dir2", True,
+                id="chained_rm_rf-two_recursive_deletes_one_chain",
+            ),
+            pytest.param(
+                "cd /tmp && rm -rf a b c", True,
+                id="cd_and_rm_multiple_targets-multiple_positional_targets",
+            ),
+            pytest.param(
+                "cd /tmp; rm -rf test", True,
+                id="semicolon_rm-semicolon_is_a_chain_operator_too",
+            ),
+            pytest.param(
+                "find . | xargs rm -rf", True,
+                id="pipe_xargs_rm-xargs_indirection_does_not_hide_the_verb",
+            ),
+            pytest.param(
+                "(rm -rf /tmp/test)", False,
+                id="subshell_rm-parens_do_not_split_into_components",
+            ),
+            pytest.param(
+                "python3 -c \"import os; os.remove('file')\"", False,
+                id="python_os_remove-inline_ast_reaches_stdlib_delete",
+            ),
+            pytest.param(
+                "python3 -c \"import shutil; shutil.rmtree('dir')\"", False,
+                id="python_shutil_rmtree-inline_ast_reaches_recursive_delete",
+            ),
+            pytest.param(
+                "echo start && rm -rf test && echo done", True,
+                id="triple_chain-rm_hiding_between_two_safe_commands",
+            ),
+            pytest.param(
+                "rm -f file.txt", False,
+                id="rm_f_without_recursive-force_alone_is_still_t3",
+            ),
+            pytest.param(
+                "rm file.txt", False,
+                id="plain_rm-no_flags_at_all_is_still_t3",
+            ),
+        ],
+    )
+    def test_rm_pattern_denied(self, simulator, command, is_compound):
+        result = simulator.execute_bash(command)
+        if is_compound:
+            _assert_compound_t3_disabled(result, command)
+        else:
+            _assert_t3_denied(result, command)

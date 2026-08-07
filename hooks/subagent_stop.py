@@ -52,7 +52,6 @@ from modules.agents.contract_validator import (
     extract_commands_from_evidence,
     extract_exit_code_from_output,
     parse_contract,
-    requires_consolidation_report,
     validate as validate_contract,
 )
 from modules.agents.defect_capture import build_defect_anomaly
@@ -208,10 +207,13 @@ def subagent_stop_hook(task_info, agent_output):
             context_update_result=context_update_result,
         )
 
+        # consolidation_required mirrors the adapter path: unconditionally
+        # False since the injected-context payload that signalled
+        # multi-surface work retired with the dispatch-kernel migration.
         response_contract = validate_response_contract(
             agent_output,
             task_agent_id=resolve_agent_id(task_info),
-            consolidation_required=requires_consolidation_report(task_info),
+            consolidation_required=False,
             parsed_contract=parsed_contract,
         )
         save_validation_result(task_info, response_contract)

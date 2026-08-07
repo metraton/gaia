@@ -11,7 +11,6 @@ from typing import Any, Dict
 
 from .contract_validator import extract_exit_code_from_output, extract_plan_status_from_output
 from .transcript_reader import (
-    extract_injected_context_payload_from_transcript,
     extract_minted_agent_id_from_transcript,
     extract_task_description_from_transcript,
 )
@@ -56,15 +55,7 @@ def build_task_info_from_hook_data(
     # Extract real task description from the first user message in the transcript
     transcript_path = hook_data.get("agent_transcript_path", "")
     task_description = extract_task_description_from_transcript(transcript_path)
-    # Resolve agent name first: it is the key the context payload is stored
-    # under (context_injector writes f"{subagent_type}.json"), so the reader
-    # needs it to find the payload. The bare hook_data value (not the "unknown"
-    # default) is the write-side key.
-    agent_type_raw = hook_data.get("agent_type", "")
-    injected_context = extract_injected_context_payload_from_transcript(
-        transcript_path, agent_type_raw
-    )
-    agent_type = agent_type_raw or "unknown"
+    agent_type = hook_data.get("agent_type", "") or "unknown"
     if not task_description:
         task_description = f"SubagentStop for {agent_type}"
 
@@ -85,5 +76,4 @@ def build_task_info_from_hook_data(
         "tags": [agent_type] if agent_type != "unknown" else [],
         "exit_code": exit_code,
         "plan_status": plan_status,
-        "injected_context": injected_context,
     }

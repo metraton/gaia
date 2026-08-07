@@ -38,11 +38,7 @@ if _HOOKS_DIR not in sys.path:
 
 from gaia.contract.drafts import _agent_of, mint_agent_id
 from gaia.contract.validator import AGENT_ID_PATTERN_TEXT
-from modules.agents.dispatch_identity import (
-    IDENTITY_BLOCK_HEADING,
-    mint_dispatch_identity,
-    render_identity_block,
-)
+from modules.agents.dispatch_identity import mint_dispatch_identity
 
 _AGENT_ID_RE = re.compile(AGENT_ID_PATTERN_TEXT)
 
@@ -151,19 +147,6 @@ def test_cli_and_dispatch_mint_the_same_handle_shape():
     assert _AGENT_ID_RE.match(mint_agent_id())
 
 
-def test_identity_block_carries_both_halves_verbatim():
-    block = render_identity_block("a0123456789abcdef", "a0123456789abcdef.beef")
-    assert IDENTITY_BLOCK_HEADING in block
-    assert "a0123456789abcdef.beef" in block
-    assert "--draft-id a0123456789abcdef.beef" in block
-    assert "--agent-id a0123456789abcdef" in block
-
-
-def test_identity_block_is_absent_rather_than_malformed():
-    assert render_identity_block("", "a0123456789abcdef.beef") is None
-    assert render_identity_block("a0123456789abcdef", "") is None
-
-
 # ---------------------------------------------------------------------------
 # The row is BORN under that identity
 # ---------------------------------------------------------------------------
@@ -230,8 +213,8 @@ def _dispatch(adapter, session_id, agent_type, description, prompt):
     born = {}
     original = adapter._maybe_birth_dispatched_row
 
-    def _capture(parameters, agent_name, sid):
-        result = original(parameters, agent_name, sid)
+    def _capture(parameters, agent_name, sid, **kwargs):
+        result = original(parameters, agent_name, sid, **kwargs)
         if result:
             born.update(result)
         return result
@@ -245,8 +228,6 @@ def _dispatch(adapter, session_id, agent_type, description, prompt):
                 "description": description,
                 "prompt": prompt,
             },
-            [agent_type],
-            Path(_HOOKS_DIR),
             session_id,
         )
     finally:
@@ -356,6 +337,137 @@ def test_dispatches_of_different_agent_types_do_not_cross_identities(
 
     assert sysagent["contract_id"] in ctx_sys
     assert devagent["contract_id"] not in ctx_sys
+
+
+# ---------------------------------------------------------------------------
+# The claim is the stamping seam: harness_agent_id lands on the claimed row
+# ---------------------------------------------------------------------------
+
+def _harness_id_for(db_path: Path, contract_id: str):
+    con = sqlite3.connect(str(db_path))
+    try:
+        row = con.execute(
+            "SELECT harness_agent_id FROM agent_contract_handoffs "
+            "WHERE contract_id = ?",
+            (contract_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    return row[0] if row else None
+
+
+def test_cache_miss_start_still_stamps_harness_agent_id(
+    db_path, tmp_path, monkeypatch,
+):
+    """The stamp rides the CLAIM, not the context cache.
+
+    When the stamp travelled on the cached contract_id, a start that lost the
+    cache race (or whose dispatch produced no events digest, hence no cache
+    entry at all) silently lost the harness_agent_id join -- exactly the cut
+    turns the stamp exists to make recoverable. The claim resolves the row
+    from the DB regardless of the cache, so the stamp must land here even
+    with an empty cache directory.
+    """
+    from adapters.claude_code import ClaudeCodeAdapter
+    from modules.session import session_event_injector
+
+    monkeypatch.setattr(
+        ClaudeCodeAdapter, "CONTEXT_CACHE_DIR", tmp_path / "ctx-cache-empty",
+    )
+    # No events digest -> _adapt_task writes NO cache entry (the miss lane).
+    monkeypatch.setattr(
+        session_event_injector, "build_session_events", lambda *_a, **_k: None,
+    )
+    _seed_plan_task(db_path)
+    adapter = ClaudeCodeAdapter()
+
+    born = _dispatch(
+        adapter, "sess-stamp-miss", "gaia-system", "stamp on miss",
+        f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}",
+    )
+    assert born
+    cache_dir = tmp_path / "ctx-cache-empty"
+    assert not cache_dir.exists() or not list(cache_dir.glob("*.json")), (
+        "precondition: no cache entry for this start"
+    )
+
+    result = adapter.adapt_subagent_start({
+        "session_id": "sess-stamp-miss",
+        "agent_type": "gaia-system",
+        "task_description": "stamp on miss",
+        "agent_id": "harness-run-0001",
+    })
+
+    assert result.context_injected
+    assert _harness_id_for(db_path, born["contract_id"]) == "harness-run-0001"
+
+
+def test_cache_hit_start_stamps_through_the_same_claim(
+    db_path, tmp_path, monkeypatch,
+):
+    """A cache hit changes what context is forwarded, never whether the row
+    is stamped: the digest-only cache carries no contract identity, so the
+    stamp comes from the claim on this lane too."""
+    from adapters.claude_code import ClaudeCodeAdapter
+
+    monkeypatch.setattr(
+        ClaudeCodeAdapter, "CONTEXT_CACHE_DIR", tmp_path / "ctx-cache-hit",
+    )
+    _seed_plan_task(db_path)
+    adapter = ClaudeCodeAdapter()
+
+    born = _dispatch(
+        adapter, "sess-stamp-hit", "gaia-system", "stamp on hit",
+        f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}",
+    )
+    assert born
+    adapter._cache_context_for_subagent(
+        "sess-stamp-hit", "gaia-system", "# Recent Session Events\n- one",
+        task_description="stamp on hit",
+    )
+
+    result = adapter.adapt_subagent_start({
+        "session_id": "sess-stamp-hit",
+        "agent_type": "gaia-system",
+        "task_description": "stamp on hit",
+        "agent_id": "harness-run-0002",
+    })
+
+    assert result.context_injected
+    assert "# Recent Session Events" in result.additional_context
+    assert born["contract_id"] in result.additional_context
+    assert _harness_id_for(db_path, born["contract_id"]) == "harness-run-0002"
+
+
+def test_start_without_harness_agent_id_claims_without_stamping(
+    db_path, tmp_path, monkeypatch,
+):
+    """A payload with no agent_id still claims and injects; the stamp simply
+    skips (stamp_harness_agent_id returns no_harness_agent_id) -- best-effort,
+    never a blocked start."""
+    from adapters.claude_code import ClaudeCodeAdapter
+
+    monkeypatch.setattr(
+        ClaudeCodeAdapter, "CONTEXT_CACHE_DIR", tmp_path / "ctx-cache-noid",
+    )
+    _seed_plan_task(db_path)
+    adapter = ClaudeCodeAdapter()
+
+    born = _dispatch(
+        adapter, "sess-stamp-none", "gaia-system", "no harness id",
+        f"Ejecuta plan_id={PLAN_ID} task_id={TASK_PENDING}",
+    )
+    assert born
+
+    result = adapter.adapt_subagent_start({
+        "session_id": "sess-stamp-none",
+        "agent_type": "gaia-system",
+        "task_description": "no harness id",
+    })
+
+    assert result.context_injected
+    assert born["contract_id"] in result.additional_context
+    assert _harness_id_for(db_path, born["contract_id"]) is None
 
 
 # ---------------------------------------------------------------------------
@@ -680,18 +792,19 @@ def test_concurrent_same_type_dispatches_converge_their_own_rows(db_path):
 def test_same_type_same_description_still_crosses_injected_identities(
     db_path, tmp_path, monkeypatch,
 ):
-    """R1 RESIDUAL, pinned as it actually stands -- NOT closed.
+    """The former R1 residual, superseded by the v43 claim (FIFO layer).
 
-    Correlation at SubagentStart runs agent_type + task_description, then
-    agent_type, then recency. Two concurrent dispatches of the SAME type with the
-    SAME description are identical under every tier, so the newest cache entry
-    wins for whichever subagent starts first: the first agent is handed the
-    SECOND dispatch's identity. Closing this needs a correlation token in
-    SubagentStart's own payload; no heuristic at this seam can recover it.
+    Two concurrent dispatches of the SAME type with the SAME description are
+    identical under every cache-correlation tier, and the cache used to hand
+    the first start the SECOND dispatch's identity. The DB-backed claim now
+    resolves this deterministically: both born rows match the description key,
+    their material signatures agree (identical dispatches), so
+    ``claim_dispatch_row`` claims the OLDEST (FIFO) and the start is handed
+    the FIRST identity through the ``# Your Contract`` kernel -- exactly one
+    identity (the cache no longer carries identities at all).
 
-    What IS closed by the minting: the two rows are distinct and each keeps its
-    own binding, so the failure is bounded to which agent adopts which row --
-    never two agents converging onto ONE row.
+    Still true from the minting: the two rows are distinct and each keeps its
+    own binding -- never two agents converging onto ONE row.
     """
     from adapters.claude_code import ClaudeCodeAdapter
 
@@ -720,8 +833,12 @@ def test_same_type_same_description_still_crosses_injected_identities(
         "task_description": same_description,
     }).additional_context
 
-    assert second["contract_id"] in ctx
-    assert first["contract_id"] not in ctx
+    assert "# Your Contract" in ctx
+    assert first["contract_id"] in ctx, "FIFO claims the oldest sibling"
+    assert second["contract_id"] not in ctx, (
+        "exactly one identity reaches the start -- the claimed row's kernel "
+        "is the only identity channel"
+    )
 
 
 def test_unadopted_turn_born_row_is_closed_through_the_birth_envelope_name(db_path):
@@ -1098,3 +1215,133 @@ def test_free_kind_row_adopted_and_finalized_to_complete_with_no_blind_verificat
     assert not any(
         a["code"] == "BLIND_VERIFICATION_REQUIRED" for a in gate.anomalies
     ), gate.anomalies
+
+
+# ---------------------------------------------------------------------------
+# IMPLICIT ADOPTION (variant (a) of the adoption-simplification proposal):
+# a first set/add/fill/view against a BORN identity's contract_id succeeds
+# with no prior `gaia contract init` call. The safeguard -- converge only an
+# ALREADY-BORN row, never mint one -- is pinned by the negative case below.
+# ---------------------------------------------------------------------------
+
+def test_first_fill_without_init_adopts_the_born_identity(db_path):
+    """The whole arc with the `init` step removed: birth -> fill -> finalize."""
+    from adapters.claude_code import ClaudeCodeAdapter
+    from gaia.contract.drafts import load_draft
+
+    identity = ClaudeCodeAdapter._maybe_birth_dispatched_row(
+        {"prompt": "investigate why the build is flaky"},
+        "gaia-system", "sess-implicit-fill",
+    )
+    assert identity is not None
+    # v43: birth pre-creates the on-disk draft under the born identity, so
+    # the turn starts with its contract already open (no init required).
+    pre_created = load_draft(identity["contract_id"])
+    assert pre_created is not None, "birth must pre-create the draft file"
+    assert pre_created["agent_status"]["agent_id"] == identity["agent_id"]
+
+    patch = json.dumps({"evidence_report": {k: [] for k in _EVIDENCE_KEYS}})
+    first_write = _cli([
+        "fill", "--draft-id", identity["contract_id"], "--json", patch,
+    ])
+    assert first_write.returncode == 0, first_write.stderr
+    assert json.loads(first_write.stdout)["draft_id"] == identity["contract_id"], (
+        "the FIRST write, with no init, must land on the born id, not beside it"
+    )
+
+    materialized = load_draft(identity["contract_id"])
+    assert materialized is not None
+    assert materialized["agent_status"]["agent_id"] == identity["agent_id"], (
+        "the auto-materialized draft must carry the SAME identity the row "
+        "was born under, never an invented one"
+    )
+
+    assert _cli([
+        "fill", "--draft-id", identity["contract_id"], "--json",
+        json.dumps({"evidence_report": {
+            "verification": {"method": "test", "result": "pass", "details": "x"},
+        }}),
+    ]).returncode == 0
+    assert _cli([
+        "set", "--draft-id", identity["contract_id"],
+        "agent_status.next_action", "done",
+    ]).returncode == 0
+    assert _cli([
+        "set", "--draft-id", identity["contract_id"],
+        "agent_status.agent_state", "COMPLETE",
+    ]).returncode == 0
+
+    fin = _cli([
+        "finalize", "--draft-id", identity["contract_id"],
+        "--session-id", "sess-implicit-fill", "--json",
+    ])
+    assert fin.returncode == 0, f"{fin.stdout} {fin.stderr}"
+
+    rows = _rows_for(db_path, identity["contract_id"])
+    assert len(rows) == 1, "no init call was made, and still exactly one row"
+    assert rows[0]["agent_state"] == "COMPLETE"
+    assert rows[0]["agent_id"] == identity["agent_id"]
+
+
+def test_first_view_without_init_adopts_the_born_identity(db_path):
+    """`view` is the other verb that must auto-adopt, per the proposal."""
+    from adapters.claude_code import ClaudeCodeAdapter
+
+    identity = ClaudeCodeAdapter._maybe_birth_dispatched_row(
+        {"prompt": "investigate why the build is flaky"},
+        "gaia-system", "sess-implicit-view",
+    )
+    assert identity is not None
+
+    result = _cli(["view", "--draft-id", identity["contract_id"]])
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["draft_id"] == identity["contract_id"]
+    assert payload["envelope"]["agent_status"]["agent_id"] == identity["agent_id"]
+    assert payload["envelope"]["agent_status"]["pending_steps"] == []
+
+
+def test_well_formed_id_with_no_born_row_still_fails_like_before(db_path):
+    """The negative case the safeguard exists for: a well-formed id an agent
+    merely TYPED, with no row behind it, must NOT be adopted -- it fails with
+    the SAME error implicit adoption did not exist to soften."""
+    from modules.agents.dispatch_identity import mint_dispatch_identity
+    from gaia.contract.drafts import draft_exists
+
+    identity = mint_dispatch_identity()
+    assert not draft_exists(identity["contract_id"])
+
+    result = _cli([
+        "set", "--draft-id", identity["contract_id"],
+        "agent_status.next_action", "done",
+    ])
+    assert result.returncode == 1, (
+        "a well-formed but never-born contract_id must not be adopted"
+    )
+    assert "No draft found" in result.stderr
+    assert not draft_exists(identity["contract_id"]), (
+        "a rejected adoption attempt must not leave a draft file behind"
+    )
+
+
+def test_validate_does_not_implicitly_adopt(db_path):
+    """`validate` is documented as never mutating the draft -- it must not
+    materialize one either, even against a genuinely born identity."""
+    from adapters.claude_code import ClaudeCodeAdapter
+    from gaia.contract.drafts import draft_exists, draft_path
+
+    identity = ClaudeCodeAdapter._maybe_birth_dispatched_row(
+        {"prompt": "investigate why the build is flaky"},
+        "gaia-system", "sess-implicit-validate",
+    )
+    assert identity is not None
+
+    # v43 pre-creates the draft at birth; remove it so the guarantee under
+    # test (a READ verb never materializes a draft) is still exercised.
+    draft_path(identity["contract_id"]).unlink()
+
+    result = _cli(["validate", "--draft-id", identity["contract_id"]])
+    assert result.returncode == 1
+    assert not draft_exists(identity["contract_id"]), (
+        "validate must never materialize a draft file as a side effect"
+    )

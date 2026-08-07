@@ -375,7 +375,6 @@ class TestAdapterCapturesTheDefectOnTheProductionRoute:
             {
                 "extract_commands_from_evidence": lambda *_a, **_k: [],
                 "parse_contract": lambda *_a, **_k: parsed_contract,
-                "requires_consolidation_report": lambda *_a, **_k: False,
                 "validate": lambda *_a, **_k: _types.SimpleNamespace(
                     is_valid=True, error_message="",
                 ),

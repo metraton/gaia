@@ -16,10 +16,9 @@ orphans, session-agnostic matching (check_db_semantic_grant) still authorizes
 retried commands, and the user inspects/acts on pendings on demand through
 `gaia approvals`.
 
-What does NOT move (stays in UserPromptSubmit):
-
-- First-run welcome (one-shot, but tied to first user prompt of the install).
-- Surface Routing Recommendation (depends on the prompt of the turn).
+UserPromptSubmit retains only sparse turn-time notices such as the first-run
+welcome and unread-notification counter. Surface classification remains a
+DB-backed diagnostic capability but is no longer injected into every turn.
 
 Design constraints:
 
@@ -260,13 +259,13 @@ def build_workspace_memory_block(
 
     ``sections`` (optional): a subset of ``carry_forward``/``anchor``/
     ``thread_open``. When set, the CLI uses the class/status section renderer
-    instead of the digest. The subagent-dispatch path (``_append_workspace_memory``
-    in ``hooks/adapters/claude_code.py``) and the orchestrator's own
-    SessionStart assembler both pass ``["anchor"]`` so their caller receives
-    only the durable "About you / What I know" anchors -- never the
-    session-scoped ``carry_forward``/``thread_open`` state, which for the
-    orchestrator is instead carried by the no-``sections`` digest call. When
-    set, it is forwarded verbatim as ``--sections`` to the CLI.
+    instead of the digest. The orchestrator's SessionStart assembler passes
+    ``["anchor"]`` so its caller receives only the durable "About you / What
+    I know" anchors -- never the session-scoped
+    ``carry_forward``/``thread_open`` state, which is instead carried by the
+    no-``sections`` digest call. (Dispatched subagents get their anchors from
+    the kernel's ``build_memory_block``, not from this builder.) When set, it
+    is forwarded verbatim as ``--sections`` to the CLI.
 
     Fail-safe: any error (subprocess timeout, non-zero exit, missing CLI,
     empty output) returns "". SessionStart must not block on memory.
@@ -658,7 +657,7 @@ def build_contracts_index_block(max_chars: int = 2000) -> str:
     # omitted always lands. See FIX (b).
     if len(block) > max_chars:
         def _footer(n: int) -> str:
-            return f"\n... ({n} more, see config/surface-routing.json)"
+            return f"\n... ({n} more, inspect the DB-backed surface_routing registry)"
 
         footer_budget = len(_footer(total_available))
         trim_target = max(0, max_chars - footer_budget)

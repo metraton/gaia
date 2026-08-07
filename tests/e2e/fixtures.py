@@ -5,34 +5,7 @@ Realistic Claude Code JSON payloads as Python dicts, matching the stdin
 protocol that hooks/pre_tool_use.py and hooks/post_tool_use.py expect.
 
 Each fixture includes hook_event_name so the adapter layer can route it.
-
-JSON fixture files are also available in tests/fixtures/plugin/*.json.
-Use load_fixture(name) to load a JSON fixture by name.
 """
-
-import json
-from pathlib import Path
-
-# Directory containing standalone JSON fixture files (FR-029)
-_FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "plugin"
-
-
-def load_fixture(name: str) -> dict:
-    """Load a JSON fixture file by name from tests/fixtures/plugin/.
-
-    Args:
-        name: Fixture name without .json extension (e.g. 'pretool_bash_safe').
-
-    Returns:
-        Parsed dict from the JSON fixture file.
-
-    Raises:
-        FileNotFoundError: If the fixture file does not exist.
-        json.JSONDecodeError: If the fixture file is not valid JSON.
-    """
-    fixture_path = _FIXTURES_DIR / f"{name}.json"
-    with open(fixture_path) as f:
-        return json.load(f)
 
 # ============================================================================
 # PreToolUse Bash -- Safe (T0 read-only)
@@ -158,11 +131,15 @@ PRETOOL_READ = {
 POSTTOOL_BASH = {
     "tool_name": "Bash",
     "tool_input": {"command": "ls -la"},
-    "tool_result": {
+    # Real harness shape (see hooks/adapters/claude_code.py:1197-1214, verified
+    # against ~17.9k real Bash results): a SUCCESS result is a dict keyed
+    # 'stdout' (not 'output'/'exit_code' -- those keys do not exist here).
+    "tool_response": {
         "stdout": "total 42\ndrwxr-xr-x 5 user user 4096 Jan 01 00:00 .",
-        "output": "total 42\ndrwxr-xr-x 5 user user 4096 Jan 01 00:00 .",
-        "exit_code": 0,
-        "duration_ms": 50,
+        "stderr": "",
+        "interrupted": False,
+        "isImage": False,
+        "noOutputExpected": False,
     },
     "hook_event_name": "PostToolUse",
     "session_id": "e2e-test-post-001",
@@ -171,12 +148,9 @@ POSTTOOL_BASH = {
 POSTTOOL_BASH_FAILED = {
     "tool_name": "Bash",
     "tool_input": {"command": "cat /nonexistent"},
-    "tool_result": {
-        "stdout": "",
-        "output": "cat: /nonexistent: No such file or directory",
-        "exit_code": 1,
-        "duration_ms": 10,
-    },
+    # Real harness shape for FAILURE: a bare string (the error text), not a
+    # dict -- see hooks/adapters/claude_code.py:1197-1214.
+    "tool_response": "cat: /nonexistent: No such file or directory",
     "hook_event_name": "PostToolUse",
     "session_id": "e2e-test-post-002",
 }

@@ -15,10 +15,11 @@ the contract substrate can adopt:
 
 So the row existed but nothing could converge onto it: the agent minted its own
 unrelated identity via ``gaia contract init`` and finalized a SECOND row. This
-module owns the other half -- minting an identity that is REAL (it satisfies the
+module owns the other half: minting an identity that is REAL (it satisfies the
 validator) and ADOPTABLE (its ``contract_id`` has the draft-id shape the CLI's
-``--draft-id`` addresses), plus rendering the block that carries both halves
-into the context the subagent receives.
+``--draft-id`` addresses). The identity reaches the subagent through the
+dispatch kernel rendered from the claimed row (``modules/context/kernel_builder``),
+not through a block rendered here.
 
 Uniqueness over derivability -- and why:
     The identity is minted from ``secrets``, never DERIVED from the dispatch
@@ -36,11 +37,14 @@ from __future__ import annotations
 
 import pathlib as _pl
 import sys as _sys
-from typing import Optional
 
-# Heading of the injected block. Consumers (tests, and the agent reading its own
-# context) locate the identity by this marker, never by position in the payload.
-IDENTITY_BLOCK_HEADING = "# Contract Identity (born at dispatch)"
+# Heading of the injected contract block. Consumers (tests, and the agent
+# reading its own context) locate the identity by this marker, never by
+# position in the payload. The dispatch kernel (modules/context/
+# kernel_builder.py, KERNEL_HEADING) renders the block under this same
+# marker; the constant survives here as the marker's protocol-side name now
+# that the legacy identity-block renderer is retired.
+IDENTITY_BLOCK_HEADING = "# Your Contract"
 
 
 def _import_drafts():
@@ -66,41 +70,10 @@ def mint_dispatch_identity() -> dict:
     Returns ``{"agent_id": ..., "contract_id": ...}`` where ``agent_id``
     satisfies ``AGENT_ID_PATTERN_TEXT`` and ``contract_id`` is
     ``mint_draft_id(agent_id)`` -- so ``_agent_of(contract_id) == agent_id`` and
-    the id is directly usable as ``gaia contract init --draft-id``.
+    the id is directly addressable as ``--draft-id`` on every ``gaia contract``
+    call.
     """
     drafts = _import_drafts()
     agent_id = drafts.mint_agent_id()
     return {"agent_id": agent_id, "contract_id": drafts.mint_draft_id(agent_id)}
 
-
-def render_identity_block(agent_id: str, contract_id: str) -> Optional[str]:
-    """Render the context block that hands the minted identity to the subagent.
-
-    Returns None when either half is missing, so a caller can splice the result
-    into its context payload unconditionally and a failed mint degrades to no
-    block rather than to a malformed one.
-
-    The wording names the ONE command that adopts the row today: ``gaia contract
-    init`` already honors an explicit ``--draft-id`` as the id to create under
-    (see ``bin/cli/contract.py::cmd_init``), so passing both halves creates the
-    draft AT the id the row was born under instead of minting a rival one.
-    """
-    if not agent_id or not contract_id:
-        return None
-    return (
-        f"{IDENTITY_BLOCK_HEADING}\n"
-        "\n"
-        "This turn's contract row ALREADY EXISTS in gaia.db, born at dispatch\n"
-        "under the identity below. Adopt it -- do not mint your own.\n"
-        "\n"
-        f"agent_id: {agent_id}\n"
-        f"draft_id: {contract_id}\n"
-        "\n"
-        "Adopt with:\n"
-        f"  gaia contract init --agent-id {agent_id} --draft-id {contract_id}\n"
-        "\n"
-        f"Then pass --draft-id {contract_id} on every later `gaia contract`\n"
-        "call, and use the agent_id above verbatim in agent_status.agent_id.\n"
-        "Adopting is what makes your finalize converge the row that is already\n"
-        "bound to this dispatch instead of leaving a second, unbound one."
-    )

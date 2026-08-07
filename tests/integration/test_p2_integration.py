@@ -19,7 +19,6 @@ Modules under test:
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -211,26 +210,27 @@ class TestSubagentStartFlow:
 
         assert event.event_type == HookEventType.SUBAGENT_START
 
-    def test_subagent_start_returns_context_result(self):
-        """SubagentStart produces a ContextResult with context for project agents."""
-        stub_context = "# Context stub for developer"
-        with patch(
-            "modules.context.context_injector.build_project_context",
-            return_value=(stub_context, {}),
-        ), patch(
-            "modules.session.session_event_injector.build_session_events",
-            return_value="",
-        ):
-            _, result, response = _run_subagent_start_flow({
-                "agent_type": "developer",
-                "task_description": "Run npm audit",
-            })
+    def test_subagent_start_returns_context_result(self, tmp_path, monkeypatch):
+        """SubagentStart forwards the cached events digest for project agents."""
+        monkeypatch.setattr(
+            ClaudeCodeAdapter, "CONTEXT_CACHE_DIR", tmp_path / "ctx-cache",
+        )
+        ClaudeCodeAdapter()._cache_context_for_subagent(
+            "p2-integration-test",
+            "developer",
+            "# Recent Session Events (last 24h)\n- one event",
+            task_description="Run npm audit",
+        )
+
+        _, result, response = _run_subagent_start_flow({
+            "agent_type": "developer",
+            "task_description": "Run npm audit",
+        })
 
         assert isinstance(result, ContextResult)
-        # Project agents get context injected (via cache or on-demand rebuild)
         assert result.context_injected is True
         assert result.additional_context is not None
-        assert isinstance(result.additional_context, str)
+        assert "# Recent Session Events" in result.additional_context
 
     def test_subagent_start_exit_zero(self):
         """SubagentStart response has exit code 0."""

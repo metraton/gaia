@@ -226,30 +226,17 @@ class TestSubagentStopHookPostRemoval:
         assert result["response_contract"]["valid"] is False
 
     @patch("subagent_stop.write_episode", return_value="ep-hook-001")
-    def test_multi_surface_transcript_requires_consolidation_report(self, mock_episodic, structural_task_info, tmp_path, monkeypatch):
+    def test_consolidation_report_is_never_required(self, mock_episodic, structural_task_info, tmp_path):
+        """The multi-surface signal retired with the preloaded-context payload
+        (dispatch-kernel migration): no injected payload exists to mark a task
+        multi-surface, so a valid contract WITHOUT a consolidation_report must
+        pass -- consolidation_required is unconditionally False at this seam.
+        """
         transcript_path = tmp_path / "agent.jsonl"
-        injected_payload = {
-            "project_knowledge": {"application_services": {}},
-            "surface_routing": {
-                "active_surfaces": ["app_ci_tooling", "gitops_desired_state"],
-                "primary_surface": "app_ci_tooling",
-                "multi_surface": True,
-            },
-            "investigation_brief": {
-                "cross_check_required": True,
-                "consolidation_required": True,
-            },
-        }
-        # Phase 2: context is delivered via additionalContext, payload persisted to disk
         user_prompt = "Investigate rollout failure after CI image change."
         transcript_path.write_text(
             json.dumps({"message": {"role": "user", "content": user_prompt}}) + "\n"
         )
-        # Write payload to disk cache (as context_injector does in Phase 2)
-        payload_dir = tmp_path / "gaia-context-payloads"
-        payload_dir.mkdir()
-        (payload_dir / "agent.json").write_text(json.dumps(injected_payload))
-        monkeypatch.setenv("TMPDIR", str(tmp_path))
 
         task_info = dict(structural_task_info)
         task_info["agent_id"] = "a123450f1e2d3c4b5"
@@ -277,6 +264,5 @@ class TestSubagentStopHookPostRemoval:
         output = f"## Findings\n\n```agent_contract_handoff\n{json.dumps(contract, indent=2)}\n```\n"
         result = subagent_stop_hook(task_info, output)
         assert result["success"] is True
-        assert result["response_contract"]["valid"] is False
-        assert result["response_contract"]["consolidation_required"] is True
-        assert "CONSOLIDATION_REPORT" in result["response_contract"]["missing"]
+        assert result["response_contract"]["consolidation_required"] is False
+        assert "CONSOLIDATION_REPORT" not in result["response_contract"].get("missing", [])

@@ -11,9 +11,14 @@ is unconditional:
      the main session (is_subagent=False -> has_orchestrator_above=False)
      still yields a native ``ask``. This floor is driven solely by
      ``has_orchestrator_above`` and is independent of any plugin mode.
-  2. The delegate gate is ON. The orchestrator (main session, no agent_id)
-     is restricted to dispatch-only tools -- an investigation tool such as
-     Bash is blocked -- with no mode guard in front of it.
+  2. The delegate gate is ON, but its shape changed since this test was
+     first written (commits f8db56c/2e37984/84f6af3): the orchestrator
+     (main session, no agent_id) now gets ONE deliberate Bash lane
+     (``_orchestrator_bash_is_allowed``), with enforcement moved to the
+     gaia-cli-only guard that lane feeds into (Phase 0 of
+     ``bash_validator.validate()``). A non-gaia-CLI command such as ``ls``
+     must still be denied there, unconditionally and with no mode guard in
+     front of it.
 """
 
 import sys
@@ -26,6 +31,7 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.tools.bash_validator import validate_bash_command
 from modules.orchestrator.delegate_mode import check_delegate_mode
+from modules.security import gaia_cli_only_guard
 
 
 @pytest.fixture(autouse=True)
@@ -58,15 +64,36 @@ def test_main_session_t3_still_yields_native_ask():
 
 
 def test_delegate_gate_is_on_for_orchestrator():
-    """Delegate gate active with no mode guard: Bash blocked for orchestrator."""
+    """Security moved, did not disappear: delegate_mode grants the
+    orchestrator ONE Bash lane (`_orchestrator_bash_is_allowed`, commits
+    f8db56c/2e37984/84f6af3), so ``check_delegate_mode`` no longer blocks
+    Bash for the orchestrator role -- that assertion is retired. What must
+    still be unconditionally true is the invariant this test exists to pin:
+    an orchestrator command that is NOT the trusted, installed gaia CLI is
+    still denied, categorically, by the guard the Bash lane now feeds into
+    (``gaia_cli_only_guard``, wired as Phase 0 of ``bash_validator.validate()``).
+    """
     payload = {
         "session_id": "no-mode-session",
         "tool_name": "Bash",
         "tool_input": {"command": "ls"},
         # No agent_id -> orchestrator (main session) context.
     }
+
+    # The lane itself is open: delegate_mode no longer blocks Bash for the
+    # orchestrator role.
     result = check_delegate_mode("Bash", payload)
-    assert result.blocked, (
-        "The delegate gate must restrict the orchestrator to dispatch-only "
-        "tools unconditionally (no runtime mode guard)."
+    assert not result.blocked, (
+        "The orchestrator's Bash lane (_orchestrator_bash_is_allowed) must "
+        "let Bash reach the gaia-cli-only guard -- delegate_mode itself no "
+        "longer restricts it."
+    )
+
+    # CRITICAL: the security invariant survives -- moved, not removed. A
+    # non-allowlisted command (here, a bare `ls`) must still be denied
+    # outright by gaia_cli_only_guard, not approvable.
+    allowed, reason = gaia_cli_only_guard.check("ls", payload)
+    assert not allowed, (
+        "gaia_cli_only_guard must categorically deny a non-gaia-CLI command "
+        f"for the orchestrator role. Got allowed=True, reason={reason!r}"
     )

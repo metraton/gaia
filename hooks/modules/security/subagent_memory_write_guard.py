@@ -2,7 +2,7 @@
 subagent_memory_write_guard.py -- subagent memory-write enforcement.
 
 PreToolUse Bash guard that rejects direct curated-memory MUTATIONS
-(`gaia memory add|edit|append|reclassify|delete|link`) attempted from a
+(`gaia memory add|edit|append|reclassify|delete|link|checkpoint`) attempted from a
 SUBAGENT dispatch context, EXCEPT for the sanctioned writer agents.
 
 Why this exists
@@ -12,8 +12,8 @@ The `memory` skill declares the contract explicitly ("Who writes"):
     Only the orchestrator and `gaia-operator` mutate memory directly via
     the CLI. Subagents dispatched into a task do **not** call
     `gaia memory add` -- the writer hook rejects mutation from a dispatch
-    context. Subagents instead propose new memory by emitting a
-    `memorialize_suggestions` block in their `agent_contract_handoff`.
+    context. Subagents propose impact with a versioned `memory_delta` in
+    `agent_contract_handoff`; `memorialize_suggestions` is the legacy lane.
 
 That contract was documented but NOT enforced at runtime: `gaia memory add`
 (and `append` / `reclassify` / `link`) carry no verb in MUTATIVE_VERBS, so
@@ -58,7 +58,7 @@ from typing import Optional, Tuple
 # (search/show/list/stats/get-relevant/conflicts/episode-show) are absent by
 # design -- subagents read memory freely.
 MEMORY_WRITE_VERBS = frozenset(
-    {"add", "edit", "append", "reclassify", "delete", "link"}
+    {"add", "edit", "append", "reclassify", "delete", "link", "checkpoint"}
 )
 
 # Subagents that ARE sanctioned to mutate memory directly. The orchestrator is
@@ -68,8 +68,8 @@ ALLOWED_AGENTS = frozenset({"gaia-operator"})
 
 REJECTION_MESSAGE = (
     "Direct memory writes are not allowed from a subagent dispatch context. "
-    "Subagents propose new memory by emitting a `memorialize_suggestions` "
-    "block in their agent_contract_handoff; the orchestrator (or gaia-operator) "
+    "Subagents propose memory impact by emitting a versioned `memory_delta` "
+    "block in their agent_contract_handoff (`memorialize_suggestions` is legacy); the orchestrator (or gaia-operator) "
     "persists it on user confirmation. Do NOT retry -- this is not approvable."
 )
 

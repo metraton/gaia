@@ -5,92 +5,66 @@ description: Use when starting an investigation, analyzing existing code or infr
 
 # Investigation
 
-Investigation is the universal method every agent runs before acting: an
-optimal, context-anchored search that turns the task into understanding. It is
-not a checklist of phases — it is the discipline of searching FROM what you
-were given, with the tools you already have, only as far as your scope reaches,
-separating what you have confirmed from what you are still assuming.
+Investigate from cheapest authoritative context toward narrowly scoped live
+evidence. The purpose is both diagnosis and a reliable mutation forecast.
 
-## Core principle
+## Evidence ladder
 
-Three forces shape every good investigation:
+1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
+   `project`, the `can_read` menu) and `# What I know about you`. Do not
+   re-derive facts it already supplies.
+2. Pull the project context the goal needs on demand -- it is NOT preloaded:
+   a scoped `gaia context get --section <s>` (within your `can_read` menu),
+   then `gaia context show` or `gaia context query` for wider reads. Do not
+   read Gaia's database directly.
+3. Inspect the smallest relevant source files, tests, configuration, git diff,
+   or runtime query. Prefer authoritative implementation over prose.
+4. Record each material source immediately in the contract:
+   `files_checked`, `patterns_checked`, `commands_run`, `key_outputs`, exact
+   excerpts in `verbatim_outputs`, and uncertainty in `open_gaps`.
+5. Two rules apply here, at two different levels, and they do not compete.
+   Entering this phase at all is `agent-protocol`'s phase-transition floor: the
+   instant work becomes investigation, write `work_phase=investigating` once
+   (or fold it into the first evidence write) -- that mark is not optional
+   when this phase genuinely runs. WITHIN the phase, what else gets
+   checkpointed is governed by value-at-risk, not a fixed list: write a
+   finding the instant re-deriving it would cost more than recording it. A
+   long synthesis that runs with no tool calls in between is the costliest
+   case: checkpoint the gathered evidence and hypotheses before you start it
+   (you cannot predict where it lands), then fill the conclusion the instant
+   you reach it -- before composing the report that states it, not after. A
+   one-file read that never reaches a costly-to-redo finding earns zero
+   mid-turn checkpoints beyond the one phase mark; do not add ritual where
+   nothing is at risk.
 
-- **Context is the map.** Your injected context — Project Context, Surface
-  Routing, and the **Agent Contract Handoff** (goal, acceptance criteria,
-  scope) — names the resources, identifiers, and surface that matter, and is
-  where your environment defines which tools you have. Search outward from
-  those anchors with those tools; enumerating the whole space when the context
-  already names what matters wastes calls and buries the signal. When the
-  context also carries a **Memory Index / Historical Context** section, read
-  the relevant prior episodes before searching — they may already hold
-  findings, sparing you from re-investigating what is known.
-- **Scope decides what matters.** Your handoff defines the surface you own, and
-  your injected **rules** define what you own and may change — consult them for
-  your boundaries before investigating, and respect them when proposing.
-  Searching beyond your surface yields findings you cannot act on or verify;
-  narrow to scope first, and name anything beyond it as a dependency.
-- **Confirmed beats assumed.** The most valuable output is a clean line between
-  what you *observed* (confirmed) and what you *inferred* (assumed). Propose
-  only on the confirmed; carry the assumed forward as an open gap, never fact.
+## Forecast mutations after read-only work
 
-Use this when starting any task that touches existing state — source,
-configuration, or live state — before planning, proposing, or mutating.
+Once the cause and desired outcome are known, enumerate the exact mutations the
+accepted plan predictably requires. Classify every command through
+`security-tiers` before execution.
 
-## Process
-1. **Anchor in the handoff.** Read the **Agent Contract Handoff** for goal,
-   acceptance criteria, and scope, and the context for the identifiers already
-   known. List the unknowns it does *not* answer — those, within your scope,
-   are the only things worth searching for.
-2. **Investigate with your tools, scoped to your anchors.** Use whatever tools
-   your environment gives you to observe, query, or examine the specific
-   anchors the context named, rather than scanning the whole space. Examine
-   2-3 comparable existing instances to learn the conventions in play — one is
-   anecdote, three are a pattern.
-3. **Search only the gaps, only in your scope.** Direct your tools at what the
-   context did not answer. Follow adjacency: what sits next to your target
-   explains its constraints; what references it reveals its coupling. Do not
-   expand into a surface another scope owns — name that as a dependency.
-4. **Your surface may be source, configuration, or live state — the method is
-   the same.** When the task depends on current runtime state, that is not an
-   exception; it is one more surface you observe read-only, scoped to your
-   anchors. See `command-execution` for running a query safely and
-   `security-tiers` for why a read-only (T0) query needs no approval. Do not
-   retain runtime values as if they were stable facts.
-5. **Apply the pattern hierarchy, in order.** (a) Existing pattern — if 2-3
-   comparable instances exist, follow them; consistency beats preference, for
-   prerequisites and dependencies too. (b) Your domain skill when none is
-   found. (c) Prior knowledge as last resort, marked: *"No existing pattern
-   found — applying best practices."* Following a pattern, copy its identifiers
-   exactly; finding one problematic, surface it as a deviation with an
-   alternative.
-6. **Validate before proposing.** For each action that creates, modifies, or
-   deletes something, confirm your investigation revealed how the project
-   *manages* that kind of thing — your action must use that mechanism. A
-   divergence between observed state and the context is either real drift or
-   stale context to correct (see `agent-contract-handoff`). Multiple valid approaches
-   → list them, set status `NEEDS_INPUT`. Carry findings into the
-   `evidence_report` of your handoff (schema in `agent-protocol`), confirmed
-   and assumed kept distinct.
-7. **Stop when the remaining unknowns are not actionable.** Investigation ends
-   not when everything is known, but when nothing more you could learn would
-   change what you do next. Unknowns beyond that boundary are open gaps, not
-   reasons to keep searching.
+For two or more exact T3 commands, prefer one plan-first COMMAND_SET only when:
 
-## Anti-Patterns
-- **Searching for what context already holds.** The map names the resources and
-  identifiers — re-enumerating to rediscover them wastes calls. Read anchors
-  first.
-- **Searching outside your scope.** A surface you do not own yields findings
-  you cannot verify or act on. Scope first; report the rest as a dependency.
-- **Proposing on the assumed.** A plan built on inference collapses when reality
-  disagrees. Propose only on the confirmed; everything else is an open gap.
-- **Treating prior knowledge as project convention.** The project's own "we do
-  Y" outweighs abstract best practice. Consistency within the project wins.
-- **Skipping investigation because the prompt is specific.** The orchestrator
-  does not see the actual state. When instructions contradict what you observe,
-  observed reality wins.
-- **Solving a prerequisite by the fastest path instead of the project's.** If
-  the project manages that kind of thing through a specific mechanism,
-  bypassing it creates drift. Report the dependency.
-- **Over-investigating.** Searching after the remaining unknowns can no longer
-  change your next action spends budget without changing the outcome.
+- all commands serve one bounded goal and are known verbatim now;
+- order is meaningful and can be shown explicitly;
+- the risk, rollback, and verification can be explained for the complete set;
+- no item depends on unseen output from an earlier item; and
+- each item is one atomic invocation, never `&&`, `;`, a pipe, substitution, or
+  other shell composition.
+
+Do not group speculative clean-up, alternatives, unrelated repositories or
+services, condition-dependent follow-ups, or commands that must be derived from
+earlier results. Request those later only after new read-only investigation.
+Consent grouping reduces repeated consent; it does not make execution atomic.
+
+Use `gaia approvals request-set --command '<exact 1>' --command '<exact 2>' ...`
+before attempting any item. A single predictable T3 operation uses the normal
+single-command approval branch. A command already blocked is relayed exactly;
+never retrofit it into a different spelling or self-mint consent metadata.
+
+## Evidence quality
+
+A finding names the source and observation. A failed command records its exact
+text, exit status, stdout/stderr, and what remains unknown. An exit code alone
+does not establish desired state; verification must query or inspect the result.
+Keep assumptions visibly separate from confirmed facts.

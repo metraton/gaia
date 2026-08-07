@@ -65,6 +65,14 @@ two pure-shape cross-field conditionals the form layer previously missed):
                            sub-field missing/blank, an empty evidence list, or
                            a severity outside the enum). Absent or null ==
                            no check, on every agent_state.
+    WORK_PHASE_SHAPE    -- the OPTIONAL top-level work_phase field is present
+                           but not one of VALID_WORK_PHASES. Absent or null ==
+                           no check, on every agent_state -- work_phase is the
+                           observable WORK cycle (framing/investigating/
+                           planning/executing/verifying), orthogonal to the
+                           agent_state communication states above; see the
+                           VALID_WORK_PHASES comment for why the two are kept
+                           as separate enums.
 
 Design notes:
     - SHAPE ONLY: the form layer takes the already-parsed envelope dict. Fence
@@ -169,6 +177,45 @@ except ImportError:  # pragma: no cover -- exercised only on a bare stdlib path
 _ENVELOPE_ONLY_VERIFICATION_TYPES: Tuple[str, ...] = ("none",)
 ENVELOPE_VERIFICATION_TYPES: Tuple[str, ...] = (
     VALID_VERIFICATION_TYPES + _ENVELOPE_ONLY_VERIFICATION_TYPES
+)
+
+# ---------------------------------------------------------------------------
+# work_phase -- the observable WORK cycle (agent-protocol, work-cycle-observability
+# design). Orthogonal to agent_state on purpose:
+#
+#   agent_state (VALID_PLAN_STATUSES above) is the COMMUNICATION state machine --
+#   how THIS TURN currently reports back (IN_PROGRESS/BLOCKED/NEEDS_INPUT/
+#   APPROVAL_REQUEST/NEEDS_VERIFICATION/COMPLETE). It feeds routing and the
+#   finalize/verification gate, a pure function of (agent_state, plan_task_id),
+#   and that gate must not grow a second axis.
+#
+#   work_phase is the WORK state machine -- WHERE the producer is in framing ->
+#   investigating -> planning -> executing -> verifying. Two turns can carry the
+#   identical agent_state (IN_PROGRESS) while being in entirely different work
+#   phases; collapsing the two into one enum would force agent_state to grow
+#   phase-shaped values and break the routing/verification gate's purity. Kept
+#   separate instead.
+#
+# Like ENVELOPE_VERIFICATION_TYPES's "none" above, this enum backs NO DB CHECK
+# column -- agent_contract_handoffs persists the whole envelope in
+# raw_handoff_json, so a new top-level key needs no migration -- and therefore
+# does NOT belong in gaia.state.STATE_MACHINE_REGISTRY (that registry is
+# reserved for tuples paired with a real SQL CHECK). It is defined here, local
+# to the form layer, exactly where the DB-free envelope-only enum precedent
+# already lives.
+#
+# work_phase is OPTIONAL on every agent_state (mirrors failure_report): a
+# turn with no investigating/planning/executing/verifying phase -- a single
+# read-only lookup, say -- never sets it, and its absence is never an error.
+# Presence is validated in full: an out-of-enum value is a WORK_PHASE_SHAPE
+# rejection, so a typo'd phase does not silently pass as a null-equivalent.
+# ---------------------------------------------------------------------------
+VALID_WORK_PHASES: Tuple[str, ...] = (
+    "framing",
+    "investigating",
+    "planning",
+    "executing",
+    "verifying",
 )
 
 # Evidence is required for every valid status (no exclusions), matching
@@ -310,6 +357,11 @@ class FormErrorCode(str, Enum):
     # but malformed. Never fires on an envelope that omits the block, which is
     # what makes the field additive over already-persisted history.
     FAILURE_REPORT_SHAPE = "FAILURE_REPORT_SHAPE"
+    # Additive (work-cycle observability): the OPTIONAL top-level work_phase
+    # field is present but outside VALID_WORK_PHASES. Never fires on an
+    # envelope that omits the field, so every already-persisted contract
+    # keeps its verdict.
+    WORK_PHASE_SHAPE = "WORK_PHASE_SHAPE"
 
 
 @dataclass(frozen=True)
@@ -924,6 +976,31 @@ def validate_form(envelope: Any) -> FormValidationResult:
                 )
             )
 
+    # --- work_phase (OPTIONAL, pure SHAPE, orthogonal to agent_state) -------
+    # Same presence-gating idiom as failure_report above: checked independently
+    # of agent_state (a turn's WORK phase is meaningful whatever it reports
+    # back), and gated only on presence -- absence or an explicit null (the
+    # seeded default in bin/cli/contract.py's _initial_envelope) reaches no
+    # check at all, so no already-persisted contract is affected.
+    raw_work_phase = envelope.get("work_phase")
+    if raw_work_phase is not None:
+        normalized_phase = str(raw_work_phase).strip().lower()
+        if normalized_phase not in VALID_WORK_PHASES:
+            errors.append(
+                FormError(
+                    code=FormErrorCode.WORK_PHASE_SHAPE,
+                    field="work_phase",
+                    detail=(
+                        f"{raw_work_phase!r} is not one of "
+                        f"{list(VALID_WORK_PHASES)}. work_phase is optional "
+                        "and orthogonal to agent_state -- omit it entirely "
+                        "for a turn with no distinguishable work phase, or "
+                        "set it to one of the enum values at each phase "
+                        "transition."
+                    ),
+                )
+            )
+
     return FormValidationResult(
         ok=not errors,
         errors=tuple(errors),
@@ -944,4 +1021,5 @@ __all__ = [
     "REQUIRED_AGENT_STATUS_FIELDS",
     "REQUIRED_FAILURE_REPORT_FIELDS",
     "VALID_FAILURE_SEVERITIES",
+    "VALID_WORK_PHASES",
 ]

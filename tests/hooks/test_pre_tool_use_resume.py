@@ -15,7 +15,11 @@ import pytest
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-import pre_tool_use
+REPO_ROOT = Path(__file__).parent.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from tests.fixtures.pretool_adapter import compat_shape, run_pre_tool_use
 from modules.security.prompt_validator import classify_resume_prompt
 from modules.security.approval_constants import (
     NONCE_APPROVAL_PREFIX,
@@ -47,7 +51,7 @@ def saved_states(monkeypatch):
         captured.append(state)
         return True
 
-    monkeypatch.setattr(pre_tool_use, "save_hook_state", _save)
+    monkeypatch.setattr("modules.core.state.save_hook_state", _save)
     return captured
 
 
@@ -62,10 +66,10 @@ class TestHandleSendMessageApproval:
     def test_message_with_nonce_passes_through(self, saved_states):
         """APPROVE:<nonce> in a SendMessage is no longer intercepted."""
         nonce = "deadbeef" * 4
-        result = pre_tool_use._handle_send_message(
+        result = compat_shape(run_pre_tool_use(
             "SendMessage",
             {"to": "a123450f1e2d3c4b5", "message": f"APPROVE:{nonce}"},
-        )
+        ))
 
         # No longer blocked or intercepted -- passes through as normal resume
         assert result is None
@@ -73,10 +77,10 @@ class TestHandleSendMessageApproval:
 
     def test_message_with_malformed_nonce_passes_through(self, saved_states):
         """Malformed APPROVE: tokens are no longer intercepted in SendMessage."""
-        result = pre_tool_use._handle_send_message(
+        result = compat_shape(run_pre_tool_use(
             "SendMessage",
             {"to": "a123450f1e2d3c4b5", "message": "APPROVE:commit\n\nRetry the git commit."},
-        )
+        ))
 
         # No longer blocked -- passes through
         assert result is None
@@ -84,50 +88,50 @@ class TestHandleSendMessageApproval:
 
     def test_message_with_deprecated_phrase_passes_through(self, saved_states):
         """Deprecated approval phrases are no longer intercepted in SendMessage."""
-        result = pre_tool_use._handle_send_message(
+        result = compat_shape(run_pre_tool_use(
             "SendMessage",
             {"to": "a123450f1e2d3c4b5", "message": "User approved: terraform apply prod/vpc"},
-        )
+        ))
 
         # No longer blocked -- passes through
         assert result is None
         assert len(saved_states) == 1
 
     def test_documentary_nonce_text_passes_through(self, saved_states):
-        result = pre_tool_use._handle_send_message(
+        result = compat_shape(run_pre_tool_use(
             "SendMessage",
             {"to": "a123450f1e2d3c4b5", "message": "Use APPROVE:<nonce> in the docs and continue."},
-        )
+        ))
 
         assert result is None
         assert len(saved_states) == 1
         assert saved_states[0].metadata["has_approval"] is False
 
     def test_resume_without_approval_token_allows_and_marks_false(self, saved_states):
-        result = pre_tool_use._handle_send_message(
+        result = compat_shape(run_pre_tool_use(
             "SendMessage",
             {"to": "a123450f1e2d3c4b5", "message": "Continue with the investigation."},
-        )
+        ))
 
         assert result is None
         assert len(saved_states) == 1
         assert saved_states[0].metadata["has_approval"] is False
 
     def test_invalid_agent_id_blocked(self, saved_states):
-        result = pre_tool_use._handle_send_message(
+        result = compat_shape(run_pre_tool_use(
             "SendMessage",
             {"to": "invalid_id", "message": "Continue."},
-        )
+        ))
 
         assert isinstance(result, str)
         assert "Invalid agent ID format" in result
         assert saved_states == []
 
     def test_empty_message_blocked(self, saved_states):
-        result = pre_tool_use._handle_send_message(
+        result = compat_shape(run_pre_tool_use(
             "SendMessage",
             {"to": "a123450f1e2d3c4b5", "message": ""},
-        )
+        ))
 
         assert isinstance(result, str)
         assert "SendMessage requires a message" in result

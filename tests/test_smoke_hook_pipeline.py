@@ -2,9 +2,11 @@
 """
 End-to-end smoke test for the bash classification hook pipeline.
 
-Exercises the FULL path: pre_tool_use.pre_tool_use_hook() -> BashValidator.validate()
-across all 5 phases.  This is NOT an isolation test of bash_validator.py — it
-calls the same entry point that Claude Code calls at runtime.
+Exercises the FULL path: ClaudeCodeAdapter.adapt_pre_tool_use() ->
+BashValidator.validate() across all 5 phases, as a dispatched SUBAGENT (the
+lane that classifies domain commands by tier).  This is NOT an isolation test
+of bash_validator.py — it drives the same adapter method the stdin entry
+point calls at runtime.
 
 Running:
     python tests/test_smoke_hook_pipeline.py          # standalone, color output
@@ -32,9 +34,11 @@ if str(HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(HOOKS_DIR))
 
 # ---------------------------------------------------------------------------
-# Import the real hook entry point (same function Claude Code uses)
+# Import the real adapter path (same code the stdin entry point runs)
 # ---------------------------------------------------------------------------
-import pre_tool_use  # noqa: E402  (after sys.path setup)
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from tests.fixtures.pretool_adapter import compat_shape, run_subagent_bash  # noqa: E402
 from modules.core.paths import clear_path_cache  # noqa: E402
 
 
@@ -305,7 +309,9 @@ def _run_scenario(scenario: Scenario, tmp_path: Path) -> Result:
     (tmp_path / ".claude").mkdir(parents=True, exist_ok=True)
 
     try:
-        raw = pre_tool_use.pre_tool_use_hook("bash", scenario.as_parameters())
+        raw = compat_shape(
+            run_subagent_bash(scenario.as_parameters().get("command", ""))
+        )
     except Exception as exc:
         os.chdir(orig_cwd)
         clear_path_cache()

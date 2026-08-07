@@ -5,136 +5,281 @@ description: Use when producing any agent response
 
 # Agent Protocol
 
-## What is agent-protocol?
+This is the producer workflow. It routes to reference and branch skills; it does
+not duplicate their schemas. `agent-contract-handoff` owns the envelope,
+`investigation` owns evidence gathering, and the approval skills own T3 data.
 
-The producer's playbook for an agent turn: how to read where you stand in the increment, and how to emit your position back so the orchestrator can decide the next dispatch. The `agent_contract_handoff` is the coordination tool, not an administrative form -- the orchestrator reads your draft (it carries no shell, so this is a dispatched gaia-operator read of `gaia contract view`, relayed back to it) to route mid-turn, and the runtime persists the outcome once you `gaia contract finalize`. Build it BY-VALUE with the `gaia contract` CLI across the turn (`init` once, then `set`/`add`/`fill --json` as you discover things, `finalize` once at the end) instead of composing and re-emitting one large fenced JSON block every message -- see "Building the contract" below. Regardless of how it was built, a fenced `agent_contract_handoff` block in your final response text is still required output every turn: the SubagentStop gate parses that fence, not your finalized DB row, so building by-value via the CLI is not a second protocol that exempts you from emitting it. This skill is produce-side judgment only. For the full field schema, conditional triggers, sub-field tables, the INPUT-vs-OUTPUT name collision, and the agent_state enum, see `agent-contract-handoff`. For the approval payload, see `agent-approval-protocol`; for orchestrator-side interpretation, see `agent-response`.
+**Two senses of "contract" meet in this skill -- keep them apart.** The
+*handoff contract* is the envelope this skill produces: one row born at
+dispatch under `# Your Contract`, mutated by `gaia contract set/add/fill`,
+closed by `finalize`. A *project-context contract* is a different thing: a
+slice of project knowledge stored per workspace
+(`project_context_contracts`), pulled on demand via `gaia context get`
+within the `can_read` scope the kernel names -- it is NOT injected as input.
+`agent-contract-handoff` documents the distinction in full. Everywhere
+below, "contract" means the handoff envelope unless said otherwise.
 
-## The workflow as a map
+**Two orthogonal machines run through a turn.** `agent_status.agent_state` is
+the COMMUNICATION state machine -- how this turn currently reports back
+(`IN_PROGRESS`/`BLOCKED`/`NEEDS_INPUT`/`APPROVAL_REQUEST`/
+`NEEDS_VERIFICATION`/`COMPLETE`). It feeds routing and the finalize/
+verification gate, a pure function of `(agent_state, plan_task_id)`, and nothing
+below widens that enum or that gate. `work_phase` is the separate WORK state
+machine -- where the producer is in framing -> investigating -> planning ->
+executing -> verifying. The two never collapse: a turn can sit at
+`agent_state=IN_PROGRESS` through every one of its five work phases.
+
+## This row is your contract
+
+`# Your Contract` names a contract that already exists as a row in gaia.db
+AND as an on-disk draft before you run anything -- this turn's contract is
+not something you create, it is something you were handed, ALREADY OPEN. You
+do not run `gaia contract init`. Each field of the block means one thing:
+
+- `contract_id` -- the id you pass on every `gaia contract` call, as
+  `--draft-id <contract_id>`. It addresses both the row and the draft.
+- `agent_id` -- copied VERBATIM into `agent_status.agent_id` whenever you
+  declare state. Shape: `a` plus at least 16 lowercase hex characters.
+- `goal` -- the assignment, whole and bounded: nothing outside it belongs to
+  this turn.
+- `role` / `surface` -- your relationship to the task and the surface that
+  owns it.
+- `project` (when present) -- the project this turn is about, as
+  `name (/abs/path)`: the project to pull context for on demand. It is
+  dispatch data first (the orchestrator's `project=<name>` token), with
+  cwd-based resolution only as fallback; a name the substrate does not know
+  yet appears bare, without the `(path)` suffix. Absent when the dispatch
+  named no project and the cwd matched none.
+- `can_read` / `can_write` -- your project-context scope: `can_read` is the
+  MENU of sections you may pull on demand (`gaia context get --section <s>`)
+  and cite as evidence; `can_write` names the ones you may propose updates
+  to. Nothing from that menu arrives preloaded.
+- `plan_task_id` + `acceptance` (present only on a plan-task-bound turn) --
+  the task binding and its gates: the verifiable floor the increment must
+  clear. A turn with them cannot self-COMPLETE; it closes NEEDS_VERIFICATION.
+
+**Project context is NOT preloaded.** The kernel deliberately carries data
+about your contract, not the project. Pull what you need on demand through
+the commands the `# Your CLI` block names -- `gaia context get --section <s>`
+for project knowledge, `gaia memory search` for curated memory -- and only
+the sections your scope and your goal actually require.
+
+**Your contract is your primary information tool, not just your deliverable.**
+Write into it as you advance, and consult it when you need to recall what you
+already verified, which commands you ran, and what you ruled out. What is in
+your contract is already evidence: do not produce it again.
+
+**Your first write is your adoption.** There is no separate "adopt" step: the
+moment you run `gaia contract set/add/fill --draft-id <contract_id>` (or
+`view`), you are writing the draft that was opened for you. `gaia contract
+init` still exists, but only as THE fallback for a turn that received no
+`# Your Contract` block at all -- a resumed session, a dispatch outside this
+harness, or a dispatch whose born row could not be claimed at start. Run bare
+`gaia contract init` (no `--agent-id`), reuse what it mints, and work the
+protocol identically; the unclaimed born row (if one exists) is closed by the
+stop-hook persister, never by you. Never mint a competing identity once one
+exists.
+
+## The envelope as a form, filled one section per moment
+
+Read the contract as a form with one section active at a time, not a
+checklist of commands to run in order. This is the same cycle "Work the
+increment" below walks in full; here is where each moment's answer lives:
+
+| Moment (`work_phase`) | Section you write | |
+|---|---|---|
+| framing | *(no section of its own)* | its output is one `key_outputs` note -- see step 2 of "Start the turn" below. This is the one moment without a dedicated field. |
+| investigating | `evidence_report` (`patterns_checked`, `files_checked`, `commands_run`, `key_outputs`, `verbatim_outputs`, `open_gaps`) | keeps accumulating once execution starts too -- it is not owned by investigating alone |
+| planning | `agent_status.pending_steps`; `approval_request` when a COMMAND_SET is required | `approval_request` opens here (plan-first) and is written to again once executing starts |
+| executing | `evidence_report` continued; COMMAND_SET's typed progress fields; `failure_report` if something breaks | |
+| verifying | `evidence_report.verification`; `consolidation_report` for multi-surface work; the terminal `agent_state` decision | |
+
+Do not force a clean one-section-per-phase mapping onto this table --
+the schema does not carry one. `evidence_report` and `approval_request` each
+span two moments by design, and `framing` has none of its own. What the table
+teaches is where to look, not a rule that every section belongs to exactly one
+phase. `agent_state` (how the turn currently reports back) and `work_phase`
+(where the work itself is) stay the two orthogonal axes the intro above
+already names; this table is a reading aid for the second axis, not a new rule
+on the first.
+
+## Start the turn
+
+1. Read whatever context was injected first -- it is already paid for, do not
+   re-derive it with a tool call. What was NOT injected is on demand: a
+   `# Your CLI` block means project context is pulled per section
+   (`gaia context get --section <s>`) when the goal needs it, not scanned up
+   front.
+2. **FRAME**, before any other work: restate the goal in your own words, and
+   check what you can actually do against the project context you just read
+   ("what can I do with this"). Record both in one write, e.g.
+   `gaia contract fill --json '{"work_phase":"framing","evidence_report":
+   {"key_outputs":["FRAME: <goal restated>; capability: <what the context
+   lets you do>"]}}'`. This step always happens -- it is one cheap call, not
+   the ritual the phase floor below exempts. A turn that never leaves framing
+   (answered entirely from already-known context) sets it once and goes
+   straight to `COMPLETE` -- that name is the `agent_state`, never a shortcut
+   past the close itself: `gaia contract finalize` still runs before the
+   fence, on this turn exactly as on any other. See "Checkpoint and close".
+3. Checkpoint by value at risk, not by phase, for everything WITHIN a phase:
+   write a finding the instant re-deriving it would cost more than recording
+   it, and before any step whose outcome you cannot predict (a long synthesis,
+   an approval handoff, a mutation, the final message) confirm you are
+   already resume-complete -- checkpoint first if not. Use `contract add`,
+   `set`, or `fill --json`. This is the WITHIN-phase rule; the transition
+   ITSELF between phases is never optional -- see "Work the increment".
+
+## Work the increment
+
+**The phase-transition floor.** The instant work enters a new phase --
+investigating, planning, executing, verifying -- write `work_phase` before
+doing that phase's work: `gaia contract set work_phase <phase>` (or fold it
+into a `fill --json` alongside real evidence). This is a floor, independent of
+and beneath the value-at-risk rule above: value-at-risk still governs what
+ELSE gets checkpointed once inside a phase, but the transition mark itself is
+never skipped when the phase genuinely exists. `work_phase` is optional at the
+schema level (`WORK_PHASE_SHAPE` only fires when it is present and malformed)
+precisely so a phase that does not exist for this turn is never simulated: a
+one-file read that answers the question during framing never touches
+`investigating`/`planning`/`executing`/`verifying` at all. Do not write a
+phase you did not enter just to satisfy a checklist.
+
+### investigating
+
+Load `investigation` for the evidence ladder, the mutation forecast, and its
+own checkpoint-by-value-at-risk guidance (that guidance operates WITHIN this
+phase, not instead of the transition floor above).
+
+### planning
+
+Before touching mutation, answer these explicitly -- write the answers, do not
+only think them:
+
+| Question | Where the answer lives |
+|---|---|
+| What does "done" mean here? | A `key_outputs` note stating the completion criterion, or the `evidence_report.verification` plan |
+| How many independent pieces are there, and in what order? | `agent_status.pending_steps` -- write the ordered list; see below |
+| What predictable T3 mutations does the COMPLETE plan require, and do they fit one COMMAND_SET? | `investigation`'s forecast step: apply its grouping conditions (one bounded goal, exact known order, coherent risk/rollback/verification, no item depending on unseen output) |
+| How is each piece verified -- by result, never by exit code alone? | `evidence_report.verification`, or a note per `pending_steps` entry |
+| What open_gaps do you declare before executing? | `evidence_report.open_gaps` |
+
+This checklist exists to stimulate consolidating a plan's mutations into one
+`request-set` when `investigation`'s conditions already hold -- it stimulates,
+it does not force a set where the commands genuinely are not knowable together.
+
+Close planning by writing the resulting task list to `agent_status.pending_steps`
+(this is its home: the ordered list of remaining pieces) and setting
+`work_phase` to `planning` if not already there.
+
+### pending_steps is the progress meter
+
+`agent_status.pending_steps` carries the plan planning just wrote. As each
+piece finishes, retire it from the list with `gaia contract set
+agent_status.pending_steps '[...]'` (the remaining entries only) -- the list
+shrinking is what a mid-flight observer polling the row sees as progress. This
+is not a new rule: `COMPLETE` already requires `pending_steps == []`
+(`COMPLETE_SHAPE`); this is that existing requirement read forward, as a
+running measure, instead of only backward, as a terminal check.
+
+### executing / verifying
+
+`work_phase` moves to `executing` once the first piece starts, and to
+`verifying` once mutation is done and the result is being confirmed by a
+separate read, not assumed from an exit code. Meanwhile `agent_state`
+continues to report the turn's own communication status through all of it:
+`IN_PROGRESS` means more work can continue. `BLOCKED` means an external
+obstacle prevents progress. `NEEDS_INPUT` asks for a material user choice.
+`APPROVAL_REQUEST` hands off exact T3 consent. `NEEDS_VERIFICATION` hands a
+producer result to an independent verifier. Only `COMPLETE` is terminal.
+
+Before mutation, finish the read-only investigation and forecast the commands
+the accepted plan predictably requires. COMMAND_SET is plan-first informed
+consent: collect an exact, ordered, coherent set of predictable T3 commands;
+never include speculative commands. Each item is one atomic shell invocation,
+not a compound command. Group commands only when they serve one bounded goal,
+share a clear risk/rollback/verification story, and their exact text is already
+known. Do not group unrelated effects, unknown follow-ups, condition-dependent
+commands, or work whose next command depends on earlier output.
+
+Create the request set before attempting its commands:
 
 ```
-INVESTIGATE -> PLAN -> EXECUTE -> VERIFY -> COMPLETE
-   ^                                  |
-   |                                  v
-   +---------- (loop on fail) --------+
-
-        |- BLOCKED          (escalate, cannot continue alone)
-mid-loop |- NEEDS_INPUT     (need user decision)
-        |- APPROVAL_REQUEST (T3 blocked, awaiting consent)
+gaia approvals request-set --command '<exact T3 command 1>' --command '<exact T3 command 2>' --rationale '<bounded goal>' --agent-id <agent_id> --session-id <session_id>
 ```
 
-You receive a task (the injected INPUT envelope), work the increment, then emit one OUTPUT envelope. `state_tracker.py` enforces the legal transitions (`_LEGAL_TRANSITIONS`, `_MAX_IN_PROGRESS_RETRIES = 2`); this map tells you where you stand, not which transitions are allowed -- the runtime blocks the illegal ones for you.
+Then follow `subagent-request-approval`. A command that was attempted and
+blocked follows the single-command relay branch instead. Never evade a block,
+mint an approval id, or calculate an approval fingerprint yourself.
 
-**Frame before action.** Read the map before you move. An agent turn is not the whole of Gaia's work; it is one increment inside it -- a prior turn (the orchestrator's routing, the INPUT envelope injected into you) set you here, and a future turn consumes the OUTPUT envelope you leave. So situate yourself first (where in INVESTIGATE -> ... -> COMPLETE do I stand? what did the work before me settle, and what does the turn after me need?), let that raise the first questions the task poses, reason them through, and only then act. The contract you emit is the report of a move made with that awareness, not a form filled in after the fact. For the orient-first discipline itself, see `investigation`.
+## Branch routing
 
-## Building the contract: by-value via the CLI
+| Situation | Load / action |
+|---|---|
+| Need exact envelope fields | `agent-contract-handoff` |
+| Need evidence or mutation forecast | `investigation` |
+| Run one shell operation | `command-execution`, then `security-tiers` |
+| T3 set planned or command blocked | `subagent-request-approval` |
+| Orchestrator receives a request | `orchestrator-present-approval` |
+| User names an old/pending id | `pending-approvals` |
+| Consent was granted | fresh specialist dispatch with `execution` |
+| Orchestrator receives a contract | `agent-response` |
 
-The contract is your non-negotiable artifact: the turn's outcome exists only in the draft you build and finalize, so build it as you go rather than composing it all at once at the end -- a draft you ran out of turn to finalize is still readable by the orchestrator (via a gaia-operator dispatch running `gaia contract view`, since the orchestrator has no shell of its own), which a block you never got to emit never was. Every write validates the FULL resulting envelope before persisting (validate-on-write, no false-pass): a rejected write leaves the draft at its last-known-good state and prints the concrete errors plus the canonical repair message, never a crash.
+## Checkpoint and close
 
+**Declare your closing state IN the contract before you close it.** The write
+just before `finalize` sets `agent_status.agent_state` to the state your final
+message will declare -- `COMPLETE`, `NEEDS_VERIFICATION`, `BLOCKED`,
+`NEEDS_INPUT`, or `APPROVAL_REQUEST` -- never the `IN_PROGRESS` your last
+checkpoint left behind. The row is the record: a fence that says COMPLETE over
+a row finalized IN_PROGRESS closes the record in limbo -- neither cut nor
+closed, invisible to both `contract list --cut` and the terminal-state reads
+(observed live: a clean close, `cut_reason` NULL, state IN_PROGRESS).
+`finalize` rejects an `IN_PROGRESS` draft for exactly this reason: fix the
+state, then close.
+
+**Finalize is a floor, not a phase: every turn ends with it, including the
+shortest one.** A turn closing `COMPLETE` has, by construction, an empty
+`pending_steps` (the progress meter above having shrunk to nothing). A turn
+that mutated typically also carries a final `work_phase` of `verifying` --
+but `work_phase` itself is never a `COMPLETE` precondition; only
+`agent_state`'s own shape rules (`COMPLETE_SHAPE`, `VERIFICATION_RESULT`) gate
+the close. A turn that never mutated (pure investigation, answered entirely
+from framing) may close `COMPLETE` having set no phase past `framing` at all
+-- there is nothing to verify, but there is still a row to close, and closing
+it is `finalize`, not the fence.
+
+Approval data belongs only inside `approval_request`; do not copy command
+payloads into evidence fields.
+Use the runtime's typed progress fields when present and otherwise record exact
+per-command results in evidence. A failed COMMAND_SET is terminal/frozen:
+preserve completed, failed, and untouched indexes, then require fresh
+investigation and a new approval for every retry or remainder. Capture the exact
+command, exit status, and stderr; do not claim the effect occurred.
+
+`gaia contract validate --draft-id <draft_id>` checks the draft without writing
+a handoff row. `gaia contract finalize --draft-id <draft_id> ...` validates and
+persists/converges the born row idempotently. Finalize does not imply COMPLETE:
+it accepts any CLOSING state -- `APPROVAL_REQUEST`, `BLOCKED`, `NEEDS_INPUT`,
+`NEEDS_VERIFICATION`, `COMPLETE` -- each a real end of the turn that the
+orchestrator routes. What it refuses is `IN_PROGRESS`, the one state that says
+the turn has NOT ended (see the floor at the top of this section). Only a
+coherent, verified `COMPLETE` is terminal; a plan-task-bound producer must use
+`NEEDS_VERIFICATION`.
+
+**`gaia contract finalize` is your last tool call, every turn, with no
+exception for a short one.** The row being born open at dispatch, and
+`set`/`add`/`fill` mirroring your evidence onto it as you build the draft,
+both describe how the row gets FILLED -- neither one closes it. A turn that
+stops after its last `fill` and goes straight to the fence leaves the row
+exactly where the draft left it: open. A SubagentStop hook backstop exists and
+will eventually converge that row with `cut_reason=reaped` -- that is forensic
+cleanup for a turn that failed to close itself, not a second way to close one:
+it never earns `COMPLETE`, it only records that `finalize` was never called.
+Then emit the same JSON envelope in a fenced `agent_contract_handoff` block.
+The fence remains required by the current stop gate even though the DB row is
+authoritative; treat this as compatibility debt, not a second protocol or a
+place to reconstruct a different contract.
+
+```agent_contract_handoff
+{"agent_status":{"agent_state":"IN_PROGRESS","agent_id":"a0000000000000000","pending_steps":[],"next_action":"continue"},"evidence_report":{"patterns_checked":[],"files_checked":[],"commands_run":[],"key_outputs":[],"verbatim_outputs":[],"cross_layer_impacts":[],"open_gaps":[]},"consolidation_report":null,"approval_request":null}
 ```
-gaia contract init --agent-id <id> --draft-id <id.token>   # once, first call: ADOPT the identity injected at dispatch
-gaia contract init                            # ONLY when no identity was injected -- mints and PRINTS your agent_id + draft_id
-gaia contract set agent_status.agent_state IN_PROGRESS
-gaia contract add evidence_report.files_checked "path/to/file.py"
-gaia contract fill --json '{"evidence_report": {"key_outputs": ["..."]}}'   # batch merge
-gaia contract view                            # inspect the current draft, no mutation
-gaia contract view --field evidence_report.files_checked   # read ONLY one dotted-path subtree
-gaia contract validate                        # check the verdict without mutating
-gaia contract finalize --session-id <sid> --plan-task-id <task_id>   # once, at the end: writes the SOLE, idempotent row
-```
-
-**Adopt before you mint.** Your turn's `agent_contract_handoffs` row usually already exists: the dispatch mints a real identity and births the row before you run, then injects both halves into your context as a `# Contract Identity (born at dispatch)` block. When that block is present, your first call is `gaia contract init --agent-id <agent_id> --draft-id <draft_id>` with both values copied verbatim from it -- that creates your draft AT the id the row was born under, so your later `finalize` converges that bound row instead of leaving it orphaned while a second, unbound row carries your verdict. Minting your own identity when one was handed to you is not a harmless duplicate: it is how a turn ends with its work in one row and its plan-task binding stranded in another.
-
-**The block now appears on virtually every dispatch, bound or free -- its absence is no longer the expected shape of a free turn, and reads as a gap far more often than as a verdict on your turn.** A dispatch naming a resolvable `task_id=<N>` (a dispatchable `tasks.id`) births `kind=task_execution` with `plan_task_id` populated; a verifier dispatch naming a resolvable `parent_handoff_id=<N>` births `kind=verifier`; and a dispatch that carries NO binding token at all now births a FREE kind too (`investigation`, or `memory` when the prompt names `Skill('memory')`) with `plan_task_id` NULL -- all three birth normally and all three get the injected block (see `agents/gaia-orchestrator.md`, Dispatch, for the convention; `hooks/modules/agents/dispatch_binding.py` for the classifier and the referential-integrity rules). What still leaves the row unborn, and the block absent, is narrower than "no token": a prompt naming a binding-shaped token that never resolves cleanly -- a bare `plan_id=<N>` with no `task_id=` (forced into `task_execution` by the token's presence, then rejected outright since `plan_task_id` never populated), or a verifier dispatch whose `parent_handoff_id` is missing or fails to resolve. (An attempted `task_id=<N>` that fails to resolve, or resolves to a non-dispatchable task, still births -- degraded, `plan_task_id` NULL, the rejection reason and the failed token recorded inside the birth envelope and consultable via `gaia contract list --json`.) So read an absent block against your OWN task framing, not as a default verdict: if your task describes executing a specific plan task and no block arrived, the dispatch prompt likely dropped or mis-formed the token -- name that as a gap rather than quietly running as if unbound. If your task carries no plan-task framing at all (a free-standing investigation or memory turn), a block now normally arrives too -- adopt it exactly like any other turn; only when birth itself failed (a hook-side error, or one of the still-rejected shapes above) do you mint your own identity via a bare `gaia contract init`, which remains correct in that case, not a fallback to apologize for.
-
-`init` mints BOTH halves of your identity when you do NOT adopt (no block reached your context) and never reads a harness session variable: run it with no `--agent-id` and it mints the `agent_id` (`a` + `secrets.token_hex(8)`) as well as the `draft_id`, printing both on labelled lines. **Copy them verbatim and pass `--draft-id <that id>` on every subsequent call.** Bare resolution (no flags) still falls back to your most-recently-touched draft, but that fallback refuses to guess when several drafts are live -- and `--agent-id` narrows to one draft only when the handle names exactly one, otherwise it too refuses. `--draft-id` is the only handle that always identifies your draft, so it is locatable the same way whether you are a fresh dispatch or a resumed one. `set`/`add`/`fill` mutate an in-memory copy, validate it, and persist ONLY on a passing verdict -- a rejected `set` (e.g. an out-of-enum `agent_state`) leaves the on-disk draft untouched and reports the enum text, not a stack trace. Those same three verbs then MIRROR the partial envelope onto your adopted row (best-effort, `gaia.store.writer.mirror_partial_contract_handoff`): incremental state no longer lives only on disk, it reaches the DB while the turn is still running. The mirror is deliberately weaker than `finalize` -- it never creates a row (an unadopted draft mirrors to nothing), never touches a row already terminal, and never moves the row's `agent_state` or its binding; it writes `raw_handoff_json` and nothing else. So `finalize` remains the SOLE writer of the TERMINAL row and is idempotent: a second `finalize` of the same draft is a no-op that reports back the same `handoff_id`, so retrying it is always safe.
-
-**Pass `--session-id` and `--plan-task-id` on that final `finalize` call -- they are how the row becomes findable by query, not just by joining through a closed dispatch row.** Neither is read from the environment (this CLI never touches a harness value); both are arguments YOU supply from your own dispatch envelope. Pass `--session-id` whenever you know it -- essentially always. Pass `--plan-task-id` when this turn executes a plan task (a `tasks.id` from your INPUT envelope); omit it for a free-standing turn (investigation, memory, a verifier turn) that has none. Declaring `--plan-task-id` also BINDS the turn at this same CLI seam: a `finalize` carrying it alongside `agent_state=COMPLETE` is rejected outright (the identical blind-verification rule as "NEEDS_VERIFICATION" above) -- a plan-task-bound producer emits `NEEDS_VERIFICATION` and passes `--plan-task-id` there, it does not self-`COMPLETE` with the flag set. Omitting either flag when it was knowable is not a cosmetic gap: measured across the current terminal rows, 100% (6468/6468) carry `plan_task_id = NULL` and 844 also carry `session_id = NULL`, so the chain `plan task -> producer contract -> verifier contract` cannot be walked by query at all today. Worse, the gap does not self-heal later -- see "terminal rows are immutable" below: a finalize that lands the row without the flags cannot be backfilled by a subsequent finalize call that does supply them.
-
-The shape you are building is unchanged -- `agent_status` + `evidence_report`, with `consolidation_report` and `approval_request` null in the common case; any human-facing prose still belongs in the optional `user_facing_summary`, not spilled across the machine-audience fields. What changed is HOW it gets built: field-by-field across the turn, not composed as one block at the end.
-
-**Build order matters -- validate-on-write checks the FULL resulting envelope, not your patch.** Setting `agent_status.agent_state` to `COMPLETE` before `evidence_report.verification` is filled in is rejected with `VERIFICATION_RESULT` even though that `set` call itself was well-formed -- the draft stays at its last valid state, and the error names the field, not the ordering cause. Fill `evidence_report` (`verification` last, when heading to `COMPLETE`) and `next_action` BEFORE setting the terminal `agent_state` -- last field, last call. **And once that terminal row lands, it is immutable by design: the writer blocks any further UPDATE once `agent_state` is already terminal (`COMPLETE`), even from the same agent trying to correct its own row.** There is no fix-it-after; verify before you finalize, not finalize-then-correct.
-
-**The same order trap applies to the optional `failure_report` block, sharper than most.** If a genuine failure is worth reporting -- a concrete operation you attempted that broke, with the observed proof -- `failure_report` (sibling of `consolidation_report` and `approval_request`, `null` by default) is where it goes: `{attempted, symptom, evidence}` required, `{component, severity}` optional. It is advisory end to end and never certifies or blocks the turn on any `agent_state` -- do not treat it as something you must fill. But unlike `evidence_report`'s seven keys, this block has no partial-write grace period at all: `gaia contract set failure_report.attempted "..."` alone leaves the block incomplete, and that incompleteness is rejected on the spot, so nothing persists -- not even `attempted`. Build the whole block in ONE `gaia contract fill --json` call, or not at all. Consumers read it back via `parse_failure_report()` (`hooks/modules/agents/contract_validator.py`); full shape in `agent-contract-handoff`.
-
-**Building by-value via the CLI does not replace emitting the fence -- it is still required in your final response text, every turn.** The SubagentStop gate never reads your finalized draft row from the DB; it parses the fenced `agent_contract_handoff` block out of your response text (`agent_output` -- `completion.last_message`, or the transcript fallback) via `parse_contract`, THEN validates that parsed dict. `gaia contract finalize` writes the authoritative `agent_contract_handoffs` row, but that row is not what the gate reads to decide whether your turn passes. With `GAIA_CONTRACT_FULL_VERDICT_GATE` default ON (M4), the full-verdict gate hard-rejects (exit 2) any turn whose response text lacks a valid fence -- including a turn where you built and finalized a perfectly valid draft via `gaia contract` but never echoed it as a fenced block in your last message. This is the M4 footgun: a "CLI-only, no fence" agent is rejected, not passed on the strength of its DB row. Always close your turn with the fenced block -- built field-by-field via the CLI across the turn, and then emitted (echoed) as a fence in the response text at the end.
-
-### Fence fallback (still supported, not a second protocol -- and still the required output)
-
-"Fallback" names how the fence relates to the CLI build sequence -- the CLI is the primary way to construct the contract turn-by-turn -- not whether emitting the fence itself is optional. It is not: the fence in your response text is the ONE thing the SubagentStop gate parses, so it is mandatory output on every turn regardless of whether the underlying draft was built via `gaia contract set`/`add`/`fill` or composed directly. An agent that still composes the fenced `agent_contract_handoff` JSON block directly (never touching the CLI) is not on a deprecated path in the sense of being unenforced -- the fence is parsed and the resulting dict is validated through the EXACT SAME core (`gaia.contract.validator.validate_form` / `gaia.contract.crosscheck.validate`) that every `gaia contract` write goes through. The requirements are identical: `evidence_report` carries 7 required keys + `verification` on COMPLETE (the honesty rule below), and the block body must be valid JSON (`json.loads` -- not YAML: comments, trailing commas, or unquoted keys make the block unparseable and the runtime treats it as missing). Prefer building incrementally via the CLI -- it validates incrementally and survives a truncated turn -- but the fence itself, correctly emitted in the response text, is required either way, not merely tolerated.
-
-For every field, its required/conditional status, and its trigger, see `agent-contract-handoff`; a rendered example per `agent_state` is in this skill's own `examples.md`. The canonical repair message (`CANONICAL_REPAIR_MESSAGE`) that both paths return on rejection lives at `gaia/contract/validator.py` -- the single source of truth, never duplicated inline.
-
-## Closing the turn: finalize last, then the fence
-
-Run `gaia contract finalize` as the LAST tool call of your turn, then emit the fence in the text right after it, in that same final message. This ordering is the mitigation for a cut the runtime cannot prevent: one session saw six subagent turns truncated mid-turn -- at 45, 62, 64, 66, and 72 tool calls, across both models, no common threshold -- with every internal cause ruled out by measurement. The transcript anomaly check (`workflow_auditor._check_excessive_tool_calls`, threshold 50 calls -- `EXCESSIVE_TOOL_CALL_THRESHOLD`; the duration outlier at 600,000ms) is observation-only, and its threshold is calibrated to sit BELOW the floor of the sample that justifies it, not above it: measured across 2416 archived transcripts, the rate of turns ending in a harness cut steps up roughly sevenfold once a turn crosses 50 tool calls, and the five 2026-07-26 harness cuts on record (`OBSERVED_HARNESS_CUT_TOOL_CALLS` -- 55, 58, 59, 62, 85) all land above that floor. The prior value, 75, sat above four of those five cuts and below only the last one (85), so the check used to fire after the risk it existed to observe had already materialized; 50 is the measured step, not a round number. The property that keeps the number honest is structural, not the literal: the threshold must sit below the lowest cut in whatever sample calibrates it (`test_threshold_sits_below_every_observed_cut_in_tool_calls`), so a future recalibration cannot silently drift the two apart -- a threshold raised without the measurement moving with it fails that test before it ships. No Gaia hook emits `continue: false` or a `stopReason`; and the same session ran an 87-tool-call, 236k-token turn uncut. Every cut showed the identical shape: the last assistant message ends `stop_reason="tool_use"`, its tool result lands 0.25-0.4s later with no error, and the model never produces another message -- it never reaches `end_turn`. **The cut is the harness's and cannot be anticipated from inside the turn** -- so the only lever left is what you leave behind when it lands.
-
-**Never narrate the next step as a standalone terminal-looking text block** ("Now I'll finalize the contract...") before actually taking it. On a cut, the harness reports `status=completed` and shows, as `<result>`, the LAST text block the model produced -- which can be several tool calls old by the time the cut lands. That stale narration then reads as a deliberate stop announcing a step that was never taken: an eco viejo the orchestrator cannot tell apart from a genuine one from outside. Narrating intentions leaves the orchestrator reading an announcement instead of a result.
-
-**A finalized draft outlives the cut even when the fence does not -- this is the mitigation that carries the weight, not a footnote.** One of the six cuts in this same session landed immediately after a successful `gaia contract finalize`: the draft survived intact, and only the fence was lost. Given a corte that cannot be prevented, build the contract field-by-field as you go, finalize it last, and a cut that costs you the fence still rarely costs the work -- the draft remains readable via `gaia contract view` (a gaia-operator dispatch, since the orchestrator has no shell of its own). That same readability is the orchestrator's cheap recovery: on a `status=completed` notification whose `<result>` carries no valid fence, read that agent's `gaia contract view` before re-dispatching -- the terminal row is often already there, and a `SendMessage` round-trip asking for re-emission is frequently unnecessary.
-
-## What the emitted fence MUST satisfy (the four rejections to avoid)
-
-Emitting a fence is necessary but not sufficient: the gate parses it and then validates the parsed dict through `gaia.contract.validator.validate_form`, which hard-rejects (exit 2) on eight named SHAPE codes (`FormErrorCode`, the SSOT): `MISSING_FIELD`, `PLAN_STATUS`, `AGENT_ID_FORMAT`, `VERIFICATION_RESULT`, `VERIFICATION_SHAPE`, `APPROVAL_REQUEST_SHAPE`, `COMPLETE_SHAPE`, and `FAILURE_REPORT_SHAPE`. `MISSING_FIELD` is the general "required field absent" code and fires for two distinct conditions below (points 1 and 2). `VERIFICATION_SHAPE` (additive) fires only when a contract declares an OPTIONAL `verification.type` and omits the field that type requires -- not part of the checklist below, since a turn that never declares `verification.type` can never trip it (see `agent-contract-handoff` for the enum and per-type fields). `APPROVAL_REQUEST_SHAPE` and `COMPLETE_SHAPE` (also additive) are likewise not part of the five-point checklist below, but -- unlike `VERIFICATION_SHAPE` -- they are reachable on ANY normal turn that declares those statuses, not gated behind an opt-in `verification.type`: `APPROVAL_REQUEST_SHAPE` fires when an `APPROVAL_REQUEST` lacks a usable `approval_request.exact_content` (see `agent-approval-protocol`); `COMPLETE_SHAPE` fires when a `COMPLETE` carries `next_action != "done"` or a non-empty `pending_steps` (the shape point 2 below already tells you to avoid). `FAILURE_REPORT_SHAPE` (also additive) is likewise not part of the five-point checklist, and unlike the other three it is never gated on a particular `agent_state` at all: it fires only when the OPTIONAL top-level `failure_report` block is itself declared and malformed (missing `attempted`/`symptom`, an empty `evidence` list, or an off-enum `severity`) -- an envelope that never declares `failure_report`, or sets it `null`, can never trip it, on ANY status. It is advisory end to end: never required, and its absence never blocks `COMPLETE` or any other state -- see `agent-contract-handoff` for the full shape and the one-write construction requirement. The checklist runs to five points covering the four codes every normal turn risks regardless of which status it declares (`MISSING_FIELD`, `PLAN_STATUS`, `AGENT_ID_FORMAT`, `VERIFICATION_RESULT`). A *present* fence that misses any point below is rejected exactly as if it were absent. Run this checklist against your block -- or your `gaia contract view` -- before closing the turn. This is the shape inline so you do not have to open `agent-contract-handoff` to get it right; the reference still owns the full per-field detail.
-
-1. **`evidence_report` carries ALL 7 keys -> or `MISSING_FIELD`.** Every one must be *present*; an empty list `[]` is valid, but a *missing* key is a rejection. The seven, exactly: `patterns_checked`, `files_checked`, `commands_run`, `key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, `open_gaps`. (`verification` is a SEPARATE, 8th field, required only on `COMPLETE` -- see point 5; it is NOT one of the 7.) Emitting six keys and omitting `cross_layer_impacts` or `verbatim_outputs` "because there were none" is the #1 rejection -- emit them as `[]`, do not drop them.
-
-2. **`agent_status` carries ALL 4 sub-fields -> or `MISSING_FIELD`.** `agent_state` (absent -> `MISSING_FIELD`; present-but-out-of-enum -> `PLAN_STATUS`, see point 3), `agent_id` (see point 4), `pending_steps` (presence-only; `[]` is valid on a `COMPLETE`), and `next_action` (present and non-empty -- use `"done"` on a terminal `COMPLETE`, never omit it or leave it `""`). Dropping `pending_steps` or `next_action` because the turn is finished is a rejection; a finished turn still emits `pending_steps: []` and `next_action: "done"`.
-
-3. **`agent_state`, when present, must be one of the six canonical values -> or `PLAN_STATUS`.** The enum: `IN_PROGRESS`, `APPROVAL_REQUEST`, `COMPLETE`, `BLOCKED`, `NEEDS_INPUT`, `NEEDS_VERIFICATION`. An absent `agent_state` is `MISSING_FIELD` (point 2); a *present* value outside this enum is a distinct rejection, `PLAN_STATUS` (`gaia/contract/validator.py`, `FormErrorCode.PLAN_STATUS`), not folded into `MISSING_FIELD`. That same invalidity also suppresses the `evidence_report`/`verification` classification for the turn -- one code per invalidity, never stacked. `NEEDS_VERIFICATION` additionally is never accepted as done by the finalize gate (`hooks/adapters/claude_code.py`, `_blind_verification_required`) regardless of any proposed `verification.result` -- proposing it is not the same as being done.
-
-4. **`agent_id` matches `^a[0-9a-f]{16,}$` -> or `AGENT_ID_FORMAT`.** It is a lowercase `a` followed by 16 or more HEXADECIMAL digits (`0-9`, `a-f`). **Do not invent it -- adopt the one the dispatch minted, or let the substrate mint one.** When your context carries a `# Contract Identity (born at dispatch)` block, its `agent_id` IS your handle: pass it (with the `draft_id`) to `gaia contract init` and use it verbatim in `agent_status.agent_id`. Only with no such block do you run `gaia contract init` with NO `--agent-id`; it mints `a` + `secrets.token_hex(8)`, prints it on a labelled `agent_id:` line alongside the `draft_id:`, and you reuse that exact string for the whole turn (in `agent_status.agent_id`, and as `--draft-id` for every later CLI call). Passing an explicit `--agent-id` still works, but there is no reason to: the value has to conform to the same floor and you gain nothing by typing it yourself.
-   - **Why the floor is 16 and not shorter.** It is measured, not stylistic. Handles you invent collide across sessions in proportion to how much you have to compress: at 6 hex digits, 27 of 82 distinct handles collided (32.9%); at 7 hex, 12 of 103 (11.7%); at 17 hex, 0 of 2658 (0.0%). A collision is not cosmetic -- two live drafts under one handle is how a `COMPLETE` once landed on another agent's contract. Sixteen digits is the shortest length inside the zero-collision regime, and it is exactly what the substrate mints, so the safe path and the easy path are the same path.
-   - Invalid (real rejection samples): `gaia-system` (your name is not an id), `aworkspace1` (`w`,`o`,`r`,`k`,`s`,`p` are not hex, and no `-`), `a00000gaiasystem` (`g`,`i`,`y`,`s`,`m` are not hex -- looking id-shaped is not the same as being hex), and now any conforming-but-SHORT handle such as `a` + 6 hex, which used to pass. If any character after the leading `a` is outside `0-9a-f`, or there are fewer than 16 of them, it is rejected.
-
-5. **On `COMPLETE`, `evidence_report.verification.result == "pass"` -> or `VERIFICATION_RESULT`.** `verification` must be a dict AND its `result` must be exactly `"pass"`. A `COMPLETE` with `verification` missing, or with `result` set to anything other than `"pass"` (including `"fail"`), is rejected. The rule is not a formality: if the check did not genuinely pass, you are `IN_PROGRESS` or `BLOCKED`, not `COMPLETE` -- see "The verification honesty rule" below. For every non-`COMPLETE` status, `verification` may be `null`.
-
-## When to emit each `agent_state`
-
-Choose by what is true of your position. The enum and meanings are owned by `agent-contract-handoff`; here is when to reach for each:
-
-- **`COMPLETE`** -- you finished the increment AND verification genuinely passed. Reaching for it because the loop felt long is the failure mode below.
-- **`APPROVAL_REQUEST`** -- a T3 command was blocked with an `approval_id`. Pass the id through verbatim; do not retry the command. Hand off to `agent-approval-protocol` for the payload.
-- **`BLOCKED`** -- you hit something outside your authority (wrong surface, missing capability) or need information another surface owns. Name the gap in `open_gaps` and suggest the next agent.
-- **`NEEDS_INPUT`** -- you need a user decision to continue. List the explicit options in `next_action`.
-- **`NEEDS_VERIFICATION`** -- harness R2: you believe the increment is done and MAY propose `evidence_report.verification.result`, but this is a proposal, never a `COMPLETE`. The gate never accepts `NEEDS_VERIFICATION` as done regardless of the proposed value. The finalize gate is keyed on the dispatch binding's `plan_task_id`, NOT on the emitting agent's role (`hooks/adapters/claude_code.py`, `_blind_verification_required` / `BLIND_VERIFICATION_REQUIRED`): a turn whose binding carries a `plan_task_id` is a plan-task-bound producer that may NOT self-`COMPLETE` -- it is forced to `NEEDS_VERIFICATION` so an independent (blind) verifier confirms the increment. The orchestrator dispatches `gaia-verifier`, which binds to the producer via `parent_handoff_id` (and therefore carries NO `plan_task_id` of its own), so the verifier turn is UNBOUND and promotes the increment to `COMPLETE`. A turn with NO `plan_task_id` (investigation, memory, a free-standing turn) is not plan-task-bound, so it may self-`COMPLETE` directly. The former verifier-registry role coupling (`verifier_fleet`) is gone from this gate on purpose.
-- **`IN_PROGRESS`** -- mid-loop during retry or verify-fail. Rarely terminal; the runtime caps consecutive `IN_PROGRESS` at 2, so do not park here to avoid a decision. Your draft persists across a resume (`SendMessage`) by its own contract id -- `gaia contract set`/`add` on resume continues the SAME draft rather than starting over, so `IN_PROGRESS` across N resumes is filling in one contract incrementally, not re-declaring it each time. The orchestrator can have that in-progress draft read -- by dispatching gaia-operator to run `gaia contract view` and relay it back, since the orchestrator carries no shell -- between your messages without you re-emitting anything.
-
-## The verification honesty rule
-
-Report `verification.result = "pass"` only when it genuinely passed. `verification` is required only on `COMPLETE`, and on COMPLETE `result` must be `"pass"` -- a `COMPLETE` with `result = "fail"` is a contradiction the runtime rejects (`VERIFICATION_RESULT_MUST_BE_PASS`). The deeper failure mode is not the rejected contract; it is the habit of defining success by command exit code. A clean exit does not mean the change worked -- verification is the moment you confirm the change produced the intended outcome. Reach for the strongest genuine check within your reach, using everything at your disposal -- what your context already gives you, what the system offers, what the skill catalog holds, even a capability you obtain when it genuinely sharpens the check -- and where the output has a surface you can observe, observe it rather than assert it. The method fits the domain (infra: `dry-run`; code: `test`; skills: `self-review`; email: `metric`). `self-review` is the floor, not the default: settle for it only when no stronger genuine check is within reach, and then state what you checked and what you observed -- never a hollow pass.
-
-## When to populate `update_contracts`
-
-`update_contracts` is the optional array (`{contract, payload}` each) that writes your discoveries into shared project-context so the next agent does not start from zero on what only you saw. It is produce-side judgment: emit a delta when ANY is true -- a section you own is **empty**, discovered data **drifts** from what is indexed, you found **new resources** not listed, or you uncovered a **pattern/structure/config** not yet captured. Skip when findings match what is already indexed; a redundant write only adds noise to the audit trail. Emit as you discover, not at task end. For the field shape, merge semantics, and the index-not-snapshot boundary on payload contents, see `agent-contract-handoff`.
-
-**Prioritize when a section is empty or sparse** -- capture the highest-value keys first:
-
-| Priority | Capture | Why |
-|----------|---------|-----|
-| P0 | resource identifiers (names, IDs, paths) | direct targeting in future searches |
-| P1 | structural relationships (what connects to what) | cross-agent reasoning |
-| P2 | configuration values (versions, replicas, limits) | drift detection |
-| P3 | behavioral patterns (conventions, naming schemes) | consistency enforcement |
-
-Capture P0 on every investigation; P1-P3 only when naturally encountered -- do not investigate solely to populate context.
-
-**Mutative triggers fire even without investigation.** An investigative trigger fires when you *discover* something that already existed; a mutative trigger fires when an action *creates or changes* workspace state. When tool output says *installed*, *added*, *configured*, *applied*, or *upgraded* for a named package or service (`npm install`, `pip install`, `kubectl apply`, `helm install/upgrade`, `brew install`, `auth configure`), record the new state in `update_contracts` before the turn ends. Read-only output is not a trigger: `kubectl get`, `helm list`, `npm list`, `terraform plan`, and `*describe*` index through scanners, not the contract.
-
-## Anti-patterns
-
-- **Defining success by exit code** -- `exit 0` is not verification. The change either produced the intended outcome or it did not; the honesty rule is the test.
-- **Emitting `COMPLETE` without verification** -- the validator blocks it, but the worse cost is reaching for `COMPLETE` because the loop felt long. If unverified, you are still `IN_PROGRESS`.
-- **Assuming the orchestrator remembers** -- every turn starts from the contract. If you saw something relevant and did not write it into your draft (`set`/`add`/`fill`), it does not exist for the next agent, even though the draft itself now persists across resumes.
-- **Inventing an `agent_state`** -- only the six canonical values exist (`IN_PROGRESS`, `APPROVAL_REQUEST`, `COMPLETE`, `BLOCKED`, `NEEDS_INPUT`, `NEEDS_VERIFICATION`). A novel status is not silently coerced -- it is rejected outright with the distinct `PLAN_STATUS` code (`gaia/contract/validator.py`, `FormErrorCode.PLAN_STATUS`), and that same invalidity suppresses the `evidence_report`/`verification` classification for the turn (one code per invalidity). Either way the turn fails; there is no silent fallback.
-- **Caching live-state in `update_contracts`** -- writing runtime facts (pod counts, IPs, instance status) into project-context misleads the next agent the moment they change. Index what statically exists; fetch the live value on demand.
-- **Spending the budget on narration instead of building the draft** -- prose is not the deliverable; the contract is. Reporting progress in ad-hoc `SendMessage` prose instead of writing it into the draft (`set`/`add`) is the turn the orchestrator cannot route on, no matter how much was done. The persisted draft is the substrate for incremental progress -- use it, not narration.
-- **Narrating the next step in prose instead of taking it** -- a terminal-looking text block announcing what you're about to do, followed by more tool calls, leaves a stale block behind; a later harness cut can surface exactly that block as your `<result>`, an old announcement misread as a deliberate stop. See "Closing the turn" above.
-- **Never calling `finalize`** -- a draft that is `set`/`add`ed all the way to a genuine `COMPLETE` verdict but never finalized is not yet an authoritative row. The SubagentStop backstop exists in code, but do not treat it as a safety net for a harness cut: measured across the same six truncations above, the backstop never ran for any of them -- no `SubagentStop` event fired, no `episodes` row was written, at any of the five cutoff timestamps checked. A harness cut does not reach `SubagentStop`; it just stops, so on the subagent side nothing is captured, degraded or otherwise, because nothing runs. **The cut itself is no longer invisible, but the rescue you might hope for is still absent.** It is now detected from the ORCHESTRATOR side: a `PostToolUse` matcher on `Task` routes the parent's Task result to `hooks/modules/agents/task_result_observer.py`, which recognizes the signature -- a result reporting success that carries no parseable contract fence -- and writes an `agent.cut` event (`AGENT_CUT_EVENT`, severity `warning`, reason `no_contract_fence` or `unparseable_contract_fence`). Read what that does and does not buy you: it records THAT your turn was cut, with the agent name, status, tool/token metrics, and a short tail preview of your output -- it does NOT capture your contract, your evidence, or any of your work, and it is observation only (the write is best-effort and swallows its own failures). So the substrate will note your disappearance, and only `finalize` promotes the row to a clean, terminal close. What the mirror changed is what a cut leaves behind on the way there: because `set`/`add`/`fill` reflect the partial envelope onto your adopted row as you build it, a turn cut before `finalize` no longer leaves an empty birth envelope -- the evidence and `open_gaps` accumulated up to the last write are on the row, queryable. That is a floor, not a substitute: the mirrored row is still non-terminal, still unverified, and mirrors nothing at all if you never adopted the injected identity. For this class of failure, adopting early, filling incrementally, and calling `finalize` yourself are what leave a row of the work.
-- **Finalizing via the CLI and never emitting the fence** -- the M4 footgun. The gate parses the fenced block out of your response text, not your finalized DB row; a valid `gaia contract finalize` with no fence in the final message still hard-rejects the turn. Building by-value via the CLI is HOW you construct the contract across the turn -- it is not a substitute for emitting the fence at the end.
-
-## Handoffs
-
-- **`agent-contract-handoff`** -- the full field schema, conditional triggers, sub-field tables, INPUT-vs-OUTPUT distinction, and agent_state enum.
-- **`agent-approval-protocol`** -- sealed_payload schema, `approval_id` format, full APPROVAL_REQUEST envelope.
-- **`agent-response`** -- how the orchestrator parses and acts on your contract.
-- **Domain skills** (`gaia-patterns`, ...) -- what counts as evidence and which verification method fits per surface.

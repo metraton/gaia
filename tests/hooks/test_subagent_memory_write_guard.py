@@ -39,9 +39,12 @@ from modules.security.tiers import SecurityTier
 # Layer 1: detection (is_memory_write_attempt)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("verb", sorted(MEMORY_WRITE_VERBS))
-def test_detects_each_write_verb(verb):
-    assert is_memory_write_attempt(f"gaia memory {verb} foo --body x") is True
+def test_detects_each_write_verb():
+    """Every MEMORY_WRITE_VERBS member is a pure `tokens[k] in MEMORY_WRITE_VERBS`
+    membership check with no per-verb branching, so one loop over the full
+    set preserves total coverage without 7 parametrized cases repeating it."""
+    for verb in sorted(MEMORY_WRITE_VERBS):
+        assert is_memory_write_attempt(f"gaia memory {verb} foo --body x") is True
 
 
 @pytest.mark.parametrize(
@@ -162,7 +165,8 @@ def validator():
         "gaia memory add project_foo --body x",
         "gaia memory append foo --body x",
         "gaia memory reclassify foo --status graduated",
-        "gaia memory link a b --kind relates",
+    "gaia memory link a b --kind relates",
+    "gaia memory checkpoint --file payload.json --workspace me",
     ],
 )
 def test_e2e_subagent_write_blocked(validator, cmd):
