@@ -24,6 +24,8 @@ from modules.security.mutative_verbs import (
     NATIVE_OUTPUT_FLAG_CLIS,
     PIPE_POLICY_EXCLUDED_CLIS,
 )
+from modules.security.tiers import SecurityTier
+from modules.tools.bash_validator import BashValidator
 
 
 class TestMutativeResult:
@@ -1796,6 +1798,190 @@ class TestSqliteReadonlyDotCommands:
         assert result.category == "MUTATIVE"
 
 
+class TestPsqlReadonlyMetaCommands:
+    """psql backslash meta-commands are introspection, not SQL.
+
+    ``_SQL_READONLY_PREFIX`` only recognises SELECT / EXPLAIN / WITH / PRAGMA,
+    so every ``psql -c '\\dt'`` fell through to the database_cli MUTATIVE
+    default and demanded T3 approval for listing tables.
+
+    Every test here drives ``detect_mutative_command`` with the command an
+    operator would actually type: the classification is what is asserted, not
+    the presence of a pattern in a table. A table entry that no idiomatic
+    command reaches is dead code that only looks like coverage.
+    """
+
+    @pytest.mark.parametrize("meta_cmd", [
+        "\\l",           # list databases
+        "\\l+",          # ...verbose
+        "\\list",        # long form
+        "\\d",           # describe everything
+        "\\dt",          # tables
+        "\\dt+",         # tables, verbose
+        "\\du",          # roles
+        "\\dn",          # schemas
+        "\\di",          # indexes
+        "\\df",          # functions
+        "\\dv",          # views
+        "\\dx",          # extensions
+        "\\dRp",         # publications (multi-letter, mixed case)
+        "\\z",           # access privileges
+        "\\sf",          # show function source
+        "\\conninfo",    # connection info
+        "\\?",           # help
+    ])
+    def test_readonly_meta_command_is_not_mutative(self, meta_cmd):
+        result = detect_mutative_command(f"psql -d mydb -c '{meta_cmd}'")
+        assert result.is_mutative is False, (
+            f"psql -c '{meta_cmd}' is read-only introspection. Got "
+            f"is_mutative={result.is_mutative}, category={result.category!r}, "
+            f"reason={result.reason!r}"
+        )
+        assert result.category == "READ_ONLY"
+
+    def test_meta_command_with_pattern_argument_is_not_mutative(self):
+        result = detect_mutative_command("psql -d mydb -c '\\dt public.*'")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    def test_equals_style_command_flag_is_not_mutative(self):
+        result = detect_mutative_command("psql -d mydb --command='\\du'")
+        assert result.is_mutative is False
+        assert result.category == "READ_ONLY"
+
+    @pytest.mark.parametrize("meta_cmd", [
+        "\\i /tmp/migration.sql",     # run a script file
+        "\\ir migration.sql",         # run a script, relative
+        "\\o /tmp/out.txt",           # redirect output to a file
+        "\\copy t FROM '/tmp/x.csv'",  # bulk load
+        "\\! rm -rf /tmp/x",          # shell escape
+        "\\gexec",                    # execute the result set as SQL
+        "\\gset",                     # capture results into variables
+    ])
+    def test_execute_or_write_meta_command_stays_mutative(self, meta_cmd):
+        """The allow-list must not leak: anything that runs or writes stays T3."""
+        result = detect_mutative_command(f'psql -d mydb -c "{meta_cmd}"')
+        assert result.is_mutative is True, (
+            f"psql -c '{meta_cmd}' executes or writes and must stay T3. "
+            f"Got category={result.category!r}, reason={result.reason!r}"
+        )
+
+    def test_statement_appended_to_meta_command_stays_mutative(self):
+        """psql reads ';' as a statement separator -- a DROP smuggled after a
+        read-only meta-command must not inherit its classification."""
+        result = detect_mutative_command(
+            "psql -d mydb -c '\\dt; DROP TABLE users'"
+        )
+        assert result.is_mutative is True
+
+    def test_second_command_flag_cannot_be_laundered(self):
+        """psql accepts repeated -c: EVERY payload must be read-only, so one
+        harmless meta-command cannot cover a mutation in the next flag."""
+        result = detect_mutative_command(
+            "psql -d mydb -c '\\dt' -c 'DROP TABLE users'"
+        )
+        assert result.is_mutative is True
+
+    @pytest.mark.parametrize("separator", [
+        "\n",          # line feed -- psql's own meta-command terminator
+        "\r",          # carriage return -- the other half of psqlscan's [\n\r]
+        "\r\n",        # CRLF
+        "\n\n",        # repeated line feeds
+        " \n",         # horizontal space first, then the break
+        "\n\t",        # break first, then horizontal space
+        "\v",          # vertical tab
+        "\f",          # form feed
+        " ",      # unicode LINE SEPARATOR
+        "",      # NEL
+    ], ids=[
+        "lf", "cr", "crlf", "lf-lf", "space-lf", "lf-tab",
+        "vtab", "formfeed", "u2028", "nel",
+    ])
+    def test_vertical_whitespace_cannot_launder_a_statement(self, separator):
+        """A line break is a statement separator for psql exactly as ``;`` is:
+        since PostgreSQL 10 a single ``-c`` payload may mix meta-commands and
+        SQL, and both run. ``shell_parser.parse()`` is quote-aware, so a break
+        inside the quoted payload never splits the command into components --
+        the whole payload reaches the classifier intact and the meta-command
+        rule must not swallow what follows the break.
+
+        Driven end to end through ``BashValidator.validate`` because the
+        downgrade manifested as ``allowed=True tier=T0`` at the gate, not only
+        as a regex match.
+        """
+        command = f"psql -d mydb -c '\\dt{separator}UPDATE t SET x=1'"
+
+        result = detect_mutative_command(command)
+        assert result.is_mutative is True, (
+            f"payload smuggled past the meta-command rule via {separator!r}. "
+            f"Got category={result.category!r}, reason={result.reason!r}"
+        )
+
+        verdict = BashValidator().validate(command)
+        assert verdict.allowed is False, (
+            f"{separator!r} laundered an UPDATE to "
+            f"tier={verdict.tier}, reason={verdict.reason!r}"
+        )
+        assert verdict.tier == SecurityTier.T3_BLOCKED
+
+    @pytest.mark.parametrize("meta_cmd", [
+        "\\l",
+        "\\dt",
+        "\\du",
+        "\\d+ mytable",
+        "\\z",
+    ])
+    def test_legitimate_introspection_passes_the_gate(self, meta_cmd):
+        """The point of the lane is removing friction from real introspection.
+        Closing the newline hole must not revert that in practice, so the
+        allowed forms are asserted at the gate, not only at the regex."""
+        verdict = BashValidator().validate(f"psql -d mydb -c '{meta_cmd}'")
+        assert verdict.allowed is True, (
+            f"psql -c '{meta_cmd}' must not gate. "
+            f"tier={verdict.tier}, reason={verdict.reason!r}"
+        )
+
+    def test_meta_command_with_file_redirect_stays_mutative(self):
+        """Rule 1 (external payload) still fires first."""
+        result = detect_mutative_command("psql -d mydb -c '\\dt' < /tmp/x.sql")
+        assert result.is_mutative is True
+
+    def test_plain_sql_classification_is_unchanged(self):
+        """The new lane must not disturb the SQL payload rules it sits beside."""
+        assert detect_mutative_command(
+            'psql -d mydb -c "SELECT 1"').is_mutative is False
+        assert detect_mutative_command(
+            'psql -d mydb -c "DROP TABLE users"').is_mutative is True
+        assert detect_mutative_command(
+            "psql -d mydb -f /tmp/x.sql").is_mutative is True
+
+    def test_the_new_lane_is_what_produces_the_verdict(self, monkeypatch):
+        """Counterfactual: with the meta-command pattern neutralised, the very
+        same command gates again. This is what distinguishes a reachable rule
+        from a table entry no idiomatic invocation ever touches."""
+        import re as _re
+        from modules.security import capability_classes
+
+        command = "psql -d mydb -c '\\dt'"
+        monkeypatch.setattr(
+            capability_classes, "_PSQL_READONLY_META_COMMAND",
+            _re.compile(r"(?!x)x"),
+        )
+        detect_mutative_command.cache_clear()
+        try:
+            assert detect_mutative_command(command).is_mutative is True
+        finally:
+            monkeypatch.undo()
+            detect_mutative_command.cache_clear()
+        assert detect_mutative_command(command).is_mutative is False
+
+    def test_meta_command_shape_does_not_leak_to_other_database_clis(self):
+        """The lane is anchored to psql. In the mysql client ``\\d`` is the
+        DELIMITER command, not a describe -- it must keep the class default."""
+        result = detect_mutative_command("mysql -e '\\d ;;'")
+        assert result.is_mutative is True
+
+
 class TestSlugAndFlagFalsePositives:
     """Regression suite for slug/flag false-positive fix.
 
@@ -2071,17 +2257,25 @@ class TestGaiaPlanningBookkeepingException:
             f"Got: category={result.category}, reason={result.reason}"
         )
 
-    def test_gaia_memory_save_still_mutative(self):
-        """gaia memory save: 'memory' is not an excepted group; 'save'..."""
-        # 'save' is not in MUTATIVE_VERBS, so exercise a real write verb.
-        result = detect_mutative_command("gaia memory write some-note")
-        assert result.is_mutative is True, (
-            f"gaia memory write must stay gated (not an excepted group). "
+    def test_gaia_memory_non_destructive_verb_is_bookkeeping(self):
+        """`memory` joined the excepted groups: a non-destructive verb is
+        local bookkeeping like brief/ac/plan.
+
+        This previously asserted the opposite, via `gaia memory write` -- a
+        verb the memory CLI does not actually have (its writers are add / edit
+        / append / reclassify / link / checkpoint). See
+        TestGaiaMemoryTierGroup for the false positives that motivated the
+        exception, and for the counterfactual that proves it is reachable.
+        """
+        result = detect_mutative_command("gaia memory edit 42 --body x")
+        assert result.is_mutative is False, (
+            f"gaia memory edit is local bookkeeping. "
             f"Got: category={result.category}, reason={result.reason}"
         )
 
     def test_gaia_memory_delete_still_mutative(self):
-        """gaia memory delete: 'memory' is not an excepted group -- stays T3."""
+        """gaia memory delete: destruction stays T3 through the group's
+        deny-verb guard, even though `memory` is now an excepted group."""
         result = detect_mutative_command("gaia memory delete some-note")
         assert result.is_mutative is True
 
@@ -4071,6 +4265,116 @@ class TestGaiaScheduleTierGroup:
         )
         assert ("gaia", "schedule") in COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
         assert COMMAND_SUBCOMMAND_EXTRA_DENY_VERBS[("gaia", "schedule")] == frozenset({"sync", "remove"})
+
+
+class TestGaiaMemoryTierGroup:
+    """`gaia memory` is local curated-memory bookkeeping, and its payload is
+    DATA.
+
+    Two measured false positives motivated the exception, and the tests below
+    are anchored to those exact shapes rather than to a plausible-sounding one:
+
+      * `gaia memory edit <id>` -- `edit` is a generic MUTATIVE_VERB, so every
+        correction of a note demanded T3;
+      * `gaia memory add --body apply` -- a payload that is itself a mutative
+        word gated the write on the CONTENT of the note.
+
+    A multi-word body ("apply the manifest") was never gated: the scan matches
+    whole tokens, and the quoted body is one token. That distinction is why
+    these tests carry counterfactuals -- asserting only the post-fix verdict
+    would pass identically on shapes the fix never touched.
+
+    `delete` is the one destructive verb in the group and must survive the
+    exception.
+    """
+
+    def test_memory_add_with_mutative_word_as_body_not_mutative(self):
+        result = detect_mutative_command("gaia memory add --name n --body apply")
+        assert result.is_mutative is False, (
+            f"a verb spelled inside an atom body is data, not a command. "
+            f"Got category={result.category}, verb={result.verb}, "
+            f"reason={result.reason}"
+        )
+
+    @pytest.mark.parametrize("body_word", [
+        "apply", "deploy", "create", "update", "push", "install",
+    ])
+    def test_single_word_mutative_body_does_not_gate_the_write(self, body_word):
+        result = detect_mutative_command(
+            f"gaia memory add --name n --body {body_word}"
+        )
+        assert result.is_mutative is False, (
+            f"'{body_word}' as the note body must not gate the note. "
+            f"reason={result.reason}"
+        )
+
+    def test_memory_edit_not_mutative(self):
+        """`edit` is a generic MUTATIVE_VERB -- before the exception this gated
+        on the verb alone, regardless of payload."""
+        result = detect_mutative_command(
+            "gaia memory edit 42 --body 'apply the change'"
+        )
+        assert result.is_mutative is False
+
+    def test_memory_append_not_mutative(self):
+        result = detect_mutative_command("gaia memory append 42 --text 'more'")
+        assert result.is_mutative is False
+
+    def test_memory_link_not_mutative(self):
+        result = detect_mutative_command("gaia memory link 42 43 --kind refines")
+        assert result.is_mutative is False
+
+    def test_memory_reclassify_not_mutative(self):
+        result = detect_mutative_command("gaia memory reclassify 42 --type decision")
+        assert result.is_mutative is False
+
+    def test_memory_checkpoint_not_mutative(self):
+        result = detect_mutative_command("gaia memory checkpoint --note 'session end'")
+        assert result.is_mutative is False
+
+    def test_memory_search_not_mutative(self):
+        result = detect_mutative_command("gaia memory search 'apply manifest'")
+        assert result.is_mutative is False
+
+    def test_memory_delete_stays_mutative(self):
+        """The global deny-verb guard must still gate the one destructive verb."""
+        result = detect_mutative_command("gaia memory delete 42")
+        assert result.is_mutative is True, (
+            f"gaia memory delete tombstones a curated atom and must stay T3. "
+            f"reason={result.reason}"
+        )
+        assert result.verb == "delete"
+
+    def test_memory_delete_with_flags_stays_mutative(self):
+        result = detect_mutative_command("gaia memory delete 42 --yes --json")
+        assert result.is_mutative is True
+
+    @pytest.mark.parametrize("command", [
+        "gaia memory add --name n --body apply",
+        "gaia memory edit 42 --body 'apply the change'",
+    ])
+    def test_the_group_entry_is_what_produces_the_verdict(self, command, monkeypatch):
+        """Counterfactual: remove the (gaia, memory) entry and these exact
+        commands gate again -- proof the entry is reached by the real
+        invocation and not merely present in the table."""
+        from modules.security import mutative_verbs
+
+        monkeypatch.delitem(
+            mutative_verbs.COMMAND_SUBCOMMAND_TIER_EXCEPTIONS, ("gaia", "memory"),
+        )
+        detect_mutative_command.cache_clear()
+        try:
+            assert detect_mutative_command(command).is_mutative is True
+        finally:
+            monkeypatch.undo()
+            detect_mutative_command.cache_clear()
+        assert detect_mutative_command(command).is_mutative is False
+
+    def test_approvals_approve_is_untouched_by_the_memory_exception(self):
+        """The exception is anchored to (gaia, memory); the consent layer keeps
+        its own gate."""
+        result = detect_mutative_command("gaia approvals approve P-abc123")
+        assert result.is_mutative is True
 
 
 class TestScriptRecursionCycleGuard:
