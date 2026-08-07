@@ -106,6 +106,14 @@ def upsert_brief(
             ``acceptance_criteria``, ``milestones``, ``dependencies``.
         db_path: optional explicit DB path (tests).
 
+    An AC/milestone `status` set via `gaia ac set-status` / `gaia milestone
+    set-status` survives this call even though `fields["acceptance_criteria"]`
+    / `fields["milestones"]` carry no `status` key (the markdown round-trip
+    does not feed it back): each child row's prior status is matched by its
+    natural identity (`ac_id` for ACs, `name` for milestones) and reapplied.
+    Status is never read from `fields` -- `gaia ac/milestone set-status`
+    remain the only way to change it.
+
     Returns:
         ``{"status": "applied", "brief_id": int, "acs": int, "milestones": int}``.
 
@@ -171,43 +179,71 @@ def upsert_brief(
                     ),
                 )
 
-            # Replace ACs and milestones (full sync semantics)
+            # Replace ACs and milestones (full sync semantics). The full sync
+            # DELETEs and re-INSERTs every child row, so a status set by
+            # `gaia ac/milestone set-status` (not carried through the markdown
+            # round-trip) would otherwise fall back to the schema DEFAULT
+            # 'pending' on every edit. Snapshot the pre-DELETE status keyed by
+            # the natural identity of each row (ac_id / name) and carry it
+            # forward for any row that survives the sync; a row with no prior
+            # match is genuinely new and starts 'pending' as the schema
+            # intends, and a row dropped from `fields` is simply not
+            # reinserted (removed, not resurrected).
+            existing_ac_status = {
+                row["ac_id"]: row["status"]
+                for row in con.execute(
+                    "SELECT ac_id, status FROM acceptance_criteria WHERE brief_id = ?",
+                    (brief_id,),
+                ).fetchall()
+            }
             con.execute("DELETE FROM acceptance_criteria WHERE brief_id = ?", (brief_id,))
             ac_count = 0
             for ac in fields.get("acceptance_criteria") or []:
                 shape = ac.get("evidence_shape")
                 if isinstance(shape, (dict, list)):
                     shape = json.dumps(shape, sort_keys=True)
+                ac_id = ac.get("ac_id", "")
                 con.execute(
                     """
                     INSERT INTO acceptance_criteria
                         (brief_id, ac_id, description, evidence_type,
-                         evidence_shape, artifact_path)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                         evidence_shape, artifact_path, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         brief_id,
-                        ac.get("ac_id", ""),
+                        ac_id,
                         ac.get("description", ""),
                         ac.get("evidence_type"),
                         shape,
                         ac.get("artifact_path"),
+                        existing_ac_status.get(ac_id, "pending"),
                     ),
                 )
                 ac_count += 1
 
+            existing_ms_status = {
+                row["name"]: row["status"]
+                for row in con.execute(
+                    "SELECT name, status FROM milestones WHERE brief_id = ?",
+                    (brief_id,),
+                ).fetchall()
+            }
             con.execute("DELETE FROM milestones WHERE brief_id = ?", (brief_id,))
             ms_count = 0
             for idx, m in enumerate(fields.get("milestones") or [], start=1):
+                m_name = m.get("name", f"M{idx}")
                 con.execute(
                     """
-                    INSERT INTO milestones (brief_id, order_num, name, description)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO milestones
+                        (brief_id, order_num, name, description, status)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     (
                         brief_id, idx,
-                        m.get("name", f"M{idx}"),
+                        m_name,
                         m.get("description", ""),
+                        existing_ms_status.get(m_name, "pending"),
                     ),
                 )
                 ms_count += 1
@@ -306,7 +342,8 @@ def get_brief_by_id(
         brief.pop("workspace", None)
 
         ac_rows = con.execute(
-            "SELECT ac_id, description, evidence_type, evidence_shape, artifact_path "
+            "SELECT ac_id, description, evidence_type, evidence_shape, "
+            "artifact_path, status "
             "FROM acceptance_criteria WHERE brief_id = ? ORDER BY id",
             (brief["id"],),
         ).fetchall()
@@ -324,17 +361,18 @@ def get_brief_by_id(
                 "evidence_type": ar["evidence_type"],
                 "evidence_shape": shape,
                 "artifact_path": ar["artifact_path"],
+                "status": ar["status"],
             })
         brief["acceptance_criteria"] = acs
 
         ms_rows = con.execute(
-            "SELECT order_num, name, description FROM milestones "
+            "SELECT order_num, name, description, status FROM milestones "
             "WHERE brief_id = ? ORDER BY order_num",
             (brief["id"],),
         ).fetchall()
         brief["milestones"] = [
             {"order_num": m["order_num"], "name": m["name"],
-             "description": m["description"]}
+             "description": m["description"], "status": m["status"]}
             for m in ms_rows
         ]
 
@@ -393,7 +431,8 @@ def get_brief(
         brief.pop("workspace", None)
 
         ac_rows = con.execute(
-            "SELECT ac_id, description, evidence_type, evidence_shape, artifact_path "
+            "SELECT ac_id, description, evidence_type, evidence_shape, "
+            "artifact_path, status "
             "FROM acceptance_criteria WHERE brief_id = ? ORDER BY id",
             (brief["id"],),
         ).fetchall()
@@ -411,16 +450,18 @@ def get_brief(
                 "evidence_type": ar["evidence_type"],
                 "evidence_shape": shape,
                 "artifact_path": ar["artifact_path"],
+                "status": ar["status"],
             })
         brief["acceptance_criteria"] = acs
 
         ms_rows = con.execute(
-            "SELECT order_num, name, description FROM milestones "
+            "SELECT order_num, name, description, status FROM milestones "
             "WHERE brief_id = ? ORDER BY order_num",
             (brief["id"],),
         ).fetchall()
         brief["milestones"] = [
-            {"order_num": m["order_num"], "name": m["name"], "description": m["description"]}
+            {"order_num": m["order_num"], "name": m["name"],
+             "description": m["description"], "status": m["status"]}
             for m in ms_rows
         ]
 
@@ -1230,8 +1271,9 @@ def verify_brief(
                     "detail": (
                         f"brief '{name}' is 'closed' but AC '{ac_row['ac_id']}' "
                         f"is status='{ac_row['status']}' (not terminal; terminal "
-                        f"set is {{done, descoped}}) -- mark it 'done' or "
-                        f"'descoped' to close honestly"
+                        f"set is {{done, descoped}}) -- close it honestly with "
+                        f"`gaia ac set-status {name} {ac_row['ac_id']} "
+                        f"<done|descoped>`"
                     ),
                 })
 

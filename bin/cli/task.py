@@ -11,9 +11,20 @@ Subcommands:
                   [--workspace W] [--json]
     gaia task list <brief>                            List a plan's tasks (read-only)
                    [--status=pending|done|skipped]
-                   [--format=table|json|count] [--workspace W]
+                   [--format=table|json|count] [--json] [--workspace W]
+    gaia task show <brief> <order_num>                Show one task (read-only)
+                   Prints ORDER_NUM (plan position) and TASK_ID (tasks.id --
+                   the value the dispatch contract's task_id=<N> token
+                   requires) clearly labeled and never conflated.
+                   [--json] [--workspace W]
     gaia task remove <brief> <order_num>              Remove a task from a plan
                      [--workspace W] [--json]
+    gaia task edit <brief> <order_num> --goal="..."   Edit a task's goal IN PLACE
+                   [--goal-file]                      (preserves task id AND
+                                                        its task_gates -- unlike
+                                                        remove + add, which
+                                                        cascades away every gate)
+                   [--workspace W] [--json]
     gaia task reorder <brief> --from=A --to=B         Swap task order numbers
                       [--workspace W] [--json]
     gaia task gate add <brief> <order_num> --type=T   Add a verification gate
@@ -26,6 +37,13 @@ Subcommands:
     gaia task gate set-status <brief> <order_num> <gate_id> <status>
                           Set a gate's status (pending|pass|fail)
                           [--workspace W] [--json]
+    gaia task gate edit <brief> <order_num> <gate_id> Edit a gate IN PLACE
+                        [--verification-type] [--evidence-type]           (only
+                        [--evidence-shape|--evidence-shape-file]           the
+                        [--artifact-path]                                  given
+                                                                            fields
+                                                                            change)
+                        [--workspace W] [--json]
 """
 
 from __future__ import annotations
@@ -44,6 +62,38 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _read_content_file(path_str: str) -> str:
+    """Read content text from a file path or stdin.
+
+    Pass ``"-"`` to read from ``sys.stdin`` until EOF (utf-8). Pass any other
+    path string to read that file (utf-8). Raises ``FileNotFoundError`` for
+    missing paths (caller converts to _err). Mirrors ``cli.brief``'s helper
+    of the same name.
+    """
+    if path_str == "-":
+        return sys.stdin.read()
+    return Path(path_str).read_text(encoding="utf-8")
+
+
+def _resolve_field(inline_val, file_val, field_name):
+    """Return the effective value for a --X / --X-file mutex pair.
+
+    ``file_val`` of None means --X-file was not given; ``inline_val`` passes
+    through unchanged in that case (including None, meaning neither was
+    given). Raises ValueError (caller converts to _err) on a missing/unreadable
+    file. Mirrors ``cli.brief``'s helper of the same name -- long-text fields
+    (a goal, an evidence shape) sharing that convention across CLI files.
+    """
+    if file_val is None:
+        return inline_val
+    try:
+        return _read_content_file(file_val)
+    except FileNotFoundError:
+        raise ValueError(f"--{field_name}-file: file not found: {file_val}")
+    except OSError as exc:
+        raise ValueError(f"--{field_name}-file: cannot read '{file_val}': {exc}")
+
 
 def _resolve_workspace(explicit: str | None) -> str:
     if explicit:
@@ -179,6 +229,49 @@ def _cmd_remove(args) -> int:
     return 0
 
 
+def _cmd_edit(args) -> int:
+    """Edit a task's goal IN PLACE (wraps gaia.store.writer.update_task).
+
+    Preserves the task's id and, critically, every task_gates row attached to
+    it -- 'remove' + 'add' deletes the task row and, through the ON DELETE
+    CASCADE from task_gates.task_id, destroys every gate along with it. This
+    is the verb to reach for whenever a task's scope needs adjusting and its
+    gates must survive the edit.
+    """
+    from gaia.store.writer import update_task
+    from gaia.state.permissions import StateTransitionForbidden
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    brief_name = args.brief
+    order_num = args.order_num
+    as_json = getattr(args, "json", False)
+
+    try:
+        goal = _resolve_field(
+            getattr(args, "goal", None), getattr(args, "goal_file", None), "goal",
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if goal is None:
+        return _err(
+            "--goal or --goal-file is required for edit", as_json=as_json,
+        )
+
+    try:
+        res = update_task(workspace, brief_name, order_num, goal=goal, db_path=None)
+    except StateTransitionForbidden as exc:
+        return _err(f"forbidden: {exc}", as_json=as_json)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"Edited task order_num={order_num} in '{brief_name}': goal updated")
+    return 0
+
+
 def _cmd_reorder(args) -> int:
     from gaia.store.writer import reorder_tasks
     from gaia.state.permissions import StateTransitionForbidden
@@ -211,6 +304,12 @@ def _cmd_list(args) -> int:
     only the number -- the cheap answer to "how many tasks / how many
     pending". Scoped to a single plan (plans.brief_id is UNIQUE), never the
     whole workspace.
+
+    The table view prints both ORDER (the plan-position ordinal) and TASK_ID
+    (``tasks.id`` -- the row id the dispatch contract's ``task_id=<N>`` token
+    requires) as separate, clearly labeled columns: the whole failure mode
+    this closes is confusing the two, so they are never merged into one
+    ambiguous number.
     """
     from gaia.store.writer import list_plan_tasks
 
@@ -218,7 +317,9 @@ def _cmd_list(args) -> int:
     brief_name = args.brief
     status = getattr(args, "status", None)
     fmt = getattr(args, "format", None) or "table"
-    as_json = fmt == "json"
+    as_json = getattr(args, "json", False) or fmt == "json"
+    if as_json:
+        fmt = "json"
 
     try:
         tasks = list_plan_tasks(workspace, brief_name, status=status,
@@ -238,24 +339,72 @@ def _cmd_list(args) -> int:
         print("(no tasks)")
         return 0
     order_w = max(5, max(len(str(t["order_num"])) for t in tasks))
+    id_w = max(7, max(len(str(t["id"])) for t in tasks))
     status_w = max(6, max(len((t["status"] or "")) for t in tasks))
     goal_w = max(4, max(len((t.get("goal") or "")) for t in tasks))
-    print(f"{'ORDER':<{order_w}}  {'STATUS':<{status_w}}  {'GOAL':<{goal_w}}")
-    print("-" * (order_w + status_w + goal_w + 4))
+    print(f"{'ORDER':<{order_w}}  {'TASK_ID':<{id_w}}  "
+          f"{'STATUS':<{status_w}}  {'GOAL':<{goal_w}}")
+    print("-" * (order_w + id_w + status_w + goal_w + 6))
     for t in tasks:
         print(f"{str(t['order_num']):<{order_w}}  "
+              f"{str(t['id']):<{id_w}}  "
               f"{(t['status'] or ''):<{status_w}}  "
               f"{(t.get('goal') or ''):<{goal_w}}")
     return 0
 
 
+def _cmd_show(args) -> int:
+    """Read-only: show a single task of the ONE plan attached to a brief.
+
+    Addressed by ``order_num`` -- consistent with every other single-task
+    verb in this file (`remove`, `gate add/list/remove/set-status`). Prints
+    ORDER_NUM (the plan-position ordinal a human reads/types) and TASK_ID
+    (``tasks.id``, the row id the dispatch contract's ``task_id=<N>`` token
+    requires) as two separate, explicitly labeled lines -- the two numbers
+    are never the same value, and conflating them is the exact failure mode
+    this verb exists to close.
+    """
+    from gaia.store.writer import get_task_by_order
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    brief_name = args.brief
+    order_num = args.order_num
+    as_json = getattr(args, "json", False)
+
+    try:
+        task = get_task_by_order(workspace, brief_name, order_num, db_path=None)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if task is None:
+        return _err(
+            f"no task at order_num={order_num} in the plan for '{brief_name}'",
+            as_json=as_json,
+        )
+
+    if as_json:
+        print(json.dumps(task, indent=2, default=str))
+        return 0
+
+    print(f"BRIEF:      {brief_name}")
+    print(f"ORDER_NUM:  {task['order_num']}   "
+          f"(plan position -- NOT the dispatch id)")
+    print(f"TASK_ID:    {task['id']}   "
+          f"(tasks.id -- pass this as task_id={task['id']} to dispatch)")
+    print(f"STATUS:     {task['status']}")
+    print(f"GOAL:       {task.get('goal') or ''}")
+    print(f"EVIDENCE:   {task.get('evidence_path') or '(none)'}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
-# gate sub-action handlers (gaia task gate add|list|remove)
+# gate sub-action handlers (gaia task gate add|list|remove|set-status|edit)
 #
 # A gate is addressed by its parent task's order_num within a brief's plan --
-# consistent with how `gaia task add/remove` address tasks. The CLI persists
-# the gate AS GIVEN; the pure structural validator lives separately in
-# gaia.state.gate_validation and is not invoked at write time (R1-A scope).
+# consistent with how `gaia task add/remove/edit` address tasks. The CLI
+# persists the gate AS GIVEN, on both `add` and `edit`; the pure structural
+# validator lives separately in gaia.state.gate_validation and is not invoked
+# at write time (R1-A scope).
 # ---------------------------------------------------------------------------
 
 def _cmd_gate_add(args) -> int:
@@ -396,6 +545,64 @@ def _print_derived_closure(res: dict, args) -> None:
         print(f"  No derived transition: {derived['why']}")
 
 
+def _cmd_gate_edit(args) -> int:
+    """Edit a gate's content fields IN PLACE (wraps gaia.store.writer.update_gate).
+
+    Partial update: only the flags given change; the rest of the row, and its
+    id, are untouched. Never touches .status -- that transition stays the job
+    of `gate set-status` alone. Mirrors `gaia brief ac edit`'s in-place
+    convention: prefer this over 'remove' + 'add', which deletes the row and
+    inserts a fresh one with a new id.
+    """
+    from gaia.store.writer import update_gate
+    from gaia.state.permissions import StateTransitionForbidden
+
+    workspace = _resolve_workspace(getattr(args, "workspace", None))
+    as_json = getattr(args, "json", False)
+
+    try:
+        evidence_shape = _resolve_field(
+            getattr(args, "evidence_shape", None),
+            getattr(args, "evidence_shape_file", None), "evidence-shape",
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    verification_type = getattr(args, "verification_type", None)
+    evidence_type = getattr(args, "evidence_type", None)
+    artifact_path = getattr(args, "artifact_path", None)
+
+    if all(v is None for v in
+           [verification_type, evidence_type, evidence_shape, artifact_path]):
+        return _err(
+            "at least one of --verification-type, --evidence-type, "
+            "--evidence-shape/--evidence-shape-file, --artifact-path "
+            "is required for edit",
+            as_json=as_json,
+        )
+
+    try:
+        res = update_gate(
+            workspace, args.brief, args.order_num, args.gate_id,
+            verification_type=verification_type,
+            evidence_type=evidence_type,
+            evidence_shape=evidence_shape,
+            artifact_path=artifact_path,
+            db_path=None,
+        )
+    except StateTransitionForbidden as exc:
+        return _err(f"forbidden: {exc}", as_json=as_json)
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(f"Edited gate id={args.gate_id} on task order_num={args.order_num} "
+              f"in '{args.brief}': {', '.join(res['fields'])} updated")
+    return 0
+
+
 def _cmd_gate(args) -> int:
     """Dispatch handler for `gaia task gate`."""
     action = getattr(args, "gate_action", None)
@@ -404,10 +611,11 @@ def _cmd_gate(args) -> int:
         "list":       _cmd_gate_list,
         "remove":     _cmd_gate_remove,
         "set-status": _cmd_gate_set_status,
+        "edit":       _cmd_gate_edit,
     }
     if action in handlers:
         return handlers[action](args)
-    print("Usage: gaia task gate <add|list|remove|set-status>", file=sys.stderr)
+    print("Usage: gaia task gate <add|list|remove|set-status|edit>", file=sys.stderr)
     return 0
 
 
@@ -514,7 +722,34 @@ def register(subparsers) -> None:
     list_p.add_argument("--format", default="table",
                         choices=("table", "json", "count"),
                         help="Output shape. Default: table.")
+    list_p.add_argument("--json", action="store_true", default=False,
+                        help="Alias for --format=json.")
     list_p.add_argument("--workspace", default=None, metavar="W")
+
+    # -- show ------------------------------------------------------------------
+    show_p = actions.add_parser(
+        "show",
+        help="Show one task of the plan attached to a brief (read-only)",
+        description=(
+            "Show a single task, addressed by order_num (consistent with "
+            "`remove`/`gate`). Prints ORDER_NUM (the plan-position ordinal) "
+            "and TASK_ID (tasks.id -- the row id the dispatch contract's "
+            "task_id=<N> token requires) as two separate, explicitly "
+            "labeled values -- never conflate the two."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia task show my-brief 1\n"
+            "  gaia task show my-brief 1 --json\n"
+        ),
+    )
+    show_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+    show_p.add_argument("order_num", type=int, metavar="ORDER_NUM",
+                        help="Task order_num to show.")
+    show_p.add_argument("--workspace", default=None, metavar="W")
+    show_p.add_argument("--json", action="store_true", default=False,
+                        help="Emit JSON.")
 
     # -- remove ----------------------------------------------------------------
     remove_p = actions.add_parser(
@@ -533,6 +768,37 @@ def register(subparsers) -> None:
     remove_p.add_argument("--workspace", default=None, metavar="W")
     remove_p.add_argument("--json", action="store_true", default=False,
                           help="Emit JSON.")
+
+    # -- edit --------------------------------------------------------------------
+    edit_p = actions.add_parser(
+        "edit",
+        help="Edit a task's goal in place",
+        description=(
+            "Update a task's goal IN PLACE (wraps gaia.store.writer.update_task) "
+            "-- the task's id and its task_gates rows are both preserved. Prefer "
+            "this over 'remove' + 'add', which deletes the task row and, through "
+            "the ON DELETE CASCADE from task_gates.task_id, destroys every gate "
+            "attached to it."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia task edit my-brief 3 --goal='Implement feature X, revised'\n"
+            "  gaia task edit my-brief 3 --goal-file=/tmp/goal.txt\n"
+        ),
+    )
+    edit_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+    edit_p.add_argument("order_num", type=int, metavar="ORDER_NUM",
+                        help="Task order_num to edit.")
+    _edit_goal_group = edit_p.add_mutually_exclusive_group()
+    _edit_goal_group.add_argument("--goal", default=None, help="New task goal.")
+    _edit_goal_group.add_argument(
+        "--goal-file", dest="goal_file", default=None, metavar="PATH",
+        help="Read --goal from PATH. Use '-' to read from stdin.",
+    )
+    edit_p.add_argument("--workspace", default=None, metavar="W")
+    edit_p.add_argument("--json", action="store_true", default=False,
+                        help="Emit JSON.")
 
     # -- reorder ---------------------------------------------------------------
     reorder_p = actions.add_parser(
@@ -554,10 +820,10 @@ def register(subparsers) -> None:
     reorder_p.add_argument("--json", action="store_true", default=False,
                            help="Emit JSON.")
 
-    # -- gate (add|list|remove) ------------------------------------------------
+    # -- gate (add|list|remove|set-status|edit) --------------------------------
     gate_p = actions.add_parser(
         "gate",
-        help="Add / list / remove a verification gate on a task",
+        help="Add / list / remove / edit a verification gate on a task",
         description="Manage planner-authored typed verification gates on a task.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -567,6 +833,7 @@ def register(subparsers) -> None:
             "  gaia task gate list my-brief 1\n"
             "  gaia task gate remove my-brief 1 3\n"
             "  gaia task gate set-status my-brief 1 3 pass\n"
+            "  gaia task gate edit my-brief 1 3 --evidence-shape='pytest -q -k foo'\n"
         ),
     )
     gate_actions = gate_p.add_subparsers(dest="gate_action", metavar="<action>")
@@ -642,6 +909,57 @@ def register(subparsers) -> None:
     gate_setstatus_p.add_argument("--json", action="store_true", default=False,
                                   help="Emit JSON.")
 
+    gate_edit_p = gate_actions.add_parser(
+        "edit",
+        help="Edit a gate's content fields in place",
+        description=(
+            "Update fields of an existing gate IN PLACE (wraps "
+            "gaia.store.writer.update_gate) -- the gate's id is preserved and "
+            "only the given fields change. Never touches .status; use "
+            "'set-status' for that. Prefer this over 'remove' + 'add', which "
+            "deletes the row and inserts a fresh one with a new id."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia task gate edit my-brief 1 3 --evidence-shape='pytest -q -k foo'\n"
+            "  gaia task gate edit my-brief 1 3 "
+            "--evidence-shape-file=/tmp/gate3-shape.txt\n"
+        ),
+    )
+    gate_edit_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
+    gate_edit_p.add_argument("order_num", type=int, metavar="ORDER_NUM",
+                             help="Parent task order_num.")
+    gate_edit_p.add_argument("gate_id", type=int, metavar="GATE_ID",
+                             help="task_gates.id to edit.")
+    gate_edit_p.add_argument(
+        "--verification-type", dest="verification_type", default=None,
+        choices=("command", "code", "semantic", "self_review"),
+        help="New verification type (VALID_VERIFICATION_TYPES).",
+    )
+    gate_edit_p.add_argument("--evidence-type", dest="evidence_type",
+                             default=None, help="New evidence type descriptor.")
+    _gate_edit_shape_group = gate_edit_p.add_mutually_exclusive_group()
+    _gate_edit_shape_group.add_argument(
+        "--evidence-shape", dest="evidence_shape", default=None,
+        help="New evidence shape / check spec.",
+    )
+    _gate_edit_shape_group.add_argument(
+        "--evidence-shape-file", dest="evidence_shape_file", default=None,
+        metavar="PATH",
+        help=(
+            "Read --evidence-shape from PATH. Use '-' to read from stdin. "
+            "Recommended when the shape prose contains '<placeholder>' "
+            "tokens or '; expect ...' clauses -- inlining that text as a "
+            "shell argument can trip the command pre-execution security scan."
+        ),
+    )
+    gate_edit_p.add_argument("--artifact-path", dest="artifact_path",
+                             default=None, help="New artifact path for evidence.")
+    gate_edit_p.add_argument("--workspace", default=None, metavar="W")
+    gate_edit_p.add_argument("--json", action="store_true", default=False,
+                             help="Emit JSON.")
+
 
 def cmd_task(args) -> int:
     """Dispatch handler for `gaia task`."""
@@ -650,13 +968,15 @@ def cmd_task(args) -> int:
         "set-status": _cmd_set_status,
         "add":        _cmd_add,
         "list":       _cmd_list,
+        "show":       _cmd_show,
         "remove":     _cmd_remove,
+        "edit":       _cmd_edit,
         "reorder":    _cmd_reorder,
         "gate":       _cmd_gate,
     }
     if action in handlers:
         return handlers[action](args)
 
-    print("Usage: gaia task <set-status|add|list|remove|reorder|gate>",
+    print("Usage: gaia task <set-status|add|list|show|remove|edit|reorder|gate>",
           file=sys.stderr)
     return 0

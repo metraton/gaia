@@ -110,6 +110,72 @@ def test_save_updates_existing_plan(tmp_db, tmp_path, monkeypatch, capsys):
     assert cnt == 1
 
 
+def test_save_without_status_preserves_the_live_status(tmp_db, tmp_path,
+                                                       monkeypatch, capsys):
+    """Saving content on an ACTIVE plan must not demote it to 'draft'.
+
+    The insert default was applied to the update path too, so every content
+    save reset the lifecycle -- and `gaia plan set-status` is curator-only, so
+    the planner could not repair what it had just broken.
+    """
+    from cli.plan import _cmd_save
+
+    monkeypatch.chdir(tmp_path)
+    _seed_brief(tmp_db, "feature-x")
+    base = dict(brief="feature-x", workspace="me", json=True)
+
+    _cmd_save(argparse.Namespace(content="v1", status="active", **base))
+    capsys.readouterr()
+    assert _read_plan_row(tmp_db, "feature-x")["status"] == "active"
+
+    rc = _cmd_save(argparse.Namespace(content="v2", status=None, **base))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["action"] == "updated"
+    assert payload["plan_status"] == "active"
+
+    row = _read_plan_row(tmp_db, "feature-x")
+    assert row["content"] == "v2"
+    assert row["status"] == "active", (
+        "an update without --status must preserve the live status"
+    )
+
+
+def test_save_without_status_on_insert_is_draft(tmp_db, tmp_path,
+                                                monkeypatch, capsys):
+    """'draft' is still the default -- but only where there is nothing to
+    preserve."""
+    from cli.plan import _cmd_save
+
+    monkeypatch.chdir(tmp_path)
+    _seed_brief(tmp_db, "fresh-plan")
+    rc = _cmd_save(argparse.Namespace(
+        brief="fresh-plan", content="v1", status=None, workspace="me", json=True,
+    ))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["action"] == "inserted"
+    assert payload["plan_status"] == "draft"
+    assert _read_plan_row(tmp_db, "fresh-plan")["status"] == "draft"
+
+
+def test_save_with_explicit_status_still_transitions(tmp_db, tmp_path,
+                                                     monkeypatch, capsys):
+    """Preservation is the DEFAULT, not a lock: an explicit --status wins."""
+    from cli.plan import _cmd_save
+
+    monkeypatch.chdir(tmp_path)
+    _seed_brief(tmp_db, "feature-y")
+    base = dict(brief="feature-y", workspace="me", json=True)
+
+    _cmd_save(argparse.Namespace(content="v1", status="active", **base))
+    capsys.readouterr()
+    rc = _cmd_save(argparse.Namespace(content="v2", status="draft", **base))
+    assert rc == 0
+    capsys.readouterr()
+    assert _read_plan_row(tmp_db, "feature-y")["status"] == "draft"
+
+
 def test_save_brief_not_found(tmp_db, tmp_path, monkeypatch, capsys):
     from cli.plan import _cmd_save
 

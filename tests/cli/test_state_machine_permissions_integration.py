@@ -31,7 +31,6 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GAIA_BIN = _REPO_ROOT / "bin" / "gaia"
-_BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
 
 
 # ---------------------------------------------------------------------------
@@ -39,23 +38,19 @@ _BOOTSTRAP_SH = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def fresh_db_with_data(tmp_path):
-    """Bootstrap a fresh v5 DB and seed it with brief+plan+task+AC+milestone."""
+def fresh_db_with_data(tmp_path, bootstrapped_db_template):
+    """Copy the session-scoped bootstrapped v5 DB and seed it with
+    brief+plan+task+AC+milestone.
+
+    Uses ``bootstrapped_db_template`` (built once via
+    ``scripts/bootstrap_database.sh``) copied per test instead of re-running
+    the multi-second bootstrap subprocess. Each test still gets its own
+    independent, mutable DB file -- isolation is unchanged.
+    """
+    from tests.conftest import copy_bootstrapped_db
+
     db_path = tmp_path / "gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
-    env["WORKSPACE"] = str(tmp_path)
-    res = subprocess.run(
-        ["bash", str(_BOOTSTRAP_SH)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    assert res.returncode == 0, (
-        f"bootstrap failed:\nstdout:\n{res.stdout}\nstderr:\n{res.stderr}"
-    )
+    copy_bootstrapped_db(bootstrapped_db_template, db_path)
 
     # Seed the DB directly with sqlite3 (a brief, plan, task, AC, milestone)
     con = sqlite3.connect(str(db_path))

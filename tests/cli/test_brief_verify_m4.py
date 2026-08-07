@@ -10,8 +10,6 @@ Coverage (T4.3):
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -27,23 +25,18 @@ if str(_REPO_ROOT) not in sys.path:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def tmp_db(tmp_path, monkeypatch):
-    bootstrap = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+def tmp_db(tmp_path, monkeypatch, bootstrapped_db_template):
+    """Bootstrap a v5 DB in tmp_path (copied from the session template).
+
+    Uses the session-scoped ``bootstrapped_db_template`` and copies it per
+    test instead of re-running ``scripts/bootstrap_database.sh`` each time.
+    Each test still gets its own independent, mutable DB file -- isolation is
+    unchanged.
+    """
+    from tests.conftest import copy_bootstrapped_db
+
     db_path = tmp_path / "gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
-    env["WORKSPACE"] = str(tmp_path)
-    result = subprocess.run(
-        ["bash", str(bootstrap)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    assert result.returncode == 0, (
-        f"bootstrap failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    copy_bootstrapped_db(bootstrapped_db_template, db_path)
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
     return db_path
@@ -223,6 +216,28 @@ class TestInvariant7ClosedBriefNonterminalAc:
         result = verify_brief("me", "inv7-terminal", db_path=tmp_db)
         kinds = [i["kind"] for i in result["inconsistencies"]]
         assert "closed_brief_nonterminal_ac" not in kinds
+
+    def test_detail_names_the_command_that_closes_the_ac(self, tmp_db):
+        """The advisory must name the verb, not just the target state.
+
+        Naming only the states ("mark it 'done' or 'descoped'") left the reader
+        to guess the CLI: two agents separately concluded no such command
+        existed. The detail now carries a runnable `gaia ac set-status`.
+        """
+        from gaia.briefs.store import verify_brief
+        brief_id, _ = _seed_brief_and_plan(tmp_db, "inv7-actionable",
+                                           plan_status="closed")
+        _set_brief_status(tmp_db, brief_id, "closed")
+        _add_ac(tmp_db, brief_id, "AC-3", "pending")
+        _insert_handoff(tmp_db, brief_id, agent_state="COMPLETE")
+
+        result = verify_brief("me", "inv7-actionable", db_path=tmp_db)
+        detail = next(
+            i["detail"] for i in result["inconsistencies"]
+            if i["kind"] == "closed_brief_nonterminal_ac"
+        )
+        assert "gaia ac set-status inv7-actionable AC-3" in detail, detail
+        assert "done|descoped" in detail, detail
 
     def test_non_closed_brief_with_pending_ac_no_flag(self, tmp_db):
         """Invariant 7 only fires when the brief itself is closed."""

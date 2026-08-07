@@ -50,6 +50,14 @@ keys, ACs missing optional fields).
 
 No external dependencies. We implement a minimal YAML subset (key: value,
 list items, nested 2-space indentation) sufficient for the brief format.
+
+`acceptance_criteria.status` and `milestones.status` are shown -- as
+``(status: X)`` on an AC line, ``[status: X]`` on a milestone line -- but are
+display-only: this module never feeds them into the round-trip dict, so
+editing the marker text has no effect. The DB is the source of truth for
+status; `gaia.briefs.store.upsert_brief` preserves it by matching each row's
+identity (`ac_id` / `name`) against what existed before the edit, and `gaia
+ac/milestone set-status` remain the only way to change it.
 """
 
 from __future__ import annotations
@@ -428,6 +436,22 @@ def _split_body_sections(body: str) -> tuple[str, dict[str, str]]:
     return title, sections
 
 
+# A trailing "[status: X]" marker is display-only (see
+# `_serialize_milestones_section`): the DB is the source of truth for
+# `milestones.status` (preserved by `ac_id`/`name` match in
+# `gaia.briefs.store.upsert_brief`, changed only via `gaia milestone
+# set-status`), so a marker found while parsing is discarded here rather
+# than folded into `description` -- keeping it would corrupt the description
+# with an ever-growing bracket on every edit round-trip.
+_TRAILING_STATUS_MARKER_RE = re.compile(
+    r"\s*\[status:\s*[a-zA-Z_-]+\]\s*$", re.IGNORECASE
+)
+
+
+def _strip_trailing_status_marker(text: str) -> str:
+    return _TRAILING_STATUS_MARKER_RE.sub("", text).strip()
+
+
 def _parse_milestones_section(text: str) -> list[dict[str, str]]:
     """Parse a Milestones section into a list of {name, description} dicts.
 
@@ -436,6 +460,10 @@ def _parse_milestones_section(text: str) -> list[dict[str, str]]:
       - **M1**: name and description
       - **M1: Name** description
     Falls back to capturing each list item as a single description.
+
+    A trailing display-only ``[status: X]`` marker (see
+    ``_serialize_milestones_section``) is stripped, not preserved -- the
+    caller relies on the DB, not the markdown, for status.
     """
     result: list[dict[str, str]] = []
     if not text.strip():
@@ -449,34 +477,60 @@ def _parse_milestones_section(text: str) -> list[dict[str, str]]:
 
     for idx, item in enumerate(items, start=1):
         # Try to match **M<N>: <Name>** -- <desc>
-        m = re.match(r"\*\*([^*:]+)(?::\s*([^*]+))?\*\*\s*[-—–]?\s*(.*)", item, re.DOTALL)
+        #
+        # The separator group matches a RUN of one or more dash-like
+        # characters (`-`, em dash, en dash) rather than at most one: the
+        # serializer always emits a literal two-character "--" (see
+        # `_serialize_milestones_section`), and a single optional dash char
+        # left the second hyphen of that pair sitting at the front of the
+        # captured description -- corrupting it with a stray "- " on every
+        # serialize/parse cycle, compounding without bound across repeated
+        # edits. Because the run only matches CONSECUTIVE dash characters and
+        # the serializer always separates it from `desc` with a space, this
+        # cannot eat into a description that legitimately starts with its own
+        # dash(es): that leading dash sits after the separating space, not
+        # adjacent to the run.
+        m = re.match(r"\*\*([^*:]+)(?::\s*([^*]+))?\*\*\s*(?:[-—–]+)?\s*(.*)", item, re.DOTALL)
         if m:
             tag = m.group(1).strip() or f"M{idx}"
             name_part = (m.group(2) or "").strip()
-            rest = (m.group(3) or "").strip()
+            rest = _strip_trailing_status_marker((m.group(3) or "").strip())
             if name_part:
                 full_name = f"{tag}: {name_part}"
             else:
                 full_name = tag
             result.append({"name": full_name, "description": rest})
         else:
-            result.append({"name": f"M{idx}", "description": item})
+            result.append({
+                "name": f"M{idx}",
+                "description": _strip_trailing_status_marker(item),
+            })
 
     return result
 
 
 def _serialize_milestones_section(milestones: list[dict[str, str]]) -> str:
-    """Serialize milestones list back to markdown bullet form."""
+    """Serialize milestones list back to markdown bullet form.
+
+    Appends a display-only ``[status: X]`` suffix when the milestone dict
+    carries a ``status`` (as returned by `gaia.briefs.store.get_brief`).
+    Display-only: `parse_brief_markdown` strips this marker back out rather
+    than feeding it into `description` -- status is preserved by the store's
+    ac_id/name match, never read from the markdown. See `gaia milestone
+    set-status` for the canonical way to change it.
+    """
     if not milestones:
         return ""
     lines: list[str] = []
     for m in milestones:
         name = m.get("name", "")
         desc = m.get("description", "")
+        status = m.get("status")
+        suffix = f" [status: {status}]" if status else ""
         if desc:
-            lines.append(f"- **{name}** -- {desc}")
+            lines.append(f"- **{name}** -- {desc}{suffix}")
         else:
-            lines.append(f"- **{name}**")
+            lines.append(f"- **{name}**{suffix}")
     return "\n".join(lines)
 
 
@@ -654,7 +708,12 @@ def serialize_brief_to_markdown(brief: dict[str, Any]) -> str:
     _section("Context", brief.get("context"))
     _section("Approach", brief.get("approach"))
 
-    # Acceptance Criteria section: leave a stub if frontmatter has ACs
+    # Acceptance Criteria section: leave a stub if frontmatter has ACs.
+    # `status` is display-only here (this section is never parsed back --
+    # `parse_brief_markdown` reads ACs from the frontmatter, not this list),
+    # so showing it costs nothing and closes the invisibility half of the
+    # brief-status defect. Change it via `gaia ac set-status`, not by editing
+    # this line.
     if acs:
         parts.append("## Acceptance Criteria")
         parts.append("")
@@ -663,7 +722,10 @@ def serialize_brief_to_markdown(brief: dict[str, Any]) -> str:
             ac_id = ac.get("ac_id", "")
             desc = ac.get("description", "")
             ev_type = ac.get("evidence_type") or ""
+            status = ac.get("status") or ""
             line = f"- {ac_id}: {desc}".rstrip()
+            if status:
+                line += f" (status: {status})"
             if ev_type:
                 line += f" (evidence: {ev_type})"
             parts.append(line)

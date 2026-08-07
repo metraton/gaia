@@ -8,19 +8,28 @@ Subcommands:
     gaia ac set-status <brief> <ac_id> <status>  Transition AC status
                        [--workspace W] [--json]
     gaia ac add <brief> <ac_id>                  Add a new AC to a brief
-                --description "..."
+                [--description "..." | --description-file PATH]
                 [--evidence-type TYPE]
-                [--evidence-shape JSON]
+                [--evidence-shape JSON | --evidence-shape-file PATH]
                 [--artifact-path PATH]
                 [--workspace W] [--json]
     gaia ac remove <brief> <ac_id>               Remove an AC from a brief
                    [--workspace W] [--json]
-    gaia ac edit <brief> <ac_id>                 Edit an existing AC
-                 [--description "..."]
+    gaia ac edit <brief> <ac_id>                 Edit an existing AC in place
+                 (preserves ac_id and list position; wraps
+                 gaia.briefs.store.update_ac)
+                 [--description "..." | --description-file PATH]
                  [--evidence-type TYPE]
-                 [--evidence-shape JSON]
+                 [--evidence-shape JSON | --evidence-shape-file PATH]
                  [--artifact-path PATH]
                  [--workspace W] [--json]
+
+``--description-file`` / ``--evidence-shape-file`` (mutex with their inline
+counterparts) read the value from a file, or from stdin with ``-``. Use these
+for evidence_shape prose containing ``<placeholder>`` tokens or ``; expect
+...`` clauses -- that text can otherwise trip the command pre-execution
+security scan when inlined as a shell argument. Same convention as `gaia
+brief edit --content-file` / `gaia brief new --objective-file`.
 """
 
 from __future__ import annotations
@@ -34,6 +43,37 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+
+
+def _read_content_file(path_str: str) -> str:
+    """Read content text from a file path or stdin.
+
+    Pass ``"-"`` to read from ``sys.stdin`` until EOF (utf-8). Pass any other
+    path string to read that file (utf-8). Raises ``FileNotFoundError`` for
+    missing paths (caller converts to _err). Mirrors bin/cli/brief.py's helper
+    of the same name -- the established convention for long text that must
+    not be inlined as a shell argument.
+    """
+    if path_str == "-":
+        return sys.stdin.read()
+    return Path(path_str).read_text(encoding="utf-8")
+
+
+def _resolve_file_arg(inline_val, file_val, flag_name):
+    """Return the effective value for a --X / --X-file mutex pair.
+
+    Raises ValueError (caller converts to _err) on a missing/unreadable file.
+    ``file_val`` of None means --X-file was not given; inline_val passes
+    through unchanged in that case (including None, meaning neither was given).
+    """
+    if file_val is None:
+        return inline_val
+    try:
+        return _read_content_file(file_val)
+    except FileNotFoundError:
+        raise ValueError(f"--{flag_name}-file: file not found: {file_val}")
+    except OSError as exc:
+        raise ValueError(f"--{flag_name}-file: cannot read '{file_val}': {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -100,11 +140,21 @@ def _cmd_add(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     brief_name = args.brief
     ac_id = args.ac_id
-    description = args.description
     evidence_type = getattr(args, "evidence_type", None)
-    evidence_shape = getattr(args, "evidence_shape", None)
     artifact_path = getattr(args, "artifact_path", None)
     as_json = getattr(args, "json", False)
+
+    try:
+        description = _resolve_file_arg(
+            args.description, getattr(args, "description_file", None), "description"
+        )
+        evidence_shape = _resolve_file_arg(
+            getattr(args, "evidence_shape", None),
+            getattr(args, "evidence_shape_file", None),
+            "evidence-shape",
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
 
     try:
         if artifact_path is not None:
@@ -160,16 +210,29 @@ def _cmd_edit(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     brief_name = args.brief
     ac_id = args.ac_id
-    description = getattr(args, "description", None)
     evidence_type = getattr(args, "evidence_type", None)
-    evidence_shape = getattr(args, "evidence_shape", None)
     artifact_path = getattr(args, "artifact_path", None)
     as_json = getattr(args, "json", False)
 
+    try:
+        description = _resolve_file_arg(
+            getattr(args, "description", None),
+            getattr(args, "description_file", None),
+            "description",
+        )
+        evidence_shape = _resolve_file_arg(
+            getattr(args, "evidence_shape", None),
+            getattr(args, "evidence_shape_file", None),
+            "evidence-shape",
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
     if all(v is None for v in [description, evidence_type, evidence_shape, artifact_path]):
         return _err(
-            "At least one of --description, --evidence-type, --evidence-shape, "
-            "--artifact-path is required for edit",
+            "At least one of --description/--description-file, --evidence-type, "
+            "--evidence-shape/--evidence-shape-file, --artifact-path is "
+            "required for edit",
             as_json=as_json,
         )
 
@@ -255,11 +318,29 @@ def register(subparsers) -> None:
     )
     add_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
     add_p.add_argument("ac_id", metavar="AC_ID", help="AC identifier (e.g. AC-3).")
-    add_p.add_argument("--description", default=None, help="AC description text.")
+    _add_desc_group = add_p.add_mutually_exclusive_group()
+    _add_desc_group.add_argument("--description", default=None,
+                                 help="AC description text.")
+    _add_desc_group.add_argument(
+        "--description-file", dest="description_file", default=None, metavar="PATH",
+        help="Read --description from PATH. Use '-' to read from stdin.",
+    )
     add_p.add_argument("--evidence-type", dest="evidence_type", default=None,
                        help="Evidence type (e.g. 'test', 'metric', 'review').")
-    add_p.add_argument("--evidence-shape", dest="evidence_shape", default=None,
-                       help="Evidence shape as JSON string.")
+    _add_shape_group = add_p.add_mutually_exclusive_group()
+    _add_shape_group.add_argument("--evidence-shape", dest="evidence_shape",
+                                  default=None,
+                                  help="Evidence shape as JSON string.")
+    _add_shape_group.add_argument(
+        "--evidence-shape-file", dest="evidence_shape_file", default=None,
+        metavar="PATH",
+        help=(
+            "Read --evidence-shape from PATH. Use '-' to read from stdin. "
+            "Recommended when the shape prose contains '<placeholder>' "
+            "tokens or '; expect ...' clauses -- inlining that text as a "
+            "shell argument can trip the command pre-execution security scan."
+        ),
+    )
     add_p.add_argument("--artifact-path", dest="artifact_path", default=None,
                        help=("Existing absolute blob path returned by `gaia "
                              "evidence add`; relative paths are rejected."))
@@ -287,25 +368,50 @@ def register(subparsers) -> None:
     # -- edit ------------------------------------------------------------------
     edit_p = actions.add_parser(
         "edit",
-        help="Edit an existing AC",
+        help="Edit an existing AC in place (preserves id and list position)",
         description=(
-            "Update fields of an existing AC. Only specified fields are updated; "
-            "omitted fields are preserved."
+            "Update fields of an existing AC IN PLACE via an UPDATE ... WHERE "
+            "id = ? against the existing row -- the AC's id and its position "
+            "in the list are both preserved (wraps "
+            "gaia.briefs.store.update_ac). Only specified fields are updated; "
+            "omitted fields are preserved. This is the correct way to correct "
+            "an existing AC; 'remove' + 'add' instead deletes the row and "
+            "inserts a fresh one with a new id at the END of the list."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  gaia ac edit my-brief AC-1 --description 'Updated desc'\n"
             "  gaia ac edit my-brief AC-1 --artifact-path /tmp/report.html\n"
+            "  gaia ac edit my-brief AC-1 "
+            "--evidence-shape-file /tmp/ac1-shape.txt\n"
         ),
     )
     edit_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
     edit_p.add_argument("ac_id", metavar="AC_ID", help="AC identifier to edit.")
-    edit_p.add_argument("--description", default=None, help="New description text.")
+    _edit_desc_group = edit_p.add_mutually_exclusive_group()
+    _edit_desc_group.add_argument("--description", default=None,
+                                  help="New description text.")
+    _edit_desc_group.add_argument(
+        "--description-file", dest="description_file", default=None, metavar="PATH",
+        help="Read --description from PATH. Use '-' to read from stdin.",
+    )
     edit_p.add_argument("--evidence-type", dest="evidence_type", default=None,
                         help="New evidence type.")
-    edit_p.add_argument("--evidence-shape", dest="evidence_shape", default=None,
-                        help="New evidence shape as JSON string.")
+    _edit_shape_group = edit_p.add_mutually_exclusive_group()
+    _edit_shape_group.add_argument("--evidence-shape", dest="evidence_shape",
+                                   default=None,
+                                   help="New evidence shape as JSON string.")
+    _edit_shape_group.add_argument(
+        "--evidence-shape-file", dest="evidence_shape_file", default=None,
+        metavar="PATH",
+        help=(
+            "Read --evidence-shape from PATH. Use '-' to read from stdin. "
+            "Recommended when the shape prose contains '<placeholder>' "
+            "tokens or '; expect ...' clauses -- inlining that text as a "
+            "shell argument can trip the command pre-execution security scan."
+        ),
+    )
     edit_p.add_argument("--artifact-path", dest="artifact_path", default=None,
                         help=("New canonical blob path returned by `gaia "
                               "evidence add`; relative paths are rejected."))

@@ -14,8 +14,10 @@ Coverage:
   * CLI: append requires --body or --body-file (argparse mutually-exclusive)
   * CLI: --body-file variant
   * register: `append` is a registered nested action
-  * SECURITY PIN: `gaia memory append` is classified NON-mutative (not T3),
-    while `gaia memory edit` / `delete` stay MUTATIVE (T3). This pins the
+  * SECURITY PIN: `gaia memory append` is classified NON-mutative (not T3).
+    So is `gaia memory edit` (a deliberate, documented group exception --
+    see ``mutative_verbs.py``); `gaia memory delete` stays MUTATIVE (T3), the
+    one destructive verb the exception still gates. This pins the
     security-classification decision so a future edit to MUTATIVE_VERBS that
     added `append` would fail loudly here.
 """
@@ -232,13 +234,29 @@ def test_append_is_classified_non_mutative():
     )
 
 
-def test_edit_and_delete_stay_mutative():
-    """The correction/removal verbs stay T3 -- they change what reads see or
-    reduce recoverability, the directions that need consent."""
+def test_memory_edit_is_read_only():
+    """`gaia memory edit` is READ_ONLY (T0) -- a deliberate, documented
+    exception in ``modules.security.mutative_verbs`` (the ``("gaia",
+    "memory")`` group exception): correcting a curated note's body is
+    reversible local bookkeeping, and `edit` is absent from the group's
+    deny-verb set (only delete/destroy/purge/wipe/drop/shred/erase stay
+    gated within the exception). This is the confirmed, current contract --
+    NOT a regression -- so it is pinned as a positive assertion rather than
+    left to the (retired) assumption that `edit` still trips the generic
+    MUTATIVE_VERBS scan."""
     from modules.security.mutative_verbs import detect_mutative_command
     edit_r = detect_mutative_command("gaia memory edit --name=x --field=body --content=z")
+    assert edit_r.is_mutative is False, (
+        f"gaia memory edit must stay READ_ONLY by the documented group "
+        f"exception; got {edit_r.category}"
+    )
+
+
+def test_memory_delete_stays_mutative():
+    """`gaia memory delete` stays T3 -- tombstoning a curated atom is the one
+    destructive (irreversible) verb the group exception still gates."""
+    from modules.security.mutative_verbs import detect_mutative_command
     delete_r = detect_mutative_command("gaia memory delete x")
-    assert edit_r.is_mutative is True, "gaia memory edit must stay T3"
     assert delete_r.is_mutative is True, "gaia memory delete must stay T3"
 
 

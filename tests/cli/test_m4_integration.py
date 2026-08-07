@@ -8,8 +8,6 @@ and asserting on the JSON output shape.
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -28,23 +26,18 @@ if str(_BIN_DIR) not in sys.path:
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def tmp_db(tmp_path, monkeypatch):
-    bootstrap = _REPO_ROOT / "scripts" / "bootstrap_database.sh"
+def tmp_db(tmp_path, monkeypatch, bootstrapped_db_template):
+    """Bootstrap a v5 DB in tmp_path (copied from the session template).
+
+    Uses the session-scoped ``bootstrapped_db_template`` and copies it per
+    test instead of re-running ``scripts/bootstrap_database.sh`` each time.
+    Each test still gets its own independent, mutable DB file -- isolation is
+    unchanged.
+    """
+    from tests.conftest import copy_bootstrapped_db
+
     db_path = tmp_path / "gaia.db"
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
-    env["WORKSPACE"] = str(tmp_path)
-    result = subprocess.run(
-        ["bash", str(bootstrap)],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=60,
-    )
-    assert result.returncode == 0, (
-        f"bootstrap failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
-    )
+    copy_bootstrapped_db(bootstrapped_db_template, db_path)
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     monkeypatch.delenv("GAIA_DISPATCH_AGENT", raising=False)
     return db_path

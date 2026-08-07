@@ -58,6 +58,25 @@ def _read_content_file(path_str: str) -> str:
     return Path(path_str).read_text(encoding="utf-8")
 
 
+def _resolve_field(inline_val, file_val, field_name):
+    """Return the effective value for a --X / --X-file mutex pair.
+
+    ``file_val`` of None means --X-file was not given; ``inline_val`` passes
+    through unchanged in that case (including None, meaning neither was
+    given). Raises ValueError (caller converts to _err) on a missing/unreadable
+    file. Module-level so every handler in this file can share it -- it used
+    to be a closure inside `_cmd_new`; hoisted out for `_cmd_ac`'s edit path.
+    """
+    if file_val is None:
+        return inline_val
+    try:
+        return _read_content_file(file_val)
+    except FileNotFoundError:
+        raise ValueError(f"--{field_name}-file: file not found: {file_val}")
+    except OSError as exc:
+        raise ValueError(f"--{field_name}-file: cannot read '{file_val}': {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Workspace resolution
 # ---------------------------------------------------------------------------
@@ -201,36 +220,22 @@ def _cmd_new(args) -> int:
                 as_json=as_json,
             )
 
-        # Resolve *-file flags for fields that support them.
-        def _resolve_field(inline_val, file_attr, field_name):
-            """Return inline_val unless a --*-file flag was given."""
-            path_str = getattr(args, file_attr, None)
-            if path_str is None:
-                return inline_val
-            try:
-                return _read_content_file(path_str)
-            except FileNotFoundError:
-                raise ValueError(
-                    f"--{field_name}-file: file not found: {path_str}"
-                )
-            except OSError as exc:
-                raise ValueError(
-                    f"--{field_name}-file: cannot read '{path_str}': {exc}"
-                )
-
         try:
             objective = _resolve_field(
-                getattr(args, "objective", None), "objective_file", "objective"
+                getattr(args, "objective", None),
+                getattr(args, "objective_file", None), "objective"
             )
             context_val = _resolve_field(
-                getattr(args, "context", None), "context_file", "context"
+                getattr(args, "context", None),
+                getattr(args, "context_file", None), "context"
             )
             approach = _resolve_field(
-                getattr(args, "approach", None), "approach_file", "approach"
+                getattr(args, "approach", None),
+                getattr(args, "approach_file", None), "approach"
             )
             out_of_scope = _resolve_field(
-                getattr(args, "out_of_scope", None), "out_of_scope_file",
-                "out-of-scope"
+                getattr(args, "out_of_scope", None),
+                getattr(args, "out_of_scope_file", None), "out-of-scope"
             )
         except ValueError as exc:
             return _err(str(exc), as_json=as_json)
@@ -451,6 +456,8 @@ def _cmd_list(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     status = getattr(args, "status", None)
     fmt = getattr(args, "format", None) or "table"
+    if getattr(args, "json", False):
+        fmt = "json"
 
     briefs = list_briefs(workspace, status=status)
 
@@ -766,6 +773,8 @@ def register(subparsers) -> None:
     list_p.add_argument("--format", default="table",
                         choices=("table", "count", "json"),
                         help="Output shape. Default: table.")
+    list_p.add_argument("--json", action="store_true", default=False,
+                        help="Alias for --format=json.")
     list_p.add_argument("--workspace", default=None,
                         help="Workspace identity.")
 
@@ -903,10 +912,10 @@ def register(subparsers) -> None:
     m_rm.add_argument("--json", action="store_true", default=False,
                       help="Emit JSON.")
 
-    # -- ac <add|remove> ----------------------------------------------------
+    # -- ac <add|edit|remove> -------------------------------------------------
     ac_p = actions.add_parser(
         "ac",
-        help="Add or remove an acceptance criterion (DB-only)",
+        help="Add, edit, or remove an acceptance criterion (DB-only)",
         description="Manage acceptance criteria for a brief "
                     "(acceptance_criteria table).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -916,21 +925,41 @@ def register(subparsers) -> None:
             "--evidence-type=command\n"
             "  # After execution: gaia evidence add --brief my-brief "
             "--ac AC-1 --type command_output --artifact-file /tmp/result.txt\n"
+            "  gaia brief ac edit my-brief --id=AC-1 --description='...'\n"
+            "  gaia brief ac edit my-brief --id=AC-1 "
+            "--evidence-shape-file=/tmp/ac1-shape.txt\n"
             "  gaia brief ac remove my-brief --id=AC-1\n"
         ),
     )
-    ac_actions = ac_p.add_subparsers(dest="ac_action", metavar="<add|remove>")
+    ac_actions = ac_p.add_subparsers(dest="ac_action", metavar="<add|edit|remove>")
     ac_add = ac_actions.add_parser("add", help="Add an acceptance criterion")
     ac_add.add_argument("brief", help="Brief slug.")
     ac_add.add_argument("--id", required=True, help="AC id (e.g. AC-1).")
-    ac_add.add_argument("--description", default=None, help="AC description.")
+    _ac_add_desc_group = ac_add.add_mutually_exclusive_group()
+    _ac_add_desc_group.add_argument("--description", default=None,
+                                    help="AC description.")
+    _ac_add_desc_group.add_argument(
+        "--description-file", dest="description_file", default=None, metavar="PATH",
+        help="Read --description from PATH. Use '-' to read from stdin.",
+    )
     ac_add.add_argument(
         "--evidence-type", dest="evidence_type", default=None,
         help="Evidence type (e.g. command, file, url, screenshot).",
     )
-    ac_add.add_argument(
+    _ac_add_shape_group = ac_add.add_mutually_exclusive_group()
+    _ac_add_shape_group.add_argument(
         "--evidence-shape", dest="evidence_shape", default=None,
         help="Evidence shape hint (free-form string or JSON).",
+    )
+    _ac_add_shape_group.add_argument(
+        "--evidence-shape-file", dest="evidence_shape_file", default=None,
+        metavar="PATH",
+        help=(
+            "Read --evidence-shape from PATH. Use '-' to read from stdin. "
+            "Recommended when the shape prose contains '<placeholder>' "
+            "tokens or '; expect ...' clauses -- inlining that text as a "
+            "shell argument can trip the command pre-execution security scan."
+        ),
     )
     ac_add.add_argument(
         "--artifact", dest="artifact", default=None,
@@ -943,6 +972,58 @@ def register(subparsers) -> None:
                         help="Workspace identity.")
     ac_add.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON.")
+
+    ac_edit = ac_actions.add_parser(
+        "edit",
+        help="Edit an existing acceptance criterion in place",
+        description=(
+            "Update fields of an existing AC IN PLACE (wraps "
+            "gaia.briefs.store.update_ac) -- the AC's id and its position in "
+            "the list are both preserved. Only specified fields are updated. "
+            "Prefer this over 'remove' + 'add', which deletes the row and "
+            "inserts a fresh one with a new id at the END of the list."
+        ),
+    )
+    ac_edit.add_argument("brief", help="Brief slug.")
+    ac_edit.add_argument("--id", required=True, help="AC id to edit.")
+    _ac_edit_desc_group = ac_edit.add_mutually_exclusive_group()
+    _ac_edit_desc_group.add_argument("--description", default=None,
+                                     help="New AC description.")
+    _ac_edit_desc_group.add_argument(
+        "--description-file", dest="description_file", default=None, metavar="PATH",
+        help="Read --description from PATH. Use '-' to read from stdin.",
+    )
+    ac_edit.add_argument(
+        "--evidence-type", dest="evidence_type", default=None,
+        help="New evidence type.",
+    )
+    _ac_edit_shape_group = ac_edit.add_mutually_exclusive_group()
+    _ac_edit_shape_group.add_argument(
+        "--evidence-shape", dest="evidence_shape", default=None,
+        help="New evidence shape hint (free-form string or JSON).",
+    )
+    _ac_edit_shape_group.add_argument(
+        "--evidence-shape-file", dest="evidence_shape_file", default=None,
+        metavar="PATH",
+        help=(
+            "Read --evidence-shape from PATH. Use '-' to read from stdin. "
+            "Recommended when the shape prose contains '<placeholder>' "
+            "tokens or '; expect ...' clauses -- inlining that text as a "
+            "shell argument can trip the command pre-execution security scan."
+        ),
+    )
+    ac_edit.add_argument(
+        "--artifact", dest="artifact", default=None,
+        help=(
+            "New existing absolute blob path returned by `gaia evidence "
+            "add`; repository-relative paths are rejected."
+        ),
+    )
+    ac_edit.add_argument("--workspace", default=None, metavar="W",
+                         help="Workspace identity.")
+    ac_edit.add_argument("--json", action="store_true", default=False,
+                         help="Emit JSON.")
+
     ac_rm = ac_actions.add_parser("remove", help="Remove an acceptance criterion")
     ac_rm.add_argument("brief", help="Brief slug.")
     ac_rm.add_argument("--id", required=True, help="AC id to remove.")
@@ -1022,13 +1103,13 @@ def _cmd_milestone(args) -> int:
 
 
 def _cmd_ac(args) -> int:
-    """Dispatch `gaia brief ac <add|remove>` -- acceptance_criteria table writes.
+    """Dispatch `gaia brief ac <add|edit|remove>` -- acceptance_criteria writes.
 
     Local planning bookkeeping (reversible, DB-only), covered by the
     ("gaia","brief") tier exemption -- no T3 approval. `remove` is a single-row
-    delete, so it stays exempt.
+    delete, `edit` an in-place UPDATE, so both stay exempt.
     """
-    from gaia.briefs import add_ac, remove_ac
+    from gaia.briefs import add_ac, remove_ac, update_ac
 
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     as_json = getattr(args, "json", False)
@@ -1036,26 +1117,56 @@ def _cmd_ac(args) -> int:
     brief_name = getattr(args, "brief", None)
     ac_id = getattr(args, "id", None)
 
-    if sub not in ("add", "remove"):
-        return _err("usage: gaia brief ac <add|remove>", as_json=as_json)
+    if sub not in ("add", "edit", "remove"):
+        return _err("usage: gaia brief ac <add|edit|remove>", as_json=as_json)
     if not brief_name:
         return _err("brief slug is required", as_json=as_json)
     if not ac_id:
         return _err("--id is required", as_json=as_json)
 
     try:
-        if sub == "add":
+        description = _resolve_field(
+            getattr(args, "description", None),
+            getattr(args, "description_file", None), "description",
+        )
+        evidence_shape = _resolve_field(
+            getattr(args, "evidence_shape", None),
+            getattr(args, "evidence_shape_file", None), "evidence-shape",
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json=as_json)
+
+    try:
+        if sub in ("add", "edit"):
             artifact_path = getattr(args, "artifact", None)
             if artifact_path is not None:
                 from gaia.evidence.fs import require_canonical_artifact_path
                 artifact_path = require_canonical_artifact_path(artifact_path)
-            res = add_ac(
-                workspace, brief_name, ac_id,
-                description=getattr(args, "description", None),
-                evidence_type=getattr(args, "evidence_type", None),
-                evidence_shape=getattr(args, "evidence_shape", None),
-                artifact_path=artifact_path,
-            )
+            if sub == "add":
+                res = add_ac(
+                    workspace, brief_name, ac_id,
+                    description=description,
+                    evidence_type=getattr(args, "evidence_type", None),
+                    evidence_shape=evidence_shape,
+                    artifact_path=artifact_path,
+                )
+            else:
+                evidence_type = getattr(args, "evidence_type", None)
+                if all(v is None for v in
+                       [description, evidence_type, evidence_shape, artifact_path]):
+                    return _err(
+                        "at least one of --description/--description-file, "
+                        "--evidence-type, --evidence-shape/--evidence-shape-file, "
+                        "--artifact is required for edit",
+                        as_json=as_json,
+                    )
+                res = update_ac(
+                    workspace, brief_name, ac_id,
+                    description=description,
+                    evidence_type=evidence_type,
+                    evidence_shape=evidence_shape,
+                    artifact_path=artifact_path,
+                )
         else:
             res = remove_ac(workspace, brief_name, ac_id)
     except ValueError as exc:
