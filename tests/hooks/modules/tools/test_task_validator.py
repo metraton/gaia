@@ -37,9 +37,17 @@ class TestAgentExistence:
     def validator(self):
         return TaskValidator()
 
-    @pytest.mark.parametrize("agent", AVAILABLE_AGENTS)
+    @pytest.mark.parametrize("agent", ["platform-architect", "gaia:platform-architect"])
     def test_allows_valid_agents(self, validator, agent):
-        """Test that all registered agents are allowed."""
+        """A registered agent -- base form and the ``gaia:``-namespaced form,
+        the only structural variation AVAILABLE_AGENTS carries -- is allowed.
+
+        Every member of AVAILABLE_AGENTS exercises the identical branch
+        (validate()'s ``agent_name not in self.available_agents`` is False
+        by construction, since the default validator's available_agents IS
+        AVAILABLE_AGENTS), so these two representatives cover it without
+        the remaining members adding new detection capability.
+        """
         params = {
             "subagent_type": agent,
             "prompt": "Test prompt",

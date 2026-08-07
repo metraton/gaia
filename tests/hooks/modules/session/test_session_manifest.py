@@ -694,7 +694,7 @@ class TestBuildContractsIndexBlock:
         )
         block = session_manifest.build_contracts_index_block(max_chars=600)
         assert len(block) <= 600
-        assert "more, see config/surface-routing.json" in block
+        assert "more, inspect the DB-backed surface_routing registry" in block
 
     def test_real_config_has_all_surfaces(self, tmp_path, monkeypatch):
         """Integration: against a DB seeded from the real agent frontmatters,
@@ -750,7 +750,7 @@ class TestBuildContractsIndexBlock:
         for cap in (120, 200, 350, 500):
             block = session_manifest.build_contracts_index_block(max_chars=cap)
             assert block, f"cap={cap} produced empty block"
-            assert "more, see config/surface-routing.json" in block, (
+            assert "more, inspect the DB-backed surface_routing registry" in block, (
                 f"cap={cap}: overflow dropped entries WITHOUT a footer"
             )
             assert len(block) <= cap, f"cap={cap}: block exceeded cap"
