@@ -177,10 +177,24 @@ Rules, in order:
   non-curator table -- the planner is permitted to write it with no approval
   prompt. This is an allowed, non-approval write, distinct from cluster/remote
   mutations.
-- **Re-planning a brief whose plan already has rows:** a repeated
-  `gaia task add` at an existing order_num errors on the duplicate. When
-  re-materializing, remove or reorder the stale rows first
-  (`gaia task remove` / `gaia task reorder`), or add only the new order_nums.
+- **Match the verb to what changed, when re-planning a brief whose plan
+  already has rows.** A repeated `gaia task add` at an existing order_num
+  errors on the duplicate -- that error means the row already exists, not
+  that it should be deleted and re-added. **Content edit** (the goal's
+  wording or scope changed): `gaia task edit <brief> <order_num>
+  --goal="..."` (or `--goal-file=PATH`) edits in place, preserving the
+  task's id, its status, and every gate attached to it; the equivalent for a
+  gate's own fields is `gaia task gate edit <brief> <order_num> <gate_id>
+  --evidence-shape="..."` (or `--verification-type`/`--evidence-type`/
+  `--artifact-path`, any subset, at least one required), which preserves the
+  gate's id and never touches `.status`. **Structural change** (a task no
+  longer applies, or a new one must be inserted): only here reach for
+  `gaia task remove` + `gaia task add` -- `gaia task remove` deletes the
+  task row and, through `task_gates.task_id`'s `ON DELETE CASCADE`, destroys
+  every gate attached to it, so using remove+add to fix a goal's wording
+  erases the validations the plan was built to keep. **Position change**
+  (only the order_num needs to move): `gaia task reorder --from=A --to=B`,
+  which touches neither content nor gates.
 
 **Half 3 -- author the typed gate or gates each task needs:**
 

@@ -1,11 +1,9 @@
 # Memory — Reference
 
-Deep mechanics for the `memory` skill: project-scoped anchoring
-internals, the periodic curate flow, and the knowledge-graph roadmap.
-Load this on demand when `SKILL.md` points you here — day-to-day read
-and write operations do not need it. The core mental model, read flow,
-write flow, carry-forward discipline, rules, and anti-patterns all live
-in `SKILL.md`.
+Exact mechanics for the `memory` technique: storage enums, CLI operations,
+scope and retrieval rules, checkpoint payloads, history coverage, and graph
+behavior. Load this when materializing, debugging, or auditing memory; the
+judgment and ownership flow stays in `SKILL.md`.
 
 ## Project-scoped memory: reference `project_ref`, not the workspace
 
@@ -402,18 +400,18 @@ When a body exceeds ~100 lines, split into focused subtopics:
 
 ### Verb detail: `append` and `edit` worked examples
 
-`SKILL.md` carries the verb-selection table (add / append / reclassify /
-checkpoint / edit / delete with tiers). These are the worked examples and
-the history guarantee behind it.
+`SKILL.md` carries the curation judgment — which role an item serves, when it
+earns curated attention, and how it exits ("When curated memory loses it").
+These are the worked examples and the history guarantee behind the verbs it
+names.
 
 **Add to a note -- `append` (the primary additive verb, non-mutative):**
 
 ```bash
 gaia memory append <slug> --body="One more finding: ..."
 
-# Markdown-rich or multi-line text:
+# Markdown-rich or multi-line text uses an explicit body file:
 gaia memory append <slug> --body-file=/tmp/more.md
-cat more.md | gaia memory append <slug> --body-file=-
 ```
 
 `append` concatenates onto the current body (separator `\n\n`) and never
@@ -426,7 +424,6 @@ carry-forward thread or running log that accumulates.
 ```bash
 # Fix a body that is WRONG (overwrites the live column):
 gaia memory edit --name=<slug> --field=body --body-file=/tmp/corrected.md
-cat corrected.md | gaia memory edit --name=<slug> --field=body --body-file=-
 gaia memory edit --name=<slug> --field=<description|body> --content="..."
 ```
 
@@ -437,15 +434,14 @@ hood — the `--append` flag still exists and delegates to the same path as
 `append` — but for adding text, reach for `append` first. Use
 `reclassify` to change `class`/`status`; use `link` to wire the graph.
 
-**Persist a whole session close -- `checkpoint` (atomic, non-mutative):**
+**Persist a meaningful milestone -- `checkpoint` (atomic, non-mutative):**
 
 ```bash
 gaia memory checkpoint --file /tmp/session_checkpoint.json \
   --project=<project> --workspace=<ws>
-cat payload.json | gaia memory checkpoint --file - --workspace=<ws>
 ```
 
-`checkpoint` writes a session-close reflection as ONE transaction: the
+`checkpoint` writes a confirmed milestone as ONE transaction: the
 `resumen` object becomes the record anchor (`class=anchor`), each
 `pendientes[]` entry becomes a `class=thread status=carry_forward` row
 (inheriting the record's `type`), and each thread is linked
@@ -467,17 +463,16 @@ errors -- see the table above) and the same subagent-dispatch gate (only
 the orchestrator/operator pair may write). If the record body reads like
 it hides a pending (`TODO`, `pendiente`, `next step`, `- [ ]`) while
 `pendientes` is empty, it emits a non-blocking **warning** (exit 0). This
-is the mechanism `session-reflection` Step 6 uses to save a closing
-session -- one command instead of an `add` per row plus a `link` per
-thread.
+is the mechanism `session-reflection` uses when a closing arc passes the
+milestone test -- one command instead of an `add` per row plus a `link` per
+thread. An ordinary session close does not require a checkpoint.
 
-**Nothing is ever truly lost.** Any UPDATE to `body`, `description`,
-`type`, `status`, `workspace`, or `deleted_at` fires the
-`trg_memory_history` trigger, which archives the before/after into the
-`memory_history` table — this covers `append`, `edit`, and `add`'s UPSERT
-alike. Every version is recoverable from `memory_history` (a DB-layer
-safety net, queryable directly; no `gaia memory` subcommand browses it
-yet).
+**Ordinary updates are audited.** Any UPDATE to `name`, `body`, `description`,
+`type`, `class`, `status`, `workspace`, `project_ref`, `initiative`, or
+`deleted_at` fires `trg_memory_history`, which archives the tracked before/after
+values. This covers `append`, `edit`, lifecycle/scope transitions, and `add`'s
+UPSERT. It is a recovery aid, not an immortality guarantee: explicit hard
+deletion and workspace cascade can remove the row and its history.
 
 ## Knowledge graph (future)
 

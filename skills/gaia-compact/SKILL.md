@@ -1,71 +1,70 @@
 ---
 name: gaia-compact
-description: Use when the user asks to compact the current session -- "compacta", "compact", "oye Gaia compacta", "orquestador compacta", "haz un compact", "compactemos la sesión". Runs /compact with a structured prompt that preserves decisions, components, gaps, file map, and next steps.
+description: Use when the user asks to compact the current session, including “compacta”, “compactemos”, or “compact the session”
 ---
 
 # Gaia Compact
 
-A raw `/compact` tells the model "summarize everything you remember." What survives that summary is what the model happened to find salient -- which is rarely the same as what the user needs to resume work. This skill replaces that default with a preservation contract: the six categories below are what matter for continuity, and the compact prompt forces the model to retain them with high fidelity.
-
-## When this skill fires
-
-Load this skill when the user asks the orchestrator to compact the session. Spanish and English both trigger: "compacta", "orquestador compacta", "oye Gaia compacta", "haz un compact", "compact the session", "compactemos".
-
-## What the orchestrator does
-
-The Skill tool cannot invoke `/compact` directly -- built-in slash commands are not reachable through Skill. The orchestrator reads this skill, builds the combined prompt below, and then invokes `/compact <combined_prompt>` itself as its next action.
+Gaia Compact preserves the small amount of transient context needed to resume
+work after compaction. Durable decisions and work belong in memory, briefs,
+plans, tasks, or project context; compact references those objects instead of
+duplicating their bodies.
 
 ## Process
 
-1. **Extract any extra preservation instructions** the user gave alongside the compact request. Examples:
-   - "compacta pero preserva el estado del DB schema"
-   - "compacta y no olvides la decisión sobre Tailscale"
-   - "compact keeping the failing test output"
+1. **Collect user extras.** Preserve any specific item the user names.
+2. **Classify what would be lost, by which door you came in.** After a
+   `session-reflection`, every decision, learning, and pending already has a
+   home, so `UNSAVED TRANSIENT CONTEXT` is empty by construction: anything you
+   are tempted to put there names an item the reflection did not finish, and it
+   belongs back in that table rather than in a summary that expires. Arriving
+   standalone with unsaved decisions, learnings, milestones, or Gaia
+   improvements, offer the `session-reflection` → `memory` flow first; if the
+   user insists on compacting now, preserve those items explicitly under that
+   field, labeled as not durable rather than pretending permanence.
+3. **Preflight continuity.** Resolve or clearly retain approvals in flight,
+   unpersisted brief/plan changes, verification evidence, and requested git
+   actions. Compaction does not make them durable.
+4. **Build the handoff.** Preserve only:
+   - active objective;
+   - exact resume point;
+   - durable references (slugs, brief/plan/task IDs), never their bodies;
+   - unsaved transient facts;
+   - blockers and approvals;
+   - active files needed to resume;
+   - user-provided preservation instructions.
+5. **Invoke `/compact` with that handoff** -- the orchestrator's own action; this skill cannot invoke it.
 
-   If the user gave no extra instructions, `$ARGUMENTS` is empty and the base prompt is used as-is.
+## Preservation prompt
 
-2. **Build the combined prompt** by concatenating the base preservation prompt with any extra instructions:
+```text
+Preserve continuity for the next turn:
+- ACTIVE OBJECTIVE: <goal>
+- RESUME POINT: <exact next action>
+- DURABLE REFERENCES: <memory slugs and brief/plan/task IDs; no copied bodies>
+- UNSAVED TRANSIENT CONTEXT: <facts that exist only in this conversation>
+- BLOCKERS / APPROVALS: <current state>
+- ACTIVE FILES: <only files needed to resume>
+- USER EXTRAS: <request-specific instructions, if any>
 
-   ```
-   <BASE_PROMPT>
-
-   Additional preservation instructions from this request:
-   $ARGUMENTS
-   ```
-
-   If `$ARGUMENTS` is empty, omit the "Additional preservation instructions" block entirely -- do not leave a dangling header.
-
-3. **Before invoking /compact, verify persistence-critical work**. If any of the following are in-flight and NOT yet written to disk, surface them to the user and ask whether to persist first:
-   - Unsaved changes to `MEMORY.md` or memory documents under `.claude/projects/*/memory/`
-   - Brief or plan content drafted in the conversation but not yet persisted to the substrate DB via `gaia brief new --headless` / `gaia brief edit`
-   - Evidence files (`T{N}.txt`, `AC-N.*`) from a dispatch whose verification has not been persisted
-   - Uncommitted git changes the user asked to commit
-
-   Compaction is lossy by design. Anything only held in the model's context window is gone after `/compact`.
-
-4. **Invoke /compact with the combined prompt**. The orchestrator runs this as its own action -- the skill does not and cannot execute it.
-
-5. **After /compact returns**, briefly confirm to the user what was preserved (the six categories plus any extra instructions they gave).
-
-## Base preservation prompt
-
-This is the literal text the orchestrator prepends:
-
+Compress tool output and intermediate reasoning. Do not duplicate durable
+memory or structured work; retain identifiers and the next decision.
 ```
-Preserve the following with high fidelity:
-1. DECISIONS: Every architectural decision made, including the rationale and alternatives rejected.
-2. COMPONENTS: Agent roster with responsibilities, skill assignments, and known gaps identified.
-3. OPEN ITEMS: All pending briefs, open questions, and identified gaps -- with their current status.
-4. FILE MAP: Absolute paths of every file read, created, or modified, with one-line description.
-5. KEY FINDINGS: Bugs, security issues, or design problems surfaced during investigation.
-6. NEXT STEPS: The exact next action agreed upon before this compact.
-Compress tool outputs, file contents, and intermediate reasoning. Retain conclusions, not process.
-```
+
+## Handoffs
+
+- `session-reflection` supplies the resume point, not the handoff; compact
+  builds its own from that pointer and from the session's own state.
+- `memory` owns durable knowledge and live threads; compact owns transient
+  conversational continuity only.
+- See `examples.md` for chained and standalone compaction.
 
 ## Anti-patterns
 
-- **Compacting without the preservation prompt** -- defaults to a generic summary that drops file paths, approval_ids, and nonces; resuming becomes guesswork.
-- **Compacting while a T3 approval is in flight** -- the approval_id and nonce live in context; after `/compact` the grant activation can lose its anchor. Resolve approvals first, then compact.
-- **Ignoring user-provided preservation hints** -- if the user says "preserva el DB schema", appending that to `$ARGUMENTS` is the whole point; dropping it makes the skill a fancy wrapper for the default.
-- **Compacting with unsaved memory or brief drafts in context** -- these are not recoverable from `/compact` output; warn the user before running.
-- **Summarizing what was preserved in vague terms** -- after compacting, name the six categories explicitly so the user can spot a missing one immediately.
+- **Compacting durable candidates silently:** offer reflection and curation
+  before losing the context that explains them.
+- **Copying durable bodies:** duplicates memory and causes later divergence;
+  preserve identifiers.
+- **Inventorying every file read:** retain only active files needed to resume.
+- **Treating compaction as persistence:** a summary is context, not a durable
+  database record.

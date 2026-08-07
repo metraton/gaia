@@ -89,9 +89,9 @@ If the same logic would help another agent, extract it to a skill instead.
 
 ### D0 (decide first): What is the contract?
 
-The `project_context_contracts` block is the first design decision because it sets two things nothing else can recover later: token cost and write safety.
+The `project_context_contracts` block is the first design decision because it sets two things nothing else can recover later: read scope and write safety.
 
-- **`read` is the token lever.** It filters the project-context injection down to the slices this domain reasons over. Every slice in the list is injected on every call, read or not -- so a `read` list bloated with slices the agent never consults is a tax paid on every turn. Scope it to what the domain actually consults.
+- **`read` is the scope lever.** It defines the menu of project-context slices the agent may pull on demand -- surfaced to the turn as `can_read` in its dispatch kernel; nothing is preloaded. A `read` list bloated with slices the agent never consults widens the menu it is told to reason over and dilutes its evidence scope. Scope it to what the domain actually consults.
 - **`write` is the security lever.** It is the allowlist the runtime checks before accepting any `update_contracts` clause in the agent's `agent_contract_handoff` envelope (see `agent-contract-handoff`). A contract absent from `write` cannot be persisted, regardless of what the agent emits. Scope it to the contracts the domain *owns* -- `developer` owns `application_services`, `platform-architect` owns `infrastructure`/`infrastructure_topology`, a read-only diagnostic agent owns nothing or only the single observation contract it curates.
 
 The identity, the tool set, and the skills all derive from the contract: "this agent reasons over X and owns Y" is what the `read`/`write` lists already say. Decide the contract, then write the rest to match it.

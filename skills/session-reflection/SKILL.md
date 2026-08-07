@@ -1,269 +1,119 @@
 ---
 name: session-reflection
-description: Use at the end of a session with substantial conversational work to offer the user a structured reflection before closing -- briefs closed, decisions taken, components modified
+description: Use when the user asks to reflect on a session, or when closing substantial work that contains decisions, learnings, unresolved threads, or Gaia improvements worth reviewing
 ---
 
 # Session Reflection
 
-Help the user close the conversational arc of a session by offering a short,
-structured reflection. This is **not** a technical log summary, a commit
-recap, or a status report. It is a return of *what was agreed* from the
-user's side, in the language the conversation already produced.
+Session reflection is everything the session lived, contrasted against what
+belongs to each project, until no loop is left dangling. It recovers the whole
+arc, reconciles it against the durable corpus in both directions, and leaves
+every item — settled or open — with an owner a later session can find.
 
-The orchestrator loaded this skill because the session carried enough
-conversational weight that closing without reflection would lose the arc.
-Your job is to recover that arc -- not re-narrate the actions.
-
-## When to Activate
-
-Activate when the session has at least two of:
-
-- 50+ turns or multiple subagent dispatches.
-- One or more decisions where the user said yes/no to a concrete proposal.
-- A brief opened, edited, or closed.
-- A skill, agent, hook, or routing config modified.
-- Multiple follow-ups that surfaced and were either deferred or absorbed.
-
-Skip when the session was purely executive (commands run, no agreements
-exchanged). Better to honestly say "this session was mostly execution --
-no conversational arc to reflect on" than to inflate three bullets.
-
-## The long-session failure mode (read this first)
-
-In dense sessions (50+ turns, multiple agents, several briefs in flight),
-the orchestrator forgets at scale. Symptoms the user has flagged:
-
-- Mid-session decisions get dropped because later topics overwrote them.
-- Follow-ups get mixed with closures -- "we agreed to defer X" turns into
-  "we closed X".
-- Conclusions get invented to fill the section structure when honest
-  sections would have been shorter.
-- The user's plain-language framing gets re-technified ("dejémoslo así"
-  becomes "decided to maintain current state").
-
-The Process below is built to defend against this. The recovery pass in
-Step 1 is the antidote -- skipping it produces exactly the failure mode
-above.
+Upstream are the transcript, the specialist contracts, and the injected digest.
+Downstream is memory curation: reflection ends when the corpus is correct.
+Compaction is a separate act, performed only when the user asks for it.
 
 ## Process
 
-### Step 1: Recover the arc, not the log
+1. **Recover the whole arc.** Scan from the session opening for accepted and
+   rejected proposals, deferrals, closures, user corrections, and specialist
+   reactions — recency is not weight, an early settled choice still stands.
+   Include `cross_layer_impacts`, `open_gaps`, and `failure_report` findings
+   even where the user never reacted: they are observations about Gaia, not
+   conversational agreements. `reference.md` holds the full recovery pass.
+2. **Reconcile in both directions.** For each initiative the session touched,
+   read its live corpus — `gaia memory get-relevant --initiative=<key>`
+   returns that whole pending set uncapped, with bodies — and ask: what did
+   this session produce with no home yet, and what already-open pending did
+   it close, advance, or invalidate? A topic search only answers whether your
+   own phrasing has a row; the closure you owe is usually phrased in terms
+   that predate the session that solved it. Read briefs, plans, tasks, and
+   approvals the same way — a conversation cannot close an object the
+   substrate still shows open. `reference.md` holds the reverse-sweep
+   mechanics and the objective-state checks that verify a `SKIP`.
+3. **Classify disjointly.** Separate settled decisions and learnings,
+   genuinely open work, and Gaia improvements. When closure is uncertain,
+   classify as open; a lost pending costs more than an extra review.
+4. **Give every item a home, and know what the home does.** The pending
+   worklist that returns to the user each session selects `class=thread` with
+   status `carry_forward` or `open` only — an `anchor` still reaches a
+   dispatched agent as held knowledge, but never comes back as work. Filing
+   live work as an anchor hides it; filing settled knowledge as a thread
+   turns the worklist into noise. `SKIP` is a home only when you name the
+   canonical object that owns the item — already-canonical work is
+   referenced, never copied.
+5. **Present the reflection and the exact proposal.** Show scope, operation,
+   values, and verification before any write. Consent mechanics belong to
+   `memory`.
+6. **Run the confirmed curation, closures included.** Materialize the step 2
+   closures alongside the new rows; `reclassify` and `append` are
+   non-mutative, so nothing but omission keeps a resolved thread open. A
+   closing arc that passes the milestone test in `reference.md` uses
+   `checkpoint`, one atomic write; an ordinary close does not.
+7. **State the resume point.** One line naming what the next session picks
+   up — a pointer, not a container: everything it names already has a row.
 
-Before drafting any bullet, scan the session transcript for **agreement
-markers** and **deferral markers**. These are the anchors of the real arc.
+## Output
 
-**Read the whole arc, from the first turn -- not the recent window.**
-The failure the user named is reflecting from the last few turns because
-they are closest to hand; a point settled at turn 12 and never revisited
-is exactly the one that gets dropped. Scan forward from the session's
-opening to its close -- do not walk backward from the end until it "feels
-like enough". If the transcript is long, that is the reason to be more
-thorough, not less: length is where the early arc hides.
+No section holds a bare sentence. Every item leaves with a home and an
+operation — a display that cannot state an item without stating its owner
+cannot lose one to prose. Omit an empty section instead of inventing content,
+and use the user's own vocabulary and language.
 
-| Marker type | User phrases (Spanish + English) |
-|-------------|----------------------------------|
-| Agreement | "ok", "exacto", "vayamos por eso", "let's go with that", "confirmado", "dale", "sí", "yes" |
-| Rejection | "no, mejor", "actually no", "esperá", "wait", "cambiemos", "let's change" |
-| Deferral | "eso lo vemos después", "for later", "captura como brief", "leave it open", "ya veremos" |
-| Closure | "dejémoslo", "cerralo", "close it", "listo", "done", "ya está" |
+`SAVE`, `APPEND`, `TRANSITION`, `LINK`, and `SKIP` are the proposal verbs
+`memory` adjudicates; a closure or graduation is a `TRANSITION`, materialized
+as `reclassify` — `memory/reference.md` holds the exact forms.
 
-For dense sessions (50+ turns, multiple subagents), walk through these
-checkpoints explicitly before drafting:
+### What we settled
 
-1. **Decision verbs**: every user message that contained a verb committing
-   to or rejecting a path. Note both sides -- what was accepted *and* what
-   was rejected.
-2. **"Vayamos con X" / "let's go with X"**: every explicit affirmative the
-   user emitted in response to a proposal. These are the strongest agreement
-   signals; do not lose them.
-3. **Dispatch reactions**: every subagent result the user reacted to. The
-   reaction (approval, rework, deferral) is the agreement, not the result
-   itself.
-4. **Briefs mentioned but not implemented**: deferred work that surfaces
-   under "what stayed open", not under "what we agreed".
+Accepted decisions, closures, and reusable learnings, each with evidence of
+agreement or objective completion. Most rows are `SKIP` naming the object
+that already holds them; a decision that will constrain a future choice is
+`SAVE`, filed as knowledge rather than as work.
 
-As you walk these, keep **two disjoint lists**: **closed** (reached a
-conclusion both sides accepted) and **open** (surfaced and did not
-conclude). Every item belongs to exactly one -- never both. When you
-are unsure which, it is **open**: a pending mislabeled as closed
-vanishes, while a closed item mislabeled as open only costs a harmless
-extra thread later. This asymmetry is the safe default; err toward open.
+| Item | Home | Operation |
+|---|---|---|
+| the decision, in the user's words | slug, commit, or brief/plan/task id | SAVE, APPEND, LINK, or SKIP |
 
-**A fifth check, separate from the four above: harvest the contracts.**
-Every subagent turn returned an `agent_contract_handoff`, and its
-`cross_layer_impacts` / `open_gaps` fields often carry friction, defects,
-or missing capability the user never saw. These need no user reaction to
-count -- they are findings about the system, not agreements. Keep them
-in a third list, separate from closed and open.
+### Open work
 
-This is the antidote to "orchestrator forgets at scale". List these
-mentally (or in a scratch buffer) before writing the first bullet.
+One row per unresolved concern, plus one row per pending the step 2 sweep
+found this session resolved — a pending you closed is a `TRANSITION`, and
+leaving it out is how a worklist grows past the attention anyone can give it.
 
-### Step 2: Four-section structure with objective criteria
+| Item | Home | Operation |
+|---|---|---|
+| the concern, in the user's words | slug, brief/plan/task id, or initiative | SAVE, APPEND, TRANSITION, LINK, or SKIP |
 
-Produce a short response with four sections. Each section has an objective
-admission criterion -- if the criterion is not met, the section is empty.
+### What Gaia should improve
 
-**What we agreed**
-2-4 bullets naming decisions that emerged. Admission criterion: the user
-responded affirmatively to a concrete proposal. A topic that was discussed
-without affirmative response is *not* an agreement.
+    Symptom      observable behavior, not diagnosis
+    Component    one precise owner
+    Evidence     observed proof
+    Reproduction exact repeatable route, or unknown
+    → feedback_<component>_<symptom> · type feedback · SAVE or APPEND
 
-**What stayed open**
-What was raised but not closed -- ideas, deferred questions, follow-ups
-that surfaced and did not reach closure. Admission criterion: the topic
-appeared in the session and was *not* concluded. Do not force items;
-"nothing significant stayed open" is valid output.
+Displayed in full, not summarized — consent to a defect whose evidence was
+never shown is consent to a slug. `reference.md` holds the field definitions
+and the `gaia_system` retrieval query a wrong initiative or type hides from.
 
-**What the session revealed about the system**
-Friction, defects, or missing capabilities a contract named in
-`cross_layer_impacts` or `open_gaps`, whether or not the user reacted.
-Omit the section when none did -- do not invent a finding to fill it.
+### Resume point
 
-**What deserves to crystallize**
-Optional suggestion of which decisions or learnings would be worth
-persisting. Propose; do not prescribe. The user decides.
+One line. If the user asks to compact after this, `gaia-compact` builds its
+own handoff; reflection hands it a pointer, not a container.
 
-### Step 3: Use the user's own vocabulary
+## Ownership and consent
 
-If the user said "DB-canonical", use "DB-canonical". If they said "mover a
-la base de datos", do not translate to "migrate to substrate". If they said
-"dejémoslo como está", do not write "decided to maintain current state".
+The orchestrator recovers, reconciles, and adjudicates; the user corrects the
+displayed proposal; the orchestrator or `gaia-operator` materializes the
+exact confirmed batch. Independent operations are best-effort, a checkpoint
+stays atomic. Reflection itself is not a new durable object.
 
-The continuity of language is what makes the reflection feel like the
-user's session, not the agent's report. Re-technifying plain Spanish (or
-plain English) into jargon breaks that continuity.
+## Handoffs
 
-User quotes can stay in the original language even when the surrounding
-prose is English. The reflection is for the user; the user's words win.
-
-### Step 4: Verify against pending state
-
-Before closing the reflection, confirm against any objective state in the
-session:
-
-- Briefs in `draft` that the conversation discussed -- still draft, or
-  moved to `open`?
-- Commits not yet pushed -- should they appear under "stayed open"?
-- Subagent dispatches that returned `BLOCKED` or `NEEDS_INPUT` -- those
-  are open, not closed.
-- Approvals requested but not granted -- open.
-
-If your draft reflection contradicts the actual state (e.g. you wrote
-"we closed brief X" but `gaia brief show X` shows `status: open`), align
-the reflection to reality before presenting.
-
-This check is also the gate for Step 6: only the items this step
-confirms are *genuinely* open become carry-forward threads on save. A
-pending that objective state shows already resolved is not a thread; a
-"closure" the state contradicts is not a closure. Reconcile here so the
-save decomposes the real arc, not the drafted one.
-
-### Step 5: Length budget
-
-The reflection itself is **<= 200 words**, all four sections included.
-The system-findings section does not add to that budget -- if it
-appears, the other three tighten to make room.
-
-Honest brevity beats padded structure. If a section has nothing real to
-say, omit it or say so.
-
-Do not re-summarize commit hashes the user already saw during the
-session. They read that output live; repeating it is not reflection, it
-is noise.
-
-The skill *instructions* (this file) can be longer; the *output* cannot.
-
-### Step 6: Closing is itself a save point -- the orchestrator decides, gaia-operator executes
-
-#### The decision
-
-Closing any turn of substantial work is a save point on its own. It does
-not wait for the user to ask. The orchestrator decides what earned a
-place in memory and proposes it to the user -- deciding is not optional.
-User consent to persist is still mandatory; only an explicit yes turns
-the proposal into a write.
-
-The orchestrator has no shell of its own. It dispatches gaia-operator to
-run `gaia memory checkpoint`, with the payload the orchestrator
-dictates. The operator executes the write -- it does not decide what to
-save, what to connect it to, or whether to create or link. If the user
-accepts, save **decomposed**, never as one packed anchor.
-
-**A pending never travels inside the summary body.** A single
-`gaia memory add` that folds the whole session -- closures *and*
-pendings -- into one anchor is the failure this step exists to prevent:
-an anchor's body is never re-injected at SessionStart (only
-`class=thread status=carry_forward` notes resurface), so a real pending
-buried in that body becomes invisible and has to be rescued by hand.
-The save is a record and its threads -- but write it as **one atomic
-command**, not an `add` per row.
-
-#### The mechanics
-
-**gaia-operator runs `gaia memory checkpoint`.** It persists the whole
-reflection in one transaction: the record anchor, one carry-forward
-thread per pending, and a `derived_from` edge from each thread back to
-the record. It is all-or-nothing -- an invalid row writes *zero* rows,
-never a half-written save. The orchestrator dictates the JSON payload
-below; gaia-operator passes it via `--file` (or `--file -` on stdin):
-
-```json
-{
-  "resumen": {
-    "name": "project_session_2026-07-14_<topic>",
-    "type": "project",
-    "description": "<one-line summary of the arc>",
-    "body": "Source: brief <id>, plan <id>, tasks <ids>. Related: <sibling anchor names created this session>. <the durable account of what happened -- NO live pendings>"
-  },
-  "pendientes": [
-    {
-      "name": "project_<pending_topic>",
-      "description": "<the single pending, in one line>",
-      "body": "<the pending's detail>"
-    }
-  ]
-}
-```
-
-**Name the source work in the body, in that same fixed spot.** No field
-or link ties a memory entry to a brief, a plan, or a task --
-`derived_from` only connects memory to memory. The only connection until
-then is textual: use the `Source:` / `Related:` line above every time,
-or six weeks later nobody can tell which work the note came from.
-
-```bash
-gaia memory checkpoint --file /tmp/session_checkpoint.json \
-  --project=<project> --workspace=<ws>
-```
-
-`resumen` becomes the record anchor (`class=anchor`); each `pendientes`
-entry becomes a `class=thread status=carry_forward` row that inherits the
-record's `--type` and is linked `derived_from` the record. **One pending
-= one entry** in the `pendientes` list -- never a single thread with a
-`## PENDIENTE` list. This is the same **"One thread = one note"** rule the
-`memory` skill enforces for handoffs: the `status` column is what
-resurfaces a pending at the next SessionStart, so each concern needs its
-own row and its own `status`.
-
-If there were no open pendings, `pendientes` is `[]` -- the record anchor
-alone is a complete, honest save. Do not invent a thread to fill
-structure, and do not relabel a pending as closed to avoid writing one
-(Step 4's two-list rule already forbids this). If the record body itself
-reads like it hides a pending (a `TODO`, a "próximo paso", a `- [ ]`
-line) while `pendientes` is empty, `checkpoint` returns a non-blocking
-**warning** -- heed it and lift the pending into a `pendientes` entry.
-
-`checkpoint` is non-mutative (T0, no approval) and idempotent: the
-date-stamped `project_session_<date>_<topic>` slug avoids collisions, so
-re-running the same payload UPSERTs the same rows rather than duplicating
-them.
-
-See `memory/SKILL.md` -- **Write flow** for the slug↔type rules and
-UPSERT semantics, and **Carry-forward / handoff** for the
-`derived_from` grouping and why a thread is closed by its `status`, not
-by editing its body.
-
-Memory lives in the `memory` table in the Gaia substrate
-(`~/.gaia/gaia.db`), never in disk files such as `MEMORY.md`. Flag any
-doc that still describes file-based reflections in `cross_layer_impacts`.
+- Load `memory` for curation policy, lifecycle verbs, and consent.
+- Load `reference.md` for dense-session recovery, the reverse sweep, the
+  Gaia-improvement shape, the milestone test, and the anti-patterns to avoid.
+- Load `examples.md` for the integrated reflection → curation flow.
+- Load `gaia-compact` only when the user asks to compact.

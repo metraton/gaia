@@ -139,9 +139,21 @@ gaia task add <brief> --order=N --goal="... AC-<n> ..." --workspace=<ws>
 - `order_num` is 1-based and unique per plan; a duplicate is rejected.
 - `gaia task add` is safe bookkeeping (not T3) on the non-curator `tasks` table
   -- an allowed, no-approval write for the planner.
-- Re-planning a brief whose plan already has rows: a repeated add at an existing
-  order_num errors; remove/reorder the stale rows first, or add only the new
-  order_nums.
+- Re-planning a brief whose plan already has rows: match the verb to what
+  changed. A repeated add at an existing order_num errors -- that means the
+  row already exists, not that it should be deleted and re-added. A content
+  edit (the goal's wording or scope changed) is `gaia task edit <brief>
+  <order_num> --goal="..."` (or `--goal-file=PATH`), which preserves the
+  task's id, status, and every gate attached to it; the same for a gate's own
+  fields is `gaia task gate edit <brief> <order_num> <gate_id>
+  --evidence-shape="..."` (or `--verification-type`/`--evidence-type`/
+  `--artifact-path`, any subset, at least one required), preserving the
+  gate's id and never touching `.status`. Reserve `gaia task remove` +
+  `gaia task add` for a genuine structural change -- a task that no longer
+  applies, or a new one to insert -- because `gaia task remove` deletes the
+  row and, through `task_gates.task_id`'s `ON DELETE CASCADE`, destroys every
+  gate attached to it. `gaia task reorder --from=A --to=B` remains the verb
+  for a pure position change, touching neither content nor gates.
 
 Confirm the rows with `gaia task list <name> --format=count` (it should equal
 the number of tasks you decomposed).
