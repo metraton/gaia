@@ -42,10 +42,13 @@ gaia contract finalize --session-id af7e4d2-session --plan-task-id 4821   # writ
 Order matters here: `verification` is filled in BEFORE `agent_state` is set to `COMPLETE` (`SKILL.md`, "Build order matters"). Reversing those two calls rejects with `VERIFICATION_RESULT` on the `set agent_state COMPLETE` step, because validate-on-write checks the FULL envelope at that point, not just the field being set.
 
 The draft this produces is byte-for-byte the same envelope as example 1
-below. `finalize` writing the DB row does not end the turn's obligation: the
-SubagentStop gate parses the fence in your response text, not this row, so
-the turn still closes with the exact same JSON echoed as a fenced
-`agent_contract_handoff` block (example 1) in the final message.
+below. `finalize` writing the DB row does not end the turn's obligation: once
+that row is cleanly finalized, the SubagentStop gate validates the row's own
+envelope, not the fence's text -- the row now decides. The fence remains
+required output regardless, as the gate's fallback for a turn with no
+reachable dispatch row, so the turn still closes with the exact same JSON
+echoed as a fenced `agent_contract_handoff` block (example 1) in the final
+message.
 
 ## 1. COMPLETE (verified result, happy path)
 
