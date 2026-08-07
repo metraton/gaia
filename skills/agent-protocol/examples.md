@@ -1,26 +1,25 @@
 # Agent Protocol -- Status-Specific Examples
 
 Read on-demand when constructing an `agent_contract_handoff` envelope.
-See `SKILL.md` for the schema definition and field rules.
+See `agent-contract-handoff` for the schema definition and field rules, and
+`reference.md` for where each moment's answer lands.
 
-The envelope shape below is unchanged by the by-value CLI model (`SKILL.md`
-"Building the contract"): building it with `gaia contract init`/`set`/`add`/
-`fill --json`/`finalize` produces this exact JSON, one field at a time, and
-`gaia contract view` prints it in this same shape. The fenced block tag is
-`agent_contract_handoff` (single canonical format); each example below opens
-the block with that tag as the reference for the shape you either compose
-directly or build via the CLI and then echo -- the fence in your response
-text is required output either way (`SKILL.md`, "Fence fallback").
+Each example below is the envelope **as the row holds it** -- the shape your
+`set`/`add`/`fill --json` calls build up one field at a time, and the shape
+`gaia contract view` prints back. None of it is something you paste into your
+final message. The row is the handoff, and whoever needs this turn queries it
+(`SKILL.md`, principle 1). Read these as the target you are filling toward,
+not as output.
 
-## 0. Building example 1 via the CLI, then closing with the fence
+## 0. Building example 1 via the CLI, from first write to close
 
 Every example below can be read as "the JSON shape", but example 1 is walked
-through here as a CLI-built turn end-to-end, so the two paths are visibly the
-same contract:
+through here as a CLI-built turn end-to-end, so the shape and the calls that
+produce it are visibly the same contract:
 
 ```
-gaia contract init          # prints:  agent_id: <a + 16 hex>   draft_id: <that>.<token>
-gaia contract set agent_status.agent_state IN_PROGRESS --draft-id <the printed draft_id>
+# the row and its draft already exist; contract_id comes from `# Your Contract`
+gaia contract set agent_status.agent_state IN_PROGRESS --draft-id <contract_id>
 # ... work happens: kubectl get hr -n qxo, etc ...
 gaia contract fill --json '{
   "evidence_report": {
@@ -32,29 +31,27 @@ gaia contract fill --json '{
     "cross_layer_impacts": [],
     "open_gaps": []
   }
-}'
-gaia contract fill --json '{"evidence_report": {"verification": {"method": "test", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}'
-gaia contract set agent_status.agent_state COMPLETE
-gaia contract validate   # confirm the verdict before finalizing
-gaia contract finalize --session-id af7e4d2-session --plan-task-id 4821   # writes the sole, idempotent agent_contract_handoffs row
+}' --draft-id <contract_id>
+gaia contract fill --json '{"evidence_report": {"verification": {"method": "test", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}' --draft-id <contract_id>
+gaia contract set agent_status.agent_state COMPLETE --draft-id <contract_id>
+gaia contract validate --draft-id <contract_id>   # confirm the verdict before finalizing
+gaia contract finalize --draft-id <contract_id> --plan-task-id 4821   # writes the sole, idempotent agent_contract_handoffs row
 ```
 
-Order matters here: `verification` is filled in BEFORE `agent_state` is set to `COMPLETE` (`SKILL.md`, "Build order matters"). Reversing those two calls rejects with `VERIFICATION_RESULT` on the `set agent_state COMPLETE` step, because validate-on-write checks the FULL envelope at that point, not just the field being set.
+Order matters here: `verification` is filled in BEFORE `agent_state` is set to `COMPLETE` (`reference.md`, "Build order for a terminal state"). Reversing those two calls rejects with `VERIFICATION_RESULT` on the `set agent_state COMPLETE` step, because validate-on-write checks the FULL envelope at that point, not just the field being set.
 
 The draft this produces is byte-for-byte the same envelope as example 1
-below. `finalize` writing the DB row does not end the turn's obligation: once
-that row is cleanly finalized, the SubagentStop gate validates the row's own
-envelope, not the fence's text -- the row now decides. The fence remains
-required output regardless, as the gate's fallback for a turn with no
-reachable dispatch row, so the turn still closes with the exact same JSON
-echoed as a fenced `agent_contract_handoff` block (example 1) in the final
-message.
+below, and `finalize` writing that row is where the turn ends. The stop gate
+resolves this turn's own persisted row and validates the envelope THAT row
+holds; nothing is echoed after it. What the turn says in its final message is
+an account for whoever is reading -- the detail behind it is queried from the
+row, at whatever granularity the question needs, whenever it is asked.
 
 ## 1. COMPLETE (verified result, happy path)
 
 Standard terminal envelope after a successful increment. `verification` is required and `result` must be `"pass"`.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "COMPLETE",
@@ -86,7 +83,7 @@ Standard terminal envelope after a successful increment. `verification` is requi
 
 Escalation envelope -- the agent identified a gap it cannot close on its own surface.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "BLOCKED",
@@ -113,7 +110,7 @@ Escalation envelope -- the agent identified a gap it cannot close on its own sur
 
 `next_action` lists the explicit choices.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "NEEDS_INPUT",
@@ -140,7 +137,7 @@ Escalation envelope -- the agent identified a gap it cannot close on its own sur
 
 Hook produced `approval_id` -- pass it through verbatim. The orchestrator presents the operation to the user for explicit consent.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "APPROVAL_REQUEST",
@@ -175,7 +172,7 @@ Hook produced `approval_id` -- pass it through verbatim. The orchestrator presen
 
 The agent uncovered a fact worth persisting (a decision, an anchor) and offers it as a memorialize entry. The orchestrator presents it to the user; the user decides whether it lands in gaia memory. Required fields per entry: `description`, `body`.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "COMPLETE",
@@ -215,7 +212,7 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and offers i
 
 The injected handoff carried `consolidation_required: true`; the agent reports ownership state and names the next agent if the task crosses surfaces. Enum values: `owned_here`, `cross_surface_dependency`, `not_my_surface`.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "COMPLETE",
@@ -252,13 +249,13 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
 
 ## 7. `loop_state` -- blocking vs non-blocking
 
-Agentic-loop agents emit a `loop_state` dict. The runtime (`_check_loop_state_blocking` in `contract_validator.py`) blocks `COMPLETE` when `iteration < max_iterations AND metric < threshold` -- in that case another iteration is forced and the contract is rejected. When `metric >= threshold` (or iteration count is exhausted) the `COMPLETE` is accepted.
+Agentic-loop agents carry a `loop_state` dict in the envelope. The runtime (`_check_loop_state_blocking` in `contract_validator.py`) blocks `COMPLETE` when `iteration < max_iterations AND metric < threshold` -- in that case another iteration is forced and the contract is rejected. When `metric >= threshold` (or iteration count is exhausted) the `COMPLETE` is accepted.
 
 ### 7a. Blocking case (metric below threshold, iteration remaining)
 
 The runtime will reject this `COMPLETE` and force the agent to iterate again.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "COMPLETE",
@@ -296,7 +293,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 
 `metric >= threshold` -- the `COMPLETE` lands as terminal.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "COMPLETE",
@@ -334,7 +331,7 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
 
 The agent discovered a project fact a section it owns did not yet hold, and writes it back so the next agent does not re-derive it. `update_contracts` is an array of `{contract, payload}`; `contract` must be a name from the INPUT `write_permissions.writable_sections`, and `payload` carries only the keys to add or update (index, not live-state). See `agent-contract-handoff` for merge semantics.
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "COMPLETE",
@@ -376,7 +373,7 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
 
 Harness R2: the producer believes the increment is done and MAY propose `evidence_report.verification.result`, but this is a proposal, not a `COMPLETE` -- only a verifier-role agent transitions `NEEDS_VERIFICATION` to `COMPLETE` (a verifier rejecting it sends the increment back to `IN_PROGRESS`).
 
-```agent_contract_handoff
+```json
 {
   "agent_status": {
     "agent_state": "NEEDS_VERIFICATION",
@@ -408,7 +405,7 @@ Harness R2: the producer believes the increment is done and MAY propose `evidenc
 
 **Per-command (default):** when T3 commands appear one at a time as the agent
 works, each blocked command produces its own `APPROVAL_REQUEST` with an
-`approval_id` (shape identical to example 4 above). Do not emit `batch_scope`
+`approval_id` (shape identical to example 4 above). Do not write `batch_scope`
 -- it is ignored.
 
 **Compound-command batch (hook-minted, not agent-declared):** there is no

@@ -51,7 +51,9 @@ Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) ar
 skills/
 ├── agent-contract-handoff/ # Reference: full field dictionary for the agent_contract_handoff envelope (input + output)
 ├── agent-creation/        # Coach skill: structure, tone, and component inventory for new specialist agents
-├── agent-protocol/        # Small producer workflow and branch router
+├── agent-protocol/        # Protocol: the eleven principles that govern a turn as it happens, plus what the gate rejects
+│   ├── reference.md       # the two state machines, phase-to-section map, kernel fields, storage/recovery, edge cases
+│   └── examples.md        # filled envelopes, one per agent_state
 ├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
 ├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
