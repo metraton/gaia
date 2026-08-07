@@ -10,7 +10,8 @@ on curated memory rows:
   stats [--json]                         Episode count, index count, scores, conflicts
   show <name> [--json]                  Curated memory row by (project, name)
   episode-show <episode_id> [--json]    Full episode with metadata and score
-  list [--type=...] [--workspace=<ws>]  Enumerate curated memory rows
+  list [--type=...] [--audience=...] [--workspace=<ws>]
+                                          Enumerate curated memory rows
   get-relevant [--workspace=<ws>]       Compact SessionStart injection block
   conflicts [--threshold F] [--json]    Pairwise contradiction scan (curated)
 
@@ -28,6 +29,7 @@ these verbs in this order:
 
   add --name=<slug> --type=<project|user|feedback|atom|decision|negative>
       --body="..." [--description=...] [--class=...] [--status=...]
+      [--audience=<orchestrator|executor|any>]
       [--workspace=<ws>] [--project=<name> | --project-ref=<identity>] [--json]
                                           Creates/UPSERTs a NEW row (distinct
                                           from append, which grows one).
@@ -46,6 +48,11 @@ these verbs in this order:
                                           {"error","code"}) and writes no row.
                                           --workspace only => project_ref NULL,
                                           exit 0 (explicit degraded lane).
+                                          --audience (v45) sets memory.audience
+                                          at insertion time; omitted, a new row
+                                          defaults to 'any' and a correction
+                                          upsert leaves an existing value
+                                          untouched (never silently reset).
 
   reclassify <name> [--class=...] [--status=...] [--workspace=<ws>]
                                           Lifecycle transitions (open ->
@@ -54,7 +61,8 @@ these verbs in this order:
                                           Non-mutative (T0).
 
   edit --name=<slug> --field=<description|body>
-       --content="..." | --body-file=<path> [--append] [--json]
+       --content="..." | --body-file=<path> [--append]
+       [--audience=<orchestrator|executor|any>] [--json]
                                           CORRECTION verb: overwrite/supersede
                                           a field when existing content is
                                           WRONG. Non-destructive under the
@@ -62,6 +70,10 @@ these verbs in this order:
                                           value) but changes what reads see,
                                           so it stays T3 (needs approval).
                                           Prefer append to add text.
+                                          --audience (v45) PATCHes
+                                          memory.audience on an EXISTING row;
+                                          combinable with --field/--class/
+                                          --status/--project in the same call.
 
   link <src> <dst> --kind=<relates_to|supersedes|derived_from|graduated_to>
       [--delete] [--workspace=<ws>]      Create/delete a memory_links edge.
@@ -684,6 +696,7 @@ def _cmd_add(args) -> int:
     status_flag = getattr(args, "status", None)
     project_flag = getattr(args, "project", None)
     project_ref_flag = getattr(args, "project_ref", None)
+    audience_flag = getattr(args, "audience", None)
     workspace = _resolve_workspace(workspace_flag)
 
     if not name:
@@ -816,6 +829,7 @@ def _cmd_add(args) -> int:
             description=description,
             project_ref=project_ref,
             initiative=initiative,
+            audience=audience_flag,
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -867,6 +881,8 @@ def _cmd_add(args) -> int:
             out["project_ref"] = project_ref
         if initiative is not None:
             out["initiative"] = initiative
+        if audience_flag is not None:
+            out["audience"] = audience_flag
         if reclassify_result is not None:
             out["class"] = reclassify_result["class"]
             out["memory_status"] = reclassify_result["memory_status"]
@@ -880,6 +896,8 @@ def _cmd_add(args) -> int:
             print(f"  project_ref: {project_ref}")
         if initiative is not None:
             print(f"  initiative: {initiative}")
+        if audience_flag is not None:
+            print(f"  audience: {audience_flag}")
         print(f"  body: {snippet}")
         if reclassify_result is not None:
             print(
@@ -1105,6 +1123,7 @@ def _cmd_list(args) -> int:
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     type_filter = getattr(args, "type", None)
+    audience_filter = getattr(args, "audience", None)
     fmt = getattr(args, "format", None) or "table"
     limit = getattr(args, "limit", None)
     if as_json:
@@ -1115,7 +1134,7 @@ def _cmd_list(args) -> int:
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
-    rows = list_memory(workspace, type=type_filter)
+    rows = list_memory(workspace, type=type_filter, audience=audience_filter)
     if limit is not None and limit > 0:
         rows = rows[:limit]
 
@@ -2009,6 +2028,14 @@ def _history_view(h: dict) -> dict:
         fields.append("description")
     if (h.get("before_workspace") or None) != (h.get("after_workspace") or None):
         fields.append("workspace")
+    if (h.get("before_name") or None) != (h.get("after_name") or None):
+        fields.append("name")
+    if (h.get("before_class") or None) != (h.get("after_class") or None):
+        fields.append("class")
+    if (h.get("before_project_ref") or None) != (h.get("after_project_ref") or None):
+        fields.append("project_ref")
+    if (h.get("before_initiative") or None) != (h.get("after_initiative") or None):
+        fields.append("initiative")
     if (h.get("before_deleted_at") or None) != (h.get("after_deleted_at") or None):
         fields.append("deleted_at")
     body_delta = len(h.get("after_body") or "") - len(h.get("before_body") or "")
@@ -2090,6 +2117,7 @@ def _cmd_curated_show(args) -> int:
     if row.get("description"):
         print(f"# {row['description']}")
     print(f"# class: {row.get('class')}  status: {row.get('status')}")
+    print(f"# audience: {row.get('audience')}")
     print(f"# updated_at: {row.get('updated_at')}")
 
     if links_payload is not None:
@@ -2234,6 +2262,7 @@ def _cmd_edit(args) -> int:
     status_flag = getattr(args, "status", None)
     project_flag = getattr(args, "project", None)
     project_ref_flag = getattr(args, "project_ref", None)
+    audience_flag = getattr(args, "audience", None)
 
     if not name:
         return _err("--name is required", as_json)
@@ -2273,11 +2302,12 @@ def _cmd_edit(args) -> int:
     has_field_patch = field is not None and content not in (None, "")
     has_reclassify = class_flag is not None or status_touches
     has_reanchor = project_flag is not None or project_ref_flag is not None
+    has_audience = audience_flag is not None
 
-    if not has_field_patch and not has_reclassify and not has_reanchor:
+    if not has_field_patch and not has_reclassify and not has_reanchor and not has_audience:
         return _err(
-            "--field/--content, --class/--status, or --project/--project-ref "
-            "is required", as_json,
+            "--field/--content, --class/--status, --project/--project-ref, "
+            "or --audience is required", as_json,
         )
 
     try:
@@ -2336,6 +2366,18 @@ def _cmd_edit(args) -> int:
         except PermissionError as exc:
             return _err(str(exc), as_json)
 
+    audience_result = None
+    if has_audience:
+        try:
+            from gaia.store.writer import set_memory_audience
+            audience_result = set_memory_audience(
+                workspace, name, audience_flag,
+            )
+        except ValueError as exc:
+            return _err(str(exc), as_json)
+        except PermissionError as exc:
+            return _err(str(exc), as_json)
+
     if as_json:
         payload = {
             "name": name,
@@ -2343,6 +2385,7 @@ def _cmd_edit(args) -> int:
             "field_update": field_result,
             "reclassify": reclassify_result,
             "reanchor": reanchor_result,
+            "audience": audience_result,
         }
         print(json.dumps(payload, indent=2, default=str))
     else:
@@ -2355,6 +2398,12 @@ def _cmd_edit(args) -> int:
             print(
                 f"Reclassified '{name}': class={reclassify_result['class']}, "
                 f"status={reclassify_result['memory_status']}"
+            )
+        if audience_result is not None:
+            print(
+                f"Audience '{name}': "
+                f"{audience_result['before_audience']!r} -> "
+                f"{audience_result['after_audience']!r}"
             )
         if reanchor_result is not None:
             print(
@@ -2826,6 +2875,11 @@ def register(subparsers):
         choices=("project", "user", "feedback", "atom", "decision", "negative"),
         help="Filter by type.",
     )
+    list_p.add_argument(
+        "--audience", default=None,
+        choices=("orchestrator", "executor", "any"),
+        help="v45: filter by memory.audience (which agent role the row is FOR).",
+    )
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")
     list_p.add_argument(
@@ -2961,6 +3015,16 @@ def register(subparsers):
             "RE-ANCHOR: set memory.project_ref of an EXISTING row directly to a "
             "known project_identity string (no name resolution). Mutually "
             "exclusive with --project."
+        ),
+    )
+    edit_p.add_argument(
+        "--audience", default=None,
+        choices=("orchestrator", "executor", "any"),
+        help=(
+            "v45: PATCH memory.audience of an EXISTING row -- which agent "
+            "role this row is FOR (orchestrator|executor|any). Can be "
+            "combined with --field/--class/--status/--project in the same "
+            "call."
         ),
     )
     edit_p.add_argument("--json", action="store_true", default=False,
@@ -3170,6 +3234,18 @@ def register(subparsers):
         help=(
             "T5: set memory.status (open|carry_forward|graduated|closed); "
             "use 'null' to clear. Only valid for class=thread."
+        ),
+    )
+    add_p.add_argument(
+        "--audience", default=None,
+        choices=("orchestrator", "executor", "any"),
+        help=(
+            "v45: which agent role this row is FOR -- 'orchestrator' "
+            "(routing/model-choice/report-style instructions), 'executor' "
+            "(preferences for any dispatched specialist), or 'any' (the "
+            "schema default; unclassified/applies regardless). Omit to "
+            "leave the row at 'any' on insert, or unchanged on a correction "
+            "upsert (never silently reset)."
         ),
     )
     add_p.add_argument("--workspace", default=None, metavar="W",

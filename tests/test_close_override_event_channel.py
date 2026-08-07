@@ -697,10 +697,9 @@ def test_the_channels_own_sources_declare_no_ddl():
 def test_the_expected_schema_version_matches_the_channels_authored_baseline():
     # This channel was authored against v37 and needed no migration of its
     # own (asserted structurally above, against the live schema -- not this
-    # number). v38 (plan_task_id index), v39 (cut_reason column), and v40
-    # (harness_agent_id column) landed afterward for the born-at-dispatch/
-    # cut-detection work, unrelated to this channel, and are the actual
-    # current floor -- tracked dynamically by
+    # number). v38 (plan_task_id index), v39 (cut_reason column), v40
+    # (harness_agent_id column), and v41-v45 landed afterward for unrelated
+    # work, and are the actual current floor -- tracked dynamically by
     # tests/cli/test_schema_version_lockstep.py, which is the real drift
     # guard. This assertion only pins the number this test module itself
     # depends on: it must be bumped in lockstep with any future migration,
@@ -710,15 +709,15 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 40
+    assert int(match.group(1)) == 45
 
 
 def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
-    # Same baseline as the test above, same reason it can go stale: v38, v39,
-    # and v40 are real, unrelated migrations, not drift in this channel. The
-    # actual lockstep invariant (EXPECTED_SCHEMA_VERSION == migration floor)
-    # lives in tests/cli/test_schema_version_lockstep.py -- this only pins
-    # what this module itself was written against.
+    # Same baseline as the test above, same reason it can go stale: v38
+    # through v45 are real, unrelated migrations, not drift in this channel.
+    # The actual lockstep invariant (EXPECTED_SCHEMA_VERSION == migration
+    # floor) lives in tests/cli/test_schema_version_lockstep.py -- this only
+    # pins what this module itself was written against.
     migrations = sorted(
         int(m.group(1))
         for path in (_REPO_ROOT / "scripts" / "migrations").glob("v*_to_v*.sql")
@@ -726,4 +725,4 @@ def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     )
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 40
+    assert max(migrations) == 45
