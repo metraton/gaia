@@ -10,7 +10,7 @@
 
 Gaia is event-driven. Every capability in the codebase is attached to a moment in the Claude Code lifecycle — a prompt arriving, a tool being called, an agent completing. Reading the folder structure without that lens makes it look like a collection of files. Reading it with that lens, everything clicks into place.
 
-The flow is this: a user sends a prompt, the `UserPromptSubmit` hook fires and injects the orchestrator's identity and a routing recommendation. The orchestrator picks a specialist agent and dispatches it. Before that agent's first tool call lands, the `PreToolUse` hook intercepts it — injecting context, validating permissions, blocking dangerous commands. The agent does its work and returns a `agent_contract_handoff`. The `SubagentStop` hook fires, validates the contract, records metrics, and writes to episodic memory.
+The flow is this: a user sends a prompt and the orchestrator routes it from its agent identity plus DB-backed surface configuration. The orchestrator picks a specialist agent and dispatches it. Before that agent's first tool call lands, the `PreToolUse` hook intercepts it — injecting context, validating permissions, and blocking dangerous commands. The agent does its work and returns an `agent_contract_handoff`. The `SubagentStop` hook validates the contract, records metrics, and writes episodic memory. UserPromptSubmit stays sparse; it does not inject a per-turn routing recommendation.
 
 ```
 UserPromptSubmit  ->  routing  ->  PreToolUse  ->  agent  ->  PostToolUse  ->  SubagentStop
@@ -38,7 +38,7 @@ That pipeline is the spine. Everything else in this repo is either a component o
 - **Approval gates** for T3 operations via native `ask` dialog
 - **Git commit validation** with Conventional Commits
 - **37 skills** - Injected procedural knowledge modules for agents (protocol, domain, workflow)
-- **Curated + episodic memory** - `gaia memory` CLI: FTS5 search, episode inspection, session context orientation, and curated-note curation (`append`/`add`/`edit`/`reclassify`/`delete`/`link`)
+- **Event + episodic + curated memory** - automatic operational evidence plus user-governed durable knowledge and live threads, with FTS5 search, lifecycle transitions, lineage, and atomic milestone checkpoints
 - **Context evals** - pytest-driven agent evaluation (5 graders, 3 backends, 10 scenarios, baseline + drift detection)
 - **Plugin + npm** - Distributable as Claude Code native plugin or npm package
 - **Enterprise ready** - Managed settings template for organization-wide deployment

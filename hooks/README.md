@@ -21,7 +21,7 @@ User sends prompt
         |
 [user_prompt_submit.py] <- fires on UserPromptSubmit event
         |  Refreshes the session heartbeat (throttled, non-fatal)
-        |  Injects deterministic Surface Routing Recommendation (per-turn signal)
+        |  Emits sparse first-run and unread-notification notices
         |  First-run welcome on the install's first prompt only
         |  Skills loaded on-demand: agent-response
         v
@@ -29,7 +29,7 @@ Orchestrator dispatches agent (Task/Agent tool call)
         |
 [pre_tool_use.py] <- fires on PreToolUse for: Bash, Task, Agent, SendMessage,
         |                 and Read|Edit|Write|Glob|Grep|WebSearch|WebFetch|NotebookEdit
-        |  Bash calls: security gate (blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard)
+        |  Bash calls: security gate (gaia_cli_only_guard for the orchestrator's Gaia coordination console, blocked_commands, mutative_verbs, cloud_pipe_validator, protected_path_guard)
         |  Task/Agent calls: context injection via DB-backed contracts (project_context_contracts)
         |  Write/Edit calls: protected path validation (_is_protected())
         |  NOTE: .claude/ tree is protected on BOTH surfaces -- _is_protected() for Write/Edit
@@ -76,7 +76,7 @@ To add a new hook entry point: create `hooks/<event_name>.py`, register it in `b
 
 ```
 hooks/
-├── user_prompt_submit.py  # Per-turn routing recommendation + heartbeat refresh
+├── user_prompt_submit.py  # Sparse notices + heartbeat refresh
 ├── pre_tool_use.py        # Security gate + context injection (PreToolUse)
 ├── post_tool_use.py       # Audit logging (PostToolUse)
 ├── subagent_stop.py       # Contract validation + approval cleanup + memory (SubagentStop)

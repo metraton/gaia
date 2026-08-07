@@ -51,7 +51,7 @@ Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) ar
 skills/
 ├── agent-contract-handoff/ # Reference: full field dictionary for the agent_contract_handoff envelope (input + output)
 ├── agent-creation/        # Coach skill: structure, tone, and component inventory for new specialist agents
-├── agent-protocol/        # Response contract format, state machine, error handling
+├── agent-protocol/        # Small producer workflow and branch router
 ├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
 ├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
@@ -65,8 +65,8 @@ skills/
 │   ├── reference.md       # field schema, engine behaviors, authoring modes, build/verify loop
 │   └── assets/            # vendored portable engine: index.html, engine/, package.json, tools/verify.mjs, seed data/ (see assets/README.md)
 ├── execution/             # Post-approval execution discipline
-├── fast-queries/          # Quick diagnostic scripts for cloud/system state
-├── gaia-compact/          # Orchestrator: structured /compact prompt with preservation contract
+├── fast-queries/          # Project Context-first scoped diagnostics
+├── gaia-compact/          # Preserve transient continuity without duplicating durable state
 ├── gaia-patterns/         # Gaia component patterns: hooks, agents, routing, CLI
 │   └── reference.md
 ├── gaia-planner/          # Feature planning, briefs, task decomposition
@@ -80,21 +80,21 @@ skills/
 ├── investigation/         # Diagnosis methodology and pattern analysis
 ├── jira-ticket-writing/   # Formula for human-readable Jira Stories and Subtasks (invocable directly via the Skill tool)
 │   └── examples.md
-├── memory/                # Read, search, write, and curate Gaia memory (atoms/decisions/negative + legacy)
+├── memory/                # Curate durable knowledge, live threads, and historical logs
 │   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
 ├── readme-writing/        # How to write READMEs for Gaia component folders
-├── subagent-request-approval/ # T3 approval-request workflow (attempt first, emit APPROVAL_REQUEST)
+├── subagent-request-approval/ # Plan-first T3 set / blocked-single producer branch
 │   ├── reference.md
 │   └── examples.md
-├── agent-approval-protocol/ # Unified approval protocol combining request + present flows
+├── agent-approval-protocol/ # Approval and COMMAND_SET data reference
 ├── scheduled-task/        # Headless recurring task: crontab + claude -p, reports via notifications
 │   ├── reference.md
 │   └── scripts/           # run-scheduled-task.sh wrapper + crontab.template
 ├── security-tiers/        # T0-T3 classification + hook enforcement model
 │   └── reference.md
-├── session-reflection/    # End-of-session reflection on conversational arc
+├── session-reflection/    # Recover, reconcile, curate, and hand off session continuity
 ├── skill-creation/        # How to design and write new skills
 ├── verification-oracle/   # Deterministically re-execute a command/code task_gates entry and compare actual vs expected exit code (loaded by gaia-verifier, the seeded verifier-role agent)
 ├── verification-rubric/   # Judge a semantic/self_review task_gates entry against its rubric, emit a justified pass/fail verdict (loaded by gaia-verifier, the seeded verifier-role agent)
@@ -125,16 +125,17 @@ skill that could theoretically apply.
 | gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, coding-standards | agent-creation, skill-creation, gaia-release, gaia-verify |
 | gaia-verifier | agent-protocol, security-tiers, command-execution, verification-oracle, verification-rubric | — |
 | gaia-planner | agent-protocol, security-tiers, investigation, command-execution, gaia-planner | — |
+| gaia-orchestrator | agent-protocol, security-tiers, command-execution, memory | agent-response and flow-specific skills |
 | gaia-operator | agent-protocol, security-tiers, investigation, command-execution | memory, gmail-triage, gmail-policy, gws-setup, blog-writing, brief-spec |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
 - `orchestrator-present-approval` — T3 approval presentation and grant activation
-- `gaia-compact` — structured `/compact` invocation with a six-category preservation prompt
+- `gaia-compact` — compact transient continuity after durable state is persisted
 
 Workflow skills (on-demand injection, not in any agent frontmatter):
 - `agent-contract-handoff` — reference field dictionary for the contract envelope (input + output); loaded on demand by producers and the orchestrator when field/trigger precision is needed
-- `agent-approval-protocol` — unified approval protocol combining request + present flows
+- `agent-approval-protocol` — approval and COMMAND_SET data reference
 - `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system
 - `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
@@ -143,7 +144,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `pending-approvals` — present and resolve pending approval requests
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
 - `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match
-- `session-reflection` — end-of-session reflection; loaded on demand by orchestrator at Cerrar la sesión
+- `session-reflection` — session-arc recovery, two-way reconciliation against the live corpus, and memory curation proposal
 - `jira-ticket-writing` — formula for Jira Stories and Subtasks; invocable directly via the Skill tool
 - `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, invocable directly via the Skill tool
 - `diagram-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); carries the dialect vocabulary so the orchestrator can propose a decomposition and the agent can author it; delegates the visual check to `visual-verify`; loaded on demand by description match, invocable directly via the Skill tool

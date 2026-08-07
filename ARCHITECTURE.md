@@ -25,7 +25,7 @@ User request
     v
 Orchestrator (agents/gaia-orchestrator.md, activated via settings.json agent config)
     |  Identity defined in agent definition file
-    |  Surface routing recommendation injected by UserPromptSubmit hook (deterministic)
+    |  Routes from agent identity plus DB-backed surface configuration
     |  Skills loaded on-demand: agent-response
     v
 Orchestrator dispatches to agent

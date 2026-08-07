@@ -4,7 +4,11 @@ Agents are the specialists of Gaia. Each one has a narrow domain, a set of allow
 
 Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code reads it to know which tools the agent may use, which model to run, and which skills to inject before the first turn. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
 
-The orchestrator (`gaia-orchestrator.md`) is special: it has no `permissionMode` and no domain skills, and its only file tool is `Read` -- carried solely to triangulate evidence with the user (a document or an image next to a specialist's contract), never as a substitute for a specialist's investigation. It has no Bash, Edit, Write, Glob, or Grep. Its job is routing and governance, not execution. All other agents set `permissionMode: acceptEdits` so that file edits inside their domain flow without extra prompts, while the hook layer still enforces security tiers on every Bash call.
+The orchestrator (`gaia-orchestrator.md`) is special: it has no `permissionMode`; `Read` exists only to triangulate evidence with the user, while `Bash` is a lane for allowlisted coordination commands through the trusted `gaia` binary. `gaia_cli_only_guard.py` rejects every other binary and Gaia surface, so it remains unable to execute a general shell. It has no Edit, Write, Glob, or Grep.
+
+That lane covers coordination state (briefs, plans, tasks, contracts, approvals, notifications, history, metrics, memory), the substrate and installation reads (`doctor`, `status`, `defects`, `query`, `context show`/`get`, `workspace current`/`info`, `evidence show`/`list`, `schedule list`/`show`/`status`), the coordinator-owned writes, and two verbs that read like reads and are not: `scan` — refreshing the workspace substrate is the orchestrator's own job, since that substrate is the context every dispatch carries — and `paths`, which prints the resolved storage locations and creates the `~/.gaia` layout when it is missing. What stays out is surgery on it: `context wipe`, `context prune-workspaces`, the `context move-*` family and `doctor --fix` are dispatched to a specialist. `ALLOWED_READ_PHRASES` / `ALLOWED_WRITE_PHRASES` / `EXPLICITLY_DENIED_PHRASES` in `gaia_cli_only_guard.py` are the source of truth for the exact set.
+
+All other agents set `permissionMode: acceptEdits` so file edits inside their domain flow without extra prompts, while hooks enforce security tiers.
 
 Adding a new agent is three steps: write the `.md` file here (including a `routing:` frontmatter block if the agent owns a surface), add it to `build/gaia.manifest.json` under `agents`, and re-run `gaia install` so `tools/scan/seed_surface_routing.py` seeds the agent's surface into the DB-backed `surface_routing` table. The agent becomes available on the next Claude Code restart. Surface routing is no longer a `config/surface-routing.json` file — each agent's `routing:` block is the source of truth.
 
@@ -13,7 +17,7 @@ Adding a new agent is three steps: write the `.md` file here (including a `routi
 ```
 User sends prompt
         |
-[user_prompt_submit.py] injects orchestrator identity + routing recommendation
+[user_prompt_submit.py] emits sparse first-run and unread-notification context
         |
 Orchestrator evaluates intent against the DB-backed surface_routing table
         |
@@ -70,7 +74,7 @@ agents/
 
 **Description field:** This is the routing signal. Write it as a present-tense label: "Routes requests to specialist agents" or "Diagnoses live cloud infrastructure". The orchestrator matches user intent against these descriptions.
 
-**Tool restriction:** Give each agent only the tools it actually needs. The orchestrator has only `Read` (to triangulate evidence with the user) and no Write/Edit/Bash/Glob/Grep. Read-only agents should not have Write or Edit.
+**Tool restriction:** Give each agent only the tools it needs. The orchestrator has `Read` for triangulation and guarded `Bash` for the coordination lane described above; it has no Write/Edit/Glob/Grep. Read-only agents should not have Write or Edit.
 
 ## Ver también
 
