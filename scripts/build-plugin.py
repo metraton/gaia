@@ -22,7 +22,9 @@ Exit codes:
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -288,6 +290,35 @@ def generate_plugin_json(manifest: dict) -> dict:
 # is no dist/ artifact to produce.
 
 
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write ``data`` to ``path`` as JSON with no truncated/empty-file window.
+
+    ``open(path, "w")`` truncates before the new content is written, so any
+    concurrent reader (an ``npm pack`` racing a second ``npm pack``, a
+    packaging tool, a test) can observe a zero-byte or partial file between
+    the truncate and the write completing. Writing to a temp file in the SAME
+    directory and ``os.replace()``-ing it over the target closes that window
+    for every reader: ``os.replace`` is atomic on POSIX and Windows, so a
+    concurrent open of ``path`` always sees either the old complete content or
+    the new complete content, never neither. Same-directory placement matters
+    -- ``os.replace`` across filesystems is not guaranteed atomic.
+    """
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f, indent=2)
+            f.write("\n")
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
 def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
     """Regenerate ONLY the two plugin manifests into an existing directory.
 
@@ -334,9 +365,7 @@ def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
     hooks_json = generate_hooks_json(manifest)
     hooks_json_path = output_dir / "hooks" / "hooks.json"
     hooks_json_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(hooks_json_path, "w") as f:
-        json.dump(hooks_json, f, indent=2)
-        f.write("\n")
+    _atomic_write_json(hooks_json_path, hooks_json)
     print(f"  Generated: hooks/hooks.json ({len(hooks_json['hooks'])} events)", file=sys.stderr)
 
     # .claude-plugin/plugin.json (inline hooks)
@@ -344,9 +373,7 @@ def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
     plugin_json_dir = output_dir / ".claude-plugin"
     plugin_json_dir.mkdir(parents=True, exist_ok=True)
     plugin_json_path = plugin_json_dir / "plugin.json"
-    with open(plugin_json_path, "w") as f:
-        json.dump(plugin_json, f, indent=2)
-        f.write("\n")
+    _atomic_write_json(plugin_json_path, plugin_json)
     print("  Generated: .claude-plugin/plugin.json (metadata only, no inline hooks)", file=sys.stderr)
     print("Root manifests regenerated.", file=sys.stderr)
 
