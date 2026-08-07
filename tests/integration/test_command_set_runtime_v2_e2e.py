@@ -109,3 +109,85 @@ def test_plan_forecast_approval_execution_failure_and_routing(tmp_path, monkeypa
         "checkpoint": {"completed": [0], "failed": 1, "next": 1},
     }
     assert agent_response["agent_state"] == "NEEDS_VERIFICATION"
+
+
+def test_single_command_plan_first_set_activates_and_consumes_like_a_longer_one(
+    tmp_path, monkeypatch,
+):
+    """A set of ONE command must go through the identical plan-first lifecycle
+    as a longer set -- not silently degrade into the looser
+    SCOPE_SEMANTIC_SIGNATURE path once the real AskUserQuestion activation
+    runs. This is the proactive path for a single T3 command: requested
+    before any attempt, through the same verb a longer set uses.
+    """
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    db = tmp_path / "gaia.db"
+    con = sqlite3.connect(db)
+    con.executescript(writer._SCHEMA_PATH.read_text())
+    con.commit()
+    con.close()
+
+    commands = ["git push origin main"]
+    items = validate_request_set(commands)
+    payload = {
+        "request_type": "COMMAND_SET", "operation": "single-command forecast",
+        "exact_content": "\n".join(commands), "commands": commands,
+        "command_set": items, "request_fingerprint": request_fingerprint(commands),
+        "scope": "COMMAND_SET", "risk_level": "high", "rollback_hint": None,
+        "rationale": "Proactive single-command request",
+    }
+    approval_id = store.insert_requested(payload, agent_id="gaia-system", session_id="request")
+
+    presented_question = (
+        f"APPROVAL REQUIRED -- {approval_id}\n\nCOMANDOS (1):\n  [0] {commands[0]}"
+    )
+    approve_label = f"Approve -- push [{approval_id[:10]}]"
+    nonce_prefix = extract_nonce_from_label(approve_label)
+    assert nonce_prefix, f"label must yield a nonce prefix: {approve_label!r}"
+
+    store.record_event(
+        approval_id, "SHOWN", agent_id="gaia-orchestrator", session_id="presenter",
+        payload_json=json.dumps(
+            {"question": presented_question, "label": approve_label}, sort_keys=True,
+        ),
+    )
+
+    # The REAL activation path: must route the length-1 plan-first set into
+    # insert_plan_command_set, not the singular SCOPE_SEMANTIC_SIGNATURE branch.
+    activation = activate_db_pending_by_prefix(
+        nonce_prefix, current_session_id="presenter",
+        presented_question=presented_question, presented_label=approve_label,
+    )
+    assert activation.success, f"activation should succeed: {activation.reason}"
+    assert "COMMAND_SET" in activation.reason, (
+        f"a one-command plan-first set must not degrade to a semantic-signature "
+        f"grant: {activation.reason!r}"
+    )
+
+    grants = writer.list_approval_grants(status="PENDING", limit=10)
+    matching = [g for g in grants if g["approval_id"] == approval_id]
+    assert len(matching) == 1, "exactly one plan-first COMMAND_SET grant, not a fallback grant"
+    assert matching[0]["scope"] == "COMMAND_SET"
+    assert matching[0]["source"] == "plan-first"
+    assert matching[0]["next_index"] == 0
+
+    validator = BashValidator()
+    result = validator._validate_single_command(
+        commands[0], session_id="exec", tool_use_id="call-1",
+    )
+    assert result.allowed and result.command_set_reservation == {
+        "approval_id": approval_id, "index": 0,
+    }
+    assert writer.settle_plan_command(
+        approval_id, session_id="exec", tool_use_id="call-1", success=True,
+    )
+
+    consumed = writer.list_approval_grants(status="CONSUMED", limit=10)
+    row = next(g for g in consumed if g["approval_id"] == approval_id)
+    assert json.loads(row["consumed_indexes_json"]) == [0]
+    assert row["next_index"] == 1
+
+    # Replay protection: the same command no longer reserves once consumed.
+    assert writer.reserve_plan_command(
+        commands[0], session_id="exec", tool_use_id="replay",
+    ) is None

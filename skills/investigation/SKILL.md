@@ -14,9 +14,10 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    `project`, the `can_read` menu) and `# What I know about you`. Do not
    re-derive facts it already supplies.
 2. Pull the project context the goal needs on demand -- it is NOT preloaded:
-   a scoped `gaia context get --section <s>` (within your `can_read` menu),
-   then `gaia context show` or `gaia context query` for wider reads. Do not
-   read Gaia's database directly.
+   a scoped `gaia context get-contract --section <s>` (within your `can_read`
+   menu -- `gaia context get`/`show` resolve `--section` against the workspace
+   shape instead, never against these contracts), then `gaia context show` or
+   `gaia context query` for wider reads. Do not read Gaia's database directly.
 3. Inspect the smallest relevant source files, tests, configuration, git diff,
    or runtime query. Prefer authoritative implementation over prose.
 4. Record each material source immediately in the contract:
@@ -43,7 +44,10 @@ Once the cause and desired outcome are known, enumerate the exact mutations the
 accepted plan predictably requires. Classify every command through
 `security-tiers` before execution.
 
-For two or more exact T3 commands, prefer one plan-first COMMAND_SET only when:
+A single predictable T3 command is requested plan-first too -- proactively,
+the instant it is known, rather than waiting for PreToolUse to block it. For
+two or more exact T3 commands, prefer grouping them into one plan-first
+COMMAND_SET only when:
 
 - all commands serve one bounded goal and are known verbatim now;
 - order is meaningful and can be shown explicitly;
@@ -57,10 +61,11 @@ services, condition-dependent follow-ups, or commands that must be derived from
 earlier results. Request those later only after new read-only investigation.
 Consent grouping reduces repeated consent; it does not make execution atomic.
 
-Use `gaia approvals request-set --command '<exact 1>' --command '<exact 2>' ...`
-before attempting any item. A single predictable T3 operation uses the normal
-single-command approval branch. A command already blocked is relayed exactly;
-never retrofit it into a different spelling or self-mint consent metadata.
+Use `gaia approvals request-set --command '<exact 1>' [--command '<exact 2>' ...]`
+before attempting any item -- one `--command` for a single operation, one per
+item for a group. A command already blocked (the reactive path, reached only
+after an attempted command trips PreToolUse) is relayed exactly; never
+retrofit it into a different spelling or self-mint consent metadata.
 
 ## Evidence quality
 

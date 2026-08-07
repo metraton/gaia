@@ -1,9 +1,9 @@
 """Plan-first COMMAND_SET validation and immutable command fingerprints.
 
 Requests contain atomic Bash invocations that have already been shown to the
-user.  The runtime accepts only exact T3 commands; shell composition, protected
-paths, interactive programs, and commands that are safe or permanently blocked
-are rejected before an approval row can be minted.
+user.  The runtime accepts one or more exact T3 commands; shell composition,
+protected paths, interactive programs, and commands that are safe or
+permanently blocked are rejected before an approval row can be minted.
 """
 
 from __future__ import annotations
@@ -39,8 +39,8 @@ def request_fingerprint(commands: Iterable[str]) -> str:
 
 def validate_request_set(commands: list[str], *, cwd: str | None = None) -> list[dict]:
     """Validate and normalize a plan-first set without minting or consuming grants."""
-    if not isinstance(commands, list) or len(commands) < 2:
-        raise CommandSetValidationError("COMMAND_SET requires at least two commands")
+    if not isinstance(commands, list) or len(commands) < 1:
+        raise CommandSetValidationError("COMMAND_SET requires at least one command")
 
     hooks_dir = str(Path(__file__).resolve().parents[2] / "hooks")
     if hooks_dir not in sys.path:

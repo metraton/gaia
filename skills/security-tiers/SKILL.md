@@ -8,12 +8,14 @@ description: Use when classifying any operation before executing it, or deciding
 ## COMMAND_SET boundary
 
 Classification applies to each exact atomic command. After read-only
-investigation, two or more predictable T3 commands may be requested plan-first
-with `gaia approvals request-set`; never discover a set by attempting a compound
-shell command. Group only one bounded goal with exact known order and coherent
-risk, rollback, and verification. Do not group speculative or output-dependent
-steps. Consent grouping is not execution atomicity: execution remains one
-command per call, ordered and fail-fast.
+investigation, one or more predictable T3 commands may be requested plan-first
+with `gaia approvals request-set` -- a single predictable T3 command uses the
+same verb proactively, not only the reactive path that begins after
+PreToolUse returns `[T3_BLOCKED]`. Never discover a set by attempting a
+compound shell command. Group only one bounded goal with exact known order
+and coherent risk, rollback, and verification. Do not group speculative or
+output-dependent steps. Consent grouping is not execution atomicity: execution
+remains one command per call, ordered and fail-fast.
 
 security-tiers classifies every operation into four tiers so an agent knows whether it can run freely or must request the user's consent.
 

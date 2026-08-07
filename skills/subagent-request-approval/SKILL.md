@@ -8,13 +8,17 @@ description: Use when a T3 command was blocked or a predictable ordered T3 set m
 ## Plan-first set
 
 After read-only investigation, collect every predictable exact T3 command that
-forms one coherent bounded operation. Do not attempt the commands first.
+forms one coherent bounded operation -- one command or several. Do not attempt
+the commands first, even a single one: request it proactively through the
+same verb.
 
 Run one CLI request, with one `--command` per atomic item in execution order:
 
 ```
 gaia approvals request-set --command '<exact 0>' --command '<exact 1>' --rationale '<goal, risk, rollback, verification>' --agent-id <agent_id> --session-id <session_id>
 ```
+
+A single predictable T3 command uses the identical verb with one `--command`.
 
 The CLI validates T3 eligibility, persists REQUESTED, and returns the
 `approval_id`, ordered set, and fingerprints. Relay those returned values inside

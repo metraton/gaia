@@ -1372,9 +1372,16 @@ def activate_db_pending_by_prefix(
         # ``command_set`` list of more than one {command, rationale} item is a
         # batch the user approved under ONE consent. It must NOT be degraded to
         # a single command (the historic bug at this site) -- it activates into
-        # a COMMAND_SET grant via the dedicated branch below. A set of length
-        # <= 1 falls through to the singular SCOPE_SEMANTIC_SIGNATURE path so we
-        # never mint a COMMAND_SET grant for one command.
+        # a COMMAND_SET grant via the dedicated branch below. A plan-first
+        # (``request_type == "COMMAND_SET"``) set of exactly one command is
+        # ALSO routed there: it is the proactive single-command request-set
+        # path (`gaia approvals request-set` with one ``--command``), and it
+        # must keep the same index-tracked, exact-fingerprint lifecycle a
+        # longer set gets -- not silently downgrade into the looser
+        # SCOPE_SEMANTIC_SIGNATURE path below. A length-1 set from the legacy
+        # (non-plan-first) producer still falls through to that singular path;
+        # batching a single command under that shape buys nothing the ordinary
+        # singular grant doesn't already give.
         raw_command_set = payload.get("command_set")
         command_set_items: list = []
         if isinstance(raw_command_set, list):
@@ -1397,7 +1404,15 @@ def activate_db_pending_by_prefix(
                             "fingerprint": command_fingerprint(_item["command"]),
                         }
                     )
-        is_command_set = len(command_set_items) > 1
+        request_fingerprint_value = payload.get("request_fingerprint")
+        is_plan_first = (
+            payload.get("request_type") == "COMMAND_SET"
+            and isinstance(request_fingerprint_value, str)
+            and bool(request_fingerprint_value)
+        )
+        is_command_set = len(command_set_items) > 1 or (
+            len(command_set_items) == 1 and is_plan_first
+        )
 
         command = payload.get("exact_content") or payload.get("commands", [None])[0] or ""
         if is_command_set and not command:
@@ -1563,13 +1578,6 @@ def activate_db_pending_by_prefix(
         #    (tests exercising the create-side and consume-side of this shape
         #    directly) that this change does not touch.
         if is_command_set:
-            request_fingerprint_value = payload.get("request_fingerprint")
-            is_plan_first = (
-                payload.get("request_type") == "COMMAND_SET"
-                and isinstance(request_fingerprint_value, str)
-                and bool(request_fingerprint_value)
-            )
-
             if is_plan_first:
                 from gaia.store.writer import insert_plan_command_set
 

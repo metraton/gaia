@@ -28,8 +28,9 @@ The runtime-sealed request carries `operation`, verbatim `exact_content`,
 
 ## Plan-first COMMAND_SET
 
-`gaia approvals request-set` accepts two or more ordered exact T3 commands. Its
-`approval_request` carries:
+`gaia approvals request-set` accepts one or more ordered exact T3 commands --
+including a single command requested proactively, before any attempt reaches
+PreToolUse. Its `approval_request` carries:
 
 ```json
 {

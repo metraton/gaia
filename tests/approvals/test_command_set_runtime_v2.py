@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -120,6 +121,49 @@ def test_completed_progress_survives_failure_and_new_set_can_continue(isolated_d
     assert writer.reserve_plan_command(
         second, session_id="s", tool_use_id="new", db_path=isolated_db,
     ) == {"approval_id": "P-continuation", "index": 0}
+
+
+def test_single_command_request_set_full_lifecycle(isolated_db):
+    """A set of one behaves through the whole plan-first lifecycle -- entrance,
+    fingerprinting, reservation, and consumption -- exactly like a longer set,
+    not merely passing the entrance check."""
+    command = "git push origin main"
+    items = validate_request_set([command])
+    assert len(items) == 1
+    assert items[0]["command"] == command
+
+    result = writer.insert_plan_command_set(
+        "P-single", items, request_fingerprint=request_fingerprint([command]),
+        session_id="request-session", db_path=isolated_db,
+    )
+    assert result["status"] == "applied"
+
+    reservation = writer.reserve_plan_command(
+        command, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    )
+    assert reservation == {"approval_id": "P-single", "index": 0}
+    assert writer.settle_plan_command(
+        "P-single", session_id="s", tool_use_id="call-1", success=True,
+        db_path=isolated_db,
+    ) is True
+
+    con = sqlite3.connect(isolated_db)
+    con.row_factory = sqlite3.Row
+    row = dict(con.execute("SELECT * FROM approval_grants WHERE approval_id='P-single'").fetchone())
+    con.close()
+    assert row["status"] == "CONSUMED"
+    assert row["next_index"] == 1
+    assert json.loads(row["consumed_indexes_json"]) == [0]
+
+    # Replay protection: the same command no longer reserves once consumed.
+    assert writer.reserve_plan_command(
+        command, session_id="s", tool_use_id="call-2", db_path=isolated_db,
+    ) is None
+
+
+def test_request_set_rejects_empty_list():
+    with pytest.raises(CommandSetValidationError, match="at least one command"):
+        validate_request_set([])
 
 
 def test_fingerprint_is_order_sensitive_and_exact():
