@@ -106,11 +106,7 @@ def test_translates_agent_tools_disallowed_tools_and_skills(tmp_path):
         "read": "allow",
         "edit": "allow",
         "bash": "deny",
-        "skill": {
-            "*": "deny",
-            "agent-protocol": "allow",
-            "coding-standards": "allow",
-        },
+        "skill": {"*": "allow"},
     }
 
 

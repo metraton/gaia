@@ -285,9 +285,20 @@ def _opencode_frontmatter_permissions(frontmatter: dict[str, Any]) -> dict[str, 
     for name in frontmatter.get("disallowedTools", []):
         if name in tool_names:
             permission[tool_names[name]] = "deny"
-    skills = frontmatter.get("skills", [])
-    if skills:
-        permission["skill"] = {"*": "deny", **{name: "allow" for name in skills}}
+    # The frontmatter `skills:` list means different things on the two hosts.
+    # In Claude Code it is PRELOAD ONLY, not an access grant: "This field
+    # controls which skills are preloaded, not which skills the subagent can
+    # access" (code.claude.com/docs/en/sub-agents.md) -- any installed skill
+    # remains invocable via the Skill tool regardless of what is listed. In
+    # OpenCode, `skill` permission is real access control: "deny" hides the
+    # skill from the tool's listing and rejects access (opencode.ai/docs/
+    # skills). Denying the wildcard here and allowing only the listed names
+    # would make OpenCode's on-demand skill routing (skills loaded by
+    # description match, not preload, e.g. `agent-protocol`'s branch table)
+    # unreachable, since most on-demand skills are absent from every agent's
+    # preload list. Allow the wildcard unconditionally so OpenCode's skill
+    # reachability matches Claude Code's.
+    permission["skill"] = {"*": "allow"}
     return permission
 
 
