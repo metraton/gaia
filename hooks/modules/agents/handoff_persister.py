@@ -118,9 +118,16 @@ _VALID_TASK_STATUSES = frozenset(
 # resuming a draft across separate turns. Broadening this pre-check to mirror
 # the writer's guard 1:1 would let the backstop clobber a salvage-marked row
 # with an equivalent, less-informative capture of the identical crashed turn --
-# a provenance regression, not a correctness fix. The writer's own guard is
-# what actually closes the "frozen non-terminal row" defect for the agent's
-# OWN resumed ``gaia contract finalize`` calls, which this module never blocks.
+# a provenance regression, not a correctness fix.
+#
+# WHERE A RESUMED TURN'S OWN CLOSE GOES, and why this module is unaffected: an
+# agent that already declared a close and writes again lands in a CONTINUATION
+# (gaia.store.writer.open_contract_continuation), so its later
+# ``gaia contract finalize`` converges the LINK -- a fresh DISPATCHED row -- and
+# never the record it closed. This module reaches that same link because
+# ``dispatch_row_by_harness_id`` collapses the chain to its live tip before
+# judging ambiguity; the passive-when-a-row-exists posture above is unchanged by
+# any of it.
 
 
 def _minted_agent_id_from_transcript(task_info: dict):
@@ -457,10 +464,13 @@ def close_born_dispatch_row(
     is then the only shared coordinate, matched against the birth envelope. Two
     guards keep that lane from closing a row belonging to a CONCURRENT sibling,
     because a name is shared by every dispatch of that agent while an identity is
-    not: it is skipped entirely when the turn's own row was itself born at
-    dispatch (adoption -- there is no scaffold to close), and it declines an
-    ambiguous match outright rather than picking the most recent (see the writer's
-    ``find_dispatched_row_by_agent_name``).
+    not: it is skipped entirely when the turn's own row CAME FROM a dispatch
+    (adoption -- there is no scaffold to close), and it declines an ambiguous
+    match outright rather than picking the most recent (see the writer's
+    ``find_dispatched_row_by_agent_name``). A RESUMPTION'S LINK satisfies the
+    first guard too, because it continues a turn that adopted; reading it as a
+    turn that never adopted is precisely what let a resumed turn close a
+    concurrent sibling's live dispatch (see ``is_born_at_dispatch_row``).
 
     Idempotent and race-safe without a lock: only a row still in 'DISPATCHED' is
     touched, and the convergence goes through the same UPSERT the capture uses.

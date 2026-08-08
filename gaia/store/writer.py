@@ -8221,15 +8221,22 @@ def is_born_at_dispatch_row(
     *,
     db_path: "Path | None" = None,
 ) -> bool:
-    """Return True iff the row for ``contract_id`` was BORN at dispatch.
+    """Return True iff the row for ``contract_id`` CAME from a dispatch.
 
     Structural, not textual: ``kind``, ``plan_id`` and ``parent_handoff_id`` are
-    written ONLY by :func:`insert_dispatched_handoff`. A finalize neither sets
-    them on insert nor touches them on convergence, so any of the three being
-    present means this row started as a dispatch. Reading the birth envelope
-    instead would not survive adoption -- finalize replaces ``raw_handoff_json``
-    wholesale, so the birth marker inside it is gone precisely in the case a
-    caller most needs to recognize.
+    written only by :func:`insert_dispatched_handoff` and by
+    :func:`open_contract_continuation`, which copies them onto a link
+    (``_CONTINUATION_CONSTRAINT_COLUMNS``). A finalize neither sets them on
+    insert nor touches them on convergence, so any of the three being present
+    means this row started as a dispatch or continues one that did. Reading the
+    birth envelope instead would not survive adoption -- finalize replaces
+    ``raw_handoff_json`` wholesale, so the birth marker inside it is gone
+    precisely in the case a caller most needs to recognize.
+
+    A LINK ANSWERS TRUE, and must: a resumption is the same turn, still holding
+    the dispatch identity it adopted. Answering by the row alone made a resumed
+    turn look like one that never adopted -- see the constraint-tuple comment for
+    what the caller below then did to a concurrent sibling's live dispatch.
 
     The caller that needs this is the born-row closure: when the turn's OWN
     contract row is itself a born row, the turn adopted its dispatch identity and
@@ -8280,10 +8287,18 @@ def is_born_at_dispatch_row(
 #     for it, or a plain CLI use with no dispatch behind it) mirrors to nothing:
 #     the disk write still happened and this is a silent no-op. Birth stays the
 #     sole business of insert_dispatched_handoff and finalize.
-#   * NEVER TOUCHES A TERMINAL ROW. The same
-#     ``agent_state NOT IN <TERMINAL_PLAN_STATUSES>`` guard finalize converges
-#     under: a COMPLETE row is immutable, and a late mirror (a stray `set` after
-#     finalize) cannot regress it.
+#   * NEVER TOUCHES A ROW WHOSE TURN ALREADY CLOSED. The guard is
+#     ``agent_state NOT IN <CLOSED_TURN_PLAN_STATUSES>``, NOT the narrower
+#     TERMINAL_PLAN_STATUSES finalize converges under, and the difference is the
+#     measured defect: a producer that closed NEEDS_VERIFICATION is not terminal,
+#     so a mirror used to MERGE the same agent's next assignment into the record
+#     an independent verifier was about to read. Evidence is per-turn; a turn
+#     that ended accepts none. This is the second layer -- `gaia contract
+#     set/add/fill` already diverts such a write into a continuation before it
+#     gets here (bin/cli/contract.py::_plan_continuation) -- and it is what makes
+#     the property hold for any caller, not only the disciplined one. It does NOT
+#     restrict the verifier: a truer verdict arrives through finalize, which is a
+#     different writer with its own, deliberately narrower, guard.
 #   * NEVER MOVES THE ROW'S STATE OR ITS BINDING. ``raw_handoff_json`` is the
 #     ONLY column in the SET list. agent_state stays exactly where it was --
 #     which is load-bearing, not incidental: a row mirrored out of 'DISPATCHED'
@@ -8346,13 +8361,13 @@ def mirror_partial_contract_handoff(
     *,
     db_path: "Path | None" = None,
 ) -> dict:
-    """Mirror a PARTIAL contract envelope onto an existing non-terminal row.
+    """Mirror a PARTIAL contract envelope onto a row whose turn is still open.
 
-    See the module comment above for the three invariants this writer is shaped
-    around (never creates, never touches a terminal row, never moves the row's
-    state or binding). Called best-effort from ``gaia contract set/add/fill``
-    after the draft has been validated and persisted to disk, so the row tracks
-    the draft while the turn is still running.
+    See the module comment above for the invariants this writer is shaped around
+    (never creates, never touches a row whose turn already closed, never moves
+    the row's state or binding). Called best-effort from ``gaia contract
+    set/add/fill`` after the draft has been validated and persisted to disk, so
+    the row tracks the draft while the turn is still running.
 
     Args:
         contract_id:      The draft/contract id the turn is building under. A
@@ -8365,11 +8380,11 @@ def mirror_partial_contract_handoff(
 
     Returns:
         ``{"status": "applied", "handoff_id": int, "contract_id": str}`` when a
-        non-terminal row was mirrored.
+        still-open row was mirrored.
         ``{"status": "skipped", "reason": ...}`` otherwise, where reason is
         ``no_contract_id`` (nothing to key on), ``no_row`` (nothing born to
-        mirror -- the silent no-op) or ``terminal`` (the row is already a final
-        verdict and is immutable).
+        mirror -- the silent no-op) or ``closed`` (the turn already declared an
+        end; its evidence is complete and a later turn's belongs elsewhere).
 
     Raises:
         HandoffWriteForbidden: when GAIA_DISPATCH_AGENT names an unseeded agent
@@ -8389,7 +8404,7 @@ def mirror_partial_contract_handoff(
             # finalize of the same row.
             con.execute("BEGIN IMMEDIATE")
             try:
-                from gaia.state import TERMINAL_PLAN_STATUSES
+                from gaia.state import CLOSED_TURN_PLAN_STATUSES
                 existing = con.execute(
                     "SELECT id, agent_state, raw_handoff_json "
                     "FROM agent_contract_handoffs WHERE contract_id = ? LIMIT 1",
@@ -8398,14 +8413,14 @@ def mirror_partial_contract_handoff(
                 if existing is None:
                     con.commit()
                     return {"status": "skipped", "reason": "no_row"}
-                if existing["agent_state"] in TERMINAL_PLAN_STATUSES:
+                if existing["agent_state"] in CLOSED_TURN_PLAN_STATUSES:
                     con.commit()
-                    return {"status": "skipped", "reason": "terminal"}
+                    return {"status": "skipped", "reason": "closed"}
 
                 merged = _merge_birth_markers(
                     existing["raw_handoff_json"], raw_handoff_json
                 )
-                placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
+                placeholders = ", ".join("?" for _ in CLOSED_TURN_PLAN_STATUSES)
                 cur = con.execute(
                     f"""
                     -- raw_handoff_json is the ONLY column written: agent_state,
@@ -8418,19 +8433,20 @@ def mirror_partial_contract_handoff(
                     -- closure. The NOT IN guard
                     -- is redundant with the SELECT above under this lock and is
                     -- kept as the statement-level restatement of the invariant:
-                    -- a terminal row is never edited in place, by any writer.
+                    -- a turn that already closed is never edited in place, by
+                    -- any writer.
                     UPDATE agent_contract_handoffs
                        SET raw_handoff_json = ?
                      WHERE contract_id = ?
                        AND agent_state NOT IN ({placeholders})
                     RETURNING id
                     """,
-                    (merged, contract_id, *TERMINAL_PLAN_STATUSES),
+                    (merged, contract_id, *CLOSED_TURN_PLAN_STATUSES),
                 )
                 returned = cur.fetchone()
                 con.commit()
                 if returned is None:
-                    return {"status": "skipped", "reason": "terminal"}
+                    return {"status": "skipped", "reason": "closed"}
                 return {
                     "status": "applied",
                     "handoff_id": returned["id"],
@@ -8471,46 +8487,118 @@ def mirror_partial_contract_handoff(
 # born into a NEW row that declares which one it continues, through
 # `continues_handoff_id`. Three consequences shape the writer below:
 #
-#   * CLOSED means TERMINAL, by the one existing definition. The trigger is
-#     `agent_state IN gaia.state.TERMINAL_PLAN_STATUSES` -- the table's declared
-#     write-once boundary. The other five states are documented there as paused
-#     mid-loop checkpoints that MUST stay convergeable for the same contract_id,
-#     so widening the trigger to them would break convergence rather than
-#     protect a record.
+#   * CLOSED MEANS THE TURN ENDED, NOT THAT THE VERDICT IS FROZEN. The trigger
+#     is `agent_state IN gaia.state.CLOSED_TURN_PLAN_STATUSES` -- every state an
+#     agent can finalize under. It is deliberately NOT TERMINAL_PLAN_STATUSES,
+#     which answers a different question (may a later, truer verdict replace this
+#     one?) and is a strict subset. Both frontiers document each other at their
+#     definitions; the gap between them is where the measured defect lived. A
+#     turn that closed declaring NEEDS_VERIFICATION had ENDED, yet its row was
+#     not terminal, so the same agent's next assignment merged its evidence into
+#     the record it had already closed and its close replaced its own earlier
+#     verdict -- every call exiting 0. Widening the trigger does not touch the
+#     convergence the narrower set guards: finalize_agent_contract_handoff still
+#     refuses only an already-COMPLETE row, so every lane that exists to correct
+#     a record still reaches it (gaia.state, section 1b, records what those lanes
+#     are and what merging the two sets was measured to break).
 #   * ONE LINK PER CLOSED ROW. The insert runs under BEGIN IMMEDIATE and first
 #     looks for an existing child, so two concurrent first-writes cannot fork a
 #     closed row into two continuations; the loser adopts the winner's link.
 #   * THE LINK IS ALREADY CLAIMED. `claimed_at` is stamped at mint time even
-#     though no SubagentStart will ever claim it. It inherits the dispatch
-#     correlation keys, and claim_dispatch_row's candidate pool is exactly
-#     `agent_state='DISPATCHED' AND claimed_at IS NULL` -- leaving it unclaimed
-#     would let a later sibling dispatch sharing the prompt_id claim a row that
-#     belongs to a run already underway.
+#     though no SubagentStart will ever claim it. claim_dispatch_row's candidate
+#     pool is exactly `agent_state='DISPATCHED' AND claimed_at IS NULL`, so the
+#     stamp is what keeps a link out of it. The link also carries none of the
+#     correlation keys that pool matches on, which makes the exclusion true
+#     twice over rather than by a single stamp.
 # ---------------------------------------------------------------------------
 
-# Columns a continuation link inherits verbatim from the row it continues: the
-# turn's identity, its attribution, its plan binding and its dispatch context are
-# all unchanged by a resumption -- the same turn is still running. Everything
-# NOT in this tuple is set explicitly by open_contract_continuation (the new
-# contract_id, a fresh DISPATCHED state and birth cut mark, the link itself, the
-# seed envelope, claimed_at, created_at).
-_CONTINUATION_INHERITED_COLUMNS = (
+# A LINK'S BIRTH SORTS THE PARENT'S COLUMNS BY WHAT THEY DO, NOT BY WHERE THEY
+# CAME FROM. Two categories are inherited and one is not, and the two rules point
+# in opposite directions because the ways they fail are opposite:
+#
+#   * A column that DESCRIBES THE ASSIGNMENT is never inherited. Inheriting it
+#     LIES. The assignment (dispatch_prompt), its description, the prompt and
+#     tool-use correlation keys, the project, the brief and the parent binding
+#     all belong to the turn that ENDED; the link exists precisely because a new
+#     turn began, so no new value is available at mint time and the old one is
+#     false. Inheriting them produced a link whose content described renaming a
+#     module while its recorded assignment said "audit the pipeline": not empty,
+#     but populated with something untrue, which is worse, because an empty
+#     column is visible to every reader and a filled one is not. They stay NULL,
+#     and the dispatch coordinates of the turn that ended remain readable where
+#     they already are -- on the parent, which `gaia contract chain` walks to.
+#   * A column that CONSTRAINS THE AGENT is never dropped. Dropping it makes the
+#     resumption an ESCAPE HATCH. MEASURED: minting the link clean took
+#     ``plan_task_id`` with it, so a producer bound to a plan task -- forbidden
+#     from signing its own COMPLETE by both finalize seams
+#     (bin/cli/contract.py::cmd_finalize and
+#     hooks/adapters/claude_code.py::_blind_verification_required) -- self-signed
+#     simply by writing once more after its close: the producer's contract id
+#     answered "blocked, task 910" and the link's answered "not blocked, None".
+#     The SubagentStop gate is reached the same way, since it resolves the row by
+#     harness id and that lookup collapses the chain to this very link
+#     (collapse_continuation_chains).
+#
+# The two categories cannot be merged because a constraint is not a description:
+# ``dispatch_prompt`` says what the ended turn was ASKED, which the new turn does
+# not know; ``plan_task_id`` says what the agent MAY NOT DO, which the new turn
+# has not stopped being subject to. Its truth does not expire with the turn --
+# the same agent is still working the same plan task -- so carrying it forward
+# asserts nothing the record does not already hold.
+#
+# ``kind``, ``plan_id`` and ``parent_handoff_id`` belong here for the same reason
+# as ``plan_task_id``, and were once left out of it by reading them as labels for
+# WHICH assignment this is rather than as restrictions on it. That reading is
+# wrong, and one code path is enough to make it wrong: ``is_born_at_dispatch_row``
+# answers "did this turn adopt an identity minted at dispatch?" by asking whether
+# ANY of the three is present, and its only consumer -- the SubagentStop closure,
+# hooks/modules/agents/handoff_persister.py::close_born_dispatch_row -- turns a
+# YES into a REFUSAL: the last-resort lane that finds a born row by the dispatched
+# agent's NAME is then skipped entirely. That lane must be refused for an adopting
+# turn, because a NAME is shared by every dispatch of that agent while an identity
+# is not. MEASURED: a link minted without the three answered "not born at
+# dispatch" for a turn that was; the lane switched back on; and since the turn had
+# by then closed both its own rows, the only row still DISPATCHED under that name
+# was a CONCURRENT SIBLING'S live dispatch -- which the resuming turn closed and
+# stamped as superseded by its own link.
+#
+# They pass the DESCRIPTIVE test too, which is why carrying them forward asserts
+# nothing false: each names something a resumption does not change -- the same
+# agent, still running the same kind of turn, on the same plan, answering to the
+# same producer's row. ``dispatch_prompt`` is the contrast: it is the text of an
+# assignment that ENDED, and no new value for it exists at mint time.
+#
+# The admission rule stays narrow: some code path must REFUSE an action because
+# of the column. One that merely identifies the work stays out, or it reopens the
+# lie the first category exists to prevent.
+_CONTINUATION_CONSTRAINT_COLUMNS = (
+    "plan_task_id",
+    "kind",
+    "plan_id",
+    "parent_handoff_id",
+)
+
+# Columns naming WHO the agent is, WHERE it runs and WHICH harness run it belongs
+# to -- unchanged by a resumption, so inherited verbatim.
+#
+# harness_agent_id is not an exception to the first rule above: the harness mints
+# it per RUN, not per turn, so a resumption genuinely carries the same one. It is
+# also load-bearing -- the SubagentStop bridge resolves the closing turn's row by
+# it (see collapse_continuation_chains).
+_CONTINUATION_IDENTITY_COLUMNS = (
     "agent_id",
     "session_id",
     "workspace",
-    "brief_id",
-    "plan_task_id",
-    "plan_id",
-    "parent_handoff_id",
-    "kind",
     "harness_agent_id",
-    "dispatch_prompt_id",
-    "dispatch_tool_use_id",
-    "dispatch_description",
-    "dispatch_prompt",
-    "context_anchors",
-    "kernel_sections",
-    "dispatch_project",
+)
+
+# Everything NOT in these two tuples is either set explicitly by
+# open_contract_continuation (the new contract_id, a fresh DISPATCHED state and
+# birth cut mark, the link itself, the seed envelope, claimed_at, created_at) or
+# left NULL on purpose.
+_CONTINUATION_INHERITED_COLUMNS = (
+    *_CONTINUATION_IDENTITY_COLUMNS,
+    *_CONTINUATION_CONSTRAINT_COLUMNS,
 )
 
 # Hard bound on a chain walk. A chain is one turn's resumptions, which is a
@@ -8524,6 +8612,23 @@ def _row_by_contract_id(con: sqlite3.Connection, contract_id: str):
         "SELECT * FROM agent_contract_handoffs WHERE contract_id = ? LIMIT 1",
         (contract_id,),
     ).fetchone()
+
+
+def _continuation_edge(row: sqlite3.Row) -> "int | None":
+    """The parent link of ``row``, as a diagnosis rather than a key error.
+
+    A ``SELECT *`` against a database predating schema v46 returns a row with no
+    such key, and sqlite3.Row reports that as ``IndexError: No item with that
+    key`` -- a message that names neither the column nor the reason, and would
+    have been the whole content of the recorded incident.
+    """
+    try:
+        return row["continues_handoff_id"]
+    except (IndexError, KeyError) as exc:
+        raise sqlite3.OperationalError(
+            "no such column: continues_handoff_id -- this database predates "
+            "schema v46; apply scripts/migrations/v45_to_v46.sql"
+        ) from exc
 
 
 def _continuation_chain_rows(
@@ -8548,7 +8653,7 @@ def _continuation_chain_rows(
     walked_back = {row["id"]}
     root = row
     for _ in range(_MAX_CONTINUATION_LINKS):
-        previous_id = root["continues_handoff_id"]
+        previous_id = _continuation_edge(root)
         if previous_id is None:
             break
         previous = con.execute(
@@ -8577,6 +8682,80 @@ def _continuation_chain_rows(
     return chain
 
 
+# The event type the unreadable-chain trace is written under. It is a
+# harness_event and not a log line because this module has no logger and an
+# operator cannot grep a process that already exited: the event is queryable
+# after the fact with `gaia query --surface harness_events`.
+CONTINUATION_CHAIN_UNREADABLE_EVENT = "contract.chain_unreadable"
+
+
+class ContinuationChainUnreadable(RuntimeError):
+    """The chain of a contract id could not be READ -- distinct from "no row".
+
+    Raised only after the substrate itself refused the walk (most concretely: a
+    database predating ``continues_handoff_id``, schema < v46, where selecting
+    the edge raises). An id that simply names no row is not this: that answer is
+    known, and it is the empty chain.
+    """
+
+    def __init__(self, contract_id: str, cause: BaseException) -> None:
+        super().__init__(
+            f"the continuation chain of {contract_id!r} could not be read "
+            f"({type(cause).__name__}: {cause}). This is NOT 'no such contract' "
+            f"-- whether that row exists is unknown from here."
+        )
+        self.contract_id = contract_id
+        self.cause = cause
+
+
+def _chain_unreadable_recorded(error: str, db_path: "Path | None") -> bool:
+    """True when this exact failure is already on record for this database."""
+    con = _connect(db_path)
+    try:
+        return con.execute(
+            "SELECT 1 FROM harness_events WHERE type = ? AND "
+            "CASE WHEN json_valid(payload) "
+            "THEN json_extract(payload, '$.error') END = ? LIMIT 1",
+            (CONTINUATION_CHAIN_UNREADABLE_EVENT, error),
+        ).fetchone() is not None
+    finally:
+        con.close()
+
+
+def _chain_unreadable(
+    contract_id: str, cause: BaseException, db_path: "Path | None"
+) -> "ContinuationChainUnreadable":
+    """Record the failure where an operator can find it, and build the error.
+
+    ONE INCIDENT PER DISTINCT FAILURE, not per contract id. The failure this
+    exists for describes the SUBSTRATE ("no such column: continues_handoff_id"),
+    which is true of every row at once, and every contract write resolves a chain
+    -- so an event per occurrence would bury the signal it exists to raise, and
+    would be graded by ``gaia defects`` as a flood of separate defects. The
+    ``contract_id`` in the payload is therefore the first id that met the
+    failure, an example rather than its subject.
+    """
+    error = f"{type(cause).__name__}: {cause}"
+    try:
+        if not _chain_unreadable_recorded(error, db_path):
+            write_harness_event(
+                event_type=CONTINUATION_CHAIN_UNREADABLE_EVENT,
+                source="store",
+                result=(
+                    f"continuation chain unreadable ({error}); first seen "
+                    f"resolving {contract_id}"
+                ),
+                severity="warning",
+                meta={"contract_id": contract_id, "error": error},
+                db_path=db_path,
+            )
+    except Exception:
+        # The trace is the second surface; the RAISE is the load-bearing half,
+        # and a substrate too broken to hold an event must not swallow it.
+        pass
+    return ContinuationChainUnreadable(contract_id, cause)
+
+
 def continuation_chain(
     contract_id: "str | None",
     *,
@@ -8588,16 +8767,32 @@ def continuation_chain(
     is the link currently open. A contract that was never resumed returns a
     single-element list (itself); an unknown contract id returns ``[]``.
 
+    AN EMPTY LIST MEANS "NO SUCH ROW" AND NOTHING ELSE. This used to catch every
+    exception and return ``[]``, which merged that answer with "the walk failed"
+    -- and the merge was not hypothetical: against a database still on schema
+    < v46 the edge column does not exist, so every existing contract read as
+    absent and ``gaia contract chain`` told the operator no row existed for an id
+    they were holding. A failure now RAISES
+    :class:`ContinuationChainUnreadable` and leaves a
+    ``contract.chain_unreadable`` harness_event behind, so the distinction
+    survives the process that made it.
+
     This is the read behind ``gaia contract chain``: given ANY link, an operator
     recovers the whole chain with one call rather than following ids by hand.
+
+    Raises:
+        ContinuationChainUnreadable: the substrate refused the walk.
     """
     if not contract_id:
         return []
-    con = _connect(db_path)
+    try:
+        con = _connect(db_path)
+    except Exception as exc:
+        raise _chain_unreadable(contract_id, exc, db_path) from exc
     try:
         return [dict(r) for r in _continuation_chain_rows(con, contract_id)]
-    except Exception:
-        return []
+    except Exception as exc:
+        raise _chain_unreadable(contract_id, exc, db_path) from exc
     finally:
         con.close()
 
@@ -8612,6 +8807,11 @@ def continuation_tip(
     Returns the row itself when it was never resumed, the newest link when it
     was, and None when no row exists for the id at all. Callers that must not
     write to a superseded record resolve through this first.
+
+    Raises:
+        ContinuationChainUnreadable: propagated from :func:`continuation_chain`.
+            None here means "no such row", never "the walk failed" -- a caller
+            that wants to degrade must catch the error and say so.
     """
     chain = continuation_chain(contract_id, db_path=db_path)
     return chain[-1] if chain else None
@@ -8651,6 +8851,11 @@ def open_contract_continuation(
     function only INSERTs, so neither the state nor the content of the record it
     continues can change.
 
+    CLOSED is ``agent_state IN gaia.state.CLOSED_TURN_PLAN_STATUSES`` -- the turn
+    declared an end, in ANY of the five states an agent may finalize under. A row
+    still DISPATCHED, or reaped to IN_PROGRESS by the backstop, names a turn
+    nobody closed and is written in place (``not_closed``).
+
     Args:
         parent_contract_id: The CLOSED contract the write was addressed to.
         new_contract_id:    The contract id to mint the link under. Supplied by
@@ -8687,13 +8892,16 @@ def open_contract_continuation(
             # write lock has to be held across both.
             con.execute("BEGIN IMMEDIATE")
             try:
-                from gaia.state import CUT_REASON_NEVER_FINALIZED, TERMINAL_PLAN_STATUSES
+                from gaia.state import (
+                    CLOSED_TURN_PLAN_STATUSES,
+                    CUT_REASON_NEVER_FINALIZED,
+                )
 
                 parent = _row_by_contract_id(con, parent_contract_id)
                 if parent is None:
                     con.commit()
                     return {"status": "skipped", "reason": "no_row"}
-                if parent["agent_state"] not in TERMINAL_PLAN_STATUSES:
+                if parent["agent_state"] not in CLOSED_TURN_PLAN_STATUSES:
                     con.commit()
                     return {"status": "skipped", "reason": "not_closed"}
 
@@ -9054,6 +9262,22 @@ def dispatched_binding_plan_task_id_by_contract(
     idempotent re-finalize). Returns None when no row exists for ``contract_id``
     or its ``plan_task_id`` is NULL (an unbound turn -- investigation / memory / a
     free-standing verifier turn, all free to self-COMPLETE).
+
+    THE BINDING IS A PROPERTY OF THE CHAIN, NOT OF ONE ROW, so an empty column
+    is answered by walking BACK through ``continues_handoff_id`` to the nearest
+    ancestor that carries one. The mint already copies the constraint onto every
+    new link (``_CONTINUATION_CONSTRAINT_COLUMNS``), so this walk is what keeps
+    the answer true for a link that was minted WITHOUT it -- by an older build,
+    or by a mint that raced. It matters because a flat read here is the exact
+    shape of the measured leak: the same agent, still on the same plan task,
+    self-signed COMPLETE through a link whose own column was NULL. The walk is
+    BACKWARD only -- a link is subject to what the turn it continues was bound
+    to; a DESCENDANT's binding never reaches back to constrain its ancestor.
+
+    Degrades to the flat read on any chain error, which is what a database
+    predating the ``continues_handoff_id`` column (schema < v46) raises. Such a
+    database holds no links at all, so the fallback loses nothing that exists;
+    the walk only ever ADDS a constraint the flat read could not see.
     """
     if not contract_id:
         return None
@@ -9066,9 +9290,47 @@ def dispatched_binding_plan_task_id_by_contract(
         ).fetchone()
         if row is None:
             return None
-        return row["plan_task_id"]
+        if row["plan_task_id"] is not None:
+            return row["plan_task_id"]
+        try:
+            return _inherited_plan_task_id(con, contract_id)
+        except Exception:
+            return None
     finally:
         con.close()
+
+
+def _inherited_plan_task_id(
+    con: sqlite3.Connection, contract_id: str
+) -> "int | None":
+    """The nearest ANCESTOR binding of ``contract_id``'s continuation chain.
+
+    Walks parent-ward from the row itself and returns the first non-NULL
+    ``plan_task_id`` it meets, or None when the whole chain is unbound. Bounded
+    by ``_MAX_CONTINUATION_LINKS`` and by a visited set, so a corrupt
+    self-referential edge degrades to None instead of spinning inside a hook.
+    """
+    row = con.execute(
+        "SELECT id, plan_task_id, continues_handoff_id "
+        "FROM agent_contract_handoffs WHERE contract_id = ? LIMIT 1",
+        (contract_id,),
+    ).fetchone()
+    seen: "set[int]" = set()
+    for _ in range(_MAX_CONTINUATION_LINKS):
+        if row is None:
+            return None
+        if row["plan_task_id"] is not None:
+            return row["plan_task_id"]
+        parent_id = row["continues_handoff_id"]
+        if parent_id is None or parent_id in seen:
+            return None
+        seen.add(parent_id)
+        row = con.execute(
+            "SELECT id, plan_task_id, continues_handoff_id "
+            "FROM agent_contract_handoffs WHERE id = ? LIMIT 1",
+            (parent_id,),
+        ).fetchone()
+    return None
 
 
 def insert_handoff_approval(

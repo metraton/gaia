@@ -214,15 +214,20 @@ def test_continuation_mints_a_new_contract_and_leaves_the_closed_row_intact(db):
     assert link["agent_state"] == "DISPATCHED", "a fresh link is open, not closed"
     assert link["cut_reason"] == "never_finalized", "cleanliness is earned by finalize"
     assert link["claimed_at"] is not None, (
-        "the link must be born CLAIMED: it inherits the dispatch correlation "
-        "keys, and claim_dispatch_row's pool is exactly DISPATCHED + unclaimed, "
-        "so an unclaimed link could be taken by a later sibling dispatch"
+        "the link must be born CLAIMED: claim_dispatch_row's pool is exactly "
+        "DISPATCHED + unclaimed, so an unclaimed link could be taken by a later "
+        "sibling dispatch"
     )
-    for inherited in ("agent_id", "session_id", "workspace", "kind",
-                      "harness_agent_id", "dispatch_prompt_id"):
+    for inherited in ("agent_id", "session_id", "workspace", "harness_agent_id"):
         assert link[inherited] == before[inherited], (
-            f"{inherited} belongs to the turn, which is the same turn"
+            f"{inherited} identifies the agent and its harness run, which the "
+            f"resumption does not change"
         )
+    # The dispatch columns describe the assignment that ENDED; the binding
+    # columns restrict the agent and travel with it. Both halves are covered in
+    # full by test_continuation_trigger_is_the_turn_not_the_state.py.
+    assert link["kind"] == before["kind"]
+    assert link["dispatch_prompt_id"] is None
 
 
 def test_continuation_is_refused_on_a_row_that_is_still_open(db):

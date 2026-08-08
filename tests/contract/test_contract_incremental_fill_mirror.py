@@ -276,11 +276,41 @@ def test_contract_incremental_fill_mirror_never_touches_a_terminal_row(db):
     )
 
     assert outcome["status"] == "skipped"
-    assert outcome["reason"] == "terminal"
+    assert outcome["reason"] == "closed"
     rows = _rows(db, cid)
     assert len(rows) == 1
     assert rows[0]["agent_state"] == "COMPLETE"
     assert json.loads(rows[0]["raw_handoff_json"]) == terminal
+
+
+def test_contract_incremental_fill_mirror_never_touches_a_row_awaiting_verification(db):
+    """The guard is the TURN ending, not the verdict freezing.
+
+    A producer that closed ``NEEDS_VERIFICATION`` is not terminal, so the older
+    ``TERMINAL_PLAN_STATUSES`` guard let a later write MERGE its evidence into
+    the record an independent verifier was about to read.
+    """
+    _seed_binding_targets(db)
+    cid = f"{AGENT_ID}.awaiting-verification"
+    closed = _terminal_envelope()
+    closed["agent_status"]["agent_state"] = "NEEDS_VERIFICATION"
+    finalize_agent_contract_handoff(
+        contract_id=cid,
+        agent_id=AGENT_ID,
+        workspace=WORKSPACE,
+        agent_state="NEEDS_VERIFICATION",
+        raw_handoff_json=json.dumps(closed),
+        db_path=db,
+    )
+
+    outcome = mirror_partial_contract_handoff(
+        cid, json.dumps(_partial_envelope(files=["next assignment"])), db_path=db
+    )
+
+    assert outcome == {"status": "skipped", "reason": "closed"}
+    rows = _rows(db, cid)
+    assert rows[0]["agent_state"] == "NEEDS_VERIFICATION"
+    assert json.loads(rows[0]["raw_handoff_json"]) == closed
 
 
 def test_contract_incremental_fill_mirror_guards_terminality_in_the_statement():

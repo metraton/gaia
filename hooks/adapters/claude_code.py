@@ -3338,6 +3338,29 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
                 if _bound_dispatch_row is not None:
                     _bound_plan_task_id = _bound_dispatch_row.get("plan_task_id")
+                    if _bound_plan_task_id is None:
+                        # The resolved row may be a CONTINUATION LINK: the
+                        # harness lane collapses a chain to its live tip
+                        # (collapse_continuation_chains), so the row judged here
+                        # is the link, not the turn it continues. The mint
+                        # carries the binding forward, but a link minted without
+                        # it would otherwise read as unbound and let a
+                        # plan-task-bound producer self-sign COMPLETE through
+                        # the resumption. The writer's reader walks the chain
+                        # for exactly that case; it degrades to None on any
+                        # error, same as the outer handler.
+                        from gaia.store.writer import (
+                            dispatched_binding_plan_task_id_by_contract,
+                        )
+
+                        _bound_plan_task_id = (
+                            dispatched_binding_plan_task_id_by_contract(
+                                _bound_dispatch_row.get("contract_id"),
+                                db_path=Path(_db_for_binding)
+                                if _db_for_binding
+                                else None,
+                            )
+                        )
             except Exception:
                 logger.debug(
                     "Could not resolve dispatch binding plan_task_id for %s "

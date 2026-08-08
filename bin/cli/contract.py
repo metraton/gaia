@@ -68,22 +68,37 @@ Incremental fill is MIRRORED to the row, not only to disk:
     invisible to any DB reader, however much had been written to disk. The
     mirror is deliberately weaker than ``finalize``: it never CREATES a row (a
     draft with no born row mirrors to nothing and the disk write stands alone),
-    never touches a row already in a terminal state, and never moves the row's
-    ``agent_state`` or its born-at-dispatch binding -- only
+    never touches a row whose turn already declared a close, and never moves the
+    row's ``agent_state`` or its born-at-dispatch binding -- only
     ``raw_handoff_json``. Every failure is swallowed: the mirror can never turn
-    a successful draft write into a failed CLI call. Read the mirrored row back
-    with ``gaia contract list --contract-id <draft-id> --json``.
+    a successful draft write into a failed CLI call -- but it is never silent
+    either. A mirror that did not land is announced on stderr and carried in
+    ``--json`` as ``mirror_skipped_reason``, since a write that exits 0 having
+    reached no row is exactly the failure worth being loud about. Read the
+    mirrored row back with
+    ``gaia contract list --contract-id <draft-id> --json``.
 
-Continuation -- a turn is a contract, and resuming does not reopen it:
-    A resumed agent keeps writing under the draft id it was born with, but its
-    row is already closed: the mirror refuses a terminal row and finalize
-    converges nothing, so everything the resumed turn produced used to be lost
-    while the CLI still reported success. There is no birth event on a
-    resumption to prepare a new row at, so the FIRST WRITE is the moment the
-    fix lives at: ``set``/``add``/``fill`` addressed at a CLOSED contract mint a
-    NEW one recording which it continues (``agent_contract_handoffs
-    .continues_handoff_id``) and land the write there; the closed row is read
-    and never written. ``finalize`` FOLLOWS an existing chain to its live link
+Continuation -- a turn is a contract, and closing it does not leave it open:
+    An agent that already declared a close and writes again is a NEW turn, in
+    ANY of the five states it can finalize under -- not only ``COMPLETE``. Its
+    old row stays convergeable because the write-once rule guards a VERDICT and
+    only ``COMPLETE`` is one; what that buys, and the verifier rationale that was
+    written here and is measurably false, are recorded once in ``gaia.state``
+    (section 1b). Note in particular that ``finalize`` below refuses any envelope
+    whose ``agent_id`` disagrees with its draft id's prefix, so no OTHER agent can
+    converge a row through this CLI at all. There
+    is no birth event on a resumption to prepare a new row at, so the FIRST WRITE
+    is the moment the fix lives at: ``set``/``add``/``fill`` addressed at a
+    CLOSED contract mint a NEW one recording which it continues
+    (``agent_contract_handoffs.continues_handoff_id``) and land the write there;
+    the closed row is read and never written. The link is born by ONE criterion,
+    what a column DOES: it carries the agent's identity, workspace, session and
+    harness run, plus the binding columns that RESTRICT the agent and do not
+    expire with the turn (``gaia.store.writer._CONTINUATION_CONSTRAINT_COLUMNS``
+    -- dropping them made the resumption an escape hatch); it carries NONE of the
+    dispatch columns that DESCRIBE the assignment that ended, which a new turn
+    cannot fill legitimately and must not inherit falsely.
+    ``finalize`` FOLLOWS an existing chain to its live link
     (so a resumed close lands on the contract its own writes went to) but never
     mints one -- its idempotent no-op on a repeated call is a guarantee, and
     minting there would make every retried close an empty link. ``validate`` and
@@ -419,7 +434,7 @@ def _print_ambiguous_draft_error(exc, as_json: bool) -> None:
         print(f"Error: {exc}", file=sys.stderr)
 
 
-def _mirror_partial_to_row(draft_id: str, envelope: dict) -> bool:
+def _mirror_partial_to_row(draft_id: str, envelope: dict) -> dict:
     """Mirror the partial envelope onto this turn's DB row. Best-effort.
 
     The disk draft is the primary record and is already written by the time
@@ -431,18 +446,63 @@ def _mirror_partial_to_row(draft_id: str, envelope: dict) -> bool:
     write into a failed CLI call.
 
     The writer (``gaia.store.writer.mirror_partial_contract_handoff``) is what
-    guarantees this can never create a row and never touch a terminal one; this
-    seam only decides WHEN to offer the mirror, never what it is allowed to do.
+    guarantees this can never create a row and never touch a row whose turn
+    already closed; this seam only decides WHEN to offer the mirror, never what
+    it is allowed to do.
 
-    Returns True only when a row was actually updated.
+    Returns the writer's outcome dict, so the caller can say WHY a mirror did
+    not land instead of reporting a bare False. Swallowed is not the same as
+    unreported: an exception degrades to ``{"status": "skipped", "reason":
+    "error", ...}``, which :func:`_write_if_valid` still surfaces.
     """
     try:
         from gaia.store.writer import mirror_partial_contract_handoff
 
         outcome = mirror_partial_contract_handoff(draft_id, json.dumps(envelope))
-        return bool(outcome.get("status") == "applied")
-    except Exception:
-        return False
+    except Exception as exc:
+        return {"status": "skipped", "reason": "error", "detail": str(exc)}
+    return outcome if isinstance(outcome, dict) else {
+        "status": "skipped", "reason": "unknown",
+    }
+
+
+# Why a mirror did not land, in the caller's terms. ``no_row`` is the one
+# ordinary case -- a draft with no dispatch behind it (a plain CLI use, or a turn
+# that minted its own identity) has nothing to mirror onto and never did; it is
+# reported in --json and stays off stderr so it does not cry wolf on every write
+# of a legitimately row-less draft. The others each mean evidence the caller
+# believes is recorded is NOT on any row, which no write may leave unsaid.
+_MIRROR_SKIP_EXPLANATIONS = {
+    "no_row": (
+        "no contract row exists for this draft, so the evidence lives only on "
+        "disk. Expected when the draft was not born at dispatch."
+    ),
+    "closed": (
+        "the contract row's turn is already closed and never accepts more "
+        "evidence. A continuation should have been opened -- this write reached "
+        "the row anyway, which is a defect worth reporting."
+    ),
+    "no_contract_id": "no contract id to key the mirror on.",
+    "error": "the mirror raised and was swallowed to keep the draft write valid.",
+    "unknown": "the mirror reported an unrecognized outcome.",
+}
+
+
+def _mirror_warning(outcome: dict) -> Optional[str]:
+    """The stderr line for a mirror that did not land, or None when it did.
+
+    ``no_row`` is deliberately silent here (see ``_MIRROR_SKIP_EXPLANATIONS``);
+    every other non-landing outcome is announced, because a write that exits 0
+    while its evidence reached no row is exactly the silent failure this seam
+    exists to make loud.
+    """
+    reason = str(outcome.get("reason") or "unknown")
+    if outcome.get("status") == "applied" or reason == "no_row":
+        return None
+    explanation = _MIRROR_SKIP_EXPLANATIONS.get(reason, reason)
+    detail = outcome.get("detail")
+    suffix = f" ({detail})" if detail else ""
+    return f"[MIRROR SKIPPED: {reason}] {explanation}{suffix}"
 
 
 def _write_if_valid(
@@ -461,12 +521,17 @@ def _write_if_valid(
     reading stdout must still find exactly one JSON object.
 
     ``mirror`` additionally reflects the freshly-persisted partial envelope
-    onto this turn's non-terminal row (see ``_mirror_partial_to_row``). It is
+    onto this turn's own row (see ``_mirror_partial_to_row``). It is
     opt-in per subcommand rather than automatic: the incremental verbs
     (``set``/``add``/``fill``) are the ones whose evidence would otherwise be
     lost to a cut, while ``init`` has nothing to preserve yet -- its envelope is
     the empty starting shape, and mirroring it would overwrite the birth
-    envelope with no evidence gained.
+    envelope with no evidence gained. A mirror that did NOT land is announced
+    rather than reduced to ``mirrored: false``: the caller believes its evidence
+    is recorded, and a write that exits 0 having reached no row is precisely the
+    silent failure this command must not produce (see :func:`_mirror_warning`,
+    which stays quiet only for the one benign case, a draft with no row behind
+    it).
 
     ``continuation`` carries the PENDING continuation plan from
     :func:`_plan_continuation`, and this is where it is committed -- AFTER the
@@ -487,13 +552,22 @@ def _write_if_valid(
             return 1
         draft_id = str(continuation["contract_id"])
     _save_draft(draft_id, envelope)
-    mirrored = _mirror_partial_to_row(draft_id, envelope) if mirror else None
+    mirror_outcome = _mirror_partial_to_row(draft_id, envelope) if mirror else None
+    mirrored = None if mirror_outcome is None else (
+        mirror_outcome.get("status") == "applied"
+    )
     if continuation is not None:
         print(_continuation_notice(continuation), file=sys.stderr)
+    if mirror_outcome is not None:
+        warning = _mirror_warning(mirror_outcome)
+        if warning:
+            print(warning, file=sys.stderr)
     if as_json:
         payload = {"status": "ok", "draft_id": draft_id}
         if mirrored is not None:
             payload["mirrored"] = mirrored
+            if not mirrored:
+                payload["mirror_skipped_reason"] = mirror_outcome.get("reason")
         if continuation is not None:
             payload["continuation"] = continuation
         payload.update(extra_json or {})
@@ -585,15 +659,24 @@ def _maybe_adopt_draft(draft_id: str) -> Optional[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Continuation: a turn is a contract, and resuming does not reopen it.
+# Continuation: a turn is a contract, and closing it does not leave it open.
 #
 # When the orchestrator resumes an agent that already closed its turn, the agent
-# keeps working while its row is terminal -- the mirror refuses it and finalize
-# converges nothing, so every finding the resumed turn produces is lost. There is
-# no birth event on a resumption to prepare a new row at (the nascent row is
-# written only from the dispatching PreToolUse:Task; a resume arrives as
-# SendMessage), so the FIRST WRITE is the only moment available, and that is
-# here.
+# keeps working and its next write has to go somewhere. There is no birth event
+# on a resumption to prepare a new row at (the nascent row is written only from
+# the dispatching PreToolUse:Task; a resume arrives as SendMessage), so the FIRST
+# WRITE is the only moment available, and that is here.
+#
+# THE TRIGGER IS THE TURN, NOT THE VERDICT. What counts as closed is
+# `gaia.state.CLOSED_TURN_PLAN_STATUSES` -- every state an agent can finalize
+# under. Reading it off the narrower TERMINAL_PLAN_STATUSES instead was the
+# measured defect: a turn that closed declaring NEEDS_VERIFICATION left a row
+# that was not terminal, so the same agent's NEXT assignment merged its evidence
+# into the record an independent verifier was about to read, and its close
+# replaced the producer's verdict -- all of it returning success. The verifier's
+# own path is untouched by the widening: it converges through
+# finalize_agent_contract_handoff, whose guard is still TERMINAL_PLAN_STATUSES.
+# Both frontiers document each other at their definitions in gaia.state.
 #
 # NO CEREMONY is the binding constraint: the resumed agent passes the same
 # --draft-id it was born with and does nothing different, and the orchestrator
@@ -717,10 +800,19 @@ def _plan_continuation(
 ) -> "tuple[str, Optional[dict], Optional[dict]]":
     """Decide a write's real target WITHOUT writing anything.
 
+    CLOSED is the TURN ending, not the verdict freezing: any of the five states
+    an agent can finalize under (``gaia.state.CLOSED_TURN_PLAN_STATUSES``). An
+    agent that already declared a close and writes again is a new turn whatever
+    it declared, and its evidence belongs to a contract of its own -- most
+    sharply for the producer that closed ``NEEDS_VERIFICATION``, whose row is
+    left convergeable for an INDEPENDENT VERIFIER and not for more of its own
+    work. That row keeps converging through ``finalize_agent_contract_handoff``,
+    which guards on the narrower ``TERMINAL_PLAN_STATUSES``; only this seam moved.
+
     Returns ``(effective_draft_id, seed_envelope, pending)``. On the ordinary
-    path -- the addressed contract is still open, unknown, or the substrate
-    cannot be read -- this is ``(tip_id, None, None)`` and the caller loads the
-    draft exactly as before. When the live link is CLOSED it is
+    path -- the addressed contract's turn is still running, unknown, or the
+    substrate cannot be read -- this is ``(tip_id, None, None)`` and the caller
+    loads the draft exactly as before. When the live link is CLOSED it is
     ``(new_contract_id, seed, pending)``: the id is minted from ``secrets``
     (:func:`_mint_draft_id`, a pure string), the seed is the envelope the link
     will be born with, and ``pending`` carries what :func:`_commit_continuation`
@@ -731,12 +823,12 @@ def _plan_continuation(
     """
     tip_id = _continuation_tip_id(draft_id)
     try:
-        from gaia.state import TERMINAL_PLAN_STATUSES
+        from gaia.state import CLOSED_TURN_PLAN_STATUSES
 
         row = _lookup_handoff_row_by_contract_id(tip_id)
     except Exception:
         return tip_id, None, None
-    if row is None or row.get("agent_state") not in TERMINAL_PLAN_STATUSES:
+    if row is None or row.get("agent_state") not in CLOSED_TURN_PLAN_STATUSES:
         return tip_id, None, None
 
     agent_id = str(row.get("agent_id") or "")
@@ -1412,8 +1504,14 @@ _CHAIN_TABLE_COLUMNS = (
 
 
 def cmd_chain(args) -> int:
-    """Print the continuation chain that ``--contract-id`` belongs to (read-only)."""
-    from gaia.store.writer import continuation_chain
+    """Print the continuation chain that ``--contract-id`` belongs to (read-only).
+
+    The two ways this returns nothing are reported as the DIFFERENT diagnoses
+    they are: an id that names no row (the answer is known and is empty) versus
+    a walk the substrate refused (the answer is unknown). Collapsing them told
+    an operator holding a real contract id that no such row existed.
+    """
+    from gaia.store.writer import ContinuationChainUnreadable, continuation_chain
 
     as_json = bool(getattr(args, "json", False))
     contract_id = getattr(args, "contract_id", None)
@@ -1425,7 +1523,16 @@ def cmd_chain(args) -> int:
         )
         return 1
 
-    chain = continuation_chain(contract_id)
+    try:
+        chain = continuation_chain(contract_id)
+    except ContinuationChainUnreadable as exc:
+        _print_error(
+            f"{exc} Whether a row exists for {contract_id!r} is a separate "
+            f"question this call could not reach; the failure is recorded as a "
+            f"'contract.chain_unreadable' harness event.",
+            as_json,
+        )
+        return 1
     if not chain:
         _print_error(
             f"no agent_contract_handoffs row exists for contract_id="

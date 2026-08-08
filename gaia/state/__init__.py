@@ -48,9 +48,58 @@ VALID_PLAN_STATUSES: tuple[str, ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# 1b) Terminal subset of VALID_PLAN_STATUSES -- a row's write-once boundary.
+# 1b) TWO FRONTIERS OVER THE SAME ENUM, AND WHY THEY ARE NOT THE SAME ONE.
 #
-# Of the six values above, COMPLETE is the ONLY one a genuinely-finalized
+# The six values above are cut twice, for two different questions, and the two
+# cuts do not coincide. They used to differ with nothing written down anywhere
+# about why, which is how a state ended up on the wrong side of both.
+#
+#   TERMINAL_PLAN_STATUSES -- "may a LATER, TRUER verdict replace this one?"
+#       The axis is the VERDICT, and the reader is whoever still owes this row
+#       something. Only COMPLETE answers no.
+#
+#   CLOSED_TURN_PLAN_STATUSES -- "did the agent whose turn this is declare it
+#       over?" The axis is the TURN, and the reader is that agent coming back.
+#       Every declared close answers yes.
+#
+# The relation between them is fixed and asserted by the contract suite:
+# TERMINAL_PLAN_STATUSES is a STRICT subset of CLOSED_TURN_PLAN_STATUSES. A
+# verdict nobody may overwrite was certainly declared at a close; the reverse
+# does not hold.
+#
+# WHAT THE GAP IS FOR -- and it is NOT what this comment used to claim. The
+# claim, repeated at four sites, was that a producer's NEEDS_VERIFICATION row is
+# left writable so an INDEPENDENT VERIFIER can converge it. That does not happen
+# and cannot happen. Measured over 9596 rows of the live store: 266 rows carry a
+# plan-task binding and NOT ONE has ever reached COMPLETE; in all six cases where
+# a verifier turn did reach COMPLETE it closed ITS OWN contract while the
+# producer's row stayed at NEEDS_VERIFICATION. The lane is not merely unused, it
+# is walled: `gaia contract finalize` refuses any envelope whose agent_id differs
+# from its draft id's prefix (bin/cli/contract.py::cmd_finalize), so a verifier
+# has no door through which to sign another turn's row. Cross-agent convergence
+# survives only as a capability of the core writer, reachable by a direct caller.
+#
+# The gap's real job is to keep the write-once rule narrow enough that the
+# machine lanes which CORRECT a record can still reach it. Both consumers of
+# TERMINAL_PLAN_STATUSES refuse a row by its VERDICT alone --
+# finalize_agent_contract_handoff (convergence) and stamp_harness_agent_id (the
+# join between the minted and harness identifier spaces) -- and every state
+# except COMPLETE stays reachable so that a born DISPATCHED row can converge to
+# its verdict, a reap/salvage can stamp the honest cut mark, a re-finalize is
+# idempotent rather than silently empty, and a row whose turn already declared a
+# close can still be joined to its harness run. MEASURED by merging the two sets
+# and running tests/contract + tests/hooks + tests/cli: 3 failures, of which
+# tests/cli/test_contract_reconcile.py::test_reconcile_addresses_by_harness_id_too
+# is a live operator lane -- `gaia contract reconcile --harness-id` stops finding
+# the row it repairs, because the stamp above is refused on a closed turn.
+#
+# So the two frontiers guard different OBJECTS, not different readers of one
+# object: TERMINAL guards a verdict VALUE against a later writer that knows less,
+# CLOSED guards a turn's RECORD against absorbing the next turn's evidence.
+#
+# 1b-i) TERMINAL_PLAN_STATUSES -- the write-once boundary for a VERDICT.
+#
+# Of the six values, COMPLETE is the ONLY one a genuinely-finalized
 # ``agent_contract_handoffs`` row must never regress from: once a turn is
 # verified COMPLETE, no later write (a retried finalize, a racing SubagentStop
 # backstop, or a resumed draft's stale envelope) may overwrite or downgrade it.
@@ -62,12 +111,54 @@ VALID_PLAN_STATUSES: tuple[str, ...] = (
 # row that legitimately auto-finalized mid-loop and can never converge to its
 # true COMPLETE outcome -- the defect this tuple exists to prevent.
 #
-# Consumed by gaia.store.writer.finalize_agent_contract_handoff (the
-# convergence guard) and hooks.modules.agents.handoff_persister.persist_handoff
-# (the backstop's passive/converge decision) -- both must agree on this set.
+# THIS TUPLE IS NOT THE "IS THE TURN OVER" TEST, and reading it as one is
+# exactly the measured defect: a row that is not COMPLETE is left writable so a
+# LATER, TRUER verdict can land on it -- not so the agent that already closed it
+# can keep writing into it. Use CLOSED_TURN_PLAN_STATUSES for that question. See
+# 1b above for what that writability actually serves, and for the verifier
+# rationale that was written here and is false.
+#
+# Consumed by gaia.store.writer.finalize_agent_contract_handoff (the convergence
+# guard) and gaia.store.writer.stamp_harness_agent_id (the identifier-space
+# join); hooks.modules.agents.handoff_persister.persist_handoff makes the same
+# decision deliberately more conservatively, documented at its own definition.
 # ---------------------------------------------------------------------------
 TERMINAL_PLAN_STATUSES: tuple[str, ...] = (
     "COMPLETE",
+)
+
+# ---------------------------------------------------------------------------
+# 1b-ii) CLOSED_TURN_PLAN_STATUSES -- the boundary of a TURN, not of a verdict.
+#
+# A turn is a contract. An agent that already declared a close and writes again
+# is not editing that contract, it is starting the next one -- whatever state it
+# declared. So the frontier is WHOSE turn ended, and every state an agent can
+# finalize under names an ended turn: it handed the work back and stopped.
+#
+# WHY IN_PROGRESS IS THE ONLY EXCLUSION. It is the one value ``gaia contract
+# finalize`` REFUSES (bin/cli/contract.py::cmd_finalize), so a row carrying it
+# was never closed by its agent -- it was CUT and reaped there by the
+# SubagentStop backstop, whose whole purpose is to leave the turn recoverable.
+# A row born DISPATCHED is likewise a turn still running; DISPATCHED is a ROW
+# state and is deliberately absent from VALID_PLAN_STATUSES, so it can never be
+# in this tuple to begin with.
+#
+# WHY THIS IS NOT TERMINAL_PLAN_STATUSES. That tuple answers whether a VERDICT
+# may be replaced by a later writer that knows more; this one answers whether the
+# AGENT'S TURN ended. Merging them collapses two different objects into one rule
+# and breaks both directions: reading this set as the verdict guard freezes every
+# row the moment any close is declared (measured -- see 1b: `gaia contract
+# reconcile --harness-id` loses the row it repairs), while reading the verdict
+# set as the turn guard lets the same agent's next assignment merge its evidence
+# into the record it already closed. Both were measured; the split prevents them.
+#
+# Consumed by gaia.store.writer.open_contract_continuation (the mint trigger),
+# gaia.store.writer.mirror_partial_contract_handoff (which refuses to merge new
+# evidence into an ended turn) and gaia.contract.drafts (a draft is SPENT
+# exactly when its turn declared a close).
+# ---------------------------------------------------------------------------
+CLOSED_TURN_PLAN_STATUSES: tuple[str, ...] = tuple(
+    status for status in VALID_PLAN_STATUSES if status != "IN_PROGRESS"
 )
 
 # ---------------------------------------------------------------------------
@@ -277,6 +368,7 @@ STATE_MACHINE_REGISTRY: dict[tuple[str, str], tuple[str, ...]] = {
 __all__ = [
     "VALID_PLAN_STATUSES",
     "TERMINAL_PLAN_STATUSES",
+    "CLOSED_TURN_PLAN_STATUSES",
     "CUT_REASON_NEVER_FINALIZED",
     "CUT_REASON_REAPED",
     "CUT_REASON_BACKSTOP_CAPTURE",

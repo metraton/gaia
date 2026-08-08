@@ -73,8 +73,8 @@ Liveness, and why it is the axis resolution turns on:
     spent draft that was never swept counted as a rival candidate forever,
     which made bare resolution ambiguous permanently once a second agent had
     ever run. Both symptoms have one cause: history was being treated as
-    candidacy. A draft whose contract id carries a TERMINAL
-    ``agent_contract_handoffs`` row is SPENT -- its outcome is already durable
+    candidacy. A draft whose contract id carries an ``agent_contract_handoffs``
+    row whose turn DECLARED A CLOSE is SPENT -- its outcome is already durable
     in the DB -- and is therefore excluded from candidacy (``_prefer_live``).
     Identity minting is untouched; only what resolution considers changed.
 
@@ -146,6 +146,8 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Set
 
+from gaia.state import CLOSED_TURN_PLAN_STATUSES
+
 _DRAFT_SUFFIX = ".json"
 # Random token width (hex chars). 12 hex chars = 48 bits of entropy -- far
 # beyond any realistic number of concurrent drafts per agent, so two
@@ -157,14 +159,30 @@ _TOKEN_HEX_BYTES = 6
 # shortest length measured to be collision-free across the observed corpus.
 _AGENT_HEX_BYTES = 8
 
-# Agent states that mean "this turn's outcome is already durably recorded".
-# A draft whose contract_id carries a row in one of these states is SPENT: the
-# authoritative agent_contract_handoffs row exists, so the file itself holds
-# nothing that is not already in the DB. Deliberately EXCLUDES the non-terminal
-# states (IN_PROGRESS, APPROVAL_REQUEST, NEEDS_VERIFICATION) -- those name a
-# turn still in flight, whose draft is exactly what a resume or an orchestrator
-# recovery reads.
-_TERMINAL_ROW_STATES = frozenset({"COMPLETE", "BLOCKED", "NEEDS_INPUT"})
+# Agent states that mean "this turn is over and its outcome is durably
+# recorded". A draft whose contract_id carries a row in one of these states is
+# SPENT: the authoritative agent_contract_handoffs row exists, so the file holds
+# nothing that is not already in the DB, and nothing will ever be added to it --
+# the agent's next write is diverted into a NEW contract (see
+# gaia.store.writer.open_contract_continuation), which brings its own draft.
+#
+# THIS IS THE SAME FRONTIER AS THE CONTINUATION TRIGGER, deliberately, and it
+# used to be a third, hand-drawn one. It listed COMPLETE / BLOCKED /
+# NEEDS_INPUT -- neither the set that freezes a row (TERMINAL_PLAN_STATUSES,
+# COMPLETE alone) nor the set that ends a turn -- with nothing recorded anywhere
+# about why the three cuts differed. A draft is spent exactly when its turn
+# declared a close, so it is now defined as that, once, in gaia.state.
+#
+# The remaining distinction from TERMINAL_PLAN_STATUSES is a real one and is
+# documented once, at both definitions in gaia.state: that tuple answers whether
+# a VERDICT may still be replaced by a later, truer one, which is a question
+# about the ROW. Spentness is a question about the FILE and about the TURN that
+# wrote it -- and that turn has ended either way.
+#
+# Excluded: IN_PROGRESS (the state the backstop reaps a CUT turn to, whose draft
+# is exactly what a resume or an orchestrator recovery reads) and the DISPATCHED
+# row state, which never appears in this enum.
+_CLOSED_TURN_ROW_STATES = frozenset(CLOSED_TURN_PLAN_STATUSES)
 
 # Grace window applied on top of the spent check before a draft is collectable.
 # A draft finalized moments ago is still the thing an orchestrator reads to
@@ -376,9 +394,10 @@ def spent_draft_ids(candidates: Optional[Iterable[str]] = None) -> Set[str]:
     """Return the subset of draft ids whose turn is already durably recorded.
 
     A draft is SPENT when ``agent_contract_handoffs`` holds a row for its
-    contract id in a TERMINAL state (see ``_TERMINAL_ROW_STATES``). The row is
-    the authoritative artifact; once it exists, the JSON file is a spent copy
-    that no resume and no orchestrator recovery needs.
+    contract id whose turn DECLARED A CLOSE (see ``_CLOSED_TURN_ROW_STATES``).
+    The row is the authoritative artifact; once it exists, the JSON file is a
+    spent copy that no resume and no orchestrator recovery needs -- a later write
+    by the same agent lands in a continuation with a draft of its own.
 
     Safety posture -- this function is only ever allowed to answer "yes, this
     one is already safe to consider": on ANY uncertainty (no DB, no table, a
@@ -390,11 +409,11 @@ def spent_draft_ids(candidates: Optional[Iterable[str]] = None) -> Set[str]:
     if con is None:
         return set()
     try:
-        placeholders = ",".join("?" for _ in _TERMINAL_ROW_STATES)
+        placeholders = ",".join("?" for _ in _CLOSED_TURN_ROW_STATES)
         rows = con.execute(
             f"select contract_id from agent_contract_handoffs "  # noqa: S608 -- states are a fixed frozenset
             f"where contract_id is not null and agent_state in ({placeholders})",
-            tuple(sorted(_TERMINAL_ROW_STATES)),
+            tuple(sorted(_CLOSED_TURN_ROW_STATES)),
         ).fetchall()
     except Exception:
         return set()
@@ -628,8 +647,9 @@ def collectable_drafts(
 
     A draft is collectable under either of two independent rules:
 
-    * ``spent``  -- its contract id carries a TERMINAL ``agent_contract_handoffs``
-      row AND it has been untouched for ``grace_hours``. The DB row is the
+    * ``spent``  -- its contract id carries an ``agent_contract_handoffs`` row
+      whose turn DECLARED A CLOSE, AND it has been untouched for
+      ``grace_hours``. The DB row is the
       durable artifact; the file is a copy. The grace window matters because
       "finalized" and "no longer being read" are different moments: an
       orchestrator relaying a just-closed turn still reads the draft.

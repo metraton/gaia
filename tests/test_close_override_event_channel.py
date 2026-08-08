@@ -698,7 +698,7 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
     # This channel was authored against v37 and needed no migration of its
     # own (asserted structurally above, against the live schema -- not this
     # number). v38 (plan_task_id index), v39 (cut_reason column), v40
-    # (harness_agent_id column), and v41-v45 landed afterward for unrelated
+    # (harness_agent_id column), and v41-v46 landed afterward for unrelated
     # work, and are the actual current floor -- tracked dynamically by
     # tests/cli/test_schema_version_lockstep.py, which is the real drift
     # guard. This assertion only pins the number this test module itself
@@ -709,12 +709,12 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 45
+    assert int(match.group(1)) == 46
 
 
 def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     # Same baseline as the test above, same reason it can go stale: v38
-    # through v45 are real, unrelated migrations, not drift in this channel.
+    # through v46 are real, unrelated migrations, not drift in this channel.
     # The actual lockstep invariant (EXPECTED_SCHEMA_VERSION == migration
     # floor) lives in tests/cli/test_schema_version_lockstep.py -- this only
     # pins what this module itself was written against.
@@ -725,4 +725,4 @@ def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     )
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 45
+    assert max(migrations) == 46
