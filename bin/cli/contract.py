@@ -37,6 +37,8 @@ Subcommands (the 6 draft verbs + the ``fill --json`` batch mode, plus
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
              --json-file PATH                      ... or read the patch from a file (avoids shell
                                                      quoting a payload that carries report prose)
+    chain    --contract-id ID                      Print the whole continuation chain from ANY of
+                                                     its links (see "Continuation" below)
     reconcile --contract-id ID | --harness-id ID   Clear the cut mark on a hook-written residue row
               [--superseded-by CONTRACT_ID]        (see the section header above cmd_reconcile for why
                                                      this is a separate door and not a looser finalize).
@@ -71,6 +73,25 @@ Incremental fill is MIRRORED to the row, not only to disk:
     ``raw_handoff_json``. Every failure is swallowed: the mirror can never turn
     a successful draft write into a failed CLI call. Read the mirrored row back
     with ``gaia contract list --contract-id <draft-id> --json``.
+
+Continuation -- a turn is a contract, and resuming does not reopen it:
+    A resumed agent keeps writing under the draft id it was born with, but its
+    row is already closed: the mirror refuses a terminal row and finalize
+    converges nothing, so everything the resumed turn produced used to be lost
+    while the CLI still reported success. There is no birth event on a
+    resumption to prepare a new row at, so the FIRST WRITE is the moment the
+    fix lives at: ``set``/``add``/``fill`` addressed at a CLOSED contract mint a
+    NEW one recording which it continues (``agent_contract_handoffs
+    .continues_handoff_id``) and land the write there; the closed row is read
+    and never written. ``finalize`` FOLLOWS an existing chain to its live link
+    (so a resumed close lands on the contract its own writes went to) but never
+    mints one -- its idempotent no-op on a repeated call is a guarantee, and
+    minting there would make every retried close an empty link. ``validate`` and
+    ``view`` address exactly the id given: a read verb shows the record the
+    caller named. Nothing is required of the agent or the orchestrator, and
+    nothing is silent: the mint is reported in ``--json`` output, on stderr, as a
+    ``contract.continuation`` harness event, and durably on the row itself --
+    read the whole chain back from ANY link with ``gaia contract chain``.
 
 Attribution vs. harness-agnosticism (they are not in conflict):
     The purity rule below is about what this CLI READS, not about what it may
@@ -431,6 +452,7 @@ def _write_if_valid(
     extra_json: Optional[dict] = None,
     extra_lines: Optional[list] = None,
     mirror: bool = False,
+    continuation: Optional[dict] = None,
 ) -> int:
     """Validate-on-write core: persist ONLY when the full verdict is ok.
 
@@ -445,17 +467,35 @@ def _write_if_valid(
     lost to a cut, while ``init`` has nothing to preserve yet -- its envelope is
     the empty starting shape, and mirroring it would overwrite the birth
     envelope with no evidence gained.
+
+    ``continuation`` carries the PENDING continuation plan from
+    :func:`_plan_continuation`, and this is where it is committed -- AFTER the
+    verdict, never before, so a rejected write leaves no link, no draft file and
+    no event behind, exactly as it leaves no draft mutation behind. Once
+    committed it is reported on BOTH output paths -- a structured block for a
+    machine reader, a stderr notice for a human/agent one -- because a mechanism
+    that requires no ceremony must still not be invisible: the caller whose write
+    triggered it is exactly who needs to know its contract id changed.
     """
     result = _validate_envelope(envelope)
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
+    if continuation is not None:
+        continuation = _commit_continuation(continuation, as_json)
+        if continuation is None:
+            return 1
+        draft_id = str(continuation["contract_id"])
     _save_draft(draft_id, envelope)
     mirrored = _mirror_partial_to_row(draft_id, envelope) if mirror else None
+    if continuation is not None:
+        print(_continuation_notice(continuation), file=sys.stderr)
     if as_json:
         payload = {"status": "ok", "draft_id": draft_id}
         if mirrored is not None:
             payload["mirrored"] = mirrored
+        if continuation is not None:
+            payload["continuation"] = continuation
         payload.update(extra_json or {})
         print(json.dumps(payload))
     else:
@@ -544,6 +584,233 @@ def _maybe_adopt_draft(draft_id: str) -> Optional[dict]:
     return envelope
 
 
+# ---------------------------------------------------------------------------
+# Continuation: a turn is a contract, and resuming does not reopen it.
+#
+# When the orchestrator resumes an agent that already closed its turn, the agent
+# keeps working while its row is terminal -- the mirror refuses it and finalize
+# converges nothing, so every finding the resumed turn produces is lost. There is
+# no birth event on a resumption to prepare a new row at (the nascent row is
+# written only from the dispatching PreToolUse:Task; a resume arrives as
+# SendMessage), so the FIRST WRITE is the only moment available, and that is
+# here.
+#
+# NO CEREMONY is the binding constraint: the resumed agent passes the same
+# --draft-id it was born with and does nothing different, and the orchestrator
+# runs no preparatory verb. A fix that depended on someone remembering an extra
+# step would be worthless, because the defect being fixed IS a silent omission.
+# So the helpers below sit inside ordinary resolution:
+#
+#   * _continuation_tip_id -- FOLLOW an existing chain to its live link. Pure
+#     read; used by finalize so a resumed turn's close lands on the contract its
+#     own writes went to, not on the record it already closed.
+#   * _plan_continuation   -- PLAN a new link when the addressed contract is
+#     closed, without writing anything yet. Used only by the MUTATING verbs,
+#     because only they carry content that would otherwise be lost.
+#
+# THE MINT IS DEFERRED UNTIL THE WRITE VALIDATES, and the split above is what
+# buys that. Planning is pure: it mints an id STRING (`secrets`, no DB), builds
+# the seed envelope, and returns them. Only when the mutated envelope passes the
+# full verdict does _write_if_valid call the writer and INSERT the row. This
+# keeps this CLI's oldest guarantee intact -- a rejected write NEVER lands -- for
+# the row as well as the draft: a malformed `set` against a closed contract
+# leaves no link, no draft file and no event behind, instead of stranding an
+# empty row that nothing will ever finalize.
+#
+# finalize deliberately FOLLOWS and never OPENS. Its idempotency is a documented
+# guarantee (a repeated finalize of the same draft is a genuine no-op reporting
+# the same handoff_id), and minting on finalize would turn every retried close
+# into an empty link. A resumption with nothing to write has nothing to continue;
+# a resumption that produces work reaches a mutating verb first, and the link is
+# already open by the time finalize follows the chain to it.
+#
+# NOT SILENT: opening a link is reported on every path a caller can see -- the
+# `continuation` block in --json output, a stderr notice in plain output, a
+# harness event, and the row's own continues_handoff_id, which `gaia contract
+# chain` reads back.
+# ---------------------------------------------------------------------------
+
+_CONTINUATION_EVENT = "contract.continuation"
+
+
+def _continuation_tip_id(draft_id: str) -> str:
+    """The live link of ``draft_id``'s chain, or ``draft_id`` when there is none.
+
+    Best-effort by design: a missing DB, an unknown id or a read failure all
+    degrade to the id as addressed, which is exactly the pre-continuation
+    behavior. Resolution must never turn a readable substrate into a failed CLI
+    call.
+    """
+    try:
+        from gaia.store.writer import continuation_tip
+
+        tip = continuation_tip(draft_id)
+    except Exception:
+        return draft_id
+    if not isinstance(tip, dict):
+        return draft_id
+    return str(tip.get("contract_id") or draft_id)
+
+
+def _continuation_seed(agent_id: str, parent_contract_id: str, parent_row: dict) -> dict:
+    """The envelope a fresh continuation link starts from.
+
+    Deliberately the blank starting shape plus provenance, NOT a copy of the
+    record it continues. Each link is ITS turn's contract: copying the parent's
+    evidence forward would double-count it on every read of the chain and would
+    reproduce, in a new row, the very symptom being fixed -- a record frozen at
+    the previous close's content. What the parent holds stays readable where it
+    already is, and ``gaia contract chain`` is what puts the links back together.
+
+    The birth markers are carried across because they are dispatch metadata, not
+    contract content: the SubagentStop closure's last-resort lane matches the
+    dispatched agent's NAME inside a still-DISPATCHED row's envelope, and the
+    link is exactly such a row.
+    """
+    envelope = _initial_envelope(agent_id)
+    envelope["continues_contract_id"] = parent_contract_id
+    try:
+        from gaia.store.writer import BIRTH_AGENT_NAME_KEY
+
+        parent_envelope = json.loads(parent_row.get("raw_handoff_json") or "null")
+    except (TypeError, ValueError, ImportError):
+        return envelope
+    if isinstance(parent_envelope, dict):
+        for key in ("born_at_dispatch", BIRTH_AGENT_NAME_KEY):
+            if key in parent_envelope:
+                envelope[key] = parent_envelope[key]
+    return envelope
+
+
+def _record_continuation_event(outcome: dict) -> None:
+    """Make the mint queryable after the fact. Best-effort, never load-bearing.
+
+    The durable record is the row's own ``continues_handoff_id``; this event is
+    the second surface, so the mint is findable in session history by an operator
+    who was not watching the tool output when it happened.
+    """
+    try:
+        from gaia.store.writer import write_harness_event
+
+        write_harness_event(
+            event_type=_CONTINUATION_EVENT,
+            source="cli",
+            result=(
+                f"contract {outcome.get('continues_contract_id')} was already "
+                f"closed; work continues in {outcome.get('contract_id')}"
+            ),
+            severity="info",
+            meta={
+                "contract_id": outcome.get("contract_id"),
+                "continues_contract_id": outcome.get("continues_contract_id"),
+                "continues_handoff_id": outcome.get("continues_handoff_id"),
+                "handoff_id": outcome.get("handoff_id"),
+                "created": outcome.get("created"),
+            },
+        )
+    except Exception:
+        pass
+
+
+def _plan_continuation(
+    draft_id: str,
+) -> "tuple[str, Optional[dict], Optional[dict]]":
+    """Decide a write's real target WITHOUT writing anything.
+
+    Returns ``(effective_draft_id, seed_envelope, pending)``. On the ordinary
+    path -- the addressed contract is still open, unknown, or the substrate
+    cannot be read -- this is ``(tip_id, None, None)`` and the caller loads the
+    draft exactly as before. When the live link is CLOSED it is
+    ``(new_contract_id, seed, pending)``: the id is minted from ``secrets``
+    (:func:`_mint_draft_id`, a pure string), the seed is the envelope the link
+    will be born with, and ``pending`` carries what :func:`_commit_continuation`
+    needs to INSERT the row once the write validates.
+
+    Nothing here touches the DB or the disk, which is the point -- see the
+    "THE MINT IS DEFERRED" paragraph in the section header.
+    """
+    tip_id = _continuation_tip_id(draft_id)
+    try:
+        from gaia.state import TERMINAL_PLAN_STATUSES
+
+        row = _lookup_handoff_row_by_contract_id(tip_id)
+    except Exception:
+        return tip_id, None, None
+    if row is None or row.get("agent_state") not in TERMINAL_PLAN_STATUSES:
+        return tip_id, None, None
+
+    agent_id = str(row.get("agent_id") or "")
+    if not _AGENT_ID_RE.match(agent_id):
+        # A legacy row carries the agent NAME in this column, which is not a
+        # draft key -- a link minted under it would be unaddressable by
+        # --draft-id. Leave such a row alone rather than mint an orphan.
+        return tip_id, None, None
+
+    seed = _continuation_seed(agent_id, tip_id, row)
+    new_contract_id = _mint_draft_id(agent_id)
+    return new_contract_id, seed, {
+        "parent_contract_id": tip_id,
+        "new_contract_id": new_contract_id,
+        "seed": seed,
+    }
+
+
+def _commit_continuation(pending: dict, as_json: bool) -> Optional[dict]:
+    """INSERT the planned link now that the write has validated.
+
+    Returns the writer's outcome dict, or None when the link could not be opened
+    -- which the caller must treat as a failed write, NOT as a silent fallback.
+    Falling back to writing at the parent would either edit a closed record or
+    clobber a concurrent resumption's link with this call's blank-seeded
+    envelope; both are worse than a clean refusal the caller can simply repeat,
+    since the retry resolves the now-existing link through the ordinary path.
+    """
+    try:
+        from gaia.store.writer import open_contract_continuation
+
+        outcome = open_contract_continuation(
+            pending["parent_contract_id"],
+            pending["new_contract_id"],
+            raw_handoff_json=json.dumps(pending["seed"]),
+        )
+    except Exception as exc:
+        _print_error(f"could not open a continuation contract: {exc}", as_json)
+        return None
+
+    if outcome.get("status") != "opened":
+        _print_error(
+            f"contract {pending['parent_contract_id']!r} is closed, so this "
+            f"write needs a continuation, but one could not be opened "
+            f"(reason={outcome.get('reason')}). Nothing was written. Re-run the "
+            f"same command.",
+            as_json,
+        )
+        return None
+    if outcome.get("contract_id") != pending["new_contract_id"]:
+        _print_error(
+            f"a continuation of {pending['parent_contract_id']!r} was opened "
+            f"concurrently as {outcome.get('contract_id')!r}. Nothing was "
+            f"written; re-run the same command and it will land there.",
+            as_json,
+        )
+        return None
+    _record_continuation_event(outcome)
+    return outcome
+
+
+def _continuation_notice(continuation: dict) -> str:
+    verb = "opened" if continuation.get("created") else "already open"
+    return (
+        f"[CONTINUATION {verb}] contract "
+        f"{continuation.get('continues_contract_id')} is already closed and is "
+        f"never modified. This turn's work continues in a NEW contract, "
+        f"{continuation.get('contract_id')}, which records where it came from. "
+        f"Nothing changes for you -- keep using the draft id you were given. "
+        f"Read the whole chain with 'gaia contract chain --contract-id "
+        f"{continuation.get('contract_id')}'."
+    )
+
+
 def _resolve_target_draft_id(args, as_json: bool) -> Optional[str]:
     """Resolve --draft-id (or --agent-id scope) to one concrete draft id.
 
@@ -573,9 +840,14 @@ def _resolve_target_draft_id(args, as_json: bool) -> Optional[str]:
 
 
 def _load_target_draft(
-    args, force_json: bool = False, allow_adopt: bool = True
-) -> "tuple[Optional[str], Optional[dict], bool]":
-    """Resolve --draft-id and load it. Returns (draft_id, envelope, as_json).
+    args,
+    force_json: bool = False,
+    allow_adopt: bool = True,
+    chain: str = "none",
+) -> "tuple[Optional[str], Optional[dict], bool, Optional[dict]]":
+    """Resolve --draft-id and load it.
+
+    Returns ``(draft_id, envelope, as_json, continuation)``.
 
     envelope is None (and an error already printed) when nothing is
     resolvable, resolution is ambiguous across agents, or the file is
@@ -598,20 +870,45 @@ def _load_target_draft(
     its ``--draft-id`` addressing path any more -- see its own docstring for
     why materializing ``_initial_envelope`` was never safe for a READ verb,
     and how it recovers real evidence instead without writing.
+
+    ``chain`` selects how the resolved id relates to its continuation chain
+    (see the "Continuation" section above):
+
+      * ``"none"``   -- address exactly the id given. ``validate`` uses this,
+        and ``view`` resolves without this helper at all: a read verb must show
+        the record the caller named, not a successor it never asked about.
+      * ``"follow"`` -- resolve to the chain's live link, minting nothing.
+        ``finalize`` uses this so a resumed turn's close lands on the contract
+        its own writes went to.
+      * ``"open"``   -- follow, and PLAN a link when the live one is already
+        closed. The three mutating verbs use this; it is the whole mechanism.
+        The returned fourth element is then the PENDING plan, which
+        :func:`_write_if_valid` commits only after the write validates -- so a
+        rejected write leaves no link behind, and the draft returned alongside
+        it is the seed envelope the link will be born with, held in memory.
     """
     as_json = force_json or bool(getattr(args, "json", False))
     draft_id = _resolve_target_draft_id(args, as_json)
     if draft_id is None:
-        return None, None, as_json
+        return None, None, as_json, None
+    continuation = None
+    if chain == "open":
+        draft_id, seed, continuation = _plan_continuation(draft_id)
+        if continuation is not None:
+            # The link does not exist yet -- neither as a row nor as a file --
+            # so there is nothing to adopt or load. The seed IS the draft.
+            return draft_id, seed, as_json, continuation
+    elif chain == "follow":
+        draft_id = _continuation_tip_id(draft_id)
     if allow_adopt and not _draft_exists(draft_id):
         adopted = _maybe_adopt_draft(draft_id)
         if adopted is not None:
-            return draft_id, adopted, as_json
+            return draft_id, adopted, as_json, continuation
     envelope = _load_draft(draft_id)
     if envelope is None:
         _no_draft_error(as_json, draft_id)
-        return draft_id, None, as_json
-    return draft_id, envelope, as_json
+        return draft_id, None, as_json, continuation
+    return draft_id, envelope, as_json, continuation
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +977,7 @@ def cmd_init(args) -> int:
 
 def cmd_set(args) -> int:
     """Set a scalar field by dotted path (validate-on-write)."""
-    draft_id, envelope, as_json = _load_target_draft(args)
+    draft_id, envelope, as_json, continuation = _load_target_draft(args, chain="open")
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
@@ -689,12 +986,14 @@ def cmd_set(args) -> int:
     except ValueError as exc:
         _print_error(str(exc), as_json)
         return 1
-    return _write_if_valid(envelope, draft_id, as_json, mirror=True)
+    return _write_if_valid(
+        envelope, draft_id, as_json, mirror=True, continuation=continuation
+    )
 
 
 def cmd_add(args) -> int:
     """Append a value to a list field (validate-on-write)."""
-    draft_id, envelope, as_json = _load_target_draft(args)
+    draft_id, envelope, as_json, continuation = _load_target_draft(args, chain="open")
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
@@ -703,7 +1002,9 @@ def cmd_add(args) -> int:
     except ValueError as exc:
         _print_error(str(exc), as_json)
         return 1
-    return _write_if_valid(envelope, draft_id, as_json, mirror=True)
+    return _write_if_valid(
+        envelope, draft_id, as_json, mirror=True, continuation=continuation
+    )
 
 
 def _lookup_handoff_row_by_contract_id(contract_id: str) -> Optional[dict]:
@@ -930,7 +1231,9 @@ def cmd_validate(args) -> int:
     ``_maybe_adopt_draft``) materializes a fresh draft file, which is exactly
     the mutation this verb promises never to perform.
     """
-    draft_id, envelope, as_json = _load_target_draft(args, allow_adopt=False)
+    draft_id, envelope, as_json, _continuation = _load_target_draft(
+        args, allow_adopt=False
+    )
     if envelope is None:
         return 1
     result = _validate_envelope(envelope)
@@ -1087,6 +1390,82 @@ def cmd_list(args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------------------
+# chain: read a turn's whole continuation chain from ANY of its links.
+#
+# A chain that can only be reassembled by hand does not count as readable. Given
+# one contract id -- whichever an operator happens to hold, first link or last --
+# this walks back to the root and forward to the live link and prints every
+# contract in order, so "where did this turn's later work go" and "what did this
+# link come from" are one command instead of a sequence of joins.
+# ---------------------------------------------------------------------------
+
+_CHAIN_TABLE_COLUMNS = (
+    "link",
+    "id",
+    "contract_id",
+    "agent_state",
+    "cut_reason",
+    "created_at",
+    "continues_handoff_id",
+)
+
+
+def cmd_chain(args) -> int:
+    """Print the continuation chain that ``--contract-id`` belongs to (read-only)."""
+    from gaia.store.writer import continuation_chain
+
+    as_json = bool(getattr(args, "json", False))
+    contract_id = getattr(args, "contract_id", None)
+    if not contract_id:
+        _print_error(
+            "chain addresses ONE contract explicitly: pass --contract-id "
+            "(any link of the chain -- the walk recovers the rest).",
+            as_json,
+        )
+        return 1
+
+    chain = continuation_chain(contract_id)
+    if not chain:
+        _print_error(
+            f"no agent_contract_handoffs row exists for contract_id="
+            f"{contract_id!r}, so there is no chain to read.",
+            as_json,
+        )
+        return 1
+
+    for index, row in enumerate(chain, start=1):
+        row["link"] = index
+        row["agent_name"] = _birth_agent_name(row)
+
+    if as_json:
+        print(json.dumps({
+            "contract_id": contract_id,
+            "links": len(chain),
+            "chain": chain,
+        }, indent=2, default=str))
+        return 0
+
+    widths = {
+        col: max(len(col), *(len(str(r.get(col) or "-")) for r in chain))
+        for col in _CHAIN_TABLE_COLUMNS
+    }
+    print("  ".join(col.ljust(widths[col]) for col in _CHAIN_TABLE_COLUMNS))
+    print("  ".join("-" * widths[col] for col in _CHAIN_TABLE_COLUMNS))
+    for row in chain:
+        print(
+            "  ".join(
+                str(row.get(col) if row.get(col) is not None else "-").ljust(widths[col])
+                for col in _CHAIN_TABLE_COLUMNS
+            )
+        )
+    print(
+        f"\n{len(chain)} link(s); the live contract is "
+        f"{chain[-1].get('contract_id')}."
+    )
+    return 0
+
+
 def _resolve_finalize_workspace(explicit: Optional[str]) -> str:
     """Resolve the workspace to record this finalize's row under.
 
@@ -1135,8 +1514,19 @@ def cmd_finalize(args) -> int:
     nothing for SubagentStop to supersede. Only an UNADOPTED turn leaves the born
     row behind for the stop hook to close (see gaia.store.writer's
     born-at-dispatch module comment for both paths).
+
+    Continuation (``chain="follow"``): when the addressed contract was already
+    closed and this turn's writes opened a continuation, finalize resolves to
+    that live link and closes IT -- the record it continues stays exactly as it
+    was closed. It FOLLOWS and never OPENS: a repeated finalize of the same draft
+    is a documented no-op reporting the same handoff_id, and minting here would
+    turn every retried close into an empty link. A resumption that produced work
+    reached a mutating verb first, so the link already exists by the time this
+    follows the chain to it.
     """
-    draft_id, envelope, as_json = _load_target_draft(args)
+    draft_id, envelope, as_json, _continuation = _load_target_draft(
+        args, chain="follow"
+    )
     if envelope is None:
         return 1
     result = _validate_envelope(envelope)
@@ -1308,7 +1698,9 @@ def cmd_fill(args) -> int:
     # JSON-shaped regardless -- force_json=True makes THIS helper's own
     # errors (no draft / ambiguous draft) JSON-shaped too, not only the
     # write-path errors below.
-    draft_id, envelope, as_json = _load_target_draft(args, force_json=True)
+    draft_id, envelope, as_json, continuation = _load_target_draft(
+        args, force_json=True, chain="open"
+    )
     if envelope is None:
         return 1
     # --json-file reads the patch from disk instead of a shell argument.
@@ -1339,7 +1731,9 @@ def cmd_fill(args) -> int:
         _print_error("--json must decode to a JSON object", as_json)
         return 1
     _deep_merge(envelope, patch)
-    return _write_if_valid(envelope, draft_id, as_json, mirror=True)
+    return _write_if_valid(
+        envelope, draft_id, as_json, mirror=True, continuation=continuation
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1419,7 +1813,11 @@ def cmd_reconcile(args) -> int:
     changes ``agent_state``; it stamps ``superseded_by_contract_id`` into the
     envelope and clears ``cut_reason`` so the row leaves the ``--cut`` signal.
     """
-    from gaia.store.writer import list_agent_contract_handoffs, reconcile_cut_row
+    from gaia.store.writer import (
+        collapse_continuation_chains,
+        list_agent_contract_handoffs,
+        reconcile_cut_row,
+    )
 
     as_json = bool(getattr(args, "json", False))
     contract_id = getattr(args, "contract_id", None)
@@ -1437,13 +1835,17 @@ def cmd_reconcile(args) -> int:
         return 1
 
     if harness_id and not contract_id:
-        rows = list_agent_contract_handoffs(harness_agent_id=harness_id, limit=2)
+        rows = list_agent_contract_handoffs(harness_agent_id=harness_id, limit=16)
         if not rows:
             _print_error(
                 f"no contract row carries harness_agent_id={harness_id!r}.",
                 as_json,
             )
             return 1
+        # A continuation chain shares one harness id across all its links, so
+        # the links are not rival candidates -- collapse to the live one before
+        # judging ambiguity (the same reduction the SubagentStop bridge applies).
+        rows = collapse_continuation_chains(rows)
         if len(rows) > 1:
             _print_error(
                 f"harness_agent_id={harness_id!r} matches {len(rows)} rows; "
@@ -1824,6 +2226,29 @@ def _build_subcommands(sub) -> None:
     _add_agent_scope_arg(p_fill)
     p_fill.set_defaults(func=cmd_fill)
 
+    p_chain = sub.add_parser(
+        "chain",
+        help="Print the continuation chain a contract belongs to (read-only)",
+        description=(
+            "Print every contract in one turn's continuation chain, oldest link "
+            "first. A turn is a contract, and resuming a closed turn does not "
+            "reopen it -- the new work lands in a NEW contract that records "
+            "which one it continues. Pass ANY link as --contract-id: the walk "
+            "goes back to the root and forward to the live link, so the chain "
+            "never has to be reassembled by hand. A contract that was never "
+            "resumed prints as a single link."
+        ),
+    )
+    p_chain.add_argument(
+        "--contract-id",
+        dest="contract_id",
+        metavar="CONTRACT_ID",
+        default=None,
+        help="Any link of the chain (the same value --draft-id takes)",
+    )
+    p_chain.add_argument("--json", action="store_true", help="JSON output")
+    p_chain.set_defaults(func=cmd_chain)
+
     p_reconcile = sub.add_parser(
         "reconcile",
         help="Clear the cut mark on a hook-written backstop/residue row",
@@ -1879,6 +2304,7 @@ def _contract_default(args) -> int:
     print("  validate                  -- validate the draft without mutating it")
     print("  finalize                  -- validate + persist/converge the row; only COMPLETE is terminal")
     print("  fill --json JSON          -- batch-merge a JSON patch into the draft")
+    print("  chain --contract-id ID    -- print the whole continuation chain from any link")
     print("  reconcile --contract-id ID -- clear the cut mark on a hook-written residue row")
     print("                               (--superseded-by points at the row holding the verdict);")
     print("                               never changes agent_state, refuses an agent's own cut row")

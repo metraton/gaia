@@ -866,6 +866,165 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         )
 
 
+class TestAdaptSubagentStopFencelessPlanStatusReachesEpisode:
+    """Regression: a turn that closes with no fenced ``agent_contract_handoff``
+    block, but whose contract was correctly finalized and reconstructed from
+    the persisted draft, must still leave workflow_metrics/episode plan_status
+    with the REAL state the reconstructed envelope declares -- for ANY of the
+    six valid states, not only COMPLETE.
+
+    ``task_info["plan_status"]`` is computed once, in
+    ``build_task_info_from_hook_data``, BEFORE ``parse_contract`` and BEFORE
+    the finalized-draft reconstruction that runs later in
+    ``adapt_subagent_stop``. A fenceless turn has nothing there to parse, so
+    it carries the empty string forward unless the adapter re-derives it from
+    the (possibly reconstructed) envelope's resolved ``agent_state`` -- which
+    is exactly what this test pins.
+
+    Uses the REAL ``modules.audit.workflow_recorder.record`` (left unstubbed)
+    so the actual task_info -> workflow_metrics["plan_status"] wiring runs,
+    and stubs only ``modules.memory.episode_writer.write`` to capture the
+    metrics dict it receives -- the same dict that becomes the episodes row.
+    """
+
+    def _install_module_stubs(self, monkeypatch, captured):
+        import sys as _sys
+        import types as _types
+
+        def _fake_write_episode(metrics, anomalies=None, commands_executed=None):
+            captured["metrics"] = metrics
+            return "ep_test"
+
+        def _install_stub(module_name, attrs):
+            module = _types.ModuleType(module_name)
+            for k, v in attrs.items():
+                setattr(module, k, v)
+            monkeypatch.setitem(_sys.modules, module_name, module)
+
+        _install_stub(
+            "modules.agents.contract_validator",
+            {
+                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                # No fence in the final message -- the fenceless case under test.
+                "parse_contract": lambda *_a, **_k: None,
+                "validate": lambda *_a, **_k: _types.SimpleNamespace(
+                    is_valid=True, error_message="", missing=[]
+                ),
+                "validate_approval_request": lambda *_a, **_k: None,
+                "validate_verbatim_outputs_consistency": lambda *_a, **_k: None,
+                # Real behaviour, not a hardcoded state: resolve from whatever
+                # agent_status dict the (possibly reconstructed) contract holds.
+                "_resolve_status": lambda agent_status: str(
+                    (agent_status or {}).get("agent_state", "")
+                ).strip().upper(),
+            },
+        )
+        _install_stub(
+            "modules.agents.response_contract",
+            {
+                "save_validation_result": lambda *_a, **_k: None,
+                "validate_response_contract": lambda *_a, **_k: _types.SimpleNamespace(
+                    valid=True, errors=[], warnings=[], missing=[], invalid=[]
+                ),
+                "resolve_agent_id": lambda *_a, **_k: "agent-id",
+            },
+        )
+        _install_stub(
+            "modules.agents.task_info_builder",
+            {
+                "build_task_info_from_hook_data": lambda hook_data, _agent_output: {
+                    "agent": hook_data.get("agent_type", "unknown"),
+                    "agent_id": hook_data.get("agent_id", "unknown"),
+                    "task_id": "task-id",
+                    "agent_transcript_path": hook_data.get(
+                        "agent_transcript_path", ""
+                    ),
+                    "description": "some task",
+                    "tags": [],
+                    "exit_code": 0,
+                    "tier": "T0",
+                    # The exact bug value: empty because no fence was found.
+                    "plan_status": "",
+                },
+            },
+        )
+        _install_stub(
+            "modules.agents.transcript_reader",
+            {
+                "read_transcript": lambda *_a, **_k: "",
+                "read_full_transcript_text": lambda *_a, **_k: "",
+            },
+        )
+        _install_stub(
+            "modules.audit.workflow_auditor",
+            {
+                "audit": lambda *_a, **_k: [],
+                "signal_gaia_analysis": lambda *_a, **_k: None,
+            },
+        )
+        # modules.audit.workflow_recorder is intentionally left REAL -- see
+        # class docstring: it is the code under test.
+        _install_stub(
+            "modules.context.context_writer",
+            {
+                "process_context_updates": lambda *_a, **_k: None,
+                "process_update_contracts": lambda *_a, **_k: {"updated": False},
+            },
+        )
+        _install_stub("modules.memory.episode_writer", {"write": _fake_write_episode})
+        _install_stub(
+            "modules.security.approval_cleanup",
+            {"cleanup": lambda *_a, **_k: None},
+        )
+        _install_stub(
+            "modules.security.approval_grants",
+            {"consume_session_grants": lambda *_a, **_k: 0},
+        )
+
+    def _build_event(self, subagent_stop_payload):
+        from adapters.types import HookEvent, HookEventType, HostDistribution
+        return HookEvent(
+            event_type=HookEventType.SUBAGENT_STOP,
+            session_id=subagent_stop_payload["session_id"],
+            payload=subagent_stop_payload,
+            distribution=HostDistribution(channel="npm"),
+        )
+
+    def test_reconstructed_non_complete_state_reaches_workflow_metrics(
+        self, adapter, subagent_stop_payload, monkeypatch
+    ):
+        captured = {}
+        # A finalized draft declaring BLOCKED -- deliberately NOT COMPLETE, to
+        # pin that the fix covers any valid state, not only the terminal one.
+        reconstructed_contract = {
+            "agent_status": {"agent_state": "BLOCKED", "agent_id": "a" + "b" * 16},
+            "evidence_report": {},
+        }
+        subagent_stop_payload["last_assistant_message"] = "Closing with no fence."
+
+        self._install_module_stubs(monkeypatch, captured)
+        monkeypatch.setattr(
+            adapter,
+            "_reconstruct_contract_from_finalized_draft",
+            lambda **_k: reconstructed_contract,
+        )
+        monkeypatch.setattr(
+            adapter, "_get_gaia_agent_names",
+            lambda: [subagent_stop_payload["agent_type"]],
+        )
+        monkeypatch.setenv("CLAUDE_SESSION_ID", subagent_stop_payload["session_id"])
+
+        adapter.adapt_subagent_stop(self._build_event(subagent_stop_payload))
+
+        assert "metrics" in captured, "episode_writer.write was never reached"
+        assert captured["metrics"]["plan_status"] == "BLOCKED", (
+            "task_info['plan_status'] was computed from agent_output alone, "
+            "before reconstruction -- a fenceless turn must still carry the "
+            "REAL reconstructed state (any of the six valid states, not "
+            "just COMPLETE) into workflow_metrics and the episodes row"
+        )
+
+
 # ============================================================================
 # Anchor-tracking version of Bug B / P-a11d14e0: adapt_subagent_stop must
 # resolve the SAME session_id the anchors were saved under

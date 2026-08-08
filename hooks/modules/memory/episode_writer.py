@@ -17,6 +17,35 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _record_persist_failure(metrics: Dict[str, Any], reason: str) -> None:
+    """Record a rejected episode write to ``harness_events``.
+
+    A failed INSERT used to end at the ERROR log line above -- visible only
+    to whoever happens to tail hooks-*.log at the right time. This mirrors
+    every other non-blocking hook signal (AGENT_DISPATCH, AGENT_COMPLETE) by
+    appending one row an operator can find later via
+    ``gaia query --surface harness_events``. Never raises: a failure to
+    record the failure must not mask the original one or crash the hook.
+    """
+    try:
+        from ..events.event_writer import EventWriter
+
+        EventWriter().write_event(
+            "episode.persist_failed",
+            "hook",
+            metrics.get("agent", "unknown"),
+            reason[:200],
+            severity="error",
+            meta={
+                "task_id": metrics.get("task_id"),
+                "session_id": metrics.get("session_id"),
+                "plan_status": metrics.get("plan_status"),
+            },
+        )
+    except Exception:
+        pass  # Recording the failure must never itself fail the hook.
+
+
 # ============================================================================
 # Session events (absorbed from session_state.py)
 # ============================================================================
@@ -219,9 +248,15 @@ def write(
         # store_episode raises RuntimeError when the DB write fails (e.g.
         # gaia.store.writer not importable, INSERT rejected). Log at ERROR
         # level so the failure is visible in hooks-*.log instead of being
-        # swallowed at DEBUG.
+        # swallowed at DEBUG, AND record it in harness_events -- a log line
+        # nobody tails is not a record an operator can consult later. This
+        # was the third and last of three layers (writer.insert_episode ->
+        # episodic.store_episode -> here) that turned a rejected INSERT into
+        # a silent None; the turn itself still closes COMPLETE.
         logger.error(f"Failed to persist episodic memory: {e}")
+        _record_persist_failure(metrics, str(e))
         return None
     except Exception as e:
         logger.debug(f"Failed to capture episodic memory: {e}")
+        _record_persist_failure(metrics, str(e))
         return None

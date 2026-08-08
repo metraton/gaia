@@ -141,6 +141,14 @@ def _minted_agent_id_from_transcript(task_info: dict):
         return None
 
 
+# How many rows the harness-id lookup fetches before collapsing a continuation
+# chain. It must exceed the longest chain a turn can accumulate (a handful of
+# resumptions in practice) so a chain is never truncated into a false ambiguity,
+# while staying small enough that a genuine multi-row collision is still cheap to
+# detect and decline.
+_HARNESS_ID_ROW_FETCH_LIMIT = 16
+
+
 def dispatch_row_by_harness_id(task_info: dict, session_id=None, db_path=None):
     """THE bridge between the two identifier spaces: the row that holds both.
 
@@ -163,6 +171,21 @@ def dispatch_row_by_harness_id(task_info: dict, session_id=None, db_path=None):
     A recency tiebreak here is precisely what bound a turn to a residue row
     instead of its own.
 
+    A CONTINUATION CHAIN IS NOT AN AMBIGUITY, and this is the one case where
+    several rows under one harness id are not rival candidates. A resumption
+    carries the SAME harness agent id as the turn it continues (the harness
+    stamps it per run, not per resumption), so once a resumed turn opens a
+    continuation, this lookup returns EVERY link of that chain. Read as rival
+    matches they would trip the refusal above, the bridge would resolve nothing,
+    and the gate would reject the close of a turn whose work is perfectly
+    recorded -- turning the fix for lost work into a lost close. The rows are
+    therefore collapsed to the chain's live link first
+    (``gaia.store.writer.collapse_continuation_chains``, a pure reduction that
+    drops only rows another row in the SAME result set continues). Two unrelated
+    rows still collapse to two, so a genuine ambiguity is still declined; the
+    fetch limit rises from 2 to a small bound so a multi-link chain is seen
+    whole rather than truncated into a false ambiguity.
+
     Returns the full row dict, or None. Fully guarded: this runs inside a stop
     hook, so an unavailable store degrades to None, never to a raise.
     """
@@ -172,16 +195,20 @@ def dispatch_row_by_harness_id(task_info: dict, session_id=None, db_path=None):
     try:
         from pathlib import Path as _Path
 
-        from gaia.store.writer import list_agent_contract_handoffs
+        from gaia.store.writer import (
+            collapse_continuation_chains,
+            list_agent_contract_handoffs,
+        )
 
         db_path_str = task_info.get("db_path")
         rows = list_agent_contract_handoffs(
             harness_agent_id=str(harness_agent_id),
-            limit=2,
+            limit=_HARNESS_ID_ROW_FETCH_LIMIT,
             db_path=db_path or (_Path(db_path_str) if db_path_str else None),
         )
         if not rows:
             return None
+        rows = collapse_continuation_chains(rows)
         if len(rows) > 1:
             logger.warning(
                 "Dispatch-row bridge declined: harness_agent_id=%s matches %d "

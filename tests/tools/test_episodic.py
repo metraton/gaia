@@ -292,6 +292,95 @@ class TestStoreEpisodeFailureSurfacing:
             )
 
 
+class TestEmptyPlanStatusNormalizesToNull:
+    """Regression: a turn that closes with no fenced envelope leaves
+    ``task_info["plan_status"]`` as the empty string (computed before any
+    contract reconstruction, in ``build_task_info_from_hook_data``). That
+    empty string used to flow unchanged into ``workflow_metrics["plan_status"]``
+    and then into this ``fields`` dict, where ``episodes.plan_status``'s CHECK
+    clause accepts NULL or one of six named states -- never ``""``. The INSERT
+    was rejected outright, ``store_episode`` raised, and the whole episode row
+    (not just its status) was lost for that turn.
+
+    The empty string is now normalized to NULL before it reaches
+    ``insert_episode`` -- a schema-blessed "unknown", not a CHECK violation --
+    so the row survives even when no real status could be resolved.
+    """
+
+    def test_empty_plan_status_does_not_crash_the_insert(self, memory):
+        ep_id = memory.store_episode(
+            prompt="Fenceless close",
+            episode_id="ep_fenceless",
+            workflow_metrics={
+                "agent": "gaia-system",
+                "plan_status": "",
+            },
+        )
+        row = _db_row(memory, ep_id)
+        assert row, (
+            "the episode row must exist -- an empty plan_status must not "
+            "take the whole INSERT down with it"
+        )
+        assert row["plan_status"] is None
+
+    def test_missing_plan_status_key_also_normalizes_to_null(self, memory):
+        ep_id = memory.store_episode(
+            prompt="No workflow_metrics at all",
+            episode_id="ep_no_metrics",
+        )
+        row = _db_row(memory, ep_id)
+        assert row["plan_status"] is None
+
+    def test_a_real_valid_state_still_persists_unchanged(self, memory):
+        """The normalization must not blunt a genuinely valid, non-COMPLETE
+        state -- only the empty string is rewritten."""
+        ep_id = memory.store_episode(
+            prompt="Blocked turn",
+            episode_id="ep_blocked",
+            workflow_metrics={"agent": "gaia-system", "plan_status": "BLOCKED"},
+        )
+        row = _db_row(memory, ep_id)
+        assert row["plan_status"] == "BLOCKED"
+
+
+class TestInvalidPlanStatusRecordsAnomaly:
+    """Regression: normalizing an explicit but invalid ``plan_status`` (empty
+    string, stale enum, or any other garbage) to NULL used to be silent --
+    no trace, no original value -- so today's known cause (a fenceless close
+    landing as ``""``) was indistinguishable from any other, future cause
+    collapsing to the same NULL. The normalization now records an
+    ``episode_anomalies`` row carrying the original value, queryable via
+    ``gaia defects --type invalid_plan_status``, mirroring the outcome
+    validation precedent a few lines above it in ``store_episode``.
+    """
+
+    def test_invalid_plan_status_creates_anomaly_with_original_value(self, memory):
+        ep_id = memory.store_episode(
+            prompt="Fenceless close",
+            episode_id="ep_invalid_plan_status_anomaly",
+            workflow_metrics={"agent": "gaia-system", "plan_status": ""},
+        )
+        row = _db_row(memory, ep_id)
+        assert row["plan_status"] is None
+
+        anomalies = _db_anomalies(memory, ep_id)
+        assert len(anomalies) == 1
+        assert anomalies[0]["type"] == "invalid_plan_status"
+        payload = json.loads(anomalies[0]["payload"])
+        assert payload["original_value"] == ""
+
+    def test_missing_plan_status_key_creates_no_anomaly(self, memory):
+        """The ordinary, frequent case -- no value supplied at all -- must
+        stay silent; only an explicit invalid value is an anomaly."""
+        ep_id = memory.store_episode(
+            prompt="No workflow_metrics at all",
+            episode_id="ep_missing_plan_status_no_anomaly",
+        )
+        row = _db_row(memory, ep_id)
+        assert row["plan_status"] is None
+        assert _db_anomalies(memory, ep_id) == []
+
+
 class TestWorkspaceResolution:
     """_resolve_workspace honours the env-var fallback order."""
 

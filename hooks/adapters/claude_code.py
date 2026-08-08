@@ -3258,6 +3258,18 @@ class ClaudeCodeAdapter(HookAdapter):
                 if isinstance(parsed_contract, dict) else ""
             )
 
+            # task_info["plan_status"] was computed in build_task_info_from_hook_data,
+            # BEFORE parse_contract and BEFORE the finalized-draft reconstruction
+            # above -- from agent_output alone. A turn that closes with no fenced
+            # block but a correctly finalized contract has nothing there to parse,
+            # so it carries the empty string forward unless corrected here. Every
+            # reader downstream of this point (workflow_metrics, the episodes row,
+            # episode_writer's outcome bucketing) must see the REAL state the
+            # (possibly reconstructed) envelope declares, whichever of the six
+            # valid states it is -- not just the COMPLETE case, and not silence.
+            if _resolved_agent_state:
+                task_info["plan_status"] = _resolved_agent_state
+
             # ----------------------------------------------------------
             # stop_reason isolation (decision #5 / M5 / AC-11) -- resolved
             # ONCE here, EARLY (before anomalies are signaled), so the T16

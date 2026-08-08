@@ -116,6 +116,15 @@ RELATIONSHIP_TYPES = frozenset([
 # Valid outcome values
 OUTCOME_VALUES = frozenset(["success", "partial", "failed", "abandoned"])
 
+# Mirrors the ``episodes.plan_status`` CHECK clause (gaia/store/schema.sql) --
+# the canonical enum lives in gaia.state.VALID_PLAN_STATUSES, duplicated here
+# as a frozenset (same pattern as OUTCOME_VALUES above) so this module never
+# depends on gaia.state being importable just to normalize a status string.
+VALID_PLAN_STATUSES = frozenset([
+    "IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE",
+    "BLOCKED", "NEEDS_INPUT", "NEEDS_VERIFICATION",
+])
+
 
 @dataclass
 class Episode:
@@ -354,9 +363,50 @@ class EpisodicMemory:
         # tier: prefer explicit workflow_metrics value, fall back to context.
         tier = workflow_metrics.get("tier") or context.get("tier")
 
+        # plan_status: the CHECK on episodes.plan_status accepts NULL or one
+        # of VALID_PLAN_STATUSES -- never the empty string. A turn that closed
+        # with no fenced envelope AND no reconstructable finalized draft has
+        # nothing to report here; store NULL (already a valid, schema-blessed
+        # "unknown") rather than let the empty string reach insert_episode and
+        # fail its CHECK constraint outright, taking the whole row down with it.
+        #
+        # A missing key (no value supplied at all) is the ordinary case --
+        # most callers never set plan_status -- so it stays silent; warning
+        # on every such turn would be noise, not signal. An EXPLICIT but
+        # invalid value is the rare case: today it is always the empty
+        # string from a fenceless close, but a stale enum or a future defect
+        # emitting garbage would land here too, and collapsing all of them
+        # to NULL with no trace makes those distinct causes indistinguishable
+        # after the fact. So, mirroring the outcome-validation precedent
+        # above, an explicit invalid value is both warned (stderr) and
+        # recorded as an episode_anomalies row carrying the original value --
+        # queryable later via ``gaia defects --type invalid_plan_status``.
+        raw_plan_status = workflow_metrics.get("plan_status")
+        plan_status = raw_plan_status
+        invalid_plan_status = None
+        if plan_status is not None and plan_status not in VALID_PLAN_STATUSES:
+            print(
+                f"Warning: Invalid plan_status {raw_plan_status!r}. Must be "
+                f"one of {VALID_PLAN_STATUSES} or None -- normalizing to "
+                f"NULL and recording the original value as an anomaly.",
+                file=sys.stderr,
+            )
+            invalid_plan_status = raw_plan_status
+            plan_status = None
+
         # Split off anomalies for the child table; everything else from the
         # context object lands in context_metrics as a JSON blob.
         anomalies = list(context.get("anomalies", []) or [])
+        if invalid_plan_status is not None:
+            anomalies.append({
+                "type": "invalid_plan_status",
+                "severity": "warning",
+                "message": (
+                    f"plan_status normalized to NULL; original value was "
+                    f"{invalid_plan_status!r}"
+                ),
+                "original_value": invalid_plan_status,
+            })
         context_for_blob = {k: v for k, v in context.items() if k != "anomalies"}
 
         fields = {
@@ -376,7 +426,7 @@ class EpisodicMemory:
             "outcome": outcome,
             "duration_seconds": duration_seconds,
             "exit_code": workflow_metrics.get("exit_code"),
-            "plan_status": workflow_metrics.get("plan_status"),
+            "plan_status": plan_status,
             "output_length": workflow_metrics.get("output_length"),
             "output_tokens_approx": workflow_metrics.get("output_tokens_approx"),
         }

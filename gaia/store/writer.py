@@ -8445,6 +8445,329 @@ def mirror_partial_contract_handoff(
     return _retry_on_locked(_work)
 
 
+# ---------------------------------------------------------------------------
+# Public API: the CONTINUATION chain (v46)
+# ---------------------------------------------------------------------------
+#
+# A TURN IS A CONTRACT. RESUMING DOES NOT REOPEN: IT CONTINUES.
+#
+# When the orchestrator resumes an agent that already closed its turn, the agent
+# keeps working -- and, before this, had nowhere to write. Its row was terminal,
+# so mirror_partial_contract_handoff answered `skipped/terminal` and
+# finalize_agent_contract_handoff's `WHERE agent_state NOT IN (COMPLETE)` guard
+# converged nothing while still reporting success. Every finding the resumed turn
+# produced was dropped, and the row stayed frozen at the first close's content.
+#
+# The obvious repair -- prepare a fresh row when the resumption starts -- is not
+# available: a resumption emits NO birth. The nascent row is written only from
+# the dispatching PreToolUse:Task event; a resume arrives as SendMessage and
+# births nothing. (Measured: since 2026-08-01 every specialist shows more
+# agent.complete than agent.dispatch events -- platform-architect 426/256,
+# gitops-operator 301/232, gaia-system 265/240.) So the ONLY moment left is the
+# FIRST WRITE, which is where the CLI opens a continuation.
+#
+# What is reused across a resumption is the agent's CONTEXT, not its RECORD. A
+# closed row is never modified -- not its state, not its content. The new work is
+# born into a NEW row that declares which one it continues, through
+# `continues_handoff_id`. Three consequences shape the writer below:
+#
+#   * CLOSED means TERMINAL, by the one existing definition. The trigger is
+#     `agent_state IN gaia.state.TERMINAL_PLAN_STATUSES` -- the table's declared
+#     write-once boundary. The other five states are documented there as paused
+#     mid-loop checkpoints that MUST stay convergeable for the same contract_id,
+#     so widening the trigger to them would break convergence rather than
+#     protect a record.
+#   * ONE LINK PER CLOSED ROW. The insert runs under BEGIN IMMEDIATE and first
+#     looks for an existing child, so two concurrent first-writes cannot fork a
+#     closed row into two continuations; the loser adopts the winner's link.
+#   * THE LINK IS ALREADY CLAIMED. `claimed_at` is stamped at mint time even
+#     though no SubagentStart will ever claim it. It inherits the dispatch
+#     correlation keys, and claim_dispatch_row's candidate pool is exactly
+#     `agent_state='DISPATCHED' AND claimed_at IS NULL` -- leaving it unclaimed
+#     would let a later sibling dispatch sharing the prompt_id claim a row that
+#     belongs to a run already underway.
+# ---------------------------------------------------------------------------
+
+# Columns a continuation link inherits verbatim from the row it continues: the
+# turn's identity, its attribution, its plan binding and its dispatch context are
+# all unchanged by a resumption -- the same turn is still running. Everything
+# NOT in this tuple is set explicitly by open_contract_continuation (the new
+# contract_id, a fresh DISPATCHED state and birth cut mark, the link itself, the
+# seed envelope, claimed_at, created_at).
+_CONTINUATION_INHERITED_COLUMNS = (
+    "agent_id",
+    "session_id",
+    "workspace",
+    "brief_id",
+    "plan_task_id",
+    "plan_id",
+    "parent_handoff_id",
+    "kind",
+    "harness_agent_id",
+    "dispatch_prompt_id",
+    "dispatch_tool_use_id",
+    "dispatch_description",
+    "dispatch_prompt",
+    "context_anchors",
+    "kernel_sections",
+    "dispatch_project",
+)
+
+# Hard bound on a chain walk. A chain is one turn's resumptions, which is a
+# handful in practice; the bound exists so a corrupt self-referential edge
+# degrades to a truncated answer instead of spinning inside a stop hook.
+_MAX_CONTINUATION_LINKS = 64
+
+
+def _row_by_contract_id(con: sqlite3.Connection, contract_id: str):
+    return con.execute(
+        "SELECT * FROM agent_contract_handoffs WHERE contract_id = ? LIMIT 1",
+        (contract_id,),
+    ).fetchone()
+
+
+def _continuation_chain_rows(
+    con: sqlite3.Connection, contract_id: str
+) -> "list[sqlite3.Row]":
+    """The full chain containing ``contract_id``, oldest link first.
+
+    Walks BACK to the root through ``continues_handoff_id`` and then FORWARD
+    through the children, so any member recovers the whole chain -- which is the
+    property an operator needs: they hold whatever id they happened to find, not
+    necessarily the first one.
+    """
+    row = _row_by_contract_id(con, contract_id)
+    if row is None:
+        return []
+
+    # The two walks keep SEPARATE visited sets on purpose. Sharing one would
+    # make the forward walk refuse to re-emit the links the backward walk
+    # already passed through, so entering the chain anywhere but at its root
+    # would return only the root -- which is precisely the case this function
+    # exists for (an operator holds whichever id they happened to find).
+    walked_back = {row["id"]}
+    root = row
+    for _ in range(_MAX_CONTINUATION_LINKS):
+        previous_id = root["continues_handoff_id"]
+        if previous_id is None:
+            break
+        previous = con.execute(
+            "SELECT * FROM agent_contract_handoffs WHERE id = ? LIMIT 1",
+            (previous_id,),
+        ).fetchone()
+        if previous is None or previous["id"] in walked_back:
+            break
+        walked_back.add(previous["id"])
+        root = previous
+
+    chain = [root]
+    seen = {root["id"]}
+    cursor = root
+    for _ in range(_MAX_CONTINUATION_LINKS):
+        child = con.execute(
+            "SELECT * FROM agent_contract_handoffs "
+            "WHERE continues_handoff_id = ? ORDER BY id ASC LIMIT 1",
+            (cursor["id"],),
+        ).fetchone()
+        if child is None or child["id"] in seen:
+            break
+        seen.add(child["id"])
+        chain.append(child)
+        cursor = child
+    return chain
+
+
+def continuation_chain(
+    contract_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "list[dict]":
+    """Every link of the continuation chain ``contract_id`` belongs to.
+
+    Ordered oldest-first, so ``[0]`` is the turn's original contract and ``[-1]``
+    is the link currently open. A contract that was never resumed returns a
+    single-element list (itself); an unknown contract id returns ``[]``.
+
+    This is the read behind ``gaia contract chain``: given ANY link, an operator
+    recovers the whole chain with one call rather than following ids by hand.
+    """
+    if not contract_id:
+        return []
+    con = _connect(db_path)
+    try:
+        return [dict(r) for r in _continuation_chain_rows(con, contract_id)]
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def continuation_tip(
+    contract_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """The LIVE link of ``contract_id``'s chain -- the row a write lands on.
+
+    Returns the row itself when it was never resumed, the newest link when it
+    was, and None when no row exists for the id at all. Callers that must not
+    write to a superseded record resolve through this first.
+    """
+    chain = continuation_chain(contract_id, db_path=db_path)
+    return chain[-1] if chain else None
+
+
+def collapse_continuation_chains(rows: "list[dict]") -> "list[dict]":
+    """Drop every row in ``rows`` that another row in ``rows`` continues.
+
+    A PURE function over an already-fetched result set, so a caller that queried
+    by some other coordinate can reduce a chain to its live link without a second
+    round trip. The case it exists for is the SubagentStop bridge: a resumption
+    carries the SAME harness agent id as the turn it continues, so a lookup by
+    that id returns every link of the chain and would otherwise read as an
+    ambiguous match and be declined -- rejecting the close of a turn whose work
+    is perfectly recorded. Rows unrelated to each other are all preserved, so a
+    genuine ambiguity is still reported as one.
+    """
+    superseded = {
+        row.get("continues_handoff_id")
+        for row in rows
+        if row.get("continues_handoff_id") is not None
+    }
+    return [row for row in rows if row.get("id") not in superseded]
+
+
+def open_contract_continuation(
+    parent_contract_id: "str | None",
+    new_contract_id: "str | None",
+    *,
+    raw_handoff_json: str,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Mint the contract a resumed turn continues into, or return the existing one.
+
+    See the module comment above for why this exists and why the first write is
+    the only moment available. The closed row is READ and never written: this
+    function only INSERTs, so neither the state nor the content of the record it
+    continues can change.
+
+    Args:
+        parent_contract_id: The CLOSED contract the write was addressed to.
+        new_contract_id:    The contract id to mint the link under. Supplied by
+                            the caller (the CLI owns id minting -- see
+                            gaia.contract.drafts.mint_draft_id) so the store
+                            stays free of the draft-addressing scheme.
+        raw_handoff_json:   The link's seed envelope, serialized. The caller
+                            builds it; this writer never invents contract
+                            content.
+        db_path:            Optional explicit DB path (used by tests).
+
+    Returns:
+        ``{"status": "opened", "created": bool, "contract_id": <link's id>,
+        "handoff_id": int, "continues_contract_id": str,
+        "continues_handoff_id": int}`` -- ``created`` False when a link already
+        existed for this closed row and was adopted instead of minted.
+        ``{"status": "skipped", "reason": ...}`` otherwise, where reason is
+        ``no_contract_id``, ``no_row`` (nothing to continue) or ``not_closed``
+        (the row is still writable in place, so no continuation is warranted).
+
+    Raises:
+        HandoffWriteForbidden: the same gate birth / finalize / mirror are held to.
+    """
+    if not parent_contract_id or not new_contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            # BEGIN IMMEDIATE (write-lock-first): the body is SELECT-then-INSERT
+            # and the SELECT is what makes "one link per closed row" true, so the
+            # write lock has to be held across both.
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                from gaia.state import CUT_REASON_NEVER_FINALIZED, TERMINAL_PLAN_STATUSES
+
+                parent = _row_by_contract_id(con, parent_contract_id)
+                if parent is None:
+                    con.commit()
+                    return {"status": "skipped", "reason": "no_row"}
+                if parent["agent_state"] not in TERMINAL_PLAN_STATUSES:
+                    con.commit()
+                    return {"status": "skipped", "reason": "not_closed"}
+
+                existing = con.execute(
+                    "SELECT id, contract_id FROM agent_contract_handoffs "
+                    "WHERE continues_handoff_id = ? ORDER BY id ASC LIMIT 1",
+                    (parent["id"],),
+                ).fetchone()
+                if existing is not None:
+                    con.commit()
+                    return {
+                        "status": "opened",
+                        "created": False,
+                        "contract_id": existing["contract_id"],
+                        "handoff_id": existing["id"],
+                        "continues_contract_id": parent_contract_id,
+                        "continues_handoff_id": parent["id"],
+                    }
+
+                columns = (
+                    "contract_id",
+                    *_CONTINUATION_INHERITED_COLUMNS,
+                    "continues_handoff_id",
+                    "agent_state",
+                    "cut_reason",
+                    "claimed_at",
+                    "raw_handoff_json",
+                    "created_at",
+                )
+                now = _now_iso()
+                values = (
+                    new_contract_id,
+                    *(parent[column] for column in _CONTINUATION_INHERITED_COLUMNS),
+                    parent["id"],
+                    "DISPATCHED",
+                    CUT_REASON_NEVER_FINALIZED,
+                    now,
+                    raw_handoff_json,
+                    now,
+                )
+                cur = con.execute(
+                    f"""
+                    -- ON CONFLICT DO NOTHING keeps the contract_id UNIQUE index
+                    -- authoritative: an id that somehow already names a row is
+                    -- never clobbered, exactly as at birth.
+                    INSERT INTO agent_contract_handoffs ({', '.join(columns)})
+                    VALUES ({', '.join('?' for _ in columns)})
+                    ON CONFLICT(contract_id) DO NOTHING
+                    RETURNING id
+                    """,
+                    values,
+                )
+                returned = cur.fetchone()
+                if returned is None:
+                    con.commit()
+                    return {"status": "skipped", "reason": "contract_id_taken"}
+                con.commit()
+                return {
+                    "status": "opened",
+                    "created": True,
+                    "contract_id": new_contract_id,
+                    "handoff_id": returned["id"],
+                    "continues_contract_id": parent_contract_id,
+                    "continues_handoff_id": parent["id"],
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
 def stamp_harness_agent_id(
     contract_id: "str | None",
     harness_agent_id: "str | None",

@@ -1,0 +1,46 @@
+-- Migration v45 -> v46: the continuation link on agent_contract_handoffs.
+--
+-- WHAT CHANGES
+--   One nullable column plus a partial index on agent_contract_handoffs:
+--
+--     continues_handoff_id  INTEGER  -- id of the CLOSED row this row continues
+--
+--   No backfill: a historical row was never part of a chain, and inventing an
+--   edge between two rows that merely look related is worse than a NULL.
+--
+-- WHY
+--   A turn is a contract, and resuming a turn does not reopen the contract it
+--   already closed. Before this, a resumed agent had nowhere to write: its row
+--   was terminal, mirror_partial_contract_handoff refused it (skipped/terminal)
+--   and finalize_agent_contract_handoff's `WHERE agent_state NOT IN (COMPLETE)`
+--   guard converged nothing, so every finding the resumed turn produced was
+--   dropped on the floor while the CLI reported success. The fix mints a NEW
+--   contract for the resumed work and records which one it came from; this
+--   column is that record, and it is what makes the chain readable afterwards
+--   (`gaia contract chain`) instead of reconstructable only by hand.
+--
+-- WHY NOT parent_handoff_id, which already exists and is empty on every row.
+--   parent_handoff_id is the DISPATCH parentage edge -- "a verifier turn -> its
+--   producer's row" -- a relation between two DIFFERENT turns about the same
+--   work. A continuation is the SAME turn writing its next contract. Reusing
+--   one column for both leaves a chain walk unable to distinguish the two edges
+--   without a second discriminator, and the two genuinely collide: a resumed
+--   VERIFIER turn must record BOTH the producer row it verifies AND the link it
+--   continues from, which one column cannot hold.
+--
+-- NO FOREIGN KEY, deliberately, mirroring kind / cut_reason / harness_agent_id
+--   / the dispatch_* columns: ALTER TABLE ADD COLUMN carries no constraint, so
+--   declaring one only in schema.sql would leave a migrated DB and a fresh
+--   install with different shapes. It additionally keeps prune_handoffs (a flat
+--   DELETE over a date window) from failing when the window boundary falls
+--   between two links of one chain -- a pruned parent just ends the walk.
+--
+-- IDEMPOTENCY
+--   Same contract as v43->v44: one `ALTER TABLE ... ADD COLUMN ...` per LINE so
+--   the bootstrap runner's guard (_filter_add_column_idempotent) can neutralise
+--   the line when schema.sql already created the column on a fresh install. The
+--   index uses IF NOT EXISTS and is replay-safe on its own.
+
+ALTER TABLE agent_contract_handoffs ADD COLUMN continues_handoff_id INTEGER;
+
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_continues ON agent_contract_handoffs(continues_handoff_id) WHERE continues_handoff_id IS NOT NULL;

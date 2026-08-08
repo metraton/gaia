@@ -1224,6 +1224,32 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
     -- whose cwd matched no known project, carry NULL. No CHECK, mirroring the
     -- v43 columns above.
     dispatch_project     TEXT,
+    -- v46: the CONTINUATION link. A turn is a contract, and a resumed turn does
+    -- not reopen the contract it already closed -- it CONTINUES into a new one
+    -- that names where it came from. This column holds that edge: the id of the
+    -- CLOSED row this row continues. NULL on every ordinary row (a turn that was
+    -- never resumed after closing), non-NULL only on a link minted by
+    -- gaia.store.writer.open_contract_continuation.
+    --
+    -- WHY NOT parent_handoff_id, which is already here and empty everywhere.
+    -- That column is the DISPATCH parentage edge ("a verifier turn -> its
+    -- producer's row"): a relation between two DIFFERENT turns about the same
+    -- work. A continuation is the opposite relation -- the SAME turn, still
+    -- running, writing its next contract. Overloading one column with both would
+    -- (a) leave a chain walk unable to tell a continuation edge from a verifier
+    -- edge without a second discriminator, and (b) genuinely collide: a resumed
+    -- VERIFIER turn needs to record both the producer row it verifies AND the
+    -- link it continues from, and one column cannot hold two parents. So the
+    -- continuation gets its own edge and parent_handoff_id keeps its meaning.
+    --
+    -- No FOREIGN KEY, deliberately, mirroring kind / cut_reason /
+    -- harness_agent_id / the dispatch_* columns: this column reaches an existing
+    -- DB through ALTER TABLE ADD COLUMN, which carries no constraint, so
+    -- declaring one only here would make the fresh-install and migrated shapes
+    -- disagree. It also keeps prune_handoffs (a flat DELETE over a date window)
+    -- from failing when a window boundary falls between two links of one chain;
+    -- a pruned parent simply ends the walk.
+    continues_handoff_id INTEGER,
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note
@@ -1266,6 +1292,11 @@ CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_harness ON agent_contract
 -- candidate query targets rows that are still DISPATCHED and unclaimed, a
 -- transient minority of the contract history.
 CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_unclaimed ON agent_contract_handoffs(dispatch_prompt_id) WHERE claimed_at IS NULL;
+-- v46: PARTIAL index over the continuation links only. The access path it
+-- serves is the forward walk "which row continues THIS one", asked once per
+-- contract write on a closed row and once per SubagentStop chain collapse;
+-- links are a small minority of the history, so the index tracks them, not it.
+CREATE INDEX IF NOT EXISTS idx_agent_contract_handoffs_continues ON agent_contract_handoffs(continues_handoff_id) WHERE continues_handoff_id IS NOT NULL;
 
 -- ---------------------------------------------------------------------------
 -- agent_contract_handoff_approvals: approval decisions linked to handoffs (v9/M4)
