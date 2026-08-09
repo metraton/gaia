@@ -227,6 +227,17 @@ def _get_list(d: dict, key: str) -> List[str]:
     result: List[str] = []
     for item in val:
         if isinstance(item, dict):
+            path = item.get("path")
+            commit = item.get("commit")
+            if isinstance(path, str) and isinstance(commit, str):
+                # A commit-qualified files_checked reference. Rendered in the
+                # path@commit form a reader can paste into git rather than as
+                # the dict's Python repr; the OBJECT is the stored form
+                # precisely because no string form can be told apart from a
+                # bare path on the way IN, which is not a constraint on the
+                # way out.
+                result.append(f"{path}@{commit}")
+                continue
             # e.g. {"command": "ls", "result": "ok"} -> "`ls` -> ok"
             cmd = item.get("command", item.get("cmd", ""))
             res = item.get("result", item.get("output", ""))

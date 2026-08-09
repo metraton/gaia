@@ -108,6 +108,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -327,6 +328,70 @@ REQUIRED_FAILURE_REPORT_FIELDS: Tuple[str, ...] = (
 )
 
 VALID_FAILURE_SEVERITIES: Tuple[str, ...] = ("info", "warning", "error")
+
+# ---------------------------------------------------------------------------
+# files_checked -- the commit-qualified file reference.
+#
+# A cited file is evidence, and evidence with no lineage is a photograph: it
+# shows a state without saying which one. When the file IS committed, the
+# commit turns the citation into a door -- to the diff, to the message that
+# says why, to the sibling files of the same move, to the PR discussion. So a
+# files_checked entry may now carry the commit the file was read at, and a
+# read-only investigation that produces nothing and commits nothing can still
+# date every finding it reports.
+#
+# The rule is CONDITIONAL and attaches to the ARTEFACT, never to the turn: a
+# committed file is cited with its commit, an uncommitted one is cited as a
+# bare path and that is not a fault. The condition is a fact the system can
+# check on its own rather than a discipline demanded of the agent, which is
+# what keeps a half-commit from ever being the price of citing something.
+#
+# SHAPE, NOT EXISTENCE -- deliberate and load-bearing. Nothing here consults
+# git. The validator stays pure and cheap (it runs on every incremental write,
+# measured at 0.008 ms inside a 60 ms call), and that margin is exactly what
+# lets it be strict for free. A reference to a commit that does not exist is
+# well-FORMED and passes; resolving it belongs to whoever reads it.
+#
+# WHY AN OBJECT AND NOT A path@sha STRING. The form had to satisfy one hard
+# constraint: a legitimate bare path must NEVER be mistaken for a malformed
+# reference. That was settled by measurement over the 25,967 files_checked
+# entries already persisted (9,680 rows) and on disk (212 drafts), not by
+# taste -- each candidate scored by how many EXISTING entries its trigger
+# would newly reject:
+#
+#     trailing @<token>   26  ("...approval_grants.py (match_command_set_grant @2181)")
+#     any @              429  ("node_modules/@jaguilar87/gaia/tools/memory/episodic.py")
+#     " @ "                7  (".github/workflows/foundation.yml @ century-inc/branchkinect-iac")
+#     trailing #<token>   22  ("/tmp/runtime-plan.log (CI runtime plan log, build #3)")
+#     OBJECT {path,commit} 0
+#
+# Every string separator collides with prose an agent already writes inside a
+# path entry. A JSON object cannot collide with a JSON string at all -- the
+# distinction is carried by the type, so the trigger is exact BY CONSTRUCTION
+# rather than by a regex that has to out-guess free text. The census confirms
+# it from the other side too: zero object elements exist in the whole
+# population, so nothing already written can be caught by the new check.
+#
+# The check therefore fires ONLY on an element that DECLARES itself a
+# reference by being an object. A string element is never inspected -- every
+# bare path stays valid exactly as written, which is what makes this purely
+# additive. A non-string, non-object element (one nested list exists in
+# history) is left alone as well: it was accepted before and rejecting it now
+# would re-open a verdict on a row nobody can rewrite.
+FILE_REFERENCE_KEYS: Tuple[str, ...] = ("path", "commit")
+
+# The commit token: hex only. 7 is git's own default abbreviation length
+# (``core.abbrev``) and the floor below which an abbreviation stops being
+# unambiguous in a real repository; 64 admits a SHA-256 object name as well as
+# SHA-1's 40, so a repository that has migrated does not need a validator
+# change. Matched against the stripped, lower-cased token, and canonicalized to
+# that same form on write (see ``canonicalize_envelope``).
+#
+# A branch name, a tag, or HEAD is deliberately NOT a commit here: those move,
+# and a reference that moves dates nothing -- which is the entire point of
+# carrying one. The rejection says so and names the command that resolves it.
+COMMIT_TOKEN_PATTERN_TEXT = r"^[0-9a-f]{7,64}$"
+_COMMIT_TOKEN_PATTERN = re.compile(COMMIT_TOKEN_PATTERN_TEXT)
 
 # ---------------------------------------------------------------------------
 # The declared schema -- what a key IS, not merely that it is there.
@@ -617,6 +682,11 @@ class FormErrorCode(str, Enum):
     # Deliberately a rejection naming the correct path, never a silent move:
     # inferring the intent would hide the very class of error this closes.
     MISPLACED_KEY = "MISPLACED_KEY"
+    # Additive: a files_checked entry DECLARED itself a commit-qualified file
+    # reference (it is an object) but is malformed -- no usable path, no
+    # commit, a commit that is not a commit, or a key that is neither. Never
+    # fires on a string entry, so every bare path ever written stays valid.
+    FILE_REFERENCE_SHAPE = "FILE_REFERENCE_SHAPE"
     # Additive: a key belonging to no declared path at any level. This is what
     # catches a mistyped field name (``files_checkd``), which previously
     # created a brand-new field without a word. The detail names the nearest
@@ -1095,6 +1165,128 @@ def _failure_report_shape_errors(block: Any) -> List[Tuple[str, str]]:
     return problems
 
 
+_FILE_REFERENCE_FORM_HINT = (
+    "A files_checked entry is EITHER a bare path string -- "
+    '"gaia/contract/validator.py" -- OR, when the file is committed, an object '
+    'naming the commit it was read at: {"path": "gaia/contract/validator.py", '
+    '"commit": "a76789a"}, e.g. `gaia contract add evidence_report.files_checked '
+    '\'{"path": "<path>", "commit": "<sha>"}\'`. The bare path is always valid '
+    "and is the RIGHT answer for a file that is not committed: the commit rides "
+    "along when the ARTEFACT has one, it is never a requirement on the turn, so "
+    "nothing here is a reason to commit anything."
+)
+
+
+def _file_reference_defects(ref: dict) -> List[Tuple[str, str]]:
+    """Return ``(suffix, detail)`` pairs for a malformed reference object.
+
+    The caller has already established that the entry IS an object, which is
+    the element's own declaration that it means to be a commit-qualified
+    reference; a string entry never reaches here. An empty list means the
+    reference is well-formed.
+
+    One pair per offending sub-field, so several defects in one reference
+    report as several errors under the single FILE_REFERENCE_SHAPE code --
+    the same fan-out ``_failure_report_shape_errors`` uses.
+    """
+    problems: List[Tuple[str, str]] = []
+
+    if not _is_nonempty_str(ref.get("path")):
+        problems.append((
+            ".path",
+            (
+                f"a commit-qualified file reference requires a non-empty "
+                f"'path', got {ref.get('path')!r}. " + _FILE_REFERENCE_FORM_HINT
+            ),
+        ))
+
+    raw_commit = ref.get("commit")
+    if not _is_nonempty_str(raw_commit):
+        problems.append((
+            ".commit",
+            (
+                f"a commit-qualified file reference requires a non-empty "
+                f"'commit', got {raw_commit!r}. Drop the whole object and write "
+                f"the bare path string instead if the file is not committed -- "
+                f"that is valid, not a lesser answer. " + _FILE_REFERENCE_FORM_HINT
+            ),
+        ))
+    elif not _COMMIT_TOKEN_PATTERN.match(str(raw_commit).strip().lower()):
+        problems.append((
+            ".commit",
+            (
+                f"{raw_commit!r} is not a commit: expected a hex object name "
+                f"matching {COMMIT_TOKEN_PATTERN_TEXT} (7 to 64 hex digits -- "
+                f"git's own abbreviation floor up to a full SHA-256 name). A "
+                f"branch, a tag or 'HEAD' is not accepted here because it MOVES, "
+                f"and a reference that moves dates nothing -- resolve it first "
+                f"(`git rev-parse --short HEAD`) and write the result. Nothing "
+                f"is checked against git: this is the SHAPE of the reference, "
+                f"and a commit that does not exist passes."
+            ),
+        ))
+
+    for key in ref:
+        if key in FILE_REFERENCE_KEYS:
+            continue
+        suggestion = _closest_declared_key(str(key), FILE_REFERENCE_KEYS)
+        hint = (
+            f" Did you mean {suggestion!r}?" if suggestion
+            else f" A reference carries exactly {list(FILE_REFERENCE_KEYS)}."
+        )
+        problems.append((
+            f".{key}",
+            (
+                f"{key!r} is not part of a commit-qualified file reference, so "
+                f"the entry was rejected rather than half-read.{hint} Anything "
+                f"else you want to say about the file belongs in the path "
+                f"string itself or in key_outputs. " + _FILE_REFERENCE_FORM_HINT
+            ),
+        ))
+
+    return problems
+
+
+def _file_reference_errors(entries: Any, key: str) -> List[Tuple[str, str]]:
+    """Return ``(field, detail)`` pairs for every malformed reference in a
+    ``files_checked`` list.
+
+    Only OBJECT elements are inspected. A string element -- every bare path in
+    the persisted population -- is never looked at, and neither is any other
+    scalar or container, which is what keeps this check additive over history
+    rather than a re-verdict on it.
+    """
+    problems: List[Tuple[str, str]] = []
+    if not isinstance(entries, list):
+        return problems
+    for index, item in enumerate(entries):
+        if not isinstance(item, dict):
+            continue
+        for suffix, detail in _file_reference_defects(item):
+            problems.append((f"evidence_report.{key}[{index}]{suffix}", detail))
+    return problems
+
+
+def _flatten_broken_reference(ref: dict) -> str:
+    """Render a malformed reference object as a bare-path STRING.
+
+    The repair half of the reference rule (see ``sanitize_envelope``). A bare
+    string is unconditionally valid, so flattening is guaranteed to lift the
+    rejection; nothing the agent wrote is discarded, because whatever cannot
+    be read as a path rides along as text.
+    """
+    path = ref.get("path")
+    if _is_nonempty_str(path):
+        extras = {k: v for k, v in ref.items() if k != "path"}
+        if not extras:
+            return path.strip()
+        return (
+            path.strip() + " "
+            + json.dumps(extras, sort_keys=True, ensure_ascii=False)
+        )
+    return json.dumps(ref, sort_keys=True, ensure_ascii=False)
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -1512,6 +1704,28 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                 )
             )
 
+    # --- files_checked commit references (OPTIONAL form, pure SHAPE) --------
+    # Same presence-gating idiom as failure_report and work_phase above, and
+    # gated one level deeper: only an ENTRY that declares itself a reference by
+    # being an object is checked at all. An envelope whose files_checked holds
+    # nothing but strings -- which is every envelope written before this form
+    # existed -- reaches no check, so no already-persisted contract changes its
+    # verdict. Checked independently of agent_state: a citation is a citation
+    # whatever the turn reports back.
+    evidence_block = envelope.get("evidence_report")
+    if isinstance(evidence_block, dict):
+        for evidence_key in ("files_checked", "FILES_CHECKED"):
+            for field, detail in _file_reference_errors(
+                evidence_block.get(evidence_key), evidence_key
+            ):
+                errors.append(
+                    FormError(
+                        code=FormErrorCode.FILE_REFERENCE_SHAPE,
+                        field=field,
+                        detail=detail,
+                    )
+                )
+
     return FormValidationResult(
         ok=not errors,
         errors=tuple(errors),
@@ -1613,6 +1827,28 @@ def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> A
                     _replace(
                         verification, "type", normalized,
                         "evidence_report.verification.type",
+                    )
+        # A commit token is matched stripped and lower-cased, so it persists
+        # that way -- the same narrow rule the enums above follow. 'A76789A '
+        # and 'a76789a' are one commit to git and would otherwise be two
+        # distinct strings to every reader that groups or joins on them. Only
+        # a token that MATCHED is rewritten; a malformed one is left verbatim
+        # for the rejection to quote back.
+        for evidence_key in ("files_checked", "FILES_CHECKED"):
+            entries = evidence.get(evidence_key)
+            if not isinstance(entries, list):
+                continue
+            for index, item in enumerate(entries):
+                if not isinstance(item, dict):
+                    continue
+                raw_commit = item.get("commit")
+                if not isinstance(raw_commit, str):
+                    continue
+                normalized = raw_commit.strip().lower()
+                if _COMMIT_TOKEN_PATTERN.match(normalized):
+                    _replace(
+                        item, "commit", normalized,
+                        f"evidence_report.{evidence_key}[{index}].commit",
                     )
 
     failure_report = result.get("failure_report")
@@ -1763,7 +1999,42 @@ def sanitize_envelope(envelope: Any, *, removals: Optional[list] = None) -> Any:
             evidence, EVIDENCE_REPORT_KEYS, EVIDENCE_FIELD_TYPES,
             "evidence_report.", log,
         )
+        _sanitize_file_references(evidence, log)
     return result
+
+
+def _sanitize_file_references(evidence: dict, log: list) -> None:
+    """Flatten every malformed commit reference in files_checked, in place.
+
+    This is the handle on the inside of the door FILE_REFERENCE_SHAPE closes.
+    A rejected write persists nothing, so an agent cannot trap ITSELF with a
+    malformed reference -- the entry never lands. What it does not cover is an
+    envelope INHERITED from elsewhere (a row read back, a resumed draft, a
+    hook-captured envelope): a malformed reference already sitting in one
+    would reject every subsequent write, including the write that would fix
+    it. Repairing on the way in is what keeps the new rejection from being a
+    cell rather than a validation.
+
+    Repair is by FLATTENING, not removal, for the reason ``_sanitize_level``
+    wraps a scalar instead of deleting it: the entry is evidence the agent
+    gathered, and a bare string keeps all of it while being unconditionally
+    valid.
+    """
+    for key in ("files_checked", "FILES_CHECKED"):
+        entries = evidence.get(key)
+        if not isinstance(entries, list):
+            continue
+        for index, item in enumerate(entries):
+            if not isinstance(item, dict) or not _file_reference_defects(item):
+                continue
+            replacement = _flatten_broken_reference(item)
+            entries[index] = replacement
+            log.append(
+                f"repaired evidence_report.{key}[{index}]: a malformed commit "
+                f"reference was flattened to the bare-path form "
+                f"{replacement!r}, which is always valid -- rewrite it as "
+                f'{{"path": ..., "commit": ...}} if the file is committed'
+            )
 
 
 __all__ = [
@@ -1789,4 +2060,6 @@ __all__ = [
     "REQUIRED_FAILURE_REPORT_FIELDS",
     "VALID_FAILURE_SEVERITIES",
     "VALID_WORK_PHASES",
+    "FILE_REFERENCE_KEYS",
+    "COMMIT_TOKEN_PATTERN_TEXT",
 ]
