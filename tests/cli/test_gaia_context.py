@@ -21,6 +21,7 @@ from cli.context import (
     _cmd_scan,
     _cmd_show,
     _cmd_get,
+    _cmd_get_contract,
     _cmd_dump,
     _find_project_root,
     cmd_context,
@@ -353,6 +354,124 @@ class TestCmdGetIncludeMissing:
         args = parser.parse_args(["context", "get", "--include-missing"])
         assert args.include_missing is True
         assert parser.parse_args(["context", "get"]).include_missing is False
+
+
+# ---------------------------------------------------------------------------
+# _cmd_get_contract -- resolves project_context_contracts.contract_name,
+# the same names as an agent's can_read/can_write kernel menu. This is a
+# DIFFERENT table from get_context()'s workspace shape, so these tests seed
+# a real (temp) SQLite substrate rather than mocking get_context().
+# ---------------------------------------------------------------------------
+
+class TestCmdGetContract:
+    @pytest.fixture()
+    def seeded_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        from gaia.paths import db_path
+        from gaia.store.writer import _connect
+
+        con = _connect(db_path())
+        try:
+            con.execute(
+                "INSERT INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
+                ("ws-contracts", "ws-contracts", "2026-01-01T00:00:00Z"),
+            )
+            con.execute(
+                "INSERT INTO project_context_contracts "
+                "(workspace, contract_name, payload, updated_at) VALUES (?, ?, ?, ?)",
+                (
+                    "ws-contracts",
+                    "project_identity",
+                    json.dumps({"my-repo": {"name": "my-repo"}}),
+                    "2026-01-02T00:00:00Z",
+                ),
+            )
+            con.execute(
+                "INSERT INTO project_context_contracts "
+                "(workspace, contract_name, payload, updated_at) VALUES (?, ?, ?, ?)",
+                ("ws-contracts", "stack", json.dumps({"languages": ["python"]}), "2026-01-03T00:00:00Z"),
+            )
+            con.commit()
+        finally:
+            con.close()
+        return db_path()
+
+    def _run(self, capsys, *, section, workspace="ws-contracts", json_output=True, text=False):
+        args = _MockArgs(
+            context_cmd="get-contract",
+            workspace=workspace,
+            section=section,
+            json=json_output,
+            text=text,
+        )
+        rc = _cmd_get_contract(args)
+        return rc, capsys.readouterr()
+
+    def test_known_contract_name_returns_payload(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, section="project_identity")
+        assert rc == 0
+        data = json.loads(captured.out)
+        assert data["workspace"] == "ws-contracts"
+        assert data["contract_name"] == "project_identity"
+        assert data["payload"] == {"my-repo": {"name": "my-repo"}}
+        assert data["updated_at"] == "2026-01-02T00:00:00Z"
+
+    def test_unknown_contract_name_exits_1_and_lists_available(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, section="not_a_real_contract")
+        assert rc == 1
+        assert "not_a_real_contract" in captured.err
+        assert "ws-contracts" in captured.err
+        # Orients toward the correct drawer: names the actual contract names.
+        assert "project_identity" in captured.err
+        assert "stack" in captured.err
+        # And distinguishes the namespace from the workspace-shape one.
+        assert "get" in captured.err  # points at the sibling verb by name
+
+    def test_missing_section_flag_exits_2(self, seeded_db, capsys):
+        args = _MockArgs(context_cmd="get-contract", workspace="ws-contracts", section=None, json=True, text=False)
+        rc = _cmd_get_contract(args)
+        assert rc == 2
+
+    def test_text_mode_shows_workspace_and_contract_header(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, section="stack", text=True, json_output=False)
+        assert rc == 0
+        assert "workspace     : ws-contracts" in captured.out
+        assert "contract_name : stack" in captured.out
+
+    def test_default_workspace_resolves_from_project_current(self, seeded_db, capsys):
+        args = _MockArgs(context_cmd="get-contract", workspace=None, section="project_identity", json=True, text=False)
+        with patch("gaia.project.current", return_value="ws-contracts"):
+            rc = _cmd_get_contract(args)
+        captured = capsys.readouterr()
+        assert rc == 0
+        data = json.loads(captured.out)
+        assert data["workspace"] == "ws-contracts"
+
+    def test_dispatch_routes_get_contract(self, seeded_db, capsys):
+        args = _MockArgs(context_cmd="get-contract", workspace="ws-contracts", section="stack", json=True, text=False)
+        rc = cmd_context(args)
+        assert rc == 0
+
+    def test_flag_is_registered_on_the_real_parser(self):
+        from cli.context import register
+
+        parser = argparse.ArgumentParser(prog="gaia")
+        register(parser.add_subparsers(dest="command"))
+
+        args = parser.parse_args(
+            ["context", "get-contract", "--section", "project_identity", "--workspace", "w"]
+        )
+        assert args.section == "project_identity"
+        assert args.workspace == "w"
+
+    def test_section_is_required_on_the_real_parser(self):
+        from cli.context import register
+
+        parser = argparse.ArgumentParser(prog="gaia")
+        register(parser.add_subparsers(dest="command"))
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["context", "get-contract"])
 
 
 # ---------------------------------------------------------------------------

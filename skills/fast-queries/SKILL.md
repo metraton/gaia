@@ -10,7 +10,8 @@ Start with supplied evidence, not a fixed diagnostic script.
 1. Read the injected dispatch kernel (`# Your Contract`: goal, `project`,
    your `can_read` menu). Project context is NOT preloaded.
 2. Pull what the goal needs from the persistent substrate: a narrowly scoped
-   `gaia context get --section <s>` (within `can_read`), then
+   `gaia context get-contract --section <s>` (within `can_read`; `gaia
+   context get`/`show` read the workspace shape, not these contracts), then
    `gaia context show` or `gaia context query` for wider reads.
 3. Run the smallest authoritative read-only CLI query for the surfaced domain.
    Use native output/filter flags and one command per call.

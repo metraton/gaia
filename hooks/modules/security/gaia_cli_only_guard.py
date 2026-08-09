@@ -479,6 +479,17 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("query",),
     ("context", "show"),
     ("context", "get"),
+    # `get-contract` is the ONLY verb that can read a project-context
+    # contract row (project_context_contracts, the same names an agent's
+    # can_read/can_write kernel menu carries) -- a DIFFERENT namespace from
+    # `show`/`get`'s workspace-shape --section. Verified read-only by
+    # following what `bin/cli/context.py`'s `_cmd_get_contract` calls: two
+    # SELECTs against `project_context_contracts` and nothing else -- no
+    # INSERT/UPDATE/DELETE, no commit() reachable. Its own docstring states
+    # the same: "Never mutates project_context_contracts -- the only write
+    # path for that table is `move-contracts` (re-keying)", which stays in
+    # EXPLICITLY_DENIED_PHRASES below, untouched by this entry.
+    ("context", "get-contract"),
     ("workspace", "current"),
     ("workspace", "info"),
     ("evidence", "show"),

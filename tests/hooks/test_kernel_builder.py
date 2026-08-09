@@ -160,7 +160,8 @@ def test_kernel_renders_plan_task_binding_and_acceptance(tmp_path):
 def test_cli_block_base_lines_are_verbatim():
     block = build_cli_block()
     assert block.splitlines()[0] == "# Your CLI"
-    assert "  gaia context get --section <s>   # contexto de proyecto, a demanda" in block
+    assert "  gaia context get --section <s>   # forma del workspace (apps/services/stack/git/...), a demanda" in block
+    assert "  gaia context get-contract --section <s>   # contratos de contexto (project_identity, stack, ...) -- namespace de can_read/can_write" in block
     assert "  gaia memory search '<término>'   # memoria curada y episodios" in block
     assert "  gaia memory list --type <t>      # t: project|user|feedback|atom|decision|negative" in block
     assert "  gaia memory show <slug>          # cuerpo completo de una fila curada" in block
@@ -183,6 +184,7 @@ def test_cli_block_announces_every_verb_required_by_the_contract():
     )
     required_substrings = [
         "gaia context get --section",
+        "gaia context get-contract --section",
         "gaia memory search",
         "gaia memory list --type",
         "gaia memory show",
@@ -200,7 +202,8 @@ def test_cli_block_announces_every_verb_required_by_the_contract():
 
     # And each announced verb is real -- --help must not error.
     for verb in (
-        ["context", "get"], ["memory", "search"], ["memory", "list"],
+        ["context", "get"], ["context", "get-contract"],
+        ["memory", "search"], ["memory", "list"],
         ["memory", "show"], ["memory", "get-relevant"], ["contract", "view"],
         ["contract", "list"], ["contract", "validate"], ["contract", "set"],
         ["contract", "add"], ["contract", "fill"], ["contract", "finalize"],
@@ -230,7 +233,16 @@ def test_cli_block_renders_frontmatter_extras(tmp_path):
 
 def test_cli_block_without_extras_is_just_the_base(tmp_path):
     block = build_cli_block("no-such-agent", agents_dir=tmp_path)
-    assert len(block.splitlines()) == 11  # heading + blank + 9 base lines
+    assert len(block.splitlines()) == 12  # heading + blank + 10 base lines
+
+
+def test_cli_block_workspace_line_points_at_get_contract_not_get():
+    """The workspace-scoped can_read hint must name the verb that actually
+    reaches project_context_contracts (get-contract), never `get` (which
+    resolves --section against the workspace shape and never reaches it)."""
+    block = build_cli_block(workspace=WORKSPACE)
+    assert f"gaia context get-contract --section <s> --workspace {WORKSPACE}" in block
+    assert f"gaia context get --section <s> --workspace {WORKSPACE}" not in block
 
 
 def _seed_memory_row(con, *, name, type_="user", audience="executor",

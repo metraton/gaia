@@ -232,13 +232,17 @@ READ -- changes nothing. The orchestrator runs these itself.
   status         workspace status: agents, hooks, contracts.
   history        recent agent sessions.
   metrics        dashboard: tiers, commands, agents, anomalies.
-  context        show | get
+  context        show | get | get-contract
+                 `get-contract --section <s>` is the only verb that reads a
+                 project-context contract row (the names an agent's
+                 can_read/can_write kernel menu carries) -- a different
+                 namespace from `show`/`get`'s workspace-shape --section.
   workspace      current | info
   evidence       show | list
   schedule       list | show | status
   brief          show | list | deps | search | verify
   plan           show | list
-  task           list | gate list
+  task           list | show | gate list
   memory         search | show | list | stats | get-relevant | conflicts |
                  episode-show | story
   notifications  list | show

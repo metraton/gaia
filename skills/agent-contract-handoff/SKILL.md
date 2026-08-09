@@ -16,7 +16,9 @@ different thing -- a slice of project knowledge stored per workspace
 (`project_context_contracts`, seeded by `seed_contract_permissions.py`). It
 is NOT injected: the kernel's `can_read` / `can_write` lists (from
 `agent_contract_permissions`) name which of those slices the turn may pull
-on demand (`gaia context get --section <s>`) and which it may propose
+on demand (`gaia context get-contract --section <s>` -- the sibling `gaia
+context get --section` resolves the workspace shape, not this table) and
+which it may propose
 updates to via `update_contracts`. When a message says "contract" without
 qualifying it, ask which one it means before assuming.
 
@@ -45,7 +47,7 @@ The injected input is the dispatch kernel: `# Your Contract` (identity, goal,
 role/surface, `project`, `can_read`/`can_write`, and -- on a plan-task-bound
 turn -- the acceptance gates), `# Your CLI`, and `# What I know about you`.
 Project context is NOT preloaded and no surface routing arrives: pull the
-sections you need on demand (`gaia context get --section <s>`), within the
+sections you need on demand (`gaia context get-contract --section <s>`), within the
 `can_read` menu, before querying anything wider. Only sections in `can_write`
 may appear in `update_contracts`.
 

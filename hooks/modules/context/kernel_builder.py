@@ -65,8 +65,16 @@ _GOAL_INDENT = "  "
 # the turn can look up on its own: what it does not announce, for the turn
 # does not exist. Memory reads are open to any subagent regardless of role;
 # nothing here is orchestrator-only.
+#
+# Line 0 (`get`) and line 1 (`get-contract`) resolve --section against two
+# DIFFERENT namespaces -- the fixed workspace shape (apps/services/stack/
+# git/...) vs project_context_contracts.contract_name -- and can_read/
+# can_write (in `# Your Contract`) names the SECOND one. Do not collapse
+# them back into one line: that collapse is exactly the bug this pair fixes
+# (see bin/cli/context.py's module docstring).
 _CLI_BASE_LINES = (
-    "  gaia context get --section <s>   # contexto de proyecto, a demanda",
+    "  gaia context get --section <s>   # forma del workspace (apps/services/stack/git/...), a demanda",
+    "  gaia context get-contract --section <s>   # contratos de contexto (project_identity, stack, ...) -- namespace de can_read/can_write",
     "  gaia memory search '<término>'   # memoria curada y episodios",
     "  gaia memory list --type <t>      # t: project|user|feedback|atom|decision|negative",
     "  gaia memory show <slug>          # cuerpo completo de una fila curada",
@@ -77,15 +85,18 @@ _CLI_BASE_LINES = (
     "  gaia --help                      # todo lo demás",
 )
 
-# Rendered right after the first base line when the dispatch workspace is
-# known: the workspace-scoped form of `gaia context get`. NOTE deliberately
-# --workspace, not --project: the CLI has no --project flag -- sections live
-# per WORKSPACE in project_context_contracts, the default workspace resolves
-# from the caller's current directory (gaia.project.current()), and projects
-# are entries inside the workspace's project_identity section. can_read (in
-# # Your Contract) is the menu of sections the turn may pull.
+# Rendered right after the get-contract base line when the dispatch workspace
+# is known: the workspace-scoped, concrete form of `gaia context get-contract`
+# -- the actual command that reaches can_read/can_write, not `get` (which
+# never resolves a contract name; see the base-lines comment above). NOTE
+# deliberately --workspace, not --project: the CLI has no --project flag --
+# contracts live per WORKSPACE in project_context_contracts, the default
+# workspace resolves from the caller's current directory
+# (gaia.project.current()), and projects are entries inside the workspace's
+# project_identity contract. can_read (in # Your Contract) is the menu of
+# contract names the turn may pull with this exact command.
 _CLI_WORKSPACE_LINE = (
-    "  gaia context get --section <s> --workspace {workspace}"
+    "  gaia context get-contract --section <s> --workspace {workspace}"
     "   # tus secciones legibles: can_read"
 )
 
@@ -279,14 +290,14 @@ def build_cli_block(
     """Render ``# Your CLI``: the base lines plus any per-role extras.
 
     When ``workspace`` is known (the row's own column), the workspace-scoped
-    context example is rendered concrete right after the generic one -- the
-    REAL syntax for scoping a pull, since the CLI has no ``--project`` flag
-    (see ``_CLI_WORKSPACE_LINE``).
+    ``get-contract`` example is rendered concrete right after the generic
+    ``get``/``get-contract`` pair -- the REAL syntax for scoping a pull,
+    since the CLI has no ``--project`` flag (see ``_CLI_WORKSPACE_LINE``).
     """
-    lines = [CLI_HEADING, "", _CLI_BASE_LINES[0]]
+    lines = [CLI_HEADING, "", _CLI_BASE_LINES[0], _CLI_BASE_LINES[1]]
     if workspace:
         lines.append(_CLI_WORKSPACE_LINE.format(workspace=workspace))
-    lines.extend(_CLI_BASE_LINES[1:])
+    lines.extend(_CLI_BASE_LINES[2:])
     lines.extend(_agent_cli_extras(agent_name, agents_dir))
     return "\n".join(lines)
 

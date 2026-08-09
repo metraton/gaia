@@ -1,12 +1,35 @@
 """
 gaia context -- Display and refresh project context.
 
+Two DIFFERENT things are both called "a section" in this file, and confusing
+them is the single most common mistake made with this command group:
+
+  * The WORKSPACE SHAPE -- the fixed keys `get_context()` returns:
+    identity/stack/environment/git/workspace{apps,services,features,...}.
+    `show` and `get` resolve `--section` against THIS shape.
+  * A PROJECT-CONTEXT CONTRACT -- a row keyed (workspace, contract_name) in
+    the `project_context_contracts` table (project_identity, stack,
+    infrastructure, git, environment, ...). These are the exact names that
+    appear in an agent's `can_read`/`can_write` kernel menu. `get-contract`
+    resolves `--section` against THIS table -- `show`/`get` never reach it.
+
+  Note the trap: the workspace shape ALSO has a key named `stack`, but it is
+  always `{}` (a scanner placeholder) -- the real `stack` PAYLOAD lives only
+  in the project-context contract of the same name, reachable through
+  `get-contract`, never through `get`/`show`.
+
 Subcommands:
   gaia context show [--section SECTION] [--json]   Display context from SQLite substrate (tabular)
+                                                     -- resolves --section against the WORKSPACE SHAPE
   gaia context scan [--dry-run] [--json]            Run project scanner (legacy)
   gaia context get  [--workspace W] [--section S]   Emit canonical workspace shape from substrate
                     [--json] [--text]                (--include-missing also emits soft-deleted rows)
-                    [--include-missing]
+                    [--include-missing]              -- resolves --section against the WORKSPACE SHAPE,
+                                                        NOT project-context contract names
+  gaia context get-contract [--workspace W]         Read ONE project-context contract by name (read-only) --
+                    --section S [--json] [--text]     resolves --section against project_context_contracts.
+                                                        contract_name, the SAME names as an agent's
+                                                        can_read/can_write kernel menu
   gaia context dump [--workspace W]                 (deprecated) alias for `gaia context get`
   gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
   gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
@@ -111,6 +134,10 @@ def _cmd_show(args) -> int:
 
     Reads from the SQLite substrate (single source of truth).
     Presentation: tabular (human-readable). For raw JSON use `gaia context get`.
+
+    --section here resolves against the WORKSPACE SHAPE, exactly like `get`
+    (see the module docstring). For a project-context contract by its
+    `can_read`/`can_write` name, use `gaia context get-contract`.
     """
     try:
         from gaia.store.provider import get_context
@@ -138,7 +165,13 @@ def _cmd_show(args) -> int:
         workspace_keys = set((ctx.get("workspace") or {}).keys())
         all_keys = top_keys | workspace_keys
         if section not in all_keys:
-            msg = f"Section '{section}' not found. Available: {', '.join(sorted(all_keys))}"
+            msg = (
+                f"Section '{section}' not found in the workspace shape. "
+                f"Available: {', '.join(sorted(all_keys))}. If '{section}' is "
+                f"a project-context contract name (e.g. from your can_read/"
+                f"can_write kernel menu), use "
+                f"`gaia context get-contract --section {section}` instead."
+            )
             if getattr(args, "json", False):
                 print(json.dumps({"error": msg}))
             else:
@@ -253,6 +286,11 @@ def _cmd_get(args) -> int:
     demotes a project that vanished from disk instead of dropping it, so the
     "existed but no longer on disk" record stays consultable. Without the flag
     that record was written but unreadable through the CLI.
+
+    --section here resolves against the WORKSPACE SHAPE (apps/services/stack/
+    git/environment/...), NOT a project-context contract name. To read a
+    contract by its `can_read`/`can_write` name (project_identity, stack,
+    infrastructure, ...), use `gaia context get-contract --section <name>`.
     """
     try:
         from gaia.store.provider import get_context
@@ -283,8 +321,12 @@ def _cmd_get(args) -> int:
         all_keys = top_keys | workspace_keys
         if section not in all_keys:
             print(
-                f"gaia context get: section '{section}' not found. "
-                f"Available: {', '.join(sorted(all_keys))}",
+                f"gaia context get: section '{section}' not found in the "
+                f"workspace shape. Available: {', '.join(sorted(all_keys))}. "
+                f"If '{section}' is a project-context contract name (e.g. from "
+                f"your can_read/can_write kernel menu), use "
+                f"`gaia context get-contract --section {section}` instead -- "
+                f"`get` never resolves against contract names.",
                 file=sys.stderr,
             )
             return 1
@@ -315,6 +357,100 @@ def _cmd_dump(args) -> int:
         file=sys.stderr,
     )
     return _cmd_get(args)
+
+
+def _cmd_get_contract(args) -> int:
+    """Handle `gaia context get-contract --section S [--workspace W] [--json]
+    [--text]`.
+
+    Read-only. Resolves --section against `project_context_contracts.
+    contract_name` -- the SAME names an agent's kernel names in its
+    `can_read`/`can_write` menu (project_identity, stack, infrastructure,
+    git, ...). This is a DIFFERENT namespace from `get`/`show`'s --section,
+    which resolves against the fixed workspace shape (apps/services/stack/
+    git/environment/...); see the module docstring for the distinction that
+    trips this up in practice. Never mutates project_context_contracts --
+    the only write path for that table is `move-contracts` (re-keying).
+
+    Workspace defaults to `gaia.project.current()` (the caller's cwd); pass
+    --workspace explicitly to name it, so it is always clear which
+    workspace/project the returned contract belongs to.
+    """
+    section = getattr(args, "section", None)
+    if not section:
+        print("gaia context get-contract: --section is required", file=sys.stderr)
+        return 2
+
+    try:
+        from gaia.store.writer import _connect as _store_connect
+        from gaia.project import current as _project_current
+    except Exception as exc:  # pragma: no cover -- import wiring failure
+        print(f"gaia context get-contract: failed to import store: {exc}", file=sys.stderr)
+        return 1
+
+    workspace = getattr(args, "workspace", None) or _project_current()
+    use_text = getattr(args, "text", False)
+
+    con = _store_connect()
+    try:
+        row = con.execute(
+            "SELECT contract_name, payload, metadata, updated_at "
+            "FROM project_context_contracts WHERE workspace = ? AND contract_name = ?",
+            (workspace, section),
+        ).fetchone()
+        available = [
+            r[0]
+            for r in con.execute(
+                "SELECT DISTINCT contract_name FROM project_context_contracts "
+                "WHERE workspace = ? ORDER BY contract_name",
+                (workspace,),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+
+    if row is None:
+        avail_txt = ", ".join(available) if available else "(none for this workspace)"
+        print(
+            f"gaia context get-contract: no contract named '{section}' for "
+            f"workspace '{workspace}'. This resolves project_context_contracts."
+            f"contract_name (the same names as your can_read/can_write kernel "
+            f"menu) -- it is a DIFFERENT namespace from the workspace-shape "
+            f"sections `gaia context get`/`show` understand (apps/services/"
+            f"stack/git/...). Available contract names for '{workspace}': "
+            f"{avail_txt}",
+            file=sys.stderr,
+        )
+        return 1
+
+    contract_name, payload_str, metadata_str, updated_at = row
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    try:
+        metadata = json.loads(metadata_str) if metadata_str else None
+    except (json.JSONDecodeError, TypeError):
+        metadata = metadata_str
+
+    if use_text:
+        print(f"workspace     : {workspace}")
+        print(f"contract_name : {contract_name}")
+        print(f"updated_at    : {updated_at or '(unknown)'}")
+        print()
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    result = {
+        "workspace": workspace,
+        "contract_name": contract_name,
+        "payload": payload,
+        "updated_at": updated_at,
+    }
+    if metadata is not None:
+        result["metadata"] = metadata
+    print(json.dumps(result, indent=2, default=str))
+    return 0
 
 
 def _cmd_query(args) -> int:
@@ -799,7 +935,9 @@ def register(subparsers) -> None:
         "--section",
         metavar="SECTION",
         default=None,
-        help="Show a specific section of the workspace context",
+        help="Show a specific section of the WORKSPACE SHAPE (apps/services/"
+             "stack/git/...) -- NOT a project-context contract name; for "
+             "that use `gaia context get-contract`",
     )
     show_parser.add_argument(
         "--json",
@@ -837,7 +975,10 @@ def register(subparsers) -> None:
             "--section",
             metavar="SECTION",
             default=None,
-            help="Filter output to a single top-level or workspace section",
+            help="Filter output to a single WORKSPACE-SHAPE section "
+                 "(top-level or nested under workspace.*) -- NOT a "
+                 "project-context contract name; for that use "
+                 "`gaia context get-contract`",
         )
         p.add_argument(
             "--json",
@@ -872,6 +1013,46 @@ def register(subparsers) -> None:
         help="(deprecated) Use `gaia context get` instead",
     )
     _add_get_args(dump_parser)
+
+    # gaia context get-contract  (read ONE project-context contract by name)
+    # Read-only counterpart to `move-contracts`: resolves --section against
+    # project_context_contracts.contract_name, the same names an agent's
+    # can_read/can_write kernel menu lists. `get`/`show` never reach this
+    # table -- see the module docstring for the two-namespaces trap.
+    gc_parser = ctx_subparsers.add_parser(
+        "get-contract",
+        help="Read ONE project-context contract by name (project_identity, "
+             "stack, ...) -- the can_read/can_write namespace, not the "
+             "workspace-shape `get`/`show` use",
+    )
+    gc_parser.add_argument(
+        "--workspace",
+        metavar="W",
+        default=None,
+        help="Workspace identity owning the contract (default: "
+             "gaia.project.current())",
+    )
+    gc_parser.add_argument(
+        "--section",
+        metavar="CONTRACT_NAME",
+        required=True,
+        help="project_context_contracts.contract_name to read -- the exact "
+             "name as it appears in can_read/can_write (project_identity, "
+             "stack, infrastructure, git, environment, ...)",
+    )
+    gc_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit JSON (default)",
+    )
+    gc_parser.add_argument(
+        "--text",
+        action="store_true",
+        default=False,
+        help="Emit human-readable presentation (workspace/contract_name/"
+             "updated_at header, then the payload)",
+    )
 
     # gaia context query "<SQL>"
     query_parser = ctx_subparsers.add_parser(
@@ -1013,6 +1194,8 @@ def cmd_context(args) -> int:
         return _cmd_get(args)
     if context_cmd == "dump":
         return _cmd_dump(args)
+    if context_cmd == "get-contract":
+        return _cmd_get_contract(args)
     if context_cmd == "query":
         return _cmd_query(args)
     if context_cmd == "wipe":
@@ -1031,16 +1214,25 @@ def cmd_context(args) -> int:
 
     tmp_parser = argparse.ArgumentParser(prog="gaia context")
     tmp_sub = tmp_parser.add_subparsers(dest="context_cmd", metavar="<action>")
-    show_p = tmp_sub.add_parser("show", help="Display workspace context (tabular, from substrate)")
+    show_p = tmp_sub.add_parser("show", help="Display workspace SHAPE (tabular, from substrate)")
     show_p.add_argument("--section", metavar="SECTION")
     tmp_sub.add_parser("scan", help="Run project scanner").add_argument("--dry-run", action="store_true")
-    get_p = tmp_sub.add_parser("get", help="Emit canonical workspace shape as JSON (from substrate)")
+    get_p = tmp_sub.add_parser("get", help="Emit canonical workspace SHAPE as JSON (from substrate)")
     get_p.add_argument("--workspace", metavar="W")
     get_p.add_argument("--section", metavar="SECTION")
     get_p.add_argument("--json", action="store_true")
     get_p.add_argument("--text", action="store_true")
     get_p.add_argument("--include-missing", dest="include_missing", action="store_true")
     tmp_sub.add_parser("dump", help="(deprecated) alias for `get`").add_argument("--workspace", metavar="W")
+    gc_p = tmp_sub.add_parser(
+        "get-contract",
+        help="Read ONE project-context CONTRACT by name -- the can_read/"
+             "can_write namespace, not the workspace shape `get`/`show` use",
+    )
+    gc_p.add_argument("--workspace", metavar="W")
+    gc_p.add_argument("--section", metavar="CONTRACT_NAME", required=True)
+    gc_p.add_argument("--json", action="store_true")
+    gc_p.add_argument("--text", action="store_true")
     tmp_sub.add_parser("query", help="Read-only SELECT").add_argument("sql", metavar="SQL")
     wipe_p = tmp_sub.add_parser("wipe", help="(DESTRUCTIVE) Delete all rows for a workspace (CASCADE)")
     wipe_p.add_argument("--workspace", metavar="W", required=True)

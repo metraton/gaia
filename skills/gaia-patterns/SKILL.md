@@ -25,7 +25,7 @@ Construction patterns for building Gaia components. Every component type follows
    "# Your Contract" (incl. project + can_read/can_write menu),
    "# Your CLI", "# What I know about you". Project context is NOT
    preloaded -- the agent pulls sections on demand via
-   `gaia context get --section <s>` within its can_read menu.
+   `gaia context get-contract --section <s>` within its can_read menu.
    |
 5. Agent checkpoints/finalizes the DB-backed agent_contract_handoff
    |
@@ -69,7 +69,7 @@ skills:
 
 **Identity** (1-2 paragraphs): domain, output format. **Scope**: CAN DO / CANNOT DO -> DELEGATE table. **Domain Errors**: agent-specific errors only.
 
-Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # What I know about you, rendered from the born row) + orchestrator request. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand via `gaia context get --section <s>`.
+Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # What I know about you, rendered from the born row) + orchestrator request. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand via `gaia context get-contract --section <s>` (`gaia context get --section` resolves the workspace shape instead, and never reaches `project_context_contracts`).
 
 ## Routing Patterns
 
