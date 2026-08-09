@@ -4407,8 +4407,28 @@ class ClaudeCodeAdapter(HookAdapter):
             )
             agent_id_col = minted_agent_id or task_info.get("agent") or "unknown"
 
-            salvaged = dict(envelope)
-            agent_status = salvaged.get("agent_status")
+            # Cleaned on the way in, exactly as the T9 backstop cleans its own
+            # rescued envelope and the CLI cleans an agent's write: a salvaged
+            # draft is the least validated input in the system -- a partial
+            # write the token budget interrupted -- and it used to be persisted
+            # verbatim. Cleaning cannot cost the salvage; the helper falls back
+            # to the envelope as it arrived rather than raise.
+            from modules.agents.handoff_persister import clean_rescue_envelope
+
+            cleaning_log: list = []
+            salvaged = dict(clean_rescue_envelope(envelope, log=cleaning_log))
+            if cleaning_log:
+                logger.debug(
+                    "T11 salvage: cleaned draft %s: %s",
+                    draft_id, "; ".join(str(line) for line in cleaning_log),
+                )
+            # Read from the RAW draft, not the cleaned copy -- the same split
+            # the T9 backstop makes, and for the same reason: canonicalizing the
+            # state here would change what a rescued turn is recorded as, which
+            # is a policy decision separate from cleaning the envelope. This
+            # lane has no COMPLETE downgrade of its own, so it is the more
+            # consequential of the two places to leave it unchanged.
+            agent_status = envelope.get("agent_status")
             agent_state = (
                 agent_status.get("agent_state")
                 if isinstance(agent_status, dict)

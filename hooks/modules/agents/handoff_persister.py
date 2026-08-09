@@ -86,6 +86,7 @@ the harness session id and dispatch binding onto the row.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +394,76 @@ def dispatch_identity_candidates(minted_agent_id, task_info: dict) -> list:
         seen.add(text)
         candidates.append(text)
     return candidates
+
+
+def clean_rescue_envelope(envelope, *, log: Optional[list] = None):
+    """Sanitize and canonicalize an envelope a RESCUE lane is about to persist.
+
+    The two rescue lanes -- this module's T9 backstop and the adapter's T11
+    truncation salvage -- serialized whatever they found (an on-disk draft, or
+    the parsed fence) straight to ``raw_handoff_json``. Only the CLI write path
+    cleaned before persisting, so a fifth of the rows landed carrying undeclared
+    keys and uncanonical enum spellings that every downstream reader then had to
+    reconcile. This is the shared cleaning both lanes apply, so the rescue route
+    persists what the CLI route persists.
+
+    Two properties make it safe to run on the rescue path specifically, and both
+    are load-bearing rather than defensive habit:
+
+    * **The rescue must survive the cleaning.** These lanes run only when
+      something already went wrong, on input nobody validated -- a half-written
+      draft, a fence parsed out of a truncated turn. A raise here would abort the
+      capture and lose the row entirely, which is strictly worse than persisting
+      it dirty. So every failure falls back to the envelope as it arrived: a
+      clean row when cleaning works, a dirty row when it cannot, never no row.
+    * **The turn stays findable.** ``sanitize_envelope`` gates each declared key
+      on its TYPE, not on its value's format, so a malformed-but-string
+      ``agent_id`` (the observed population -- ``execution-approved``,
+      ``a_placeholder``, sixteen zeros) passes through untouched, and
+      ``canonicalize_envelope`` never reads the field at all. A NON-string one
+      would be dropped as an unrepairable type, converting a bad value into a
+      missing field and erasing the only handle back to the turn; that case is
+      restored here in its string form. The value stays wrong, and honestly so
+      -- it is preserved as evidence of what the turn actually wrote, not
+      repaired into a conforming identity this layer has no way to know.
+
+    Args:
+        envelope: the envelope about to be serialized. A non-dict is returned
+            unchanged -- the caller owns what an unusable input means.
+        log: optional list collecting one line per change, for a caller that
+            reports them.
+
+    Returns:
+        The cleaned envelope, or ``envelope`` itself when cleaning could not be
+        applied. Never raises.
+    """
+    if not isinstance(envelope, dict):
+        return envelope
+    try:
+        from gaia.contract.validator import (
+            canonicalize_envelope,
+            sanitize_envelope,
+        )
+
+        entries = log if log is not None else []
+        cleaned = sanitize_envelope(envelope, removals=entries)
+        cleaned = canonicalize_envelope(cleaned, changes=entries)
+
+        raw_status = envelope.get("agent_status")
+        clean_status = cleaned.get("agent_status")
+        if isinstance(raw_status, dict) and isinstance(clean_status, dict):
+            if "agent_id" in raw_status and "agent_id" not in clean_status:
+                clean_status["agent_id"] = str(raw_status["agent_id"])
+                entries.append(
+                    "restored agent_status.agent_id as a string: the row must "
+                    "stay traceable to the turn that wrote it"
+                )
+        return cleaned
+    except Exception as exc:  # noqa: BLE001 -- see the docstring's first property
+        logger.debug(
+            "rescue envelope cleaning failed (non-fatal, persisting raw): %s", exc
+        )
+        return envelope
 
 
 def _extract_brief_id(envelope: dict):
@@ -728,9 +799,27 @@ def persist_handoff(
             reaping = existing_state == "DISPATCHED"
 
             # --- 3. Build the degraded / auto-captured row -------------------
+            # Cleaned BEFORE the provenance flags are added, not after: the
+            # flags below are themselves declared envelope keys, and cleaning
+            # on top of them would only re-inspect what this function just
+            # wrote. What needs cleaning is the part nobody validated -- the
+            # draft or the parsed fence this lane found.
+            cleaning_log: list = []
             if isinstance(source_envelope, dict):
-                envelope = dict(source_envelope)
-                agent_status = envelope.get("agent_status")
+                envelope = dict(
+                    clean_rescue_envelope(source_envelope, log=cleaning_log)
+                )
+                # The VERDICT is read from the RAW envelope, deliberately, and
+                # alone among everything this lane persists. Reading it from the
+                # cleaned copy would let a fence that spelled its state
+                # uncanonically ("complete") canonicalize into COMPLETE instead
+                # of falling to IN_PROGRESS -- which is not envelope hygiene but
+                # a change to what a rescued turn is RECORDED AS, and it widens
+                # the intake of the COMPLETE-carrying-a-cut-reason population
+                # that is currently under case-by-case review. Cleaning the
+                # envelope and re-deciding a verdict are two different changes;
+                # this one is only the first.
+                agent_status = source_envelope.get("agent_status")
                 agent_state = (
                     agent_status.get("agent_state")
                     if isinstance(agent_status, dict)
@@ -783,8 +872,20 @@ def persist_handoff(
                 CUT_REASON_REAPED if reaping else CUT_REASON_BACKSTOP_CAPTURE
             )
 
+            if cleaning_log:
+                logger.debug(
+                    "T9 backstop: cleaned rescued envelope for contract_id=%s: %s",
+                    contract_id, "; ".join(str(line) for line in cleaning_log),
+                )
+
             raw_handoff_json = _json.dumps(envelope)
-            brief_id = _extract_brief_id(envelope)
+            # Read from the RAW envelope, never the cleaned one. A top-level
+            # `brief_id` is not a declared envelope key, so the sanitize above
+            # legitimately drops it from what gets persisted -- but the brief it
+            # names is the row's link to the work it belongs to, and that link is
+            # carried by the row's own column, not by the JSON. Extracting after
+            # cleaning would silently unlink every rescued row that had one.
+            brief_id = _extract_brief_id(source_envelope)
 
             outcome = _writer.finalize_agent_contract_handoff(
                 contract_id=contract_id,
