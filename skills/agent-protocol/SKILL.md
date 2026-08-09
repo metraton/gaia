@@ -38,8 +38,8 @@ the part of the turn that knows least, and both are read downstream as establish
 
 Commits, files and branches need no signature; pushes, PRs, applies and every other exit into the
 world go into one ordered COMMAND_SET under a single signature, written out exactly in advance. Asking
-per command makes the user a keystroke-approver whose consent is no longer informed; a set spanning
-two goals fails halfway and leaves a terminal grant, a dead remainder and a half-applied change.
+per command makes the user a keystroke-approver whose consent is no longer informed, and a
+failed COMMAND_SET is terminal/frozen -- a set spanning two goals dies halfway, remainder and all.
 
 ## 5. The record is written in flight, at the cadence of what would hurt to lose
 
@@ -72,16 +72,17 @@ unreset, while a block is routed to whoever owns the obstacle, with none of what
 
 ## 9. The producer does not verify its own production
 
-Evidence is the command's output, not your assertion about it: `VERIFICATION_RESULT` requires a `pass`
-on a `COMPLETE` and cannot tell a fabricated one from a real one. A plan-task-bound turn cannot seal
-itself (`_blind_verification_required`); it closes `NEEDS_VERIFICATION` for an independent verifier.
+Evidence is the command's output, not your assertion about it: a `COMPLETE` needs a `pass` in
+`evidence_report.verification.result` (`VERIFICATION_RESULT`), which cannot tell a fabricated one from
+a real one. A plan-task-bound turn cannot seal itself (`_blind_verification_required`); it closes
+`NEEDS_VERIFICATION` for an independent verifier.
 
 ## 10. Every turn closes by declaring a state
 
 `IN_PROGRESS` (work can continue), `BLOCKED`, `NEEDS_INPUT`, `APPROVAL_REQUEST`, `NEEDS_VERIFICATION`,
 `COMPLETE`; only `COMPLETE` is terminal and anything outside the six is rejected (`PLAN_STATUS`). Set
-the closing state, then `gaia contract finalize --draft-id <contract_id>` last -- it refuses
-`IN_PROGRESS` (`cmd_finalize`).
+`agent_status.agent_state` to the closing value, then `gaia contract finalize --draft-id <contract_id>`
+last -- it refuses `IN_PROGRESS` (`cmd_finalize`).
 
 ## 11. Degrading honestly costs less than faking
 
@@ -94,6 +95,5 @@ field is worth nothing, because a reader who catches one cannot bound how many o
 
 - `reference.md` -- the argument behind each principle, keyed by number, plus the state machines, the kernel, storage and recovery, what the gate rejects, and the edge cases.
 - `agent-contract-handoff` -- envelope fields and rules; `examples.md` -- filled envelopes, state by state.
-- `investigation` -- evidence and mutation forecasting; `security-tiers` then `command-execution` -- one operation.
-- `subagent-request-approval` (payload `agent-approval-protocol`) then `execution` -- a COMMAND_SET.
+- `investigation` -- evidence and mutation forecasting; then `security-tiers` -> `command-execution` for one operation, or `subagent-request-approval` (payload `agent-approval-protocol`) -> `execution` for a COMMAND_SET.
 - Orchestrator-side: `orchestrator-present-approval`, `pending-approvals`, `agent-response`.

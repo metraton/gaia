@@ -69,16 +69,25 @@ def test_reflection_covers_candidate_skip_improvement_and_consent() -> None:
 def test_operator_is_exact_best_effort_materializer() -> None:
     """"best-effort by default" was retired from gaia-operator.md: the
     operator's OWN identity is now exclusively the "exact" half (apply the
-    orchestrator's instructions with no interpretation); "best-effort" batch
-    semantics moved to the technique-owning skill it materializes through
-    (`memory`), which is where this now checks for it.
+    orchestrator's instructions with no interpretation); batch semantics
+    belong to the technique-owning skill it materializes through (`memory`).
+
+    The adjective "best-effort" is deliberately NOT asserted. It has never
+    appeared in skills/memory/SKILL.md in any revision -- it lives in
+    skills/memory/examples.md -- so pinning it here asserted a word that was
+    never in the file under test, and pinned a word rather than a property:
+    the prose could not be reworded without breaking a test whose subject was
+    untouched. What must hold is the two-mode contract the operator
+    materializes -- an independent batch degrades per operation, a checkpoint
+    does not degrade at all -- so that is what is asserted.
     """
     operator = _flat(_read("agents/gaia-operator.md"))
     memory = _flat(_read("skills/memory/SKILL.md"))
     assert "exact verbs, scopes, values, ordering, and verification criteria" in operator
     assert "one observed result per operation" in operator
     assert "apply those instructions with no interpretation" in operator
-    assert "best-effort" in memory
+    assert "Report partial batch failures per operation" in memory
+    assert "is one atomic operation and remains all-or-nothing" in memory
     assert "NEEDS_INPUT" in operator
     assert "infer the domain" not in operator
     assert "not\na batch" not in operator
