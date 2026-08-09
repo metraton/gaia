@@ -891,7 +891,7 @@ class TestAdaptSubagentStopFencelessPlanStatusReachesEpisode:
         import sys as _sys
         import types as _types
 
-        def _fake_write_episode(metrics, anomalies=None, commands_executed=None):
+        def _fake_write_episode(metrics, anomalies=None, commands_executed=None, **_kw):
             captured["metrics"] = metrics
             return "ep_test"
 

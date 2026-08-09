@@ -298,7 +298,7 @@ class TestDefectCaptureIsUnrequested:
 
         captured = {}
 
-        def _fake_write_episode(metrics, anomalies=None, commands_executed=None):
+        def _fake_write_episode(metrics, anomalies=None, commands_executed=None, **_kw):
             captured["anomalies"] = list(anomalies or [])
             return "ep_test"
 
@@ -428,7 +428,7 @@ class TestAdapterCapturesTheDefectOnTheProductionRoute:
             },
         )
 
-        def _fake_write_episode(metrics, anomalies=None, commands_executed=None):
+        def _fake_write_episode(metrics, anomalies=None, commands_executed=None, **_kw):
             captured["anomalies"] = list(anomalies or [])
             return "ep_test"
 

@@ -3392,6 +3392,55 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
                 _gate = ContractGateVerdict(False, "", (), _gate_mode)
 
+            # ----------------------------------------------------------
+            # Rejection circuit breaker.
+            #
+            # A rejection is handed back to the SUBAGENT, which repairs and
+            # stops again -- and nothing used to count how often that had
+            # already happened this turn (measured: eleven passes, 361k
+            # tokens, a byte-identical message every time). Counting HERE, at
+            # the one place the verdict is known, is what lets the rejection
+            # message carry an attempt number and lets the third rejection end
+            # the turn instead of extending the loop.
+            #
+            # Isolated exactly like the relay below: the breaker may enrich or
+            # terminate a rejection, but a failure inside it must never erase
+            # one, so `_circuit = None` (no ceiling, gate unchanged) is the
+            # degraded outcome and it is reported rather than swallowed.
+            # ----------------------------------------------------------
+            _circuit = None
+            _circuit_key = None
+            _circuit_unkeyed = False
+            if _gate.rejected:
+                try:
+                    from modules.agents import rejection_circuit
+
+                    _circuit_key = rejection_circuit.counter_key(session_id, task_info)
+                    if _circuit_key:
+                        _circuit = rejection_circuit.record_rejection(_circuit_key)
+                    else:
+                        # No per-dispatch identity -> no key that belongs to this
+                        # turn alone. Cutting on a shared key ends turns that
+                        # never failed, so the breaker stands down and says so.
+                        _circuit_unkeyed = True
+                        logger.warning(
+                            "Rejection circuit: no harness agent_id for %s "
+                            "(session=%s), so this turn cannot be counted "
+                            "separately from any other; the ceiling is NOT in "
+                            "force for it.",
+                            agent_type, session_id,
+                        )
+                except Exception as _circuit_exc:
+                    logger.warning(
+                        "Rejection circuit failed for %s (non-fatal); the retry "
+                        "ceiling is NOT in force this turn: %s",
+                        agent_type, _circuit_exc,
+                    )
+            # Resolved here, not at the verdict below: the episode write and the
+            # anomaly append both happen earlier in this method and both have to
+            # know the turn was cut.
+            _circuit_tripped = bool(_circuit is not None and _circuit.tripped)
+
             # Preserve a pending approval this turn's own record still
             # references via APPROVAL_REQUEST. Cleanup must not destroy an
             # approval the user is being asked to act on -- and "this turn's
@@ -3609,6 +3658,32 @@ class ClaudeCodeAdapter(HookAdapter):
                         ),
                     })
 
+            # A tripped breaker is recorded HERE, ahead of write_episode, so it
+            # reaches the persisted episode_anomalies floor an operator queries
+            # with `gaia defects` -- the advisory appends further down only ever
+            # reach the returned dict. A breaker that could not count is
+            # recorded too: a turn running without the ceiling must not look
+            # like a turn that simply never reached it.
+            if _circuit is not None or _circuit_unkeyed:
+                try:
+                    from modules.agents import rejection_circuit
+
+                    if _circuit_unkeyed:
+                        anomalies.append(rejection_circuit.no_key_anomaly(agent_type))
+                    elif _circuit.tripped:
+                        anomalies.append(
+                            rejection_circuit.circuit_anomaly(agent_type, _circuit)
+                        )
+                    elif _circuit.error:
+                        anomalies.append(
+                            rejection_circuit.counter_error_anomaly(agent_type, _circuit)
+                        )
+                except Exception as _circuit_anom_exc:
+                    logger.warning(
+                        "Rejection circuit anomaly not recorded for %s: %s",
+                        agent_type, _circuit_anom_exc,
+                    )
+
             # ----------------------------------------------------------
             # Compliance score (T011)
             # Computed after audit so anomalies are available for
@@ -3677,10 +3752,15 @@ class ClaudeCodeAdapter(HookAdapter):
             workflow_metrics["anomalies_detected"] = len(anomalies)
             workflow_metrics["anomaly_types"] = [a.get("type", "") for a in anomalies]
 
+            # A cut turn is a failed turn everywhere it is recorded. The episode's
+            # own derivation reads plan_status -- what the turn CLAIMED about
+            # itself -- so a turn whose envelope says COMPLETE was stored as a
+            # 'success' on the very pass the breaker cut it.
             episode_id = write_episode(
                 workflow_metrics,
                 anomalies=anomalies if anomalies else None,
                 commands_executed=commands_executed,
+                outcome_override="failed" if _circuit_tripped else None,
             )
 
             # ----------------------------------------------------------
@@ -3711,9 +3791,10 @@ class ClaudeCodeAdapter(HookAdapter):
             # Wrapped in try/except per T4.2 spec -- DB failures must NOT
             # crash the hook.
             # ----------------------------------------------------------
+            _captured_contract_id = None
             try:
                 from modules.agents.handoff_persister import persist_handoff
-                persist_handoff(
+                _capture = persist_handoff(
                     parsed_contract=parsed_contract,
                     agent_output=agent_output,
                     task_info=task_info,
@@ -3726,6 +3807,8 @@ class ClaudeCodeAdapter(HookAdapter):
                     # unattributable contract.
                     plan_task_id=_bound_plan_task_id,
                 )
+                if isinstance(_capture, dict):
+                    _captured_contract_id = _capture.get("contract_id")
             except Exception as _handoff_exc:
                 logger.warning(
                     "M4: handoff persistence call failed (non-blocking): %s",
@@ -3748,13 +3831,12 @@ class ClaudeCodeAdapter(HookAdapter):
             except Exception:
                 pass  # Events are non-critical
 
-            contract_attempts = 0
-            if not response_contract.valid:
-                try:
-                    repair_data = response_contract.to_dict()
-                    contract_attempts = int(repair_data.get("repair_attempts", 0))
-                except Exception:
-                    contract_attempts = 0
+            # How many times THIS turn's contract has been rejected, from the
+            # breaker that actually counts them. This used to read a
+            # `repair_attempts` key off ResponseContractValidation -- an
+            # eleven-field dataclass that has no such field -- so it was 0 on
+            # every turn, including the eleven-rejection one.
+            contract_attempts = _circuit.attempt if _circuit is not None else 0
 
             # ----------------------------------------------------------
             # Option D: Cross-field validation for verbatim_outputs
@@ -3891,6 +3973,61 @@ class ClaudeCodeAdapter(HookAdapter):
             contract_rejected = _gate.rejected
             contract_rejection_reason = _gate.rejection_reason
 
+            # The trip. exit_code=2 is what invites the subagent to repair, so
+            # ending the loop means NOT raising the rejection flag -- the turn
+            # stops here instead of coming back for pass four.
+            #
+            # DEGRADED, NOT CERTIFIED: nothing below finalizes a row, promotes a
+            # state, or claims a verdict the turn did not earn. Ending a turn is
+            # not the same as passing it.
+            #
+            # Saying so in the returned dict is NOT sufficient, which is the
+            # correction this branch carries. The last-resort backstop records a
+            # fence-only turn's SELF-DECLARED agent_state, so an agent that
+            # emitted a COMPLETE envelope and never finalized its row leaves a
+            # row reading COMPLETE -- written on the FIRST pass, long before any
+            # cut. Ending the turn there froze that row as the final word while
+            # the return said the opposite. The demotion below reconciles it, and
+            # is safe because it can only reach a row carrying a cut mark: a row
+            # the agent finalized itself is unreachable from that statement.
+            if _circuit_tripped:
+                from modules.agents import rejection_circuit
+
+                contract_rejected = False
+                _degraded_reason = rejection_circuit.degraded_close_reason(
+                    _circuit, contract_rejection_reason,
+                )
+                logger.error(
+                    "Contract rejection circuit OPEN for %s after %d rejections "
+                    "(limit %d): closing the turn degraded. The contract is NOT "
+                    "complete and its row stays unfinalized.",
+                    agent_type, _circuit.attempt, _circuit.limit,
+                )
+                try:
+                    from gaia.store.writer import demote_uncertified_completion
+
+                    _demoted = demote_uncertified_completion(
+                        _captured_contract_id,
+                        db_path=Path(task_info["db_path"])
+                        if task_info.get("db_path") else None,
+                    )
+                    if _demoted.get("status") == "applied":
+                        logger.error(
+                            "Rejection circuit: demoted the uncertified COMPLETE "
+                            "row %s for %s -- the turn was cut, not completed.",
+                            _captured_contract_id, agent_type,
+                        )
+                except Exception as _demote_exc:
+                    # A cut that leaves a COMPLETE row standing is the failure
+                    # this branch exists to prevent, so it is reported loudly and
+                    # carried into the result rather than swallowed.
+                    _demoted = {"status": "error", "reason": str(_demote_exc)}
+                    logger.error(
+                        "Rejection circuit: could NOT reconcile the contract row "
+                        "for %s (%s); a row claiming COMPLETE may survive this "
+                        "cut.", agent_type, _demote_exc,
+                    )
+
             # stop_reason resolution (T10) and truncation salvage (T11) were
             # computed earlier, BEFORE the T9 backstop, so the salvage row wins
             # and the backstop stays passive. The values flow into result below.
@@ -3933,34 +4070,112 @@ class ClaudeCodeAdapter(HookAdapter):
                     agent_type, contract_rejection_reason.split("\n")[0],
                 )
 
+            # The degraded close, stated on the result so it cannot be mistaken
+            # for a clean one. `contract_complete: False` is asserted rather than
+            # left to be inferred from the ABSENCE of contract_rejected -- an
+            # absent key reads identically to a turn that was never rejected at
+            # all, and this turn was rejected until the loop was cut.
+            if _circuit_tripped:
+                result["status"] = "contract_circuit_open"
+                result["contract_circuit_open"] = True
+                result["contract_closed_degraded"] = True
+                result["contract_complete"] = False
+                result["contract_rejection_count"] = _circuit.attempt
+                result["contract_rejection_limit"] = _circuit.limit
+                result["contract_degraded_close_reason"] = _degraded_reason
+                result["contract_row_reconciled"] = _demoted.get("status")
+
+                # A degraded close exits 0, and on exit 0 the harness reads
+                # stdout JSON and sends stderr to the debug log where the model
+                # never sees it. So the notice travels by the two channels that
+                # ARE read: additionalContext reaches the model as a system
+                # reminder, systemMessage reaches the user. `decision: block` is
+                # deliberately NOT used -- blocking the stop is the retry loop
+                # this breaker exists to end.
+                _cut_notice = (
+                    f"El turno de {agent_type} fue CORTADO por el circuito de "
+                    f"rechazos tras {_circuit.attempt} rechazos de contrato "
+                    f"(limite {_circuit.limit}). El turno TERMINO DEGRADADO: no "
+                    "esta certificado, el contrato NO quedo completo y su fila "
+                    "persistida no fue finalizada. No trates su ultimo mensaje "
+                    "como un cierre valido, aunque declare COMPLETE."
+                )
+                result["systemMessage"] = _cut_notice
+                result["hookSpecificOutput"] = {
+                    "hookEventName": "SubagentStop",
+                    "additionalContext": (
+                        f"{_cut_notice}\n\nUltimo veredicto de la compuerta:\n"
+                        f"{contract_rejection_reason}"
+                    ),
+                }
+
             # A rejection sends the turn back to the SUBAGENT, whose repair
             # message then REPLACES the rejected one in everything the
             # orchestrator receives -- so the substantive work of the rejected
             # turn is lost in the relay unless it is preserved and handed back.
             # The gate stays as strict as before; only the cost of a rejection
             # changes. See modules/agents/rejected_turn_relay.py.
+            #
+            # The branch keys on the GATE's verdict, not on `contract_rejected`:
+            # a tripped turn was rejected and had its flag cleared to end the
+            # loop, and running the accepted-path cleanup on it would delete the
+            # preserved evidence of the very turn the breaker just cut.
             try:
                 from modules.agents import rejected_turn_relay
+                from modules.agents import rejection_circuit
                 _relay_key = rejected_turn_relay.preservation_key(session_id, task_info)
-                if contract_rejected:
+                if _gate.rejected:
+                    _attempt = _circuit.attempt if _circuit is not None else 1
                     _relay = rejected_turn_relay.on_rejection(
                         agent_output,
                         key=_relay_key,
                         rejection_reason=contract_rejection_reason,
+                        max_inline_chars=rejection_circuit.inline_budget(
+                            _attempt, rejected_turn_relay._MAX_INLINE_CHARS,
+                        ),
                     )
-                    contract_rejection_reason = _relay["reason"]
                     if _relay["chars"]:
                         result["preserved_output_path"] = _relay["path"]
                         result["preserved_output_chars"] = _relay["chars"]
                         result["preserved_output_carried_forward"] = _relay["carried_forward"]
-                    result["contract_rejection_reason"] = contract_rejection_reason
+                        result["preserved_output_inline_truncated"] = _relay["inline_truncated"]
+                    if contract_rejected:
+                        # Only a turn that is going back for repair receives the
+                        # reinjected text and the attempt counter; a tripped turn
+                        # is not being invited to read anything.
+                        contract_rejection_reason = _relay["reason"]
+                        if _circuit is not None and not _circuit.error:
+                            contract_rejection_reason += rejection_circuit.retry_notice(_circuit)
+                        result["contract_rejection_reason"] = contract_rejection_reason
+                    elif _circuit_tripped and _relay["path"]:
+                        result["contract_degraded_close_reason"] += (
+                            f"\nEvidencia preservada en: {_relay['path']}"
+                        )
                 else:
                     _closed = rejected_turn_relay.on_accepted(agent_output, key=_relay_key)
+                    if _circuit_key:
+                        rejection_circuit.reset(_circuit_key)
                     if _closed:
                         result["preserved_output_relayed"] = _closed["relayed"]
                         result["preserved_output_chars"] = _closed["chars"]
             except Exception as exc:
                 logger.warning("Rejected-turn relay failed (non-fatal): %s", exc)
+
+            # The queryable trace of the tripped turn, landed on the same
+            # append-only channel as agent.contract_rejected so an operator
+            # reaches it with the verb that already exists. Written LAST, once
+            # the preserved-evidence path is known, and never able to raise.
+            if _circuit_tripped:
+                from modules.agents import rejection_circuit
+
+                rejection_circuit.record_circuit_event(
+                    agent_type,
+                    _circuit,
+                    session_id=session_id,
+                    episode_id=episode_id,
+                    gate_source=_gate_source,
+                    preserved_output_path=result.get("preserved_output_path"),
+                )
 
         except Exception as e:
             logger.error("Error in adapt_subagent_stop: %s", e, exc_info=True)

@@ -269,13 +269,18 @@ def subagent_stop_hook(task_info, agent_output):
             commands_executed=commands_executed,
         )
 
-        contract_attempts = 0
-        if not response_contract.valid:
-            try:
-                repair_data = response_contract.to_dict()
-                contract_attempts = int(repair_data.get("repair_attempts", 0))
-            except Exception:
-                contract_attempts = 0
+        # Rejections recorded for this turn by the circuit breaker. This entry
+        # point does not run the contract gate, so it READS the count and never
+        # increments it -- the gate in the adapter is the only writer. It used
+        # to read a `repair_attempts` key off ResponseContractValidation, an
+        # eleven-field dataclass with no such field, and so was always 0.
+        try:
+            from modules.agents.rejected_turn_relay import preservation_key
+            from modules.agents.rejection_circuit import count as _rejection_count
+            contract_attempts = _rejection_count(preservation_key(session_id, task_info))
+        except Exception as exc:
+            logger.warning("Rejection count unavailable (non-fatal): %s", exc)
+            contract_attempts = 0
 
         return {
             "success": True,
@@ -318,6 +323,18 @@ def _handle_subagent_stop(event) -> None:
         error_msg = response.output.get("contract_rejection_reason", response.output.get("error", "unknown")) if isinstance(response.output, dict) else str(response.output)
         print(
             f"HOOK ERROR: Contract rejected: {error_msg}",
+            file=sys.stderr,
+        )
+    elif isinstance(response.output, dict) and response.output.get("contract_circuit_open"):
+        # A degraded close exits 0 -- the turn ends rather than being sent back
+        # for repair -- so it would otherwise be the ONE outcome that reaches
+        # stderr with nothing at all, precisely the outcome that most needs
+        # saying. The anomaly and the event are the durable record; this is the
+        # immediate one, on the same channel a rejection already uses.
+        print(
+            "HOOK ERROR: Contract rejection circuit OPEN -- turn closed "
+            "DEGRADED, contract NOT complete: "
+            f"{response.output.get('contract_degraded_close_reason', 'unknown')}",
             file=sys.stderr,
         )
 

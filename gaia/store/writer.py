@@ -9137,6 +9137,86 @@ def reconcile_cut_row(
     return _retry_on_locked(_work)
 
 
+def demote_uncertified_completion(
+    contract_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Take a COMPLETE verdict off a row no agent ever certified.
+
+    The mirror image of :func:`reconcile_cut_row`: that one clears the cut mark
+    and never touches the verdict; this one corrects the verdict and never
+    touches the cut mark. Both are narrow on purpose, and the narrowness is the
+    safety property -- neither can become a general "edit any row" door.
+
+    WHAT MAKES THIS SAFE IS THE PREDICATE, not the caller. It fires only on a
+    row that is BOTH ``agent_state = 'COMPLETE'`` AND ``cut_reason IS NOT NULL``
+    -- a row closed by a CLOSURE path (backstop capture, reap, truncation
+    salvage) that nonetheless carries a COMPLETE verdict. A row the agent
+    finalized itself has ``cut_reason IS NULL`` (see
+    :func:`finalize_agent_contract_handoff`, where leaving that argument alone
+    is what produces a clean closure) and is therefore unreachable from here.
+    A genuine completion can never be demoted by this statement.
+
+    WHY THE CASE EXISTS AT ALL. The SubagentStop backstop captures a turn that
+    emitted a valid fenced envelope but never ran ``gaia contract finalize``,
+    and it records that fence's own ``agent_state`` -- COMPLETE included. The
+    existing downgrade in ``handoff_persister`` covers only the REAPING branch
+    (an orphaned nascent row being converged), so a fence-only turn, which has
+    no nascent row to converge, keeps its self-declared COMPLETE. That row then
+    satisfies the briefs invariant "a closed plan must have a COMPLETE handoff"
+    (``gaia/briefs/store.py``) for a turn nobody completed.
+
+    IN_PROGRESS is the honest replacement, matching the reaping branch: the turn
+    ran and did not close, which is exactly what happened.
+
+    Returns ``{"status": "applied", "handoff_id": int, "contract_id": str}`` or
+    ``{"status": "skipped", "reason": ...}`` (``no_contract_id`` / ``no_row`` /
+    ``not_demotable``).
+    """
+    if not contract_id:
+        return {"status": "skipped", "reason": "no_contract_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                cur = con.execute(
+                    "UPDATE agent_contract_handoffs "
+                    "   SET agent_state = 'IN_PROGRESS' "
+                    " WHERE contract_id = ? "
+                    "   AND agent_state = 'COMPLETE' "
+                    "   AND cut_reason IS NOT NULL "
+                    "RETURNING id",
+                    (contract_id,),
+                )
+                returned = cur.fetchone()
+                con.commit()
+                if returned is None:
+                    exists = con.execute(
+                        "SELECT 1 FROM agent_contract_handoffs "
+                        "WHERE contract_id = ? LIMIT 1",
+                        (contract_id,),
+                    ).fetchone()
+                    reason = "not_demotable" if exists is not None else "no_row"
+                    return {"status": "skipped", "reason": reason}
+                return {
+                    "status": "applied",
+                    "handoff_id": returned["id"],
+                    "contract_id": contract_id,
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
 def dispatch_row_for_identity(
     session_id: "str | None",
     agent_id: "str | None",

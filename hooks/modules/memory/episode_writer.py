@@ -126,6 +126,7 @@ def write(
     metrics: Dict[str, Any],
     anomalies: Optional[List[Dict[str, str]]] = None,
     commands_executed: Optional[List[str]] = None,
+    outcome_override: Optional[str] = None,
 ) -> Optional[str]:
     """
     Capture workflow as episodic memory.
@@ -134,6 +135,12 @@ def write(
         metrics: Subagent metrics from workflow (includes plan_status, tier, task description)
         anomalies: Detected anomalies from audit(), stored in episode context
         commands_executed: List of commands extracted from EVIDENCE_REPORT
+        outcome_override: Force the recorded outcome instead of deriving it from
+            plan_status/exit_code. The derivation reads what the turn CLAIMED
+            about itself, so a turn whose envelope says COMPLETE records
+            'success' even when the hook refused that claim -- measured on a
+            turn the rejection circuit cut, which was stored as a success three
+            times over. A caller that knows the turn failed states it here.
 
     Returns:
         Episode ID if stored, None otherwise
@@ -200,6 +207,10 @@ def write(
         else:
             outcome = "failed"
             success = False
+
+        if outcome_override:
+            outcome = outcome_override
+            success = {"success": True, "failed": False}.get(outcome_override)
 
         # Tags from metrics -- filter empty strings defensively
         tags = [t for t in metrics.get("tags", []) if t]

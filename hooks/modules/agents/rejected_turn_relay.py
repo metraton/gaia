@@ -23,7 +23,8 @@ rejected. What changes is that the rejection no longer costs the work:
     the orchestrator, which reads the subagent's final message and nothing else.
   * CARRY FORWARD -- a second rejection of the same turn re-preserves the
     ORIGINAL text (the repair attempt is usually thinner than what it replaced),
-    so repeated rejections cannot erode it.
+    so repeated rejections cannot erode it. What is bounded is the REINJECTION,
+    never the preserved copy -- see the note on ``_MAX_INLINE_CHARS`` below.
 
 Key space: one file per (session, harness agent id) turn -- the harness id is
 the right key here precisely because this module keys the HARNESS turn, not a
@@ -53,6 +54,16 @@ _CONTRACT_MARKERS = ("agent_contract_handoff", '"agent_status"', "'agent_status'
 # truncating the relay to a summary would reintroduce the very loss this module
 # exists to prevent.
 _MAX_INLINE_CHARS = 20000
+
+# THE PRESERVED FILE HAS NO CEILING, and that is deliberate. An earlier
+# revision capped it, which destroyed evidence outright: a SINGLE 30030-char
+# turn with no accumulation at all was stored truncated to 20107 -- 9923
+# characters of the agent's own work gone, in the one module whose entire
+# purpose is that a rejection must not cost the work. What made the loop
+# expensive was never the file; it was RE-READING it on every pass, and that is
+# bounded where it belongs -- ``_MAX_INLINE_CHARS`` and the caller's shrinking
+# per-attempt budget cap what is REINJECTED. The number of passes is itself now
+# bounded by the rejection circuit breaker, so accumulation cannot run away.
 
 _SUBDIR = "rejected_turns"
 _SUFFIX = ".txt"
@@ -123,19 +134,34 @@ def clear(key: str) -> None:
         logger.debug("Rejected-turn relay: clear failed for %s: %s", key, exc)
 
 
-def build_relay_notice(text: str, path: Optional[Path] = None) -> str:
+def build_relay_notice(
+    text: str,
+    path: Optional[Path] = None,
+    max_inline_chars: Optional[int] = None,
+) -> str:
     """The block appended to the rejection message the subagent receives.
 
     It names the loss (the orchestrator never saw the rejected message), the
     obligation (reproduce it verbatim), and the anti-pattern that was actually
     measured (replacing it with a thin "this only adds the envelope" line).
+
+    ``max_inline_chars`` lets the caller spend a smaller inline budget on a
+    later attempt -- the text has already been delivered once and the file path
+    is named, so re-shipping the whole ceiling every pass is what made the retry
+    loop expensive. Defaults to :data:`_MAX_INLINE_CHARS`.
     """
+    budget = _MAX_INLINE_CHARS if max_inline_chars is None else max(1, int(max_inline_chars))
     body = text
-    if len(body) > _MAX_INLINE_CHARS:
+    if len(body) > budget:
+        # The marker states the true cause -- this excerpt is short because the
+        # INLINE budget for this attempt is, not because anything was discarded
+        # -- and points at the complete copy, which is never truncated.
+        omitted = len(body) - budget
         body = (
-            body[:_MAX_INLINE_CHARS]
-            + f"\n[... truncated at {_MAX_INLINE_CHARS} chars"
-            + (f"; full text preserved at {path}" if path else "")
+            body[:budget]
+            + f"\n[... {omitted} more chars not inlined here: this attempt's "
+            f"inline budget is {budget} chars. NOTHING was discarded"
+            + (f"; the complete text is preserved at {path}" if path else "")
             + "]"
         )
     where = f"\nThe full text is also preserved at: {path}" if path else ""
@@ -161,6 +187,7 @@ def on_rejection(
     *,
     key: str,
     rejection_reason: str,
+    max_inline_chars: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Preserve the rejected turn's prose and reinject it into the rejection.
 
@@ -174,6 +201,7 @@ def on_rejection(
         "path": None,
         "chars": 0,
         "carried_forward": False,
+        "inline_truncated": False,
     }
     try:
         text = substantive_text(agent_output)
@@ -189,7 +217,11 @@ def on_rejection(
         path = save(key, text)
         result["path"] = str(path) if path else None
         result["chars"] = len(text)
-        result["reason"] = rejection_reason + build_relay_notice(text, path)
+        notice = build_relay_notice(text, path, max_inline_chars=max_inline_chars)
+        result["inline_truncated"] = len(text) > (
+            _MAX_INLINE_CHARS if max_inline_chars is None else max_inline_chars
+        )
+        result["reason"] = rejection_reason + notice
         logger.warning(
             "Rejected-turn relay: preserved %d chars of substantive output for "
             "%s and reinjected it into the repair message.",

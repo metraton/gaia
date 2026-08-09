@@ -561,7 +561,7 @@ def persist_handoff(
     task_info: dict,
     session_id: str,
     plan_task_id: "int | None" = None,
-) -> None:
+) -> "dict | None":
     """Conditional BACKSTOP finalize of the agent_contract_handoffs row.
 
     Called synchronously inside the SubagentStop hook lifecycle. Failures are
@@ -599,6 +599,11 @@ def persist_handoff(
     ``plan_task_id`` is the binding the SubagentStop adapter already resolved for
     this turn; passing it stamps the attribution the CLI finalize path cannot
     supply on its own. None leaves any existing binding untouched.
+
+    Returns the capture's ``{"contract_id", "turn_recorded_own_contract"}``, or
+    None when the whole persistence attempt raised (every failure here is
+    non-blocking by contract). The pointer exists for callers that must act on
+    THIS turn's captured row afterwards; it is not needed to persist.
     """
     import json as _json
     import os as _os
@@ -873,8 +878,20 @@ def persist_handoff(
             agent_name=task_info.get("agent"),
         )
 
+        # The capture's own key, handed back so a caller that must reconcile
+        # THIS turn's captured row can name it exactly instead of guessing at
+        # the synthetic id or sweeping the session (which would reach rows
+        # belonging to other turns). Returned whether or not this call is the
+        # one that wrote the row: a later pass of the same turn finds it already
+        # terminal and stays passive, yet still needs the pointer.
+        return {
+            "contract_id": contract_id,
+            "turn_recorded_own_contract": turn_recorded_own_contract,
+        }
+
     except Exception as _exc:
         logger.error(
             "T9 backstop: handoff persistence failed (non-blocking): %s",
             _exc, exc_info=True,
         )
+    return None
