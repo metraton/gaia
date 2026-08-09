@@ -39,10 +39,13 @@ two pure-shape cross-field conditionals the form layer previously missed):
     MISSING_FIELD       -- a required field (agent_status, an agent_status
                            sub-field, evidence_report, or a required
                            evidence_report key) is absent
-    VERIFICATION_SHAPE  -- verification.type declares a known type but the field
+    VERIFICATION_SHAPE  -- verification.type declares a type but the evidence
                            that type requires is missing/empty (a by-TYPE SHAPE
                            check, independent of agent_state; DISTINCT from
-                           VERIFICATION_RESULT). Absent type == no check.
+                           VERIFICATION_RESULT). Applies to EVERY declared type:
+                           a known one owes its named field, an out-of-enum one
+                           owes at least one of command/reviewed/requires_human.
+                           Absent or blank type == no check.
     APPROVAL_REQUEST_SHAPE -- agent_state is APPROVAL_REQUEST but the top-level
                            approval_request object is absent/null, or present
                            without a non-empty exact_content (the verbatim
@@ -181,6 +184,89 @@ _ENVELOPE_ONLY_VERIFICATION_TYPES: Tuple[str, ...] = ("none",)
 ENVELOPE_VERIFICATION_TYPES: Tuple[str, ...] = (
     VALID_VERIFICATION_TYPES + _ENVELOPE_ONLY_VERIFICATION_TYPES
 )
+
+# ---------------------------------------------------------------------------
+# verification.type -- an OPEN vocabulary that grants no discount.
+#
+# The shape check below used to fire only when the declared type was a MEMBER
+# of ENVELOPE_VERIFICATION_TYPES, so a word outside the list switched the
+# requirement off. That is backwards: naming a type the enum happens to know
+# cost the agent its companion field, and naming one it did not cost nothing.
+# Measured on the live population, 127 of 522 typed rows (24.3%) sat outside
+# the enum, and 123 of those carried no companion evidence at all -- not by
+# malice but by economics, because inventing a plausible word was simply
+# cheaper than producing the evidence. The values are ordinary and often
+# accurate: test, self-review, dry_run, command_execution, manual,
+# observation, oracle, and a tail of some thirty more.
+#
+# The fix removes the DISCOUNT rather than the VOCABULARY. Two rules, applied
+# in order, and they answer two different problems:
+#
+#   1. CANONICALIZATION (_canonical_verification_type) folds pure orthography.
+#      A hyphen and an underscore spell one concept -- self-review/self_review,
+#      dry-run/dry_run, command-execution/command_execution all occur in both
+#      forms -- so they are folded to one token before anything is decided.
+#      This is lossless by construction: it rewrites separators, never words.
+#      It deliberately does NOT map a semantic type onto a known one. "manual",
+#      "observation" and "oracle" survive verbatim, because choosing a known
+#      type on their behalf would be inventing a claim the agent never made.
+#
+#   2. THE COMPANION FIELD IS REQUIRED FOR EVERY TYPE, known or not
+#      (_verification_type_shape_error). Declaring a type is a claim that a
+#      verification happened; the price of the claim is naming the evidence.
+#      For a known type the enum says WHICH field (command / requires_human /
+#      reviewed). For a word the enum does not know, no such mapping exists, so
+#      the demand is stated at the only altitude available: at least ONE of the
+#      three. That is not a weaker rule -- there is no fourth kind of evidence
+#      the envelope recognizes, and no branch of the disjunction is free.
+#
+# "none" stays exempt, and that exemption is what proves the discount is gone
+# rather than relocated: it is reachable at exactly ONE spelling, a word that
+# says out loud "no oracle was required" and can be audited as such. An
+# invented word no longer lands there -- it lands in rule 2.
+#
+# The rejection is NOT a cell (see the sanitization note further down for what
+# a cell is and why this file is careful about them). The remedy for it is an
+# ADDITION -- write the command, the reviewed statement, or requires_human --
+# and addition is exactly what every mutating verb does: `fill --json` and
+# `set` deep-merge into the existing verification object, so the corrective
+# write produces a merged envelope that validates and lands. That is the
+# structural difference from the traps this file has hit before, where the
+# offending state was an undeclared key or a malformed value and NO write
+# could remove it.
+# ---------------------------------------------------------------------------
+_VERIFICATION_TYPE_SEPARATOR_RE = re.compile(r"[\s_-]+")
+
+# The three fields the envelope recognizes as verification evidence, in the
+# order a writer is offered them. Ordered so the deterministic one comes first:
+# a command another party can re-run is the strongest of the three.
+_VERIFICATION_EVIDENCE_FIELDS: Tuple[str, ...] = (
+    "command",
+    "reviewed",
+    "requires_human",
+)
+
+
+def _canonical_verification_type(raw: Any) -> str:
+    """Fold a declared ``verification.type`` to its canonical spelling.
+
+    Strips, lower-cases, and collapses every run of separator characters
+    (whitespace, hyphen, underscore) to a single underscore -- so
+    ``"Self-Review"``, ``"self review"`` and ``"self_review"`` are one token.
+    Only separators move; no word is ever substituted for another, which is
+    what keeps this safe to apply to types outside the enum.
+
+    Returns ``""`` for a value that carries no declaration at all (``None`` or
+    a blank string). An empty result means "no type was declared" and fires no
+    requirement -- an empty string is not a claim, and treating it as one would
+    invent a rejection class over a value that has always been a no-op.
+    """
+    if raw is None:
+        return ""
+    text = str(raw).strip().lower()
+    if not text:
+        return ""
+    return _VERIFICATION_TYPE_SEPARATOR_RE.sub("_", text).strip("_")
 
 # ---------------------------------------------------------------------------
 # work_phase -- the observable WORK cycle (agent-protocol, work-cycle-observability
@@ -647,10 +733,11 @@ class FormErrorCode(str, Enum):
     PLAN_STATUS = "PLAN_STATUS"
     VERIFICATION_RESULT = "VERIFICATION_RESULT"
     MISSING_FIELD = "MISSING_FIELD"
-    # Additive (R3): a verification.type was declared but the field that type
+    # Additive (R3): a verification.type was declared but the evidence that type
     # requires is missing/empty. DISTINCT from VERIFICATION_RESULT (which is the
     # by-VALUE "COMPLETE but result != pass" check); this is a by-TYPE SHAPE
-    # check, independent of agent_state. Absent verification.type == no check.
+    # check, independent of agent_state. Fires on every declared type, in or out
+    # of the enum; absent or blank verification.type == no check.
     VERIFICATION_SHAPE = "VERIFICATION_SHAPE"
     # Additive (R4): APPROVAL_REQUEST without a usable approval_request block
     # (absent, or present but missing a non-empty exact_content). A pure-shape
@@ -860,11 +947,26 @@ def _is_nonempty_str(value: Any) -> bool:
     return isinstance(value, str) and value.strip() != ""
 
 
+def _has_verification_evidence(verification: dict) -> bool:
+    """True when the block carries at least one of the three evidence fields.
+
+    The disjunction an out-of-enum type is held to. ``requires_human`` is read
+    for truthiness (it is a marker) while the other two must be non-empty
+    strings, matching exactly what each known type is held to individually.
+    """
+    return (
+        _is_nonempty_str(verification.get("command"))
+        or _is_nonempty_str(verification.get("reviewed"))
+        or bool(verification.get("requires_human"))
+    )
+
+
 def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any, str]:
     """Return ``(field, detail)`` for a missing type-required field, else ``(None, "")``.
 
-    Given a KNOWN ``verification.type`` (caller has already checked membership
-    in ENVELOPE_VERIFICATION_TYPES), enforce the field that type requires:
+    ``vtype`` is the CANONICAL form (``_canonical_verification_type``), and the
+    requirement applies to EVERY non-empty type, not only the ones the enum
+    knows -- see the open-vocabulary rationale where that helper is defined.
 
       * "command"/"code" (DETERMINISTIC) -- a non-empty ``command`` naming the
         command/oracle a third-party verifier would run.
@@ -875,6 +977,9 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
       * "none" (envelope-only, plan 34 task 7) -- no plan-task-bound verification
         was performed; demands NO field (falls through to the ``(None, "")``
         return below).
+      * anything else -- an agent's own word for what it did, which stays
+        sayable. The enum cannot say WHICH field such a type implies, so it
+        demands at least one of the three.
 
     A ``(None, "")`` return means the type-required field is satisfied. Every
     non-empty detail below is order-aware (per the same rationale as
@@ -924,6 +1029,26 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
                     "before) verification.type."
                 ),
             )
+    elif not _has_verification_evidence(verification):
+        # An out-of-enum type. The word is kept -- what is refused is declaring
+        # a verification and naming nothing that backs it.
+        return (
+            "evidence_report.verification",
+            (
+                f"verification.type {vtype!r} is not one of "
+                f"{', '.join(ENVELOPE_VERIFICATION_TYPES)}, which is allowed -- "
+                "the vocabulary is open and your own word for what you did is "
+                "kept. What is not allowed is declaring a type and naming no "
+                "evidence for it: an unrecognized type must carry at least one "
+                "of 'command' (the command/oracle a third party would re-run), "
+                "'reviewed' (what you checked and observed), or "
+                "'requires_human' (this needs human/rubric judgement), and "
+                "carries none. Order matters: set the evidence field together "
+                "with (or before) verification.type. If no verification was "
+                "performed at all, the honest declaration is "
+                "verification.type 'none', which requires no evidence."
+            ),
+        )
     return (None, "")
 
 
@@ -1542,21 +1667,24 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
 
         # --- verification.type (type-conditional SHAPE, any status) ---------
         # Mirrors the conditional-by-VALUE pattern below (VERIFICATION_RESULT):
-        # if verification declares a KNOWN type, require the field that type
+        # if verification declares a type, require the evidence that type
         # demands and reject an omission with VERIFICATION_SHAPE. This is a
         # SHAPE check independent of agent_state; it is DISTINCT from the
         # by-VALUE COMPLETE/result==pass check and may co-occur with it (two
-        # different invalidities -> two codes). Backward compatible: an ABSENT
-        # verification.type (or a type outside the SSOT enum) fires no new
-        # requirement, preserving every pre-R3 contract.
+        # different invalidities -> two codes).
+        #
+        # The trigger is the PRESENCE of a declared type, not its membership in
+        # any enum. Gating on membership was the escape: a word the enum did not
+        # know switched the requirement off, which priced an invented type below
+        # a real one. _verification_type_shape_error now answers for every type;
+        # membership only decides WHICH evidence is demanded, and "none"
+        # (envelope-only, plan 34 task 7) remains the one type demanding none.
+        # An ABSENT or blank type still fires no requirement, which is what
+        # keeps every contract that never declared one valid.
         verification = evidence.get("verification") if isinstance(evidence, dict) else None
-        if isinstance(verification, dict) and verification.get("type") is not None:
-            vtype = str(verification.get("type")).strip().lower()
-            # Membership is tested against the ENVELOPE enum (which adds "none"),
-            # NOT the task_gates SSOT VALID_VERIFICATION_TYPES -- so "none" is a
-            # first-class envelope type while the task_gates CHECK stays at its
-            # four deterministic/judgement types (plan 34 task 7).
-            if vtype in ENVELOPE_VERIFICATION_TYPES:
+        if isinstance(verification, dict):
+            vtype = _canonical_verification_type(verification.get("type"))
+            if vtype:
                 shape_field, shape_detail = _verification_type_shape_error(vtype, verification)
                 if shape_field is not None:
                     errors.append(
@@ -1822,8 +1950,15 @@ def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> A
                 )
             raw_type = verification.get("type")
             if isinstance(raw_type, str):
-                normalized = raw_type.strip().lower()
-                if normalized in ENVELOPE_VERIFICATION_TYPES:
+                # Folded whether or not the result is a member of the enum --
+                # the SAME helper validate_form decided with, so the stored
+                # value is the value that was judged. Convergence is the point:
+                # 'self-review' and 'self_review', 'dry-run' and 'dry_run' are
+                # one concept each, and leaving both spellings in the column
+                # left every reader that groups on it to reconcile them. Only
+                # separators fold, so an out-of-enum word survives as itself.
+                normalized = _canonical_verification_type(raw_type)
+                if normalized:
                     _replace(
                         verification, "type", normalized,
                         "evidence_report.verification.type",
