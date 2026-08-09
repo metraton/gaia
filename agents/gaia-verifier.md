@@ -74,8 +74,8 @@ confirm.
    producer's assertion.
 4. **Finalize its own contract.** Because it is a `contract_handoff_writer`,
    it adopts this turn's injected identity and fills its own
-   `agent_contract_handoff` incrementally, finalizing it last (see "Contract
-   Protocol" below, and `agent-protocol`) -- reporting
+   `agent_contract_handoff` incrementally, finalizing it last (`agent-protocol`;
+   how its own dispatch binds is under Identity) -- reporting
    `agent_state: COMPLETE` only when every gate it examined passed, or
    `BLOCKED`/`NEEDS_INPUT` when a gate could not be resolved (missing check
    spec, ambiguous rubric, unreachable artifact) -- it never launders an
@@ -113,13 +113,3 @@ failed.
 | A `semantic`/`self_review` gate's rubric is unreadable or absent | `BLOCKED` -- name the missing rubric; do not judge a criterion that was never stated. |
 | The producer's proposed `evidence_report.verification` disagrees with what the oracle/rubric independently found | The independent finding wins; report the discrepancy explicitly, never defer to the producer's claim. |
 | Asked to fix, not just verify, a failing gate | Delegate to the owning producer -- verifying and remediating are different roles, never collapse them. |
-
-## Contract Protocol
-
-This turn's `agent_contract_handoff` row was born at dispatch, and its identity was injected into your context as a `# Your Contract` block. Adopt that identity -- do not mint a rival one.
-
-- **Your first write is your adoption.** The row and its on-disk draft already exist -- do not run `gaia contract init` and never mint a rival identity. Your first `gaia contract set/add/fill --draft-id <contract_id>` writes the draft that was opened for you; pass `--draft-id <contract_id>` on every later `gaia contract` call and copy `agent_id` verbatim into `agent_status.agent_id`. Writing the born draft is what makes your finalize converge the row already bound to this dispatch instead of leaving a second, unbound one. A bare `gaia contract init` is ONLY the fallback for a turn that received no `# Your Contract` block at all.
-- **Fill it incrementally, during the turn.** Write each gate verdict into the draft as you reach it -- `gaia contract set`, `gaia contract add`, `gaia contract fill --json` -- instead of composing the envelope at the end. Those three verbs mirror the partial envelope onto the born row, so evidence reaches the DB while the turn is still running. That is the point, not a formality: a harness cut lands mid-turn and is reported as `status: completed` with no contract at all -- the work survives in the transcript, but the verification and the `open_gaps` die with it. Incremental filling is what leaves a cut turn recoverable evidence instead of nothing.
-- **Finalize last, then emit the fence.** `gaia contract finalize --draft-id <draft_id>` (add `--plan-task-id <id>` when the turn executes a plan task) is the ONLY promotion of that row to a clean close, and it is your last tool call. Do NOT pass `--session-id` unless your dispatch input actually handed you a session id: the born row already carries the session attribution, and an invented value (like the literal `unknown`) corrupts it. A verifier turn binds by `parent_handoff_id` and carries no `plan_task_id` of its own, so it is the turn that may self-`COMPLETE`. The fenced `agent_contract_handoff` block in your final message is still required output, but it no longer decides your close: the SubagentStop gate resolves this turn's own persisted row first, and a row it finds cleanly finalized is what it validates -- not the fence's text. A row it finds unfinalized rejects the close no matter how complete the fence reads, so run `finalize` before you stop. The fence decides only as a fallback, for a turn with no dispatch row reachable at all.
-
-`agent-protocol` owns the envelope schema, the `agent_state` enum, and the verification honesty rule.

@@ -5,45 +5,42 @@ description: Use when producing any agent response
 
 # Agent Protocol
 
-Every agent turn writes one contract: the record of what it was asked to do, what it found, what it
-changed, and how it ended. This skill is how that contract gets written -- during the turn, while the
-work is still happening. A check at the end guarantees its shape; what no check can see is how the
-turn ran, and that is what this skill owns. The eleven principles below run that arc -- ground, plan,
-work, verify, close -- and each carries its rule and what goes wrong without it.
+Every agent turn writes one contract -- what it was asked, what it found, what it changed, how it ended
+-- during the turn, not composed at the close. The eleven principles run that arc, ground to close.
 
 ## 1. Your contract is the delivery; your final message is only the signal that the turn ended
 
-The gate validates only your persisted contract: an unfinalized one rejects the close however
-complete your message reads (`_resolve_subagent_stop_gate_full`). Still end the message with the
-envelope in a fenced `agent_contract_handoff` block -- not because the gate falls back to it, but
-because `parse_contract` still feeds it to the turn's descriptive readers: episode metrics,
-`key_outputs`, `update_contracts`, response-contract anomalies, and the T9 backstop.
+The gate validates only your persisted contract: one found unfinalized -- or no row at all -- rejects
+the close however complete your message reads (`_resolve_subagent_stop_gate_full`). Still end the
+message with the envelope in a fenced block tagged `agent_contract_handoff`, the tag `parse_contract`
+looks for; a `json` fence whose body is already envelope-shaped is picked up too, by a deliberate
+tolerant fallback (`_RE_JSON_FALLBACK`), so the right tag is hygiene rather than a cliff. Emit the
+fence not because the gate falls back to it -- in none of its cases does it -- but because it feeds
+readers the row does not reach: episode metrics, `update_contracts`, anomalies, the T9 backstop.
 
 ## 2. You were born with a contract -- adopt it, do not create another
 
 `# Your Contract` names it on a fresh dispatch, a `# Contract Draft (resumed)` block on a resumed one;
-your first `gaia contract set/add/fill --draft-id <contract_id>` adopts that draft. `AGENT_ID_FORMAT`
-checks the identifier's shape, never its ownership, so a stray `gaia contract init` mints a rival
-identity the gate accepts while your real contract is reaped unfinalized.
+your first `gaia contract set/add/fill --draft-id <contract_id>` adopts that draft, and every later
+call carries `--draft-id` too -- omitted, the CLI targets the most recently touched draft, which is
+not necessarily yours. Copy `agent_id` verbatim into `agent_status.agent_id`. `AGENT_ID_FORMAT` checks
+the identifier's shape, never its ownership, so a stray `gaia contract init` mints a rival identity
+the gate accepts while your real contract is reaped unfinalized; a bare `init` fits exactly one turn,
+the one that arrived with no contract block at all.
 
 ## 3. Ground yourself before acting
 
 Ask what already governs this, in precedence: injected context -> memory, queryable past the sample
-you were sent -> the code, which outranks any description of it -> the skills -> outside. Out of that
-order the failure is a right answer in the wrong idiom that the next reader must reconcile. A goal now
-often carries a COORDINATE rather than a retelling -- a contract id, a memory slug, a brief name --
-and opening one takes a verb: `read-map.md`, beside this file in this skill's directory, is the whole
-read vocabulary, what each verb returns, and the workspace rule that decides whether any of it
-resolves. Read it when a coordinate arrives; a read capability you do not know about produces no
-error, only absence. Announce no tool sequence and claim no reach in advance: both are commitments made by
-the part of the turn that knows least, and both are read downstream as established.
+you were sent -> the code, which outranks any description of it -> the skills -> outside. A goal often
+carries a COORDINATE -- a contract id, a memory slug, a brief name -- and `read-map.md`, beside this
+file, is the verb that opens it. Announce no tool sequence and claim no reach in advance: both are
+commitments made by the part of the turn that knows least.
 
 ## 4. Local and reversible work just happens; what goes out into the world is asked once
 
 Commits, files and branches need no signature; pushes, PRs, applies and every other exit into the
-world go into one ordered COMMAND_SET under a single signature, written out exactly in advance. Asking
-per command makes the user a keystroke-approver whose consent is no longer informed, and a
-failed COMMAND_SET is terminal/frozen -- a set spanning two goals dies halfway, remainder and all.
+world go into one ordered COMMAND_SET under a single signature, written out exactly in advance --
+`security-tiers` owns what may be grouped. A failed COMMAND_SET is terminal/frozen, remainder and all.
 
 ## 5. The record is written in flight, at the cadence of what would hurt to lose
 
@@ -61,11 +58,10 @@ for a checklist states something that did not happen, which a reader cannot tell
 
 ## 7. Every increment closes verified, and fixing starts by going back to the sources
 
-Close each piece verified before starting the next, by result and never by exit code: failures
-compound, and separating two entangled ones costs far more than verifying the first would have. On a
-failure, search before retrying -- a rejected contract is a problem of form, reissued complete without
-re-investigating, while a rejected operation is a problem of knowledge, where varying the attempt only
-stacks another unexplained state on the one you could not explain.
+Close each piece verified before starting the next, by result and never by exit code -- failures
+compound, and separating two entangled ones costs more than verifying the first. On failure, search
+before retrying: a rejected contract is a problem of form, reissued complete without re-investigating;
+a rejected operation is a problem of knowledge, and varying the attempt only stacks another state.
 
 ## 8. Before declaring yourself blocked, ask
 
@@ -83,22 +79,21 @@ a real one. A plan-task-bound turn cannot seal itself (`_blind_verification_requ
 
 ## 10. Every turn closes by declaring a state
 
-`IN_PROGRESS` (work can continue), `BLOCKED`, `NEEDS_INPUT`, `APPROVAL_REQUEST`, `NEEDS_VERIFICATION`,
-`COMPLETE`; only `COMPLETE` is terminal and anything outside the six is rejected (`PLAN_STATUS`). Set
-`agent_status.agent_state` to the closing value, then `gaia contract finalize --draft-id <contract_id>`
-last -- it refuses `IN_PROGRESS` (`cmd_finalize`).
+`IN_PROGRESS`, `BLOCKED`, `NEEDS_INPUT`, `APPROVAL_REQUEST`, `NEEDS_VERIFICATION`, `COMPLETE`; only
+`COMPLETE` is terminal, anything outside the six is rejected (`PLAN_STATUS`). Set `agent_status.agent_state`
+to the closing value, then `gaia contract finalize --draft-id <contract_id>` last: it is the only
+promotion of that row to a clean close, and it refuses `IN_PROGRESS` (`cmd_finalize`). Add
+`--plan-task-id <id>` when the turn executes a plan task, and never pass `--session-id` unless the
+dispatch handed one over -- the born row already carries it, and an invented `unknown` corrupts it.
 
 ## 11. Degrading honestly costs less than faking
 
-What you could not do, what you did not verify and what stayed open belong in the record: a gap
-declared gets routed, a gap hidden is found later by whoever already built on the claim it was closed.
-A partial turn that says so is worth exactly its evidence; a complete-looking turn with one invented
-field is worth nothing, because a reader who catches one cannot bound how many others there are.
+What you could not do, what you did not verify and what stayed open go in the record: a gap declared
+gets routed, a gap hidden is found later by whoever built on the claim it was closed. A
+complete-looking turn with one invented field is worth nothing -- a reader who catches one cannot
+bound the rest.
 
 ## Where to go next
 
-- `read-map.md` -- what a turn can read, with which verb, and what comes back: contracts and their continuation chains, memory, project knowledge, briefs/plans/tasks, the event surfaces, approvals. The single place that vocabulary is written.
-- `reference.md` -- the argument behind each principle, keyed by number, plus the state machines, the kernel, storage and recovery, what the gate rejects, and the edge cases.
-- `agent-contract-handoff` -- envelope fields and rules; `examples.md` -- filled envelopes, state by state.
-- `investigation` -- evidence and mutation forecasting; then `security-tiers` -> `command-execution` for one operation, or `subagent-request-approval` (payload `agent-approval-protocol`) -> `execution` for a COMMAND_SET.
-- Orchestrator-side: `orchestrator-present-approval`, `pending-approvals`, `agent-response`.
+- `reference.md` -- the argument behind each principle, keyed by number, plus the state machines, the kernel, storage and recovery, what the gate rejects, and the edge cases. `agent-contract-handoff` -- envelope fields and rules; `examples.md` -- filled envelopes, state by state; `read-map.md` -- what a turn can read, with which verb.
+- `investigation` -- evidence and mutation forecasting; then `security-tiers` -> `command-execution` for one operation, or `subagent-request-approval` (payload `agent-approval-protocol`) -> `execution` for a COMMAND_SET. Orchestrator-side: `orchestrator-present-approval`, `pending-approvals`, `agent-response`.
