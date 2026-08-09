@@ -44,6 +44,11 @@ Public API::
     replay_for_approval(approval_id, con=None)
         -> list[dict]  -- ordered approval_events rows for an approval
 
+    get_status_map(approval_ids, con=None)
+        -> dict[str, str]  -- bulk decision-status lookup (id -> status), one
+                              query; ids absent from the approvals table are
+                              simply absent from the returned dict.
+
 TODO (Cut Point 1 — T2.2 or similar): The bash_validator classifier does not
 intercept `npm run <script>` commands whose postinstall is mutative. A hook
 that calls store.insert_requested() should detect this pattern and classify it
@@ -686,6 +691,49 @@ def get_by_id(
         if hasattr(row, "keys"):
             return dict(row)
         return dict(zip(keys, row))
+    finally:
+        if owned:
+            _con.close()
+
+
+def get_status_map(
+    approval_ids: List[str],
+    con: Optional[sqlite3.Connection] = None,
+) -> Dict[str, str]:
+    """Return {approval_id: status} for the given ids, in one query.
+
+    ``approvals.status`` is the sole authoritative decision -- pending,
+    approved, rejected, revoked, or expired -- and the exact value every
+    consent-gated command (approve/reject/revoke) reads before acting. Callers
+    that need to label an id from another table (e.g. an approval_grants row,
+    whose own ``status`` column tracks unrelated consumption/lifecycle state)
+    use this to attach the true decision instead of re-deriving or guessing
+    it, so the two never drift into disagreement.
+
+    An id with no matching row (a legacy grant written before this table
+    existed) is simply absent from the returned dict; the caller decides the
+    fallback.
+
+    Args:
+        approval_ids: The ids to resolve. Duplicates and an empty list are
+            both handled; an empty list short-circuits without a query.
+        con: Optional open connection.
+
+    Returns:
+        Dict mapping each found id to its ``approvals.status`` value.
+    """
+    if not approval_ids:
+        return {}
+    _con, owned = _get_con(con)
+    try:
+        placeholders = ",".join("?" for _ in approval_ids)
+        cur = _con.execute(
+            f"SELECT id, status FROM approvals WHERE id IN ({placeholders})",
+            list(approval_ids),
+        )
+        return {row["id"] if hasattr(row, "keys") else row[0]:
+                row["status"] if hasattr(row, "keys") else row[1]
+                for row in cur.fetchall()}
     finally:
         if owned:
             _con.close()

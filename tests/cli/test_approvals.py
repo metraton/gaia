@@ -297,6 +297,172 @@ class TestCmdList:
         )
 
 
+def _make_grant_row(
+    approval_id="P-75958e69bb8b4187b4c7eab3789bad89",
+    status="PENDING",
+    scope="COMMAND_SET",
+    command="kubectl delete iamserviceaccount demo-common-service",
+):
+    """Build a raw approval_grants row exactly as writer.list_approval_grants()
+    returns it (a plain dict of columns), for feeding into a stubbed
+    _import_writer without touching the real approval_grants table.
+    """
+    return {
+        "approval_id": approval_id,
+        "agent_id": "test-agent",
+        "session_id": "test-session",
+        "command_set_json": json.dumps([{"command": command, "rationale": ""}]),
+        "scope": scope,
+        "created_at": "2026-08-03T11:50:14Z",
+        "expires_at": None,
+        "status": status,
+        "consumed_indexes_json": "[]",
+        "consumed_at": None,
+        "revoked_at": None,
+        "next_index": 0,
+        "failed_index": None,
+        "failure_reason": None,
+        "request_fingerprint": "fp-1",
+        "source": "plan-first",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Tests: cmd_list DB-grants status vs. grant_state (regression coverage for
+# an approved-but-unconsumed grant that used to print as "PENDING" -- the
+# same string the genuinely-undecided pending section uses for "awaiting a
+# decision". See _grant_to_display's docstring for the two-status split.
+# ---------------------------------------------------------------------------
+
+class TestGrantDecisionStatus:
+    def _seed_approved(self, store, approval_id, command):
+        """Seed one approvals-table row all the way to status='approved'."""
+        payload = _sealed_payload(command, verb="delete", category="COMMAND_SET")
+        aid = store.insert_requested(
+            payload, agent_id="test-agent", session_id="test-session",
+            approval_id=approval_id,
+        )
+        store.approve(aid, approver_session="test-session")
+        return aid
+
+    def test_approved_grant_never_shows_status_pending(self, capsys, db_store):
+        """The exact reported defect: an approved, unconsumed COMMAND_SET grant
+        (approval_grants.status='PENDING') must show STATUS=APPROVED, not
+        PENDING, in the human-readable list -- PENDING there would be
+        indistinguishable from a real undecided approval.
+        """
+        store, _insert_pending = db_store
+        aid = "P-75958e69bb8b4187b4c7eab3789bad89"
+        self._seed_approved(store, aid, "kubectl delete iamserviceaccount demo")
+
+        mock_writer = MagicMock()
+        mock_writer.list_approval_grants.return_value = [
+            _make_grant_row(approval_id=aid, status="PENDING")
+        ]
+        with patch.object(approvals_mod, "_import_writer", return_value=mock_writer):
+            rc = approvals_mod.cmd_list(_make_args())
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        grant_line = next(line for line in out.splitlines() if aid in line)
+        assert "APPROVED" in grant_line, (
+            f"grant row must show the decided consent status, not its raw "
+            f"consumption state: {grant_line!r}"
+        )
+        # GRANT_STATE still carries the original PENDING (still-consumable)
+        # value -- it must not be lost, only relabeled as a different column.
+        fields = grant_line.split()
+        assert "PENDING" in fields
+
+    def test_approved_grant_json_separates_status_from_grant_state(self, capsys, db_store):
+        store, _insert_pending = db_store
+        aid = "P-75958e69bb8b4187b4c7eab3789bad89"
+        self._seed_approved(store, aid, "kubectl delete iamserviceaccount demo")
+
+        mock_writer = MagicMock()
+        mock_writer.list_approval_grants.return_value = [
+            _make_grant_row(approval_id=aid, status="PENDING")
+        ]
+        with patch.object(approvals_mod, "_import_writer", return_value=mock_writer):
+            rc = approvals_mod.cmd_list(_make_args(json=True))
+
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        [grant] = data["grants"]
+        assert grant["status"] == "approved", (
+            "JSON status must be the approvals-table decision, matching what "
+            "cmd_revoke/cmd_approve/cmd_reject act on."
+        )
+        assert grant["grant_state"] == "PENDING", (
+            "the raw approval_grants.status (consumption lifecycle) must "
+            "survive under its own name, not be discarded."
+        )
+
+    @pytest.mark.parametrize("grant_state", ["CONSUMED", "FAILED", "REVOKED", "EXPIRED"])
+    def test_every_grant_state_keeps_approved_decision(self, capsys, db_store, grant_state):
+        """Regardless of the grant's own lifecycle value, the decision status
+        resolved from the approvals table must always read APPROVED for a row
+        that exists in approval_grants (a grant is only ever written after
+        approval) -- the defect is not specific to the PENDING/CONSUMED pair.
+        """
+        store, _insert_pending = db_store
+        aid = f"P-{grant_state.lower()}0000000000000000000000000000"
+        self._seed_approved(store, aid, "terraform apply")
+
+        mock_writer = MagicMock()
+        mock_writer.list_approval_grants.return_value = [
+            _make_grant_row(approval_id=aid, status=grant_state)
+        ]
+        with patch.object(approvals_mod, "_import_writer", return_value=mock_writer):
+            rc = approvals_mod.cmd_list(_make_args(json=True))
+
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        [grant] = data["grants"]
+        assert grant["status"] == "approved"
+        assert grant["grant_state"] == grant_state
+
+    def test_orphaned_grant_with_no_decision_row_defaults_to_approved(self, capsys, db_store):
+        """A grant row with no matching approvals-table entry (a legacy/
+        pre-existing row) still reports APPROVED -- the only write path into
+        approval_grants runs after approval, so absence of a decision row is
+        not evidence of an undecided request.
+        """
+        _store, _insert_pending = db_store
+        aid = "P-orphan00000000000000000000000000"
+
+        mock_writer = MagicMock()
+        mock_writer.list_approval_grants.return_value = [
+            _make_grant_row(approval_id=aid, status="CONSUMED")
+        ]
+        with patch.object(approvals_mod, "_import_writer", return_value=mock_writer):
+            rc = approvals_mod.cmd_list(_make_args(json=True))
+
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        [grant] = data["grants"]
+        assert grant["status"] == "approved"
+        assert grant["grant_state"] == "CONSUMED"
+
+    def test_get_status_map_batches_in_one_query(self, db_store):
+        """gaia.approvals.store.get_status_map resolves many ids in one call,
+        the single source cmd_list now reads instead of each row echoing its
+        own approval_grants.status under the "status" name.
+        """
+        store, _insert_pending = db_store
+        aid1 = self._seed_approved(store, "P-batch1000000000000000000000000000", "cmd one")
+        aid2 = self._seed_approved(store, "P-batch2000000000000000000000000000", "cmd two")
+
+        result = store.get_status_map([aid1, aid2, "P-doesnotexist00000000000000000000"])
+
+        assert result == {aid1: "approved", aid2: "approved"}
+        assert "P-doesnotexist00000000000000000000" not in result
+
+    def test_get_status_map_empty_input_short_circuits(self, db_store):
+        store, _insert_pending = db_store
+        assert store.get_status_map([]) == {}
+
+
 # ---------------------------------------------------------------------------
 # Tests: cmd_show
 # ---------------------------------------------------------------------------

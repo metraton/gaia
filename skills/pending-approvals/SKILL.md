@@ -10,7 +10,13 @@ is explicit: the user asks to list/search pendings or supplies an approval id.
 
 Use the unified CLI and treat the DB as primary:
 
-- `gaia approvals list --status pending`
+- `gaia approvals pending` -- the undecided pendings only (all sessions by
+  default; `--session <id>` narrows to one orchestrator session)
+- `gaia approvals list` -- the DB-backed grants table plus the undecided
+  pendings beneath it; it takes `--session` / `--orphans-only` / `--json` and
+  has NO `--status` filter. Filtering by decision lives on
+  `gaia approvals history --status <pending|approved|rejected|revoked>`
+  (`--limit N`, default 50).
 - `gaia approvals show <approval_id>`
 - `gaia approvals approve <approval_id>`
 - `gaia approvals reject <approval_id>`
@@ -21,7 +27,7 @@ risk, rollback, and verification before an approve decision; for COMMAND_SET,
 show the full indexed ordered set. Never infer approval from conversational
 language alone or select a similarly prefixed id.
 
-**These five verbs are not all the orchestrator's to run.** The trusted-CLI
+**These verbs are not all the orchestrator's to run.** The trusted-CLI
 role guard (`hooks/modules/security/gaia_cli_only_guard.py`) splits them
 along a read/write line, not a T3 line: `approvals list` / `show` / `pending`
 / `history` / `stats` are in `ALLOWED_READ_PHRASES` -- the orchestrator reads

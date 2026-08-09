@@ -234,8 +234,54 @@ def _scan_pending_shared(exclude_live_sessions: bool = False) -> list:
     return results
 
 
-def _grant_to_display(g: dict) -> dict:
-    """Convert a DB approval_grants row to a display-friendly dict."""
+# approval_grants rows are written ONLY by insert_semantic_grant() and
+# insert_plan_command_set() (gaia/store/writer.py), and both run strictly
+# AFTER a human decision is recorded in the approvals table -- there is no
+# code path that creates a grant row ahead of that decision. So a grant with
+# no matching approvals-table row (a pre-v12 or otherwise orphaned row) still
+# implies "approved"; this is the fallback for that case only, never a guess
+# used in place of a lookup that succeeded.
+_GRANT_DECISION_FALLBACK = "approved"
+
+
+def _resolve_decision_status(approval_id: str) -> str:
+    """Look up the one authoritative consent decision for a single grant.
+
+    Used by call sites that render exactly one approval_grants row (cmd_show)
+    where a bulk lookup would be overkill. cmd_list resolves the same field
+    for every row in one query via gaia.approvals.store.get_status_map()
+    instead of calling this per row.
+    """
+    try:
+        store = _import_approval_store()
+        row = store.get_by_id(approval_id)
+    except Exception:
+        return _GRANT_DECISION_FALLBACK
+    if row is None:
+        return _GRANT_DECISION_FALLBACK
+    return row.get("status") or _GRANT_DECISION_FALLBACK
+
+
+def _grant_to_display(g: dict, decision_status: str | None = None) -> dict:
+    """Convert a DB approval_grants row to a display-friendly dict.
+
+    ``status`` in the returned dict is the consent decision -- pending,
+    approved, rejected, revoked, expired -- read from the approvals table
+    (the same table cmd_revoke/cmd_approve/cmd_reject consult), never the raw
+    approval_grants.status column. That column is a different, orthogonal
+    fact -- whether this already-approved grant's commands are still
+    consumable -- and is returned separately as ``grant_state``. Conflating
+    the two under one "status" is exactly the defect this split fixes: an
+    approved grant sitting on unconsumed commands has grant_state='PENDING',
+    which is not a pending DECISION and must never be labeled as one.
+
+    Args:
+        g: The raw approval_grants row.
+        decision_status: The approvals.status value for this approval_id,
+            pre-resolved by the caller (cmd_list batches this for every row in
+            one query). When omitted, resolved here with a single lookup --
+            the right choice only for a single-row call site.
+    """
     approval_id = g.get("approval_id", "")
     created_at = g.get("created_at", "")
     # Compute age from ISO8601 created_at
@@ -266,9 +312,13 @@ def _grant_to_display(g: dict) -> dict:
         first_cmd = ""
         command_count = 0
 
+    if decision_status is None:
+        decision_status = _resolve_decision_status(approval_id)
+
     return {
         "approval_id": approval_id,
-        "status": g.get("status", ""),
+        "status": decision_status,
+        "grant_state": g.get("status", ""),
         "scope": g.get("scope", ""),
         "session_id": g.get("session_id", ""),
         "agent_id": g.get("agent_id", ""),
@@ -296,6 +346,15 @@ def cmd_list(args) -> int:
 
     ``--orphans-only`` filters pending approvals to rows whose owning session
     is no longer alive (orphaned pendings from dead sessions).
+
+    Each DB-grants row carries two independent statuses -- ``status``, the
+    consent decision resolved from the approvals table (batched below via
+    ``get_status_map`` so this never drifts from what cmd_revoke/cmd_approve/
+    cmd_reject act on), and ``grant_state``, the row's own consumption
+    lifecycle (PENDING/CONSUMED/FAILED/REVOKED/EXPIRED). Never collapse the
+    two: a grant can be an approved decision (``status``) with unconsumed
+    commands still live (``grant_state='PENDING'``), which is not a pending
+    decision.
     """
     session_id = getattr(args, "session", None)
     orphans_only = getattr(args, "orphans_only", False)
@@ -319,7 +378,26 @@ def cmd_list(args) -> int:
     except Exception:
         pass
 
-    db_items = [_grant_to_display(g) for g in db_grants]
+    # One query resolves every row's real consent decision from the approvals
+    # table, instead of letting each row echo its own approval_grants.status
+    # (a grant-consumption field, not a decision) under the same "status" name.
+    # See _grant_to_display's docstring for why the two must never collide.
+    decision_statuses: dict = {}
+    if db_grants:
+        try:
+            store = _import_approval_store()
+            decision_statuses = store.get_status_map(
+                [g.get("approval_id", "") for g in db_grants]
+            )
+        except Exception:
+            decision_statuses = {}
+
+    db_items = [
+        _grant_to_display(
+            g, decision_statuses.get(g.get("approval_id", ""), _GRANT_DECISION_FALLBACK)
+        )
+        for g in db_grants
+    ]
     pending_items = [_pending_to_display(p) for p in pending_rows]
 
     if getattr(args, "json", False):
@@ -338,13 +416,23 @@ def cmd_list(args) -> int:
         return 0
 
     if db_items:
-        print(f"\n{'APPROVAL_ID':<34}  {'STATUS':<10}  {'AGE':<6}  {'CMD_COUNT':<10}  FIRST_COMMAND")
-        print("-" * 80)
+        # STATUS is the consent decision (always APPROVED for a row that made
+        # it into this table -- see _grant_to_display); GRANT_STATE is the
+        # separate consumption lifecycle (PENDING=still consumable, CONSUMED,
+        # FAILED, REVOKED, EXPIRED). Keeping them in two columns is the fix:
+        # an approved grant with unconsumed commands must never print
+        # "PENDING" as if it were still awaiting a decision.
+        print(
+            f"\n{'APPROVAL_ID':<34}  {'STATUS':<10}  {'GRANT_STATE':<12}  "
+            f"{'AGE':<6}  {'CMD_COUNT':<10}  FIRST_COMMAND"
+        )
+        print("-" * 92)
         for item in db_items:
             cmd_preview = item["first_command"][:30]
             print(
                 f"{item['approval_id']:<34}  "
-                f"{item['status']:<10}  "
+                f"{item['status'].upper():<10}  "
+                f"{item['grant_state']:<12}  "
                 f"{item['age']:<6}  "
                 f"{str(item['command_count']):<10}  "
                 f"{cmd_preview}"
@@ -399,19 +487,26 @@ def cmd_show(args) -> int:
     if db_row is not None:
         item = _grant_to_display(db_row)
         if getattr(args, "json", False):
-            print(json.dumps(db_row, indent=2))
+            detail = dict(db_row)
+            # db_row's own "status" is the grant-consumption field (see
+            # _grant_to_display); expose the real consent decision alongside
+            # it under its own name instead of overwriting or hiding either.
+            detail["decision_status"] = item["status"]
+            detail["grant_state"] = item["grant_state"]
+            print(json.dumps(detail, indent=2))
             return 0
         lines = [
             f"Grant {item['approval_id']}",
             "",
-            f"  Status    : {item['status']}",
-            f"  Scope     : {item['scope']}",
-            f"  Age       : {item['age']}",
-            f"  Session   : {item['session_id']}",
-            f"  Agent     : {item['agent_id']}",
-            f"  Created   : {item['created_at']}",
-            f"  Expires   : {item['expires_at']}",
-            f"  Commands  : {item['command_count']}",
+            f"  Status      : {item['status'].upper()}",
+            f"  Grant state : {item['grant_state']}",
+            f"  Scope       : {item['scope']}",
+            f"  Age         : {item['age']}",
+            f"  Session     : {item['session_id']}",
+            f"  Agent       : {item['agent_id']}",
+            f"  Created     : {item['created_at']}",
+            f"  Expires     : {item['expires_at']}",
+            f"  Commands    : {item['command_count']}",
         ]
         for i, cmd_item in enumerate(item["command_set"]):
             lines.append(f"  [{i}] {cmd_item.get('command', '')}")
@@ -1594,7 +1689,27 @@ def register(subparsers) -> None:
     sub.required = True
 
     # list (legacy + new DB path via pending)
-    p_list = sub.add_parser("list", help="List pending approvals (legacy + DB)")
+    p_list = sub.add_parser(
+        "list",
+        help="List pending approvals (legacy + DB)",
+        description=(
+            "List DB-backed command_set/semantic-signature grants, then the\n"
+            "genuinely undecided pending approvals below them.\n\n"
+            "The DB-grants table has two status columns, and they answer two\n"
+            "different questions:\n"
+            "  STATUS       -- the consent decision (approved/rejected/revoked/\n"
+            "                  expired), read from the approvals table. A row only\n"
+            "                  ever appears in this table after a decision was\n"
+            "                  made, so STATUS is APPROVED here in practice.\n"
+            "  GRANT_STATE  -- whether this already-approved grant's commands\n"
+            "                  are still usable: PENDING (unconsumed, can still\n"
+            "                  be replayed), CONSUMED, FAILED, REVOKED, EXPIRED.\n\n"
+            "GRANT_STATE=PENDING is never a decision awaiting your input --\n"
+            "that only ever appears in the separate 'pending approval(s)'\n"
+            "section beneath the DB-grants table, or via 'gaia approvals\n"
+            "pending'. Use 'gaia approvals show APPROVAL_ID' for full detail."
+        ),
+    )
     p_list.add_argument("--json", action="store_true", help="JSON output")
     p_list.add_argument("--session", metavar="SESSION_ID", help="Filter by session ID")
     p_list.add_argument(
