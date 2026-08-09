@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from gaia.contract.crosscheck import validate as validate_full
-from gaia.contract.validator import validate_form
+from gaia.contract.validator import FormErrorCode, validate_form
 
 
 # ---------------------------------------------------------------------------
@@ -90,57 +90,98 @@ def _broken_envelope() -> dict:
 
 
 class TestCoreValidatesIdenticallyRegardlessOfStopReason:
-    def test_valid_envelope_identical_with_and_without_stop_reason(self):
-        without = validate_form(_valid_complete_envelope())
+    """The isolation claim, proved across stop_reason VALUES.
+
+    These once compared an envelope carrying the field against one without it.
+    That framing stopped being able to prove anything once the form layer
+    began rejecting undeclared keys: EVERY undeclared key changes the verdict
+    now, so a difference between "with" and "without" would only be measuring
+    the unknown-key door, not this field.
+
+    Comparing values is what the claim was always about, and it is the half
+    that survives untouched: the adapter maps ``max_tokens`` -> truncation and
+    ``end_turn`` -> violation (``classify_stop_reason``), and the core must not
+    tell those apart. The stronger, non-behavioural proof is
+    ``TestCoreSourceNeverReferencesStopReason`` below -- the core cannot branch
+    on a string its source never contains.
+
+    No production path ever puts ``stop_reason`` inside an envelope: it is read
+    from the harness EVENT payload (``hooks/stop_hook.py``) and passed as an
+    argument, never merged into the contract dict, and it appears in none of
+    the persisted envelopes.
+    """
+
+    def test_valid_envelope_verdict_is_the_same_for_every_stop_reason(self):
+        # POSITIVE ANCHOR first: the fixture really is a valid envelope.
+        # Without this, every assertion below would still hold if the
+        # validator rejected absolutely everything.
+        assert validate_form(_valid_complete_envelope()).ok is True
 
         with_max_tokens = dict(_valid_complete_envelope())
         with_max_tokens["stop_reason"] = "max_tokens"
-        with_it = validate_form(with_max_tokens)
+        as_truncation = validate_form(with_max_tokens)
 
         with_end_turn = dict(_valid_complete_envelope())
         with_end_turn["stop_reason"] = "end_turn"
-        with_end = validate_form(with_end_turn)
+        as_violation = validate_form(with_end_turn)
 
-        assert without.ok == with_it.ok == with_end.ok is True
-        assert without.errors == with_it.errors == with_end.errors == ()
-        assert (
-            without.repair_message
-            == with_it.repair_message
-            == with_end.repair_message
+        assert as_truncation.ok == as_violation.ok
+        assert as_truncation.codes == as_violation.codes
+        assert as_truncation.error_summary() == as_violation.error_summary()
+        assert as_truncation.repair_message == as_violation.repair_message
+        # And the verdict is the SPECIFIC one expected: rejected for the
+        # undeclared key alone, identically under both values. Pinning the
+        # exact codes is what keeps "they agree" from being satisfied by two
+        # arbitrary failures that happen to match.
+        assert as_truncation.codes == [FormErrorCode.UNKNOWN_FIELD]
+        assert all(
+            err.field == "stop_reason" for err in as_truncation.errors
         )
 
-    def test_broken_envelope_identical_with_and_without_stop_reason(self):
+    def test_broken_envelope_verdict_is_the_same_for_every_stop_reason(self):
         without = validate_form(_broken_envelope())
 
         with_max_tokens = dict(_broken_envelope())
         with_max_tokens["stop_reason"] = "max_tokens"
-        with_it = validate_form(with_max_tokens)
+        as_truncation = validate_form(with_max_tokens)
 
         with_end_turn = dict(_broken_envelope())
         with_end_turn["stop_reason"] = "end_turn"
-        with_end = validate_form(with_end_turn)
+        as_violation = validate_form(with_end_turn)
 
         assert without.ok is False
-        assert without.codes == with_it.codes == with_end.codes
-        assert without.error_summary() == with_it.error_summary() == with_end.error_summary()
-        assert without.repair_message == with_it.repair_message == with_end.repair_message
+        assert as_truncation.codes == as_violation.codes
+        assert as_truncation.error_summary() == as_violation.error_summary()
+        assert as_truncation.repair_message == as_violation.repair_message
+        # The envelope's OWN defect is reported the same either way -- the
+        # field's value never suppresses or alters it.
+        assert FormErrorCode.PLAN_STATUS in as_truncation.codes
+        assert FormErrorCode.PLAN_STATUS in as_violation.codes
 
-    def test_full_verdict_layer_identical_with_and_without_stop_reason(self, tmp_path):
+    def test_full_verdict_layer_is_the_same_for_every_stop_reason(self, tmp_path):
         """Same proof through the composed form+crosscheck entry point
         (gaia.contract.crosscheck.validate), with no gaia.db on disk so the
         cross-check layer degrades gracefully (AC-3) and only the form
         layer's stop_reason-agnosticism is under test here."""
         db_path = tmp_path / "absent-gaia.db"
 
-        without = validate_full(_valid_complete_envelope(), db_path=db_path)
+        # POSITIVE ANCHOR: the composed verdict passes a genuinely valid
+        # envelope, so the agreement asserted below is agreement about a
+        # working validator rather than about two identical failures.
+        assert validate_full(_valid_complete_envelope(), db_path=db_path).ok is True
 
-        with_stop_reason = dict(_valid_complete_envelope())
-        with_stop_reason["stop_reason"] = "max_tokens"
-        with_it = validate_full(with_stop_reason, db_path=db_path)
+        with_max_tokens = dict(_valid_complete_envelope())
+        with_max_tokens["stop_reason"] = "max_tokens"
+        as_truncation = validate_full(with_max_tokens, db_path=db_path)
 
-        assert without.ok == with_it.ok is True
-        assert without.form.errors == with_it.form.errors == ()
-        assert without.crosscheck == with_it.crosscheck
+        with_end_turn = dict(_valid_complete_envelope())
+        with_end_turn["stop_reason"] = "end_turn"
+        as_violation = validate_full(with_end_turn, db_path=db_path)
+
+        assert as_truncation.ok == as_violation.ok
+        assert as_truncation.form.errors == as_violation.form.errors
+        assert as_truncation.crosscheck == as_violation.crosscheck
+        assert as_truncation.form.codes == [FormErrorCode.UNKNOWN_FIELD]
 
 
 # ---------------------------------------------------------------------------

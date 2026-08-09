@@ -201,7 +201,11 @@ if str(_REPO_ROOT) not in sys.path:
 # candidate for implicit adoption (see _maybe_adopt_draft). Imported from the
 # portable validator rather than re-spelled, so this floor can never drift
 # from the one the envelope itself is checked against.
-from gaia.contract.validator import AGENT_ID_PATTERN_TEXT  # noqa: E402
+from gaia.contract.validator import (  # noqa: E402
+    AGENT_ID_PATTERN_TEXT,
+    canonicalize_envelope,
+    sanitize_envelope,
+)
 
 _AGENT_ID_RE = re.compile(AGENT_ID_PATTERN_TEXT)
 
@@ -546,6 +550,15 @@ def _write_if_valid(
     if not result.ok:
         _print_rejection(result, as_json=as_json)
         return 1
+    # What gets persisted is what got VALIDATED. Every enum in the envelope is
+    # compared normalized (agent_state upper-cased, work_phase stripped and
+    # lower-cased, verification.result lower-cased), and persisting the raw
+    # spelling instead left two spellings of one value in the database for
+    # every reader downstream to reconcile. Canonicalizing here, after the
+    # verdict and before the write, is the one point where the validated value
+    # and the stored value can be made the same value.
+    canonical_changes: list = []
+    envelope = canonicalize_envelope(envelope, changes=canonical_changes)
     if continuation is not None:
         continuation = _commit_continuation(continuation, as_json)
         if continuation is None:
@@ -558,6 +571,11 @@ def _write_if_valid(
     )
     if continuation is not None:
         print(_continuation_notice(continuation), file=sys.stderr)
+    # No silent conversion: a value the write changed on its way to disk is
+    # announced on the same terms a rejection would be. The caller wrote one
+    # spelling and the record now holds another; that is worth one line.
+    for change in canonical_changes:
+        print(f"[CANONICALIZED] {change}", file=sys.stderr)
     if mirror_outcome is not None:
         warning = _mirror_warning(mirror_outcome)
         if warning:
@@ -570,6 +588,10 @@ def _write_if_valid(
                 payload["mirror_skipped_reason"] = mirror_outcome.get("reason")
         if continuation is not None:
             payload["continuation"] = continuation
+        if canonical_changes:
+            payload["canonicalized"] = canonical_changes
+        if _SANITIZE_REPORT:
+            payload["sanitized"] = list(_SANITIZE_REPORT)
         payload.update(extra_json or {})
         print(json.dumps(payload))
     else:
@@ -936,6 +958,7 @@ def _load_target_draft(
     force_json: bool = False,
     allow_adopt: bool = True,
     chain: str = "none",
+    sanitize: bool = False,
 ) -> "tuple[Optional[str], Optional[dict], bool, Optional[dict]]":
     """Resolve --draft-id and load it.
 
@@ -980,6 +1003,10 @@ def _load_target_draft(
         it is the seed envelope the link will be born with, held in memory.
     """
     as_json = force_json or bool(getattr(args, "json", False))
+    # One CLI process runs one verb, but the test suite calls these handlers
+    # in-process and repeatedly; a stale report would be attributed to the
+    # next write.
+    _SANITIZE_REPORT.clear()
     draft_id = _resolve_target_draft_id(args, as_json)
     if draft_id is None:
         return None, None, as_json, None
@@ -995,12 +1022,46 @@ def _load_target_draft(
     if allow_adopt and not _draft_exists(draft_id):
         adopted = _maybe_adopt_draft(draft_id)
         if adopted is not None:
-            return draft_id, adopted, as_json, continuation
+            return draft_id, _sanitize_inherited(adopted, sanitize), as_json, continuation
     envelope = _load_draft(draft_id)
     if envelope is None:
         _no_draft_error(as_json, draft_id)
         return draft_id, None, as_json, continuation
-    return draft_id, envelope, as_json, continuation
+    return draft_id, _sanitize_inherited(envelope, sanitize), as_json, continuation
+
+
+def _sanitize_inherited(envelope: dict, sanitize: bool) -> dict:
+    """Repair an INHERITED envelope so the caller can actually write to it.
+
+    A write validates the whole envelope and no verb removes a key, so one
+    invalid key inherited from a historical row -- or from a draft file the
+    CLI itself wrote before the vocabulary was closed -- rejects every `set`,
+    `fill` and `finalize`, including the write that would fix it. 70 of the
+    238 draft files on disk are in exactly that state. Repairing on the way IN
+    is what keeps the door from having no handle on the inside.
+
+    Announced, never silent, and on both output paths -- the caller is about
+    to write a record that differs from the one it read, which is precisely
+    what must not happen quietly. The read verbs pass ``sanitize=False``:
+    ``validate`` and ``view`` must report the draft as it actually is.
+    """
+    if not sanitize:
+        return envelope
+    removals: list = []
+    cleaned = sanitize_envelope(envelope, removals=removals)
+    for line in removals:
+        print(f"[SANITIZED] {line}", file=sys.stderr)
+    if removals:
+        _SANITIZE_REPORT.extend(removals)
+    return cleaned
+
+
+# Populated by :func:`_sanitize_inherited` and drained by
+# :func:`_write_if_valid` into the --json payload. A module-level accumulator
+# rather than a threaded return value because the sanitize happens during
+# draft RESOLUTION, several frames above the write that reports it, and every
+# mutating verb would otherwise have to carry it through by hand.
+_SANITIZE_REPORT: list = []
 
 
 # ---------------------------------------------------------------------------
@@ -1069,7 +1130,9 @@ def cmd_init(args) -> int:
 
 def cmd_set(args) -> int:
     """Set a scalar field by dotted path (validate-on-write)."""
-    draft_id, envelope, as_json, continuation = _load_target_draft(args, chain="open")
+    draft_id, envelope, as_json, continuation = _load_target_draft(
+        args, chain="open", sanitize=True
+    )
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
@@ -1085,7 +1148,9 @@ def cmd_set(args) -> int:
 
 def cmd_add(args) -> int:
     """Append a value to a list field (validate-on-write)."""
-    draft_id, envelope, as_json, continuation = _load_target_draft(args, chain="open")
+    draft_id, envelope, as_json, continuation = _load_target_draft(
+        args, chain="open", sanitize=True
+    )
     if envelope is None:
         return 1
     value = _parse_value_arg(args.value)
@@ -1632,7 +1697,7 @@ def cmd_finalize(args) -> int:
     follows the chain to it.
     """
     draft_id, envelope, as_json, _continuation = _load_target_draft(
-        args, chain="follow"
+        args, chain="follow", sanitize=True
     )
     if envelope is None:
         return 1
@@ -1806,7 +1871,7 @@ def cmd_fill(args) -> int:
     # errors (no draft / ambiguous draft) JSON-shaped too, not only the
     # write-path errors below.
     draft_id, envelope, as_json, continuation = _load_target_draft(
-        args, force_json=True, chain="open"
+        args, force_json=True, chain="open", sanitize=True
     )
     if envelope is None:
         return 1

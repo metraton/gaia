@@ -106,6 +106,8 @@ Design notes:
 
 from __future__ import annotations
 
+import copy
+import difflib
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -326,6 +328,247 @@ REQUIRED_FAILURE_REPORT_FIELDS: Tuple[str, ...] = (
 
 VALID_FAILURE_SEVERITIES: Tuple[str, ...] = ("info", "warning", "error")
 
+# ---------------------------------------------------------------------------
+# The declared schema -- what a key IS, not merely that it is there.
+#
+# The form layer used to check PRESENCE only, and the live population shows
+# exactly what that bought: the seven evidence lists accepted a string, a
+# number or an object and answered ok (mistyped rows in six of the seven), and
+# ``pending_steps`` carried a bare string on 166 rows. A required key holding
+# the wrong type is not a filled field -- every reader downstream iterates it
+# expecting a list and gets characters, or a dict and gets nothing.
+#
+# Each entry below is anchored to a MEASURED observation over the persisted
+# population, never to a guess about what the field ought to hold:
+#
+#   dict-valued     agent_status / evidence_report (7201 / 7133 dicts, no
+#                   counterexample), consolidation_report, approval_request,
+#                   failure_report, context_consumption, loop_state
+#   memory_delta    dict -- anchored to its consumer,
+#                   ``modules.agents.response_contract._extract_memory_delta``,
+#                   which requires an object carrying ``version`` +
+#                   ``proposals``; the population holds only nulls
+#   list-valued     update_contracts, memory_suggestions,
+#                   memorialize_suggestions (lists, with a single dict
+#                   counterexample that is itself the defect this closes)
+#   str-valued      work_phase, user_facing_summary
+#
+# ``rollback_executed`` is the one field admitting two spellings, and that is
+# its consumer's doing rather than a hedge: ``parse_rollback_executed`` returns
+# ``str(val)``, so a boolean and a sentence are both real, already-supported
+# inputs. Narrowing it to ``bool`` here would reject a value the reader
+# explicitly accepts.
+#
+# A type is enforced only on a value that is PRESENT and not null: an explicit
+# null is the seeded convention for every optional block (see
+# ``gaia.contract.drafts.initial_envelope``), and absence/nullity of a REQUIRED
+# field is already owned by MISSING_FIELD. That split is what keeps one code
+# per invalidity.
+# ---------------------------------------------------------------------------
+TOP_LEVEL_FIELD_TYPES = {
+    "agent_status": (dict,),
+    "evidence_report": (dict,),
+    "consolidation_report": (dict,),
+    "approval_request": (dict,),
+}
+
+# ``failure_report`` and ``work_phase`` are declared fields whose type IS
+# checked -- by the dedicated code that already owned them,
+# FAILURE_REPORT_SHAPE and WORK_PHASE_SHAPE, each of which reports a
+# wrong-typed value with a message written for that field (the required
+# sub-fields, the five phase names). Adding them to the table above would
+# rename an existing rejection for no gain and stack two codes on one defect.
+# They are listed here so the schema is complete where it is read.
+_FIELDS_TYPED_BY_A_DEDICATED_CODE: Tuple[str, ...] = (
+    "failure_report",
+    "work_phase",
+)
+
+# ---------------------------------------------------------------------------
+# The advisory optional fields -- declared, allowlisted, deliberately UNTYPED.
+#
+# These carry an EXPLICIT pre-existing contract, written three times in
+# ``modules.agents.contract_validator``: "The return value is purely
+# informational; the validator never rejects based on this field"
+# (``parse_rollback_executed``, ``parse_context_consumption``,
+# ``parse_user_facing_summary``). Their parsers degrade to ``None`` on a
+# malformed value and the turn still closes, and a test asserts exactly that:
+# ``test_non_string_summary_is_none`` -- "a malformed optional field never
+# blocks".
+#
+# Type-checking them would reverse that contract: a turn that emits a
+# malformed advisory field closes today and would be REJECTED instead. That is
+# a runtime behaviour change for a field nothing load-bearing reads, so it is
+# NOT taken here on the validator's own initiative. They stay in the
+# allowlists (a typo among them is still caught by UNKNOWN_FIELD) and out of
+# the type table.
+#
+# Flipping this is one edit -- move a name from this tuple into
+# TOP_LEVEL_FIELD_TYPES with its type -- and the observed types are recorded
+# here so the decision needs no re-measurement: user_facing_summary str (236,
+# with 1 null), update_contracts list (282, 1 dict, 5 null),
+# memorialize_suggestions list (27, 1 null), memory_suggestions list (12, 1
+# null), context_consumption dict (4, 2 null), loop_state dict (3),
+# memory_delta null only (its consumer ``_extract_memory_delta`` requires an
+# object carrying version + proposals), rollback_executed null only (its
+# consumer returns ``str(val)``, so a boolean and a sentence are both real).
+# ---------------------------------------------------------------------------
+ADVISORY_UNTYPED_FIELDS: Tuple[str, ...] = (
+    "context_consumption",
+    "loop_state",
+    "memorialize_suggestions",
+    "memory_delta",
+    "memory_suggestions",
+    "rollback_executed",
+    "update_contracts",
+    "user_facing_summary",
+)
+
+AGENT_STATUS_FIELD_TYPES = {
+    "agent_state": (str,),
+    "agent_id": (str,),
+    "pending_steps": (list,),
+    "next_action": (str,),
+}
+
+EVIDENCE_FIELD_TYPES = dict(
+    {key: (list,) for key in REQUIRED_EVIDENCE_FIELDS},
+    verification=(dict,),
+)
+
+# ---------------------------------------------------------------------------
+# Keys the SYSTEM writes into an envelope -- never an agent.
+#
+# This is the allowlist's delicate half, and it was built by sweeping the 9646
+# persisted envelopes rather than by reading the source: three of these
+# (``_contract_tag`` on 3806 rows, ``fallback`` on 1486, ``salvaged`` on 172)
+# have no grep-visible assignment at the top level and would have been missed
+# by source inspection alone. Rejecting any one of them does not tighten
+# validation -- it breaks the mechanism that writes it:
+#
+#   _contract_tag       stamped onto EVERY fence-parsed envelope by
+#                       ``modules.agents.contract_validator.parse_contract``,
+#                       whose result is handed straight to ``validate_form``.
+#                       Rejecting it fails every fence-path validation there
+#                       is. Two values in history: "agent_contract_handoff"
+#                       and the legacy "json:contract".
+#   continues_contract_id
+#                       the continuation link, written by
+#                       ``bin/cli/contract.py::_continuation_seed``. Rejecting
+#                       it stops a resumed turn from minting its new contract,
+#                       which is the whole resumed-turn mechanism.
+#   born_at_dispatch / agent_name
+#                       birth markers (``gaia.store.writer``), carried across
+#                       into a continuation seed on purpose -- the SubagentStop
+#                       last-resort lane matches the dispatched agent's name
+#                       inside a still-DISPATCHED row's envelope.
+#   agent_state         the BIRTH envelope's own top-level state
+#                       ("DISPATCHED"). Deliberately NOT treated as a misplaced
+#                       agent_status.agent_state: the system writes it here, and
+#                       an agent that puts its state at the root instead of in
+#                       agent_status is already caught by MISSING_FIELD on
+#                       agent_status.agent_state.
+#   degraded / auto_captured / backstop / reaped / salvaged /
+#   dispatch_closed_at_subagent_stop / superseded_by_contract_id /
+#   agent_output_preview / reconstructed_from_finalized_draft / fallback
+#                       the rescue lanes -- what the hook-side capture,
+#                       reaper, salvage and reconstruction paths leave on a row
+#                       whose turn never wrote an envelope of its own.
+#                       ``fallback`` is retired (last written 2026-07-09) and is
+#                       kept because history is still revalidated, not because
+#                       anything writes it today.
+# ---------------------------------------------------------------------------
+#   binding_rejection   written into the BIRTH envelope by
+#                       ``modules.agents.dispatch_binding`` when a dispatch
+#                       names a plan task it may not bind to: the reason and
+#                       the rejected token are recorded on the row instead of
+#                       vanishing with an unborn one.
+#   reconciled          written by ``gaia contract reconcile``
+#                       (``bin/cli/contract.py::cmd_reconcile``) when a
+#                       hook-written residue row has its cut mark cleared.
+#
+# The last two are the reason this list is built from a CODE sweep and not
+# only from the persisted population. ``reconciled`` appears in ZERO rows --
+# it is written by a verb whose output nothing had yet re-read -- so a sweep
+# of the database, however careful, is structurally incapable of finding it.
+# ``binding_rejection`` is written as a key inside a dict LITERAL, which a
+# sweep looking for ``envelope["key"] = ...`` cannot see either. A sweep is
+# only as complete as the shapes it knows to look for.
+SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
+    "_contract_tag",
+    "agent_name",
+    "agent_output_preview",
+    "agent_state",
+    "auto_captured",
+    "backstop",
+    "binding_rejection",
+    "born_at_dispatch",
+    "continues_contract_id",
+    "degraded",
+    "dispatch_closed_at_subagent_stop",
+    "fallback",
+    "reaped",
+    "reconciled",
+    "reconstructed_from_finalized_draft",
+    "salvaged",
+    "superseded_by_contract_id",
+)
+
+# Agent-authored top-level keys, per the agent-contract-handoff envelope: the
+# two required blocks, the conditional objects, and the documented optional
+# fields -- which is exactly the set carrying a declared type above.
+#
+# Kept SEPARATE from the system keys, and that separation is load-bearing for
+# the error messages rather than decorative. An UNKNOWN_FIELD rejection that
+# offers the caller a list of "declared keys" must offer the keys the CALLER
+# may write: listing `backstop`, `reaped`, `salvaged`, `_contract_tag` or
+# `born_at_dispatch` as available options invites an agent to write a key only
+# the rescue lanes may write, which is worse than the typo the message was
+# answering.
+AGENT_WRITABLE_TOP_LEVEL_KEYS: Tuple[str, ...] = (
+    tuple(TOP_LEVEL_FIELD_TYPES)
+    + _FIELDS_TYPED_BY_A_DEDICATED_CODE
+    + ADVISORY_UNTYPED_FIELDS
+)
+
+TOP_LEVEL_ENVELOPE_KEYS: Tuple[str, ...] = (
+    AGENT_WRITABLE_TOP_LEVEL_KEYS + SYSTEM_WRITTEN_ENVELOPE_KEYS
+)
+
+# evidence_report additionally accepts the UPPER-CASE spelling of each required
+# key, matching the long-standing backward compatibility in
+# ``_evidence_has_key``: 20 rows in history carry the upper form, and the
+# presence check has always honoured it.
+EVIDENCE_REPORT_KEYS: Tuple[str, ...] = (
+    tuple(EVIDENCE_FIELD_TYPES)
+    + tuple(key.upper() for key in REQUIRED_EVIDENCE_FIELDS)
+)
+
+AGENT_STATUS_KEYS: Tuple[str, ...] = tuple(AGENT_STATUS_FIELD_TYPES)
+
+# Every declared path, keyed by its LAST segment, so a key found at the wrong
+# level can be told where it belongs. Only levels the unknown-key door closes
+# on appear here -- ``verification`` and the conditional objects stay open (see
+# ``_unknown_key_errors``), so no path inside them is claimed.
+def _declared_paths() -> dict:
+    """Map each declared key to its one canonical dotted path.
+
+    Built root-first so a key the SYSTEM writes at the root (``agent_state``)
+    keeps the root as its home and is never reported as a misplaced
+    ``agent_status.agent_state``.
+    """
+    paths = {}
+    for key in TOP_LEVEL_ENVELOPE_KEYS:
+        paths.setdefault(key, key)
+    for key in AGENT_STATUS_KEYS:
+        paths.setdefault(key, "agent_status." + key)
+    for key in EVIDENCE_FIELD_TYPES:
+        paths.setdefault(key, "evidence_report." + key)
+    return paths
+
+
+_DECLARED_PATH_BY_KEY = _declared_paths()
+
 
 class FormErrorCode(str, Enum):
     """Named, stable error codes emitted by the form layer (AC-1).
@@ -362,6 +605,23 @@ class FormErrorCode(str, Enum):
     # envelope that omits the field, so every already-persisted contract
     # keeps its verdict.
     WORK_PHASE_SHAPE = "WORK_PHASE_SHAPE"
+    # Additive: a DECLARED field is present with the wrong JSON type -- a
+    # string where a list is declared, an object where a string is. Presence
+    # was all the form layer used to check, which is how the seven evidence
+    # lists came to hold strings and objects in the live population. Fires only
+    # on a present, non-null value; absence stays MISSING_FIELD's.
+    FIELD_TYPE = "FIELD_TYPE"
+    # Additive: a declared key written at the WRONG LEVEL -- most often an
+    # evidence key at the root (``commands_run`` instead of
+    # ``evidence_report.commands_run``), which used to create a silent orphan.
+    # Deliberately a rejection naming the correct path, never a silent move:
+    # inferring the intent would hide the very class of error this closes.
+    MISPLACED_KEY = "MISPLACED_KEY"
+    # Additive: a key belonging to no declared path at any level. This is what
+    # catches a mistyped field name (``files_checkd``), which previously
+    # created a brand-new field without a word. The detail names the nearest
+    # declared key when there is one.
+    UNKNOWN_FIELD = "UNKNOWN_FIELD"
 
 
 @dataclass(frozen=True)
@@ -597,6 +857,158 @@ def _verification_type_shape_error(vtype: str, verification: dict) -> Tuple[Any,
     return (None, "")
 
 
+_JSON_TYPE_NAMES = {
+    dict: "object",
+    list: "array",
+    str: "string",
+    bool: "boolean",
+    int: "number",
+    float: "number",
+    type(None): "null",
+}
+
+
+def _json_type_name(value: Any) -> str:
+    """The JSON type name for a value, so a rejection speaks the envelope's
+    vocabulary rather than Python's (``array``, not ``list``)."""
+    return _JSON_TYPE_NAMES.get(type(value), type(value).__name__)
+
+
+def _type_error(path: str, value: Any, expected: tuple) -> Tuple[str, str]:
+    """Return ``(field, detail)`` naming the field, what arrived, what was
+    expected -- the three things a caller needs to fix the write in one go."""
+    wanted = " or ".join(
+        _JSON_TYPE_NAMES.get(kind, kind.__name__) for kind in expected
+    )
+    return (
+        path,
+        (
+            f"{path} must be {'an' if wanted[0] in 'aeiou' else 'a'} {wanted}, "
+            f"got {_json_type_name(value)} ({value!r}). The form layer checks "
+            f"the TYPE of a declared field, not only that the key is there: a "
+            f"required key holding the wrong type is not a filled field, it is "
+            f"an unreadable one -- every consumer downstream iterates it "
+            f"expecting {wanted}."
+        ),
+    )
+
+
+def _typed_field_errors(container: Any, types: dict, prefix: str) -> List[Tuple[str, str]]:
+    """Type-check every declared key PRESENT in ``container``.
+
+    A null is skipped on purpose: an explicit null is the seeded convention for
+    every optional block, and a required field's absence or nullity is already
+    MISSING_FIELD's to report. Checking it here too would stack two codes on
+    one defect.
+    """
+    problems: List[Tuple[str, str]] = []
+    if not isinstance(container, dict):
+        return problems
+    for key, expected in types.items():
+        if key not in container:
+            continue
+        value = container[key]
+        if value is None:
+            continue
+        # bool is a subclass of int in Python; no declared field wants a
+        # number, so the only risk is a boolean satisfying a numeric slot.
+        # Guard it explicitly rather than relying on isinstance semantics.
+        if isinstance(value, bool) and bool not in expected:
+            problems.append(_type_error(prefix + key, value, expected))
+            continue
+        if not isinstance(value, expected):
+            problems.append(_type_error(prefix + key, value, expected))
+    return problems
+
+
+def _unknown_key_errors(
+    container: Any,
+    allowed: Tuple[str, ...],
+    prefix: str,
+    suggestable: Optional[Tuple[str, ...]] = None,
+) -> List[Tuple[FormErrorCode, str, str]]:
+    """Report each key in ``container`` that is not declared at this level.
+
+    ``allowed`` is what passes; ``suggestable`` is what the message may OFFER,
+    and at the root the two differ. Every key is accepted there, including the
+    fifteen only the rescue lanes and the birth path write, but a message that
+    lists those as available options teaches an agent to write `backstop` or
+    `reaped` -- a worse outcome than the typo the message was answering.
+    Defaults to ``allowed`` for the levels where the distinction is empty.
+
+    Two distinct verdicts, because they are two distinct mistakes and the fix
+    differs:
+
+      * the key IS declared, but somewhere else -> MISPLACED_KEY, naming the
+        path it belongs at. The value is never moved there: guessing the intent
+        is what let a root ``commands_run`` sit unnoticed on 62 rows.
+      * the key is declared nowhere -> UNKNOWN_FIELD, naming the nearest
+        declared key when one is close enough to be a plausible typo.
+
+    Applied at the three levels whose vocabulary is closed -- the root,
+    ``agent_status`` and ``evidence_report``. It is deliberately NOT applied
+    inside ``verification`` (47 distinct keys in history: ``checks``,
+    ``observed``, ``expected``, ``actual`` -- a genuinely open evidence
+    object), nor inside ``consolidation_report`` / ``approval_request``, whose
+    fields are extended by the approval protocol. Closing those would reject
+    the shapes their own protocols specify.
+    """
+    problems: List[Tuple[FormErrorCode, str, str]] = []
+    if not isinstance(container, dict):
+        return problems
+    suggestable = allowed if suggestable is None else suggestable
+    for key in container:
+        if key in allowed:
+            continue
+        path = prefix + str(key)
+        declared_at = _DECLARED_PATH_BY_KEY.get(key)
+        if declared_at is not None:
+            problems.append((
+                FormErrorCode.MISPLACED_KEY,
+                path,
+                (
+                    f"{path} is a declared field written at the wrong level -- "
+                    f"it belongs at {declared_at}. It was NOT moved there: "
+                    f"inferring the intent would hide exactly the error this "
+                    f"reports. Two things follow, and the second is the one "
+                    f"that usually matters. (1) Re-run this write addressing "
+                    f"{declared_at}. (2) This rejection persisted NOTHING, so "
+                    f"the draft still reads as it did before -- and if "
+                    f"{path} was already sitting IN the draft, you do not "
+                    f"need a way to delete it: there is no delete verb, and "
+                    f"none is needed, because the next write strips an "
+                    f"inherited key like this one and tells you it did."
+                ),
+            ))
+            continue
+        suggestion = _closest_declared_key(str(key), suggestable)
+        hint = (
+            f" Did you mean {suggestion!r}?" if suggestion
+            else f" Fields you can write here: {sorted(suggestable)}."
+        )
+        problems.append((
+            FormErrorCode.UNKNOWN_FIELD,
+            path,
+            (
+                f"{path} is not a field of the contract envelope, so it was "
+                f"rejected rather than created.{hint}"
+            ),
+        ))
+    return problems
+
+
+def _closest_declared_key(key: str, allowed: Tuple[str, ...]) -> str:
+    """The nearest declared key to ``key``, or "" when none is close.
+
+    ``difflib`` at a 0.7 cutoff is what turns "unknown key" into an actionable
+    message for the case that motivated the check: ``files_checkd`` is one
+    deletion from ``files_checked`` and scores well above the cutoff, while an
+    unrelated word matches nothing and falls through to the declared-key list.
+    """
+    matches = difflib.get_close_matches(key, allowed, n=1, cutoff=0.7)
+    return matches[0] if matches else ""
+
+
 _FAILURE_REPORT_ORDER_HINT = (
     "The whole block is validated the moment it appears, so build it in ONE "
     "write -- e.g. `gaia contract fill --json '{\"failure_report\": "
@@ -741,17 +1153,54 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
             ok=False, errors=tuple(errors), repair_message=repair_message
         )
 
+    # --- vocabulary: misplaced and unknown keys, at the three closed levels --
+    # Run before the per-field checks so a key at the wrong level is reported
+    # as what it is (misplaced) rather than as the required field it is not.
+    for level, allowed, prefix, suggestable in (
+        (envelope, TOP_LEVEL_ENVELOPE_KEYS, "", AGENT_WRITABLE_TOP_LEVEL_KEYS),
+        (envelope.get("agent_status"), AGENT_STATUS_KEYS, "agent_status.", None),
+        (
+            envelope.get("evidence_report"),
+            EVIDENCE_REPORT_KEYS,
+            "evidence_report.",
+            tuple(EVIDENCE_FIELD_TYPES),
+        ),
+    ):
+        for code, field, detail in _unknown_key_errors(
+            level, allowed, prefix, suggestable
+        ):
+            errors.append(FormError(code=code, field=field, detail=detail))
+
+    # --- declared types -----------------------------------------------------
+    for container, types, prefix in (
+        (envelope, TOP_LEVEL_FIELD_TYPES, ""),
+        (envelope.get("agent_status"), AGENT_STATUS_FIELD_TYPES, "agent_status."),
+        (
+            envelope.get("evidence_report"),
+            EVIDENCE_FIELD_TYPES,
+            "evidence_report.",
+        ),
+    ):
+        for field, detail in _typed_field_errors(container, types, prefix):
+            errors.append(
+                FormError(code=FormErrorCode.FIELD_TYPE, field=field, detail=detail)
+            )
+
     # --- agent_status -------------------------------------------------------
     agent_status = envelope.get("agent_status")
     normalized_status = ""
     if not isinstance(agent_status, dict) or not agent_status:
-        errors.append(
-            FormError(
-                code=FormErrorCode.MISSING_FIELD,
-                field="agent_status",
-                detail="agent_status object is missing",
+        # A present-but-wrong-type agent_status already reported FIELD_TYPE
+        # above; adding MISSING_FIELD on top would stack two codes on one
+        # defect. Only a genuinely absent (or empty) block is missing.
+        if agent_status is None or isinstance(agent_status, dict):
+            errors.append(
+                FormError(
+                    code=FormErrorCode.MISSING_FIELD,
+                    field="agent_status",
+                    detail="agent_status object is missing",
+                )
             )
-        )
     else:
         # agent_state: absent -> MISSING_FIELD; present-but-invalid -> PLAN_STATUS
         raw_status = agent_status.get("agent_state")
@@ -763,6 +1212,10 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                     detail="agent_state is missing",
                 )
             )
+        elif not isinstance(raw_status, str):
+            # FIELD_TYPE already named this defect. Reading an enum out of a
+            # non-string would add PLAN_STATUS for the same one value.
+            pass
         else:
             normalized_status = _normalize_status(raw_status)
             if normalized_status not in VALID_PLAN_STATUSES:
@@ -849,7 +1302,7 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                             ),
                         )
                     )
-            if "pending_steps" in agent_status:
+            if isinstance(agent_status.get("pending_steps"), list):
                 raw_pending = agent_status.get("pending_steps")
                 if raw_pending:
                     errors.append(
@@ -874,13 +1327,16 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
     if normalized_status in _EVIDENCE_REQUIRING_STATUSES:
         evidence = envelope.get("evidence_report")
         if not isinstance(evidence, dict) or not evidence:
-            errors.append(
-                FormError(
-                    code=FormErrorCode.MISSING_FIELD,
-                    field="evidence_report",
-                    detail="evidence_report object is missing",
+            # Same split as agent_status above: a present-but-wrong-type block
+            # is FIELD_TYPE's to report, not MISSING_FIELD's.
+            if evidence is None or isinstance(evidence, dict):
+                errors.append(
+                    FormError(
+                        code=FormErrorCode.MISSING_FIELD,
+                        field="evidence_report",
+                        detail="evidence_report object is missing",
+                    )
                 )
-            )
         else:
             for key in REQUIRED_EVIDENCE_FIELDS:
                 if not _evidence_has_key(evidence, key):
@@ -1063,11 +1519,266 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
     )
 
 
+# ---------------------------------------------------------------------------
+# Canonicalization -- persist the value that was VALIDATED, not the raw one.
+#
+# Every enum in this module is compared NORMALIZED and was persisted RAW, so a
+# lower-case agent_state, a work_phase with surrounding spaces and capitals,
+# and an upper-case verification result all passed validation and then sat in
+# the database in whatever spelling they arrived with, forever. Two spellings
+# of one value are two values to every reader downstream -- a GROUP BY, a
+# filter, a metric -- and no amount of care at the read end recovers what the
+# write end threw away.
+#
+# The rule this applies is narrow and mechanical: a value is canonicalized
+# EXACTLY where the validator compared a normalized form of it, and nowhere
+# else. Free prose (``details``, ``next_action`` when it is a real next step)
+# is never touched, because nothing normalized it to decide anything.
+#
+# ``verification.type`` is canonicalized only when it names a KNOWN type. An
+# unrecognized type is left verbatim on purpose: it is not validated against
+# anything today (a deliberately open escape, out of scope here), and
+# rewriting a value no check consulted would be a conversion with no
+# validation behind it.
+#
+# Never in place, and never silent: a copy is returned, and every substitution
+# is appended to ``changes`` so the caller can report it. A conversion the
+# writer cannot see is the same defect as a rejection it cannot see.
+# ---------------------------------------------------------------------------
+
+def canonicalize_envelope(envelope: Any, *, changes: Optional[list] = None) -> Any:
+    """Return a copy of ``envelope`` with every validated value canonical.
+
+    Args:
+        envelope: a parsed envelope. A non-dict is returned unchanged, so a
+            caller can apply this unconditionally after a verdict.
+        changes: optional list; each substitution is appended as a
+            ``"<path>: <raw!r> -> <canonical!r>"`` line, in the order applied.
+
+    Returns:
+        A deep copy carrying the canonical spellings. The input is never
+        mutated -- a caller that validated one dict and persists another must
+        be able to compare the two.
+    """
+    if not isinstance(envelope, dict):
+        return envelope
+
+    log = changes if changes is not None else []
+    result = copy.deepcopy(envelope)
+
+    def _replace(container: dict, key: str, canonical: Any, path: str) -> None:
+        raw = container[key]
+        if raw == canonical:
+            return
+        container[key] = canonical
+        log.append(f"{path}: {raw!r} -> {canonical!r}")
+
+    agent_status = result.get("agent_status")
+    if isinstance(agent_status, dict):
+        raw_state = agent_status.get("agent_state")
+        if isinstance(raw_state, str):
+            normalized = _normalize_status(raw_state)
+            if normalized in VALID_PLAN_STATUSES:
+                _replace(
+                    agent_status, "agent_state", normalized,
+                    "agent_status.agent_state",
+                )
+        raw_next = agent_status.get("next_action")
+        # Only the one value an enum comparison is made against: COMPLETE
+        # requires next_action to read "done", so " Done " validated and must
+        # persist as "done". Any other next_action is prose and stays verbatim.
+        if isinstance(raw_next, str) and raw_next.strip().lower() == "done":
+            _replace(agent_status, "next_action", "done", "agent_status.next_action")
+
+    raw_phase = result.get("work_phase")
+    if isinstance(raw_phase, str):
+        normalized = raw_phase.strip().lower()
+        if normalized in VALID_WORK_PHASES:
+            _replace(result, "work_phase", normalized, "work_phase")
+
+    evidence = result.get("evidence_report")
+    if isinstance(evidence, dict):
+        verification = evidence.get("verification")
+        if isinstance(verification, dict):
+            raw_result = verification.get("result")
+            if isinstance(raw_result, str):
+                _replace(
+                    verification, "result", raw_result.strip().lower(),
+                    "evidence_report.verification.result",
+                )
+            raw_type = verification.get("type")
+            if isinstance(raw_type, str):
+                normalized = raw_type.strip().lower()
+                if normalized in ENVELOPE_VERIFICATION_TYPES:
+                    _replace(
+                        verification, "type", normalized,
+                        "evidence_report.verification.type",
+                    )
+
+    failure_report = result.get("failure_report")
+    if isinstance(failure_report, dict):
+        raw_severity = failure_report.get("severity")
+        if isinstance(raw_severity, str):
+            normalized = raw_severity.strip().lower()
+            if normalized in VALID_FAILURE_SEVERITIES:
+                _replace(
+                    failure_report, "severity", normalized,
+                    "failure_report.severity",
+                )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Sanitization -- no draft may be born impossible to close.
+#
+# Closing the envelope's vocabulary created a trap with no handle on the
+# inside. Every write validates the WHOLE envelope, and there is no verb that
+# removes a key; so a draft carrying one invalid key rejects every `set`,
+# `fill` and `finalize` alike, and the agent holding it cannot even write the
+# correction. The draft is stuck forever.
+#
+# That is not a hypothetical inherited from the distant past: 70 of the 238
+# draft files already on disk carry a root orphan or an undeclared key, put
+# there by the CLI itself back when it accepted them silently. An agent that
+# resumes one of those inherits a contract it can never close, for a defect it
+# did not commit.
+#
+# So the vocabulary is enforced on what an agent WRITES and repaired on what
+# it INHERITS. This function is the repair half: it takes an envelope read
+# back from disk or from a row and returns one that validates, recording every
+# change. Nothing is silent -- the caller announces each line, for the same
+# reason the rest of this work exists.
+#
+# Two repair strategies, chosen so the agent's own evidence survives wherever
+# it can:
+#
+#   * an undeclared key is REMOVED. There is nowhere for it to go and no way
+#     to guess what it meant; a misplaced one names where it belonged so the
+#     caller can write it back deliberately.
+#   * a DECLARED key holding the wrong type is repaired in place rather than
+#     removed, because removing a REQUIRED key just trades one unclosable
+#     draft for another (MISSING_FIELD blocks writes exactly as FIELD_TYPE
+#     does). A scalar where a list belongs is wrapped -- ``"ran pytest"``
+#     becomes ``["ran pytest"]``, which is lossless. A required string holding
+#     a non-string falls back to the same placeholder a fresh draft is seeded
+#     with, since no lossless reading exists.
+#
+# ``agent_id`` is deliberately NOT repaired: it must match AGENT_ID_PATTERN
+# and this layer cannot invent a conforming handle. It has zero non-string
+# observations across the persisted population, so the case is theoretical;
+# were it to occur, the residual MISSING_FIELD is reported honestly rather
+# than papered over with a fabricated identity.
+# ---------------------------------------------------------------------------
+
+_REQUIRED_STR_PLACEHOLDERS = {
+    "agent_state": "IN_PROGRESS",
+    "next_action": "pending",
+}
+
+
+def _sanitize_level(
+    container: dict, allowed: Tuple[str, ...], types: dict, prefix: str, log: list
+) -> None:
+    """Drop undeclared keys and repair wrong-typed declared ones, in place."""
+    for key in [k for k in container if k not in allowed]:
+        path = prefix + str(key)
+        declared_at = _DECLARED_PATH_BY_KEY.get(key)
+        where = (
+            f" (a declared field that belongs at {declared_at})"
+            if declared_at else " (not a field of the contract envelope)"
+        )
+        del container[key]
+        log.append(f"removed {path}{where}")
+
+    for key, expected in types.items():
+        if key not in container:
+            continue
+        value = container[key]
+        if value is None or isinstance(value, expected):
+            if not (isinstance(value, bool) and bool not in expected):
+                continue
+        path = prefix + key
+        if list in expected:
+            container[key] = [value]
+            log.append(
+                f"repaired {path}: {_json_type_name(value)} wrapped into an "
+                f"array, so the value itself is kept"
+            )
+        elif key in _REQUIRED_STR_PLACEHOLDERS:
+            replacement = _REQUIRED_STR_PLACEHOLDERS[key]
+            container[key] = replacement
+            log.append(
+                f"repaired {path}: {_json_type_name(value)} replaced with "
+                f"{replacement!r}, the value a fresh draft is seeded with -- "
+                f"no lossless reading of the original exists"
+            )
+        else:
+            del container[key]
+            log.append(
+                f"removed {path}: {_json_type_name(value)} where "
+                f"{_JSON_TYPE_NAMES.get(expected[0], expected[0].__name__)} "
+                f"is declared, and no lossless repair exists"
+            )
+
+
+def sanitize_envelope(envelope: Any, *, removals: Optional[list] = None) -> Any:
+    """Return a copy of ``envelope`` that the form layer will accept.
+
+    Args:
+        envelope: a parsed envelope, typically read back from a draft file or
+            a persisted row. A non-dict is returned unchanged.
+        removals: optional list; one human-readable line is appended per
+            change, in the order applied. An empty list afterwards means the
+            envelope needed nothing.
+
+    Returns:
+        A deep copy with undeclared keys removed and wrong-typed declared keys
+        repaired. The input is never mutated.
+
+    This repairs the vocabulary and the declared types. It does not
+    manufacture a missing required block, so an envelope with no
+    ``agent_status`` at all comes back still failing MISSING_FIELD -- which is
+    the honest answer, not a defect: that is a draft with no contract in it,
+    and inventing one would fabricate a turn's identity.
+    """
+    if not isinstance(envelope, dict):
+        return envelope
+
+    log = removals if removals is not None else []
+    result = copy.deepcopy(envelope)
+
+    _sanitize_level(
+        result, TOP_LEVEL_ENVELOPE_KEYS, TOP_LEVEL_FIELD_TYPES, "", log
+    )
+    agent_status = result.get("agent_status")
+    if isinstance(agent_status, dict):
+        _sanitize_level(
+            agent_status, AGENT_STATUS_KEYS, AGENT_STATUS_FIELD_TYPES,
+            "agent_status.", log,
+        )
+    evidence = result.get("evidence_report")
+    if isinstance(evidence, dict):
+        _sanitize_level(
+            evidence, EVIDENCE_REPORT_KEYS, EVIDENCE_FIELD_TYPES,
+            "evidence_report.", log,
+        )
+    return result
+
+
 __all__ = [
     "FormErrorCode",
     "FormError",
     "FormValidationResult",
     "validate_form",
+    "canonicalize_envelope",
+    "sanitize_envelope",
+    "AGENT_WRITABLE_TOP_LEVEL_KEYS",
+    "TOP_LEVEL_ENVELOPE_KEYS",
+    "TOP_LEVEL_FIELD_TYPES",
+    "AGENT_STATUS_FIELD_TYPES",
+    "EVIDENCE_FIELD_TYPES",
+    "SYSTEM_WRITTEN_ENVELOPE_KEYS",
     "CANONICAL_REPAIR_MESSAGE",
     "ROW_ENVELOPE_REPAIR_MESSAGE",
     "VALID_PLAN_STATUSES",
