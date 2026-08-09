@@ -31,7 +31,11 @@ Provides:
     - parse_contract(): Extract structured dict from an agent_contract_handoff
                         fenced block
     - validate(): Check agent output against contract requirements -> ValidationResult
-    - extract_commands_from_evidence(): Parse COMMANDS_RUN field
+    - extract_commands_from_evidence(): Parse COMMANDS_RUN field from fenced text
+    - extract_commands_executed(): Union COMMANDS_RUN from the persisted row
+                        envelope and the fenced text (see merge_commands_executed())
+    - merge_commands_executed(): Order-preserving, dedup-aware union of two
+                        already-extracted command sequences
     - extract_plan_status_from_output(): Extract agent_state string
     - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS
     - parse_loop_state(): Parse loop_state clause (blocking check on COMPLETE)
@@ -46,6 +50,7 @@ memory_delta is parsed by response_contract.parse_memory_delta, not here; the
 form layer deliberately leaves that proposal-only field advisory.
 """
 
+import difflib
 import json
 import logging
 import re
@@ -392,19 +397,23 @@ def validate(agent_output: str, task_info: Dict[str, Any]) -> ValidationResult:
 # Functions absorbed from evidence_parser.py (backward compatible)
 # ============================================================================
 
-def extract_commands_from_evidence(agent_output: str) -> List[str]:
-    """Extract command strings from the EVIDENCE_REPORT COMMANDS_RUN field.
+def _commands_from_contract_dict(contract: Optional[dict]) -> List[str]:
+    """The COMMANDS_RUN filter, given an already-parsed contract dict.
 
-    Reads from the ``agent_contract_handoff`` fenced-block, specifically the
-    ``evidence_report.commands_run`` list.
+    Both sources of ``commands_executed`` -- the fenced text (parsed by
+    :func:`extract_commands_from_evidence`) and a turn's persisted row
+    envelope (parsed once by the caller, never re-read here) -- end up
+    passing an envelope dict through this ONE function. That is what keeps
+    the two sources shape-compatible without a separate normalization step:
+    whatever shape either producer used for an entry (the canonical plain
+    string, or a tolerated ``{"command": ...}``/``{"cmd": ...}`` dict) is
+    resolved identically for both, so a caller merging their outputs is
+    always merging two lists of plain command strings.
 
-    Commands whose result indicates they were NOT actually run (e.g. "not run",
-    "skipped", "n/a", "not executed") are excluded from the returned list.
-
-    Returns a list of command strings (without surrounding backticks).
+    Commands whose result indicates they were NOT actually run (e.g. "not
+    run", "skipped", "n/a", "not executed") are excluded.
     """
-    contract = parse_contract(agent_output)
-    if contract is None:
+    if not isinstance(contract, dict):
         return []
 
     evidence = contract.get("evidence_report", {}) or {}
@@ -424,6 +433,104 @@ def extract_commands_from_evidence(agent_output: str) -> List[str]:
             if not _NOT_RUN_INDICATORS.search(cmd):
                 commands.append(cmd)
     return commands
+
+
+def extract_commands_from_evidence(agent_output: str) -> List[str]:
+    """Extract command strings from the EVIDENCE_REPORT COMMANDS_RUN field.
+
+    Reads from the ``agent_contract_handoff`` fenced-block, specifically the
+    ``evidence_report.commands_run`` list.
+
+    Commands whose result indicates they were NOT actually run (e.g. "not run",
+    "skipped", "n/a", "not executed") are excluded from the returned list.
+
+    Returns a list of command strings (without surrounding backticks).
+    """
+    contract = parse_contract(agent_output)
+    return _commands_from_contract_dict(contract)
+
+
+def merge_commands_executed(
+    row_commands: List[str], fence_commands: List[str]
+) -> List[str]:
+    """Union two already-extracted command sequences into one ordered list.
+
+    ``row_commands`` is this turn's persisted dispatch-row envelope (written
+    incrementally, in real time, by ``gaia contract set/add/fill``);
+    ``fence_commands`` is the fenced ``agent_contract_handoff`` block in the
+    final message text. Each is independently a faithful sequence -- this
+    only reconciles the two into one, on three decisions:
+
+    Dedup criterion: literal text equality, scoped to the ALIGNED position
+    between the two sequences (via :class:`difflib.SequenceMatcher`), not a
+    set-membership dedup over the whole list. A command that is genuinely
+    run twice on purpose stays twice, because each source lists it twice and
+    an aligned block of repeats matches as one equal run of length 2, not
+    one deduplicated entry -- collapsing by naive set membership would lose
+    that repetition, which is real. The cost of the aligned-position choice:
+    the same command run once by each source, in a stretch where the two
+    sequences otherwise disagree, is not always recognized as "the same
+    occurrence" and can surface twice -- accepted, because the alternative
+    (matching by value regardless of position) is what would erase an
+    intentional repeat.
+
+    Order: row-first. Where the two sequences agree (the expected case --
+    the fence is normally the same envelope the row was finalized with),
+    the shared run is emitted once, in that order. Where they diverge for a
+    stretch, the row's version of that stretch is emitted before the
+    fence's exclusive items, because the row is the turn's incrementally
+    time-stamped record (agent-protocol's "write in flight" discipline)
+    while the fence is composed once, at the end, from memory -- and a
+    record composed at the close is the second telling, not the first.
+
+    Shape: both inputs are expected to already be plain command strings --
+    :func:`_commands_from_contract_dict` is the single normalizer both the
+    fence and the row envelope pass through before reaching here, so this
+    function itself does no shape handling.
+
+    ``autojunk=False`` is deliberate: :class:`difflib.SequenceMatcher`'s
+    default junk heuristic can down-weight a command that recurs often in
+    one of the two lists, which is exactly the intentional-repeat case this
+    merge must not distort.
+    """
+    matcher = difflib.SequenceMatcher(
+        None, row_commands, fence_commands, autojunk=False
+    )
+    merged: List[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            merged.extend(row_commands[i1:i2])
+        elif tag == "delete":
+            merged.extend(row_commands[i1:i2])
+        elif tag == "insert":
+            merged.extend(fence_commands[j1:j2])
+        elif tag == "replace":
+            merged.extend(row_commands[i1:i2])
+            merged.extend(fence_commands[j1:j2])
+    return merged
+
+
+def extract_commands_executed(
+    *, agent_output: str, row_envelope: Optional[Any] = None
+) -> List[str]:
+    """The ``commands_executed`` union: this turn's persisted row envelope
+    merged with the fenced ``agent_contract_handoff`` text, so neither
+    source's gap loses commands the other source has.
+
+    ``row_envelope`` is the SAME already-resolved dict a caller such as
+    ``ClaudeCodeAdapter.adapt_subagent_stop`` already holds (its
+    ``_authoritative_envelope`` local, resolved by the SubagentStop gate --
+    see ``hooks/adapters/claude_code.py``) -- this performs no DB query and
+    no disk read of its own; it only re-derives commands from a dict the
+    caller passes in, plus the raw text it already had.
+
+    See :func:`merge_commands_executed` for the dedup/order/shape decisions.
+    """
+    fence_commands = extract_commands_from_evidence(agent_output)
+    row_commands = _commands_from_contract_dict(
+        row_envelope if isinstance(row_envelope, dict) else None
+    )
+    return merge_commands_executed(row_commands, fence_commands)
 
 
 # ============================================================================

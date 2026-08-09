@@ -522,7 +522,7 @@ class TestAdaptSubagentStopSessionId:
         _install_stub(
             "modules.agents.contract_validator",
             {
-                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                "extract_commands_executed": lambda *_a, **_k: [],
                 "parse_contract": lambda *_a, **_k: None,
                 "validate": lambda *_a, **_k: _types.SimpleNamespace(
                     is_valid=True, error_message=""
@@ -669,7 +669,7 @@ class TestAdaptSubagentStopPreservesApprovalRequest:
         _install_stub(
             "modules.agents.contract_validator",
             {
-                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                "extract_commands_executed": lambda *_a, **_k: [],
                 # The single behavioural difference vs the Bug-B test: we
                 # return the synthesised contract instead of None so the
                 # APPROVAL_REQUEST extraction branch executes.
@@ -904,7 +904,7 @@ class TestAdaptSubagentStopFencelessPlanStatusReachesEpisode:
         _install_stub(
             "modules.agents.contract_validator",
             {
-                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                "extract_commands_executed": lambda *_a, **_k: [],
                 # No fence in the final message -- the fenceless case under test.
                 "parse_contract": lambda *_a, **_k: None,
                 "validate": lambda *_a, **_k: _types.SimpleNamespace(
@@ -1069,7 +1069,7 @@ class TestAdaptSubagentStopAnchorHits:
         _install_stub(
             "modules.agents.contract_validator",
             {
-                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                "extract_commands_executed": lambda *_a, **_k: [],
                 "parse_contract": lambda *_a, **_k: parsed_contract,
                 "validate": lambda *_a, **_k: _types.SimpleNamespace(
                     is_valid=True, error_message=""

@@ -3118,7 +3118,7 @@ class ClaudeCodeAdapter(HookAdapter):
         anomaly detection, episodic memory, and result assembly.
         """
         from modules.agents.contract_validator import (
-            extract_commands_from_evidence,
+            extract_commands_executed,
             parse_contract,
             validate as validate_contract,
             validate_approval_request,
@@ -3482,7 +3482,17 @@ class ClaudeCodeAdapter(HookAdapter):
             # short (5m) TTL, so it must survive the subagent ending. The former
             # consume_session_grants() sweep has been removed.
 
-            commands_executed = extract_commands_from_evidence(agent_output)
+            # Union, not substitution: _authoritative_envelope (resolved
+            # above by the gate, no extra query) carries commands checkpointed
+            # incrementally onto the row, while agent_output's fence carries
+            # whatever the final message declared -- each loses different
+            # turns when read alone (a fence missing its final block loses the
+            # row's evidence; a row never mirrored before finalize loses the
+            # fence's). See merge_commands_executed() for the dedup/order
+            # decision.
+            commands_executed = extract_commands_executed(
+                agent_output=agent_output, row_envelope=_authoritative_envelope,
+            )
 
             # ----------------------------------------------------------
             # Process update_contracts array (agent_contract_handoff envelope path).

@@ -373,7 +373,7 @@ class TestAdapterCapturesTheDefectOnTheProductionRoute:
         _install_stub(
             "modules.agents.contract_validator",
             {
-                "extract_commands_from_evidence": lambda *_a, **_k: [],
+                "extract_commands_executed": lambda *_a, **_k: [],
                 "parse_contract": lambda *_a, **_k: parsed_contract,
                 "validate": lambda *_a, **_k: _types.SimpleNamespace(
                     is_valid=True, error_message="",
