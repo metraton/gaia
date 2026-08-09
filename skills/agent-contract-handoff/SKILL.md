@@ -83,10 +83,22 @@ does not turn a non-terminal state into `COMPLETE`. `validate` is read-only.
 
 ## Optional typed verification and progress
 
-`evidence_report.verification.type` may be `command`, `code`, `semantic`, or
-`self_review`. `command`/`code` require `command`; `semantic` requires
-`requires_human`; `self_review` requires `reviewed`. These typed fields are
-optional unless declared. Use typed COMMAND_SET progress fields only when the
+`evidence_report.verification.type` is the classifier the validator reads, over
+an OPEN vocabulary: `command`, `code`, `semantic`, `self_review` and `none` are
+the names it knows, and any other word is accepted as written. Declaring a type
+is a claim that a check ran, and the claim is priced in a companion field --
+`command`/`code` require a non-empty `command`, `semantic` a truthy
+`requires_human`, `self_review` a non-empty `reviewed`, any other word at least
+ONE of those three, and `none` (no oracle was required) nothing. An omission is
+a `VERIFICATION_SHAPE` rejection, escapable in one deep-merging write. Spelling
+folds on separators only, so `self-review` and `self_review` are one type and
+`observation` stays itself. `type` is optional: absent or blank, no evidence is
+demanded, which is what keeps every contract that never declared one valid.
+
+`verification.method` is a different, free-text field: prose naming HOW the
+check was done, stored verbatim and never read as a classifier. It does not
+substitute for `type` -- a block carrying only `method` declares no type and is
+asked for no evidence. Write both. Use typed COMMAND_SET progress fields only when the
 runtime returns them; do not invent schema. The v42 store exposes ordered
 `next_index`, `consumed_indexes_json`, `failed_index`, and `failure_reason`.
 

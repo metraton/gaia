@@ -40,7 +40,7 @@ gaia contract fill --json '{
     "open_gaps": []
   }
 }' --draft-id <contract_id>
-gaia contract fill --json '{"evidence_report": {"verification": {"method": "test", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}' --draft-id <contract_id>
+gaia contract fill --json '{"evidence_report": {"verification": {"type": "command", "command": "kubectl get hr -n qxo", "method": "listed every HelmRelease in the namespace and read its Ready and suspended columns", "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"], "result": "pass", "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."}}}' --draft-id <contract_id>
 gaia contract set agent_status.agent_state COMPLETE --draft-id <contract_id>
 gaia contract validate --draft-id <contract_id>   # confirm the verdict before finalizing
 gaia contract finalize --draft-id <contract_id>   # writes the sole, idempotent agent_contract_handoffs row
@@ -67,6 +67,8 @@ asked.
 
 Standard terminal envelope after a successful increment. `verification` is required and `result` must be `"pass"`.
 
+The two verification fields are not synonyms and both earn their place. `type` is the classifier the validator reads, over an OPEN vocabulary: declaring one is a claim that a check ran, and the claim is priced in a companion field -- `command`/`code` owe `command`, `semantic` owes `requires_human`, `self_review` owes `reviewed`, any other word owes at least one of those three, and `none` (no oracle was required) owes nothing. `method` is free prose naming HOW you checked; nothing reads it as a classifier, so a block carrying only `method` declares no type and is asked for no evidence. See `agent-contract-handoff`.
+
 ```json
 {
   "agent_status": {
@@ -84,7 +86,9 @@ Standard terminal envelope after a successful increment. `verification` is requi
     "cross_layer_impacts": [],
     "open_gaps": [],
     "verification": {
-      "method": "test",
+      "type": "command",
+      "command": "kubectl get hr -n qxo",
+      "method": "listed every HelmRelease in the namespace and read its Ready and suspended columns",
       "checks": ["kubectl get hr -n qxo shows all reconciled", "no suspended or failed HelmReleases"],
       "result": "pass",
       "details": "12/12 HelmReleases Ready=True. Last reconciled within 5m."
@@ -205,7 +209,9 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and offers i
     "cross_layer_impacts": [],
     "open_gaps": [],
     "verification": {
-      "method": "self-review",
+      "type": "self_review",
+      "reviewed": "publish.yml suffix parsing, read against the RC tag policy it implements",
+      "method": "re-read the workflow by hand and matched its --tag branch to the -rc.N suffix; nothing was executed",
       "checks": ["publish.yml auto-detect logic matches -rc.N suffix"],
       "result": "pass",
       "details": "Confirmed `.github/workflows/publish.yml` parses suffix to set --tag."
@@ -228,6 +234,8 @@ The agent uncovered a fact worth persisting (a decision, an anchor) and offers i
 
 The injected handoff carried `consolidation_required: true`; the agent reports ownership state and names the next agent if the task crosses surfaces. Enum values: `owned_here`, `cross_surface_dependency`, `not_my_surface`.
 
+`verification.type` is `dry_run` here -- a word outside the names the validator knows. The vocabulary is open, so it is accepted as written, and it is priced exactly like a known type: it still owes at least one of `command`, `reviewed`, `requires_human`. Inventing a word never costs less than naming the evidence.
+
 ```json
 {
   "agent_status": {
@@ -245,7 +253,9 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
     "cross_layer_impacts": ["Flux depends on GKE node pool count from terraform output"],
     "open_gaps": ["HPA config in flux not verified"],
     "verification": {
-      "method": "dry-run",
+      "type": "dry_run",
+      "command": "terragrunt plan -chdir=/abs/path",
+      "method": "ran the plan against live state and read its change counts, then matched the kustomization sourceRef against the cluster name",
       "checks": ["terragrunt plan shows no changes", "kustomization references match cluster name"],
       "result": "pass",
       "details": "Plan: 0 to add, 0 to change, 0 to destroy. Kustomization sourceRef matches cluster dev-gke-01."
@@ -288,7 +298,9 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
     "cross_layer_impacts": [],
     "open_gaps": ["3 failures need investigation"],
     "verification": {
-      "method": "test",
+      "type": "command",
+      "command": "pytest tests/layer1_prompt_regression -q",
+      "method": "ran the regression subset and read its summary line",
       "checks": ["pytest exit code"],
       "result": "pass",
       "details": "42/45 passed"
@@ -326,7 +338,9 @@ The runtime will reject this `COMPLETE` and force the agent to iterate again.
     "cross_layer_impacts": [],
     "open_gaps": [],
     "verification": {
-      "method": "test",
+      "type": "command",
+      "command": "pytest tests/layer1_prompt_regression -q",
+      "method": "ran the regression subset and read its summary line",
       "checks": ["pytest exit code"],
       "result": "pass",
       "details": "45/45 passed"
@@ -364,7 +378,9 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
     "cross_layer_impacts": [],
     "open_gaps": [],
     "verification": {
-      "method": "self-review",
+      "type": "self_review",
+      "reviewed": "port and namespace read from package.json and the manifest, and compared against each other",
+      "method": "read both files directly; no command run and no live state queried",
       "checks": ["port and namespace confirmed against package.json and manifest"],
       "result": "pass",
       "details": "Service identifiers read directly from source; no live-state cached."
@@ -406,7 +422,9 @@ Harness R2: the producer believes the increment is done and MAY propose `evidenc
     "cross_layer_impacts": [],
     "open_gaps": ["Independent verifier confirmation of reconciled state"],
     "verification": {
-      "method": "self-review",
+      "type": "self_review",
+      "reviewed": "the applied manifest diff, checked against the change the task asked for",
+      "method": "read back the manifest after apply and diffed it against the intended change",
       "checks": ["kubectl apply exit code", "manifest diff matches intended change"],
       "result": "pass",
       "details": "Proposed by the producer, not a verifier -- offered for the verifier's reference, not a self-declared pass."

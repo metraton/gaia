@@ -257,7 +257,9 @@ exhausted) -- otherwise the runtime blocks it and forces another iteration:
   },
   "evidence_report": {
     "verification": {
-      "method": "metric",
+      "type": "command",
+      "command": "<the loop's eval_command>",
+      "method": "re-ran the loop's eval_command on the final iteration and read the metric it printed",
       "checks": ["accuracy >= 98 threshold"],
       "result": "pass",
       "details": "accuracy=98.1 (baseline=89.0) achieved in 12 iterations"

@@ -858,6 +858,18 @@ class FormValidationResult:
 # the wrong place; ``validate_form``'s ``source`` argument selects the
 # matching variant. The JSON template and build-order guidance below apply
 # identically either way, so only the opening clause forks.
+#
+# The verification line teaches a CONCRETE type ("command") rather than the
+# ``<a|b|c>`` placeholder the closed-vocabulary fields above use, and the
+# difference is load-bearing rather than stylistic. An unsubstituted
+# placeholder cannot survive in agent_state or next_action -- the enum rejects
+# it -- but verification.type is an OPEN vocabulary, so a literal
+# "<command|code|semantic|self_review|none>" would validate and persist as the
+# stored type, poisoning the one column readers group on. A concrete type also
+# puts the obligation in the reader's eye: the companion "command" sits on the
+# same line, so what declaring a type COSTS is visible in the example itself.
+# The alternatives are named in the prose below, where they cannot be
+# copy-pasted by accident.
 # ---------------------------------------------------------------------------
 _REPAIR_MESSAGE_BODY = (
     "\n"
@@ -878,7 +890,9 @@ _REPAIR_MESSAGE_BODY = (
     '    "verbatim_outputs": [],\n'
     '    "cross_layer_impacts": [],\n'
     '    "open_gaps": [],\n'
-    '    "verification": { "method": "<method>", "result": "pass", "details": "<...>" }\n'
+    '    "verification": { "type": "command", "command": "<the exact command a '
+    'verifier can re-run>", "method": "<prose: how you checked>", "result": '
+    '"pass", "details": "<what you observed>" }\n'
     "  },\n"
     '  "consolidation_report": null,\n'
     '  "approval_request": null\n'
@@ -893,6 +907,22 @@ _REPAIR_MESSAGE_BODY = (
     "verbatim_outputs, cross_layer_impacts, open_gaps. "
     "When agent_state is COMPLETE, evidence_report.verification.result must be "
     '"pass".\n'
+    "\n"
+    "verification.type and verification.method are NOT the same field. 'type' "
+    "is the classifier the validator reads, and its vocabulary is OPEN: "
+    "command, code, semantic, self_review and none are the names it knows, and "
+    "any other word you find accurate is accepted. Declaring a type is a claim "
+    "that a check ran, and the claim is priced in a companion field -- "
+    "'command'/'code' owe a non-empty 'command' (the oracle a third party can "
+    "re-run), 'semantic' owes a truthy 'requires_human', 'self_review' owes a "
+    "non-empty 'reviewed', any other word owes at least ONE of those three, "
+    "and 'none' (no oracle was required) owes nothing. Spelling folds on "
+    "separators only, so 'self-review' and 'self_review' are one type. "
+    "'method' is a different thing: free prose naming HOW you checked, stored "
+    "verbatim and never read as a classifier -- a verification block carrying "
+    "only 'method' declares no type at all and is asked for no evidence. "
+    "Write both: the type that can be checked, and the prose that can be "
+    "read.\n"
     "\n"
     "Build order for a terminal state (when building the draft incrementally "
     "via `gaia contract set`/`add`/`fill`): fill the fields the terminal state "
@@ -1712,8 +1742,10 @@ def validate_form(envelope: Any, *, source: str = "declaration") -> FormValidati
                             "content defect: fill "
                             "evidence_report.verification (e.g. `gaia contract "
                             "fill --json '{\"evidence_report\": {\"verification\": "
-                            "{\"method\": \"<how you checked>\", \"result\": "
-                            "\"pass\", \"details\": \"<what you observed>\"}}}'`) "
+                            "{\"type\": \"command\", \"command\": \"<the exact "
+                            "command a verifier can re-run>\", \"method\": "
+                            "\"<prose: how you checked>\", \"result\": \"pass\", "
+                            "\"details\": \"<what you observed>\"}}}'`) "
                             "BEFORE -- or in the same write as -- setting "
                             "agent_status.agent_state to COMPLETE. Set "
                             "agent_state last, once verification.result already "
