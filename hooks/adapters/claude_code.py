@@ -4425,9 +4425,9 @@ class ClaudeCodeAdapter(HookAdapter):
             # Read from the RAW draft, not the cleaned copy -- the same split
             # the T9 backstop makes, and for the same reason: canonicalizing the
             # state here would change what a rescued turn is recorded as, which
-            # is a policy decision separate from cleaning the envelope. This
-            # lane has no COMPLETE downgrade of its own, so it is the more
-            # consequential of the two places to leave it unchanged.
+            # is a policy decision separate from cleaning the envelope. So an
+            # uncanonical spelling still falls to IN_PROGRESS below rather than
+            # being repaired into a terminal verdict.
             agent_status = envelope.get("agent_status")
             agent_state = (
                 agent_status.get("agent_state")
@@ -4437,6 +4437,21 @@ class ClaudeCodeAdapter(HookAdapter):
             agent_state = (
                 agent_state if agent_state in VALID_PLAN_STATUSES else "IN_PROGRESS"
             )
+            if agent_state == "COMPLETE":
+                # A COMPLETE in a SALVAGED draft is a claim, not a verdict. This
+                # lane runs only for a turn the token budget cut off mid-work: it
+                # never reached its own `gaia contract finalize`, so nothing
+                # verified that COMPLETE, and recording it would falsely satisfy
+                # the briefs "plan closed => a COMPLETE handoff row exists"
+                # invariant (gaia/briefs/store.py, invariant 5) for a turn that
+                # did not complete. The T9 backstop already downgrades exactly
+                # this claim when it converges an unfinalized row; this lane had
+                # no downgrade of its own, so the SAME truncated turn was
+                # recorded COMPLETE or IN_PROGRESS depending only on which rescue
+                # reached it first. The claim itself is not erased -- it stays in
+                # the salvaged envelope under agent_status.agent_state, beside
+                # the `salvaged` marker that says why the row disagrees with it.
+                agent_state = "IN_PROGRESS"
             salvaged["degraded"] = True
             salvaged["auto_captured"] = True
             salvaged["salvaged"] = "truncation"

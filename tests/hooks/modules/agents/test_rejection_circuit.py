@@ -302,6 +302,13 @@ def test_a_cut_turn_leaves_no_completed_contract_row(tmp_path):
     and the last-resort backstop meanwhile records that self-declared COMPLETE
     on its own row, on the FIRST pass. Cutting the turn froze that row as the
     final word while the return value said the contract was not complete.
+
+    TWO LAYERS now stand between that turn and a COMPLETE row, and the
+    constraint is that no row survives reading COMPLETE -- not that any
+    particular layer is the one that prevented it. The capture keys on the born
+    row, so it meets that row in 'DISPATCHED' and downgrades the self-declared
+    COMPLETE at capture time; the demotion is the second layer, for the turn
+    whose capture could resolve no row and landed on a synthetic id instead.
     """
     import sqlite3
 
@@ -335,7 +342,17 @@ def test_a_cut_turn_leaves_no_completed_contract_row(tmp_path):
         "a turn cut by the breaker must not leave a row reading COMPLETE; "
         f"survivors: {completed}"
     )
-    assert response.output["contract_row_reconciled"] in ("applied", "not_demotable")
+    # The turn's OWN row, stated directly rather than inferred from the absence
+    # of a COMPLETE anywhere: it ran, it did not close, and it carries the mark
+    # that says so.
+    born = [r for r in rows if r["contract_id"] == contract_id]
+    assert born[0]["agent_state"] == "IN_PROGRESS"
+    assert born[0]["cut_reason"], "a cut turn's row must keep its cut mark"
+    # The demotion is a REPAIR, so "nothing to repair" is a legitimate outcome
+    # and the healthier one -- it means the COMPLETE was never recorded rather
+    # than recorded and corrected. What is NOT acceptable is 'error', a
+    # reconciliation that failed and may have left a COMPLETE standing.
+    assert response.output["contract_row_reconciled"] in ("applied", "skipped")
 
 
 def test_the_demotion_cannot_touch_a_row_the_agent_finalized(tmp_path):

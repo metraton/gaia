@@ -50,7 +50,10 @@ SECOND, INDEPENDENT RESPONSIBILITY -- closing the born-at-dispatch row:
     The closure below is for the turn that did NOT adopt: no kernel reached it
     (the claim failed or was refused), or it minted a rival id anyway, so its
     verdict landed on a DIFFERENT row and the born one is left behind -- with a
-    corrected fence or without one, crash or no crash. THIS MODULE IS THE ONLY LAYER THAT HOLDS BOTH
+    corrected fence or without one, crash or no crash. A turn that adopted but
+    never finalized no longer reaches that closure at all: the CAPTURE keys on
+    the born row and converges it first, and the closure then finds nothing left
+    to close. THIS MODULE IS THE ONLY LAYER THAT HOLDS BOTH
     IDENTITIES, which is why that exit belongs here and nowhere else. (Earlier
     revisions of this docstring claimed the backstop "is also the REAPER" that
     converges the nascent row on a crash. It never could: it looked the orphan up
@@ -240,6 +243,34 @@ def dispatch_row_by_harness_id(task_info: dict, session_id=None, db_path=None):
         return None
 
 
+def is_minted_handle(value) -> bool:
+    """True iff ``value`` has the shape a draft is keyed by
+    (``gaia.contract.validator.AGENT_ID_PATTERN_TEXT``).
+
+    Every value that reaches a draft glob passes through here first, whatever
+    lane produced it -- a row column, a fence field, a transcript scrape. The
+    shape check cannot tell WHOSE handle it is (the harness id matches the same
+    pattern), so it is not an ownership proof; it only keeps a value that could
+    never key a draft out of the key space.
+
+    Fails CLOSED: an unavailable validator answers False. Every caller has a lane
+    that survives a False -- the bridge returns None, the capture keys on the
+    born row or its synthetic id -- whereas answering True on an unverifiable
+    value would put an arbitrary string back into the space this check protects.
+    """
+    if not value:
+        return False
+    try:
+        import re as _re
+
+        from gaia.contract.validator import AGENT_ID_PATTERN_TEXT
+
+        return bool(_re.match(AGENT_ID_PATTERN_TEXT, str(value)))
+    except Exception as exc:
+        logger.debug("Minted-handle validation unavailable: %s", exc)
+        return False
+
+
 def _minted_agent_id_from_dispatch_row(task_info: dict, session_id):
     """The minted handle carried by this turn's own dispatch row, or None.
 
@@ -251,23 +282,15 @@ def _minted_agent_id_from_dispatch_row(task_info: dict, session_id):
     row = dispatch_row_by_harness_id(task_info, session_id)
     if row is None:
         return None
-    try:
-        import re as _re
-
-        from gaia.contract.validator import AGENT_ID_PATTERN_TEXT
-
-        candidate = row.get("agent_id")
-        if candidate and _re.match(AGENT_ID_PATTERN_TEXT, str(candidate)):
-            return str(candidate)
-        logger.warning(
-            "Minted-id bridge found row contract_id=%s but its agent_id=%r is "
-            "not a minted handle; not usable as a draft key.",
-            row.get("contract_id"), candidate,
-        )
-        return None
-    except Exception as exc:
-        logger.debug("Minted-id validation on the bridged row failed: %s", exc)
-        return None
+    candidate = row.get("agent_id")
+    if is_minted_handle(candidate):
+        return str(candidate)
+    logger.warning(
+        "Minted-id bridge found row contract_id=%s but its agent_id=%r is "
+        "not a minted handle; not usable as a draft key.",
+        row.get("contract_id"), candidate,
+    )
+    return None
 
 
 def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None):
@@ -285,9 +308,20 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None
     backstop's step 1a). The harness id is therefore NOT the draft key space,
     and this resolver never treats it as one.
 
+    EVERY lane is shape-checked (:func:`is_minted_handle`) before it is
+    returned, including the fence. The fence is the one lane whose value is
+    written by the agent rather than read back from Gaia's own substrate, so it
+    is also the only one that arrives with no guarantee at all -- the measured
+    population includes ``execution-approved``, ``a_placeholder`` and a run of
+    zeroes. Taking such a value verbatim did not fail: it globbed a draft
+    directory that could not contain a match, returned no draft, and sent the
+    capture to a synthetic id -- the loud symptom of a wrong key is
+    indistinguishable from the quiet one of no draft, which is why it survived.
+
     Resolution order, most authoritative first:
       1. ``agent_status.agent_id`` from the parsed envelope -- the exact value
-         the CLI minted, when a fence was emitted.
+         the CLI minted, when a fence was emitted and the value it carries is
+         actually a minted handle.
       2. ``task_info['minted_agent_id']`` -- precomputed once per turn by
          ``task_info_builder`` from the transcript.
       3. The transcript itself (``agent_transcript_path``), scanned for the
@@ -327,22 +361,29 @@ def resolve_minted_agent_id(parsed_contract, task_info: dict, *, session_id=None
         agent_status = parsed_contract.get("agent_status")
         if isinstance(agent_status, dict):
             aid = agent_status.get("agent_id")
-            if aid:
+            if is_minted_handle(aid):
                 return str(aid)
+            if aid:
+                logger.warning(
+                    "Fence agent_status.agent_id=%r is not a minted handle; "
+                    "NOT used as a draft key (agent=%s harness_agent_id=%s). "
+                    "Resolution continues with the lanes below.",
+                    aid, task_info.get("agent"), task_info.get("agent_id"),
+                )
     precomputed = task_info.get("minted_agent_id")
-    if precomputed:
+    if is_minted_handle(precomputed):
         return str(precomputed)
     recovered = _minted_agent_id_from_transcript(task_info)
-    if recovered:
+    if is_minted_handle(recovered):
         return str(recovered)
     bridged = _minted_agent_id_from_dispatch_row(task_info, session_id)
     if bridged:
         return bridged
     logger.warning(
         "Minted agent id UNRESOLVED for this turn (agent=%s harness_agent_id=%s "
-        "session=%s): no fence agent_status.agent_id, no precomputed mint, no "
-        "mint report in the transcript, and no dispatch row reachable by "
-        "harness_agent_id. Every draft-keyed rescue (M4 reconstruction, "
+        "session=%s): no USABLE fence agent_status.agent_id, no precomputed "
+        "mint, no mint report in the transcript, and no dispatch row reachable "
+        "by harness_agent_id. Every draft-keyed rescue (M4 reconstruction, "
         "truncation salvage, backstop step 1a) is unavailable for this turn.",
         task_info.get("agent"), task_info.get("agent_id"), session_id,
     )
@@ -466,6 +507,30 @@ def clean_rescue_envelope(envelope, *, log: Optional[list] = None):
         return envelope
 
 
+def _carry_birth_markers(_writer, contract_id, raw_handoff_json: str, db_path) -> str:
+    """Carry a born row's dispatch marks onto the envelope about to replace it.
+
+    Only ever ADDS the birth-marker keys the target row already carries, so an
+    envelope that states them itself is left exactly as it is.
+
+    Never raises: an unreadable row returns the envelope unchanged. What is at
+    risk here is the row's provenance, never the capture -- a rescue that lost
+    the row to protect a marker would have the trade backwards.
+    """
+    try:
+        rows = _writer.list_agent_contract_handoffs(
+            contract_id=contract_id, limit=1, db_path=db_path
+        )
+        if not rows:
+            return raw_handoff_json
+        return _writer.merge_birth_markers(
+            rows[0].get("raw_handoff_json"), raw_handoff_json
+        )
+    except Exception as exc:
+        logger.debug("Birth-marker carry-forward failed (non-fatal): %s", exc)
+        return raw_handoff_json
+
+
 def _extract_brief_id(envelope: dict):
     """Resolve brief_id from the envelope (direct field or update_contracts)."""
     if not isinstance(envelope, dict):
@@ -497,6 +562,7 @@ def close_born_dispatch_row(
     db_path=None,
     skip_contract_id: "str | None" = None,
     agent_name: "str | None" = None,
+    turn_row_is_born_row: bool = False,
 ) -> "dict | None":
     """Take the turn's born-at-dispatch row out of 'DISPATCHED'. Runs EVERY turn.
 
@@ -543,6 +609,16 @@ def close_born_dispatch_row(
     turn that never adopted is precisely what let a resumed turn close a
     concurrent sibling's live dispatch (see ``is_born_at_dispatch_row``).
 
+    ``turn_row_is_born_row`` is that first guard ASSERTED rather than inferred,
+    for the caller that already knows: a capture that keyed on the born row has
+    just converged it, so the row is no longer 'DISPATCHED' and the structural
+    test can no longer find a scaffold to protect. The structural test is also
+    incomplete on its own -- it reads the binding columns, all of which are NULL
+    on a FREE dispatch that carried no plan coordinates -- and answering False
+    there would hand the name lane a turn whose scaffold is already closed, whose
+    only remaining same-name match is a CONCURRENT sibling's live dispatch. The
+    two are OR-ed: an assertion here can only ADD protection, never remove it.
+
     Idempotent and race-safe without a lock: only a row still in 'DISPATCHED' is
     touched, and the convergence goes through the same UPSERT the capture uses.
     Whoever gets there first moves the row out of 'DISPATCHED'; a second arrival
@@ -564,7 +640,9 @@ def close_born_dispatch_row(
         orphan = _writer.find_orphaned_dispatched_handoff(
             session_id, identity_candidates, db_path=db_path
         )
-        turn_row_was_born_at_dispatch = _writer.is_born_at_dispatch_row(
+        turn_row_was_born_at_dispatch = bool(
+            turn_row_is_born_row
+        ) or _writer.is_born_at_dispatch_row(
             skip_contract_id or contract_pointer, db_path=db_path
         )
         if orphan is None and agent_name and not turn_row_was_born_at_dispatch:
@@ -641,16 +719,19 @@ def persist_handoff(
     TWO INDEPENDENT JOBS, in this order (see the module docstring for both):
     the CAPTURE (steps 1-4, conditional -- ensure the turn has a contract row)
     and the CLOSE (step 5, unconditional -- take the born-at-dispatch row out of
-    'DISPATCHED'). They target DIFFERENT rows in different key spaces, so
-    neither competes with the other for a row and the turn's row count is
-    unchanged: the capture never adopts the born row, and the close never
-    touches the capture's.
+    'DISPATCHED'). They do not compete: when the capture keys on the born row
+    the two collapse onto ONE row and ``skip_contract_id`` makes the close a
+    no-op, and when they resolve different rows the close links them with a
+    pointer. Either way the turn's row count is what the dispatch already
+    created -- the capture no longer ADDS a row to a turn that has one.
 
     Logic (see module docstring for the never-lost / exactly-once rationale):
     1. Resolve the ``contract_id`` (idempotency key) and a source envelope:
        prefer the agent's own on-disk draft (same key its ``gaia contract
-       finalize`` UPSERTs on, so a race converges to one row); otherwise
-       synthesize a deterministic backstop id for this (agent, session).
+       finalize`` UPSERTs on, so a race converges to one row); else the row born
+       at dispatch, joined by harness id -- the turn's contract named exactly,
+       with no glob; else synthesize a deterministic backstop id for this
+       (agent, session).
     2. CONDITIONAL on the current row state:
        * a TERMINAL row already exists (the agent finalized) -> capture nothing,
          stay fully passive; step 5 still runs.
@@ -717,49 +798,130 @@ def persist_handoff(
         # --- 1. Resolve contract_id (idempotency key) + source envelope ------
         contract_id = None
         source_envelope = None
+        # WHERE the capture landed and WHAT it captured, recorded on the row in
+        # step 3. The contract_id alone no longer answers either question: a
+        # fence-only turn used to be recognizable by its synthetic
+        # `hook-backstop.*` id, and now that the born row is a key this capture
+        # adopts, that distinction has to be carried by a mark of its own rather
+        # than inferred from the shape of an identifier. Same distinction, moved
+        # to where it can survive the key changing.
+        capture_key_space = "synthetic"
+        capture_notes: dict = {}
 
         # 1a. Prefer the agent's own on-disk draft -- the SAME contract_id its
         #     `gaia contract finalize` would UPSERT on, so a finalize+backstop
         #     race converges to one row.
         try:
-            from gaia.contract.drafts import load_draft, resolve_draft_id
+            from gaia.contract import drafts as _drafts
 
             if minted_agent_id:
-                draft_id = resolve_draft_id(
-                    explicit=None, agent_id=str(minted_agent_id)
-                )
+                try:
+                    draft_id = _drafts.resolve_draft_id(
+                        explicit=None, agent_id=str(minted_agent_id)
+                    )
+                except _drafts.AmbiguousDraftError as _ambiguous:
+                    # NOT swallowed. This is a REAL, reachable condition, not an
+                    # unexpected fault: an agent id is minted once per dispatch
+                    # while a CONTINUATION opens a new contract under the SAME
+                    # handle, so every resumption adds a live draft and any turn
+                    # past the first resolves 2+ (five were measured under one
+                    # handle). The glob cannot tell which draft is this turn's --
+                    # but the born row can, and 1b keys on it below. What must
+                    # not happen again is the previous behaviour: a bare `except`
+                    # discarded this exception with no log at all, so the capture
+                    # silently fell to a synthetic id and wrote a second row for
+                    # a turn that already had one, with nothing anywhere saying
+                    # why.
+                    draft_id = None
+                    capture_notes["draft_ambiguity"] = {
+                        "agent_id": str(minted_agent_id),
+                        "candidates": list(_ambiguous.candidates),
+                    }
+                    logger.warning(
+                        "T9 backstop: draft resolution under minted agent id %s "
+                        "is AMBIGUOUS (%d live drafts: %s); the glob cannot name "
+                        "this turn's draft, so the capture keys on the born "
+                        "dispatch row instead.",
+                        minted_agent_id, len(_ambiguous.candidates),
+                        ", ".join(_ambiguous.candidates),
+                    )
                 if draft_id:
-                    loaded = load_draft(draft_id)
+                    loaded = _drafts.load_draft(draft_id)
                     if loaded is not None:
                         contract_id = draft_id
                         source_envelope = loaded
-        except Exception:
-            # drafts substrate unavailable / unreadable -> synthesize below.
-            pass
+                        capture_key_space = "draft"
+        except Exception as _drafts_exc:
+            # The drafts substrate itself is unavailable / unreadable. Distinct
+            # from the ambiguity above and reported as such: this one says
+            # nothing about which draft is this turn's, only that no draft can
+            # be read at all.
+            logger.warning(
+                "T9 backstop: the drafts substrate is unreadable for minted "
+                "agent id %s (%s); the capture falls through to the born "
+                "dispatch row.",
+                minted_agent_id, _drafts_exc,
+            )
 
-        # 1b. NO adoption of the born-at-dispatch row as the capture target --
-        #     deliberately. A previous revision, when no draft resolved, re-keyed
-        #     this capture onto the orphaned nascent row's contract_id. That was
-        #     dead code (it looked the orphan up in the wrong identity space and
-        #     never once resolved), and reviving it would be actively harmful:
-        #     the capture id is what distinguishes a FENCE-ONLY turn -- one that
-        #     emitted a valid fence but never ran `gaia contract init`, so no
-        #     draft exists -- by its synthetic `hook-backstop.*` id. Folding
-        #     those turns onto the dispatch key space would merge two structurally
-        #     distinct populations into one indistinguishable route, losing the
-        #     ability to tell which one happened. The capture keeps its own key
-        #     space; the born row is closed separately, in step 5, by the one
-        #     writer that owns it.
+        # 1b. THE BORN ROW is the capture's key when no draft resolved. The
+        #     dispatch births a row for every turn and SubagentStart stamps the
+        #     harness id onto it, so `dispatch_row_by_harness_id` -- the same
+        #     bridge step 5 and the gate already cross on -- names THIS turn's
+        #     contract exactly, with no glob and no guess.
         #
-        # 1c. No draft: synthesize a deterministic backstop id. A turn with no
-        #     draft never ran finalize, so there is no primary-path row to
-        #     converge with; the deterministic id only makes a re-fire of the
-        #     hook for the same (agent, session) idempotent against itself.
+        #     This replaces a deliberate refusal to adopt that row. The refusal's
+        #     stated reason was that the capture's own key space is what tells a
+        #     FENCE-ONLY turn apart from a normal one; that distinction is real
+        #     and is preserved, by `capture_source` / `capture_key_space` on the
+        #     row rather than by the shape of the id. What the refusal cost was
+        #     larger: a turn whose row already existed got a SECOND, synthetic
+        #     row that by construction never pre-existed, so step 2 always read
+        #     "no row" and always wrote a degraded one -- while step 5 went on to
+        #     find the born row and point it at the synthetic twin.
+        if not contract_id:
+            born_row = dispatch_row_by_harness_id(
+                task_info, session_id, db_path=db_path
+            )
+            born_contract_id = born_row.get("contract_id") if born_row else None
+            if born_contract_id:
+                contract_id = str(born_contract_id)
+                capture_key_space = "dispatch_row"
+                # The born row names WHICH draft is this turn's -- precisely what
+                # the glob could not decide. Loading it is not an optimization:
+                # finalize replaces `raw_handoff_json` wholesale, so capturing
+                # under this key with only the fence in hand would overwrite the
+                # evidence the agent's own `set`/`add`/`fill` calls accumulated
+                # in that draft.
+                try:
+                    from gaia.contract.drafts import load_draft as _load_draft
+
+                    loaded = _load_draft(contract_id)
+                    if isinstance(loaded, dict):
+                        source_envelope = loaded
+                except Exception as _load_exc:
+                    logger.debug(
+                        "T9 backstop: the born row's own draft %s is unreadable "
+                        "(%s); capturing from the fence instead.",
+                        contract_id, _load_exc,
+                    )
+
+        # 1c. Neither a draft nor a born row: synthesize a deterministic backstop
+        #     id. Reached only when the turn has no row to key on at all (no
+        #     harness id, an ambiguous or session-mismatched join, an unavailable
+        #     store), which is exactly when a row must still be written. The
+        #     deterministic id makes a re-fire of the hook for the same (agent,
+        #     session) idempotent against itself.
         if not contract_id:
             sid = session_id or "nosession"
             contract_id = f"hook-backstop.{agent_id}.{sid}"
-            if isinstance(parsed_contract, dict):
-                source_envelope = parsed_contract
+
+        if source_envelope is not None:
+            capture_source = "draft"
+        elif isinstance(parsed_contract, dict):
+            source_envelope = parsed_contract
+            capture_source = "fence_only"
+        else:
+            capture_source = "none"
 
         # --- 2-4. The CAPTURE, as a closure ---------------------------------
         # Scoped as a nested function for one structural reason: the capture has
@@ -780,11 +942,12 @@ def persist_handoff(
             #     prior backstop) -> stay PASSIVE. See the module-level NOTE above
             #     for why this pre-check deliberately does not narrow to "only
             #     COMPLETE blocks" the way the writer's own guard does.
-            #   * NASCENT 'DISPATCHED' -> only reachable when the born row and the
-            #     capture happen to share a contract_id (they do not in
-            #     production; see step 1b) -> converge it to a degraded
-            #     NON-COMPLETE verdict, never a false COMPLETE, through the same
-            #     idempotent convergent writer.
+            #   * NASCENT 'DISPATCHED' -> the ORDINARY shape of a turn that never
+            #     finalized, now that step 1 keys on the born row: this capture
+            #     converges THAT row to a degraded NON-COMPLETE verdict, never a
+            #     false COMPLETE, through the same idempotent convergent writer.
+            #     It used to be all but unreachable, because the capture wrote in
+            #     a key space the born row was never in.
             #   * None -> no row at all -> write a degraded row.
             existing_state = _writer.agent_contract_handoff_state(
                 contract_id, db_path=db_path
@@ -862,6 +1025,16 @@ def persist_handoff(
                 # Distinguish a reaped-orphan row (nascent DISPATCHED converged by
                 # the backstop) from a plain no-row-yet degraded capture.
                 envelope["reaped"] = True
+            # WHICH ROUTE produced this row, carried by the row instead of by the
+            # id it happens to be keyed under (step 1). `capture_source` is what
+            # keeps a FENCE-ONLY turn -- a valid fence with no draft behind it --
+            # legible now that such a turn converges its born row rather than
+            # minting a `hook-backstop.*` id of its own. `draft_ambiguity`, when
+            # present, records the condition that sent the capture down the
+            # dispatch-row lane, so the row itself says why.
+            envelope["capture_source"] = capture_source
+            envelope["capture_key_space"] = capture_key_space
+            envelope.update(capture_notes)
 
             # Every row this capture writes is by construction a row the agent
             # did NOT finalize itself -- the step returns early when a terminal
@@ -879,6 +1052,18 @@ def persist_handoff(
                 )
 
             raw_handoff_json = _json.dumps(envelope)
+            if reaping:
+                # The row being converged was BORN at dispatch, and finalize
+                # replaces `raw_handoff_json` wholesale. Without this the capture
+                # would erase the birth's own marks -- `born_at_dispatch` and the
+                # dispatched agent's NAME -- which are the row's record of where
+                # it came from and the coordinate `gaia contract list` reads a
+                # readable name from. Reuses the writer's merge, the same one the
+                # CLI mirror applies, so "which keys are birth marks" has one
+                # definition.
+                raw_handoff_json = _carry_birth_markers(
+                    _writer, contract_id, raw_handoff_json, db_path
+                )
             # Read from the RAW envelope, never the cleaned one. A top-level
             # `brief_id` is not a declared envelope key, so the sanitize above
             # legitimately drops it from what gets persisted -- but the brief it
@@ -957,14 +1142,15 @@ def persist_handoff(
         turn_recorded_own_contract = _capture()
 
         # --- 5. ALWAYS: close the born-at-dispatch row -----------------------
-        # Runs on every turn, healthy or not, because a born row is left behind
-        # by a NORMAL turn too -- the capture above and the dispatch row live in
-        # different key spaces (step 1b), so the capture never converges it. The
-        # turn's contract row is at `contract_id` either way (already there, or
-        # just written), so that is always the pointer; whether the turn got there
-        # ITSELF is the separate fact that decides reaped-vs-superseded.
-        # `skip_contract_id` keeps this from re-writing a row the capture already
-        # converged.
+        # Runs on every turn, healthy or not, because a turn whose contract row
+        # is NOT its born row (it minted a rival id, or it was captured under a
+        # synthetic one) still leaves that born row behind. When the capture
+        # keyed on the born row itself, `skip_contract_id` collapses this to a
+        # no-op -- the identity resolving to one value IS the detection, no
+        # separate adoption check. The turn's contract row is at `contract_id`
+        # either way (already there, or just written), so that is always the
+        # pointer; whether the turn got there ITSELF is the separate fact that
+        # decides reaped-vs-superseded.
         close_born_dispatch_row(
             _writer,
             session_id=session_id,
@@ -977,6 +1163,7 @@ def persist_handoff(
             db_path=db_path,
             skip_contract_id=contract_id,
             agent_name=task_info.get("agent"),
+            turn_row_is_born_row=(capture_key_space == "dispatch_row"),
         )
 
         # The capture's own key, handed back so a caller that must reconcile

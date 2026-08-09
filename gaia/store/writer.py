@@ -8330,12 +8330,17 @@ def is_born_at_dispatch_row(
 _BIRTH_MARKER_KEYS = ("born_at_dispatch", BIRTH_AGENT_NAME_KEY)
 
 
-def _merge_birth_markers(existing_raw: "str | None", envelope_raw: str) -> str:
+def merge_birth_markers(existing_raw: "str | None", envelope_raw: str) -> str:
     """Carry the birth-marker keys from ``existing_raw`` into ``envelope_raw``.
 
     Returns ``envelope_raw`` unchanged when either side is not a JSON object or
     the existing row carries no marker -- the mirror must degrade to "write the
     partial envelope as-is", never to a failed write.
+
+    Public because the mirror is no longer the only writer that replaces a born
+    row's envelope: the SubagentStop capture converges that same row when the
+    turn never finalized, and it must preserve the dispatch's own marks for the
+    same reason. One definition of "which keys are birth marks", used by both.
     """
     try:
         existing = json.loads(existing_raw) if existing_raw else None
@@ -8417,7 +8422,7 @@ def mirror_partial_contract_handoff(
                     con.commit()
                     return {"status": "skipped", "reason": "closed"}
 
-                merged = _merge_birth_markers(
+                merged = merge_birth_markers(
                     existing["raw_handoff_json"], raw_handoff_json
                 )
                 placeholders = ", ".join("?" for _ in CLOSED_TURN_PLAN_STATUSES)

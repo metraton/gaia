@@ -272,6 +272,42 @@ def test_salvaged_row_distinguishable_from_verified_complete(default_db):
     assert by_id[trunc_draft].get("salvaged") == "truncation"
 
 
+def test_salvage_downgrades_a_complete_claim_in_the_draft(db):
+    """A COMPLETE inside a SALVAGED draft is a claim, not a verdict.
+
+    This lane runs only for a turn the token budget cut off mid-work: it never
+    reached its own ``gaia contract finalize``, so nothing verified that
+    COMPLETE. Recording it would falsely satisfy the briefs "plan closed => a
+    COMPLETE handoff row exists" invariant. The T9 backstop already downgrades
+    exactly this claim when it converges an unfinalized row; this lane had no
+    downgrade of its own, so the SAME truncated turn was recorded COMPLETE or
+    IN_PROGRESS depending only on which rescue reached it first.
+
+    The claim itself is preserved in the envelope -- the row records a verdict,
+    it does not rewrite what the turn wrote.
+    """
+    draft_id = mint_draft_id(VALID_AGENT_ID)
+    save_draft(draft_id, _verified_complete_envelope())
+    _born_and_stamped(draft_id, db)
+
+    out = _adapter()._salvage_truncated_draft(
+        parsed_contract=None,
+        task_info=_task_info(db),
+        session_id="sess-complete-claim",
+    )
+    assert out["created"] is True
+
+    rows = _rows(db)
+    assert len(rows) == 1
+    assert rows[0]["agent_state"] == "IN_PROGRESS", (
+        "a truncated turn never verified its own COMPLETE; the two rescue lanes "
+        "must not disagree about the same turn"
+    )
+    payload = _payload(rows[0]["raw_handoff_json"])
+    assert payload["agent_status"]["agent_state"] == "COMPLETE"
+    assert payload.get("salvaged") == "truncation"
+
+
 # ---------------------------------------------------------------------------
 # 3. Salvage reuses view.py's SINGLE renderer for the resume hint (T14)
 # ---------------------------------------------------------------------------

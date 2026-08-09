@@ -159,8 +159,35 @@ def _adapter() -> ClaudeCodeAdapter:
 # ---------------------------------------------------------------------------
 
 def test_resolver_prefers_envelope_agent_id():
-    parsed = {"agent_status": {"agent_id": "aff0091"}}
-    assert resolve_minted_agent_id(parsed, {"agent_id": "aother9"}) == "aff0091"
+    parsed = {"agent_status": {"agent_id": VALID_AGENT_ID}}
+    assert resolve_minted_agent_id(
+        parsed, {"agent_id": HARNESS_AGENT_ID}
+    ) == VALID_AGENT_ID
+
+
+def test_resolver_refuses_a_fence_agent_id_that_is_not_a_minted_handle(caplog):
+    """The fence is the one lane whose value the AGENT writes, so it is the one
+    lane that can carry anything at all -- and it was taken verbatim, unchecked.
+
+    The measured population includes ``execution-approved``, ``a_placeholder``
+    and a run of zeroes; each was handed to ``resolve_draft_id`` as a draft key,
+    where it globbed a directory that could not contain a match. Nothing failed:
+    "wrong key" and "no draft" are the same silence. This test previously
+    asserted the OPPOSITE -- that a 7-character ``aff0091`` came back verbatim --
+    which is how the unchecked value survived review.
+    """
+    parsed = {"agent_status": {"agent_id": "execution-approved"}}
+    with caplog.at_level("WARNING"):
+        resolved = resolve_minted_agent_id(parsed, {"agent_id": HARNESS_AGENT_ID})
+
+    assert resolved is None, (
+        f"a fence id that cannot key a draft must not be used as one; got "
+        f"{resolved!r}"
+    )
+    assert resolved != HARNESS_AGENT_ID
+    assert any(
+        "is not a minted handle" in rec.message for rec in caplog.records
+    ), "refusing the value silently would restore the original defect one layer up"
 
 
 def test_resolver_returns_none_rather_than_the_harness_id_when_no_fence():
