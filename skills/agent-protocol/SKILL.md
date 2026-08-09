@@ -29,9 +29,13 @@ identity the gate accepts while your real contract is reaped unfinalized.
 ## 3. Ground yourself before acting
 
 Ask what already governs this, in precedence: injected context -> memory, queryable past the sample
-you were sent (`gaia memory search`) -> the code, which outranks any description of it -> the skills
--> outside. Out of that order the failure is a right answer in the wrong idiom that the next reader
-must reconcile. Announce no tool sequence and claim no reach in advance: both are commitments made by
+you were sent -> the code, which outranks any description of it -> the skills -> outside. Out of that
+order the failure is a right answer in the wrong idiom that the next reader must reconcile. A goal now
+often carries a COORDINATE rather than a retelling -- a contract id, a memory slug, a brief name --
+and opening one takes a verb: `read-map.md`, beside this file in this skill's directory, is the whole
+read vocabulary, what each verb returns, and the workspace rule that decides whether any of it
+resolves. Read it when a coordinate arrives; a read capability you do not know about produces no
+error, only absence. Announce no tool sequence and claim no reach in advance: both are commitments made by
 the part of the turn that knows least, and both are read downstream as established.
 
 ## 4. Local and reversible work just happens; what goes out into the world is asked once
@@ -93,6 +97,7 @@ field is worth nothing, because a reader who catches one cannot bound how many o
 
 ## Where to go next
 
+- `read-map.md` -- what a turn can read, with which verb, and what comes back: contracts and their continuation chains, memory, project knowledge, briefs/plans/tasks, the event surfaces, approvals. The single place that vocabulary is written.
 - `reference.md` -- the argument behind each principle, keyed by number, plus the state machines, the kernel, storage and recovery, what the gate rejects, and the edge cases.
 - `agent-contract-handoff` -- envelope fields and rules; `examples.md` -- filled envelopes, state by state.
 - `investigation` -- evidence and mutation forecasting; then `security-tiers` -> `command-execution` for one operation, or `subagent-request-approval` (payload `agent-approval-protocol`) -> `execution` for a COMMAND_SET.

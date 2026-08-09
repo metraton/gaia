@@ -53,7 +53,8 @@ skills/
 ├── agent-creation/        # Coach skill: structure, tone, and component inventory for new specialist agents
 ├── agent-protocol/        # Protocol: the eleven principles that govern a turn as it happens, plus what the gate rejects
 │   ├── reference.md       # the two state machines, phase-to-section map, kernel fields, storage/recovery, edge cases
-│   └── examples.md        # filled envelopes, one per agent_state
+│   ├── examples.md        # filled envelopes, one per agent_state
+│   └── read-map.md        # THE read vocabulary: what a turn can read, with which verb, and what comes back (every other skill points here)
 ├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
 ├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io

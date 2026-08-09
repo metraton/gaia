@@ -287,19 +287,10 @@ grandfathering window exists or is needed.
 ### Project knowledge is pulled, not preloaded
 
 The kernel deliberately carries data about the turn, not about the project.
-Read one section from the `can_read` menu with
-`gaia context get-contract --section <s>` (`--workspace <w>` when the workspace
-is not the cwd's; `--section` is required; `--text` for the human form). It
-resolves against `project_context_contracts.contract_name` -- the exact names
-the menu lists -- and exits 1 naming the available sections when the name does
-not exist.
-
-Its sibling `gaia context get --section <s>` is a different namespace: it
-resolves against the workspace SHAPE (`apps`, `services`, `git`,
-`environment`, ...) and never reaches these sections. The names overlap without
-meaning the same thing -- `gaia context get --section stack` returns the
-shape's empty scanner placeholder `{}`, while the real `stack` payload comes
-only from `get-contract`.
+`can_read` is a menu of section names, and nothing behind it arrives with the
+dispatch -- the turn pulls what the goal needs. Which verb reaches those
+sections, why its sibling with the same `--section` flag does not, and what each
+returns: `read-map.md`, "Project knowledge -- two namespaces".
 
 ## Storage and recovery
 
@@ -346,14 +337,37 @@ gate reads.
 `degraded` + `reaped` -- forensic cleanup that records that `finalize` was
 never called. It never earns `COMPLETE`.
 
-**Recovering a cut turn.** `gaia contract list --cut --json` lists cut rows;
-`gaia contract view --draft-id <contract_id>` or
-`gaia contract view --harness-id <harness_agent_id>` prints the envelope,
-recovering accumulated evidence from `raw_handoff_json` when no draft file
-remains. `view` never writes, so it is safe to point at any row, historical or
-cut. `gaia contract view --field <dotted.path>` prints one subtree, exiting 1
-when the path does not exist -- an existing-but-empty field and an absent one
-are never the same response.
+**Recovering a cut turn.** The verbs and their addressing modes are in
+`read-map.md`, "The record of past turns"; what matters here is that recovery is
+safe. `gaia contract view` never writes, so it may be pointed at any row --
+historical, cut, or another agent's -- and it recovers accumulated evidence from
+the row's `raw_handoff_json` when no draft file remains. `gaia contract list
+--cut` is the filter that finds those rows in the first place.
+
+**Four things the CLI does to your contract without being asked.** None is
+silent: each is printed on stderr and carried in `--json`, because a write that
+lands differently from what you sent is exactly what must not happen quietly.
+
+1. **Canonicalization on write.** A validated value is persisted in its canonical
+   spelling -- `work_phase: ' Verifying ' -> 'verifying'`, reported under
+   `canonicalized`. What you read back is the canonical form, not your input.
+2. **Repair of an inherited draft.** A draft carrying a key from an older
+   vocabulary would otherwise reject every write, including the one that would
+   fix it. `_sanitize_inherited` drops the undeclared key on the way IN and says
+   so (`[SANITIZED] removed <key> ...`, `sanitized` in `--json`). The read verbs
+   pass `sanitize=False`: `validate` and `view` report the draft as it actually
+   is.
+3. **A continuation minted when you write over a closed contract.** A turn that
+   already declared a close and writes again is a NEW turn: the write lands on a
+   fresh contract recording which one it continues
+   (`agent_contract_handoffs.continues_handoff_id`), and the closed row is read,
+   never written. Reported in `--json`, on stderr, and as a
+   `contract.continuation` harness event; read the whole chain back from any link
+   with `gaia contract chain`.
+4. **A mirror that did not land.** `set`/`add`/`fill` reflect the partial
+   envelope onto the born row best-effort. A draft with no born row mirrors to
+   nothing, and the call still exits 0 -- so it reports `mirrored: false` with a
+   `mirror_skipped_reason`. Treat that as evidence NOT reaching the database.
 
 ## Edge cases
 

@@ -13,11 +13,11 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
 1. Read the injected dispatch kernel -- `# Your Contract` (goal, role,
    `project`, the `can_read` menu) and `# What I know about you`. Do not
    re-derive facts it already supplies.
-2. Pull the project context the goal needs on demand -- it is NOT preloaded:
-   a scoped `gaia context get-contract --section <s>` (within your `can_read`
-   menu -- `gaia context get`/`show` resolve `--section` against the workspace
-   shape instead, never against these contracts), then `gaia context show` or
-   `gaia context query` for wider reads. Do not read Gaia's database directly.
+2. Pull what the goal needs from the substrate on demand -- none of it is
+   preloaded, and a coordinate in the goal (a contract id, a memory slug, a
+   brief) is an instruction to go read it. The verbs, their addressing, and the
+   workspace rule that decides whether they resolve are in
+   `agent-protocol/read-map.md`. Do not read Gaia's database directly.
 3. Inspect the smallest relevant source files, tests, configuration, git diff,
    or runtime query. Prefer authoritative implementation over prose.
 4. Record each material source immediately in the contract:
