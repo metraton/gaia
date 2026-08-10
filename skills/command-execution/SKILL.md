@@ -24,7 +24,12 @@ One command, one result, one exit code. This skill owns invocation discipline;
    under the canonical Gaia scratch directory (`~/.gaia/scratch`, printed by
    `gaia paths`; a `GAIA_DATA_DIR` override relocates it), never into a
    workspace or client repository tree. Only the actual deliverable (the code
-   change, the config, the report the task asked for) belongs in-repo. A file
+   change, the config, the report the task asked for) belongs in-repo. Name it
+   after the current turn's `contract_id` (the `# Your Contract` value, shape
+   `<agent_id>.<token>`) -- the bare id as the entry name, or that id plus one
+   trailing extension (`<contract_id>.json`) -- never a free-form or
+   task-derived name: that is the identifier Gaia's own retention rule reads
+   back to attribute and reclaim the entry once the contract closes. A file
    worth keeping as proof of what was done is deposited as evidence through
    the contract's evidence clause (`agent-contract-handoff`), not left sitting
    in scratch or committed as a side effect.

@@ -171,9 +171,12 @@ rejects the whole batch of evidence entries, though other, non-evidence
 
 A file large enough to need `artifact_path` rather than inline `text` is
 staged first under the canonical Gaia scratch directory (`~/.gaia/scratch`,
-see `command-execution`) if it did not already exist as a real deliverable,
-then deposited with `gaia evidence add` (which mints the canonical path) --
-never referenced from scratch or from a workspace/client repo path directly.
+see `command-execution`) if it did not already exist as a real deliverable --
+staged under the current turn's own `contract_id` (`<agent_id>.<token>`, bare
+or with one trailing extension) so Gaia's own retention rule can attribute
+and reclaim the staged copy once this contract closes -- then deposited with
+`gaia evidence add` (which mints the canonical path) -- never referenced from
+scratch or from a workspace/client repo path directly.
 
 ## Validator ownership
 

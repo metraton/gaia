@@ -26,7 +26,7 @@ kubectl apply -f manifest.yaml
 
 ## Rule 6: Files Over Inline Data
 
-Inline JSON/YAML/HCL creates shell quoting fragility. Write to a temp file, reference by path: `helm upgrade app chart -f /tmp/values.yaml` instead of `--set "config={key: value}"`.
+Inline JSON/YAML/HCL creates shell quoting fragility. Write to a file under the canonical Gaia scratch directory (`~/.gaia/scratch`, printed by `gaia paths`), reference by path: `helm upgrade app chart -f ~/.gaia/scratch/values.yaml` instead of `--set "config={key: value}"`.
 
 ## Cloud CLI Examples
 
@@ -44,7 +44,7 @@ Inline JSON/YAML/HCL creates shell quoting fragility. Write to a temp file, refe
 # GOOD: run each separately, verify each exit code
 terraform init
 terraform validate
-terraform plan -out=/tmp/tfplan
+terraform plan -out=~/.gaia/scratch/tfplan
 ```
 
 ### No Indirect-Execution Wrappers (Rule 2b)
