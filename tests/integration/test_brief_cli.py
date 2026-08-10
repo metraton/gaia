@@ -804,16 +804,25 @@ def test_milestone_add_and_show_roundtrip(tmp_db, tmp_path, monkeypatch, capsys)
 
 
 def test_ac_add_and_show_roundtrip(tmp_db, tmp_path, monkeypatch, capsys):
-    """`gaia brief ac add` writes an acceptance_criteria row readable via get_brief."""
+    """`gaia brief ac add` writes an acceptance_criteria row readable via get_brief.
+
+    Uses gaia.paths.evidence_dir() rather than constructing the root from
+    HOME: the evidence root resolves through GAIA_DATA_DIR like every other
+    Gaia directory (see gaia/evidence/fs.py::_evidence_root), and the tmp_db
+    fixture above already points GAIA_DATA_DIR at this test's tmp_path.
+    Hardcoding Path.home() here would silently stop testing the real
+    canonical root the moment that root honored the override (it did).
+    """
     import argparse
     from cli.brief import _cmd_new, _cmd_ac
     from gaia.briefs import get_brief
+    from gaia.paths import evidence_dir
 
     monkeypatch.chdir(tmp_path)
     assert _cmd_new(_new_args(title="AC Brief", surface_type="cli")) == 0
 
     canonical_artifact = str(
-        Path.home() / ".gaia" / "evidence" / "me" / "ac-brief" / "AC-1" / "result.txt"
+        evidence_dir() / "me" / "ac-brief" / "AC-1" / "result.txt"
     )
     rc = _cmd_ac(argparse.Namespace(
         ac_action="add", brief="ac-brief", workspace="me",

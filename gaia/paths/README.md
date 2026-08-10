@@ -11,6 +11,7 @@ documentation, see the parent README.
 from gaia.paths import (
     data_dir, db_path, snapshot_dir, state_dir,
     workspaces_dir, logs_dir, events_dir, cache_dir,
+    scratch_dir, evidence_dir, worktrees_dir, tmp_dir, rejected_turns_dir,
     ensure_layout, workspace_id,
     create_snapshot, enforce_retention, latest_snapshot_age_seconds,
 )

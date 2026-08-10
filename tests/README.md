@@ -58,6 +58,7 @@ tests/
 ├── orchestrator/                    # Layer 1: orchestrator behavior (sealed-payload relay, …)
 ├── project/                         # Layer 1: project-context / workspace identity tests
 ├── paths/                           # Layer 1: path resolution and layout tests
+├── retention/                       # Layer 1: scratch/tmp/cache + worktree/branch retention rules
 ├── snapshots/                       # Layer 1: scanner output snapshot tests
 ├── skills/                          # Layer 1: skill-resolution and skill-format tests
 ├── evals/                           # Layer 1: grader / trace evaluation tests

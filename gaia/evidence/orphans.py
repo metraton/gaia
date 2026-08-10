@@ -19,11 +19,13 @@ write-before-validate gap would produce new orphans indistinguishable from
 the historical ones, and a sweep that only looked at new files would mask
 that regression instead of catching it.
 
-Fail-closed exactly like ``gaia.retention.fs_rules``: when gaia.db cannot be
-read (no file, locked, missing table), ``find_orphan_blobs()`` returns an
-empty list. Absence of evidence can only mean "cannot confirm any orphan
-here," never "every file must be one" -- the same posture ``gaia.retention.
-fs_rules._closed_contract_ids`` uses for its own DB-backed checks.
+Fail-closed via the shared ``gaia.retention.infra._ro_db_connect`` (the same
+canonical connection ``fs_rules`` and ``liveness`` import instead of each
+defining their own): when gaia.db cannot be read (no file, locked, missing
+table), ``find_orphan_blobs()`` returns an empty list. Absence of evidence
+can only mean "cannot confirm any orphan here," never "every file must be
+one" -- the same posture ``gaia.retention.fs_rules._closed_contract_ids``
+uses for its own DB-backed checks.
 
 Public API::
 
@@ -35,26 +37,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Optional, Set
 
-
-def _ro_db_connect():
-    """Strictly read-only, never-create connection to gaia.db.
-
-    Mirrors ``gaia.retention.fs_rules._ro_db_connect``: never bootstraps the
-    schema, returns None on any failure (absent DB, locked file, missing
-    driver) so a caller can run this sweep against a machine with no DB at
-    all and simply learn nothing.
-    """
-    try:
-        import sqlite3
-
-        from gaia.paths import db_path
-
-        path = db_path()
-        if not Path(path).is_file():
-            return None
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    except Exception:
-        return None
+from gaia.retention.infra import _ro_db_connect
 
 
 def _known_artifact_paths() -> Optional[Set[str]]:

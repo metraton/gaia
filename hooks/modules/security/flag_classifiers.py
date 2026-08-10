@@ -11,14 +11,28 @@ Classification outcomes:
   BLOCKED    -- permanently blocked (exit 2), maps to the same path as blocked_commands
 
 Note on BLOCKED overlap with blocked_commands.py:
-  blocked_commands.py already permanently blocks:
-    - git push --force / -f
-    - git reset --hard
-  The classifiers for git push and git reset are still present here for
-  consistency (they return BLOCKED with the same reason), but blocked_commands.py
-  will catch these first in the pipeline.  Having both layers is intentional:
-  flag_classifiers is the semantic-aware layer; blocked_commands is the
-  pattern-level safety net.
+  blocked_commands.py permanently blocks git push --force / -f, and
+  blocked_commands.py catches it first in the pipeline. The classifier for
+  git push here is retained for consistency (it returns BLOCKED with the
+  same reason) but is redundant with that permanent block for this verb.
+
+  git reset --hard is a DIFFERENT case: blocked_commands.py deliberately
+  does NOT block it -- it is T3-approvable there (see the "git_destructive"
+  note in blocked_commands.py and test_git_reset_hard_is_t3_approvable),
+  because it is destructive but recoverable via `git reflog`, unlike a
+  force push. _classify_git_reset's BLOCKED outcome below still exists for
+  this module's own unit-test contract, but it never actually decides a
+  live `git reset --hard`'s tier: bash_validator.py runs
+  detect_mutative_command() (mutative_verbs.py) before classify_by_flags()
+  and excludes git from the flag-classifier's MUTATIVE path precisely
+  because mutative_verbs already has deliberate git handling -- and
+  mutative_verbs classifies every `git reset` form, including --hard, as
+  MUTATIVE (T3-approvable), so this module's git-reset classifier is never
+  reached for a real Bash invocation. The two files therefore state the
+  SAME live policy for git reset --hard (T3-approvable, not permanently
+  blocked); only this module's isolated unit tests still exercise its own
+  BLOCKED verdict for --hard as a classifier-level contract, not as the
+  pipeline's actual behavior.
 
 Dependencies: Python stdlib only.
 """

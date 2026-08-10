@@ -17,7 +17,7 @@ directory name -- a deliberate, confirmed decision (do not revisit it): the
 directory name is an opaque token (``secrets.token_hex``), and
 ``lock_reason`` / ``parse_lock_reason`` are the one place that encodes and
 decodes "which contract and which agent created this" into the free-text
-string ``git worktree lock --reason`` accepts. That reason is what task 14's
+string ``git worktree lock --reason`` accepts. That reason is what task 15's
 worktree collector reads -- cross-referenced against
 ``gaia.retention.liveness`` -- to decide whether an abandoned, still-locked
 worktree's owning session is still alive.
@@ -65,7 +65,7 @@ def parse_lock_reason(reason: Optional[str]) -> Optional[Dict[str, str]]:
 
     Returns ``None`` when *reason* was not minted by ``lock_reason`` -- a
     worktree locked by a human or another tool for an unrelated purpose
-    carries no parseable identity, and a caller (task 14's collector) must
+    carries no parseable identity, and a caller (task 15's collector) must
     treat that as unknown rather than guess at ownership.
     """
     if not reason:
