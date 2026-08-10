@@ -1654,6 +1654,240 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
 
 
 # ============================================================================
+# git worktree -- family classifier and managed-root recycling exception
+# ============================================================================
+# The worktree verb family was never modelled here, and the resulting economy
+# was inverted: `git worktree add` carries no verb in MUTATIVE_VERBS ("add" is
+# deliberately absent, see the note in that table) so creating a worktree fell
+# through to Step 4 and classified READ_ONLY by elimination, while
+# `git worktree remove` was gated only because the generic "remove" token
+# happens to sit in MUTATIVE_VERBS.  So the one act that CONTRACTS a cleanup
+# obligation was free, and the act that DISCHARGES it cost an approval -- the
+# mechanism behind the orphaned worktrees accumulating in the user's repos.
+#
+# This lane models the family explicitly and inverts that economy:
+#   add / move  -> MUTATIVE.  Creating a worktree contracts an obligation to
+#                  clean it up later; that is the act worth a signature.
+#   remove      -> MUTATIVE, EXCEPT when every target resolves strictly inside
+#                  Gaia's central worktrees root and no force signal is present
+#                  (see _git_worktree_recycles_only_managed_root).
+#   anything else (list, prune, lock, unlock, repair, or a subcommand added by
+#                  a future git) -> not handled here; the lane returns None and
+#                  the pre-existing classification stands untouched.
+#
+# WHY --force is never exempt, and why that is the whole calibration: what needs
+# consent is DESTROYING UNCAPTURED WORK, not deleting a directory whose contents
+# are already safe.  `git worktree remove` refuses on its own when the worktree
+# has uncommitted changes; `--force` is precisely the override of that refusal.
+# Keeping the force form at T3 means the exempted path can never destroy work
+# git itself would have protected -- git's own check does the load-bearing work
+# and the tier gate sits exactly on top of the bypass.
+#
+# This is a NEW predicate over the worktree verb family, deliberately NOT a
+# reuse of _rm_targets_only_scratch: that one is specific to the `rm` verb and
+# to the scratch root, parses `rm`'s own flag grammar, and permits the root
+# itself as a target.  Sharing it would couple two unrelated exemptions and let
+# a change to either silently widen the other.
+
+_WORKTREE_GLOB_CHARS: FrozenSet[str] = frozenset("*?[]{}")
+
+# Worktree subcommands anchored MUTATIVE by this lane.  "remove" is listed
+# because it must be gated by an explicit model rather than by the incidental
+# match on the generic "remove" verb; its exemption is applied separately.
+GIT_WORKTREE_MUTATIVE_SUBCOMMANDS: FrozenSet[str] = frozenset({
+    "add",
+    "move",
+    "remove",
+})
+
+
+def _gaia_worktrees_root() -> "str | None":
+    """Return the canonical (realpath) Gaia worktrees root, or None.
+
+    Reads the location from gaia.paths.resolver.worktrees_dir() so a
+    GAIA_DATA_DIR override is honoured, then canonicalises it with
+    os.path.realpath.  Resolving at call time (rather than comparing against a
+    literal string prefix) is what makes the containment check in
+    _git_worktree_recycles_only_managed_root a statement about the real
+    directory instead of about the spelling of a path.
+
+    Fail-closed: any failure to import the resolver or resolve the path returns
+    None, which makes the worktree exception decline (stay T3).
+    """
+    import os
+    try:
+        from gaia.paths.resolver import worktrees_dir
+        return os.path.realpath(str(worktrees_dir()))
+    except Exception:
+        return None
+
+
+def _git_worktree_positionals(tokens: tuple) -> List[str]:
+    """Return the positional tokens of a git command, original case preserved.
+
+    Mirrors the flag grammar analyze_command applies -- a single-letter short
+    flag appearing before the first positional consumes the next token as its
+    value, so the path in ``git -C /repo worktree remove wt`` is absorbed and
+    never mistaken for a subcommand or a removal target.
+
+    semantics.non_flag_tokens cannot be used here: it lowercases every token,
+    which corrupts any path with an uppercase component on a case-sensitive
+    filesystem and would make the containment check resolve the wrong
+    directory.
+    """
+    positionals: List[str] = []
+    skip_next = False
+    seen_positional = False
+    args = list(tokens[1:])
+    for index, token in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if token.startswith("-") and token != "-":
+            is_short_value_flag = (
+                not token.startswith("--")
+                and len(token) == 2
+                and token[1].isalpha()
+            )
+            if (
+                not seen_positional
+                and is_short_value_flag
+                and index + 1 < len(args)
+                and not args[index + 1].startswith("-")
+            ):
+                skip_next = True
+            continue
+        positionals.append(token)
+        seen_positional = True
+    return positionals
+
+
+def _git_worktree_has_force_signal(tokens: tuple) -> bool:
+    """Return True when a git worktree command carries a force override.
+
+    Matches the long form ``--force`` and any single-dash short cluster
+    containing ``f`` (``-f``, ``-ff``), which is how `git worktree remove`
+    spells the override of its own uncommitted-changes refusal.  A value token
+    absorbed after ``-C``/``-c`` is a bare path and never dash-prefixed, so it
+    cannot trip this check.
+    """
+    for token in tokens[1:]:
+        lowered = token.lower()
+        if lowered == "--force":
+            return True
+        if lowered.startswith("--"):
+            continue
+        if lowered.startswith("-") and len(lowered) > 1:
+            body = lowered[1:]
+            if body.isalpha() and "f" in body:
+                return True
+    return False
+
+
+def _git_worktree_recycles_only_managed_root(tokens: tuple) -> bool:
+    """Return True only if a `git worktree remove` recycles inside Gaia's root.
+
+    STRICT and fail-closed.  Returns True only when ALL of the following hold:
+      (a) the worktrees root resolves (GAIA_DATA_DIR honoured);
+      (b) no force signal is present -- see _git_worktree_has_force_signal;
+      (c) at least one removal target is present after ``worktree remove``;
+      (d) every target is ABSOLUTE after expanduser.  A relative target is
+          refused because ``git -C <repo>`` resolves it against the repo, not
+          against the hook's cwd, so its real destination is not knowable here;
+      (e) no target carries a glob metacharacter or a ``..`` component;
+      (f) every target, after os.path.realpath, lives strictly UNDER
+          ``worktrees_root + os.sep``.
+
+    realpath (not normpath) is deliberate: a path fabricated out of symlinks or
+    parent-traversal segments is resolved to the directory it actually names
+    before containment is tested, so satisfying the text of the prefix is not
+    enough to satisfy the check.  Containment is strict -- the root itself is
+    not a worktree and does not qualify.
+
+    Any ambiguity returns False, keeping the command at T3.
+    """
+    import os
+    worktrees_root = _gaia_worktrees_root()
+    if not worktrees_root:
+        return False
+
+    if _git_worktree_has_force_signal(tokens):
+        return False
+
+    positionals = _git_worktree_positionals(tokens)
+    # positionals[0] == "worktree", positionals[1] == "remove"; targets follow.
+    targets = positionals[2:]
+    if not targets:
+        return False
+
+    for target in targets:
+        if any(char in _WORKTREE_GLOB_CHARS for char in target):
+            return False
+        if ".." in target:
+            return False
+        expanded = os.path.expanduser(target)
+        if not os.path.isabs(expanded):
+            return False
+        real = os.path.realpath(expanded)
+        if not real.startswith(worktrees_root + os.sep):
+            return False
+
+    return True
+
+
+def _check_git_worktree(
+    semantics: CommandSemantics,
+    tokens: tuple,
+    family: str,
+) -> "Optional[MutativeResult]":
+    """Classify the `git worktree` verb family, or return None to stand aside.
+
+    Returns None for any worktree subcommand this lane does not model, leaving
+    the pre-existing classification of that subcommand exactly as it was.
+    """
+    non_flag = semantics.non_flag_tokens
+    if len(non_flag) < 2 or non_flag[0] != "worktree":
+        return None
+
+    subcommand = non_flag[1]
+    if subcommand not in GIT_WORKTREE_MUTATIVE_SUBCOMMANDS:
+        return None
+
+    if subcommand == "remove" and _git_worktree_recycles_only_managed_root(tokens):
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_READ_ONLY,
+            verb="worktree remove",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                "git worktree remove recycling only inside Gaia's managed "
+                "worktrees root (~/.gaia/worktrees); every target resolves "
+                "strictly under the runtime-resolved root via realpath and no "
+                "force flag overrides git's own uncommitted-changes refusal"
+            ),
+        )
+
+    if subcommand == "add":
+        reason = (
+            "git worktree add creates a worktree, contracting an obligation to "
+            "clean it up later"
+        )
+    else:
+        reason = f"State-mutating command path 'git worktree {subcommand}'"
+
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb=f"worktree {subcommand}",
+        dangerous_flags=_scan_dangerous_flags(list(tokens), "git"),
+        cli_family=family,
+        confidence="high",
+        reason=reason,
+    )
+
+
+# ============================================================================
 # Simulation Flags (--dry-run and equivalents)
 # ============================================================================
 
@@ -2771,6 +3005,14 @@ def detect_mutative_command(
     # Dangerous flags (-D, -M, --force) are still checked so that
     # "git branch -D feature" remains flagged.
     if base_cmd == "git" and semantics.non_flag_tokens:
+        # Step 3e-wt: the `git worktree` family is modelled explicitly rather
+        # than left to the verb scanner, which gated `remove` only by an
+        # incidental token match and let `add` through as safe by elimination.
+        # Stands aside (None) for every subcommand it does not model.
+        worktree_result = _check_git_worktree(semantics, tuple(tokens), family)
+        if worktree_result is not None:
+            return worktree_result
+
         git_subcmd = semantics.non_flag_tokens[0]
         if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:
             dangerous_flags = _scan_dangerous_flags(tokens, base_cmd)
