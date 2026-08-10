@@ -11,7 +11,8 @@ Public helpers exposed to install/update:
   - configure_settings_json   Create or repair `.claude/settings.json`.
   - merge_local_permissions   Union gaia permissions into `settings.local.json`.
   - merge_local_hooks         Merge hook event entries into `settings.local.json`.
-  - merge_worktree_settings   Force `worktree.bgIsolation: "none"` into `settings.local.json`.
+  - merge_worktree_settings   Force `worktree.bgIsolation: "none"` into `settings.local.json`,
+                              but only for a workspace that is not inside a git working tree.
   - manage_symlinks           Create or repair `.claude/{agents,hooks,...}` symlinks.
   - register_plugin           Write `.claude/plugin-registry.json` with the version.
 
@@ -36,6 +37,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -580,31 +582,86 @@ def merge_local_hooks(
 # repo, the harness cannot create that worktree, and every subagent
 # Edit/Write in the workspace is silently blocked with no way out. Setting
 # bgIsolation to "none" was validated live: it unblocks writes even with
-# CLAUDE_JOB_DIR set, in both git and non-git workspaces. Gaia forces this
-# in every install so a workspace launched via Agent View is never silently
-# broken by a harness default it never opted into.
+# CLAUDE_JOB_DIR set, when there is no git working tree to isolate into.
+#
+# That bug does not exist when the workspace IS inside a git working tree
+# -- `git worktree add` has a real repo to target, so the harness's own
+# isolation mechanism works as designed. Forcing "none" there too was a
+# measured regression, not a defense: it silently undid the isolation a
+# user turned ON (or the harness's own default), and every `gaia install`/
+# `gaia update` re-asserted it, so the override survived no longer than the
+# next install. Gaia now forces this value ONLY for a workspace that has no
+# git working tree to protect; inside one, this key is left completely
+# alone -- present or absent, "none" or "worktree" -- because there is no
+# bug here for Gaia to guard against and the choice is the user's.
 _WORKTREE_BG_ISOLATION_KEY = "bgIsolation"
 _WORKTREE_BG_ISOLATION_VALUE = "none"
 
+_GIT_RESOLVE_TIMEOUT_SECONDS = 5
+
+
+def _workspace_is_inside_git_work_tree(workspace: Path) -> bool:
+    """True when *workspace* sits inside a git working tree.
+
+    Covers a repo's own root, any subdirectory of one (git discovers the
+    repo upward however deep -- a `.claude/` installed a few levels into a
+    monorepo still counts), a linked worktree, and a submodule. False for
+    a bare repo (there is no working tree to isolate into, so the harness
+    bug this override guards against still applies) and false for a
+    directory that merely CONTAINS unrelated git repositories as children
+    -- git only searches upward from *workspace*, never downward, so an
+    umbrella folder over independent nested repos never reads as "inside"
+    one of them just because one of its subdirectories is a repo.
+
+    Any failure running git (git missing, permission denied, or a
+    malformed/inaccessible repo) is treated as "no working tree" -- the
+    same conservative default this override already had before this
+    predicate existed, so a detection failure can only ever widen the set
+    of workspaces `bgIsolation` protects, never narrow it.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=_GIT_RESOLVE_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
 
 def merge_worktree_settings(workspace: Path, *, dry_run: bool = False) -> dict[str, Any]:
-    """Force `worktree.bgIsolation: "none"` into settings.local.json.
+    """Force `worktree.bgIsolation: "none"` into settings.local.json --
+    but ONLY for a workspace that is not inside a git working tree.
 
-    Authoritative on this ONE key -- like the `agent` identity field in
-    merge_local_permissions, not like the env-var smart-merge in the same
-    function. Gaia needs this exact value to take effect in EVERY install,
-    including a re-install over a workspace that already carries a
-    `worktree.bgIsolation` set to something else (a stale harness default,
-    or a value written before this fix existed) -- so an existing value
-    that is not already "none" is normalized rather than preserved. Any
-    OTHER key nested under `worktree` (present or future harness options)
-    is left untouched; only `bgIsolation` is Gaia-owned.
+    Authoritative on this ONE key for that ONE case -- like the `agent`
+    identity field in merge_local_permissions, not like the env-var
+    smart-merge in the same function. Gaia needs this exact value to take
+    effect in EVERY install of a non-git workspace, including a re-install
+    over one that already carries a `worktree.bgIsolation` set to
+    something else (a stale harness default, or a value written before
+    this fix existed) -- so an existing value that is not already "none"
+    is normalized rather than preserved THERE. Any OTHER key nested under
+    `worktree` (present or future harness options) is left untouched;
+    only `bgIsolation` is ever Gaia-owned, and only outside a git working
+    tree.
+
+    A workspace inside a git working tree is skipped entirely -- this key
+    is not read, not compared, and not written, regardless of what it
+    currently holds or whether it is present at all. See
+    `_workspace_is_inside_git_work_tree` for exactly what counts.
     """
     claude_dir = workspace / ".claude"
     local_path = claude_dir / "settings.local.json"
 
     if not claude_dir.exists():
         return _result("skipped", local_path, ".claude/ not found")
+
+    if _workspace_is_inside_git_work_tree(workspace):
+        return _result(
+            "skipped", local_path,
+            "workspace is inside a git working tree -- worktree.bgIsolation "
+            "is left to the user/harness, never forced",
+        )
 
     existing = _read_json(local_path) if local_path.exists() else {}
     if existing is None:

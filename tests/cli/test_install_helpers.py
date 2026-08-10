@@ -415,6 +415,137 @@ class TestMergeWorktreeSettings(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# merge_worktree_settings -- git-scoped forcing
+#
+# The measured regression this class pins: forcing bgIsolation to "none"
+# unconditionally undid a user's own choice (or the harness default) inside
+# a git working tree, where the original bug (the harness cannot create a
+# worktree because there is no repo) does not apply, and every reinstall
+# re-asserted "none" -- so the override survived no longer than the next
+# `gaia install`/`gaia update`. These tests exercise the git-vs-no-git split
+# `_workspace_is_inside_git_work_tree` decides, not the value-merging logic
+# above (already covered by `TestMergeWorktreeSettings`, all of which run in
+# a plain tmpdir with no `.git` -- i.e. already exercise the no-git branch).
+# ---------------------------------------------------------------------------
+
+def _git_init(path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "--quiet", str(path)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.email", "test@example.com"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(path), "config", "user.name", "test"], check=True, capture_output=True
+    )
+
+
+class TestMergeWorktreeSettingsGitScope(unittest.TestCase):
+    def test_repo_root_workspace_is_skipped_key_absent(self):
+        """Inside a git working tree, an absent key is left absent -- Gaia
+        does not manufacture a value even to spare the user remembering."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _git_init(workspace)
+            (workspace / ".claude").mkdir()
+            res = helpers.merge_worktree_settings(workspace)
+            self.assertEqual(res["action"], "skipped")
+            local = workspace / ".claude" / "settings.local.json"
+            self.assertFalse(local.exists())
+
+    def test_repo_root_workspace_never_overwrites_worktree_value(self):
+        """The user's own choice (`worktree`, matching the harness default
+        the fix restores) survives untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _git_init(workspace)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({"worktree": {"bgIsolation": "worktree"}}))
+            res = helpers.merge_worktree_settings(workspace)
+            self.assertEqual(res["action"], "skipped")
+            data = json.loads(local.read_text())
+            self.assertEqual(data["worktree"]["bgIsolation"], "worktree")
+
+    def test_repo_root_workspace_never_overwrites_none_either(self):
+        """A user who deliberately chose "none" inside a git repo keeps it --
+        this is no longer Gaia's key to normalize there in either direction."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _git_init(workspace)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({"worktree": {"bgIsolation": "none"}}))
+            res = helpers.merge_worktree_settings(workspace)
+            self.assertEqual(res["action"], "skipped")
+            data = json.loads(local.read_text())
+            self.assertEqual(data["worktree"]["bgIsolation"], "none")
+
+    def test_reinstall_over_a_git_workspace_does_not_revert_the_choice(self):
+        """The concrete failure this task exists to fix: a user flips
+        bgIsolation to "worktree" by hand, then reinstalls/updates -- the
+        choice must survive, not be silently reasserted back to "none"."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            _git_init(workspace)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({"worktree": {"bgIsolation": "worktree"}}))
+
+            # Simulate a `gaia install` immediately followed by a `gaia
+            # update` -- both real call sites delegate to this one helper.
+            helpers.merge_worktree_settings(workspace)
+            helpers.merge_worktree_settings(workspace, dry_run=False)
+
+            data = json.loads(local.read_text())
+            self.assertEqual(data["worktree"]["bgIsolation"], "worktree")
+
+    def test_nested_subdirectory_of_a_repo_is_also_skipped(self):
+        """`.claude/` installed a few levels into a larger repo (a monorepo
+        package, for instance) still counts as "inside a git working tree"
+        -- git discovers the ancestor repo upward, so the harness's own
+        worktree mechanism has a real repo to target from here too."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _git_init(repo_root)
+            nested = repo_root / "packages" / "app"
+            nested.mkdir(parents=True)
+            (nested / ".claude").mkdir()
+            res = helpers.merge_worktree_settings(nested)
+            self.assertEqual(res["action"], "skipped")
+
+    def test_umbrella_directory_over_unrelated_repos_is_not_skipped(self):
+        """A workspace that merely CONTAINS independent git repos as
+        children -- never tracked itself -- is NOT "inside" a working tree:
+        git only searches upward from the workspace, never downward into
+        its children. The original no-git behavior (force "none") applies
+        here exactly as before, since the harness bug still reproduces at
+        this level regardless of what its subdirectories happen to be."""
+        with tempfile.TemporaryDirectory() as tmp:
+            umbrella = Path(tmp)
+            nested_repo = umbrella / "some-project"
+            nested_repo.mkdir()
+            _git_init(nested_repo)
+            (umbrella / ".claude").mkdir()
+            res = helpers.merge_worktree_settings(umbrella)
+            self.assertEqual(res["action"], "updated")
+            data = json.loads((umbrella / ".claude" / "settings.local.json").read_text())
+            self.assertEqual(data["worktree"]["bgIsolation"], "none")
+
+    def test_no_git_workspace_is_unaffected_by_the_new_check(self):
+        """Regression pin: a plain non-git workspace (no `.git` anywhere in
+        its ancestry) keeps forcing "none" exactly as before this change."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            res = helpers.merge_worktree_settings(workspace)
+            self.assertEqual(res["action"], "updated")
+            data = json.loads((workspace / ".claude" / "settings.local.json").read_text())
+            self.assertEqual(data["worktree"]["bgIsolation"], "none")
+
+
+# ---------------------------------------------------------------------------
 # manage_symlinks
 # ---------------------------------------------------------------------------
 
