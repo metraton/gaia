@@ -14,6 +14,8 @@ Subcommands:
     gaia evidence show  <id> [--json]
 
     gaia evidence list  --brief <slug> [--ac <ac_id>] [--workspace W] [--json]
+
+    gaia evidence orphans  [--json]
 """
 
 from __future__ import annotations
@@ -269,6 +271,25 @@ def _cmd_show(args) -> int:
     return 0
 
 
+def _cmd_orphans(args) -> int:
+    from gaia.evidence.orphans import find_orphan_blobs
+
+    as_json = getattr(args, "json", False)
+    orphans = find_orphan_blobs()
+
+    if as_json:
+        print(json.dumps({"orphans": [str(p) for p in orphans], "count": len(orphans)}))
+        return 0
+
+    if not orphans:
+        print("No orphaned evidence blobs found.")
+    else:
+        print(f"{len(orphans)} orphaned evidence blob(s) (no referencing row):")
+        for p in orphans:
+            print(f"  {p}")
+    return 0
+
+
 def _cmd_list(args) -> int:
     from gaia.evidence.store import list_evidence_for_ac
     from gaia.store.writer import _connect
@@ -410,6 +431,25 @@ def register(subparsers) -> None:
     list_p.add_argument("--json", action="store_true", default=False,
                         help="Emit JSON output.")
 
+    # -- orphans -----------------------------------------------------------
+    orphans_p = actions.add_parser(
+        "orphans",
+        help="Report evidence blobs on disk with no referencing row",
+        description=(
+            "Scan the canonical evidence root and report every blob file "
+            "that no evidence row references, regardless of age. Read-only "
+            "-- this sweep never deletes anything."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  gaia evidence orphans\n"
+            "  gaia evidence orphans --json\n"
+        ),
+    )
+    orphans_p.add_argument("--json", action="store_true", default=False,
+                           help="Emit JSON output.")
+
 def cmd_evidence(args) -> int:
     """Dispatch to the appropriate evidence subcommand. Called by bin/gaia."""
     action = getattr(args, "evidence_action", None)
@@ -417,9 +457,10 @@ def cmd_evidence(args) -> int:
         "add":  _cmd_add,
         "show": _cmd_show,
         "list": _cmd_list,
+        "orphans": _cmd_orphans,
     }
     if action in handlers:
         return handlers[action](args)
 
-    print("Usage: gaia evidence <add|show|list>", file=sys.stderr)
+    print("Usage: gaia evidence <add|show|list|orphans>", file=sys.stderr)
     return 0

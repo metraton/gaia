@@ -26,6 +26,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 # bin/cli/cleanup.py -> bin/cli -> bin -> gaia/
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -53,6 +54,47 @@ def _find_project_root() -> Path:
         current = parent
 
     return Path(os.environ.get("INIT_CWD", str(Path.cwd())))
+
+
+# ---------------------------------------------------------------------------
+# Lazy resolvers for Gaia's own data-substrate directories (scratch/tmp/cache/
+# rejected-turns), used by the turn-scoped retention rules below. Defined
+# ahead of RETENTION_POLICY because the table below references them directly
+# as callables. Each degrades to None (never raises) when gaia.paths cannot
+# be imported, mirroring the accessor posture used throughout this module.
+# ---------------------------------------------------------------------------
+
+
+def _lazy_scratch_dir():
+    try:
+        from gaia.paths import scratch_dir
+        return scratch_dir()
+    except ImportError:
+        return None
+
+
+def _lazy_tmp_dir():
+    try:
+        from gaia.paths import tmp_dir
+        return tmp_dir()
+    except ImportError:
+        return None
+
+
+def _lazy_cache_dir():
+    try:
+        from gaia.paths import cache_dir
+        return cache_dir()
+    except ImportError:
+        return None
+
+
+def _lazy_rejected_turns_dir():
+    try:
+        from gaia.paths import rejected_turns_dir
+        return rejected_turns_dir()
+    except ImportError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +161,40 @@ RETENTION_POLICY = [
         "pattern": "*.json",
         "label": "Contract drafts",
     },
+    # The four rules below cover what Gaia creates during a turn and never
+    # revisits on its own (AC-4 of the brief this task implements): scratch,
+    # tmp, and cache entries a turn left behind, plus preserved rejected-turn
+    # text. All four copy the contract-drafts model -- caducity by STATE
+    # (owning turn closed) plus a grace window, not by age -- via
+    # gaia.retention.fs_rules, which is also the single place their threshold
+    # lives. Unlike contract drafts, none of the four has an age-only
+    # fallback: see gaia.retention.fs_rules's module docstring for why an
+    # unreadable DB must degrade to "select nothing" here rather than to
+    # pure age.
+    {
+        "key": "scratch",
+        "type": "turn-scoped",
+        "dir_fn": _lazy_scratch_dir,
+        "label": "Scratch (closed-turn working files)",
+    },
+    {
+        "key": "tmp",
+        "type": "turn-scoped",
+        "dir_fn": _lazy_tmp_dir,
+        "label": "Tmp (closed-turn temp files)",
+    },
+    {
+        "key": "cache",
+        "type": "turn-scoped",
+        "dir_fn": _lazy_cache_dir,
+        "label": "Cache (closed-turn cache entries)",
+    },
+    {
+        "key": "rejectedTurns",
+        "type": "rejected-turns",
+        "dir_fn": _lazy_rejected_turns_dir,
+        "label": "Rejected-turn text",
+    },
 ]
 
 
@@ -144,6 +220,21 @@ def _contract_drafts_grace_hours():
     """The spent-draft grace window the policy will apply, or None."""
     try:
         from gaia.contract.drafts import resolve_grace_hours
+    except ImportError:
+        return None
+    return resolve_grace_hours()
+
+
+# Same posture as the contract-drafts accessors above: the threshold lives in
+# gaia.retention.fs_rules (the policy shared by every one of the four rules
+# below), never as a local constant here. Degrades to None -- rather than a
+# guessed number -- when the policy module cannot be imported.
+
+
+def _fs_retention_grace_hours():
+    """The closed-owner grace window the four new fs rules apply, or None."""
+    try:
+        from gaia.retention.fs_rules import resolve_grace_hours
     except ImportError:
         return None
     return resolve_grace_hours()
@@ -235,6 +326,81 @@ def _prune_contract_drafts(pattern: str, label: str, dry_run: bool) -> list:
             except OSError:
                 pass
 
+    return actions
+
+
+def _prune_turn_scoped(root: Optional[Path], label: str, dry_run: bool) -> list:
+    """Prune closed-owner entries under a Gaia-owned ephemeral directory.
+
+    Shared by the scratch/tmp/cache rules: selection is entirely delegated
+    to ``gaia.retention.fs_rules.collectable_turn_scoped``, so this CLI's
+    ``--dry-run`` preview and its real sweep can never select a different
+    population from each other. ``root=None`` (the policy module could not
+    be imported) yields no actions rather than raising.
+    """
+    if root is None:
+        return []
+    try:
+        from gaia.retention.fs_rules import collectable_turn_scoped
+    except ImportError:
+        return []
+    try:
+        selected = collectable_turn_scoped(root, label=label)
+    except Exception:  # noqa: BLE001 -- retention must never abort cleanup
+        return []
+
+    import shutil
+    actions = []
+    for record in selected:
+        actions.append({
+            "action": record["action"],
+            "path": record["path"],
+            "label": record["label"],
+            "reason": record.get("reason"),
+        })
+        if not dry_run:
+            entry_path = Path(str(record["path"]))
+            try:
+                if record["action"] == "delete-dir":
+                    shutil.rmtree(entry_path, ignore_errors=True)
+                else:
+                    entry_path.unlink()
+            except OSError:
+                pass
+    return actions
+
+
+def _prune_rejected_turns(root: Optional[Path], label: str, dry_run: bool) -> list:
+    """Prune preserved rejected-turn text whose owning session already closed.
+
+    Delegates selection to
+    ``gaia.retention.fs_rules.collectable_rejected_turns`` -- the single
+    criterion shared by this CLI and any future automatic sweep.
+    """
+    if root is None:
+        return []
+    try:
+        from gaia.retention.fs_rules import collectable_rejected_turns
+    except ImportError:
+        return []
+    try:
+        selected = collectable_rejected_turns(root, label=label)
+    except Exception:  # noqa: BLE001 -- retention must never abort cleanup
+        return []
+
+    actions = []
+    for record in selected:
+        actions.append({
+            "action": record["action"],
+            "path": record["path"],
+            "label": record["label"],
+            "reason": record.get("reason"),
+        })
+        if not dry_run:
+            try:
+                Path(str(record["path"])).unlink()
+            except OSError:
+                pass
     return actions
 
 
@@ -385,10 +551,11 @@ def _prune_flag_by_ttl(root: Path, file_rel: str, max_hours: int, label: str, dr
 def _action_note(action: dict) -> str:
     """Label for a retention action, carrying the policy's reason when it has one.
 
-    Only the contract-drafts rule reports a reason, and it is the one rule whose
-    two lanes ("spent" vs "aged") select very different populations -- a preview
-    that hides which lane fired tells the reader nothing about why 100 files are
-    about to go.
+    The state-based rules (contract drafts, plus scratch/tmp/cache/rejected
+    turns) report a reason naming the specific state each one consulted --
+    contract drafts distinguishes its "spent" and "aged" lanes, the other
+    four each name the closed owner they found. The pure age-based rules
+    above have no comparable ambiguity to disambiguate and report none.
     """
     reason = action.get("reason")
     return f"{action['label']}: {reason}" if reason else str(action["label"])
@@ -423,6 +590,14 @@ def _apply_retention_policy(root: Path, dry_run: bool) -> list:
         elif ptype == "abs-drafts":
             all_actions.extend(
                 _prune_contract_drafts(policy["pattern"], policy["label"], dry_run)
+            )
+        elif ptype == "turn-scoped":
+            all_actions.extend(
+                _prune_turn_scoped(policy["dir_fn"](), policy["label"], dry_run)
+            )
+        elif ptype == "rejected-turns":
+            all_actions.extend(
+                _prune_rejected_turns(policy["dir_fn"](), policy["label"], dry_run)
             )
 
     return all_actions
@@ -902,6 +1077,7 @@ def cmd_cleanup(args) -> int:
         "anomaly_flag_hours": 1,
         "contract_drafts_days": _contract_drafts_max_days(),
         "contract_drafts_grace_hours": _contract_drafts_grace_hours(),
+        "fs_retention_grace_hours": _fs_retention_grace_hours(),
     }
 
     if prune_only:
@@ -919,6 +1095,17 @@ def cmd_cleanup(args) -> int:
             # threshold describes a sweep that does not happen.
             print(f"  Contract drafts:     {_contract_drafts_max_days()} days,"
                   f" or spent + quiet {_contract_drafts_grace_hours()}h")
+            # No day count here on purpose, mirroring the contract-drafts
+            # line above: these four rules have no age-only lane at all --
+            # an entry is only ever collected once its owner (a contract, or
+            # a session) reaches a TERMINAL verdict and has stayed quiet for
+            # the grace window. A paused turn (an approval, an input, a
+            # verification still pending) is not enough -- see
+            # gaia.retention.fs_rules's module docstring for why.
+            print(f"  Scratch/tmp/cache:   owning contract terminal,"
+                  f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
+            print(f"  Rejected turns:      owning session terminal,"
+                  f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
             if dry_run:
                 print("  (dry-run mode -- no files will be modified)\n")
             else:
