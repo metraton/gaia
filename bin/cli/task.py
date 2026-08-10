@@ -784,7 +784,7 @@ def register(subparsers) -> None:
         epilog=(
             "Examples:\n"
             "  gaia task edit my-brief 3 --goal='Implement feature X, revised'\n"
-            "  gaia task edit my-brief 3 --goal-file=/tmp/goal.txt\n"
+            "  gaia task edit my-brief 3 --goal-file=~/.gaia/scratch/goal.txt\n"
         ),
     )
     edit_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
@@ -924,7 +924,7 @@ def register(subparsers) -> None:
             "Examples:\n"
             "  gaia task gate edit my-brief 1 3 --evidence-shape='pytest -q -k foo'\n"
             "  gaia task gate edit my-brief 1 3 "
-            "--evidence-shape-file=/tmp/gate3-shape.txt\n"
+            "--evidence-shape-file=~/.gaia/scratch/gate3-shape.txt\n"
         ),
     )
     gate_edit_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")

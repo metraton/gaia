@@ -382,9 +382,14 @@ def register(subparsers) -> None:
         epilog=(
             "Examples:\n"
             "  gaia ac edit my-brief AC-1 --description 'Updated desc'\n"
-            "  gaia ac edit my-brief AC-1 --artifact-path /tmp/report.html\n"
+            "  # --artifact-path must already be a canonical evidence path minted\n"
+            "  # by `gaia evidence add` (its printed artifact_path), not an arbitrary file:\n"
+            "  gaia evidence add --brief my-brief --ac AC-1 --type file "
+            "--artifact-file ~/.gaia/scratch/report.html\n"
+            "  gaia ac edit my-brief AC-1 --artifact-path "
+            "~/.gaia/evidence/me/my-brief/AC-1/<uuid>.html\n"
             "  gaia ac edit my-brief AC-1 "
-            "--evidence-shape-file /tmp/ac1-shape.txt\n"
+            "--evidence-shape-file ~/.gaia/scratch/ac1-shape.txt\n"
         ),
     )
     edit_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")

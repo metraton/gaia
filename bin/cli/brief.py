@@ -924,10 +924,10 @@ def register(subparsers) -> None:
             "  gaia brief ac add my-brief --id=AC-1 --description='...' "
             "--evidence-type=command\n"
             "  # After execution: gaia evidence add --brief my-brief "
-            "--ac AC-1 --type command_output --artifact-file /tmp/result.txt\n"
+            "--ac AC-1 --type command_output --artifact-file ~/.gaia/scratch/result.txt\n"
             "  gaia brief ac edit my-brief --id=AC-1 --description='...'\n"
             "  gaia brief ac edit my-brief --id=AC-1 "
-            "--evidence-shape-file=/tmp/ac1-shape.txt\n"
+            "--evidence-shape-file=~/.gaia/scratch/ac1-shape.txt\n"
             "  gaia brief ac remove my-brief --id=AC-1\n"
         ),
     )

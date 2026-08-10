@@ -95,7 +95,7 @@ def _cmd_save(args) -> int:
     into the wrong table, overwrites the brief body, and produces a stale
     brief that does not reflect the plan. Never repeat this. If the plan
     content is too large to pass inline, use:
-    ``gaia plan save --brief=<slug> --content="$(cat /tmp/plan.md)"``
+    ``gaia plan save --brief=<slug> --content="$(cat ~/.gaia/scratch/plan.md)"``
 
     Verify after saving with ``gaia plan show <slug>``.
     """

@@ -2956,7 +2956,7 @@ def register(subparsers):
                "  gaia memory edit --name=foo --field=body "
                "--append --content='...'\n"
                "  gaia memory edit --name=foo --field=body "
-               "--body-file=/tmp/new_body.md\n"
+               "--body-file=~/.gaia/scratch/new_body.md\n"
                "  cat new_body.md | gaia memory edit --name=foo --field=body "
                "--body-file=-\n",
     )
@@ -3050,7 +3050,7 @@ def register(subparsers):
         epilog=(
             "Examples:\n"
             "  gaia memory append thread_handoff --body='Next: verify T0.'\n"
-            "  gaia memory append thread_handoff --body-file=/tmp/note.md\n"
+            "  gaia memory append thread_handoff --body-file=~/.gaia/scratch/note.md\n"
             "  cat note.md | gaia memory append thread_handoff --body-file=-\n"
         ),
     )
@@ -3167,7 +3167,7 @@ def register(subparsers):
                "  gaia memory add --name=feedback_x --type=feedback "
                "--body='...'\n"
                "  gaia memory add --name=atom_x --type=atom "
-               "--body-file=/tmp/body.md\n"
+               "--body-file=~/.gaia/scratch/body.md\n"
                "  cat body.md | gaia memory add --name=atom_x --type=atom "
                "--body-file=-\n",
     )

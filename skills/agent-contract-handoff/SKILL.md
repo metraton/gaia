@@ -145,6 +145,36 @@ fingerprint as specified by `agent-approval-protocol`.
 - `rollback_executed`, `context_consumption`, `loop_state`: advisory or
   workflow-specific fields.
 
+## The evidence clause of `update_contracts`
+
+One `update_contracts` entry is not a `can_write` section at all: `{"contract":
+"evidence", "payload": {...}}` is the subagent's lane to deposit structured
+evidence for an acceptance criterion, reached through the same `gaia contract
+set/add/fill` calls used for everything else in this envelope -- no separate
+command surface. It is handled by `_apply_evidence_entries`
+(`hooks/modules/context/context_writer.py`), validated by
+`_validate_evidence_payload` / `contract_validator.validate_evidence_update_
+contract_payload`, and inserted via `gaia.evidence.store.insert_evidence`.
+
+`payload` fields: `brief_id` (required, integer), `ac_id` (required, non-empty
+string), `type` (required, one of `text`/`file`/`command_output`/`url`/
+`screenshot`), exactly one of `text` or `artifact_path`, and optional
+`task_id`, `created_by_agent`, `size_bytes`. When `artifact_path` is given it
+must already resolve under the canonical Gaia evidence root
+(`gaia.evidence.fs.require_canonical_artifact_path` --
+`~/.gaia/evidence/{workspace}/{brief_slug}/{ac_id}/...`, minted by `gaia
+evidence add`); a repository-relative path, a `/tmp` path, or anything else
+outside that root is rejected by name, not inserted. Multiple evidence entries
+in the same `update_contracts` array fail together (D8): one invalid entry
+rejects the whole batch of evidence entries, though other, non-evidence
+`update_contracts` entries in the same call are unaffected.
+
+A file large enough to need `artifact_path` rather than inline `text` is
+staged first under the canonical Gaia scratch directory (`~/.gaia/scratch`,
+see `command-execution`) if it did not already exist as a real deliverable,
+then deposited with `gaia evidence add` (which mints the canonical path) --
+never referenced from scratch or from a workspace/client repo path directly.
+
 ## Validator ownership
 
 `gaia/contract/validator.py` owns form codes: `MISSING_FIELD`, `PLAN_STATUS`,

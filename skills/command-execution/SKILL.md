@@ -19,6 +19,15 @@ One command, one result, one exit code. This skill owns invocation discipline;
    in `agent-protocol`; do not duplicate a sealed payload here.
 5. Never write under `.claude/`. Gaia components are edited in the `gaia/`
    source tree and propagated by install.
+6. A file that is not itself the deliverable -- a probe, a throwaway
+   reproduction, an intermediate dump to inspect before deciding -- is written
+   under the canonical Gaia scratch directory (`~/.gaia/scratch`, printed by
+   `gaia paths`; a `GAIA_DATA_DIR` override relocates it), never into a
+   workspace or client repository tree. Only the actual deliverable (the code
+   change, the config, the report the task asked for) belongs in-repo. A file
+   worth keeping as proof of what was done is deposited as evidence through
+   the contract's evidence clause (`agent-contract-handoff`), not left sitting
+   in scratch or committed as a side effect.
 
 For a plan-first COMMAND_SET, each tool call contains only the next exact item
 in the approved order. Consent to a set is not permission to combine its items

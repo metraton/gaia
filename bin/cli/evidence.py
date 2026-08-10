@@ -342,7 +342,7 @@ def register(subparsers) -> None:
         epilog=(
             "Examples:\n"
             "  gaia evidence add --brief my-brief --ac AC-1 --type text --text 'All tests pass'\n"
-            "  gaia evidence add --brief my-brief --ac AC-1 --type file --artifact-file /tmp/report.html\n"
+            "  gaia evidence add --brief my-brief --ac AC-1 --type file --artifact-file ~/.gaia/scratch/report.html\n"
             "  gaia evidence add --brief my-brief --ac AC-2 --type command_output --text 'exit 0' --task T1\n"
         ),
     )
