@@ -452,3 +452,78 @@ def test_evidence_neither_text_nor_artifact(evidence_db):
 
     assert _count_evidence(evidence_db) == 0
     assert len(result["errors"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# T8 (AC-2): artifact_path outside the canonical evidence root is never
+# inserted verbatim -- it is either copied into the store or rejected by
+# name. This lane rejects: no filesystem copy happens, so a rejected entry
+# leaves neither a row nor a blob (there was never a blob to begin with).
+# ---------------------------------------------------------------------------
+
+def test_evidence_artifact_path_in_repo_working_tree_rejected_no_orphan_row(evidence_db):
+    """Adversarial: artifact_path pointing at a repo's working tree is rejected by name.
+
+    Before AC-2, _apply_evidence_entries passed payload["artifact_path"]
+    straight to insert_evidence() with no canonical-root check, so this
+    exact payload would have inserted a row pointing at a live repo file.
+    Uses this very test file as the "foreign" path -- not a name the guard
+    was tuned to recognize, just any path outside the canonical evidence
+    root -- so the assertion exercises the structural property, not a
+    blocklisted example.
+    """
+    offending_path = str(Path(__file__).resolve())
+    contract_dict = {
+        "update_contracts": [
+            {
+                "contract": "evidence",
+                "payload": {
+                    "brief_id": 1,
+                    "ac_id": "AC-2",
+                    "type": "file",
+                    "artifact_path": offending_path,
+                },
+            }
+        ]
+    }
+    result = process_update_contracts(contract_dict, _make_task_info(evidence_db))
+
+    # No row inserted at all -- neither with the foreign path nor any other.
+    assert _count_evidence(evidence_db) == 0, (
+        f"Expected zero rows for a rejected out-of-canonical-root path, "
+        f"got: {_get_evidence_rows(evidence_db)}"
+    )
+    rows = _get_evidence_rows(evidence_db)
+    assert not any(r.get("artifact_path") == offending_path for r in rows), (
+        "The offending repo path must never land in an evidence row, rejected or not"
+    )
+    assert any(offending_path in e for e in result["errors"]), (
+        f"Expected the rejection error to name the offending path, got: {result['errors']}"
+    )
+
+
+def test_evidence_text_only_entries_unaffected_by_artifact_path_guard(evidence_db):
+    """Regression guard: a pure-text entry (no artifact_path) is untouched by AC-2.
+
+    The canonical-root check added for AC-2 only runs when artifact_path is
+    present (see _validate_evidence_payload); this asserts a text-only
+    evidence clause still inserts exactly as before the fix.
+    """
+    contract_dict = {
+        "update_contracts": [
+            {
+                "contract": "evidence",
+                "payload": {
+                    "brief_id": 1,
+                    "ac_id": "AC-3",
+                    "type": "text",
+                    "text": "no artifact_path here, behavior must be unchanged",
+                },
+            }
+        ]
+    }
+    result = process_update_contracts(contract_dict, _make_task_info(evidence_db))
+
+    assert result["updated"] is True
+    assert _count_evidence(evidence_db) == 1
+    assert not result["errors"]

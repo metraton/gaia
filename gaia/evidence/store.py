@@ -7,10 +7,15 @@ Layered atop gaia.store.writer._connect. Stores evidence rows in the
 Storage modes (decision: EVIDENCE_INLINE_MAX_BYTES = 4096):
   * inline: text IS NOT NULL, artifact_path IS NULL -- payload fits in DB page.
   * blob:   artifact_path IS NOT NULL, text IS NULL -- payload lives in FS at
-            ~/.gaia/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid}.{ext}.
+            <data_dir>/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid}.{ext}
+            (data_dir() is ~/.gaia unless overridden by GAIA_DATA_DIR).
 
 Permission guard:
-  * Only orchestrator / operator identities may write or delete evidence.
+  * Curator identities (orchestrator / operator) may insert AND delete evidence.
+  * Producer identities -- every declared agent that is not a curator, derived
+    from the fleet by _evidence_producer_agents() -- may insert evidence for
+    their own acceptance criteria but may never delete a row; see
+    _assert_dispatch_can_write_evidence's allow_producers arg.
   * Read helpers (get_evidence, list_evidence_for_ac) are unrestricted.
   * Absence of GAIA_DISPATCH_AGENT (CLI caller) is always allowed.
 
@@ -30,6 +35,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from gaia.state.permissions import agent_fleet
 from gaia.store.writer import _connect
 
 # ---------------------------------------------------------------------------
@@ -54,28 +60,69 @@ _EVIDENCE_CURATOR_AGENTS = frozenset({
 })
 
 
+def _evidence_producer_agents() -> frozenset[str]:
+    """Specialist identities admitted to DEPOSIT (insert) evidence.
+
+    DERIVED, never enumerated: the whole agent fleet (``agents/*.md``, via
+    ``gaia.state.permissions.agent_fleet``) minus the curators. A producer
+    deposits evidence for its own acceptance criteria without joining the
+    curator set, and may never delete a row (see ``allow_producers`` below).
+
+    The derivation is the guarantee. A hand-written membership list would
+    admit whichever specialist happened to motivate the lane and silently
+    exclude every specialist added afterwards -- so a new agent .md would
+    reopen the same hole on the day it lands, with nothing to signal it. By
+    subtracting the curators from the fleet instead, enrolling an agent is
+    enrolling it: no edit here.
+
+    This does NOT make the guard a no-op. Membership is bounded by the fleet,
+    so an identity that is not a declared agent -- a typo, a stale name, an
+    unregistered caller -- is still rejected, and the insert/delete asymmetry
+    is untouched: no producer, derived or not, can delete.
+    """
+    return frozenset(agent_fleet() - _EVIDENCE_CURATOR_AGENTS)
+
+
 class EvidenceWriteForbidden(PermissionError):
-    """Raised when a non-curator subagent attempts to write or delete evidence."""
+    """Raised when a subagent dispatch without authority for the requested
+    operation attempts to write or delete evidence."""
 
 
-def _assert_dispatch_can_write_evidence() -> None:
-    """Block evidence writes from non-curator subagent dispatches.
+def _assert_dispatch_can_write_evidence(*, allow_producers: bool = True) -> None:
+    """Block evidence writes from subagent dispatches without authority.
 
     Reads ``GAIA_DISPATCH_AGENT`` from the environment:
 
     * Unset / empty string -> human CLI caller. Allowed.
-    * Set to a curator identity -> allowed.
-    * Set to anything else -> raises ``EvidenceWriteForbidden``.
+    * Set to a curator identity -> allowed, for both insert and delete.
+    * Set to a producer identity (``_evidence_producer_agents()``) -> allowed
+      only when ``allow_producers`` is True. ``insert_evidence`` calls with
+      the default (True); ``delete_evidence`` calls with ``allow_producers=
+      False`` so a producer can deposit evidence it made but never delete
+      any row.
+    * Set to anything else -- including an identity that is not a declared
+      agent at all -> raises ``EvidenceWriteForbidden``.
     """
     raw = os.environ.get("GAIA_DISPATCH_AGENT")
     if not raw:
         return
-    if raw in _EVIDENCE_CURATOR_AGENTS:
+    allowed = _EVIDENCE_CURATOR_AGENTS
+    if allow_producers:
+        allowed = allowed | _evidence_producer_agents()
+    if raw in allowed:
         return
     raise EvidenceWriteForbidden(
-        f"Evidence writes are forbidden from non-curator subagent dispatches "
+        f"Evidence writes are forbidden from this subagent dispatch "
         f"(current GAIA_DISPATCH_AGENT={raw!r}). "
-        f"Only orchestrator and operator may insert or delete evidence."
+        + (
+            "Insert is open to any curator or to any declared agent under "
+            "agents/; this identity is neither, so it is most likely a "
+            "misspelled or unregistered agent name."
+            if allow_producers
+            else "Deletion is curator-only (orchestrator / operator): a "
+                 "producer identity may insert its own evidence but never "
+                 "delete a row."
+        )
     )
 
 
@@ -133,7 +180,8 @@ def insert_evidence(
         dict with all columns of the inserted evidence row.
 
     Raises:
-        EvidenceWriteForbidden: when dispatched from a non-curator subagent
+        EvidenceWriteForbidden: when dispatched from a subagent that is
+                                neither a curator nor a producer identity
                                 (only when bypass_dispatch_guard is False).
         ValueError: on type mismatch, missing payload, or mutex violation.
     """
@@ -240,9 +288,11 @@ def delete_evidence(
     Returns True if a row was deleted, False if the id was not found.
 
     Raises:
-        EvidenceWriteForbidden: when dispatched from a non-curator subagent.
+        EvidenceWriteForbidden: when dispatched from a non-curator subagent
+                                (a producer identity is not enough -- deletion
+                                stays curator-only, see allow_producers).
     """
-    _assert_dispatch_can_write_evidence()
+    _assert_dispatch_can_write_evidence(allow_producers=False)
 
     con = _connect(db_path)
     try:

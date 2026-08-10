@@ -598,7 +598,7 @@ def set_status_brief(
 
 
 # ---------------------------------------------------------------------------
-# delete_brief (used by tests; not exposed via CLI)
+# delete_brief (used by tests and `gaia brief delete`)
 # ---------------------------------------------------------------------------
 
 def delete_brief(
@@ -607,6 +607,43 @@ def delete_brief(
     *,
     db_path: Path | None = None,
 ) -> bool:
+    """Hard-delete a brief, clearing its blob-backed evidence first.
+
+    ``evidence`` rows disappear via ``ON DELETE CASCADE`` the instant the
+    ``briefs`` row is removed, but a CASCADE never reaches the filesystem --
+    once a blob-backed row is gone, its ``artifact_path`` is gone with it and
+    nothing can clean up the file it named. So every evidence row for this
+    brief that carries an ``artifact_path`` is deleted explicitly through
+    ``gaia.evidence.store.delete_evidence`` (which removes the FS blob before
+    its row) BEFORE the brief row itself is deleted. Inline evidence (no
+    ``artifact_path``) has no filesystem footprint and is left to the
+    CASCADE as before.
+    """
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT id FROM briefs WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchone()
+        if row is None:
+            return False
+        brief_id = row["id"]
+        blob_evidence_ids = [
+            r["id"]
+            for r in con.execute(
+                "SELECT id FROM evidence WHERE brief_id = ? "
+                "AND artifact_path IS NOT NULL",
+                (brief_id,),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+
+    if blob_evidence_ids:
+        from gaia.evidence.store import delete_evidence
+        for evidence_id in blob_evidence_ids:
+            delete_evidence(evidence_id, db_path=db_path)
+
     con = _connect(db_path)
     try:
         cur = con.execute(

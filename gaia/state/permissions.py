@@ -337,6 +337,7 @@ __all__ = [
     "is_handoff_writer",
     "verifier_fleet",
     "is_verifier",
+    "agent_fleet",
 ]
 
 
@@ -474,3 +475,71 @@ def is_verifier(agent: str) -> bool:
     if not agent:
         return False
     return agent.strip() in verifier_fleet()
+
+
+# ---------------------------------------------------------------------------
+# Whole-fleet seed (marker-free)
+# ---------------------------------------------------------------------------
+#
+# ``handoff_writer_fleet`` and ``verifier_fleet`` above each answer "which
+# agents opted into ROLE X?" via a frontmatter marker. This one answers the
+# prior question -- "which agent identities exist at all?" -- and therefore
+# carries NO marker: an agent .md is a fleet member by existing.
+#
+# The marker-free form is the point, not an omission. A caller that derives a
+# permission by NEGATION against a small closed set (e.g. "every identity that
+# is not a curator") must not depend on each new agent remembering to opt in;
+# an opt-in marker would reintroduce, one level down, exactly the hand-
+# maintained enumeration such a caller exists to avoid. Adding an agent .md
+# enrolls it here with no edit anywhere.
+#
+# Same never-fails-open discipline as its two siblings: an identity absent
+# from the resolved fleet is absent, and an unresolvable ``agents/`` directory
+# substitutes a known non-empty floor rather than an empty set that would make
+# every membership question answer False.
+
+# Known agents shipped under ``agents/`` -- the fallback floor (see above).
+# Kept separate from ``_FALLBACK_HANDOFF_WRITER_FLEET`` because that constant
+# describes a ROLE (and carries the bare curator aliases, which are not fleet
+# members); this one describes the directory.
+_FALLBACK_AGENT_FLEET: frozenset[str] = frozenset({
+    "cloud-troubleshooter",
+    "developer",
+    "gaia-operator",
+    "gaia-orchestrator",
+    "gaia-planner",
+    "gaia-system",
+    "gaia-verifier",
+    "gitops-operator",
+    "platform-architect",
+})
+
+
+@functools.lru_cache(maxsize=1)
+def agent_fleet() -> frozenset[str]:
+    """Return every agent identity declared under ``agents/``.
+
+    Seeded from the ``name:`` of each ``agents/*.md`` frontmatter block (README
+    skipped), with no role marker required. Falls back to
+    ``_FALLBACK_AGENT_FLEET`` when ``agents/`` is unresolvable or yields no
+    name. Cached exactly like ``handoff_writer_fleet`` / ``verifier_fleet``:
+    the fleet is a static property of the installed tree, not per-call state.
+    Call ``agent_fleet.cache_clear()`` in a test that mutates the agent set.
+    """
+    agents_dir = _agents_dir()
+    if agents_dir is None:
+        return _FALLBACK_AGENT_FLEET
+    fleet: set[str] = set()
+    for md in sorted(agents_dir.glob("*.md")):
+        if md.name.lower() == "readme.md":
+            continue
+        try:
+            text = md.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        name, _ = _parse_agent_frontmatter(text)
+        if name:
+            fleet.add(name)
+    if not fleet:
+        return _FALLBACK_AGENT_FLEET
+    return frozenset(fleet)

@@ -516,6 +516,24 @@ def _validate_evidence_payload(payload: dict) -> list:
     elif not has_text and not has_artifact:
         errors.append("evidence payload requires exactly one of 'text' or 'artifact_path'")
 
+    # Reject an artifact_path that is not already under the canonical evidence
+    # root (e.g. a repo working-tree file) instead of inserting it verbatim --
+    # same guard bin/cli/ac.py and bin/cli/brief.py already apply.
+    artifact_path = payload.get("artifact_path")
+    if artifact_path is not None:
+        import sys as _sys
+        import pathlib as _pl
+        _repo_root = _pl.Path(__file__).resolve().parent.parent.parent.parent
+        if str(_repo_root) not in _sys.path:
+            _sys.path.insert(0, str(_repo_root))
+        try:
+            from gaia.evidence.fs import require_canonical_artifact_path
+            require_canonical_artifact_path(str(artifact_path))
+        except ValueError as exc:
+            errors.append(
+                f"evidence payload artifact_path {artifact_path!r} rejected: {exc}"
+            )
+
     return errors
 
 

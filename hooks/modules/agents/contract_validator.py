@@ -550,6 +550,8 @@ def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
     - ``ac_id``    required, non-empty string
     - ``type``     required, must be in the valid evidence type enum
     - ``text`` and ``artifact_path`` are mutually exclusive (exactly one)
+    - ``artifact_path``, when present, must already be under the canonical
+      evidence root (``gaia.evidence.fs.require_canonical_artifact_path``)
     - ``task_id``, ``created_by_agent``, ``size_bytes`` are optional
 
     Returns a list of error strings.  An empty list means the payload is valid.
@@ -603,6 +605,21 @@ def validate_evidence_update_contract_payload(payload: dict) -> List[str]:
         errors.append(
             "evidence payload requires exactly one of 'text' or 'artifact_path'"
         )
+
+    # artifact_path must already live under the canonical evidence store --
+    # a path elsewhere (a repo working tree, /tmp, ...) is rejected by name
+    # rather than inserted verbatim. Mirrors bin/cli/ac.py and bin/cli/brief.py,
+    # which apply the same gaia.evidence.fs.require_canonical_artifact_path
+    # guard to artifact_path references.
+    artifact_path = payload.get("artifact_path")
+    if artifact_path is not None:
+        try:
+            from gaia.evidence.fs import require_canonical_artifact_path
+            require_canonical_artifact_path(str(artifact_path))
+        except ValueError as exc:
+            errors.append(
+                f"evidence payload artifact_path {artifact_path!r} rejected: {exc}"
+            )
 
     return errors
 

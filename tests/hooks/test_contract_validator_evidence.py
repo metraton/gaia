@@ -37,8 +37,20 @@ def test_evidence_payload_valid():
     assert errors == [], f"Expected no errors, got: {errors}"
 
 
-def test_evidence_payload_valid_artifact_path():
-    """Payload with artifact_path (not text) is also valid."""
+def test_evidence_payload_artifact_path_outside_canonical_root_rejected():
+    """A non-canonical artifact_path (e.g. /tmp) is now rejected, not accepted.
+
+    INVERTED (was test_evidence_payload_valid_artifact_path): this test used
+    to assert that an arbitrary path like "/tmp/report.txt" passed validation
+    with zero errors -- affirming, as correct and desired, that the evidence
+    clause skipped the canonical-root guard (gaia.evidence.fs
+    .require_canonical_artifact_path) that bin/cli/ac.py and bin/cli/brief.py
+    already apply to the same field. That was the hole AC-2 closes: any
+    artifact_path -- including one pointing into a repo's working tree --
+    was inserted into the evidence table verbatim. The guard now runs here
+    too, so a path outside the canonical evidence root is rejected and the
+    error names the offending path, instead of silently passing through.
+    """
     payload = {
         "brief_id": 42,
         "ac_id": "AC-1",
@@ -46,7 +58,52 @@ def test_evidence_payload_valid_artifact_path():
         "artifact_path": "/tmp/report.txt",
     }
     errors = validate_evidence_update_contract_payload(payload)
-    assert errors == [], f"Expected no errors, got: {errors}"
+    assert errors, "Expected the out-of-canonical-root artifact_path to be rejected"
+    assert any("/tmp/report.txt" in e for e in errors), (
+        f"Expected the error to name the offending path, got: {errors}"
+    )
+
+
+def test_evidence_payload_artifact_path_in_repo_working_tree_rejected():
+    """Adversarial: artifact_path pointing at a repo's working tree is rejected by name.
+
+    Distinct from the /tmp case above -- this uses a path shaped like a real
+    repository file (this very test file) to demonstrate the guard is a
+    structural canonical-root check, not a name/path blocklist tuned to one
+    example.
+    """
+    repo_file = str(Path(__file__).resolve())
+    payload = {
+        "brief_id": 1,
+        "ac_id": "AC-2",
+        "type": "file",
+        "artifact_path": repo_file,
+    }
+    errors = validate_evidence_update_contract_payload(payload)
+    assert errors, "Expected a repo working-tree artifact_path to be rejected"
+    assert any(repo_file in e for e in errors), (
+        f"Expected the error to name the offending repo path, got: {errors}"
+    )
+
+
+def test_evidence_payload_valid_canonical_artifact_path():
+    """An artifact_path already under the canonical evidence root still passes.
+
+    Confirms the guard is scoped to location, not to artifact_path per se --
+    a real blob path returned by `gaia evidence add` continues to validate
+    cleanly.
+    """
+    from gaia.paths.resolver import evidence_dir
+
+    canonical_path = str(evidence_dir() / "ws" / "brief" / "AC-1" / "blob.txt")
+    payload = {
+        "brief_id": 42,
+        "ac_id": "AC-1",
+        "type": "file",
+        "artifact_path": canonical_path,
+    }
+    errors = validate_evidence_update_contract_payload(payload)
+    assert errors == [], f"Expected no errors for a canonical path, got: {errors}"
 
 
 def test_evidence_payload_missing_brief_id():

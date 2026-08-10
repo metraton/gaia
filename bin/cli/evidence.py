@@ -54,6 +54,36 @@ def _err(msg: str, as_json: bool = False) -> int:
     return 1
 
 
+def _cleanup_orphan_blob(artifact_path: str | None) -> None:
+    """Undo a blob write when the deposit that produced it is then rejected.
+
+    ``_cmd_add`` writes a blob to the canonical evidence store before it
+    knows whether ``insert_evidence`` will accept the row -- the permission
+    guard and the row-level validation (type, ac_id, payload mutex) all live
+    inside ``insert_evidence``. So a rejected deposit, for any of those
+    reasons, must delete the blob it already wrote; row and blob commit
+    together or neither exists. Also prunes now-empty parent directories the
+    write created (workspace/brief_slug/ac_id/), stopping at the canonical
+    evidence root, so a rejection leaves no new filesystem entry at all --
+    not even an empty directory.
+    """
+    if not artifact_path:
+        return
+    from gaia.evidence.fs import delete_blob
+    from gaia.paths.resolver import evidence_dir
+
+    delete_blob(artifact_path)
+
+    root = evidence_dir().resolve()
+    parent = Path(artifact_path).resolve().parent
+    while parent != root and root in parent.parents:
+        try:
+            parent.rmdir()  # only succeeds when the directory is empty
+        except OSError:
+            break
+        parent = parent.parent
+
+
 def _resolve_brief_id(workspace: str, brief_name: str, db_path=None) -> int:
     """Look up the integer brief_id for (workspace, brief_name)."""
     from gaia.store.writer import _connect
@@ -186,8 +216,10 @@ def _cmd_add(args) -> int:
             created_by_agent=created_by,
         )
     except EvidenceWriteForbidden as exc:
+        _cleanup_orphan_blob(final_artifact_path)
         return _err(str(exc), as_json)
     except Exception as exc:
+        _cleanup_orphan_blob(final_artifact_path)
         return _err(str(exc), as_json)
 
     if as_json:

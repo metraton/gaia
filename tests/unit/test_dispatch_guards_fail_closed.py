@@ -76,11 +76,28 @@ def test_evidence_unset_is_allowed(monkeypatch):
     _assert_dispatch_can_write_evidence()  # no raise
 
 
-@pytest.mark.parametrize("agent", ["developer", "gitops-operator", "cloud-troubleshooter"])
-def test_evidence_non_curator_blocked(monkeypatch, agent):
+@pytest.mark.parametrize("agent", ["not-an-agent", "developerr", "kubectl", "gaia"])
+def test_evidence_unknown_identity_blocked(monkeypatch, agent):
+    """An identity outside the declared fleet is refused even for insert.
+
+    This is what keeps the producer lane from being a no-op: producers are
+    derived as fleet-minus-curators, so a typo, a stale name, or an
+    unregistered caller resolves to no membership at all and is blocked.
+    """
     monkeypatch.setenv(ENV, agent)
     with pytest.raises(EvidenceWriteForbidden):
         _assert_dispatch_can_write_evidence()
+
+
+@pytest.mark.parametrize("agent", ["gitops-operator", "cloud-troubleshooter", "platform-architect"])
+def test_evidence_specialist_blocked_for_delete(monkeypatch, agent):
+    """A specialist may deposit its own evidence but never delete a row --
+    the insert/delete asymmetry holds for every derived producer, not just
+    the one that motivated the lane."""
+    monkeypatch.setenv(ENV, agent)
+    _assert_dispatch_can_write_evidence()  # insert: no raise
+    with pytest.raises(EvidenceWriteForbidden):
+        _assert_dispatch_can_write_evidence(allow_producers=False)
 
 
 @pytest.mark.parametrize("agent", ["orchestrator", "gaia-operator"])
@@ -89,10 +106,29 @@ def test_evidence_curator_allowed(monkeypatch, agent):
     _assert_dispatch_can_write_evidence()  # no raise
 
 
+@pytest.mark.parametrize("agent", ["developer", "platform-architect"])
+def test_evidence_producer_allowed_for_insert(monkeypatch, agent):
+    """A producer identity may deposit its own evidence: the default call (as
+    insert_evidence makes it) admits curator OR producer. Any non-curator
+    specialist qualifies -- ``platform-architect`` no less than the
+    ``developer`` that motivated the lane."""
+    monkeypatch.setenv(ENV, agent)
+    _assert_dispatch_can_write_evidence()  # no raise
+
+
+def test_evidence_producer_blocked_for_delete(monkeypatch):
+    """A producer identity may insert but never delete -- delete_evidence
+    calls the guard with allow_producers=False, which still blocks it."""
+    monkeypatch.setenv(ENV, "developer")
+    with pytest.raises(EvidenceWriteForbidden):
+        _assert_dispatch_can_write_evidence(allow_producers=False)
+
+
 def test_insert_evidence_blocked_before_db(monkeypatch):
     """insert_evidence consults the guard BEFORE touching the DB, so a blocked
-    subagent never reaches persistence (no db_path needed)."""
-    monkeypatch.setenv(ENV, "developer")
+    subagent never reaches persistence (no db_path needed). Uses an identity
+    outside the declared fleet, the only kind still refused for insert."""
+    monkeypatch.setenv(ENV, "not-an-agent")
     with pytest.raises(EvidenceWriteForbidden):
         insert_evidence(
             "me", 1, "AC-1", type="text", text="unauthorized",
@@ -103,8 +139,10 @@ def test_insert_evidence_blocked_before_db(monkeypatch):
 def test_insert_evidence_bypass_flag_skips_guard(monkeypatch):
     """The trusted hook-layer bypass path is unaffected by dispatch identity --
     it fails later on the missing DB, NOT on the guard (proves the guard was
-    skipped)."""
-    monkeypatch.setenv(ENV, "developer")
+    skipped). Uses an identity outside the declared fleet -- blocked for both
+    insert and delete -- so a raised EvidenceWriteForbidden could only come
+    from the guard, never from the missing-DB failure alone."""
+    monkeypatch.setenv(ENV, "not-an-agent")
     with pytest.raises(Exception) as exc:
         insert_evidence(
             "me", 1, "AC-1", type="text", text="trusted",
