@@ -97,6 +97,22 @@ def _lazy_rejected_turns_dir():
         return None
 
 
+# Evidence bucket a worktree's captured diff is filed under when this
+# generic, session-start sweep collects it -- as opposed to a curator or
+# specialist reclaiming a specific worktree with its own brief/AC already
+# in hand. This sweep does not know which brief owned an abandoned
+# worktree, so it cannot supply a real one. This matters only for a DIRTY
+# worktree (uncommitted changes or unpushed commits): a CLEAN worktree
+# never reaches the evidence-deposit path at all. If this sentinel brief
+# does not exist in a given workspace, gaia.retention.worktree_reclaim
+# already fails closed on that lookup (status "deposit_failed") and
+# leaves the worktree untouched -- the same fail-safe posture every other
+# rule in this module already commits to, not a new one invented here.
+_WORKTREE_SWEEP_WORKSPACE = "_gaia_system"
+_WORKTREE_SWEEP_BRIEF_SLUG = "_orphaned_worktrees"
+_WORKTREE_SWEEP_AC_ID = "_orphaned"
+
+
 # ---------------------------------------------------------------------------
 # Retention policy -- per-target rules for what gets pruned and when.
 # ---------------------------------------------------------------------------
@@ -194,6 +210,22 @@ RETENTION_POLICY = [
         "type": "rejected-turns",
         "dir_fn": _lazy_rejected_turns_dir,
         "label": "Rejected-turn text",
+    },
+    # Task 17's wiring (AC-12): the first real caller of
+    # gaia.retention.worktree_collector.collect_worktrees, task 15's
+    # decision logic, which until this amendment had no caller outside
+    # its own test file. A single call per project root covers BOTH the
+    # Gaia central worktrees root and the harness-native .claude/worktrees
+    # folder inside the repo -- git's own worktree registry is
+    # per-repository, not per-directory, so `git worktree list` run
+    # against `root` already returns every worktree registered to it
+    # regardless of where each one physically lives. See
+    # _prune_worktrees's own docstring for the fail-safe posture when
+    # `root` is not a git repo.
+    {
+        "key": "worktrees",
+        "type": "worktrees",
+        "label": "Abandoned agentic worktrees (central + harness-native roots)",
     },
 ]
 
@@ -404,6 +436,52 @@ def _prune_rejected_turns(root: Optional[Path], label: str, dry_run: bool) -> li
     return actions
 
 
+def _prune_worktrees(root: Path, label: str, dry_run: bool) -> list:
+    """Sweep abandoned agentic worktrees registered against the repo at *root*.
+
+    Delegates the entire collectibility decision to
+    ``gaia.retention.worktree_collector.collect_worktrees`` -- this
+    function does no inventory or judgment of its own, only the fail-safe
+    wrapping every retention rule in this module already carries: a
+    ``root`` that is not a git working tree (no ``.git``), or an import
+    failure, yields no actions rather than raising, matching
+    ``_prune_turn_scoped``'s posture for its own missing-directory case.
+
+    ``dry_run`` is threaded straight into ``collect_worktrees`` so the
+    preview and the real sweep run the identical decision
+    (``worktree_collect_reason``) rather than two separately-maintained
+    paths that could silently disagree -- see that function's own
+    docstring for why.
+    """
+    if not (root / ".git").exists():
+        return []
+    try:
+        from gaia.retention.worktree_collector import collect_worktrees
+    except ImportError:
+        return []
+
+    try:
+        results = collect_worktrees(
+            root,
+            workspace=_WORKTREE_SWEEP_WORKSPACE,
+            brief_slug=_WORKTREE_SWEEP_BRIEF_SLUG,
+            ac_id=_WORKTREE_SWEEP_AC_ID,
+            dry_run=dry_run,
+        )
+    except Exception:  # noqa: BLE001 -- retention must never abort cleanup
+        return []
+
+    actions = []
+    for r in results:
+        actions.append({
+            "action": "reclaim-worktree",
+            "path": str(r["path"]),
+            "label": label,
+            "reason": f"{r['collect_reason']} (status={r['status']})",
+        })
+    return actions
+
+
 def _prune_old_dirs(root: Path, dir_rel: str, max_days: int, label: str, dry_run: bool) -> list:
     """Return list of action dicts for directories older than max_days."""
     import shutil
@@ -598,6 +676,10 @@ def _apply_retention_policy(root: Path, dry_run: bool) -> list:
         elif ptype == "rejected-turns":
             all_actions.extend(
                 _prune_rejected_turns(policy["dir_fn"](), policy["label"], dry_run)
+            )
+        elif ptype == "worktrees":
+            all_actions.extend(
+                _prune_worktrees(root, policy["label"], dry_run)
             )
 
     return all_actions
@@ -1106,6 +1188,13 @@ def cmd_cleanup(args) -> int:
                   f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
             print(f"  Rejected turns:      owning session terminal,"
                   f" quiet {_fs_retention_grace_hours()}h (no age-only fallback)")
+            # Same state-based posture as the four rules above -- no
+            # age-only fallback -- but the owner is the worktree's own
+            # contract/session pair, judged by
+            # gaia.retention.worktree_collector.worktree_collect_reason.
+            print("  Worktrees:           owning contract/session dead"
+                  " (explicit reap, or terminal/dead + grace); central"
+                  " and harness-native roots both covered")
             if dry_run:
                 print("  (dry-run mode -- no files will be modified)\n")
             else:
