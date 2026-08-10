@@ -57,7 +57,7 @@ import time
 from enum import Enum
 from typing import Optional
 
-from gaia.retention.fs_rules import _ro_db_connect, resolve_grace_hours
+from gaia.retention.infra import _ro_db_connect, resolve_grace_hours
 
 
 class SessionLiveness(str, Enum):
@@ -185,7 +185,7 @@ def session_dead_past_grace(
     The one importable site for "is this collectible on liveness grounds
     alone" -- ``fs_rules.collectable_turn_scoped`` (a PAUSED turn whose
     scratch/tmp/cache entry outlived a dead session, task 10) and the
-    worktree collector (task 14) both call this rather than each composing
+    worktree collector (task 15) both call this rather than each composing
     ``session_liveness_for_contract`` with its own grace arithmetic, which
     would leave two independent guesses at "dead enough" free to drift apart.
 

@@ -77,10 +77,11 @@ state alone -- without cross-checking liveness -- would silently reopen the
 exact hole this module was hardened against.
 
 Threshold: ``GAIA_FS_RETENTION_GRACE_HOURS`` (default 24 hours), resolved by
-``resolve_grace_hours()`` -- the single place this number lives. ``gaia
-cleanup`` (the only current caller) reads it through this function rather
-than keeping a local constant, so a preview and a real sweep can never
-disagree about the window in effect.
+``resolve_grace_hours()`` -- defined in ``gaia.retention.infra`` (the generic
+infrastructure module both retention submodules depend on) and re-exported
+here, the single place this number lives. ``gaia cleanup`` (the only current
+caller) reads it through this function rather than keeping a local constant,
+so a preview and a real sweep can never disagree about the window in effect.
 
 Wiring note: as of this module's introduction, ONLY ``gaia cleanup --prune``
 calls into it. There is deliberately no SessionStart (or other automatic)
@@ -98,6 +99,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 from gaia.contract.validator import AGENT_ID_MIN_HEX
+from gaia.retention.infra import (
+    DEFAULT_GRACE_HOURS,
+    GRACE_HOURS_ENV,
+    _ro_db_connect,
+    resolve_grace_hours,
+)
+from gaia.retention.liveness import session_dead_past_grace
 from gaia.state import CLOSED_TURN_PLAN_STATUSES, TERMINAL_PLAN_STATUSES
 
 _CLOSED_STATES = frozenset(TERMINAL_PLAN_STATUSES)
@@ -108,13 +116,6 @@ _CLOSED_STATES = frozenset(TERMINAL_PLAN_STATUSES)
 # _CLOSED_STATES. See the module docstring's axis-two section.
 _PAUSED_STATES = frozenset(CLOSED_TURN_PLAN_STATUSES) - _CLOSED_STATES
 
-# Grace window applied on top of "owner already closed" before an entry is
-# collectible -- the same purpose as gaia.contract.drafts's spent-grace hours:
-# a turn that closed moments ago may still be the thing an orchestrator or a
-# retry is actively reading out of scratch/tmp/cache.
-DEFAULT_GRACE_HOURS = 24
-GRACE_HOURS_ENV = "GAIA_FS_RETENTION_GRACE_HOURS"
-
 # A contract id has the shape mint_draft_id() mints: "<agent_id>.<token>",
 # where agent_id matches gaia.contract.validator.AGENT_ID_PATTERN_TEXT and
 # token is mint_draft_id's secrets.token_hex() output (hex, no fixed width
@@ -124,32 +125,6 @@ GRACE_HOURS_ENV = "GAIA_FS_RETENTION_GRACE_HOURS"
 _CONTRACT_ID_RE = re.compile(r"^a[0-9a-f]{%d,}\.[0-9a-f]{6,}$" % AGENT_ID_MIN_HEX)
 
 _REJECTED_TURN_SUFFIX = ".txt"
-
-
-def _resolve_env_int(name: str, default: int) -> int:
-    """Read a non-negative integer threshold from the environment.
-
-    Read on every call (never cached) so a monkeypatched env is honored, and
-    a missing/non-integer/negative value falls back to ``default`` -- a
-    malformed override must never widen retention silently. Mirrors
-    ``gaia.contract.drafts._resolve_env_int``.
-    """
-    import os
-
-    raw = os.environ.get(name, "")
-    if raw:
-        try:
-            value = int(raw)
-            if value >= 0:
-                return value
-        except ValueError:
-            pass
-    return default
-
-
-def resolve_grace_hours() -> int:
-    """The grace window in effect, honoring ``GAIA_FS_RETENTION_GRACE_HOURS``."""
-    return _resolve_env_int(GRACE_HOURS_ENV, DEFAULT_GRACE_HOURS)
 
 
 def _entry_contract_id(name: str) -> Optional[str]:
@@ -182,28 +157,6 @@ def _session_from_rejected_key(stem: str) -> Optional[str]:
         return None
     session_id = stem.split(".", 1)[0]
     return session_id or None
-
-
-def _ro_db_connect():
-    """Open a strictly read-only, never-create connection to gaia.db.
-
-    Deliberately not ``gaia.store.reader``'s connector, which lazily
-    bootstraps the schema -- a retention preview or sweep must be able to run
-    against a machine with no DB at all and simply learn nothing. Returns
-    None on any failure (absent DB, locked file, missing driver); every
-    caller treats None as "no evidence" and acts accordingly.
-    """
-    try:
-        import sqlite3
-
-        from gaia.paths import db_path
-
-        path = db_path()
-        if not Path(path).is_file():
-            return None
-        return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    except Exception:
-        return None
 
 
 def _closed_contract_ids(candidates: Set[str]) -> Set[str]:
@@ -342,8 +295,6 @@ def collectable_turn_scoped(
     See the module docstring for why there is no age-only fallback, and for
     the two-axis divergence from ``collectable_drafts``.
     """
-    from gaia.retention.liveness import session_dead_past_grace
-
     hours = resolve_grace_hours() if grace_hours is None else grace_hours
     current = time.time() if now is None else now
     cutoff = current - hours * 3600
