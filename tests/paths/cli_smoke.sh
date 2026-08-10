@@ -50,6 +50,43 @@ if [ "${MODE}" != "700" ]; then
     echo "FAIL: ~/.gaia mode is ${MODE}, expected 700" >&2
     exit 1
 fi
+REAL_HOME="${HOME}"
+
+# --- Test 5: default output names scratch, evidence, worktrees, tmp,
+# rejected_turns -- scratch and evidence exist today but were hidden from
+# `gaia paths`, and evidence's root was pinned to $HOME regardless of
+# GAIA_DATA_DIR before this fix.
+unset GAIA_DATA_DIR
+"${PYTHON}" "${GAIA_BIN}" paths > "${TEST_DIR}/case5.out"
+for KEY in scratch evidence worktrees tmp rejected_turns; do
+    if ! grep -q "^${KEY}=" "${TEST_DIR}/case5.out"; then
+        echo "FAIL: 'gaia paths' default output is missing key '${KEY}='" >&2
+        cat "${TEST_DIR}/case5.out" >&2
+        exit 1
+    fi
+done
+
+# --- Test 6 (adversarial): with GAIA_DATA_DIR overridden, NO printed value
+# may still resolve under the real (un-overridden) HOME -- including
+# evidence, which previously bypassed the override entirely.
+OVERRIDE_DIR="${TEST_DIR}/case6"
+GAIA_DATA_DIR="${OVERRIDE_DIR}" "${PYTHON}" "${GAIA_BIN}" paths > "${TEST_DIR}/case6.out"
+while IFS='=' read -r KEY VALUE; do
+    case "${VALUE}" in
+        "${REAL_HOME}"/*|"${REAL_HOME}")
+            echo "FAIL: 'gaia paths' key '${KEY}' still resolves under the real HOME (${REAL_HOME}) with GAIA_DATA_DIR overridden: ${VALUE}" >&2
+            exit 1
+            ;;
+    esac
+    case "${VALUE}" in
+        "${OVERRIDE_DIR}"/*|"${OVERRIDE_DIR}")
+            ;;
+        *)
+            echo "FAIL: 'gaia paths' key '${KEY}' did not relocate under the override (${OVERRIDE_DIR}): ${VALUE}" >&2
+            exit 1
+            ;;
+    esac
+done < "${TEST_DIR}/case6.out"
 
 echo "OK"
 exit 0

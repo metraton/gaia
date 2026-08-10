@@ -65,15 +65,14 @@ _MAX_INLINE_CHARS = 20000
 # per-attempt budget cap what is REINJECTED. The number of passes is itself now
 # bounded by the rejection circuit breaker, so accumulation cannot run away.
 
-_SUBDIR = "rejected_turns"
 _SUFFIX = ".txt"
 _KEY_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
 def _relay_dir() -> Path:
-    from gaia.paths import data_dir
+    from gaia.paths import rejected_turns_dir
 
-    directory = Path(data_dir()) / _SUBDIR
+    directory = rejected_turns_dir()
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

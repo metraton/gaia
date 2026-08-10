@@ -3,12 +3,17 @@ gaia paths -- Report canonical Gaia storage paths; materializes the layout if mi
 
 Subcommands:
   paths              Print all resolved paths (key=value):
-                       data, db, snapshot, state, workspaces, logs, events, cache
+                       data, db, snapshot, state, workspaces, logs, events,
+                       cache, scratch, evidence, worktrees, tmp, rejected_turns
   paths data         Print only data_dir()
   paths db           Print only db_path()
 
-All other canonical paths (snapshot, state, workspaces, logs, events, cache)
-are printed by `gaia paths` (no subcommand). Per-workspace metadata is
+All other canonical paths (snapshot, state, workspaces, logs, events, cache,
+scratch, evidence, worktrees, tmp, rejected_turns) are printed by `gaia
+paths` (no subcommand). Every one of them resolves under data_dir(), so a
+`GAIA_DATA_DIR` override relocates all of them together -- including
+`evidence`, whose root previously bypassed the resolver and stayed pinned
+under the real ~/.gaia regardless of the override. Per-workspace metadata is
 available via `gaia workspace info`.
 
 ensure_layout() is invoked before printing so that ~/.gaia/ (or the
@@ -54,10 +59,15 @@ def _cmd_all(args) -> int:
         db_path,
         ensure_layout,
         events_dir,
+        evidence_dir,
         logs_dir,
+        rejected_turns_dir,
+        scratch_dir,
         snapshot_dir,
         state_dir,
+        tmp_dir,
         workspaces_dir,
+        worktrees_dir,
     )
     ensure_layout()
     print(f"data={data_dir()}")
@@ -68,6 +78,11 @@ def _cmd_all(args) -> int:
     print(f"logs={logs_dir()}")
     print(f"events={events_dir()}")
     print(f"cache={cache_dir()}")
+    print(f"scratch={scratch_dir()}")
+    print(f"evidence={evidence_dir()}")
+    print(f"worktrees={worktrees_dir()}")
+    print(f"tmp={tmp_dir()}")
+    print(f"rejected_turns={rejected_turns_dir()}")
     return 0
 
 
@@ -89,7 +104,8 @@ def register(subparsers):
             "calls ensure_layout() first, so the ~/.gaia layout (six\n"
             "directories, mode 0700) is materialized if missing.\n\n"
             "No subcommand: print all paths (data, db, snapshot, state,\n"
-            "  workspaces, logs, events, cache) as key=value pairs.\n"
+            "  workspaces, logs, events, cache, scratch, evidence, worktrees,\n"
+            "  tmp, rejected_turns) as key=value pairs.\n"
             "data: print data_dir() only.\n"
             "db:   print db_path() only.\n\n"
             "Per-workspace metadata: gaia workspace info"

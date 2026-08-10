@@ -1,7 +1,8 @@
 """
 gaia.evidence.fs -- Filesystem blob storage for the evidence layer.
 
-Layout: ~/.gaia/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid4}.{ext}
+Layout: <data_dir>/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid4}.{ext}
+(``data_dir()`` is ``~/.gaia`` unless overridden by ``GAIA_DATA_DIR``.)
 
 This module does NOT enforce the permission guard: writes to the filesystem
 always accompany an insert_evidence() call that already applied the guard.
@@ -25,8 +26,19 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 def _evidence_root() -> Path:
-    """Return the root directory for evidence blobs: ~/.gaia/evidence/."""
-    return Path.home() / ".gaia" / "evidence"
+    """Return the root directory for evidence blobs.
+
+    Resolves through ``gaia.paths.resolver.evidence_dir()`` (``data_dir() /
+    "evidence"``) rather than hardcoding ``Path.home() / ".gaia"`` directly,
+    so a ``GAIA_DATA_DIR`` override relocates this root exactly like every
+    other Gaia-owned directory. Before this fix the two diverged: a test (or
+    any caller) that isolated itself by setting ``GAIA_DATA_DIR`` still wrote
+    evidence blobs into the real per-user store, because this function never
+    consulted the override.
+    """
+    from gaia.paths.resolver import evidence_dir
+
+    return evidence_dir()
 
 
 def require_canonical_artifact_path(artifact_path: str) -> str:

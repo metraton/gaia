@@ -9,11 +9,15 @@ from gaia.paths import (
     data_dir,
     db_path,
     events_dir,
+    evidence_dir,
     logs_dir,
+    rejected_turns_dir,
     scratch_dir,
     snapshot_dir,
     state_dir,
+    tmp_dir,
     workspaces_dir,
+    worktrees_dir,
 )
 
 
@@ -109,6 +113,39 @@ def test_scratch_dir_default_is_home_gaia_scratch(monkeypatch):
     assert scratch_dir() == Path.home() / ".gaia" / "scratch"
 
 
+def test_evidence_dir_under_data_dir(monkeypatch, tmp_path):
+    """evidence_dir() must relocate with GAIA_DATA_DIR like every other dir.
+
+    Regression test: gaia/evidence/fs.py::_evidence_root() previously
+    hardcoded Path.home() / ".gaia" / "evidence" directly and ignored
+    GAIA_DATA_DIR entirely, so a test (or any caller) isolating itself by
+    overriding the data directory still wrote evidence blobs into the real
+    per-user store.
+    """
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    assert evidence_dir() == tmp_path.resolve() / "evidence"
+
+
+def test_evidence_dir_default_is_home_gaia_evidence(monkeypatch):
+    monkeypatch.delenv("GAIA_DATA_DIR", raising=False)
+    assert evidence_dir() == Path.home() / ".gaia" / "evidence"
+
+
+def test_worktrees_dir_under_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    assert worktrees_dir() == tmp_path.resolve() / "worktrees"
+
+
+def test_tmp_dir_under_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    assert tmp_dir() == tmp_path.resolve() / "tmp"
+
+
+def test_rejected_turns_dir_under_data_dir(monkeypatch, tmp_path):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    assert rejected_turns_dir() == tmp_path.resolve() / "rejected_turns"
+
+
 # ---------------------------------------------------------------------------
 # Public API surface
 # ---------------------------------------------------------------------------
@@ -127,6 +164,10 @@ def test_paths_module_exports():
         "events_dir",
         "cache_dir",
         "scratch_dir",
+        "evidence_dir",
+        "worktrees_dir",
+        "tmp_dir",
+        "rejected_turns_dir",
         "ensure_layout",
         "workspace_id",
     }

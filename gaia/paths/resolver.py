@@ -20,6 +20,10 @@ Public API::
         events_dir,
         cache_dir,
         scratch_dir,
+        evidence_dir,
+        worktrees_dir,
+        tmp_dir,
+        rejected_turns_dir,
     )
 """
 
@@ -131,3 +135,63 @@ def scratch_dir() -> Path:
         ``data_dir() / "scratch"``
     """
     return data_dir() / "scratch"
+
+
+def evidence_dir() -> Path:
+    """Return the path to the canonical evidence blob store.
+
+    Root for every evidence blob copied out of an agent's working tree:
+    ``evidence_dir() / {workspace}/{brief_slug}/{ac_id}/{uuid4}.{ext}`` (see
+    ``gaia/evidence/fs.py::blob_path_for``).
+
+    Lives under ``data_dir()`` so a ``GAIA_DATA_DIR`` override relocates the
+    evidence store too. Before this function existed, ``gaia/evidence/fs.py``
+    computed this root as ``Path.home() / ".gaia" / "evidence"`` directly,
+    ignoring ``GAIA_DATA_DIR`` entirely -- a test that isolates itself by
+    overriding the data directory would still write blobs into the real
+    per-user store instead of its own sandbox.
+
+    Returns:
+        ``data_dir() / "evidence"``
+    """
+    return data_dir() / "evidence"
+
+
+def worktrees_dir() -> Path:
+    """Return the path to Gaia's central root for agentic git worktrees.
+
+    A worktree an agent creates for isolated repo work lives under here,
+    outside every repository, keyed by repo identity and contract_id -- never
+    inside the repo's own working tree, where it could be seen as untracked
+    changes or (worse) committed by mistake.
+
+    Returns:
+        ``data_dir() / "worktrees"``
+    """
+    return data_dir() / "worktrees"
+
+
+def tmp_dir() -> Path:
+    """Return the path to Gaia's own temporary-file root.
+
+    Distinct from the OS-wide ``/tmp``: this directory is under
+    ``data_dir()``, so it is swept by Gaia's own retention policy and
+    relocates with ``GAIA_DATA_DIR`` like every other Gaia-owned directory.
+
+    Returns:
+        ``data_dir() / "tmp"``
+    """
+    return data_dir() / "tmp"
+
+
+def rejected_turns_dir() -> Path:
+    """Return the path where rejected-turn text is preserved.
+
+    Holds the substantive prose of a turn the contract gate rejected (see
+    ``hooks/modules/agents/rejected_turn_relay.py``), so it survives the
+    retry regardless of what the agent's repair message does.
+
+    Returns:
+        ``data_dir() / "rejected_turns"``
+    """
+    return data_dir() / "rejected_turns"
