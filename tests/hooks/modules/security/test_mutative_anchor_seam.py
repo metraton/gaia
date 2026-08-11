@@ -35,6 +35,7 @@ from modules.security import tiers as tiers_module
 from modules.security.mutative_verbs import (
     COMMAND_PATH_MUTATIVE_UPGRADES,
     MutativeAnchor,
+    _validated_anchor_table,
     detect_mutative_command,
 )
 from modules.security.tiers import SecurityTier, classify_command_tier
@@ -71,10 +72,16 @@ def _clear_classifier_caches():
 
 
 def _install(monkeypatch, base_cmd, anchor):
-    """Add one anchor to a CLI's tuple without dropping what it already has."""
+    """Add one anchor to a CLI's tuple without dropping what it already has.
+
+    The composed tuple goes through the same declaration guard the shipped
+    table does, so a probe that could never fire is refused here too instead
+    of quietly measuring nothing.
+    """
     existing = tuple(COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ()))
+    composed = _validated_anchor_table({base_cmd: existing + (anchor,)})
     monkeypatch.setitem(
-        COMMAND_PATH_MUTATIVE_UPGRADES, base_cmd, existing + (anchor,)
+        COMMAND_PATH_MUTATIVE_UPGRADES, base_cmd, composed[base_cmd]
     )
     _clear_classifier_caches()
 
@@ -250,3 +257,139 @@ class TestAnchorDeclarationIsValidated:
     def test_uppercase_flag_is_rejected(self):
         with pytest.raises(ValueError):
             MutativeAnchor(path=("init",), flags=frozenset({"-Upgrade"}))
+
+
+class TestNoDeclarableTableHoldsAnUnreachableAnchor:
+    """A table is refused where it is WRITTEN if one anchor could never fire.
+
+    One CLI's anchors are tried in declaration order and the first match wins,
+    so an anchor whose path is already covered by an earlier one is dead
+    config: it reads as coverage and classifies nothing. The verdict never
+    changes (both entries say T3), but the user is told the BROAD form when
+    the real one was the narrow one -- and the verb and reason are the
+    product of the consent layer.
+
+    Order is what carries the meaning here, so the guard rejects only the
+    order that is genuinely dead. Declaring the specific anchor first is the
+    fix, not a second thing to forbid.
+    """
+
+    BROAD = MutativeAnchor(path=("config",))
+    SPECIFIC = MutativeAnchor(path=("config", "widgets", "anchor-probe"))
+
+    def test_broad_path_declared_first_is_refused(self):
+        with pytest.raises(ValueError) as excinfo:
+            _validated_anchor_table({"gcloud": (self.BROAD, self.SPECIFIC)})
+        message = str(excinfo.value)
+        assert "gcloud" in message
+        assert "anchor-probe" in message, (
+            f"the refusal must name the anchor that could never fire, or the "
+            f"author cannot act on it. Got: {message}"
+        )
+
+    def test_specific_path_declared_first_is_accepted(self):
+        """The fix for the refused order, and proof it is not over-rejected."""
+        table = {"gcloud": (self.SPECIFIC, self.BROAD)}
+        assert _validated_anchor_table(table) is table
+
+    def test_identical_unflagged_paths_are_refused(self):
+        with pytest.raises(ValueError):
+            _validated_anchor_table(
+                {"gcloud": (MutativeAnchor(path=("dev",)),
+                            MutativeAnchor(path=("dev",)))}
+            )
+
+    def test_same_path_differing_only_in_flags_is_accepted(self):
+        """The legitimate case: one path, two flag conditions.
+
+        Neither anchor covers the other, because the flag IS the condition --
+        a command carrying one flag does not carry the other.
+        """
+        table = {
+            "terraform": (
+                MutativeAnchor(path=("init",),
+                               flags=frozenset({"-anchor-probe"})),
+                MutativeAnchor(path=("init",),
+                               flags=frozenset({"-anchor-probe-two"})),
+            )
+        }
+        assert _validated_anchor_table(table) is table
+
+    def test_flagged_then_unflagged_same_path_is_accepted(self):
+        """`terraform init` with a flag, then the same path without one.
+
+        The unflagged anchor still fires on every command that lacks the flag,
+        so it is reachable -- the flagged one only short-circuits the commands
+        that actually carry its flag.
+        """
+        table = {
+            "terraform": (
+                MutativeAnchor(path=("init",),
+                               flags=frozenset({"-anchor-probe"})),
+                MutativeAnchor(path=("init",)),
+            )
+        }
+        assert _validated_anchor_table(table) is table
+
+    def test_unflagged_then_flagged_same_path_is_refused(self):
+        """The same two anchors in the order that kills the second one."""
+        with pytest.raises(ValueError):
+            _validated_anchor_table(
+                {"terraform": (
+                    MutativeAnchor(path=("init",)),
+                    MutativeAnchor(path=("init",),
+                                   flags=frozenset({"-anchor-probe"})),
+                )}
+            )
+
+    def test_narrower_flag_set_under_a_wider_one_is_refused(self):
+        """Every flag that could fire the second already fires the first."""
+        with pytest.raises(ValueError):
+            _validated_anchor_table(
+                {"terraform": (
+                    MutativeAnchor(
+                        path=("init",),
+                        flags=frozenset({"-anchor-probe", "-anchor-probe-two"}),
+                    ),
+                    MutativeAnchor(path=("init",),
+                                   flags=frozenset({"-anchor-probe"})),
+                )}
+            )
+
+    def test_a_prefix_pair_across_two_clis_is_accepted(self):
+        """Anchors are keyed by base command; one CLI cannot shadow another."""
+        table = {
+            "gcloud": (self.BROAD,),
+            "terraform": (self.SPECIFIC,),
+        }
+        assert _validated_anchor_table(table) is table
+
+    def test_both_flag_conditions_stay_reachable_at_runtime(self, monkeypatch):
+        """Accepting the legitimate pair is not enough -- both must fire.
+
+        The guard exists to keep declarations reachable, so the pair it
+        permits is measured against the live classifier, not just against the
+        guard's own verdict.
+        """
+        _install(monkeypatch, "terraform",
+                 MutativeAnchor(path=("init",),
+                                flags=frozenset({"-anchor-probe"})))
+        _install(monkeypatch, "terraform",
+                 MutativeAnchor(path=("init",),
+                                flags=frozenset({"-anchor-probe-two"})))
+
+        first = detect_mutative_command("terraform init -anchor-probe")
+        second = detect_mutative_command("terraform init -anchor-probe-two")
+        assert first.is_mutative is True
+        assert second.is_mutative is True
+        assert first.dangerous_flags == ("-anchor-probe",)
+        assert second.dangerous_flags == ("-anchor-probe-two",), (
+            f"the second flag condition must be reached on its own flag, not "
+            f"answered by the first anchor. Got {second.dangerous_flags}"
+        )
+
+    def test_the_shipped_table_holds_the_property(self):
+        assert (
+            _validated_anchor_table(COMMAND_PATH_MUTATIVE_UPGRADES)
+            is COMMAND_PATH_MUTATIVE_UPGRADES
+        )

@@ -654,10 +654,71 @@ class MutativeAnchor:
         return tuple(sorted(present)) if present else None
 
 
+def _anchor_shadows(earlier: MutativeAnchor, later: MutativeAnchor) -> bool:
+    """Does ``earlier`` answer every command ``later`` could ever match?
+
+    Anchors of one CLI are tried in declaration order and the first match
+    returns, so ``later`` is reachable only while some command matches it and
+    NOT ``earlier``. Two conditions together make that impossible:
+
+    * ``earlier``'s path is a prefix of ``later``'s -- matching is by prefix,
+      and an equal path is a prefix of itself; and
+    * ``earlier``'s condition is no narrower. An unflagged ``earlier`` fires on
+      the path alone, so it swallows everything beneath it. A flagged one
+      swallows ``later`` only when every flag that could fire ``later`` also
+      fires ``earlier`` -- which is why an unflagged ``later`` under a flagged
+      ``earlier`` survives: it still answers the commands that carry no flag.
+    """
+    if later.path[:len(earlier.path)] != earlier.path:
+        return False
+    if not earlier.flags:
+        return True
+    return bool(later.flags) and later.flags <= earlier.flags
+
+
+def _validated_anchor_table(
+    table: Dict[str, Tuple[MutativeAnchor, ...]],
+) -> Dict[str, Tuple[MutativeAnchor, ...]]:
+    """Return the table, or refuse it because one anchor could never fire.
+
+    Declaration order is what this seam matches on, so an anchor already
+    covered by an earlier one under the same CLI is dead config -- and dead
+    config is the failure this model exists to avoid: it reads as coverage and
+    classifies nothing. The verdict does not change (both entries say T3);
+    what degrades is the ``verb`` and ``reason`` the user is shown, which name
+    the BROAD form when the real one was the narrow one. Informed consent is
+    this layer's product, so that is not cosmetic.
+
+    Refusing HARD, at declaration, is the same stance ``__post_init__`` already
+    takes on an empty path or an uppercase token, and for the same reason: the
+    only writer of an anchor table is a source edit, so the error belongs to
+    whoever writes it, surfaced on the first import rather than discovered as a
+    missing description in a live approval prompt.
+
+    Only the dead ORDER is refused, never the pair: declaring the specific
+    anchor ahead of the broad one is the fix, and two anchors of the same path
+    that differ in their flag conditions are both reachable and both allowed.
+    """
+    for base_cmd, anchors in table.items():
+        for index, anchor in enumerate(anchors):
+            for earlier in anchors[:index]:
+                if _anchor_shadows(earlier, anchor):
+                    raise ValueError(
+                        f"{base_cmd!r} anchor {anchor} (index {index}) can "
+                        f"never fire: {earlier} is declared before it and "
+                        f"matches every command it would. Declare the more "
+                        f"specific anchor first, or drop the covered one -- "
+                        f"first match decides, so a covered entry reads as "
+                        f"coverage and classifies nothing."
+                    )
+    return table
+
+
 # Keyed by base_cmd; the anchors of one CLI are tried in declaration order and
 # the first match decides. Every match yields the same verdict, so order only
-# affects which path the reason names.
-COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = {
+# affects which path the reason names -- and an order that leaves an anchor
+# unreachable is refused by _validated_anchor_table when this table is built.
+COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validated_anchor_table({
     "gaia": (
         MutativeAnchor(path=("dev",)),
         # `gaia context prune-workspaces --yes` HARD-DELETEs workspaces rows
@@ -678,7 +739,7 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = {
         # here: it is a SIMULATION_FLAG resolved by Step 3 above this check.
         MutativeAnchor(path=("scan",)),
     ),
-}
+})
 
 
 # ============================================================================
