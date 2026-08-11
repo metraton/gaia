@@ -73,6 +73,7 @@ skills/
 │   └── reference.md
 ├── gaia-planner/          # Feature planning, briefs, task decomposition
 ├── gaia-release/          # Gaia release pipeline: install local, dry-run, release
+├── gaia-research/         # Technique: mine bookmarked GitHub repos for ideas Gaia can take, judged on their code rather than their README
 ├── gaia-audit/            # Audit one component (agent or skill) against its standard + live implementation
 ├── gaia-verify/           # Verify a Gaia installation across delivery surfaces
 ├── git-conventions/       # Conventional Commits (on-demand workflow skill)
@@ -145,6 +146,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `pending-approvals` — present and resolve pending approval requests
 - `subagent-request-approval` — T3 approval-request workflow (replaces `request-approval`)
 - `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match
+- `gaia-research` — technique for mining one or more bookmarked GitHub repos (or, in the inverse direction, finding who solves a capability the user wants) for ideas Gaia can take: burden of proof set by the claim type, code read instead of README, evidential status marked on every idea. Ends at digested ideas and deliberately produces no brief or plan — `brief-spec` picks up downstream. Loaded on demand by description match, invocable directly via the Skill tool
 - `session-reflection` — session-arc recovery, two-way reconciliation against the live corpus, and memory curation proposal
 - `jira-ticket-writing` — formula for Jira Stories and Subtasks; invocable directly via the Skill tool
 - `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, invocable directly via the Skill tool
