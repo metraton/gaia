@@ -156,7 +156,13 @@ are NOT interchangeable:
   `--all` is refused rather than assumed.
 - **`gaia schedule resume (<name>|--all)`** -- lifts a live suspension early,
   or acknowledges a lapsed one so the SessionStart notice stops repeating.
-  Never reinstalls anything on the machine.
+  Never reinstalls anything on the machine. The form must match the
+  suspension's OWN scope, not either interchangeably: `resume <name>` only
+  clears a suspension taken on that task; it is a no-op on a workspace-wide
+  (`--all`) suspension, which clears only with `--all` itself (`resume`
+  looks the row up by task id, and a global row has none). Every hint Gaia
+  prints for a lapse -- SessionStart, `status`, `list`, `show` -- already
+  names the correct form for that specific suspension.
 
 All four verbs are **T0**: reversible desired-state bookkeeping in gaia.db,
 never touching the machine's crontab. Only `gaia schedule sync` (T3)

@@ -248,6 +248,23 @@ def _describe_suspension(susp):
     return out
 
 
+def _resume_hint(scope, task_name=None):
+    """The exact `gaia schedule resume` invocation that clears THIS suspension.
+
+    Scope-specific, not offered as one interchangeable form: a task-scope
+    suspension clears only by NAME, a global (workspace-wide) one only by
+    `--all`. `resume_scheduled_tasks` looks the row up by `task_id`, and a
+    global suspension's `task_id` is NULL -- `resume <name>` finds no row to
+    delete for it and returns `not_suspended` (verified live: `gaia schedule
+    resume <name>` on a global lapse returns `{"status": "not_suspended"}`
+    and leaves the notice standing). Printing the wrong form trains the user
+    to ignore a notice that, by design, never self-clears.
+    """
+    if scope == "task" and task_name:
+        return f"gaia schedule resume {task_name}"
+    return "gaia schedule resume --all"
+
+
 def _describe_state(task):
     """Render (state, note) for one task row.
 
@@ -261,8 +278,9 @@ def _describe_state(task):
     if state == "suspended" and susp:
         return state, _describe_suspension(susp)
     if state == "active" and susp and susp.get("expired"):
+        hint = _resume_hint(susp.get("scope"), task.get("name"))
         return state, (f"suspension LAPSED {susp.get('lapsed_ago')} ago "
-                       f"-- running again; clear with `gaia schedule resume`")
+                       f"-- running again; clear with `{hint}`")
     return state, None
 
 
@@ -433,7 +451,10 @@ def _render_suspensions(suspensions):
 
     A LAPSE is listed before a live suspension and marked, because it is the
     entry that means something started running again -- the reader needs to see
-    it before anything merely still-paused.
+    it before anything merely still-paused. Each entry carries its OWN exact
+    resume command rather than a combined "<name>|--all" -- the two forms are
+    not interchangeable (see `_resume_hint`), and a mixed batch of task-scope
+    and global suspensions needs a different command per line.
     """
     if not suspensions:
         return
@@ -443,18 +464,20 @@ def _render_suspensions(suspensions):
         who = s.get("task_name") or "all tasks"
         resumed = (", ".join(s.get("resumed_names") or [])
                    or "none (still disabled, or held by another suspension)")
+        hint = _resume_hint(s.get("scope"), s.get("task_name"))
         print(f"  LAPSED    {who} -- suspension expired {s.get('lapsed_ago')} ago "
               f"({s.get('until')}); active again: {resumed}")
+        print(f"            acknowledge: `{hint}` (T0)")
     for s in live:
         who = s.get("task_name") or "all tasks"
         window = ("indefinitely" if s.get("indefinite")
                   else f"{s.get('remaining')} left, until {s.get('until')}")
+        hint = _resume_hint(s.get("scope"), s.get("task_name"))
         print(f"  SUSPENDED {who} -- {window}")
+        print(f"            lift early: `{hint}` (T0)")
     if lapsed:
-        print("Acknowledge a lapse with `gaia schedule resume "
-              "<name>|--all` (T0) -- it does not stop running again, it clears the notice.")
-    if live:
-        print("Lift a suspension early with `gaia schedule resume <name>|--all` (T0).")
+        print("A lapse does not stop the task from running again -- "
+              "the acknowledge command above only clears the notice.")
 
 
 def _render_plan(plan, as_json, suspensions=None):

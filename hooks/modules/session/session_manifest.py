@@ -884,6 +884,23 @@ def build_task_notifications_block(
         return ""
 
 
+def _resume_hint(scope: Optional[str], task_name: Optional[str]) -> str:
+    """The exact `gaia schedule resume` invocation that clears THIS suspension.
+
+    Scope-specific, not offered as one interchangeable "<name>|--all" form: a
+    task-scope suspension clears only by NAME, a global (workspace-wide) one
+    only by `--all`. `resume_scheduled_tasks` (gaia.store.writer) looks the
+    row up by `task_id`, and a global suspension's `task_id` is NULL --
+    `resume <name>` finds no row to delete for it and returns
+    `{"status": "not_suspended"}`, leaving the notice standing. This SessionStart
+    block is the one channel a lapse cannot self-clear from, so the hint it
+    prints must work verbatim -- a wrong one trains the user to ignore it.
+    """
+    if scope == "task" and task_name:
+        return f"gaia schedule resume {task_name}"
+    return "gaia schedule resume --all"
+
+
 def build_schedule_suspension_block(
     workspace: Optional[str] = None,
 ) -> str:
@@ -942,14 +959,15 @@ def build_schedule_suspension_block(
                 resumed = ", ".join(s.get("resumed_names") or [])
                 what = (f"active again: {resumed}" if resumed else
                         "nothing came back (still disabled, or held by another suspension)")
+                hint = _resume_hint(s.get("scope"), s.get("task_name"))
                 lines.append(
                     f"- ! {who} — suspension expired {s.get('lapsed_ago')} ago "
-                    f"(deadline {s.get('until')}) — {what}"
+                    f"(deadline {s.get('until')}) — {what} — acknowledge: "
+                    f"`{hint}` (T0)"
                 )
             lines.append(
                 "Nothing was reactivated by session start: the deadline simply "
-                "stopped applying. Acknowledge with `gaia schedule resume "
-                "<name>|--all` (T0) · verify the machine: `gaia schedule status`"
+                "stopped applying. Verify the machine: `gaia schedule status`"
             )
 
         if live:
@@ -963,11 +981,11 @@ def build_schedule_suspension_block(
                           else f"suspended {s.get('remaining')} more "
                                f"(until {s.get('until')})")
                 reason = f" — {s['reason']}" if s.get("reason") else ""
-                lines.append(f"- {who} — {window}{reason}")
-            lines.append(
-                "Lift early: `gaia schedule resume <name>|--all` (T0) · "
-                "inspect: `gaia schedule status`"
-            )
+                hint = _resume_hint(s.get("scope"), s.get("task_name"))
+                lines.append(
+                    f"- {who} — {window}{reason} — lift early: `{hint}` (T0)"
+                )
+            lines.append("Inspect: `gaia schedule status`")
 
         return "\n".join(lines)
     except Exception as exc:

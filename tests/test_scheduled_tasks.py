@@ -732,6 +732,67 @@ def test_session_block_never_touches_the_scheduler(db, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# The resume hint must match the suspension's SCOPE -- a task-scope
+# suspension clears only by name, a global one only by `--all`. Printing the
+# wrong form is not merely cosmetic: `resume <name>` on a global suspension
+# returns `not_suspended` and leaves the notice standing (measured live).
+# ---------------------------------------------------------------------------
+
+def test_session_block_lapse_hint_matches_task_scope(db, monkeypatch):
+    from gaia.store import writer
+    mod = _manifest(monkeypatch, db)
+    _register(db, name="a")
+    writer.suspend_scheduled_tasks(name="a", until=_past(minutes=5),
+                                   workspace="me", db_path=db)
+    out = mod.build_schedule_suspension_block()
+    assert "acknowledge: `gaia schedule resume a` (T0)" in out
+    assert "gaia schedule resume --all" not in out
+
+
+def test_session_block_lapse_hint_matches_global_scope(db, monkeypatch):
+    from gaia.store import writer
+    mod = _manifest(monkeypatch, db)
+    _register(db, name="a")
+    writer.suspend_scheduled_tasks(name=None, until=_past(minutes=5),
+                                   workspace="me", db_path=db)
+    out = mod.build_schedule_suspension_block()
+    assert "acknowledge: `gaia schedule resume --all` (T0)" in out
+    assert "gaia schedule resume a`" not in out
+
+
+def test_session_block_live_suspension_hint_matches_scope(db, monkeypatch):
+    """The not-yet-lapsed footer ("lift early") must be scope-correct too."""
+    from gaia.store import writer
+    mod = _manifest(monkeypatch, db)
+    _register(db, name="a")
+    writer.suspend_scheduled_tasks(name="a", until=_future(hours=1),
+                                   workspace="me", db_path=db)
+    out = mod.build_schedule_suspension_block()
+    assert "lift early: `gaia schedule resume a` (T0)" in out
+    assert "gaia schedule resume --all" not in out
+
+
+def test_session_block_global_lapse_hint_actually_clears_it(db, monkeypatch, capsys):
+    """The printed hint must work verbatim: it is the only channel that
+    acknowledges a lapse, which does not self-clear."""
+    from gaia.store import writer
+    mod = _manifest(monkeypatch, db)
+    _register(db, name="a")
+    writer.suspend_scheduled_tasks(name=None, until=_past(minutes=5),
+                                   workspace="me", db_path=db)
+    assert "gaia schedule resume --all" in mod.build_schedule_suspension_block()
+
+    monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+    cli, parser = _parser()
+    args = parser.parse_args(["schedule", "resume", "--all",
+                              "--workspace", "me", "--json"])
+    assert cli.cmd_schedule(args) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "ok"
+
+    assert mod.build_schedule_suspension_block() == ""
+
+
+# ---------------------------------------------------------------------------
 # CLI surface for the two new verbs
 # ---------------------------------------------------------------------------
 
@@ -887,6 +948,67 @@ def test_cli_show_prints_state_and_suspension_apart(db, monkeypatch, capsys):
     assert "state:         suspended" in out
     assert "enabled:       True" in out, "the permanent switch is untouched"
     assert "indefinitely" in out
+
+
+# ---------------------------------------------------------------------------
+# `list`/`show` (_describe_state) and `status` (_render_suspensions) print a
+# resume hint for a lapsed suspension; it must match the suspension's scope --
+# see the SessionStart-block tests above for why the wrong form is a real bug,
+# not a style nit.
+# ---------------------------------------------------------------------------
+
+def test_cli_list_lapse_hint_matches_task_scope(db, monkeypatch, capsys):
+    from gaia.store import writer
+    monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+    _register(db, name="task-only")
+    writer.suspend_scheduled_tasks(name="task-only", until=_past(minutes=1),
+                                   workspace="me", db_path=db)
+    cli, parser = _parser()
+    args = parser.parse_args(["schedule", "list", "--workspace", "me"])
+    assert cli.cmd_schedule(args) == 0
+    out = capsys.readouterr().out
+    assert "clear with `gaia schedule resume task-only`" in out
+
+
+def test_cli_list_lapse_hint_matches_global_scope(db, monkeypatch, capsys):
+    from gaia.store import writer
+    monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+    _register(db, name="task-only")
+    writer.suspend_scheduled_tasks(name=None, until=_past(minutes=1),
+                                   workspace="me", db_path=db)
+    cli, parser = _parser()
+    args = parser.parse_args(["schedule", "list", "--workspace", "me"])
+    assert cli.cmd_schedule(args) == 0
+    out = capsys.readouterr().out
+    assert "clear with `gaia schedule resume --all`" in out
+    assert "clear with `gaia schedule resume task-only`" not in out
+
+
+def test_cli_status_lapse_hint_matches_task_scope(db, monkeypatch, capsys):
+    from gaia.store import writer
+    monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+    _register(db, name="task-only")
+    writer.suspend_scheduled_tasks(name="task-only", until=_past(minutes=1),
+                                   workspace="me", db_path=db)
+    cli, parser = _parser()
+    args = parser.parse_args(["schedule", "status", "--workspace", "me"])
+    assert cli.cmd_schedule(args) == 0
+    out = capsys.readouterr().out
+    assert "acknowledge: `gaia schedule resume task-only` (T0)" in out
+
+
+def test_cli_status_lapse_hint_matches_global_scope(db, monkeypatch, capsys):
+    from gaia.store import writer
+    monkeypatch.setenv("GAIA_DATA_DIR", str(db.parent))
+    _register(db, name="task-only")
+    writer.suspend_scheduled_tasks(name=None, until=_past(minutes=1),
+                                   workspace="me", db_path=db)
+    cli, parser = _parser()
+    args = parser.parse_args(["schedule", "status", "--workspace", "me"])
+    assert cli.cmd_schedule(args) == 0
+    out = capsys.readouterr().out
+    assert "acknowledge: `gaia schedule resume --all` (T0)" in out
+    assert "acknowledge: `gaia schedule resume task-only` (T0)" not in out
 
 
 # ---------------------------------------------------------------------------

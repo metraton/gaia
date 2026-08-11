@@ -181,11 +181,18 @@ is DETECT-ONLY (T0) and zero-noise, and renders up to two headers, LAPSED
 first because it is the one that changed what is running:
 
 - `## Scheduled Tasks — SUSPENSION LAPSED (running again)` -- one line per
-  lapsed suspension, with how long ago the deadline passed and which tasks
-  came back. Does NOT self-clear; it repeats every SessionStart until `gaia
-  schedule resume <name>|--all` acknowledges it.
+  lapsed suspension, with how long ago the deadline passed, which tasks came
+  back, and the exact `gaia schedule resume ...` command that acknowledges
+  THAT entry. Does NOT self-clear; it repeats every SessionStart until that
+  command runs. The command is scope-specific, not a generic
+  `<name>|--all`: a task-scope suspension prints `resume <name>`, a
+  workspace-wide one prints `resume --all` -- the other form is a no-op on
+  it (verified live: `resume <name>` on a global lapse returns
+  `{"status": "not_suspended"}` and the notice keeps repeating). `status`,
+  `list`, and `show` print the same scope-correct hint.
 - `## Scheduled Tasks (suspended)` -- one line per LIVE suspension, with the
-  remaining time (or "indefinitely") and the `--reason`, if any.
+  remaining time (or "indefinitely"), the `--reason` if any, and the same
+  scope-correct `resume` hint to lift it early.
 
 A separate, pre-existing block, `build_schedule_reconciliation_block`
 (`## Scheduled Tasks (drift on <machine>)`), covers desired state vs. this
