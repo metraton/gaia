@@ -197,7 +197,14 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-git-remote", FREE, "git remote -v", False, T0),
 ]
 
-_MINIMUM_MEASURED_CASES = 26
+# The floor exists so a row cannot leave the table quietly, which only works
+# while it EQUALS the number of rows. It had drifted to ten below: the six IAM
+# forms closed most recently, and four others, could all have been deleted with
+# the guard still green -- a guard that permits exactly the loss it was put
+# there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
+# deriving it from the table would assert nothing; adding a row is meant to
+# cost one deliberate edit here.
+_MINIMUM_MEASURED_CASES = 36
 
 
 @pytest.mark.parametrize(

@@ -18,11 +18,12 @@ Categories retained internally for verb classification:
 
 import functools
 import logging
+import shlex
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
-from .command_semantics import CommandSemantics, analyze_command
+from .command_semantics import CommandSemantics, analyze_command, _is_flag
 
 try:
     from .capability_classes import (
@@ -774,6 +775,18 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         ),
     ),
 })
+
+
+# Keyed by base command; a CLI absent from this table has no track grammar and
+# is left completely untouched. Only ``gcloud`` publishes pre-GA surfaces as a
+# word between the tool and the command, so only ``gcloud`` declares one. Every
+# word listed here is a word this layer DELETES from a command before reading
+# it, which is why the set is the two tracks gcloud actually ships and not a
+# guess: ``preview`` was a third one years ago and is gone, so including it
+# would license deleting an ordinary word for a grammar that no longer exists.
+RELEASE_TRACK_PREFIXES: Dict[str, FrozenSet[str]] = {
+    "gcloud": frozenset({"alpha", "beta"}),
+}
 
 
 # ============================================================================
@@ -2795,6 +2808,22 @@ def detect_mutative_command(
             _depth=_depth,
         )
 
+    # --- Honor a release-track prefix (`gcloud alpha ...`, `gcloud beta ...`) ---
+    # A track word between the tool and the command names a different API track
+    # for the SAME operation, and shifts every following token one position.
+    # Both position-sensitive mechanisms below read those positions -- the
+    # anchored upgrade in Step 3e.5 matches a path as a PREFIX, and the Step 4
+    # verb scan splits a compound subcommand only near the head -- so peeling
+    # here, ABOVE both, is what lets one normalization serve them rather than
+    # each being patched on its own. SAME command minus a routing word, so
+    # ``_depth`` is carried through unchanged (mirrors the two peels above).
+    track_remainder, track_peeled = _peel_release_track_prefix(command)
+    if track_peeled and track_remainder and track_remainder != command.strip():
+        return detect_mutative_command(
+            track_remainder, from_source_code=from_source_code, cwd=cwd,
+            _depth=_depth,
+        )
+
     semantics = analyze_command(command)
     tokens = list(semantics.tokens)
     if not tokens:
@@ -4279,6 +4308,82 @@ def _peel_leading_env_prefix(command: str) -> "Tuple[str, bool]":
 
     remainder = s[i:].strip()
     return remainder, peeled
+
+
+def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
+    """Peel a CLI's release-track word off *command* so positions line up again.
+
+    Returns ``(remainder, peeled)``. ``gcloud`` names its pre-GA surfaces with a
+    word placed between the tool and the command -- ``gcloud alpha projects
+    remove-iam-policy-binding`` is the same operation as ``gcloud projects
+    remove-iam-policy-binding``, routed to a different API track. The word costs
+    nothing to type and shifts every following token one position, which is
+    enough to defeat BOTH position-sensitive mechanisms downstream:
+
+    * the anchored upgrade (Step 3e.5) matches an anchor path as a PREFIX of
+      ``non_flag_tokens``, so every declared path misses by one; and
+    * the Step 4 verb scan hyphen-splits a compound subcommand only while
+      ``semantic_index <= 2``, so the shift carries
+      ``remove-iam-policy-binding`` past the window where it would reach
+      ``remove``.
+
+    Normalizing here -- once, above both -- is what makes one edit serve them.
+    Declaring the tracked forms twice in the anchor table would double that
+    table today and double the omissions in it tomorrow, and would still leave
+    the verb scan shifted, since the verb scan reads no table at all.
+
+    Scoped by CLI, and to ONE position within it. ``alpha`` and ``beta`` are
+    ordinary words -- a bucket, a branch, a make target -- so this must not
+    reach a command where they are an argument or a resource name. Two
+    conditions together keep it to the track slot:
+
+    * ``base_cmd`` declares a track set in ``RELEASE_TRACK_PREFIXES``. Every
+      other CLI is returned untouched, so ``make alpha`` and ``git checkout
+      beta`` never enter this path at all; and
+    * the word is the FIRST non-flag token, agreed on by two views -- the raw
+      token walk here and ``analyze_command``'s own ``non_flag_tokens``. The
+      agreement matters where the two can disagree: ``analyze_command`` absorbs
+      the token after a single-letter short flag as that flag's value, so in
+      ``gcloud -q alpha storage buckets add-iam-policy-binding`` the raw walk
+      sees ``alpha`` at the head while the semantic view has already spent it
+      on ``-q``. Peeling on the raw view alone would then shift a DIFFERENT
+      token into the flag's mouth and could break an anchor that was matching.
+      Requiring both views to name the same word confines this to the case
+      where removing it is a pure shift.
+
+    Leading flags are stepped over rather than treated as a stop, because the
+    track can legally follow a global flag (``gcloud --project=x alpha ...``);
+    stopping at the first flag would leave the same bypass one word longer.
+
+    The rebuilt string is a CLASSIFICATION artifact only. Nothing executes it,
+    and it never reaches an approval signature -- those are built by
+    ``approval_scopes.build_approval_signature`` from the command as the user
+    wrote it, so ``gcloud alpha X`` and ``gcloud X`` stay two distinct grants.
+    Normalizing inside ``analyze_command`` instead would have collapsed them
+    into one, letting a grant minted for the plain form authorize the tracked
+    one.
+
+    Direction of error, when the guards above still let an argument through:
+    removing a token can only move later tokens TOWARD the head, and neither
+    track word appears in any verb table or at the head of any anchor path, so
+    no match can be lost -- only gained. A misfire costs a spurious approval
+    prompt; it cannot open a gate.
+    """
+    semantics = analyze_command(command)
+    tracks = RELEASE_TRACK_PREFIXES.get(semantics.base_cmd)
+    if not tracks or not semantics.non_flag_tokens:
+        return command, False
+    if semantics.non_flag_tokens[0] not in tracks:
+        return command, False
+
+    tokens = semantics.tokens
+    for index, token in enumerate(tokens[1:], start=1):
+        if _is_flag(token):
+            continue
+        if token.lower() not in tracks:
+            return command, False
+        return shlex.join((*tokens[:index], *tokens[index + 1:])), True
+    return command, False
 
 
 def _resolve_script_argument(
