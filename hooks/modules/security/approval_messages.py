@@ -57,24 +57,23 @@ def build_pending_approval_unavailable_message() -> str:
     )
 
 
-def build_t3_degraded_allow_message() -> str:
-    """Return the canonical reason for a Q3 degraded-allow (non-blocking) T3.
+def build_t3_degraded_block_message() -> str:
+    """Return the canonical reason for a T3 denied because approval could not persist.
 
     Used when the approval-persistence retry loop is exhausted for a T3 command
-    that is NOT deny-listed. Per the Q3 policy the hook then ALLOWS the command
-    to proceed (rather than hanging an unattended/headless run on a native
-    ask dialog) and records an always-on ``t3_degraded_allow`` audit event. The
-    allow is bounded: deny-listed destructive commands never reach this branch
-    (they are stopped by the harness deny-list pre-hook and by
-    ``is_blocked_command`` at Phase 3a), and the branch re-asserts
-    ``is_blocked_command`` before allowing as defense-in-depth.
+    that is NOT deny-listed. The command has already been classified as
+    state-mutating at this point, so the only two outcomes are denying it or
+    granting it; this branch denies, and records an always-on
+    ``t3_degraded_block`` audit event.
     """
     return (
-        "Approval persistence unavailable after retries: proceeding under the "
-        "T3 degraded-allow policy so this unattended operation is not blocked "
-        "on a human prompt. A synthetic 't3_degraded_allow' audit event was "
-        "recorded (reason=approval_persist_failed). This does NOT bypass the "
-        "destructive deny-list, which is enforced before this point."
+        "Approval persistence unavailable after retries: this T3 command is "
+        "DENIED rather than allowed through the failure. It was already "
+        "classified as state-mutating, so passing it here would grant exactly "
+        "the consent the approval record could not capture. A synthetic "
+        "'t3_degraded_block' audit event was recorded "
+        "(reason=approval_persist_failed). Retry once the approval store is "
+        "reachable again."
     )
 
 

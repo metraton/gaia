@@ -45,6 +45,21 @@ configure_hook_logging("pre_tool_use")
 logger = logging.getLogger(__name__)
 
 
+def _fail_open(reason: str, exc: BaseException):
+    """Record a gate failure and return the outcome to deliver.
+
+    Every error exit in this entry point is a gate failure: the hook returns
+    without having delivered a verdict. Routing them all through here is what
+    keeps that from being silent, and what applies the one case where the
+    operation is stopped instead -- a command the gate had already classified as
+    mutating. See modules.security.fail_open. Imported lazily so an ordinary
+    invocation, which never reaches this path, does not pay for the import.
+    """
+    from modules.security.fail_open import decide_fail_open
+
+    return decide_fail_open(reason, f"{type(exc).__name__}: {exc}")
+
+
 # ============================================================================
 # STDIN HANDLER (Claude Code integration)
 # ============================================================================
@@ -62,10 +77,10 @@ if __name__ == "__main__":
             except ValueError as e:
                 error_msg = str(e)
                 logger.error(f"Adapter parse failed: {error_msg}")
-                print(f"HOOK ERROR: {error_msg}", file=sys.stderr)
-                if "Empty stdin" in error_msg:
-                    print(f"Error: {error_msg}")
-                sys.exit(1)
+                outcome = _fail_open("event_parse_failed", e)
+                print(outcome.message, file=sys.stderr)
+                print(outcome.message)
+                sys.exit(outcome.exit_code)
 
             response = adapter.adapt_pre_tool_use(event)
 
@@ -111,13 +126,16 @@ if __name__ == "__main__":
 
         except json.JSONDecodeError as e:
             logger.error(f"Invalid JSON from stdin: {e}")
-            print(f"HOOK ERROR: Invalid JSON from stdin: {e}", file=sys.stderr)
-            sys.exit(1)
+            outcome = _fail_open("invalid_stdin_json", e)
+            print(outcome.message, file=sys.stderr)
+            print(outcome.message)
+            sys.exit(outcome.exit_code)
         except Exception as e:
             logger.error(f"Error processing hook: {e}", exc_info=True)
-            print(f"HOOK ERROR: {str(e)}", file=sys.stderr)
-            print(f"Hook error: {str(e)}")
-            sys.exit(1)
+            outcome = _fail_open("unhandled_exception", e)
+            print(outcome.message, file=sys.stderr)
+            print(outcome.message)
+            sys.exit(outcome.exit_code)
     else:
         print("Usage: echo '{\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' | python pre_tool_use.py")
         sys.exit(1)

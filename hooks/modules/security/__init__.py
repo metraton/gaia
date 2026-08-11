@@ -11,6 +11,8 @@ Provides:
 - flag_classifiers: Flag-dependent classifiers for 15 command families
 - composition_rules: Cross-stage pipe composition rules (exfiltration, RCE, obfuscation)
 - network_hosts: Network host classification for curl/wget/httpie targets
+- fail_open: What a gate that errors mid-decision must still do -- record the
+  failure, warn the user, and refuse to downgrade an already-mutating command
 """
 
 from .tiers import SecurityTier, classify_command_tier

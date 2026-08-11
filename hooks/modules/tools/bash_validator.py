@@ -77,8 +77,9 @@ from ..security.approval_grants import (
 from ..security.approval_messages import (
     build_t3_approval_instructions,
     build_t3_blocked_denial_message,
-    build_t3_degraded_allow_message,
+    build_t3_degraded_block_message,
 )
+from ..security.fail_open import note_mutative_classification
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.subagent_memory_write_guard import (
@@ -1815,6 +1816,13 @@ def decide_t3_outcome(
         A blocked BashValidationResult (allowed=False, tier T3) whose
         block_response is either a "deny" (with approval_id) or an "ask".
     """
+    # Breadcrumb for the fail-open path. Reaching this function IS the moment
+    # the command becomes known to require consent, so from here on a failure
+    # anywhere in the gate must not degrade it into a permission -- see
+    # modules.security.fail_open. Recorded before any branch so it holds no
+    # matter which outcome this call produces.
+    note_mutative_classification(command, verb, category)
+
     # A genuine multi-command chain is a set of >= 2 items. Anything else
     # collapses to the singular path so we never mint a COMMAND_SET for one
     # command (mirrors _build_sealed_payload's is_command_set guard).
@@ -1902,9 +1910,9 @@ def decide_t3_outcome(
             # to the always-on audit sink (audit-*.jsonl, not gated by GAIA_DEBUG)
             # so the NEXT occurrence of a persistence failure is diagnosable after
             # the fact. Best-effort: never let the diagnostic sink mask the
-            # degraded-allow behavior. Tagged "approval_persist_failed" -- the
+            # outcome of this branch. Tagged "approval_persist_failed" -- the
             # canonical vocabulary `gaia metrics` groups on (persist-failure
-            # sensor, complementary to the t3_degraded_allow sensor below).
+            # sensor, complementary to the t3_degraded_block sensor below).
             try:
                 from ..audit.logger import log_error
                 log_error(
@@ -1938,11 +1946,11 @@ def decide_t3_outcome(
                     suggestions=[_blocked.suggestion] if _blocked.suggestion else [],
                 )
 
-            # ---- Q3 sensor: degraded-allow (always-on) -----------------------
+            # ---- Degradation sensor (always-on) ------------------------------
             # Reuse the approval store's SAME fingerprint (SHA-256 of the
             # canonical sealed_payload) so the audit event redacts the command to
             # a hash -- no secret is logged. Best-effort: a fingerprint failure
-            # must not block the allow.
+            # must not change the outcome.
             try:
                 from gaia.approvals.chain import fingerprint_payload
                 _fp = fingerprint_payload(sealed_payload)
@@ -1951,7 +1959,7 @@ def decide_t3_outcome(
             try:
                 from ..audit.logger import log_event
                 log_event(
-                    event="t3_degraded_allow",
+                    event="t3_degraded_block",
                     component="gaia.bash_validator",
                     tier="T3",
                     reason="approval_persist_failed",
@@ -1964,23 +1972,23 @@ def decide_t3_outcome(
             except Exception:
                 pass
 
-            # ---- Q3 policy: non-blocking allow -------------------------------
-            # After the Q1 retry loop is exhausted, ALLOW the residual (non
-            # deny-listed) T3 to proceed instead of returning "ask". A native
-            # ask dialog hangs unattended/headless (scheduled-task) runs where
-            # no human can click; the degraded-allow keeps them alive. Delivered
-            # via allowed=False + an "allow" block_response so the adapter emits
-            # an explicit permissionDecision "allow" verbatim (the allowed=True
-            # path returns empty output and would defer to the harness permission
-            # system, which could still prompt). This mirrors how the former
-            # "ask" fallback delivered its decision through block_response.
-            reason = build_t3_degraded_allow_message()
-            hook_allow = build_hook_permission_response("allow", reason)
+            # ---- Policy: deny, never a permission ----------------------------
+            # Reaching this point means the command was ALREADY classified T3 and
+            # only the approval record failed to persist. This branch used to
+            # ALLOW it through, so that an unattended run would not hang on a
+            # human prompt -- but the allow granted precisely what the
+            # classification had just decided to withhold, and a persistence
+            # outage silently became blanket consent for every mutation behind
+            # it. Denying instead does not reintroduce the hang it was avoiding:
+            # a deny returns immediately and the session continues, and it
+            # reaches only commands that were already going to stop and ask.
+            reason = build_t3_degraded_block_message()
+            hook_deny = build_hook_permission_response("deny", reason)
             return BashValidationResult(
                 allowed=False,
                 tier=SecurityTier.T3_BLOCKED,
-                reason="T3 degraded-allow: approval persistence failed",
-                block_response=hook_allow,
+                reason="T3 degraded-block: approval persistence failed",
+                block_response=hook_deny,
             )
         reason = build_t3_blocked_denial_message(
             approval_id=approval_id,
