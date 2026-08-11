@@ -24,16 +24,20 @@ of repaired cases:
   same property stated against the in-system oracle rather than against the
   unflagged form.
 
-Stated that way the equivalence is also the guard on the table itself. A flag
-wrongly declared boolean leaves its value standing as a positional, which shifts
-the head by one exactly as the old absorption did -- so a wrong entry fails this
-test on any CLI whose corpus carries a form whose verdict is derived from token
-position. ``test_every_declared_cli_carries_a_gated_form`` is what keeps that
-condition true as the table grows.
+What this file does NOT do is guard the table itself, and reading it as if it
+did is the expensive mistake. The insertion writes each declared flag the way a
+valueless flag is written -- with nothing after it for the flag to absorb -- and
+in that shape a wrongly declared flag behaves exactly like a correctly declared
+one. A wrong entry does its damage only in the shape it is really typed in, the
+flag followed by the value it takes, and that shape is indistinguishable from a
+correct entry followed by a stray positional: same tokens, same verdict.
+Measured rather than argued -- injecting ``-x`` into gcloud's entry as a
+deliberately wrong entry leaves this suite green.
 
-The monotonicity half of the acceptance criterion lives in
-``test_boolean_short_flag_monotonicity.py``: this file measures that the verdict
-did not move, that one measures that it can only ever move upward.
+The table's only defense is therefore the runtime floor, and the test that fails
+when the floor is removed lives in ``test_boolean_short_flag_monotonicity.py``.
+``test_every_declared_cli_carries_a_gated_form`` below is the precondition that
+keeps that floor test covering each CLI as the table grows.
 """
 
 import sys
@@ -268,10 +272,10 @@ def test_the_corpus_carries_both_directions():
 def test_every_declared_cli_carries_a_gated_form():
     """A CLI in the table without a gated form declares a flag nothing measures.
 
-    The equivalence above is what converts a wrong table entry -- a flag that
-    really does take a value -- from a runtime gate that opens into a test that
-    fails. It can only do that on a CLI whose corpus carries a form whose
-    verdict comes from token position, which a gated form is and a read is not.
+    The floor test in ``test_boolean_short_flag_monotonicity.py`` builds its
+    cases from ``GATED_FORMS``: it writes each declared flag with a value and
+    asserts the gate still holds. A CLI that carries no gated form contributes
+    no such case, so its entries would ship with the floor unmeasured for them.
     """
     corpus_clis = {base_cmd_of(cmd) for _, cmd in GATED_FORMS}
     undeclared = sorted(set(BOOLEAN_SHORT_FLAGS) - corpus_clis)

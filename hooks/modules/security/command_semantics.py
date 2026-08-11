@@ -53,16 +53,35 @@ SEMANTIC_SCAN_LIMIT = 12
 # anything -- it only leaves the pre-existing hole open for that flag.  A WRONG
 # entry is the dangerous one: the value it declines to absorb stands as a
 # positional and shifts the head by one, which is the same corruption in the
-# other direction.  Two things hold that down.  Structurally, the entries are
-# keyed by base command and drawn only from the global set above, so each is a
-# fact about one documented CLI rather than a guess generalized across CLIs.
-# Operationally, ``test_boolean_short_flag_equivalence.py`` inserts EVERY flag
-# declared here into every corpus form for that CLI and asserts the verdict does
-# not move -- a flag that really takes a value fails that immediately.  The
-# runtime floor in ``mutative_verbs._detect_with_absorption_floor`` catches what
-# neither does: it re-reads a non-mutative command under the old absorbing
-# grammar and keeps the higher verdict, so a wrong entry costs a spurious
-# approval prompt and cannot open a gate.
+# other direction.
+#
+# WHAT HOLDS A WRONG ENTRY DOWN, AND WHAT DOES NOT.  Structurally, the entries
+# are keyed by base command and drawn only from the global set above, so each is
+# a fact about one documented CLI rather than a guess generalized across CLIs.
+# That is an argument, not a check -- nothing here can verify it, because it is
+# a claim about a third-party CLI's documented flag surface.
+#
+# The test suite does NOT catch a wrong entry, and must not be read as if it
+# did.  ``test_boolean_short_flag_equivalence.py`` inserts every flag declared
+# here into every corpus form for that CLI and asserts the verdict does not
+# move; what that measures is that a declared flag is verdict-neutral in the
+# shape a valueless flag is actually written -- with nothing after it to absorb.
+# A wrong entry does its damage in the OTHER shape, the flag written with the
+# value it really takes, and from inside the two are indistinguishable:
+# ``gcloud -q my-project storage buckets add-iam-policy-binding`` (a CORRECT
+# entry followed by a stray positional) and the same command with a wrongly
+# declared ``-x`` produce the identical token stream and the identical verdict.
+# Measured rather than argued: injecting ``-x`` into gcloud's entry here leaves
+# both suites green.
+#
+# So the runtime floor is the ONLY defense of this table, not a redundant second
+# one.  ``mutative_verbs.detect_mutative_command`` re-reads a non-mutative
+# command under the old absorbing grammar (``mutative_verbs._absorbing_form``)
+# and keeps the higher verdict, so a wrong entry costs a spurious approval
+# prompt and cannot open a gate.  Delete it as redundant because the suites look
+# green, and the table has no defense left at all.  The one test that fails when
+# it goes is ``test_the_floor_gates_a_flag_written_with_a_value`` in
+# ``test_boolean_short_flag_monotonicity.py``.
 #
 # Matching is CASE-SENSITIVE.  ``-D`` and ``-d`` are different flags on the same
 # CLI (``gsutil -D`` is debug output, ``-d`` is a different debug level), and

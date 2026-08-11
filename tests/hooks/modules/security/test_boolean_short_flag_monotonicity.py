@@ -14,20 +14,50 @@ is load-bearing for the gate, and a table of facts about a dozen third-party
 CLIs is not a thing to bet a gate on.
 
 So the verdict is floored rather than trusted: a command that comes back
-non-mutative is re-read under the OLD absorbing grammar
-(``_absorbing_form``), and the higher of the two verdicts wins. That makes the
-direction of a table error one-way, which is the property this file measures:
+non-mutative is re-read under the OLD absorbing grammar (``_absorbing_form``),
+and the higher of the two verdicts wins.
 
-    tier(command, today) >= tier(command, before the table existed)
+WHAT THE FLOOR GUARANTEES, STATED SO IT IS TRUE. The guarantee is on the GATE
+and only on the gate:
 
-for every command, whether or not the entry that fired was correct. The
-pre-table reading is reconstructible exactly -- it is the command with the flag
-kept and the token it used to swallow dropped -- so the two readings can be
-compared in one process, without a second checkout to compare against.
+    is_mutative(command, today) >= is_mutative(command, pre-table reading)
 
-The floor never lowers a verdict. The old reading is the corrupted one and is
-consulted only as a source of escalation, which is why the property is an
-inequality and not an equality.
+It is NOT a guarantee about tiers, and the same inequality written over tiers is
+false. Two measured shapes of counterexample:
+
+* ``npm -g ls audit`` classifies T0 today where its pre-table reading
+  ``npm -g audit`` classified T2 -- a drop inside the band below T3, with both
+  readings non-mutative.
+* ``npm -D plan install`` classifies T2 today where its pre-table reading
+  ``npm -D install`` classified T3 -- a drop across the T3 label itself, and yet
+  BOTH readings are ``is_mutative=True``. The gate held; only the label moved.
+
+The second one shows where the tier number comes from and why it is not the
+thing to state a guarantee over: ``tiers.py``'s ``_classify_command_tier_cached``
+matches its T2 and T1 regexes and returns before it ever calls
+``detect_mutative_command``, so a command landing in one of those lanes is
+labelled without the detector -- and therefore without the floor -- being
+consulted at all. The floor raises ``is_mutative``, which is what the validator
+gates on; the tier label is metadata computed by a different ladder.
+
+WHY THAT INEQUALITY IS ARGUED HERE AND NOT ASSERTED. The shipped verdict is
+literally ``primary or floor(pre-table reading)``, so comparing the two readings
+in one process compares a value with a term of itself: the inequality holds by
+construction and no assertion over it can fail. The property is real; a test of
+it in that shape measures nothing. What IS falsifiable is whether the floor is
+wired in and reaching the shipped verdict, and that is measured by asserting an
+ABSOLUTE expected verdict on the shape a wrong entry actually produces -- the
+flag written with a value standing after it. That is
+``test_the_floor_gates_a_flag_written_with_a_value`` below, and it is the test
+that fails if the floor is removed.
+
+The floor is the whole defense of the table, and that test is what defends the
+floor. Nothing here can detect a wrong entry itself: a correct flag followed by
+a stray positional and a wrongly declared flag followed by its real value
+produce the identical token stream, so the difference between a right entry and
+a wrong one is a fact about the third-party CLI and not an observable. Injecting
+``-x`` into gcloud's entry leaves the equivalence suite green, which is why that
+suite must not be read as a guard on the table.
 """
 
 import sys
@@ -48,18 +78,12 @@ from modules.security.mutative_verbs import (
     _detect_mutative_command,
     detect_mutative_command,
 )
-from modules.security.tiers import SecurityTier
-
-from test_boolean_short_flag_equivalence import CORPUS, with_flag
-
-# Ordered worst-to-least so "no verdict decreased" is a comparison and not a
-# special case per tier.
-TIER_ORDER = {
-    SecurityTier.T0_READ_ONLY: 0,
-    SecurityTier.T1_VALIDATION: 1,
-    SecurityTier.T2_DRY_RUN: 2,
-    SecurityTier.T3_BLOCKED: 3,
-}
+from test_boolean_short_flag_equivalence import (
+    CORPUS,
+    GATED_FORMS,
+    VERDICT_CHANGING_SHORT_FLAGS,
+    with_flag,
+)
 
 # Every corpus form crossed with every flag declared for its CLI: the commands
 # on which the two readings can actually differ.
@@ -70,25 +94,70 @@ FLAGGED_FORMS = [
 ]
 
 
+def with_flag_and_value(command: str, flag: str) -> str:
+    """Write *flag* the way a flag that TAKES a value is written.
+
+    This is the shape a wrong table entry produces at runtime, and the reason it
+    can be built without injecting anything: the classifier cannot tell this
+    from a wrongly declared flag carrying its real value, so a correct entry
+    written this way exercises exactly the same corruption.
+    """
+    tool, rest = command.split(" ", 1)
+    return f"{tool} {flag} SOME-VALUE {rest}"
+
+
+# Only the gated forms: a read that stays a read proves nothing about a gate.
+# `-h` is excluded for the reason the equivalence suite excludes it -- it
+# replaces the operation with printing usage, so it is not verdict-neutral.
+VALUE_CARRYING_FORMS = [
+    (f"{case_id}+{flag}", with_flag_and_value(command, flag))
+    for case_id, command in GATED_FORMS
+    for flag in sorted(BOOLEAN_SHORT_FLAGS.get(analyze_command(command).base_cmd, ()))
+    if flag not in VERDICT_CHANGING_SHORT_FLAGS
+]
+
+
 @pytest.mark.parametrize(
-    "case_id,command", FLAGGED_FORMS, ids=[row[0] for row in FLAGGED_FORMS]
+    "case_id,command",
+    VALUE_CARRYING_FORMS,
+    ids=[row[0] for row in VALUE_CARRYING_FORMS],
 )
-def test_the_verdict_never_falls_below_the_pre_table_reading(case_id, command):
-    """The shipped verdict is at least the verdict the old grammar produced."""
-    absorbing = _absorbing_form(command)
-    assert absorbing is not None, (
-        f"{case_id}: {command!r} carries a declared boolean flag, so the two "
-        f"readings must be distinguishable -- _absorbing_form found no difference"
+def test_the_floor_gates_a_flag_written_with_a_value(case_id, command):
+    """A gated operation stays gated with a token standing where a value would.
+
+    The expectation is absolute -- ``is_mutative`` is True -- rather than a
+    comparison against the pre-table reading, which is what keeps this
+    falsifiable. Remove the floor from ``detect_mutative_command`` and the
+    gcloud IAM cases here go non-mutative, because their verdict comes from an
+    anchor path that matches from position 0 and the stray token displaced it.
+    """
+    assert detect_mutative_command(command).is_mutative is True, (
+        f"{case_id}: {command!r} classified is_mutative=False. A token standing "
+        f"where a declared-valueless flag's value would go shifted the head and "
+        f"dropped the gate -- which is exactly what a wrong table entry does at "
+        f"runtime. The floor is what is supposed to hold this."
     )
 
-    shipped = detect_mutative_command(command).is_mutative
-    pre_table = _detect_mutative_command(absorbing).is_mutative
 
-    assert shipped >= pre_table, (
-        f"{case_id}: the change LOWERED a verdict. {command!r} is now "
-        f"is_mutative={shipped}, but the pre-table reading {absorbing!r} was "
-        f"is_mutative={pre_table}. A gate that existed before this change must "
-        f"still exist after it."
+def test_the_floor_is_the_only_gate_on_at_least_one_form():
+    """The test above must depend on the floor, or it stops measuring it.
+
+    If every value-carrying form were gated by the primary reading alone, the
+    parametrized test would pass with the floor deleted and would be guarding
+    nothing. This names the cases where the floor is the only thing standing,
+    so that condition is measured instead of assumed.
+    """
+    unfloored = [
+        (case_id, command)
+        for case_id, command in VALUE_CARRYING_FORMS
+        if not _detect_mutative_command(command).is_mutative
+    ]
+
+    assert unfloored, (
+        "no value-carrying form depends on the floor: the primary reading now "
+        "gates all of them, so test_the_floor_gates_a_flag_written_with_a_value "
+        "would pass with the floor removed. Rebuild the corpus so the floor is "
+        "measured, or the table has no guarded defense left."
     )
 
 
@@ -161,20 +230,21 @@ def test_the_floor_costs_nothing_where_no_declared_flag_fires():
     assert _absorbing_form("gcloud -q storage buckets list") == "gcloud -q buckets list"
 
 
-def test_no_corpus_verdict_was_lowered_overall():
-    """The aggregate form of the property, over the whole differential corpus.
+def test_the_differential_corpus_still_exercises_the_defect():
+    """At least one corpus form is gated today that the old grammar let through.
 
-    Per-case parametrization says which case broke; this says whether the change
-    is monotone as a whole, and reports the count that moved upward -- a change
-    that repaired nothing would pass every inequality above and still be worth
-    catching here.
+    This is the half of the differential comparison that can actually fail. The
+    other half -- that no verdict was lowered -- holds by construction and is
+    argued in this module's header rather than asserted, because the shipped
+    verdict contains the pre-table verdict as a term of itself.
     """
     raised = 0
     for _, command in FLAGGED_FORMS:
         absorbing = _absorbing_form(command)
+        if absorbing is None:
+            continue
         shipped = detect_mutative_command(command).is_mutative
         pre_table = _detect_mutative_command(absorbing).is_mutative
-        assert shipped >= pre_table
         raised += int(shipped and not pre_table)
 
     assert raised > 0, (
