@@ -2094,17 +2094,17 @@ class ClaudeCodeAdapter(HookAdapter):
         (``claim_dispatch_row``), so the return value is a birth signal for
         callers and tests, not a payload.
 
-        D1 (gate 499): an ATTEMPTED task_execution binding (``task_id=`` WAS
-        present) whose ``plan_task_id`` fails to RESOLVE
-        (``DEGRADABLE_BINDING_REASONS``) is no longer left unborn. The row is
-        still born via :func:`~modules.agents.dispatch_binding.birth_degraded_row`
-        -- ``plan_task_id`` NULL in the column (referential integrity is not
-        weakened), the rejection reason and the failed token recorded INSIDE
-        the birth envelope. The identity is still returned and the turn still
-        runs -- degrade, not block. A verifier
-        turn's unresolved binding (``verifier_requires_parent_handoff_id`` /
-        ``parent_handoff_id_unresolved``) is NOT in ``DEGRADABLE_BINDING_REASONS``
-        and keeps today's behavior exactly: no row, no identity.
+        BIRTH IS TOTAL: EVERY ``DispatchBindingError`` degrades rather than
+        dropping the row. Whichever coordinate failed to resolve is stamped
+        NULL (referential integrity is not weakened), and the rejection reason
+        plus the failed token are recorded INSIDE the birth envelope via
+        :func:`~modules.agents.dispatch_binding.birth_degraded_row`. The
+        identity is still returned and the turn still runs -- degrade, not
+        block. The reason this is total and not a curated subset is in
+        ``dispatch_binding``'s module docstring: an unborn row is not a weaker
+        binding but no contract at all, and it is UNRECOVERABLE, since
+        ``harness_agent_id`` is stamped only at the SubagentStart claim and no
+        CLI verb can write it afterwards.
 
         ``hook_data`` (the raw PreToolUse payload) enriches the birth with the
         v43/v44 dispatch coordinates -- prompt_id/tool_use_id/description/
@@ -2125,7 +2125,6 @@ class ClaudeCodeAdapter(HookAdapter):
         """
         try:
             from modules.agents.dispatch_binding import (
-                DEGRADABLE_BINDING_REASONS,
                 DispatchBindingError,
                 birth_degraded_row,
                 birth_dispatched_row,
@@ -2211,31 +2210,33 @@ class ClaudeCodeAdapter(HookAdapter):
                 _record_dispatch_binding_rejection(
                     exc, agent_name=agent, binding=binding,
                 )
-                if exc.reason in DEGRADABLE_BINDING_REASONS:
-                    try:
-                        birth_degraded_row(
-                            contract_id=contract_id,
-                            agent_id=identity["agent_id"],
-                            workspace=workspace,
-                            kind=binding.get("kind"),
-                            rejection_reason=exc.reason,
-                            failed_plan_task_id=ptid,
-                            plan_id=binding.get("plan_id"),
-                            session_id=sid,
-                            agent_name=agent,
-                            **dispatch_fields,
-                        )
-                        logger.info(
-                            "Born-at-dispatch: DEGRADED row stamped (agent=%s, "
-                            "failed_task=%s, reason=%s, contract_id=%s)",
-                            agent, ptid, exc.reason, contract_id,
-                        )
-                        return identity
-                    except Exception:
-                        logger.debug(
-                            "Born-at-dispatch degraded birth failed (non-fatal)",
-                            exc_info=True,
-                        )
+                try:
+                    birth_degraded_row(
+                        contract_id=contract_id,
+                        agent_id=identity["agent_id"],
+                        workspace=workspace,
+                        kind=binding.get("kind"),
+                        rejection_reason=exc.reason,
+                        failed_plan_task_id=ptid,
+                        failed_parent_handoff_id=binding.get("parent_handoff_id"),
+                        plan_id=binding.get("plan_id"),
+                        session_id=sid,
+                        agent_name=agent,
+                        **dispatch_fields,
+                    )
+                    logger.info(
+                        "Born-at-dispatch: DEGRADED row stamped (agent=%s, "
+                        "failed_task=%s, failed_parent=%s, reason=%s, "
+                        "contract_id=%s)",
+                        agent, ptid, binding.get("parent_handoff_id"),
+                        exc.reason, contract_id,
+                    )
+                    return identity
+                except Exception:
+                    logger.debug(
+                        "Born-at-dispatch degraded birth failed (non-fatal)",
+                        exc_info=True,
+                    )
         except Exception:
             logger.debug("Born-at-dispatch birth failed (non-fatal)", exc_info=True)
         return None

@@ -39,15 +39,14 @@ top of the (unchanged) anomaly discriminator:
     `plan_id=` named, `task_id=` dropped -- because ANY binding-shaped token
     keeps `task_execution` semantics (S2, conservative-by-design); see
     `test_task_execution_without_plan_task_id_but_with_plan_id_emits_event`.
-  * `plan_task_id_unresolved` / `plan_task_id_not_dispatchable` (D1, gate 499)
-    are now DEGRADED, not dropped: the row still births, with `plan_task_id`
-    NULL in the column and the rejection reason + the failed token recorded
-    inside the birth envelope (`binding_rejection`), consultable via
-    `gaia contract list --json`. The anomaly event still fires exactly as
-    before -- degrading does not silence it.
-  * The two verifier reasons (`verifier_requires_parent_handoff_id`,
-    `parent_handoff_id_unresolved`) are OUT of D1's scope and keep today's
-    behavior unchanged: no row, no identity, same as before this task.
+  * EVERY reason is DEGRADED, not dropped: the row still births, with the
+    unresolvable coordinate NULL in its column and the rejection reason + the
+    failed token recorded inside the birth envelope (`binding_rejection`),
+    consultable via `gaia contract list --json`. The anomaly event still fires
+    exactly as before -- degrading does not silence it. The invariant itself
+    (a dispatch always gets a row) is locked in
+    tests/hooks/test_dispatch_birth_is_total.py; what THIS file still owns is
+    the orthogonal question of which rejections are AUDIBLE.
 """
 
 from __future__ import annotations
@@ -233,10 +232,10 @@ class TestAnomalousRejectionsAreAudible:
         assert "plan_task_id_not_dispatchable" in row["raw_handoff_json"]
         assert str(TASK_DONE) in row["raw_handoff_json"]
 
-    def test_verifier_requires_parent_handoff_id_emits_event(self):
+    def test_verifier_requires_parent_handoff_id_emits_event_and_degrades(self):
         _seed_plan_tasks()
         identity = _birth("verify the producer's work", agent_name="gaia-verifier")
-        assert identity is None
+        assert identity is not None, "birth is total: the verifier row degrades, not drops"
 
         rows = _rows()
         assert len(rows) == 1
@@ -244,22 +243,31 @@ class TestAnomalousRejectionsAreAudible:
         assert rows[0]["agent"] == "gaia-verifier"
         assert "verifier_requires_parent_handoff_id" in rows[0]["payload"]
 
-    def test_parent_handoff_id_unresolved_emits_event(self):
+        row = _fetch_row(identity["contract_id"])
+        assert row["kind"] == "verifier", "the ATTEMPTED kind is preserved"
+        assert "verifier_requires_parent_handoff_id" in row["raw_handoff_json"]
+
+    def test_parent_handoff_id_unresolved_emits_event_and_degrades(self):
         _seed_plan_tasks()
         identity = _birth(
             f"verify parent_handoff_id={MISSING_PARENT}", agent_name="gaia-verifier",
         )
-        assert identity is None
+        assert identity is not None
 
         rows = _rows()
         assert len(rows) == 1
         assert "parent_handoff_id_unresolved" in rows[0]["payload"]
 
+        row = _fetch_row(identity["contract_id"])
+        assert str(MISSING_PARENT) in row["raw_handoff_json"], (
+            "the parent token that failed to resolve is consultable in the envelope"
+        )
+
     def test_task_execution_without_plan_task_id_but_with_plan_id_emits_event(self):
         """plan_id=<N> named, task_id= dropped -- the session-47 misdispatch shape."""
         _seed_plan_tasks()
         identity = _birth(f"do the thing plan_id={PLAN_ID}")
-        assert identity is None
+        assert identity is not None
 
         rows = _rows()
         assert len(rows) == 1

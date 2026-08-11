@@ -32,35 +32,44 @@ as a raw SQLite foreign-key ``IntegrityError`` from the writer's INSERT. The
 extra dispatchability constraint (status='pending') is scoped to task_execution,
 per the rules above.
 
-``validate_dispatch_binding`` / ``birth_dispatched_row`` above are UNCHANGED by
-plan 49 task 1 -- their raise contract (reject, birth nothing) is exactly what
-``tests/hooks/test_dispatch_referential_integrity.py`` locks down, and the
+``validate_dispatch_binding`` / ``birth_dispatched_row`` above keep their raise
+contract unchanged -- reject, birth nothing -- which is exactly what
+``tests/hooks/test_dispatch_referential_integrity.py`` locks down. The
 free-turn / degrade work below is deliberately layered ON TOP rather than
 folded into them:
 
   * A dispatch that extracts with NO binding token at all (see
-    ``extract_dispatch_binding``) is now labeled a FREE kind
-    (``investigation`` / ``memory``, S1) instead of being forced into
-    ``task_execution``. Since a free kind does not require ``plan_task_id``,
-    the row births normally through the existing happy path -- no new
-    machinery needed for this half.
-  * A dispatch that DOES carry an attempted ``task_execution`` binding
-    (``task_id=`` was present) but that binding fails to RESOLVE
-    (``plan_task_id_unresolved`` / ``plan_task_id_not_dispatchable``) still
+    ``extract_dispatch_binding``) is labeled a FREE kind (``investigation`` /
+    ``memory``) instead of being forced into ``task_execution``. Since a free
+    kind does not require ``plan_task_id``, the row births normally through the
+    existing happy path -- no new machinery needed for this half.
+  * BIRTH IS TOTAL: a dispatch whose binding fails referential integrity still
     calls ``validate_dispatch_binding`` first and still gets the same
-    ``DispatchBindingError`` -- referential integrity is not weakened. What
-    changed is what the CALLER (``hooks/adapters/claude_code.py``,
-    ``_maybe_birth_dispatched_row``) does with that rejection: instead of
-    letting the row go unborn, it degrades via :func:`birth_degraded_row`
-    below, which births the row anyway with ``plan_task_id`` NULL (the FK
-    forbids sealing a coordinate that does not resolve) and the rejection
-    reason + the token that failed to resolve recorded INSIDE the birth
-    envelope, consultable via ``gaia contract list --json``. The existing
-    anomaly event (``DISPATCH_BINDING_REJECTED_EVENT``) still fires --
-    degrading the row does not silence it. A verifier turn's rejection
-    (``verifier_requires_parent_handoff_id`` / ``parent_handoff_id_unresolved``)
-    is NOT degraded -- out of D1's scope, and the verifier dispatch must keep
-    behaving exactly as it does today (see the module's own tests).
+    ``DispatchBindingError``, but the CALLER
+    (``hooks/adapters/claude_code.py``, ``_maybe_birth_dispatched_row``)
+    DEGRADES every one of them via :func:`birth_degraded_row` below instead of
+    letting the row go unborn. The unresolvable coordinate is stamped NULL (the
+    FK forbids sealing a coordinate that does not resolve), the rejection
+    reason and the token that failed are recorded INSIDE the birth envelope
+    (consultable via ``gaia contract list --json``), and the anomaly event
+    (``DISPATCH_BINDING_REJECTED_EVENT``) still fires -- degrading the row does
+    not silence it.
+
+WHY TOTAL, AND NOT A CURATED SET OF DEGRADABLE REASONS. Degradation started
+scoped to the two ``plan_task_id`` reasons, leaving the three others to drop
+the row. That scoping was measured to cost far more than it protected: an
+unborn row is not a weaker binding, it is NO CONTRACT AT ALL -- no identity, no
+kernel, and above all no ``harness_agent_id``, which is stamped only at the
+SubagentStart claim (``gaia.store.writer.stamp_harness_agent_id``) and which no
+CLI verb can write afterwards. A turn that starts without a row therefore
+cannot recover one, and a turn cut before it finalizes leaves nothing behind.
+The verifier lane made that concrete: ``extract_dispatch_binding`` labels any
+agent whose NAME contains "verifier" a verifier turn, which REQUIRES a
+resolvable ``parent_handoff_id=<N>`` token in the dispatch prompt; every
+dispatch that omitted the token was dropped, so an entire agent type ran with
+no contract. Refusing to seal an unresolved coordinate is the property worth
+defending, and NULL already defends it. Refusing to record the turn defends
+nothing.
 """
 
 from __future__ import annotations
@@ -93,14 +102,17 @@ _VERIFIER_ROLE = "verifier"
 _INVESTIGATION_KIND = "investigation"
 _MEMORY_KIND = "memory"
 
-# The two DispatchBindingError reasons D1 (gate 499) degrades rather than
-# drops: both mean an ATTEMPTED task_execution binding (task_id= WAS present)
-# failed to resolve. The other three reasons (task_execution_requires_
-# plan_task_id, and the two verifier reasons) are left to reject as they do
-# today -- see the module docstring for why each stays out of scope.
+# Every DispatchBindingError reason degrades; see the module docstring for why
+# the set is total rather than curated. Kept as a named constant because it is
+# the enumeration a reader needs to know the birth path can produce -- and
+# because a future reason that must genuinely DROP would have to justify
+# itself by being removed from here, which is the right place to argue it.
 DEGRADABLE_BINDING_REASONS = frozenset({
+    "task_execution_requires_plan_task_id",
     "plan_task_id_unresolved",
     "plan_task_id_not_dispatchable",
+    "verifier_requires_parent_handoff_id",
+    "parent_handoff_id_unresolved",
 })
 
 
@@ -378,7 +390,8 @@ def birth_degraded_row(
     workspace: str,
     kind: "Optional[str]",
     rejection_reason: str,
-    failed_plan_task_id: "Optional[int]",
+    failed_plan_task_id: "Optional[int]" = None,
+    failed_parent_handoff_id: "Optional[int]" = None,
     plan_id: "Optional[int]" = None,
     session_id: "Optional[str]" = None,
     brief_id: "Optional[int]" = None,
@@ -393,25 +406,31 @@ def birth_degraded_row(
     db_path: "_pl.Path | None" = None,
 ) -> dict:
     """Birth a nascent row for an ATTEMPTED binding that failed to resolve --
-    D1 (gate 499): degrade, do not drop.
+    degrade, do not drop.
 
     Deliberately does NOT call :func:`validate_dispatch_binding`. The caller
     already ran it (via :func:`birth_dispatched_row`), already has the
     ``DispatchBindingError`` it raised, and is choosing to degrade rather than
-    let the row go unborn. Re-validating here with ``plan_task_id=None`` would
-    raise again but under the WRONG reason
-    (``task_execution_requires_plan_task_id``), masking the real one -- so this
-    function trusts the caller's classification and just writes.
+    let the row go unborn. Re-validating here with the failed coordinates
+    nulled would raise again but under a DIFFERENT reason, masking the real
+    one -- so this function trusts the caller's classification and just writes.
 
-    ``plan_task_id`` is stamped NULL in the column: the FK to ``tasks.id``
-    forbids sealing a coordinate that does not resolve, and NULL is also
-    exactly what keeps the blind-verification gate reading this turn as
-    UNBOUND (``_blind_verification_required`` in ``hooks/adapters/claude_code.py``
-    is a pure function of the column, not of ``kind``) -- the documented
-    residual: a degraded turn runs without the blind-verification gate, same
-    as a turn with no row at all today. What changes is that the reason and
-    the token that failed are now recorded INSIDE the birth envelope
-    (``binding_rejection: {reason, attempted_plan_task_id}``), consultable via
+    Both binding coordinates are stamped NULL in their columns: the FKs to
+    ``tasks.id`` / ``agent_contract_handoffs.id`` forbid sealing a coordinate
+    that does not resolve, and NULL on ``plan_task_id`` is also exactly what
+    keeps the blind-verification gate reading this turn as UNBOUND
+    (``_blind_verification_required`` in ``hooks/adapters/claude_code.py`` is a
+    pure function of the column, not of ``kind``) -- the documented residual: a
+    degraded turn runs without the blind-verification gate, same as a turn with
+    no row at all did. For a VERIFIER turn that residual is not even a change
+    in behavior: a verifier is meant to read as unbound so it can self-COMPLETE
+    and promote the increment (see ``agents/gaia-verifier.md``), which is why
+    ``extract_dispatch_binding`` drops its ``plan_task_id`` even on the sound
+    path.
+
+    What changes is that the reason and the token that failed are recorded
+    INSIDE the birth envelope (``binding_rejection: {reason,
+    attempted_plan_task_id, attempted_parent_handoff_id}``), consultable via
     ``gaia contract list --json`` instead of vanishing with the unborn row.
 
     Returns the writer's result dict, same shape as :func:`birth_dispatched_row`.
@@ -425,6 +444,7 @@ def birth_degraded_row(
         "binding_rejection": {
             "reason": rejection_reason,
             "attempted_plan_task_id": failed_plan_task_id,
+            "attempted_parent_handoff_id": failed_parent_handoff_id,
         },
     }
     if agent_name:

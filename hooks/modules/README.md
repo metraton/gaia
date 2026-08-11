@@ -111,8 +111,16 @@ four binding coordinates (`plan_task_id`, `plan_id`, `parent_handoff_id`,
   (`turn_role='verifier'`) requires a resolvable `parent_handoff_id` (the
   producer handoff it verifies). `kind` is a pure label — never rejected for its
   value. Raises `DispatchBindingError` (with a machine-readable `reason`) when a
-  coordinate does not resolve; the dispatch is never blocked (the row simply is
-  not born).
+  coordinate does not resolve; the dispatch is never blocked.
+- `birth_degraded_row(...)` — **birth is total.** Every `DispatchBindingError`
+  degrades instead of dropping the row: the caller
+  (`hooks/adapters/claude_code.py::_maybe_birth_dispatched_row`) births the row
+  anyway with the unresolvable coordinate NULL and the rejection reason plus the
+  failed token recorded inside the birth envelope, and the
+  `dispatch.binding_rejected` anomaly event still fires. An unborn row is not a
+  weaker binding but no contract at all — and an unrecoverable one, since
+  `harness_agent_id` is stamped only at the SubagentStart claim and no CLI verb
+  writes it.
 - `birth_dispatched_row(...)` — validates the binding, then writes one
   `agent_state='DISPATCHED'` row via `gaia.store.writer.insert_dispatched_handoff`.
   Idempotent: a re-dispatch of the same `contract_id` never births a second row.
