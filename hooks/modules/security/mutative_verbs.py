@@ -739,6 +739,40 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # here: it is a SIMULATION_FLAG resolved by Step 3 above this check.
         MutativeAnchor(path=("scan",)),
     ),
+    "gcloud": (
+        # Changing an IAM policy binding was gated in ONE direction and on a
+        # subset of surfaces, for two independent reasons.
+        #
+        # `add-iam-policy-binding` hyphen-splits onto `add`, which is
+        # deliberately absent from MUTATIVE_VERBS so that `git add` stays free;
+        # nothing matched it on any surface. And the hyphen split itself only
+        # runs at semantic_index <= 2 (deeper tokens are argument slugs, not
+        # subcommands), so on the three-token paths even
+        # `remove-iam-policy-binding` sits too deep to reach `remove`. Removal
+        # was therefore gated on `projects` and `secrets` alone -- their paths
+        # are two tokens -- and granting was gated nowhere.
+        #
+        # Granting is not the lesser half. It widens whoever receives it, and
+        # unlike a removal nothing observable happens until someone uses the
+        # capability, so it is the direction more likely to pass unnoticed.
+        #
+        # Anchored per surface rather than by returning `add` to MUTATIVE_VERBS:
+        # `add` in its ordinary form is harmless, and a global entry would tax
+        # `git add` and every other CLI that shares the word.
+        #
+        # `projects remove-iam-policy-binding` and `secrets
+        # remove-iam-policy-binding` are absent on purpose -- the verb scan
+        # already decides them MUTATIVE, and an anchor that re-decides a form
+        # already correct would add a declaration without adding coverage.
+        MutativeAnchor(path=("projects", "add-iam-policy-binding")),
+        MutativeAnchor(path=("secrets", "add-iam-policy-binding")),
+        MutativeAnchor(path=("storage", "buckets", "add-iam-policy-binding")),
+        MutativeAnchor(path=("storage", "buckets", "remove-iam-policy-binding")),
+        MutativeAnchor(path=("iam", "service-accounts", "add-iam-policy-binding")),
+        MutativeAnchor(
+            path=("iam", "service-accounts", "remove-iam-policy-binding")
+        ),
+    ),
 })
 
 

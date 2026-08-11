@@ -210,19 +210,21 @@ class TestPrecedenceIsPreserved:
         )
 
 
-class TestShippedTableDeclaresNoNewForms:
-    """The seam widened; the data did not.
+class TestShippedTableDeclaresExactlyWhatWasReviewed:
+    """The shipped anchors, enumerated, so a new one cannot arrive unnoticed.
 
-    Widening the seam and using it are separate pieces of work on purpose --
-    this guard is what lets the widening be judged without its first use mixed
-    in. It is expected to be edited (not deleted) by the work that closes the
-    first real gap.
+    An anchor moves a command form to T3 for every agent and every session, so
+    the set of them is reviewed as data rather than inferred from whichever
+    tests happen to exercise it. Each entry's own justification lives beside
+    its declaration in ``COMMAND_PATH_MUTATIVE_UPGRADES``; this guard only
+    pins the inventory, and is expected to be edited by the work that adds to
+    it -- the edit is the review.
     """
 
-    def test_only_the_project_cli_is_anchored(self):
-        assert set(COMMAND_PATH_MUTATIVE_UPGRADES) == {"gaia"}
+    def test_the_anchored_clis_are_the_reviewed_ones(self):
+        assert set(COMMAND_PATH_MUTATIVE_UPGRADES) == {"gaia", "gcloud"}
 
-    def test_anchored_paths_are_the_previously_declared_ones(self):
+    def test_project_cli_paths_are_the_previously_declared_ones(self):
         paths = {a.path for a in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]}
         assert paths == {
             ("dev",),
@@ -230,12 +232,30 @@ class TestShippedTableDeclaresNoNewForms:
             ("scan",),
         }
 
+    def test_cloud_cli_paths_are_the_iam_binding_forms(self):
+        """Both directions of an IAM binding change, on the surfaces that were open.
+
+        The two-token removals (`projects`, `secrets`) are absent because the
+        verb scan already decides them; the three-token ones are here because
+        the hyphen split never reaches that depth.
+        """
+        paths = {a.path for a in COMMAND_PATH_MUTATIVE_UPGRADES["gcloud"]}
+        assert paths == {
+            ("projects", "add-iam-policy-binding"),
+            ("secrets", "add-iam-policy-binding"),
+            ("storage", "buckets", "add-iam-policy-binding"),
+            ("storage", "buckets", "remove-iam-policy-binding"),
+            ("iam", "service-accounts", "add-iam-policy-binding"),
+            ("iam", "service-accounts", "remove-iam-policy-binding"),
+        }
+
     def test_no_shipped_anchor_carries_a_flag_condition(self):
+        """The flag half of the seam is still unused by any shipped entry."""
         for anchors in COMMAND_PATH_MUTATIVE_UPGRADES.values():
             for anchor in anchors:
                 assert anchor.flags == frozenset(), (
-                    f"{anchor} declares a flag condition -- the widening "
-                    f"ships the capability empty"
+                    f"{anchor} declares a flag condition -- no shipped entry "
+                    f"has needed one yet, so its arrival is a review point"
                 )
 
 

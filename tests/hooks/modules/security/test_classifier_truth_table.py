@@ -43,38 +43,81 @@ T3 = SecurityTier.T3_BLOCKED
 
 # (case_id, family, command, expected_is_mutative, expected_tier)
 CLASSIFIER_TRUTH_TABLE = [
-    # ---- OPEN: granting capability is not gated the way removing it is ----
+    # ---- CLOSED: granting capability is now gated exactly like removing it --
+    # These four were recorded OPEN (False, T0): granting was gated on no
+    # surface, because `add-iam-policy-binding` hyphen-splits onto `add`, which
+    # is kept out of MUTATIVE_VERBS so `git add` stays free. They are anchored
+    # per surface in COMMAND_PATH_MUTATIVE_UPGRADES and are now controls that
+    # must stay T3. Closing the gap is recorded HERE, as a deliberate edit to
+    # the expected verdict, because a gap that closes silently reads exactly
+    # like a regression.
     (
         "iam-grant-project",
-        OPEN,
+        GATED,
         "gcloud projects add-iam-policy-binding my-proj "
         "--member=user:a@b.c --role=roles/owner",
-        False,
-        T0,
+        True,
+        T3,
     ),
     (
         "iam-grant-bucket",
-        OPEN,
+        GATED,
         "gcloud storage buckets add-iam-policy-binding gs://my-bucket "
         "--member=allUsers --role=roles/storage.objectViewer",
-        False,
-        T0,
+        True,
+        T3,
     ),
     (
         "iam-grant-secret",
-        OPEN,
+        GATED,
         "gcloud secrets add-iam-policy-binding my-secret "
         "--member=serviceAccount:x@y.iam.gserviceaccount.com "
         "--role=roles/secretmanager.secretAccessor",
-        False,
-        T0,
+        True,
+        T3,
     ),
     (
         "iam-grant-service-account",
-        OPEN,
+        GATED,
         "gcloud iam service-accounts add-iam-policy-binding "
         "sa@proj.iam.gserviceaccount.com --member=user:a@b.c "
         "--role=roles/iam.serviceAccountTokenCreator",
+        True,
+        T3,
+    ),
+    # ---- CLOSED: removal on a three-token path was open too ----
+    # Measured while closing the grants, and not in the corpus before: the
+    # hyphen split that gates `remove-iam-policy-binding` only runs at
+    # semantic_index <= 2, so on `storage buckets` and `iam service-accounts`
+    # the token sits too deep and never reached `remove`. Removal was gated on
+    # the two-token surfaces alone -- which is why the sibling control below
+    # (`control-iam-revoke`, a `projects` form) passed while these did not
+    # exist to fail.
+    (
+        "iam-revoke-bucket",
+        GATED,
+        "gcloud storage buckets remove-iam-policy-binding gs://my-bucket "
+        "--member=allUsers --role=roles/storage.objectViewer",
+        True,
+        T3,
+    ),
+    (
+        "iam-revoke-service-account",
+        GATED,
+        "gcloud iam service-accounts remove-iam-policy-binding "
+        "sa@proj.iam.gserviceaccount.com --member=user:a@b.c "
+        "--role=roles/iam.serviceAccountTokenCreator",
+        True,
+        T3,
+    ),
+    # ---- FREE: reads of the four IAM surfaces must not start paying a toll --
+    ("read-iam-project-policy", FREE, "gcloud projects get-iam-policy my-proj", False, T0),
+    ("read-iam-bucket", FREE, "gcloud storage buckets describe gs://my-bucket", False, T0),
+    ("read-iam-secret", FREE, "gcloud secrets describe my-secret", False, T0),
+    (
+        "read-iam-service-account",
+        FREE,
+        "gcloud iam service-accounts describe sa@proj.iam.gserviceaccount.com",
         False,
         T0,
     ),
