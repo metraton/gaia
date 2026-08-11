@@ -4001,7 +4001,7 @@ class TestGaiaInstallSubcommandsAreMutative:
     """`gaia dev` is a state-mutating install (pack + install into node_modules
     + wire .claude/ + bootstrap DB). It carries no verb in MUTATIVE_VERBS and
     would otherwise classify READ_ONLY "by elimination" -- the T3-gating gap
-    this suite pins closed via the COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES anchor.
+    this suite pins closed via the COMMAND_PATH_MUTATIVE_UPGRADES anchor.
 
     NOTE: `gaia release sync-local` was REMOVED (its provenance intelligence
     moved to `gaia doctor`), so it is no longer in the anchor -- see
@@ -4069,12 +4069,16 @@ class TestGaiaContextPruneWorkspacesIsMutative:
 
     def test_context_anchor_scoped_to_prune_workspaces_only(self):
         from modules.security.mutative_verbs import (
-            COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES,
+            COMMAND_PATH_MUTATIVE_UPGRADES,
         )
-        allowed = COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES[("gaia", "context")]
-        assert allowed == frozenset({"prune-workspaces"}), (
-            "the ('gaia','context') upgrade must be scoped to the destructive "
-            "subcommand only, never the whole group (None)"
+        context_paths = {
+            anchor.path
+            for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
+            if anchor.path[0] == "context"
+        }
+        assert context_paths == {("context", "prune-workspaces")}, (
+            "the `gaia context` upgrade must be scoped to the destructive "
+            "subcommand only, never the whole group"
         )
 
     def test_other_gaia_context_subcommands_not_upgraded(self):
@@ -4122,12 +4126,16 @@ class TestGaiaScanWriteModeIsMutative:
 
     def test_gaia_scan_anchor_is_whole_group(self):
         from modules.security.mutative_verbs import (
-            COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES,
+            COMMAND_PATH_MUTATIVE_UPGRADES,
         )
-        allowed = COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES[("gaia", "scan")]
-        assert allowed is None, (
-            "the ('gaia','scan') upgrade must be the whole group (None): scan "
-            "is a flat command with no read-only subcommands"
+        scan_paths = {
+            anchor.path
+            for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
+            if anchor.path[0] == "scan"
+        }
+        assert scan_paths == {("scan",)}, (
+            "the `gaia scan` upgrade must cover the whole group (a one-token "
+            "path): scan is a flat command with no read-only subcommands"
         )
 
     def test_gaia_scan_help_stays_read_only(self):
@@ -4183,15 +4191,18 @@ class TestReadOnlyVerbEscalatedByAlwaysFlag:
 
 class TestGaiaReleaseSyncLocalNoLongerAnchored:
     """Regression guard: `gaia release sync-local` was removed as a command and
-    its ('gaia','release') entry was dropped from
-    COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES. It must no longer be anchored T3 (the
+    its `release` anchor was dropped from
+    COMMAND_PATH_MUTATIVE_UPGRADES. It must no longer be anchored T3 (the
     command does not exist; freshness intelligence lives in `gaia doctor`).
     """
 
     def test_release_key_absent_from_upgrades(self):
-        from modules.security.mutative_verbs import COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES
-        assert ("gaia", "release") not in COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES
-        assert ("gaia", "dev") in COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES
+        from modules.security.mutative_verbs import COMMAND_PATH_MUTATIVE_UPGRADES
+        anchored_heads = {
+            anchor.path[0] for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
+        }
+        assert "release" not in anchored_heads
+        assert "dev" in anchored_heads
 
     def test_release_sync_local_not_classified_via_anchor(self):
         # The ('gaia','release') anchor is gone, so the command-subcommand

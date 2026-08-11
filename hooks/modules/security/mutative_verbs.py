@@ -579,45 +579,105 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 
 
 # ============================================================================
-# Command+Subcommand Tier UPGRADES (anchored) — the symmetric opposite of
+# Command-path Tier UPGRADES (anchored) — the symmetric opposite of
 # COMMAND_SUBCOMMAND_TIER_EXCEPTIONS above.
 # ----------------------------------------------------------------------------
-# Some project-CLI subcommands perform a state-mutating INSTALL but carry no
-# verb in MUTATIVE_VERBS, so they would fall through to Step 4 and classify
-# READ_ONLY "by elimination" — silently un-gated. `gaia dev` (npm pack +
-# install into a workspace's node_modules + wire .claude/ symlinks + bootstrap
-# the DB) is exactly this case. Anchor it MUTATIVE (T3) explicitly.
+# Some subcommands perform a state-mutating operation but carry no verb in
+# MUTATIVE_VERBS, so they would fall through to Step 4 and classify READ_ONLY
+# "by elimination" — silently un-gated. `gaia dev` (npm pack + install into a
+# workspace's node_modules + wire .claude/ symlinks + bootstrap the DB) is
+# exactly this case. This table is where such a form is anchored MUTATIVE (T3)
+# by name, one exact command path at a time, instead of widening a global verb
+# table and taxing every unrelated CLI that shares the word.
 #
-# Key:   (base_cmd, subcommand)  — subcommand is non_flag_tokens[0].
-# Value: None            => the WHOLE subcommand group is mutative regardless
-#                           of the trailing verb (e.g. `gaia dev`).
-#        FrozenSet[str]  => mutative ONLY when non_flag_tokens[1] is in the set.
-#
-# The `--help` override (Step 3.5 above) keeps `gaia dev --help` READ_ONLY, and
-# any simulation flag (Step 3) is handled above this check. This dict lives
-# inside the hooks directory and is itself T3-protected.
-COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES: Dict[Tuple[str, str], Optional[FrozenSet[str]]] = {
-    ("gaia", "dev"): None,
-    # `gaia context prune-workspaces --yes` HARD-DELETEs workspaces rows (and,
-    # via ON DELETE CASCADE, their children) from gaia.db -- a persistent,
-    # destructive DB mutation. But `context` carries no verb in MUTATIVE_VERBS,
-    # so the whole `gaia context ...` group falls through to Step 4 and
-    # classifies READ_ONLY by elimination, leaving the destructive prune
-    # un-gated. Anchor ONLY the destructive subcommand MUTATIVE (T3); the other
-    # `gaia context` read/inspect subcommands stay READ_ONLY. Scoped to the
-    # subcommand set (not None) so the upgrade never widens past `prune-workspaces`.
-    ("gaia", "context"): frozenset({"prune-workspaces"}),
-    # `gaia scan --workspace <name>` (write mode) UPSERTs (workspace, project)
-    # rows into gaia.db and promotes the resolved workspace -- a persistent DB
-    # mutation. Like `context`, `scan` carries no verb in MUTATIVE_VERBS, so it
-    # would fall through to Step 4 and classify READ_ONLY by elimination,
-    # leaving the write un-gated. `scan` is a flat command with no read-only
-    # subcommands (only flags: --workspace, --dry-run, positional root), so the
-    # WHOLE group is anchored MUTATIVE (None). The `--dry-run` classify-only
-    # mode is NOT re-implemented here: it is a SIMULATION_FLAG handled by Step 3
-    # above this check, which returns non-mutative before the upgrade runs, so
-    # `gaia scan --dry-run` stays READ_ONLY.
-    ("gaia", "scan"): None,
+# The `--help` override (Step 3.5) and any simulation flag (Step 3) are
+# resolved ABOVE this check and keep winning, so `gaia dev --help` and
+# `gaia scan --dry-run` stay READ_ONLY without re-implementing either rule
+# here. This dict lives inside the hooks directory and is itself T3-protected.
+
+
+@dataclass(frozen=True)
+class MutativeAnchor:
+    """One command form declared MUTATIVE (T3) regardless of the verbs in it.
+
+    ``path`` is matched as a PREFIX of the non-flag tokens that follow the base
+    command, so ``("dev",)`` anchors every ``gaia dev ...`` while
+    ``("context", "prune-workspaces")`` anchors that leaf alone and leaves its
+    read/inspect siblings untouched. Depth is whatever the CLI needs: cloud CLIs
+    routinely spell an operation as ``<cli> <group> <subgroup> <verb>``, which
+    does not fit in a fixed two.
+
+    ``flags`` makes the anchor conditional on one of those flags being present;
+    empty means the path alone decides. This is the family-scoped inverse of an
+    ALWAYS entry in DANGEROUS_FLAGS: the flag escalates on the CLI where it
+    destroys and stays inert everywhere else, so gating it does not tax the CLI
+    where the same spelling is routine.
+
+    An empty ``path`` is refused. It would anchor a whole CLI on a flag alone —
+    the global behaviour this model exists to replace; a CLI-wide condition is
+    spelled out as one anchor per subcommand that warrants it. Tokens and flags
+    must be lowercase because the classifier lowercases what it matches against:
+    an uppercase entry could never fire, and a declaration that reads as
+    coverage while classifying nothing is worse than no declaration at all.
+    """
+
+    path: Tuple[str, ...]
+    flags: FrozenSet[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if not self.path:
+            raise ValueError(
+                "MutativeAnchor.path must name at least one subcommand token"
+            )
+        for token in self.path:
+            if not token or token != token.lower():
+                raise ValueError(
+                    f"MutativeAnchor.path token {token!r} must be non-empty lowercase"
+                )
+        for flag in self.flags:
+            if not flag or flag != flag.lower():
+                raise ValueError(
+                    f"MutativeAnchor.flags entry {flag!r} must be non-empty lowercase"
+                )
+
+    def matched_flags(self, semantics: CommandSemantics) -> Optional[Tuple[str, ...]]:
+        """Return the flags that satisfied this anchor, or None if it does not fire.
+
+        An empty tuple is a MATCH by path alone, so callers must test against
+        ``None`` rather than for truthiness.
+        """
+        if semantics.non_flag_tokens[:len(self.path)] != self.path:
+            return None
+        if not self.flags:
+            return ()
+        present = self.flags.intersection(semantics.flag_tokens)
+        return tuple(sorted(present)) if present else None
+
+
+# Keyed by base_cmd; the anchors of one CLI are tried in declaration order and
+# the first match decides. Every match yields the same verdict, so order only
+# affects which path the reason names.
+COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = {
+    "gaia": (
+        MutativeAnchor(path=("dev",)),
+        # `gaia context prune-workspaces --yes` HARD-DELETEs workspaces rows
+        # (and, via ON DELETE CASCADE, their children) from gaia.db -- a
+        # persistent, destructive DB mutation. But `context` carries no verb in
+        # MUTATIVE_VERBS, so the whole `gaia context ...` group falls through to
+        # Step 4 and classifies READ_ONLY by elimination, leaving the
+        # destructive prune un-gated. Anchor ONLY the destructive leaf; the
+        # other `gaia context` read/inspect subcommands stay READ_ONLY.
+        MutativeAnchor(path=("context", "prune-workspaces")),
+        # `gaia scan --workspace <name>` (write mode) UPSERTs (workspace,
+        # project) rows into gaia.db and promotes the resolved workspace -- a
+        # persistent DB mutation. Like `context`, `scan` carries no verb in
+        # MUTATIVE_VERBS, so it would classify READ_ONLY by elimination. `scan`
+        # is a flat command with no read-only subcommands (only flags:
+        # --workspace, --dry-run, positional root), so the WHOLE group is
+        # anchored. The `--dry-run` classify-only mode is NOT re-implemented
+        # here: it is a SIMULATION_FLAG resolved by Step 3 above this check.
+        MutativeAnchor(path=("scan",)),
+    ),
 }
 
 
@@ -3046,38 +3106,35 @@ def detect_mutative_command(
                 reason=f"Git local-only subcommand '{git_subcmd}' is safe",
             )
 
-    # --- Step 3e.5: Command+subcommand mutative UPGRADE (anchored) ---
-    # The symmetric opposite of the downgrade exception in Step 3e: anchor a
-    # state-mutating install subcommand to MUTATIVE when it carries no verb in
-    # MUTATIVE_VERBS and would otherwise reach Step 4 and be READ_ONLY "by
-    # elimination". Covers `gaia dev` (whole group). Placed AFTER the
-    # simulation-flag (Step 3) and --help (Step 3.5) overrides, so
-    # `--dry-run`/`--help` still win and keep those invocations non-mutative.
+    # --- Step 3e.5: Command-path mutative UPGRADE (anchored) ---
+    # The symmetric opposite of the downgrade exception in Step 3e: anchor an
+    # exact command path to MUTATIVE when it carries no verb in MUTATIVE_VERBS
+    # and would otherwise reach Step 4 and be READ_ONLY "by elimination".
+    # Position is load-bearing in both directions: AFTER the simulation-flag
+    # (Step 3) and --help (Step 3.5) overrides, so `--dry-run`/`--help` still
+    # win; BEFORE the Step 4 verb scan, so an anchor is still reached when a
+    # read-only noun sits at the head of the path and would short-circuit there.
     if semantics.non_flag_tokens:
-        upgrade_key = (base_cmd, semantics.non_flag_tokens[0])
-        if upgrade_key in COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES:
-            allowed = COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES[upgrade_key]
-            upgrade_verb = (
-                semantics.non_flag_tokens[1]
-                if len(semantics.non_flag_tokens) > 1 else ""
+        for anchor in COMMAND_PATH_MUTATIVE_UPGRADES.get(base_cmd, ()):
+            anchor_flags = anchor.matched_flags(semantics)
+            if anchor_flags is None:
+                continue
+            flag_detail = (
+                f" with flag(s) {', '.join(anchor_flags)}" if anchor_flags else ""
             )
-            if allowed is None or upgrade_verb in allowed:
-                anchored_verb = (
-                    semantics.non_flag_tokens[0] if allowed is None else upgrade_verb
-                )
-                trailing = f" {upgrade_verb}" if allowed is not None else ""
-                return MutativeResult(
-                    is_mutative=True,
-                    category=CATEGORY_MUTATIVE,
-                    verb=anchored_verb,
-                    cli_family=family,
-                    confidence="high",
-                    reason=(
-                        f"State-mutating install "
-                        f"'{base_cmd} {semantics.non_flag_tokens[0]}{trailing}' "
-                        f"anchored MUTATIVE (T3) by config"
-                    ),
-                )
+            return MutativeResult(
+                is_mutative=True,
+                category=CATEGORY_MUTATIVE,
+                verb=anchor.path[-1],
+                dangerous_flags=anchor_flags,
+                cli_family=family,
+                confidence="high",
+                reason=(
+                    f"State-mutating command "
+                    f"'{base_cmd} {' '.join(anchor.path)}'{flag_detail} "
+                    f"anchored MUTATIVE (T3) by config"
+                ),
+            )
 
     # --- Step 3e: Command+subcommand tier exception (anchored) ---
     # Some project-CLI subcommand groups (e.g., `gaia brief`, `gaia ac`) are
@@ -3799,7 +3856,7 @@ def _check_gaia_cli_dispatcher(
     avoid matching an unrelated ``bin/gaia``), reconstruct the equivalent
     ``gaia <args...>`` command from the tokens AFTER the script positional and
     re-run ``detect_mutative_command`` on it. The result is IDENTICAL to the
-    launcher form: ``dev`` stays T3 via ``COMMAND_SUBCOMMAND_MUTATIVE_UPGRADES``,
+    launcher form: ``dev`` stays T3 via ``COMMAND_PATH_MUTATIVE_UPGRADES``,
     ``install`` stays T3 via ``MUTATIVE_VERBS``, ``--dry-run`` / ``--help`` stay
     non-mutative, and read-only subcommands (``doctor``, ``release check``) stay T0.
 
