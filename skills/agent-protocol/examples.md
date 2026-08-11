@@ -273,91 +273,7 @@ The injected handoff carried `consolidation_required: true`; the agent reports o
 }
 ```
 
-## 7. `loop_state` -- blocking vs non-blocking
-
-Agentic-loop agents carry a `loop_state` dict in the envelope. The runtime (`_check_loop_state_blocking` in `contract_validator.py`) blocks `COMPLETE` when `iteration < max_iterations AND metric < threshold` -- in that case another iteration is forced and the contract is rejected. When `metric >= threshold` (or iteration count is exhausted) the `COMPLETE` is accepted.
-
-### 7a. Blocking case (metric below threshold, iteration remaining)
-
-The runtime will reject this `COMPLETE` and force the agent to iterate again.
-
-```json
-{
-  "agent_status": {
-    "agent_state": "COMPLETE",
-    "agent_id": "a19a3d76b28e40cf5",
-    "pending_steps": [],
-    "next_action": "done"
-  },
-  "evidence_report": {
-    "patterns_checked": ["test selection in CI"],
-    "files_checked": ["tests/layer1_prompt_regression/"],
-    "commands_run": ["pytest tests/layer1_prompt_regression -q -> 42 passed, 3 failed"],
-    "key_outputs": ["3 prompt regressions remain"],
-    "verbatim_outputs": [],
-    "cross_layer_impacts": [],
-    "open_gaps": ["3 failures need investigation"],
-    "verification": {
-      "type": "command",
-      "command": "pytest tests/layer1_prompt_regression -q",
-      "method": "ran the regression subset and read its summary line",
-      "checks": ["pytest exit code"],
-      "result": "pass",
-      "details": "42/45 passed"
-    }
-  },
-  "loop_state": {
-    "iteration": 2,
-    "max_iterations": 5,
-    "metric": 0.93,
-    "threshold": 0.98
-  },
-  "consolidation_report": null,
-  "approval_request": null
-}
-```
-
-### 7b. Non-blocking case (metric meets threshold)
-
-`metric >= threshold` -- the `COMPLETE` lands as terminal.
-
-```json
-{
-  "agent_status": {
-    "agent_state": "COMPLETE",
-    "agent_id": "a4e8b21fd0356c7a9",
-    "pending_steps": [],
-    "next_action": "done"
-  },
-  "evidence_report": {
-    "patterns_checked": ["test selection in CI"],
-    "files_checked": ["tests/layer1_prompt_regression/"],
-    "commands_run": ["pytest tests/layer1_prompt_regression -q -> 45 passed"],
-    "key_outputs": ["All prompt regressions pass"],
-    "verbatim_outputs": [],
-    "cross_layer_impacts": [],
-    "open_gaps": [],
-    "verification": {
-      "type": "command",
-      "command": "pytest tests/layer1_prompt_regression -q",
-      "method": "ran the regression subset and read its summary line",
-      "checks": ["pytest exit code"],
-      "result": "pass",
-      "details": "45/45 passed"
-    }
-  },
-  "loop_state": {
-    "iteration": 4,
-    "max_iterations": 5,
-    "metric": 1.0,
-    "threshold": 0.98
-  },
-  "consolidation_report": null,
-  "approval_request": null
-}
-```
-
-## 8. COMPLETE with `update_contracts` (index a discovery into project-context)
+## 7. COMPLETE with `update_contracts` (index a discovery into project-context)
 
 The agent discovered a project fact a section it owns did not yet hold, and writes it back so the next agent does not re-derive it. `update_contracts` is an array of `{contract, payload}`; `contract` must be a name from the INPUT `write_permissions.writable_sections`, and `payload` carries only the keys to add or update (index, not live-state). See `agent-contract-handoff` for merge semantics.
 
@@ -401,7 +317,7 @@ The agent discovered a project fact a section it owns did not yet hold, and writ
 }
 ```
 
-## 9. NEEDS_VERIFICATION (producer hands off, does not self-complete)
+## 8. NEEDS_VERIFICATION (producer hands off, does not self-complete)
 
 Harness R2: the producer believes the increment is done and MAY propose `evidence_report.verification.result`, but this is a proposal, not a `COMPLETE` -- only a verifier-role agent transitions `NEEDS_VERIFICATION` to `COMPLETE` (a verifier rejecting it sends the increment back to `IN_PROGRESS`).
 

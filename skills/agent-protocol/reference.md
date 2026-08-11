@@ -15,7 +15,6 @@ the principles in `SKILL.md` are what a turn needs to run.
 | `COMPLETE` with a non-empty `pending_steps`, or `next_action` other than `"done"` | `COMPLETE_SHAPE` |
 | `COMPLETE` whose `evidence_report.verification.result` is not `"pass"` | `VERIFICATION_RESULT` |
 | `APPROVAL_REQUEST` without a non-empty `approval_request.exact_content` | `APPROVAL_REQUEST_SHAPE` |
-| `COMPLETE` while `loop_state` still has iterations left below threshold | `_check_loop_state_blocking` (`hooks/modules/agents/contract_validator.py`) |
 | `COMPLETE` on a turn whose dispatch binding carries a `plan_task_id`, at both seams | `_blind_verification_required` (`hooks/adapters/claude_code.py`) and `cmd_finalize` (`bin/cli/contract.py`) |
 | A close whose persisted contract is unfinalized, however complete the final message | `_resolve_subagent_stop_gate_full` (`hooks/adapters/claude_code.py`) |
 | `finalize` on a draft still declaring `IN_PROGRESS` | `cmd_finalize` (`bin/cli/contract.py`) |

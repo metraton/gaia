@@ -33,6 +33,25 @@ One command, one result, one exit code. This skill owns invocation discipline;
    worth keeping as proof of what was done is deposited as evidence through
    the contract's evidence clause (`agent-contract-handoff`), not left sitting
    in scratch or committed as a side effect.
+7. Work against a SCRATCH DATABASE by setting `GAIA_DB` to a file under the
+   scratch directory, named by `contract_id` like any other scratch entry
+   (`~/.gaia/scratch/<contract_id>.db`). `GAIA_DB` is FILE-scoped: it relocates
+   the database and nothing else. `GAIA_DATA_DIR` is ROOT-scoped and relocates
+   the whole substrate (database, scratch, evidence, logs). Precedence is fixed
+   and explicit -- **`GAIA_DB` > `GAIA_DATA_DIR` > `~/.gaia`** -- so setting both
+   at different places uses `GAIA_DB`'s and prints a warning to stderr naming
+   the winner. Setting both at the same file is unambiguous and stays silent.
+   Then CONFIRM the isolation instead of assuming it: `gaia paths` prints the
+   resolved `db=` line, and a database-backed read (`gaia contract list --json`
+   returns a `count` from that database) tells you which one you are actually
+   on. Never infer isolation from the existence of a populated database file at
+   the path you asked for -- that exact inference is what a real defect exploited
+   for months: `bin/gaia` bootstrapped a complete, fully schema'd database at
+   `$GAIA_DB` while every read and write went to the user's real database, so the
+   file was there, the schema was there, the command reported success, and two
+   agents that believed they were isolated wrote into real user state. A
+   populated file proves a bootstrap ran; only a resolved-path or row-count read
+   proves where your writes go.
 
 For a plan-first COMMAND_SET, each tool call contains only the next exact item
 in the approved order. Consent to a set is not permission to combine its items

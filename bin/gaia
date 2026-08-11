@@ -38,15 +38,42 @@ _LAZY_BOOTSTRAP_SKIP = frozenset({"install", "uninstall"})
 
 
 def _resolve_db_path():
-    """Resolve the gaia.db path (honours the GAIA_DB override, else ~/.gaia)."""
-    env = os.environ.get("GAIA_DB")
-    if env:
-        return Path(env).expanduser()
-    return Path("~/.gaia/gaia.db").expanduser()
+    """Resolve the gaia.db path the store itself will use.
+
+    Delegates to ``gaia.paths.resolver.db_path`` rather than re-deriving the
+    path, because the bootstrap below CREATES a database at whatever this
+    returns. When the two resolvers disagreed, that made this function a decoy
+    factory: it honored ``GAIA_DB`` while the store honored only
+    ``GAIA_DATA_DIR``, so ``GAIA_DB=<x> gaia <subcommand>`` bootstrapped a
+    complete, fully schema'd database at ``<x>`` and then read and wrote the
+    real user database -- silently, with a success message, and with the decoy
+    left behind as evidence that the isolation had worked.
+
+    A caller must not be able to reach that state by asking for isolation the
+    wrong way, so there is now exactly ONE resolver. The fallback keeps the
+    resolution ladder identical (``GAIA_DB``, then ``GAIA_DATA_DIR``, then
+    ``~/.gaia``) for the case where the import cannot be satisfied at all,
+    since the bootstrap is best-effort and must never break the CLI.
+    """
+    try:
+        from gaia.paths.resolver import db_path
+        return db_path()
+    except Exception:  # noqa: BLE001
+        env = os.environ.get("GAIA_DB")
+        if env:
+            return Path(env).expanduser()
+        data_dir = os.environ.get("GAIA_DATA_DIR")
+        if data_dir:
+            return Path(data_dir).expanduser() / "gaia.db"
+        return Path("~/.gaia/gaia.db").expanduser()
 
 
 def _ensure_db_bootstrapped(subcommand):
-    """Lazily bootstrap ~/.gaia/gaia.db on first CLI use if it is absent.
+    """Lazily bootstrap the resolved gaia.db on first CLI use if it is absent.
+
+    The path comes from ``_resolve_db_path()``, i.e. from the same resolver the
+    store reads, so what gets bootstrapped is always the database the CLI will
+    then use -- never a second one alongside it.
 
     This is the non-invasive replacement for the removed npm ``postinstall``
     hook. It runs on the first real CLI use rather than at package-install
@@ -400,8 +427,8 @@ def _run_with_plugins(argv, plugins):
         return 2
 
     # Lazy, non-invasive DB bootstrap -- replaces the removed npm postinstall.
-    # Runs once, only when ~/.gaia/gaia.db is absent, and never for the
-    # install/uninstall subcommands (see _LAZY_BOOTSTRAP_SKIP).
+    # Runs once, only when the resolved DB (see _resolve_db_path) is absent, and
+    # never for the install/uninstall subcommands (see _LAZY_BOOTSTRAP_SKIP).
     _ensure_db_bootstrapped(args.subcommand)
 
     # Dispatch to the matching plugin handler

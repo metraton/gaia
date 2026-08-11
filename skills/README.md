@@ -56,7 +56,6 @@ skills/
 │   ├── examples.md        # filled envelopes, one per agent_state
 │   └── read-map.md        # THE read vocabulary: what a turn can read, with which verb, and what comes back (every other skill points here)
 ├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
-├── agentic-loop/          # Iterative metric-driven improvement loop (on-demand injection)
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── coding-standards/      # Language-agnostic code + inline documentation conventions
@@ -140,7 +139,6 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `agent-contract-handoff` — reference field dictionary for the contract envelope (input + output); loaded on demand by producers and the orchestrator when field/trigger precision is needed
 - `agent-approval-protocol` — approval and COMMAND_SET data reference
 - `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system
-- `agentic-loop` — iterative metric-driven improvement; injected by orchestrator text prompt
 - `brief-spec` — brief and spec creation; loaded on demand by orchestrator
 - `execution` — post-approval execution discipline
 - `git-conventions` — Conventional Commits format

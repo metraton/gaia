@@ -4241,6 +4241,45 @@ class TestGaiaScheduleTierGroup:
         result = detect_mutative_command("gaia schedule status")
         assert result.is_mutative is False
 
+    def test_schedule_suspend_not_mutative(self):
+        # `suspend` only switches something OFF -- it reduces what runs, the
+        # direction that never needs consent -- and it writes gaia.db, never the
+        # machine scheduler. Same tier as `disable`, which it complements.
+        result = detect_mutative_command("gaia schedule suspend --all --for 8h")
+        assert result.is_mutative is False, (
+            f"gaia schedule suspend is desired-state bookkeeping (T0). "
+            f"reason={result.reason}"
+        )
+
+    def test_schedule_suspend_named_task_not_mutative(self):
+        result = detect_mutative_command("gaia schedule suspend gmail-triage --for 3d")
+        assert result.is_mutative is False
+
+    def test_schedule_resume_not_mutative(self):
+        # `resume` does restore capability, but only in gaia.db: nothing runs
+        # because a row says it should. The task reaches this machine's scheduler
+        # exclusively through `sync` (T3), so the consent boundary stays at
+        # MATERIALIZATION rather than being duplicated onto every edit. Gating
+        # `resume` while `enable` is free would also be incoherent -- `enable`
+        # restores strictly more, having no deadline at all.
+        result = detect_mutative_command("gaia schedule resume gmail-triage")
+        assert result.is_mutative is False, (
+            f"gaia schedule resume must be exempted to T0 like enable. "
+            f"reason={result.reason}"
+        )
+
+    def test_schedule_suspend_and_resume_are_generic_mutative_verbs(self):
+        """The group exception is what makes them T0 -- pin that it is load-bearing.
+
+        Both words are in MUTATIVE_VERBS, so without ("gaia","schedule") in
+        COMMAND_SUBCOMMAND_TIER_EXCEPTIONS every suspend/resume would demand
+        approval. This test fails if someone removes the exception believing the
+        verbs were safe by elimination.
+        """
+        from modules.security.mutative_verbs import MUTATIVE_VERBS
+        assert "suspend" in MUTATIVE_VERBS
+        assert "resume" in MUTATIVE_VERBS
+
     def test_schedule_sync_stays_mutative(self):
         # sync writes the OS scheduler -- must stay T3 despite the group exception.
         result = detect_mutative_command("gaia schedule sync")

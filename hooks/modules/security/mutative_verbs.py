@@ -448,11 +448,22 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     ("gaia", "contract"): CATEGORY_READ_ONLY,
     # `gaia schedule <verb>` -- the scheduled-task DESIRED-STATE registry in
     # gaia.db (see the `scheduled-task` skill and the scheduled_tasks table).
-    # register/add/list/show/status/enable/disable are reversible local
-    # bookkeeping on the desired state -- they never touch the machine scheduler,
-    # so they are T0 like brief/plan/task/notifications. WITHOUT this exception
-    # `register`, `enable`, and `disable` would trip the generic MUTATIVE_VERBS
-    # scan (all three are in MUTATIVE_VERBS) and gate on every desired-state edit.
+    # register/add/list/show/status/enable/disable/suspend/resume are reversible
+    # local bookkeeping on the desired state -- they never touch the machine
+    # scheduler, so they are T0 like brief/plan/task/notifications. WITHOUT this
+    # exception `register`, `enable`, `disable`, `suspend` and `resume` would trip
+    # the generic MUTATIVE_VERBS scan (all five are in MUTATIVE_VERBS) and gate on
+    # every desired-state edit.
+    #
+    # `suspend` and `resume` sit at T0 for the same reason `disable` and `enable`
+    # do, and the pairing is the justification. `suspend` only switches something
+    # OFF: it reduces what runs, which is the direction that never needs consent.
+    # `resume` does restore capability -- but only in gaia.db, and nothing runs
+    # because a row says it should: the task reaches this machine's scheduler
+    # exclusively through `sync`, which is T3. So the consent boundary stays where
+    # the design put it, at MATERIALIZATION, and is not duplicated onto every
+    # bookkeeping edit. Gating `resume` while leaving `enable` free would also be
+    # incoherent, since `enable` restores strictly more (it has no deadline).
     # The TWO verbs that reach outside the DB stay T3 via the per-group deny set
     # below: `sync` MATERIALIZES desired state into the OS scheduler (writes the
     # crontab -- a real machine mutation that must be shown verbatim and

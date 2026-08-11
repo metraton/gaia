@@ -1085,6 +1085,54 @@ CREATE TABLE IF NOT EXISTS scheduled_task_state (
 );
 
 -- ---------------------------------------------------------------------------
+-- schedule_suspensions: a TIME-BOUNDED pause laid over desired state.
+-- ---------------------------------------------------------------------------
+-- `scheduled_tasks.enabled = 0` is a PERMANENT decision with no deadline: it
+-- stays off until someone turns it back on. A SUSPENSION is the other shape --
+-- "off, but not forever" -- and it needs a deadline, so it cannot be expressed
+-- by the same boolean without losing the very thing that distinguishes it. Two
+-- separate states, two separate columns: `enabled` says disabled, a row here
+-- says suspended, and `list`/`status` label them differently on purpose.
+--
+-- SCOPE lives in `task_id`: NULL is the WORKSPACE-WIDE switch (suspends every
+-- task in that workspace at once), a non-NULL id is one task. One table for
+-- both scopes so a single expiry evaluator covers them; the two partial UNIQUE
+-- indexes below keep at most one live suspension per scope.
+--
+-- EXPIRY IS EVALUATED AT READ TIME, never by a waking process -- managing
+-- scheduled tasks must not itself require a scheduled task. `until` is an
+-- ISO8601 UTC instant; a read compares it against now and reports the
+-- suspension as live or LAPSED. NULL `until` means indefinite (never lapses).
+-- A lapsed row is deliberately NOT deleted on read: the row IS the record that
+-- something came back to life, which is what the SessionStart block announces
+-- (prominently -- a lapse means tasks are running again). It is cleared by an
+-- explicit `gaia schedule resume`, mirroring how task_notifications waits for
+-- `gaia notifications ack` instead of self-clearing.
+--
+-- Like the rest of the registry this is DESIRED STATE, not a scheduler
+-- mutation: suspending survives a reboot, is readable without asking the system
+-- scheduler, and only takes effect on the machine when the user consents to
+-- `gaia schedule sync` (T3). Writing it (`suspend`/`resume`) is reversible local
+-- bookkeeping (T0), exactly like `enable`/`disable`.
+CREATE TABLE IF NOT EXISTS schedule_suspensions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    workspace    TEXT,                      -- workspace the suspension covers; NULL for global
+    task_id      INTEGER,                   -- FK -> scheduled_tasks.id; NULL = workspace-wide switch
+    suspended_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    until        TEXT,                      -- ISO8601 UTC expiry; NULL = indefinite
+    reason       TEXT,                      -- optional note: why it was suspended
+    FOREIGN KEY (task_id) REFERENCES scheduled_tasks(id) ON DELETE CASCADE
+);
+
+-- At most one live suspension per scope. NULLs compare as distinct in a UNIQUE
+-- index, so the workspace-wide row needs COALESCE to collapse a NULL workspace
+-- onto one key, and the two scopes need separate partial indexes.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_suspensions_global
+    ON schedule_suspensions(COALESCE(workspace, '')) WHERE task_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_suspensions_task
+    ON schedule_suspensions(task_id) WHERE task_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
 -- approval_grants: DB-backed store for command_set approval grants (v7 / M3)
 -- Replaces the filesystem JSON store (.claude/cache/approvals/).
 -- Per D5/D10: no TTL column (enforced at query time via created_at + 10 min);

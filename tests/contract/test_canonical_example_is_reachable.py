@@ -49,7 +49,6 @@ _EVIDENCE_FIELDS = ("command", "reviewed", "requires_human")
 # reachability property as the CLI's own canonical block.
 _EXAMPLE_DOCS = (
     "skills/agent-protocol/examples.md",
-    "skills/agentic-loop/reference.md",
 )
 
 

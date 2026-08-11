@@ -87,9 +87,6 @@ class TestNoPendingSurfacingBuilderRemains:
         monkeypatch.setattr(
             session_manifest, "build_contracts_index_block", lambda: ""
         )
-        monkeypatch.setattr(
-            session_manifest, "build_agentic_loop_block", lambda: "LOOP"
-        )
         # Neutralize task-notifications and schedule-reconciliation: both do
         # live I/O (DB / crontab) and must not leak environment-dependent
         # content (e.g. an orphaned crontab entry on the host machine) into
@@ -110,6 +107,6 @@ class TestNoPendingSurfacingBuilderRemains:
         )
 
         result = session_manifest.build_session_context()
-        assert result == "ENV\n\nPROJ\n\nLOOP\n\nMEM\n\nANCHOR"
+        assert result == "ENV\n\nPROJ\n\nMEM\n\nANCHOR"
         assert "[ACTIONABLE]" not in result
         assert "PENDING-APPROVALS-VERIFIED" not in result

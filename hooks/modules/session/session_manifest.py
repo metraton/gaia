@@ -6,8 +6,6 @@ that move:
 
 - Environment manifest (NEW) -- workspace identity, machine, gaia version,
   mode, cwd, plugin data dir. Stable for the lifetime of the session.
-- Agentic-loop resume -- if there is an active loop in cwd, surface it once
-  at SessionStart instead of re-scanning every prompt.
 
 Pending approvals are NOT surfaced here. Cross-session surfacing of pendings
 (the former [ACTIONABLE] block) has been removed entirely: the DB remains the
@@ -207,21 +205,6 @@ def build_environment_block() -> str:
         return ""
 
 
-def build_agentic_loop_block() -> str:
-    """Surface an active agentic-loop's resume context at SessionStart.
-
-    Thin wrapper around ``agentic_loop_detector.build_resume_context`` --
-    the detection logic is owned there because PreCompact also uses it.
-    Wrapped fail-safe in case the detector raises for any reason.
-    """
-    try:
-        from ..context.agentic_loop_detector import build_resume_context
-        return build_resume_context() or ""
-    except Exception as exc:
-        logger.debug("build_agentic_loop_block failed (non-fatal): %s", exc)
-        return ""
-
-
 def build_workspace_memory_block(
     workspace: Optional[str] = None,
     sections: Optional[list[str]] = None,
@@ -296,7 +279,17 @@ def build_workspace_memory_block(
             "--max-chars", "1500",
         ]
         if sections:
-            cmd += ["--sections", ",".join(sections)]
+            # This helper is called TWICE by the SessionStart assembler: once
+            # with no sections (the digest, which carries the recoverable-
+            # pointer footer), once with sections=["anchor"] for the durable
+            # "About you / What I know" block. --no-pointer suppresses the
+            # CLI's footer on this second call only, so the guide is emitted
+            # once per manifest instead of twice verbatim -- and so it never
+            # sits under a section its write/curate verbs (close a thread,
+            # graduate, reclassify) don't apply to. A direct/agent invocation
+            # of `gaia memory get-relevant --sections ...` outside SessionStart
+            # never passes this flag and keeps the footer.
+            cmd += ["--sections", ",".join(sections), "--no-pointer"]
 
         result = subprocess.run(
             cmd,
@@ -336,11 +329,22 @@ def _extract_projects_from_identity(
       ``path``. The absolute path is not in the contract, so it is resolved
       from the ``projects`` table via ``path_lookup``.
 
-    ``path_lookup`` maps ``(workspace, name)`` -> absolute path, with a
-    per-workspace single-path fallback so a name mismatch (contract says
-    ``nfi`` but the project row is ``nfi-oro-com``) still resolves when the
-    workspace holds exactly one project. Entries that cannot resolve a path
-    are still returned (name only) -- the name alone is partial signal.
+    ``path_lookup`` resolves a name to an absolute path through three indexes,
+    tried in descending strictness:
+
+    1. ``by_name`` -- ``(workspace, name)`` -> path, an exact hit.
+    2. ``by_basename`` -- the last path component -> path, and ONLY when that
+       basename is unique across the whole ``projects`` table. This is what
+       reunites a legacy contract (which names the repo by its DIRECTORY, e.g.
+       ``bildwiz-iac``) with the current scan-promoted row (which names the same
+       repo by its uniquified SLUG, e.g. ``bildwiz_2``). Ambiguous basenames are
+       left unresolved rather than guessed.
+    3. ``by_ws`` -- a per-workspace single-path fallback, so a name mismatch
+       (contract says ``nfi`` but the project row is ``nfi-oro-com``) still
+       resolves when the workspace holds exactly one project.
+
+    Entries that cannot resolve a path are still returned (name only) -- the
+    caller decides how to present them.
 
     ``type`` and ``description`` are carried alongside name and path when the
     payload holds them (both shapes expose these fields), so the rendered
@@ -355,9 +359,14 @@ def _extract_projects_from_identity(
     out: list[tuple[str, str, str, str, str]] = []
     by_name: dict = path_lookup.get("by_name", {})
     by_ws: dict = path_lookup.get("by_ws", {})
+    by_basename: dict = path_lookup.get("by_basename", {})
 
     def _resolve(name: str) -> str:
         p = by_name.get((workspace, name))
+        if p:
+            return p
+        # Directory-name match, unique across all workspaces (see docstring).
+        p = by_basename.get(name)
         if p:
             return p
         # Single-project workspace: the one path we have is unambiguous.
@@ -406,6 +415,45 @@ def _extract_projects_from_identity(
     return out
 
 
+def _workspace_root(paths: list[str]) -> str:
+    """Longest common directory of *paths*, or "" when it cannot be derived.
+
+    When the common prefix IS one of the project paths (a single-project group,
+    or a group where one project nests inside another) the prefix is that
+    project's own directory, which would make its relative path empty; step up
+    one level so every member still renders as a non-empty relative path.
+    """
+    if not paths:
+        return ""
+    try:
+        root = os.path.commonpath(paths)
+    except (ValueError, TypeError):
+        return ""
+    if root in set(paths):
+        root = os.path.dirname(root)
+    return root
+
+
+def _relative_to_root(path: str, root: str) -> str:
+    """Path shown for a project inside its workspace group.
+
+    Returns the portion of *path* below *root*, or *path* unchanged when it does
+    not sit under *root* (so an out-of-tree entry is never silently rewritten
+    into a misleading relative path).
+    """
+    if not path:
+        return ""
+    if not root:
+        return path
+    try:
+        rel = os.path.relpath(path, root)
+    except (ValueError, TypeError):
+        return path
+    if rel.startswith(".."):
+        return path
+    return rel
+
+
 def build_projects_context_block(max_chars: int = 8000) -> str:
     """Render the active-context project index for the SessionStart manifest.
 
@@ -424,22 +472,44 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     those projects are included rather than held back. No path-prefix filtering
     is used.
 
-    Each entry is ``- <name>: <path>`` -- the path being the value the
-    orchestrator wants (where the project lives on disk). Workspace is not a
-    grouping axis here; it is only used internally to resolve relative/missing
-    paths against the ``projects`` table.
+    The block is HIERARCHICAL: a ``### <workspace> — <root>`` group per scanned
+    workspace, with that workspace's projects underneath as
+    ``- <name> (<type>): <path relative to root> — <description>``. The relative
+    path is dropped entirely when it equals the project's name, which is the
+    common case; the group root plus the name reconstruct it exactly, so nothing
+    is lost and the repeated absolute prefix is not paid ~40 times.
 
-    Framed as ``## Project Context — Projects`` so it reads as part of the
-    project-context setup the orchestrator receives at SessionStart (it is
-    emitted immediately after ``## Environment``), not as an orphan section.
+    A project's group is the workspace that owns its ``projects`` row (the
+    scan-verified physical truth), falling back to the contract's own workspace
+    key for a hand-authored entry with no row.
 
-    Budget: bounded to ``max_chars`` (default 8000). The real active-context
-    set is small (~17 entries) but each entry now carries ``(type)`` and a
-    ``— description`` tail, so the block runs ~2-3 KB; the cap is sized with
-    generous headroom so the full index lands and the routing surface is never
-    silently truncated. On overflow we drop entries from the tail and ALWAYS
-    append a recoverable footer stating the dropped count (footer space is
-    reserved before trimming). Fail-safe: any error returns "".
+    Two defects of the older flat list are fixed at the source rather than in
+    the render:
+
+    * **Duplicates.** Two generations of contract rows coexist -- the current
+      scan-promoted map (keyed by uniquified slug, e.g. ``bildwiz_2``) and legacy
+      per-directory scanner/flat rows (keyed by the repo's directory name, e.g.
+      ``bildwiz-iac``, with no ``projects`` row under that workspace at all). The
+      old ``(name, path)`` dedup key could not see the collision because BOTH
+      components differed: one side had the slug and a path, the other the
+      directory name and no path. Dedup is now keyed on the RESOLVED ABSOLUTE
+      PATH -- a project's actual identity -- and the basename index in
+      ``_extract_projects_from_identity`` is what lets the legacy side resolve
+      to that path in the first place. Colliding entries are MERGED field by
+      field, so metadata carried by only one of the two survives.
+    * **Vanished repos.** An entry marked ``missing_since`` no longer spends a
+      full line. Per group, the marked names collapse into one
+      ``missing (N): a, b, c`` line. Nothing is deleted -- not from the
+      ``projects`` table, not from the contract -- so the full record (path,
+      type, description, exact timestamp) stays one ``gaia context get`` away.
+      The name is kept in the render precisely so a bare mention of a vanished
+      project still resolves to a workspace.
+
+    Budget: bounded to ``max_chars`` (default 8000). On overflow, live projects
+    are dropped from the tail and a recoverable footer stating the dropped count
+    ALWAYS lands (footer space is reserved before trimming). Under budget
+    pressure the explanatory note is dropped before any data. Fail-safe: any
+    error returns "".
     """
     # Ensure the package root (which holds the `gaia/` package) is importable.
     # At real SessionStart, session_start.py already inserts it; this self-heal
@@ -480,6 +550,8 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
 
     by_name: dict = {}
     by_ws: dict = {}
+    ws_of_path: dict = {}
+    basename_hits: dict = {}
     for r in proj_rows:
         d = dict(r)
         p = d.get("path")
@@ -487,73 +559,157 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
             continue
         by_name[(d["workspace"], d["name"])] = p
         by_ws.setdefault(d["workspace"], []).append(p)
-    path_lookup = {"by_name": by_name, "by_ws": by_ws}
+        ws_of_path.setdefault(p, d["workspace"])
+        basename_hits.setdefault(os.path.basename(p), set()).add(p)
+    # A basename is only a usable key while it identifies exactly ONE path;
+    # two repos sharing a directory name are left unresolved, never guessed.
+    by_basename = {
+        base: next(iter(paths))
+        for base, paths in basename_hits.items()
+        if len(paths) == 1
+    }
+    path_lookup = {
+        "by_name": by_name,
+        "by_ws": by_ws,
+        "by_basename": by_basename,
+    }
 
-    entries: list[tuple[str, str, str, str, str]] = []
-    seen: set = set()
+    # Dedup on the RESOLVED PATH -- a project's real identity. Two contract
+    # generations name the same repo differently (promoted slug vs. directory
+    # name), so a name-based key cannot see the collision. Path-less entries
+    # fall back to a name key; they cannot collide with a path-keyed entry.
+    merged: dict = {}
+    order: list = []
     for r in identity_rows:
         d = dict(r)
-        ws = d.get("workspace") or ""
+        contract_ws = d.get("workspace") or ""
         try:
             payload = json.loads(d.get("payload") or "{}")
         except (ValueError, TypeError):
             continue
         if not isinstance(payload, dict):
             continue
-        for entry in _extract_projects_from_identity(payload, ws, path_lookup):
-            key = (entry[0], entry[1])
-            if key in seen:
+        for name, path, ptype, desc, gone in _extract_projects_from_identity(
+            payload, contract_ws, path_lookup
+        ):
+            key = path or f"name:{name.lower()}"
+            # The owning workspace is the one holding this path's projects row;
+            # a hand-authored entry with no row keeps its contract's workspace.
+            group = ws_of_path.get(path) or contract_ws
+            prev = merged.get(key)
+            if prev is None:
+                merged[key] = {
+                    "name": name, "path": path, "type": ptype,
+                    "desc": desc, "gone": gone, "ws": group,
+                    "is_ws_identity": not path and name.lower() == contract_ws.lower(),
+                }
+                order.append(key)
                 continue
-            seen.add(key)
-            entries.append(entry)
+            # Same project reached twice: keep every field either side carries.
+            for field, value in (
+                ("type", ptype), ("desc", desc), ("gone", gone),
+            ):
+                if not prev[field] and value:
+                    prev[field] = value
 
-    if not entries:
+    if not merged:
         return ""
 
-    total_available = len(entries)
+    # Split live from vanished, and pin the per-workspace group order. Roots are
+    # computed from the LIVE paths only: a vanished repo's path should not widen
+    # (or, as the sole member, define) the root every sibling renders against.
+    live: list[dict] = []
+    missing_by_ws: dict = {}
+    unresolved: list[str] = []
+    group_order: list[str] = []
+    for key in order:
+        e = merged[key]
+        ws = e["ws"]
+        if e["is_ws_identity"]:
+            # A flat contract whose name IS its own workspace key, with no path
+            # resolvable anywhere in the projects table, is the workspace-identity
+            # form of the contract (see gaia.identity_shape), not a project. It is
+            # skipped as a misclassification rather than reported as a project
+            # whose path was lost -- the contract row itself is untouched.
+            continue
+        if ws and ws not in group_order:
+            group_order.append(ws)
+        if e["gone"]:
+            missing_by_ws.setdefault(ws, []).append(e["name"])
+        elif not e["path"]:
+            unresolved.append(e["name"])
+        else:
+            live.append(e)
+
+    roots: dict = {}
+    for ws in group_order:
+        roots[ws] = _workspace_root([e["path"] for e in live if e["ws"] == ws])
+
+    total_available = len(live)
     header = "## Project Context — Projects"
+    note = (
+        "Paths are relative to each workspace root, and omitted when the "
+        "directory matches the project name."
+    )
 
-    def _render(items: list[tuple[str, str, str, str, str]]) -> str:
-        lines = [header, ""]
-        for name, path, ptype, desc, gone in items:
-            # Name + optional "(type)", then " — description" when present.
-            # Kept on one line per project so the block stays scannable and
-            # bounded; description is not truncated here (the char budget below
-            # trims whole entries from the tail if the block overflows).
-            label = f"{name} ({ptype})" if ptype else name
+    def _render(items: list[dict], with_note: bool = True) -> str:
+        parts = [header]
+        if with_note:
+            parts.append(note)
+        for ws in group_order:
+            group = [e for e in items if e["ws"] == ws]
+            gone = missing_by_ws.get(ws) or []
+            if not group and not gone:
+                continue
+            root = roots.get(ws) or ""
+            lines = [f"### {ws} — {root}" if root else f"### {ws}"]
+            for e in group:
+                label = f"{e['name']} ({e['type']})" if e["type"] else e["name"]
+                shown = _relative_to_root(e["path"], root)
+                # A relative path equal to the name is fully implied by the
+                # group root; printing it would only repeat the name.
+                line = (
+                    f"- {label}: {shown}"
+                    if shown and shown != e["name"]
+                    else f"- {label}"
+                )
+                if e["desc"]:
+                    line += f" — {e['desc']}"
+                lines.append(line)
             if gone:
-                # Marked, never dropped: a repo the scanner no longer finds on
-                # disk is signal the reader needs, and it rides next to the
-                # label so it cannot be missed at the tail of a long line.
-                label += f" [MISSING since {gone}]"
-            line = f"- {label}: {path}" if path else f"- {label}"
-            if desc:
-                line += f" — {desc}"
-            lines.append(line)
-        return "\n".join(lines)
+                # Collapsed, not purged: names stay so a bare mention still
+                # resolves, and the full record is one CLI call away.
+                lines.append(
+                    f"missing ({len(gone)}): {', '.join(gone)} "
+                    f"— recover with 'gaia context get'"
+                )
+            parts.append("\n".join(lines))
+        if unresolved:
+            parts.append(
+                f"unresolved ({len(unresolved)}): {', '.join(unresolved)} "
+                f"— no path on disk; 'gaia context get'"
+            )
+        return "\n\n".join(parts)
 
-    block = _render(entries)
-    # Budget: drop from the tail until the block PLUS its footer fits. The
-    # footer must never be lost -- a silent tail-drop with no footer turns the
-    # projects index (a routing surface) into a lie about how many projects
-    # exist. So we reserve the footer's worst-case width up front and trim
-    # against ``max_chars - footer_budget``, guaranteeing the footer always
-    # lands when anything was dropped. See FIX (a)/(b).
+    block = _render(live)
+    # Budget: drop live projects from the tail until the block PLUS its footer
+    # fits. The footer must never be lost -- a silent tail-drop with no footer
+    # turns the projects index (a routing surface) into a lie about how many
+    # projects exist. So we reserve the footer's worst-case width up front and
+    # trim against ``max_chars - footer_budget``. Under pressure the note goes
+    # first: it explains the data, so it is the cheapest thing to lose.
     if len(block) > max_chars:
-        # Footer width is bounded by the digit count of ``total_available``;
-        # size the reservation against that count, not against a live ``dropped``
-        # value we do not yet have.
         def _footer(n: int) -> str:
             return f"\n... ({n} more, use 'gaia context get')"
 
         footer_budget = len(_footer(total_available))
         trim_target = max(0, max_chars - footer_budget)
 
-        kept = list(entries)
-        while kept and len(_render(kept)) > trim_target:
+        kept = list(live)
+        while kept and len(_render(kept, with_note=False)) > trim_target:
             kept.pop()
         dropped = total_available - len(kept)
-        block = _render(kept)
+        block = _render(kept, with_note=False)
         if dropped > 0:
             block = block + _footer(dropped)
 
@@ -728,6 +884,97 @@ def build_task_notifications_block(
         return ""
 
 
+def build_schedule_suspension_block(
+    workspace: Optional[str] = None,
+) -> str:
+    """Announce scheduled-task suspensions -- LIVE ones, and LAPSED ones louder.
+
+    Two things must never happen quietly, and this block is where both are made
+    audible at the one moment the user is guaranteed to be looking:
+
+      * A task stays switched off because everyone forgot. So every LIVE
+        suspension is announced with how long it has left.
+      * A task starts running again without anyone noticing. So a LAPSED
+        suspension -- deadline passed, tasks active again -- is announced FIRST
+        and marked, because it is the entry that changed what runs.
+
+    DETECT-ONLY, exactly like build_schedule_reconciliation_block. Reading a
+    suspension is what expires it (a comparison against now, no daemon), and
+    that read reactivates DESIRED state only: this hook does not install, does
+    not reactivate the machine scheduler, and does not sync. A lapse therefore
+    leaves the crontab exactly as the last consented `gaia schedule sync` left
+    it -- if that sync had removed the entry, the drift block will say so and
+    the user decides. A SessionStart hook cannot obtain T3 consent, so it may
+    only report.
+
+    The lapse notice is NOT self-clearing: it stands until an explicit `gaia
+    schedule resume` acknowledges it, the same contract task_notifications has
+    with `gaia notifications ack`. Emits "" when nothing is suspended
+    (zero-noise). Fail-safe: returns "" on any error.
+    """
+    try:
+        _pkg_root = str(Path(__file__).resolve().parents[3])
+        if _pkg_root not in sys.path:
+            sys.path.insert(0, _pkg_root)
+    except Exception:
+        pass
+
+    try:
+        from gaia.store.reader import list_schedule_suspensions
+    except Exception as exc:
+        logger.debug("schedule suspension import failed (non-fatal): %s", exc)
+        return ""
+
+    try:
+        ws = workspace or _read_workspace_identity()
+        rows = list_schedule_suspensions(workspace=ws)
+        if not rows:
+            return ""
+
+        lapsed = [s for s in rows if s.get("expired")]
+        live = [s for s in rows if not s.get("expired")]
+        lines: list[str] = []
+
+        if lapsed:
+            lines.append("## Scheduled Tasks — SUSPENSION LAPSED (running again)")
+            for s in lapsed:
+                who = s.get("task_name") or "all tasks"
+                resumed = ", ".join(s.get("resumed_names") or [])
+                what = (f"active again: {resumed}" if resumed else
+                        "nothing came back (still disabled, or held by another suspension)")
+                lines.append(
+                    f"- ! {who} — suspension expired {s.get('lapsed_ago')} ago "
+                    f"(deadline {s.get('until')}) — {what}"
+                )
+            lines.append(
+                "Nothing was reactivated by session start: the deadline simply "
+                "stopped applying. Acknowledge with `gaia schedule resume "
+                "<name>|--all` (T0) · verify the machine: `gaia schedule status`"
+            )
+
+        if live:
+            if lapsed:
+                lines.append("")
+            lines.append("## Scheduled Tasks (suspended)")
+            for s in live:
+                who = s.get("task_name") or "all tasks"
+                window = ("suspended indefinitely (no deadline)"
+                          if s.get("indefinite")
+                          else f"suspended {s.get('remaining')} more "
+                               f"(until {s.get('until')})")
+                reason = f" — {s['reason']}" if s.get("reason") else ""
+                lines.append(f"- {who} — {window}{reason}")
+            lines.append(
+                "Lift early: `gaia schedule resume <name>|--all` (T0) · "
+                "inspect: `gaia schedule status`"
+            )
+
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("build_schedule_suspension_block failed (non-fatal): %s", exc)
+        return ""
+
+
 def build_schedule_reconciliation_block(
     workspace: Optional[str] = None,
 ) -> str:
@@ -822,12 +1069,11 @@ def build_session_context() -> str:
             # this was implemented and tested (42a6231) but never wired into
             # the assembler until this fix.
             build_contracts_index_block(),
-            build_agentic_loop_block(),
             # Unread headless-task notifications: a compact list of reports left
             # by scheduled tasks (task_name + headline + time + resumable
-            # session_id). Emitted after the loop state so the user sees what
-            # ran unattended and can `claude --resume` to grant pending T3s.
-            # Zero-noise: emits nothing when there are no unread rows.
+            # session_id). Emitted after the static project-context setup so the
+            # user sees what ran unattended and can `claude --resume` to grant
+            # pending T3s. Zero-noise: emits nothing when there are no unread rows.
             build_task_notifications_block(),
             # Scheduled-task drift: DETECT-ONLY (T0). When the desired state in
             # gaia.db diverges from this machine's local scheduler, surface a
@@ -835,13 +1081,23 @@ def build_session_context() -> str:
             # noise when reconciled. The hook never writes the scheduler -- that
             # is the T3 `gaia schedule sync` the user runs after seeing this.
             build_schedule_reconciliation_block(),
+            # Scheduled-task suspensions: DETECT-ONLY (T0). A LIVE suspension is
+            # announced with the time it has left, so nothing stays switched off
+            # by being forgotten; a LAPSED one is announced first and marked,
+            # because it means tasks are running again. Placed after the drift
+            # block so the two read together: the lapse says WHAT changed in
+            # desired state, the drift block says whether this machine still
+            # matches it. Zero-noise when nothing is suspended. Like the drift
+            # block it never writes the scheduler -- reading is what expires a
+            # suspension, and expiry restores desired state only.
+            build_schedule_suspension_block(),
             # Pending approvals are no longer surfaced here. Cross-session
             # surfacing of pendings (the [ACTIONABLE] block) was removed: the
             # DB remains the pending store, TTL hygiene keeps it clean, and the
             # user inspects/acts on pendings on demand via `gaia approvals`.
             # Workspace Memory is injected last so the orchestrator sees the
-            # operational state (environment, projects, loop) before the curated
-            # knowledge it should anchor against. Two calls, DISJOINT DB classes
+            # operational state (environment, projects, schedule) before the
+            # curated knowledge it should anchor against. Two calls, DISJOINT classes
             # so neither duplicates the other's tokens:
             #   1. No `sections` -> the transversal initiative digest, the
             #      live-pending worklist (class='thread', status in

@@ -1,8 +1,8 @@
 # Agents
 
-Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and a list of skills that get injected at startup. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is a `agent_contract_handoff` block with findings, changes, and a verification result.
+Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and — for a dispatched subagent — a list of skills the host preloads at startup. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is a `agent_contract_handoff` block with findings, changes, and a verification result.
 
-Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code reads it to know which tools the agent may use, which model to run, and which skills to inject before the first turn. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
+Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code (the host, not any Gaia hook) reads it to know which tools the agent may use, which model to run, and — for a dispatched subagent only — which skills to preload before the first turn. No Gaia hook loads skills: `hooks/hooks.json` carries no `Skill` tool matcher, so a `Skill(...)` call never reaches PreToolUse, and the only Gaia component named "skill injection" (`hooks/modules/agents/skill_injection_verifier.py`) runs at SubagentStop and only observes — it checks the transcript for evidence the host already did the preload, it does not perform one. The primary agent (`gaia-orchestrator.md`) has no `skills:` field at all: Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread, so a `skills:` key there would have no effect. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
 
 The orchestrator (`gaia-orchestrator.md`) is special: it has no `permissionMode`; `Read` exists only to triangulate evidence with the user, while `Bash` is a lane for allowlisted coordination commands through the trusted `gaia` binary. `gaia_cli_only_guard.py` rejects every other binary and Gaia surface, so it remains unable to execute a general shell. It has no Edit, Write, Glob, or Grep.
 
@@ -24,16 +24,21 @@ Orchestrator evaluates intent against the DB-backed surface_routing table
 Orchestrator calls Agent/Task tool with agent name + focused objective
         |
 [pre_tool_use.py] intercepts the Task/Agent tool call
-        |  Reads agent .md frontmatter -> injects skills listed in skills:
-        |  Injects project-context sections via context-contracts.json
-        |  Validates permissionMode
+        |  Validates the dispatch: agent exists, T3 scan of the prompt
+        |  (TaskValidator) -- no frontmatter read, no skill or project-
+        |  context injection happens in this hook
+        |  Births the agent_contract_handoffs row (identity, kernel data)
         v
-Claude Code spawns subagent with:
+Claude Code (the HOST, not this hook) separately reads the target
+agent's .md frontmatter and spawns the subagent with:
   - Identity from agents/<name>.md body
-  - Skills injected from frontmatter skills: list
-  - Project context filtered by context-contracts.json
+  - Tools/model, and -- for a subagent only -- skills preloaded from
+    that frontmatter's skills: list. No Gaia hook performs this load.
         |
-[subagent_start.py] fires -> can inject additional context (e.g. persisted memory)
+[subagent_start.py] claims the born row, injects the dispatch KERNEL
+(# Your Contract incl. can_read/can_write menu, # Your CLI, # What I
+know about you). Project context is NOT preloaded here either -- the
+agent pulls sections on demand within its can_read menu.
         |
 Agent executes, returns agent_contract_handoff to orchestrator
         |
@@ -68,9 +73,10 @@ agents/
 | `permissionMode` | Most agents | Set `acceptEdits` for agents that write files |
 | `routing` | Surface owners | Declares the agent's surface (`surface`, `adjacent_surfaces`, `signals` with `commands`/`artifacts`, `required_checks`, optional `sub_surfaces`); seeded into the `surface_routing` table by `tools/scan/seed_surface_routing.py`. Keywords were retired as a signal source — the matcher scores `commands` and `artifacts` only, and a legacy `keywords` key is ignored. The surface's `intent` is the `description`; `contract_sections` derives from `project_context_contracts.read`. Omit for the orchestrator (it IS the router). |
 | `contract_handoff_writer` | Fleet-seeded agents | `true` opts this agent into the handoff-writer fleet: the write-guard (`_assert_dispatch_can_write_handoff` in `gaia/store/writer.py`) allows `gaia contract finalize` to write this agent's `agent_contract_handoffs` row only when its `name:` carries this marker. Seeded by `gaia.state.permissions.handoff_writer_fleet()`, which enumerates `agents/*.md`; every agent under `agents/` is expected to carry it (drift-checked by `tests/contract/test_finalize_store.py`). |
-| `skills` | Yes | First two are always `agent-protocol`, `security-tiers` |
+| `skills` | Every agent except the orchestrator | First two are always `agent-protocol`, `security-tiers`. Read and preloaded by the HOST (Claude Code) before the first turn — no Gaia hook loads skills. Applies to a dispatched subagent only; the primary agent (`gaia-orchestrator.md`) carries no `skills:` field, since Claude Code inherits only "system prompt, tool restrictions, and model" on the main thread. |
+| `cli` | No agent currently declares it | Optional list of extra CLI lines. The one frontmatter field Gaia itself reads, at subagent birth (`hooks/modules/context/kernel_builder.py::_agent_cli_extras`) — its entries are appended verbatim to the "# Your CLI" kernel block. |
 
-**Skills order:** `agent-protocol` first, `security-tiers` second, then domain skills. The first two are non-negotiable — every agent needs the contract format and the tier classification.
+**Skills order:** for a dispatched subagent, `agent-protocol` first, `security-tiers` second, then domain skills — the first two are non-negotiable, since every subagent needs the contract format and the tier classification. The orchestrator has no `skills:` field at all: skill preloading has no effect on the primary agent in this mode.
 
 **Description field:** This is the routing signal. Write it as a present-tense label: "Routes requests to specialist agents" or "Diagnoses live cloud infrastructure". The orchestrator matches user intent against these descriptions.
 

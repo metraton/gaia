@@ -142,8 +142,7 @@ fingerprint as specified by `agent-approval-protocol`.
   never write authority.
 - `update_contracts`: `{contract, payload}` entries, deep-merged only into the
   input write allowlist; lists replace whole and no delete sentinel exists.
-- `rollback_executed`, `context_consumption`, `loop_state`: advisory or
-  workflow-specific fields.
+- `rollback_executed`, `context_consumption`: advisory fields.
 
 ## The evidence clause of `update_contracts`
 

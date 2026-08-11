@@ -81,7 +81,7 @@ bin/
     ├── task.py                # gaia task       — manage tasks within plans (DB-canonical)
     ├── workspace.py           # gaia workspace  — workspace identity / consolidate operations
     ├── scan.py                # gaia scan       — project scanner; writes scan results to gaia.db (DB-canonical)
-    ├── schedule.py            # gaia schedule   — desired-state registry for recurring tasks (register/list/show/status/remove/sync)
+    ├── schedule.py            # gaia schedule   — desired-state registry for recurring tasks (register/list/show/status/enable/disable/suspend/resume/remove/sync)
     ├── status.py              # gaia status     — quick installation snapshot
     ├── uninstall.py           # gaia uninstall  — full or preuninstall removal
     └── update.py              # gaia update     — re-sync after npm install bumped the version

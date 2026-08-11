@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""PreCompact hook — injects agentic-loop checkpoint instructions before context compaction.
+"""PreCompact hook — a schema-valid no-op registered for the PreCompact event.
 
-When an agentic-loop is active, the agent needs to save its state before
-compaction wipes context.  This hook detects the loop and injects a prompt
-telling the agent to write continue.md + update state.json + worklog.md.
+The event carries no deliverable payload: Claude Code neither validates nor
+consumes ``hookSpecificOutput`` for PreCompact (see ``_handle_pre_compact``),
+so there is nothing this hook can inject into the model's context. It stays
+registered so the event has a well-formed responder that can never block
+compaction, and so a future capability has a wired entry point.
 
-If no loop is active, this hook is a no-op (returns empty additionalContext).
-All errors are caught and logged — this hook never blocks compaction.
+All errors are caught — this hook never blocks compaction.
 """
 
 import sys
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 
 def _handle_pre_compact(event) -> None:
-    """Log agentic-loop checkpoint instructions before compaction.
+    """Emit the schema-valid empty response for PreCompact.
 
     PLATFORM LIMITATION: Claude Code's hook-output schema does not accept
     ``hookSpecificOutput.hookEventName == "PreCompact"`` -- the validated
@@ -44,29 +45,13 @@ def _handle_pre_compact(event) -> None:
     ``"PreCompact"`` case at all, so `additionalContext` is unreachable
     for this event regardless of schema validity. Emitting the previous
     shape made every ``/compact`` fail Claude Code's JSON validation with
-    "(root): Invalid input" and silently dropped the checkpoint prompt.
-    There is currently no hook event that can inject model context in the
-    narrow window *before* compaction erases it -- see pre_compact.py's
-    module docstring and the hooks README for the accepted mitigation
-    (UserPromptSubmit's ongoing loop-resume reminder, which is a different,
-    already-working mechanism, not a substitute for this exact timing).
-    This handler now only logs (for GAIA_DEBUG diagnosis) and returns a
-    schema-valid empty response so compaction is never blocked.
+    "(root): Invalid input". There is currently no hook event that can inject
+    model context in the narrow window *before* compaction erases it; the
+    post-compaction refresh happens instead at SessionStart with
+    ``source == "compact"``. So this handler only logs for GAIA_DEBUG
+    diagnosis and returns a schema-valid empty response.
     """
-    try:
-        from modules.context.agentic_loop_detector import build_precompact_prompt
-        context = build_precompact_prompt()
-        if context:
-            logger.info(
-                "PreCompact: active agentic loop detected (checkpoint prompt built, "
-                "%d chars) but Claude Code does not support additionalContext "
-                "injection for PreCompact -- prompt is logged only, not delivered",
-                len(context),
-            )
-        else:
-            logger.info("PreCompact: no active agentic loop, skipping")
-    except Exception as e:
-        logger.debug("PreCompact: agentic-loop detection failed (non-fatal): %s", e)
+    logger.info("PreCompact: no deliverable payload for this event, returning {}")
 
     # No hookSpecificOutput: PreCompact does not accept one. An empty object
     # is the schema-valid "nothing to report" response for every hook event.

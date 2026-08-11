@@ -28,17 +28,26 @@ class ReconcilePlan:
     drift: List[dict] = field(default_factory=list)        # installed but cron expr differs
     orphans: List[str] = field(default_factory=list)       # managed here, no longer desired
     disabled_present: List[str] = field(default_factory=list)  # disabled but still installed
+    # Suspended-but-still-installed is kept APART from disabled-but-still-
+    # installed even though a sync treats them identically. The two mean
+    # different things to whoever reads the plan: a disabled entry needs an
+    # explicit `enable` to ever come back, while a suspended one returns by
+    # itself when its deadline passes. Each entry carries name + until so the
+    # reader sees the deadline without a second query.
+    suspended_present: List[dict] = field(default_factory=list)
     invalid: List[dict] = field(default_factory=list)      # spec that fails to translate
     daemon: Optional[DaemonStatus] = None
     available: bool = True                                  # a usable backend exists here
 
     @property
     def in_sync(self) -> bool:
-        return not (self.missing or self.drift or self.orphans or self.disabled_present)
+        return not (self.missing or self.drift or self.orphans
+                    or self.disabled_present or self.suspended_present)
 
     @property
     def action_count(self) -> int:
-        return len(self.missing) + len(self.drift) + len(self.orphans) + len(self.disabled_present)
+        return (len(self.missing) + len(self.drift) + len(self.orphans)
+                + len(self.disabled_present) + len(self.suspended_present))
 
 
 def compute_plan(workspace: Optional[str] = None, machine: Optional[str] = None) -> ReconcilePlan:
@@ -89,15 +98,28 @@ def compute_plan(workspace: Optional[str] = None, machine: Optional[str] = None)
         elif entries[name] and entries[name] != want_expr:
             plan.drift.append({"name": name, "want": want_expr, "have": entries[name]})
 
-    # Orphans: managed here but no longer an ENABLED desired task for this
-    # machine. Split disabled-but-present out for a clearer message.
+    # Orphans: managed here but no longer an ACTIVE desired task for this
+    # machine. Split the two "switched off on purpose" cases out of orphans so
+    # the message says WHY, and keep them apart from each other so it says
+    # whether the entry comes back on its own.
     all_tasks = list_scheduled_tasks(workspace=workspace, include_disabled=True)
-    disabled_names = {t["name"] for t in all_tasks if not t.get("enabled")}
+    by_name = {t["name"]: t for t in all_tasks}
     for name in entries:
         if name in desired_names:
             continue
-        if name in disabled_names:
+        task = by_name.get(name)
+        if task is None:
+            plan.orphans.append(name)
+        elif task.get("effective_state") == "disabled":
             plan.disabled_present.append(name)
+        elif task.get("effective_state") == "suspended":
+            susp = task.get("suspension") or {}
+            plan.suspended_present.append({
+                "name": name,
+                "until": susp.get("until"),
+                "scope": susp.get("scope"),
+                "remaining": susp.get("remaining"),
+            })
         else:
             plan.orphans.append(name)
 

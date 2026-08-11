@@ -37,7 +37,7 @@ Prints a final block ending with EXACTLY one line:
 
     METRIC kill_rate=XX.XX
 
-plus killed/survived/incompetent/total counts, for an agentic loop to parse.
+plus killed/survived/incompetent/total counts, for an automated caller to parse.
 
 The kill_rate matches cosmic-ray's `cr-rate`: killed / (total - incompetent).
 

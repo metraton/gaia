@@ -1250,14 +1250,24 @@ def _project_tag(project_ref) -> str:
     tag = ref.rsplit("/", 1)[-1]
     return tag or ""
 
-# P2a recoverable-pointer footer. Each injected line shows a slug + one-line
-# description; the full body (the actionable detail) is recoverable on demand.
-# State that explicitly so the orchestrator / a subagent fetches the depth
-# instead of treating the one-liner as all there is. Its length is RESERVED
-# from the char budget before trimming, so block + pointer respects max_chars.
+# P2a recoverable-pointer footer, extended (T8) into a read/write-axis CLI
+# guide. The audience is the orchestrator, which -- unlike a dispatched
+# subagent -- CURATES memory rather than only proposing it, so this footer
+# both recovers detail AND fences invention: read verbs are enumerated
+# verbatim from `gaia memory --help` (measured gap: the orchestrator once
+# called the non-existent `gaia memory get`, a natural blend of the two
+# verbs it HAD seen -- `show` via this pointer, `search` via the overflow
+# footer -- against the CLI's real fifteen subcommands). Every write/curate
+# verb (add, edit, append, reclassify, link, delete, checkpoint) is instead
+# routed to `Skill('memory')`, which owns the judgment those operations
+# need, rather than invited as a command to improvise. Its length is
+# RESERVED from the char budget before trimming, so block + pointer always
+# respects max_chars -- this guide must never be the line dropped by trim.
 _MEMORY_POINTER = (
-    "> Detail of any item above is recoverable: "
-    "`gaia memory show <slug>` (the slug is the name shown after `- `)."
+    "> Read — never invent a verb: `show <slug>`, `search <term>`, "
+    "`list --type <t>`, `get-relevant`, `story <slug>`, `conflicts`, "
+    "`stats`, `episode-show`. Write, close a thread, graduate, reclassify, "
+    "or delete: load `Skill('memory')` — it owns curation."
 )
 _MEMORY_POINTER_RESERVE = len(_MEMORY_POINTER) + 2  # +2 for the "\n\n" join
 
@@ -1366,6 +1376,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     """
     max_chars = int(getattr(args, "max_chars", None) or _RELEVANT_DEFAULT_MAX_CHARS)
     sections_arg = getattr(args, "sections", None)
+    no_pointer = bool(getattr(args, "no_pointer", False))
     _all_sections = ("carry_forward", "anchor", "thread_open")
     if sections_arg:
         _requested = {
@@ -1380,7 +1391,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     # Reserve room for the recoverable-pointer footer (appended after trimming)
     # so the final block + pointer respects the caller's char budget. Floor at
     # a small positive value so a pathologically tiny budget still renders.
-    max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
+    # Skipped when --no-pointer suppresses the footer (see its append below).
+    if not no_pointer:
+        max_chars = max(80, max_chars - _MEMORY_POINTER_RESERVE)
 
     try:
         from gaia.store.writer import _connect, get_memory  # noqa: F401
@@ -1493,10 +1506,20 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     items_flat: list[dict] = []
 
     def _truncate_desc(text: str) -> str:
-        """Cap a rendered description to _RELEVANT_ITEM_DESC_MAX + ellipsis."""
+        """Cap a rendered description to _RELEVANT_ITEM_DESC_MAX + ellipsis.
+
+        Prefers cutting at the last word boundary inside the cap so a
+        description never ends mid-word; falls back to the hard cut when no
+        boundary sits close enough (a single unbroken run, e.g. one long
+        token) that trimming to it would sacrifice most of the cap.
+        """
         text = text.replace("\n", " ").strip()
         if len(text) > _RELEVANT_ITEM_DESC_MAX:
-            return text[:_RELEVANT_ITEM_DESC_MAX].rstrip() + "…"
+            cut = text[:_RELEVANT_ITEM_DESC_MAX]
+            boundary = cut.rfind(" ")
+            if boundary >= _RELEVANT_ITEM_DESC_MAX * 0.6:
+                cut = cut[:boundary]
+            return cut.rstrip() + "…"
         return text
 
     def _build_section(section_key: str) -> list[str]:
@@ -1626,7 +1649,12 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
     # pointer is never the line that gets dropped; its length was reserved from
     # max_chars above, so block + pointer still respects the caller's budget.
-    block = block + "\n\n" + _MEMORY_POINTER
+    # Suppressed only for the SessionStart assembler's second (anchor-only)
+    # call, which passes --no-pointer -- the first call already emitted this
+    # same guidance once, and "About you / What I know" is not where write/
+    # curate verbs (close a thread, graduate, reclassify) belong.
+    if not no_pointer:
+        block = block + "\n\n" + _MEMORY_POINTER
 
     if as_json:
         payload = {
@@ -3353,6 +3381,16 @@ def register(subparsers):
     rel_p.add_argument(
         "--json", action="store_true", default=False,
         help="Emit JSON (with items list + block string). bool.",
+    )
+    rel_p.add_argument(
+        "--no-pointer", dest="no_pointer", action="store_true", default=False,
+        # Internal-only: suppresses the recoverable-pointer footer. Used
+        # exclusively by the SessionStart assembler's SECOND call (the
+        # anchor-sections one) so the footer is not emitted twice in one
+        # manifest -- see hooks/modules/session/session_manifest.py. Hidden
+        # from --help because a direct/agent invocation of this command
+        # (outside SessionStart) must always get the pointer.
+        help=_argparse.SUPPRESS,
     )
     rel_p.set_defaults(func=_cmd_get_relevant)
 

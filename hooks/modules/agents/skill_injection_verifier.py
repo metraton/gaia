@@ -45,18 +45,18 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
         "Enforcement anchors",
     ],
     "investigation": [
-        "Context is the map",
-        "Scope decides what matters",
-        "Confirmed beats assumed",
+        "cheapest authoritative context toward narrowly scoped",
+        "Evidence ladder",
+        "Keep assumptions visibly separate from confirmed facts",
     ],
     "command-execution": [
-        "ONE COMMAND. ONE RESULT. ONE EXIT CODE",
-        "No indirect-execution wrappers",
-        "cloud_pipe_validator",
+        "One command, one result, one exit code.",
+        "invocation discipline",
+        "byte-identical to the approved command",
     ],
     "fast-queries": [
         "fast-queries",
-        "triage",
+        "Start with supplied evidence, not a fixed diagnostic script.",
     ],
     "coding-standards": [
         "why-not-what test",

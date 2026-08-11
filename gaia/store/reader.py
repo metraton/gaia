@@ -151,7 +151,109 @@ def get_notification(
 # a parsed ``schedule_spec`` (dict) under ``spec`` and, for named-scope tasks,
 # the ``machines`` list.
 
-def _row_to_task(con: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
+# A suspension is "off with a deadline"; `enabled = 0` is "off, permanently".
+# Both are read here and kept as DISTINCT states all the way out to the CLI, so
+# neither the user nor an agent parsing the output has to guess which one is in
+# force. `effective_state` is the single derived answer:
+#
+#   disabled   -- enabled = 0. Permanent; no deadline; dominates, because a
+#                 lapsing suspension still leaves a disabled task switched off.
+#   suspended  -- a LIVE suspension row covers it (per-task or workspace-wide).
+#   active     -- neither applies, INCLUDING the case where a suspension exists
+#                 but has already lapsed. That is the automatic reactivation:
+#                 nothing rewrites the row, the comparison against now simply
+#                 stops being true.
+
+_SUSPENSION_SCOPE_GLOBAL = "global"
+_SUSPENSION_SCOPE_TASK = "task"
+
+
+def _parse_iso(value: str | None) -> datetime | None:
+    """Parse an ISO8601 UTC stamp to an aware datetime, or None when unusable."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).rstrip("Z"))
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+
+
+def humanize_seconds(total: int) -> str:
+    """Render a positive second count as a compact "2d 3h" / "45m" duration.
+
+    Used for the "time left" on a live suspension and the "ago" on a lapsed one.
+    Truncates rather than rounds, and never emits more than two units -- the
+    caller is announcing a deadline, not timing a benchmark.
+    """
+    total = max(0, int(total))
+    if total < 60:
+        return f"{total}s"
+    units = (("d", 86400), ("h", 3600), ("m", 60))
+    parts: list[str] = []
+    for label, size in units:
+        if total >= size:
+            parts.append(f"{total // size}{label}")
+            total %= size
+        if len(parts) == 2:
+            break
+    return " ".join(parts)
+
+
+def _evaluate_suspension(row: sqlite3.Row | dict, now: datetime) -> dict[str, Any]:
+    """Turn one stored suspension row into its evaluated, read-time form.
+
+    THIS is where expiry happens -- a comparison against ``now``, not a process
+    that wakes up. ``indefinite`` (no ``until``) never lapses; otherwise the row
+    is live while ``until`` is in the future and ``expired`` once it is not.
+    """
+    s = dict(row)
+    s["scope"] = _SUSPENSION_SCOPE_GLOBAL if s.get("task_id") is None else _SUSPENSION_SCOPE_TASK
+    until_dt = _parse_iso(s.get("until"))
+    s["indefinite"] = until_dt is None
+    if until_dt is None:
+        s["expired"] = False
+        s["remaining_seconds"] = None
+        s["remaining"] = None
+        s["lapsed_seconds"] = None
+        s["lapsed_ago"] = None
+    else:
+        delta = int((until_dt - now).total_seconds())
+        s["expired"] = delta <= 0
+        s["remaining_seconds"] = delta if delta > 0 else None
+        s["remaining"] = humanize_seconds(delta) if delta > 0 else None
+        s["lapsed_seconds"] = -delta if delta <= 0 else None
+        s["lapsed_ago"] = humanize_seconds(-delta) if delta <= 0 else None
+    s["live"] = not s["expired"]
+    return s
+
+
+def _load_suspension_index(con: sqlite3.Connection) -> dict[tuple[Any, Any], dict[str, Any]]:
+    """Load every suspension once, keyed by (workspace, task_id).
+
+    Keyed by both coordinates rather than filtered by workspace so a caller
+    listing ACROSS workspaces still resolves each task against its own
+    workspace's global switch. ``task_id`` is None for the workspace-wide row.
+
+    Fail-soft to {}: a DB predating the schedule_suspensions table (v46 and
+    earlier, before `gaia install` applies v47) must still list and show tasks
+    rather than error out.
+    """
+    try:
+        rows = con.execute(
+            "SELECT * FROM schedule_suspensions ORDER BY id"
+        ).fetchall()
+    except Exception:
+        return {}
+    now = datetime.now(tz=timezone.utc)
+    return {(r["workspace"], r["task_id"]): _evaluate_suspension(r, now) for r in rows}
+
+
+def _row_to_task(
+    con: sqlite3.Connection,
+    row: sqlite3.Row,
+    suspensions: dict[tuple[Any, Any], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     task = dict(row)
     try:
         task["spec"] = json.loads(task.get("schedule_spec") or "{}")
@@ -166,6 +268,22 @@ def _row_to_task(con: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         task["machines"] = [r["machine_name"] for r in ms]
     else:
         task["machines"] = []
+
+    if suspensions is None:
+        suspensions = _load_suspension_index(con)
+    ws = task.get("workspace")
+    own = suspensions.get((ws, task["id"]))
+    glob = suspensions.get((ws, None))
+    # A per-task suspension is reported in preference to the global switch when
+    # both are live, because it is the more specific decision the user made.
+    live = next((s for s in (own, glob) if s is not None and s["live"]), None)
+    task["suspension"] = live or own or glob
+    if not task.get("enabled"):
+        task["effective_state"] = "disabled"
+    elif live is not None:
+        task["effective_state"] = "suspended"
+    else:
+        task["effective_state"] = "active"
     return task
 
 
@@ -195,7 +313,8 @@ def list_scheduled_tasks(
             f"SELECT * FROM scheduled_tasks{where} ORDER BY created_at DESC, id DESC",
             tuple(params),
         ).fetchall()
-        return [_row_to_task(con, r) for r in rows]
+        susp = _load_suspension_index(con)
+        return [_row_to_task(con, r, susp) for r in rows]
     except Exception:
         return []
     finally:
@@ -227,11 +346,17 @@ def scheduled_tasks_for_machine(
     workspace: str | None = None,
     db_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Return ENABLED desired-state tasks that apply to ``machine_name``.
+    """Return ACTIVE desired-state tasks that apply to ``machine_name``.
 
     A task applies when machine_scope='all', or machine_scope='named' and
     ``machine_name`` is in its scheduled_task_machines. This is what a sync on a
     given machine, and the SessionStart reconciliation block, iterate over.
+
+    Excludes both ways a task can be switched off -- ``enabled = 0`` (permanent)
+    and a LIVE suspension (deadline not yet reached). That is what makes a
+    suspension desired state rather than a crontab edit: the machine only changes
+    when the user consents to `gaia schedule sync`, and when the suspension
+    lapses this set grows back on its own with no write anywhere.
     Fail-soft: returns [] on any error.
     """
     try:
@@ -249,11 +374,91 @@ def scheduled_tasks_for_machine(
             f"SELECT * FROM scheduled_tasks{where} ORDER BY name",
             tuple(params),
         ).fetchall()
+        susp = _load_suspension_index(con)
         out: list[dict[str, Any]] = []
         for r in rows:
-            task = _row_to_task(con, r)
+            task = _row_to_task(con, r, susp)
+            if task.get("effective_state") != "active":
+                continue
             if task.get("machine_scope") == "all" or machine_name in task.get("machines", []):
                 out.append(task)
+        return out
+    except Exception:
+        return []
+    finally:
+        con.close()
+
+
+def list_schedule_suspensions(
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return stored suspensions, expiry-evaluated, global scope first.
+
+    Each row carries the derived fields ``scope`` (global|task), ``indefinite``,
+    ``live`` / ``expired``, ``remaining`` / ``lapsed_ago``, plus ``task_name``
+    for a per-task row. A row with ``expired`` true is a LAPSE that has not been
+    acknowledged: the tasks it covered are active again, and it stays here until
+    `gaia schedule resume` clears it.
+
+    ``resumed_names`` lists the tasks a lapse actually brought back, and is
+    deliberately narrower than ``covered_names``: a task that is separately
+    ``disabled``, or that is still held by ANOTHER live suspension, is excluded.
+    Announcing either one as "active again" would be a false statement about
+    what is running -- the exact thing this feature exists to prevent.
+
+    Fail-soft: returns [] when the table does not exist yet or on any error.
+    """
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return []
+    try:
+        clauses = []
+        params: list[Any] = []
+        if workspace is not None:
+            clauses.append("workspace IS ?")
+            params.append(workspace)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = con.execute(
+            f"SELECT * FROM schedule_suspensions{where} "
+            "ORDER BY (task_id IS NOT NULL), task_id, id",
+            tuple(params),
+        ).fetchall()
+    except Exception:
+        return []
+
+    try:
+        now = datetime.now(tz=timezone.utc)
+        index = _load_suspension_index(con)
+
+        def _still_held(task_id: Any, ws: Any, excluding_id: int) -> bool:
+            """True when another LIVE suspension still covers this task."""
+            for other in (index.get((ws, task_id)), index.get((ws, None))):
+                if other is None or int(other["id"]) == excluding_id:
+                    continue
+                if other["live"]:
+                    return True
+            return False
+
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            s = _evaluate_suspension(r, now)
+            covered = con.execute(
+                "SELECT id, name, enabled, workspace FROM scheduled_tasks WHERE id = ?"
+                if s["task_id"] is not None else
+                "SELECT id, name, enabled, workspace FROM scheduled_tasks "
+                "WHERE workspace IS ? ORDER BY name",
+                (s["task_id"],) if s["task_id"] is not None else (s["workspace"],),
+            ).fetchall()
+            s["task_name"] = covered[0]["name"] if (s["task_id"] is not None and covered) else None
+            s["covered_names"] = [c["name"] for c in covered]
+            s["resumed_names"] = [
+                c["name"] for c in covered
+                if c["enabled"]
+                and not _still_held(c["id"], c["workspace"], int(s["id"]))
+            ]
+            out.append(s)
         return out
     except Exception:
         return []
@@ -282,10 +487,23 @@ def get_scheduled_task_state(
 
 
 # ---------------------------------------------------------------------------
-# Duration / date parsing for --since / --until
+# Duration / date parsing for --since / --until / --for
 # ---------------------------------------------------------------------------
 
 _DURATION_RE = re.compile(r"^\s*(\d+)\s*([smhdw])\s*$", re.IGNORECASE)
+
+_DURATION_DELTAS = {
+    "s": lambda n: timedelta(seconds=n),
+    "m": lambda n: timedelta(minutes=n),
+    "h": lambda n: timedelta(hours=n),
+    "d": lambda n: timedelta(days=n),
+    "w": lambda n: timedelta(weeks=n),
+}
+
+
+def is_duration(value: str) -> bool:
+    """True when ``value`` is a bare duration ("8h") rather than a date."""
+    return bool(_DURATION_RE.match(value or ""))
 
 
 def parse_when(value: str) -> str:
@@ -307,15 +525,7 @@ def parse_when(value: str) -> str:
 
     m = _DURATION_RE.match(s)
     if m:
-        amount = int(m.group(1))
-        unit = m.group(2).lower()
-        delta = {
-            "s": timedelta(seconds=amount),
-            "m": timedelta(minutes=amount),
-            "h": timedelta(hours=amount),
-            "d": timedelta(days=amount),
-            "w": timedelta(weeks=amount),
-        }[unit]
+        delta = _DURATION_DELTAS[m.group(2).lower()](int(m.group(1)))
         anchor = datetime.now(tz=timezone.utc) - delta
         return anchor.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -335,6 +545,46 @@ def parse_when(value: str) -> str:
             f"could not parse '{value}' as duration (e.g. '24h', '7d') "
             f"or date (YYYY-MM-DD / YYYY-MM-DDTHH:MM:SS)"
         ) from exc
+
+
+def parse_deadline(value: str) -> str:
+    """Normalize a suspension deadline to an ISO8601 UTC string.
+
+    The FORWARD-reading sibling of ``parse_when``: same accepted grammar, same
+    output shape, opposite sign on the duration. ``--since 24h`` anchors in the
+    past; ``--for 8h`` sets a deadline 8 hours from now. Kept as a separate entry
+    point rather than a flag on parse_when so a caller cannot get the direction
+    wrong by forgetting an argument.
+
+      * Duration: ``"8h"``, ``"3d"``, ``"90m"``, ``"2w"`` -- now PLUS N units.
+      * Date-only:   ``"2026-09-01"`` -> ``2026-09-01T00:00:00Z``.
+      * Datetime:    ``"2026-09-01T18:00:00"`` (Z optional).
+
+    Raises:
+        ValueError: when the input matches none of the above.
+    """
+    if not value or not value.strip():
+        raise ValueError("empty deadline value")
+    s = value.strip()
+
+    m = _DURATION_RE.match(s)
+    if m:
+        delta = _DURATION_DELTAS[m.group(2).lower()](int(m.group(1)))
+        return (datetime.now(tz=timezone.utc) + delta).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        return f"{s}T00:00:00Z"
+
+    try:
+        dt = datetime.fromisoformat(s.rstrip("Z"))
+    except ValueError as exc:
+        raise ValueError(
+            f"could not parse '{value}' as duration (e.g. '8h', '3d') "
+            f"or date (YYYY-MM-DD / YYYY-MM-DDTHH:MM:SS)"
+        ) from exc
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------

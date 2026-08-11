@@ -256,7 +256,7 @@ if __name__ == "__main__":
         # whatever the DB already holds, it does not scan.
 
         # Build the SessionStart manifest (Phase 4). Combines the Environment
-        # block, projects index, agentic-loop resume, and workspace memory into
+        # block, projects index, contract index, and workspace memory into
         # a one-shot additionalContext payload (pending approvals are no longer
         # surfaced). Fully fail-safe -- an empty manifest just
         # means no hookSpecificOutput in the response, which Claude Code

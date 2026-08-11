@@ -494,7 +494,7 @@ _COMMIT_TOKEN_PATTERN = re.compile(COMMIT_TOKEN_PATTERN_TEXT)
 #
 #   dict-valued     agent_status / evidence_report (7201 / 7133 dicts, no
 #                   counterexample), consolidation_report, approval_request,
-#                   failure_report, context_consumption, loop_state
+#                   failure_report, context_consumption
 #   memory_delta    dict -- anchored to its consumer,
 #                   ``modules.agents.response_contract._extract_memory_delta``,
 #                   which requires an object carrying ``version`` +
@@ -559,14 +559,13 @@ _FIELDS_TYPED_BY_A_DEDICATED_CODE: Tuple[str, ...] = (
 # here so the decision needs no re-measurement: user_facing_summary str (236,
 # with 1 null), update_contracts list (282, 1 dict, 5 null),
 # memorialize_suggestions list (27, 1 null), memory_suggestions list (12, 1
-# null), context_consumption dict (4, 2 null), loop_state dict (3),
+# null), context_consumption dict (4, 2 null),
 # memory_delta null only (its consumer ``_extract_memory_delta`` requires an
 # object carrying version + proposals), rollback_executed null only (its
 # consumer returns ``str(val)``, so a boolean and a sentence are both real).
 # ---------------------------------------------------------------------------
 ADVISORY_UNTYPED_FIELDS: Tuple[str, ...] = (
     "context_consumption",
-    "loop_state",
     "memorialize_suggestions",
     "memory_delta",
     "memory_suggestions",

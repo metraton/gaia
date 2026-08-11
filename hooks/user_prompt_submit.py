@@ -216,10 +216,10 @@ if __name__ == "__main__":
         # Build sparse additionalContext. DB-backed routing remains available
         # to diagnostic tools but is no longer injected into each user turn.
         # Identity now lives in agents/gaia-orchestrator.md (agent definition).
-        # Agentic-loop resume and pending approvals moved to SessionStart
-        # via session_manifest (Phase 4) -- they are session-scoped, not
-        # turn-scoped, so re-evaluating on every prompt added noise without
-        # changing the answer.
+        # Pending approvals moved to SessionStart via session_manifest
+        # (Phase 4) -- they are session-scoped, not turn-scoped, so
+        # re-evaluating on every prompt added noise without changing the
+        # answer.
         context_parts = []
 
         # First-time welcome: the marker does not exist yet because

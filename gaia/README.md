@@ -108,7 +108,19 @@ first use with mode 0700.
 
 | Variable        | Default        | Purpose                                |
 |-----------------|----------------|----------------------------------------|
-| `GAIA_DATA_DIR` | `~/.gaia`      | Override the root data directory        |
+| `GAIA_DATA_DIR` | `~/.gaia`      | Override the root data directory (ROOT-scoped: moves the database and every sibling directory) |
+| `GAIA_DB`       | `<root>/gaia.db` | Override the database file alone (FILE-scoped: leaves scratch, evidence and logs under the root) |
+
+Precedence for the database file, highest first: **`GAIA_DB`**, then
+**`GAIA_DATA_DIR`**, then `~/.gaia/gaia.db`. `GAIA_DB` outranks `GAIA_DATA_DIR`
+because it is the more specific of the two, and because every other
+database-path resolver in the tree already ranks it that way
+(`scripts/bootstrap_database.py`, where the variable originated;
+`bin/cli/doctor.py`; `bin/cli/_converge.py`; `bin/gaia`;
+`bin/validate-sandbox.sh`; and the CI workflow, which sets `GAIA_DB` alone).
+Setting both at *different* places prints a warning to stderr naming which one
+won; setting both at the same file is the established isolation idiom and stays
+silent. The ladder is pinned by `tests/paths/test_db_path_precedence.py`.
 
 ## Standalone use
 

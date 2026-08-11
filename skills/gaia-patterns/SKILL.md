@@ -17,9 +17,20 @@ Construction patterns for building Gaia components. Every component type follows
    into the subagent)
    |
 3. Pre-Tool Hook (pre_tool_use.py)
-   +-- Validate the Task dispatch, load skills from frontmatter
+   +-- Validate the Task/Agent dispatch (agent exists, T3 scan of the
+       prompt via TaskValidator) -- no frontmatter read, no skill load
    +-- Birth the agent_contract_handoffs row (identity, kernel data,
        dispatch_project resolved from cwd)
+   |
+   (for a dispatched SUBAGENT only: the HOST -- Claude Code, not this
+   hook or any other Gaia hook -- separately reads the target agent's
+   `.md` frontmatter and preloads its `skills:` list before the first
+   turn. `hooks/hooks.json` carries no `Skill` matcher, so a
+   `Skill(...)` call never reaches PreToolUse either -- see
+   `artifact_skill_reminder.py`. The primary agent has no equivalent:
+   Claude Code's own docs list only "system prompt, tool restrictions,
+   and model" as inherited on the main thread, which is why
+   `gaia-orchestrator.md`'s frontmatter carries no `skills:` field.)
    |
 4. SubagentStart hook claims the born row and injects the KERNEL:
    "# Your Contract" (incl. project + can_read/can_write menu),
@@ -43,7 +54,7 @@ hooks/pre_tool_use.py          -- reads stdin, calls adapter, writes stdout
   -> adapters/claude_code.py   -- parses event, dispatches to modules
     -> modules/security/*      -- blocked_commands, mutative_verbs
     -> modules/context/*       -- context_injector, contracts_loader
-    -> modules/agents/*        -- contract_validator, skill_injection
+    -> modules/agents/*        -- dispatch_binding, artifact_skill_map
 ```
 
 **To add a new module:** Write module in `modules/<package>/`, import and call it from the relevant adapter method. Modules receive parsed context and return results; they never read stdin or write stdout.
@@ -64,12 +75,16 @@ skills:
   - security-tiers        # always second
   - command-execution     # if agent runs commands
   - domain-skill          # agent's domain patterns
+cli:
+  - "gaia <domain-verb> ..."   # optional; appends a line to "# Your CLI"
 ---
 ```
 
 **Identity** (1-2 paragraphs): domain, output format. **Scope**: CAN DO / CANNOT DO -> DELEGATE table. **Domain Errors**: agent-specific errors only.
 
-Agents get instantiated as: identity (.md) + skills (injected from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # What I know about you, rendered from the born row) + orchestrator request. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand -- the verb that reaches them, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
+`skills:` and `cli:` are read by two different parties, not one -- this is why the example shows both. `skills:` is preloaded by the HOST (Claude Code), not by any Gaia hook, and only for a dispatched SUBAGENT: the primary agent (`gaia-orchestrator.md`) carries no `skills:` field, because Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread. `cli:` is the one frontmatter field Gaia itself reads, at subagent birth (`context/kernel_builder.py::_agent_cli_extras`): its lines are appended verbatim to the "# Your CLI" kernel block. It is optional and no shipped agent declares it yet -- shown here so the two fields' different owners (host vs. Gaia) are visible side by side, not to imply it is required.
+
+A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by the host from frontmatter) + dispatch kernel (# Your Contract / # Your CLI / # What I know about you, rendered from the born row) + orchestrator request. The primary agent skips the skills step entirely. Project context is not preloaded: the kernel's `can_read` (from `agent_contract_permissions`) is the menu of `project_context_contracts` sections the agent pulls on demand -- the verb that reaches them, and the same-named sibling that does not, are in `agent-protocol/read-map.md`.
 
 ## Routing Patterns
 

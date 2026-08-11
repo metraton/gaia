@@ -16,8 +16,8 @@ hook gate validate against. This module owns only fence extraction (the one
 migration-only piece the core deliberately does not do, since it takes an
 already-parsed dict, never raw text); it does not re-implement shape
 validation. ``validate()`` / ``validate_response_contract()`` add only the
-checks the form layer deliberately does not own (approval-request and
-loop-state blocking) on top of that shared core.
+check the form layer deliberately does not own (approval-request blocking)
+on top of that shared core.
 
 Both fence regexes require the closing ``` `` `` to start its own line
 (preceded by a real newline) and be followed only by whitespace/end-of-string.
@@ -38,7 +38,6 @@ Provides:
                         already-extracted command sequences
     - extract_plan_status_from_output(): Extract agent_state string
     - extract_exit_code_from_output(): Derive exit code from PLAN_STATUS
-    - parse_loop_state(): Parse loop_state clause (blocking check on COMPLETE)
     - parse_update_contracts(): Parse update_contracts array clause
     - parse_rollback_executed(): Parse rollback_executed clause (advisory)
     - parse_context_consumption(): Parse context_consumption clause (advisory)
@@ -65,7 +64,6 @@ from typing import Any, Dict, List, Optional
 # locally re-implemented shape check. See gaia/contract/validator.py.
 from gaia.contract.validator import (
     CANONICAL_REPAIR_MESSAGE,
-    VALID_PLAN_STATUSES as _FORM_VALID_PLAN_STATUSES,
     FormErrorCode,
     validate_form,
 )
@@ -283,7 +281,6 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
     by design (see gaia/contract/validator.py's "NO TASK CONTEXT" design
     note):
     - approval_request.verification blocking check
-    - loop_state blocking check (T2.3)
 
     Args:
         contract: Parsed dict from parse_contract(), or None when no fenced
@@ -304,16 +301,6 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
             if token not in all_missing:
                 all_missing.append(token)
 
-    # Determine effective status for the additive, non-shape checks below.
-    # (validate_form already rejected an out-of-enum status via PLAN_STATUS;
-    # a valid-shape status is safe to resolve the same way the core does.)
-    effective_status = ""
-    agent_status = contract.get("agent_status") if isinstance(contract, dict) else None
-    if isinstance(agent_status, dict):
-        effective_status = _resolve_status(agent_status)
-        if effective_status not in _FORM_VALID_PLAN_STATUSES:
-            effective_status = ""
-
     # approval_request.verification must be present (blocking).
     # approval_request.rollback is advisory only (non-blocking): the hook
     # hardcodes rollback_hint=None by design (bash_validator.py
@@ -329,11 +316,6 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
             )
         if not approval_req.get("verification"):
             all_missing.append("APPROVAL_REQUEST_VERIFICATION_REQUIRED")
-
-    # Loop-state blocking check (T2.3)
-    loop_anomaly = _check_loop_state_blocking(contract, effective_status) if isinstance(contract, dict) else None
-    if loop_anomaly:
-        all_missing.append(loop_anomaly)
 
     if all_missing:
         fields_str = ", ".join(all_missing)
@@ -682,88 +664,6 @@ def parse_update_contracts(contract: dict) -> List[Dict[str, Any]]:
 
         results.append(entry)
     return results
-
-
-def parse_loop_state(contract: dict) -> Optional[Dict[str, Any]]:
-    """Parse the ``loop_state`` clause from a contract dict.
-
-    Expected shape::
-
-        { "iteration": int, "max_iterations": int, "metric": float|null, "threshold": float|null }
-
-    Returns the parsed dict, or None when the clause is absent or malformed.
-    """
-    raw = contract.get("loop_state")
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        logger.warning("loop_state: expected object, got %s", type(raw).__name__)
-        return None
-
-    # Coerce numeric fields -- allow None/null for metric/threshold
-    # iteration is required; return None when the key is absent entirely
-    if "iteration" not in raw:
-        logger.warning("loop_state: missing required field 'iteration'")
-        return None
-    try:
-        iteration = int(raw["iteration"]) if raw.get("iteration") is not None else None
-        max_iterations = int(raw["max_iterations"]) if raw.get("max_iterations") is not None else None
-    except (TypeError, ValueError, KeyError) as exc:
-        logger.warning("loop_state: could not parse numeric fields: %s", exc)
-        return None
-
-    metric_raw = raw.get("metric")
-    threshold_raw = raw.get("threshold")
-
-    try:
-        metric = float(metric_raw) if metric_raw is not None else None
-        threshold = float(threshold_raw) if threshold_raw is not None else None
-    except (TypeError, ValueError):
-        metric = None
-        threshold = None
-
-    return {
-        "iteration": iteration,
-        "max_iterations": max_iterations,
-        "metric": metric,
-        "threshold": threshold,
-    }
-
-
-def _check_loop_state_blocking(contract: dict, effective_status: str) -> Optional[str]:
-    """Check loop_state blocking invariant (T2.3).
-
-    Blocking condition: agent_state=COMPLETE AND iteration < max_iterations
-    AND metric is not None AND metric < threshold.
-
-    Returns an error token string if the check fails, None otherwise.
-    """
-    if effective_status != "COMPLETE":
-        return None
-
-    loop = parse_loop_state(contract)
-    if loop is None:
-        return None  # No loop_state clause -- check does not apply
-
-    iteration = loop.get("iteration")
-    max_iterations = loop.get("max_iterations")
-    metric = loop.get("metric")
-    threshold = loop.get("threshold")
-
-    if (
-        iteration is not None
-        and max_iterations is not None
-        and metric is not None
-        and threshold is not None
-        and iteration < max_iterations
-        and metric < threshold
-    ):
-        return (
-            f"LOOP_STATE_INCOMPLETE:"
-            f"iteration={iteration}<max={max_iterations},"
-            f"metric={metric}<threshold={threshold}"
-        )
-    return None
 
 
 def parse_rollback_executed(contract: dict) -> Optional[str]:

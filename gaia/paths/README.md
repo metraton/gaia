@@ -25,7 +25,7 @@ create_snapshot(db_path(), snapshot_dir(), retain=5, prefix="uninstall")
 
 | Module      | Purpose                                                        |
 |-------------|----------------------------------------------------------------|
-| `resolver`  | Pure path-resolution functions (no I/O). Reads `GAIA_DATA_DIR`.|
+| `resolver`  | Pure path-resolution functions (no I/O). Reads `GAIA_DATA_DIR`; `db_path()` also honors `GAIA_DB`, which outranks it for the database file alone. |
 | `layout`    | `ensure_layout()` -- materializes the directory tree on first use. |
 | `snapshot`  | Shared "copy DB to gzip snapshot + rotate to last N" helper. One implementation used by both `gaia uninstall` (backup-by-default) and the SessionStart auto-backup (throttled 24h). Copy-based -- never moves or deletes the live DB. |
 | `__init__`  | Re-exports the public API and the `workspace_id` alias.        |

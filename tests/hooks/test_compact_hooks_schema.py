@@ -116,23 +116,12 @@ class TestPreCompactSchemaValid:
             "no runtime consumer for this event."
         )
 
-    def test_active_loop_does_not_change_the_shape(self, tmp_path):
-        """Even with an active agentic-loop state file present (which used to
-        populate additionalContext), the response must stay schema-valid and
-        must not resurrect the invalid hookSpecificOutput shape."""
-        state_path = tmp_path / "state.json"
-        state_path.write_text(
-            json.dumps(
-                {
-                    "eval_command": "pytest",
-                    "metric": "pass_rate",
-                    "threshold": 1.0,
-                    "iteration": 3,
-                    "status": "running",
-                }
-            )
-        )
-        payload = {"hook_event_name": "PreCompact", "session_id": "sess-precompact-loop"}
+    def test_state_file_in_cwd_does_not_change_the_shape(self, tmp_path):
+        """The hook reads nothing from cwd, so no file there can alter its
+        response. Guards against a future carrier being wired back into
+        PreCompact, where the invalid hookSpecificOutput shape would return."""
+        (tmp_path / "state.json").write_text(json.dumps({"iteration": 3}))
+        payload = {"hook_event_name": "PreCompact", "session_id": "sess-precompact-state"}
         response = _run_hook(PRE_COMPACT_PATH, payload, tmp_path)
         _assert_schema_valid(response)
         assert "hookSpecificOutput" not in response

@@ -1,6 +1,6 @@
 ---
 name: scheduled-task
-description: Use when the user wants something to run routinely / on a schedule rather than once now -- "tarea programada", "rutinariamente", "cada mañana", "cada N horas", "todas las noches", "schedule", "cron". Covers mounting, structuring, and running an unattended headless task that reports back, plus consuming its reports. NOT for a live in-session agentic loop (that is agentic-loop).
+description: Use when the user wants something to run routinely / on a schedule rather than once now -- "tarea programada", "rutinariamente", "cada mañana", "cada N horas", "todas las noches", "schedule", "cron". Covers mounting, structuring, and running an unattended headless task that reports back, plus consuming its reports. NOT for work that runs once now in this session.
 ---
 
 # Scheduled Task
@@ -9,8 +9,8 @@ A scheduled task is a Gaia task that runs **unattended on a recurring schedule**
 via the OS crontab, executes `claude -p` headless, and leaves the user a report
 in the notifications inbox instead of asking anything mid-run. This skill covers
 the three flows of its lifecycle: creating one, executing it headless, and
-consuming what it reports. For a task that iterates in a live session toward a
-metric, that is `agentic-loop`, not this.
+consuming what it reports. Work the user wants done once, now, in this session
+is an ordinary dispatch, not a scheduled task.
 
 The load-bearing constraint that shapes everything below: a headless run has no
 user to answer a prompt. So a scheduled task must complete everything it can
@@ -24,8 +24,7 @@ prompt, but Gaia still blocks/accumulates T3 mutations exactly the same.
 
 Trigger when the user asks for routine/scheduled execution: "cada noche corre
 X", "rutinariamente revisa Y", "cada 6 horas", "prográmame Z". If they want it
-run once now, or iterated live toward a threshold in this session, this is the
-wrong skill (one-shot dispatch / `agentic-loop` respectively).
+run once now, this is the wrong skill -- that is an ordinary one-shot dispatch.
 
 ## Flow A -- Creation (mount the task)
 
@@ -131,6 +130,42 @@ on demand rather than being interrupted:
 4. **Clear** -- `gaia notifications ack <id>` (or `ack --all`) marks reports
    seen so the counter and list go quiet.
 
+## Flow D -- Pausing (`disable`/`enable` vs `suspend`/`resume`)
+
+A task's crontab entry (Flow A) and its `gaia schedule` row are two different
+things: `gaia schedule` is a separate, DB-backed desired-state registry
+(`register`/`list`/`show`/`status`/`enable`/`disable`/`suspend`/`resume`/
+`remove`/`sync`) that a task only enters if it is **also** registered into it
+(`gaia schedule register --name <task> --cron '...'|--every <interval>`, a T0
+alternative to hand-editing `crontab.template`). A name never registered there
+makes `gaia schedule suspend/disable <name>` answer "no scheduled task named
+...". Once a task IS a `gaia schedule` row, two ways to stop it exist and they
+are NOT interchangeable:
+
+- **`gaia schedule disable <name>`** -- permanent, no deadline. Off until an
+  explicit `gaia schedule enable <name>` turns it back on. Silent afterward:
+  nothing announces it again.
+- **`gaia schedule suspend (<name>|--all) (--for <duration>|--until <date>|
+  --indefinitely) [--reason TEXT]`** -- off WITH an expiry. When the deadline
+  passes the task is active again on its own -- a comparison made when the row
+  is read, no daemon involved -- and the next SessionStart reports the lapse
+  until it is acknowledged. `--indefinitely` is still NOT `disable`: it also
+  carries no deadline, but it keeps announcing itself at every SessionStart
+  until resumed, where `disable` stays silent. `--all` is the explicit
+  workspace-wide switch; a bare `suspend`/`resume` naming neither a task nor
+  `--all` is refused rather than assumed.
+- **`gaia schedule resume (<name>|--all)`** -- lifts a live suspension early,
+  or acknowledges a lapsed one so the SessionStart notice stops repeating.
+  Never reinstalls anything on the machine.
+
+All four verbs are **T0**: reversible desired-state bookkeeping in gaia.db,
+never touching the machine's crontab. Only `gaia schedule sync` (T3)
+materializes desired state onto a machine -- suspending or disabling changes
+nothing there until sync runs (or runs again, to remove what is now off).
+
+See `reference.md` for the full `gaia schedule` verb surface, tiers, and a
+live-verified worked example.
+
 ## Anti-patterns
 
 - **Asking the user from a headless run.** There is nobody there. Forbidding
@@ -145,5 +180,11 @@ on demand rather than being interrupted:
   collapses. Never add `--no-session-persistence`.
 - **Un-staggered schedules.** Two tasks in the same minute contend for resources
   and interleave their logs; offset every entry.
-- **Treating this as a live loop.** Iterating toward a metric in-session is
-  `agentic-loop`; scheduling is OS crontab + headless. Do not conflate them.
+- **Treating this as in-session work.** Scheduling is OS crontab + headless,
+  with no user present to answer anything. Work that runs now, with the user
+  there, is an ordinary dispatch. Do not conflate them.
+- **Reaching for `disable` to pause something temporarily, or for `suspend
+  --indefinitely` expecting silence.** `disable` has no deadline and never
+  announces itself again; every `suspend`, `--indefinitely` included, is
+  repeated at each SessionStart until `gaia schedule resume` acknowledges it.
+  Pick the verb for the actual intent, not the one that happens to compile.

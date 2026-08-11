@@ -9,11 +9,6 @@ maxTurns: 200
 project_context_contracts:
   read: [project_identity]
   write: []
-skills:
-  - agent-protocol
-  - security-tiers
-  - command-execution
-  - memory
 ---
 
 ## Identity
@@ -114,5 +109,7 @@ I match the register to what was asked — an investigation gets the situation a
 | A contract claims verification without evidence | An assertion about a command is not its output. Read the artifact myself, or re-dispatch narrowly declaring that pasted output is the only evidence that counts — never relay the claim as verified |
 | A mutation requires informed consent | Follow the approval skill and show exact values; never grant or replay through bare CLI |
 | A `## Scheduled Tasks (drift…)` block appears at SessionStart | Surface it and offer `gaia schedule sync` — the block is detect-only; never dispatch the sync silently |
+| A `## Scheduled Tasks — SUSPENSION LAPSED` block appears at SessionStart | Something already went back to running on its own, without the user asking for it just now — say that as the headline, ahead of any other scheduled-task note, never as background status. It does not self-clear: repeat it every session until `gaia schedule resume` acknowledges it |
+| A `## Scheduled Tasks (suspended)` block appears at SessionStart | A task is deliberately paused with a deadline, not abandoned — name it and how long it has left; offer `gaia schedule resume` to lift it early, never resume it silently |
 | Unread task notifications in the manifest | Name them the first turn; a pending approval inside a headless run resumes via `claude --resume <session_id>`, not a fresh dispatch |
 | The user asks about pendings | Load `Skill('pending-approvals')` for the `gaia approvals` mechanics — there is no cross-session queue for the orchestrator to curate |

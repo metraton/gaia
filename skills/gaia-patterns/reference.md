@@ -1,6 +1,6 @@
 # Gaia Patterns -- Reference
 
-Package: `@jaguilar87/gaia` v5.1.1 | Node >=18 | Python >=3.9
+Package: `@jaguilar87/gaia` | Node >=18 | Python >=3.11
 
 ---
 
@@ -22,7 +22,7 @@ Package: `@jaguilar87/gaia` v5.1.1 | Node >=18 | Python >=3.9
 | `hooks/post_compact.py` | PostCompact | (all) |
 | `hooks/elicitation_result.py` | ElicitationResult | (all) |
 
-SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest (Environment, Active Agentic Loop). Pending approvals are not part of this manifest -- approvals are in-loop and single-session, with no cross-session resurfacing (no `[ACTIONABLE]` block, no per-turn verified-pendings feed); see `pending-approvals` skill. UserPromptSubmit emits only sparse notices such as the first-run welcome and unread-notification counter; routing remains DB-backed and callable for diagnostics, but is not injected into every turn. SubagentStart claims the born dispatch row and injects the kernel into every dispatched agent: `# Your Contract` (identity, goal, role/surface, `project`, `can_read`/`can_write`), `# Your CLI`, and `# What I know about you` (durable memory anchor slugs, detail one `gaia memory show <slug>` away). Project context, episodic memory indexes, and surface routing are NOT preloaded -- the agent pulls what it needs on demand, within its `can_read` menu, with the verbs in `agent-protocol/read-map.md`.
+SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest: Environment, then `Project Context — Projects` (scanned workspaces, each with its projects underneath), `Project Context — Contract Index`, unread task notifications, scheduled-task drift, scheduled-task suspensions, and workspace memory (digest + anchors). Pending approvals are not part of this manifest -- approvals are in-loop and single-session, with no cross-session resurfacing (no `[ACTIONABLE]` block, no per-turn verified-pendings feed); see `pending-approvals` skill. UserPromptSubmit emits only sparse notices such as the first-run welcome and unread-notification counter; routing remains DB-backed and callable for diagnostics, but is not injected into every turn. SubagentStart claims the born dispatch row and injects the kernel into every dispatched agent: `# Your Contract` (identity, goal, role/surface, `project`, `can_read`/`can_write`), `# Your CLI`, and `# What I know about you` (durable memory anchor slugs, detail one `gaia memory show <slug>` away). Project context, episodic memory indexes, and surface routing are NOT preloaded -- the agent pulls what it needs on demand, within its `can_read` menu, with the verbs in `agent-protocol/read-map.md`.
 
 ### Hook Modules (13 packages)
 

@@ -1519,12 +1519,19 @@ def ack_all_task_notifications(
 # ---------------------------------------------------------------------------
 #
 # The desired-state registry (see the scheduled_tasks table and the
-# `scheduled-task` skill). Writing desired state (upsert / enable / disable) is
-# reversible local bookkeeping -- NOT a machine mutation -- so, like briefs /
-# plans / task_notifications, it carries no agent_permissions gate and the `gaia
-# schedule register|list|show|status|enable|disable` CLI classifies T0 via
-# COMMAND_SUBCOMMAND_TIER_EXCEPTIONS. Only `gaia schedule sync` (materialize into
-# the OS scheduler) and `gaia schedule remove` (irreversible deletion) are T3.
+# `scheduled-task` skill). Writing desired state (upsert / enable / disable /
+# suspend / resume) is reversible local bookkeeping -- NOT a machine mutation --
+# so, like briefs / plans / task_notifications, it carries no agent_permissions
+# gate and the `gaia schedule register|list|show|status|enable|disable|suspend|
+# resume` CLI classifies T0 via COMMAND_SUBCOMMAND_TIER_EXCEPTIONS. Only `gaia
+# schedule sync` (materialize into the OS scheduler) and `gaia schedule remove`
+# (irreversible deletion) are T3.
+#
+# Two DISTINCT ways a task is switched off, deliberately not collapsed:
+#   enabled = 0                -- permanent, no deadline (enable/disable).
+#   a schedule_suspensions row -- with a deadline that reactivates on its own,
+#                                 or indefinite (suspend/resume). Expiry is
+#                                 evaluated when read, never by a daemon.
 # Reads live in gaia.store.reader.
 
 def upsert_scheduled_task(
@@ -1655,7 +1662,7 @@ def delete_scheduled_task(
     workspace: str | None = None,
     db_path: Path | None = None,
 ) -> dict[str, Any]:
-    """Delete a desired-state task row (T3). Cascades to machines/state rows.
+    """Delete a desired-state task row (T3). Cascades to machines/state/suspension rows.
 
     Irreversible in the registry -- the reversible path is
     ``set_scheduled_task_enabled(name, False)``. Does NOT remove the entry from
@@ -1673,6 +1680,133 @@ def delete_scheduled_task(
         con.execute("DELETE FROM scheduled_tasks WHERE id = ?", (int(row["id"]),))
         con.commit()
         return {"status": "ok", "name": name, "id": int(row["id"])}
+    finally:
+        con.close()
+
+
+def suspend_scheduled_tasks(
+    *,
+    name: str | None = None,
+    until: str | None = None,
+    reason: str | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Suspend one task (``name``) or the whole workspace (``name=None``).
+
+    ``until`` is an ISO8601 UTC instant (build it with
+    ``reader.parse_deadline``); None means INDEFINITE -- suspended with no
+    deadline, which never lapses on its own. A suspension REPLACES any existing
+    one at the same scope, so re-suspending extends or shortens the deadline
+    instead of stacking rows.
+
+    Reversible desired-state bookkeeping (T0), exactly like
+    ``set_scheduled_task_enabled``: it records that the task should not run and
+    touches no OS scheduler. The machine changes only when the user consents to
+    `gaia schedule sync`.
+
+    Returns {"status": ok|not_found, "scope": global|task, ...}.
+    """
+    con = _connect(db_path)
+    try:
+        task_id = None
+        if name is not None:
+            row = con.execute(
+                "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
+                (name, workspace),
+            ).fetchone()
+            if row is None:
+                return {"status": "not_found", "name": name}
+            task_id = int(row["id"])
+
+        if task_id is None:
+            con.execute(
+                "DELETE FROM schedule_suspensions WHERE workspace IS ? AND task_id IS NULL",
+                (workspace,),
+            )
+        else:
+            con.execute(
+                "DELETE FROM schedule_suspensions WHERE task_id = ?", (task_id,)
+            )
+        now = _now_iso()
+        con.execute(
+            "INSERT INTO schedule_suspensions "
+            "(workspace, task_id, suspended_at, until, reason) VALUES (?, ?, ?, ?, ?)",
+            (workspace, task_id, now, until, reason),
+        )
+        con.commit()
+        return {
+            "status": "ok",
+            "scope": "task" if task_id is not None else "global",
+            "name": name,
+            "workspace": workspace,
+            "suspended_at": now,
+            "until": until,
+            "indefinite": until is None,
+            "reason": reason,
+        }
+    finally:
+        con.close()
+
+
+def resume_scheduled_tasks(
+    *,
+    name: str | None = None,
+    workspace: str | None = None,
+    db_path: Path | None = None,
+) -> dict[str, Any]:
+    """Clear the suspension on one task (``name``) or the workspace switch.
+
+    Serves both endings a suspension can have, because the stored effect is the
+    same either way: lifting a LIVE suspension early, and acknowledging a LAPSED
+    one whose deadline already passed (the tasks are running again; this is the
+    user confirming they saw it, which is what stops the SessionStart notice).
+    The returned ``was_expired`` says which of the two happened.
+
+    Returns {"status": ok|not_found|not_suspended, ...}. ``not_suspended``
+    distinguishes "no such suspension to clear" from "no such task".
+    """
+    con = _connect(db_path)
+    try:
+        task_id = None
+        if name is not None:
+            row = con.execute(
+                "SELECT id FROM scheduled_tasks WHERE name = ? AND workspace IS ?",
+                (name, workspace),
+            ).fetchone()
+            if row is None:
+                return {"status": "not_found", "name": name}
+            task_id = int(row["id"])
+
+        if task_id is None:
+            existing = con.execute(
+                "SELECT * FROM schedule_suspensions "
+                "WHERE workspace IS ? AND task_id IS NULL",
+                (workspace,),
+            ).fetchone()
+        else:
+            existing = con.execute(
+                "SELECT * FROM schedule_suspensions WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        if existing is None:
+            return {
+                "status": "not_suspended",
+                "scope": "task" if task_id is not None else "global",
+                "name": name,
+            }
+
+        until = existing["until"]
+        was_expired = bool(until) and until <= _now_iso()
+        con.execute("DELETE FROM schedule_suspensions WHERE id = ?", (int(existing["id"]),))
+        con.commit()
+        return {
+            "status": "ok",
+            "scope": "task" if task_id is not None else "global",
+            "name": name,
+            "workspace": workspace,
+            "until": until,
+            "was_expired": was_expired,
+        }
     finally:
         con.close()
 

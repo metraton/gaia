@@ -18,7 +18,6 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.session import session_manifest
 from modules.session.session_manifest import (
-    build_agentic_loop_block,
     build_environment_block,
     build_session_context,
     build_workspace_memory_block,
@@ -146,46 +145,20 @@ class TestBuildEnvironmentBlock:
 
 
 # ---------------------------------------------------------------------------
-# build_agentic_loop_block
-# ---------------------------------------------------------------------------
-
-class TestBuildAgenticLoopBlock:
-    def test_returns_detector_output_when_present(self, monkeypatch):
-        """The block is a thin wrapper -- when the detector returns text,
-        the builder must return it verbatim.
-        """
-        sentinel = "## Active Agentic Loop\nGoal: validate Y"
-        import modules.context.agentic_loop_detector as detector
-        monkeypatch.setattr(detector, "build_resume_context", lambda: sentinel)
-
-        assert build_agentic_loop_block() == sentinel
-
-    def test_returns_empty_when_detector_returns_empty(self, monkeypatch):
-        import modules.context.agentic_loop_detector as detector
-        monkeypatch.setattr(detector, "build_resume_context", lambda: "")
-
-        assert build_agentic_loop_block() == ""
-
-    def test_returns_empty_when_detector_raises(self, monkeypatch):
-        import modules.context.agentic_loop_detector as detector
-
-        def _boom():
-            raise RuntimeError("simulated detector error")
-
-        monkeypatch.setattr(detector, "build_resume_context", _boom)
-        assert build_agentic_loop_block() == ""
-
-
-# ---------------------------------------------------------------------------
 # build_session_context (assembler)
 # ---------------------------------------------------------------------------
 
 class TestBuildSessionContext:
     """Pending approvals are no longer surfaced (M2): the assembler concatenates
-    Environment, Projects, Contract Index, agentic-loop resume, task
-    notifications, schedule reconciliation, and Workspace Memory (digest +
+    Environment, Projects, Contract Index, task notifications, schedule
+    reconciliation, schedule suspensions, and Workspace Memory (digest +
     anchors) -- there is no pending-approvals block in the join.
     """
+
+    def test_retired_loop_builder_is_gone(self):
+        """The agentic-loop capability was removed whole; a surviving builder
+        would let the block be resurrected by a single call site."""
+        assert not hasattr(session_manifest, "build_agentic_loop_block")
 
     def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
         monkeypatch.setattr(
@@ -196,9 +169,6 @@ class TestBuildSessionContext:
         )
         monkeypatch.setattr(
             session_manifest, "build_contracts_index_block", lambda: "CONTRACTS BLOCK"
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_agentic_loop_block", lambda: "LOOP BLOCK"
         )
         # Bug 2 fix: build_workspace_memory_block is now called twice -- once
         # with no args (digest) and once with sections=["anchor"]. Assert on
@@ -211,8 +181,8 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", _fake_memory
         )
-        # Neutralize the two blocks the assembler runs between the loop and
-        # workspace-memory blocks that are NOT under test here: task
+        # Neutralize the two blocks the assembler runs between the contract
+        # index and workspace-memory blocks that are NOT under test here: task
         # notifications and schedule reconciliation both do live I/O (DB /
         # crontab) and must not leak environment-dependent content into this
         # deterministic join test.
@@ -222,10 +192,13 @@ class TestBuildSessionContext:
         monkeypatch.setattr(
             session_manifest, "build_schedule_reconciliation_block", lambda: ""
         )
+        monkeypatch.setattr(
+            session_manifest, "build_schedule_suspension_block", lambda: ""
+        )
 
         result = build_session_context()
         assert result == (
-            "ENV BLOCK\n\nPROJ BLOCK\n\nCONTRACTS BLOCK\n\nLOOP BLOCK\n\n"
+            "ENV BLOCK\n\nPROJ BLOCK\n\nCONTRACTS BLOCK\n\n"
             "DIGEST BLOCK\n\nANCHOR BLOCK"
         ), (
             "Blocks must be joined with exactly one blank line separator -- "
@@ -245,9 +218,9 @@ class TestBuildSessionContext:
         monkeypatch.setattr(session_manifest, "build_environment_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_projects_context_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_contracts_index_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_agentic_loop_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_task_notifications_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_schedule_reconciliation_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_schedule_suspension_block", lambda: "")
 
         calls = []
 
@@ -276,13 +249,13 @@ class TestBuildSessionContext:
             session_manifest, "build_contracts_index_block", lambda: ""
         )
         monkeypatch.setattr(
-            session_manifest, "build_agentic_loop_block", lambda: ""
-        )
-        monkeypatch.setattr(
             session_manifest, "build_task_notifications_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_schedule_reconciliation_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_schedule_suspension_block", lambda: ""
         )
         # Called twice by the assembler (digest, then sections=["anchor"]);
         # accept both call shapes and return distinct text for each so the
@@ -312,13 +285,13 @@ class TestBuildSessionContext:
             session_manifest, "build_contracts_index_block", lambda: ""
         )
         monkeypatch.setattr(
-            session_manifest, "build_agentic_loop_block", lambda: ""
-        )
-        monkeypatch.setattr(
             session_manifest, "build_task_notifications_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_schedule_reconciliation_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_schedule_suspension_block", lambda: ""
         )
         # Called twice by the assembler (digest, then sections=["anchor"]);
         # accept both call shapes.
@@ -335,9 +308,6 @@ class TestBuildSessionContext:
 
         monkeypatch.setattr(
             session_manifest, "build_environment_block", _boom
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_agentic_loop_block", lambda: "LOOP"
         )
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda *a, **kw: ""
@@ -528,32 +498,38 @@ class TestExtractProjectsCarriesTypeAndDescription:
         assert out == [("ghost", "/x/ghost", "", "", "2026-07-01T00:00:00+00:00")]
 
 
+def _patch_connect(monkeypatch, identity_rows, proj_rows=()):
+    """Point build_projects_context_block at fixed contract + projects rows."""
+    import gaia.store.writer as _writer
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return self._rows
+
+    class _FakeCon:
+        def execute(self, sql, *a):
+            if "project_context_contracts" in sql:
+                return _FakeCursor(list(identity_rows))
+            return _FakeCursor(list(proj_rows))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_writer, "_connect", lambda: _FakeCon())
+
+
 class TestBuildProjectsBlockRendersTypeAndDescription:
-    """The rendered Projects block includes type in parens and description
-    after an em dash when present (CAMBIO 2)."""
+    """The rendered Projects block groups by workspace and includes type in
+    parens plus description after an em dash when present."""
 
     def _run_with_rows(self, monkeypatch, payload):
-        import gaia.store.writer as _writer
-
-        class _FakeCursor:
-            def __init__(self, rows):
-                self._rows = rows
-
-            def fetchall(self):
-                return self._rows
-
-        class _FakeCon:
-            def execute(self, sql, *a):
-                if "project_context_contracts" in sql:
-                    return _FakeCursor(
-                        [{"workspace": "me", "payload": json.dumps(payload)}]
-                    )
-                return _FakeCursor([])  # projects table
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(_writer, "_connect", lambda: _FakeCon())
+        _patch_connect(
+            monkeypatch,
+            [{"workspace": "me", "payload": json.dumps(payload)}],
+        )
         return session_manifest.build_projects_context_block()
 
     def test_type_and_description_rendered(self, monkeypatch):
@@ -566,20 +542,19 @@ class TestBuildProjectsBlockRendersTypeAndDescription:
             },
         }
         block = self._run_with_rows(monkeypatch, payload)
-        assert (
-            "- aos-iac (terraform): /home/x/aos-iac — Terraform IaC for AOS GCP infra"
-            in block
-        )
+        # The workspace group carries the root; the entry's relative path is
+        # "aos-iac", identical to the name, so it is not repeated.
+        assert "### me — /home/x" in block
+        assert "- aos-iac (terraform) — Terraform IaC for AOS GCP infra" in block
 
-    def test_no_type_no_description_stays_plain(self, monkeypatch):
+    def test_path_shown_when_it_differs_from_the_name(self, monkeypatch):
         payload = {"p": {"name": "plainproj", "local_path": "/p"}}
         block = self._run_with_rows(monkeypatch, payload)
-        assert "- plainproj: /p" in block
-        assert "(" not in block.split("plainproj")[1].split("\n")[0]
+        assert "- plainproj: p" in block
 
-    def test_vanished_entry_is_shown_with_its_mark(self, monkeypatch):
-        """The block marks a vanished repo instead of dropping it -- hiding it
-        would repeat the silence the propagation exists to end."""
+    def test_vanished_entry_collapses_into_one_recoverable_line(self, monkeypatch):
+        """A vanished repo must not spend a live project's worth of space, and
+        its name must survive so a bare mention still resolves."""
         payload = {
             "ghost": {
                 "name": "ghost",
@@ -590,9 +565,133 @@ class TestBuildProjectsBlockRendersTypeAndDescription:
             },
         }
         block = self._run_with_rows(monkeypatch, payload)
-        assert "ghost" in block
-        assert "[MISSING since 2026-07-01T00:00:00+00:00]" in block
-        assert "curated blurb" in block
+        assert "missing (1): ghost — recover with 'gaia context get'" in block
+        # Collapsed, so the per-entry payload is not paid.
+        assert "- ghost" not in block
+        assert "curated blurb" not in block
+        assert "2026-07-01T00:00:00+00:00" not in block
+
+
+class TestProjectsBlockDeduplicatesAtTheSource:
+    """The same repo reached through two contract generations must render once.
+
+    The current scan-promoted map names a repo by its uniquified SLUG; a legacy
+    per-directory contract names the same repo by its DIRECTORY name and carries
+    no resolvable path of its own. Keying dedup on the resolved absolute path is
+    what collapses them.
+    """
+
+    _PROJ_ROWS = (
+        {
+            "workspace": "aaxis",
+            "name": "bildwiz_2",
+            "path": "/ws/aaxis/bildwiz/bildwiz-iac",
+        },
+    )
+
+    def test_slug_and_directory_name_collapse_to_one_entry(self, monkeypatch):
+        promoted = {
+            "bildwiz_2": {
+                "name": "bildwiz-2",
+                "local_path": "/ws/aaxis/bildwiz/bildwiz-iac",
+                "type": "application",
+            },
+        }
+        legacy = {
+            "name": "bildwiz-platform",
+            "workspace_repos": [{"name": "bildwiz-iac", "path": "bildwiz-iac"}],
+        }
+        _patch_connect(
+            monkeypatch,
+            [
+                {"workspace": "aaxis", "payload": json.dumps(promoted)},
+                {"workspace": "bildwiz", "payload": json.dumps(legacy)},
+            ],
+            self._PROJ_ROWS,
+        )
+        block = session_manifest.build_projects_context_block()
+
+        entries = [l for l in block.splitlines() if l.startswith("- ")]
+        assert len(entries) == 1, f"expected one entry, got {entries}"
+        # It lands under the workspace that owns the projects row, not under the
+        # legacy contract's own workspace key.
+        assert "### aaxis" in block
+        assert "### bildwiz" not in block
+
+    def test_merge_keeps_metadata_carried_by_only_one_side(self, monkeypatch):
+        """The promoted side has the type; the legacy side has the description.
+        Neither may be lost when the two collapse."""
+        promoted = {
+            "bildwiz_2": {
+                "name": "bildwiz-2",
+                "local_path": "/ws/aaxis/bildwiz/bildwiz-iac",
+                "type": "application",
+            },
+        }
+        legacy = {
+            "name": "bildwiz-platform",
+            "workspace_repos": [
+                {
+                    "name": "bildwiz-iac",
+                    "path": "bildwiz-iac",
+                    "description": "only the legacy row has this",
+                }
+            ],
+        }
+        _patch_connect(
+            monkeypatch,
+            [
+                {"workspace": "aaxis", "payload": json.dumps(promoted)},
+                {"workspace": "bildwiz", "payload": json.dumps(legacy)},
+            ],
+            self._PROJ_ROWS,
+        )
+        block = session_manifest.build_projects_context_block()
+        assert "(application)" in block
+        assert "only the legacy row has this" in block
+
+    def test_ambiguous_basename_is_not_guessed(self, monkeypatch):
+        """Two repos sharing a directory name make the basename useless as a
+        key; the legacy entry must stay unresolved rather than bind to one."""
+        legacy = {
+            "name": "w",
+            "workspace_repos": [{"name": "terraform", "path": "terraform"}],
+        }
+        _patch_connect(
+            monkeypatch,
+            [{"workspace": "legacy", "payload": json.dumps(legacy)}],
+            (
+                {"workspace": "a", "name": "a1", "path": "/ws/a/terraform"},
+                {"workspace": "b", "name": "b1", "path": "/ws/b/terraform"},
+            ),
+        )
+        block = session_manifest.build_projects_context_block()
+        assert "unresolved (1): terraform" in block
+
+    def test_workspace_identity_row_is_not_listed_as_a_project(self, monkeypatch):
+        """A flat contract whose name IS its workspace key, with no path
+        resolvable anywhere, is a workspace-identity record -- not a project."""
+        _patch_connect(
+            monkeypatch,
+            [
+                {
+                    "workspace": "nfi",
+                    "payload": json.dumps({"name": "nfi", "type": "application"}),
+                },
+                {
+                    "workspace": "aaxis",
+                    "payload": json.dumps(
+                        {"nfi": {"name": "nfi", "local_path": "/ws/aaxis/nfi/nfi-oro-com"}}
+                    ),
+                },
+            ],
+            ({"workspace": "aaxis", "name": "nfi", "path": "/ws/aaxis/nfi/nfi-oro-com"},),
+        )
+        block = session_manifest.build_projects_context_block()
+        entries = [l for l in block.splitlines() if l.startswith("- ")]
+        assert len(entries) == 1, f"expected one entry, got {entries}"
+        assert "unresolved" not in block
+        assert "### nfi" not in block
 
 
 # ---------------------------------------------------------------------------
@@ -768,27 +867,10 @@ class TestBuildProjectsBlockNoSilentDrop:
     """
 
     def _patch_rows(self, monkeypatch, payload):
-        import gaia.store.writer as _writer
-
-        class _FakeCursor:
-            def __init__(self, rows):
-                self._rows = rows
-
-            def fetchall(self):
-                return self._rows
-
-        class _FakeCon:
-            def execute(self, sql, *a):
-                if "project_context_contracts" in sql:
-                    return _FakeCursor(
-                        [{"workspace": "me", "payload": json.dumps(payload)}]
-                    )
-                return _FakeCursor([])  # projects table
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(_writer, "_connect", lambda: _FakeCon())
+        _patch_connect(
+            monkeypatch,
+            [{"workspace": "me", "payload": json.dumps(payload)}],
+        )
 
     def _payload_17(self):
         # 17 projects, each with a type and a realistic description tail --

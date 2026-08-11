@@ -85,8 +85,8 @@ class TestAllFingerprintsPresent:
         transcript = (
             "Using agent_contract_handoff for protocol. "
             "T0_READ_ONLY classification applied. "
-            "Confirmed beats assumed was followed. "
-            "ONE COMMAND. ONE RESULT. ONE EXIT CODE enforced."
+            "Evidence ladder was followed. "
+            "One command, one result, one exit code. enforced."
         )
         result = verify_skill_injection(
             agent_type="platform-architect",
@@ -280,6 +280,47 @@ class TestEdgeCases:
                 f"Skill '{skill_name}' should be verified by its own fingerprint "
                 f"'{fingerprints[0]}' but got anomaly: {result}"
             )
+
+
+# ============================================================================
+# FINGERPRINT SYNC -- EACH FINGERPRINT MUST EXIST IN ITS OWN SKILL.md
+# ============================================================================
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+SKILLS_DIR = REPO_ROOT / "skills"
+
+
+class TestFingerprintsMatchSkillFiles:
+    """Guards SKILL_FINGERPRINTS against drifting out of sync with the
+    SKILL.md prose each entry is meant to identify.
+
+    A fingerprint that no longer appears verbatim in its skill's SKILL.md
+    (the source file edited, the fingerprint left behind) can never match a
+    real transcript again -- the check then reports a false
+    skill_injection_gap for every agent that declares that skill, forever,
+    with nothing else in the system catching it. This test is the backstop:
+    it reads every skill's actual SKILL.md and asserts each declared
+    fingerprint is a literal substring of it.
+    """
+
+    def test_every_fingerprint_exists_in_its_skill_md(self):
+        broken = []
+        for skill_name, fingerprints in SKILL_FINGERPRINTS.items():
+            skill_md = SKILLS_DIR / skill_name / "SKILL.md"
+            if not skill_md.is_file():
+                broken.append(f"{skill_name}: SKILL.md not found at {skill_md}")
+                continue
+            text = skill_md.read_text(encoding="utf-8")
+            for fp in fingerprints:
+                if fp not in text:
+                    broken.append(
+                        f"{skill_name}: fingerprint {fp!r} not found in {skill_md}"
+                    )
+        assert not broken, (
+            "Stale fingerprint(s) in SKILL_FINGERPRINTS -- the fingerprint no "
+            "longer appears in its skill's SKILL.md, so injection checks for "
+            "that skill will always report a false gap:\n" + "\n".join(broken)
+        )
 
 
 # ============================================================================
