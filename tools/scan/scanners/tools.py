@@ -8,9 +8,14 @@ and builds the tool_preferences map based on preference_priority.
 Performance: Uses shutil.which (pure Python) instead of subprocess for path
 detection, and ThreadPoolExecutor for parallel version probing.
 
+Determinism: a version probe is a timing-sensitive measurement of an invariant
+fact, so each binary is probed once per process and the result is memoized
+(see `_version_cache`). Without that, two scans of an unchanged machine could
+disagree whenever load pushed a probe past its timeout.
+
 Safety constraints:
 - Uses `shutil.which` for detection (pure Python, no subprocess)
-- Uses `subprocess.run(timeout=2)` for --version
+- Uses `subprocess.run(timeout=2)` for --version, retried once on timeout
 - Tool that hangs or fails --version gets version "unknown"
 - Does NOT execute any tool beyond --version
 - All calls are READ-ONLY, no state modification
@@ -20,10 +25,11 @@ import logging
 import re
 import shutil
 import subprocess
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from tools.scan.config import TOOL_DEFINITIONS, ToolDefinition
 
@@ -41,8 +47,34 @@ logger = logging.getLogger(__name__)
 # Timeout in seconds for --version subprocess calls
 _VERSION_TIMEOUT = 2
 
+# Attempts per version probe. A timeout says nothing about the tool when the
+# machine is merely starved of CPU -- this scanner alone puts _MAX_WORKERS
+# heavyweight CLIs (aws, gcloud, java) into startup at once -- so a probe gets
+# one more chance before its failure is recorded as the version.
+_VERSION_ATTEMPTS = 2
+
 # Max parallel workers for tool probing
 _MAX_WORKERS = 10
+
+# Process-wide memo of version probes, keyed by (path, flag, regex).
+#
+# An installed tool's version cannot change while this process runs, so the
+# value is measured once and reused. Re-probing per scan used to make repeated
+# scans disagree: under load a probe would exceed _VERSION_TIMEOUT and record
+# "unknown" instead of the real version, so scan N and scan N+1 reported
+# different versions for an unchanged machine.
+_version_cache: Dict[Tuple[str, str, Optional[str]], str] = {}
+_version_cache_lock = threading.Lock()
+
+
+def reset_version_cache() -> None:
+    """Discard memoized version probes.
+
+    Tests use this to stay hermetic: without it a real probe cached by one
+    test would be served to a later test that mocks the same binary path.
+    """
+    with _version_cache_lock:
+        _version_cache.clear()
 
 
 class ToolScanner(BaseScanner):
@@ -188,7 +220,9 @@ class ToolScanner(BaseScanner):
         if tool_path is None:
             return None
 
-        version = self._extract_version(tool_path, tool_def.version_flag, tool_def.version_regex)
+        version = self._cached_version(
+            tool_path, tool_def.version_flag, tool_def.version_regex
+        )
 
         return {
             "name": tool_def.name,
@@ -196,6 +230,33 @@ class ToolScanner(BaseScanner):
             "version": version,
             "category": tool_def.category.value,
         }
+
+    @classmethod
+    def _cached_version(
+        cls,
+        tool_path: str,
+        version_flag: str,
+        version_regex: Optional[str],
+    ) -> str:
+        """Return the memoized version for a binary, probing it on first use.
+
+        The probe runs outside the lock so concurrent workers are not
+        serialized behind one another's subprocess. Two workers racing on the
+        same key is harmless: `setdefault` picks one winner and every caller
+        is handed that same winner, so the scan cannot report two versions for
+        one binary.
+        """
+        key = (tool_path, version_flag, version_regex)
+
+        with _version_cache_lock:
+            cached = _version_cache.get(key)
+        if cached is not None:
+            return cached
+
+        probed = cls._extract_version(tool_path, version_flag, version_regex)
+
+        with _version_cache_lock:
+            return _version_cache.setdefault(key, probed)
 
     @staticmethod
     def _detect_path(name: str) -> Optional[str]:
@@ -228,15 +289,29 @@ class ToolScanner(BaseScanner):
         Returns:
             Version string, or "unknown" on failure/timeout.
         """
-        try:
-            # Split version_flag to support multi-word flags like "version --client"
-            cmd = [tool_path] + version_flag.split()
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=_VERSION_TIMEOUT,
-            )
+        # Split version_flag to support multi-word flags like "version --client"
+        cmd = [tool_path] + version_flag.split()
+
+        for attempt in range(_VERSION_ATTEMPTS):
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=_VERSION_TIMEOUT,
+                )
+            except subprocess.TimeoutExpired:
+                # Only a timeout is retried: a tool that answered with a
+                # non-zero status or refused to execute gave a real answer,
+                # and asking again would just repeat it.
+                if attempt + 1 < _VERSION_ATTEMPTS:
+                    continue
+                logger.debug("Timeout getting version for %s", tool_path)
+                return "unknown"
+            except (OSError, ValueError) as exc:
+                logger.debug("Failed to get version for %s: %s", tool_path, exc)
+                return "unknown"
+
             # Accept both stdout and stderr (many tools print version to stderr)
             output = result.stdout.strip() or result.stderr.strip()
 
@@ -252,9 +327,4 @@ class ToolScanner(BaseScanner):
             # Default: return the first line
             return output.splitlines()[0].strip()
 
-        except subprocess.TimeoutExpired:
-            logger.debug("Timeout getting version for %s", tool_path)
-            return "unknown"
-        except (OSError, ValueError) as exc:
-            logger.debug("Failed to get version for %s: %s", tool_path, exc)
-            return "unknown"
+        return "unknown"

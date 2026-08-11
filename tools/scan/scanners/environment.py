@@ -5,6 +5,12 @@ Detects OS information (platform, architecture, WSL), installed language
 runtimes, and .env file patterns. Outputs environment.os, environment.runtimes,
 and environment.env_files subsections.
 
+Determinism: a runtime's `--version` output is an invariant fact measured by a
+timing-sensitive subprocess, so each binary is probed once per process and the
+result is memoized (see `_version_cache`). Without that, a probe that exceeded
+its timeout under load recorded "unknown" and made two scans of an unchanged
+machine disagree.
+
 Pure Function Contract:
 - No file writes
 - No state modification
@@ -18,6 +24,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +32,28 @@ from typing import Any, Dict, List, Optional, Tuple
 from tools.scan.scanners.base import BaseScanner, ScanResult
 
 logger = logging.getLogger(__name__)
+
+# Attempts per version probe. A timeout under transient CPU starvation is not
+# evidence about the runtime, so a probe gets one more chance before its
+# failure is recorded as the version.
+_VERSION_ATTEMPTS = 2
+
+# Process-wide memo of runtime version probes, keyed by (binary, flag).
+# Values include None (binary absent), so membership -- not truthiness --
+# decides whether a probe already ran.
+_version_cache: Dict[Tuple[str, str], Optional[str]] = {}
+_version_cache_lock = threading.Lock()
+
+
+def reset_version_cache() -> None:
+    """Discard memoized version probes.
+
+    Tests use this to stay hermetic: without it a real probe cached by one
+    test would be served to a later test that mocks the same binary.
+    """
+    with _version_cache_lock:
+        _version_cache.clear()
+
 
 # Runtimes to detect: (binary_name, version_flag)
 _RUNTIME_DEFINITIONS: List[Tuple[str, str]] = [
@@ -205,7 +234,7 @@ class EnvironmentScanner(BaseScanner):
                         fb_path = shutil.which(fb_binary)
                         if fb_path is None:
                             continue
-                        version = self._get_version(fb_binary, fb_flag, warnings)
+                        version = self._cached_version(fb_binary, fb_flag, warnings)
                         if version is not None and version.startswith("3."):
                             runtimes.append({
                                 "name": binary_name,  # canonical name
@@ -216,7 +245,7 @@ class EnvironmentScanner(BaseScanner):
                             break
                     continue
 
-                version = self._get_version(binary_name, version_flag, warnings)
+                version = self._cached_version(binary_name, version_flag, warnings)
                 if version is not None:
                     runtimes.append({
                         "name": binary_name,
@@ -236,6 +265,25 @@ class EnvironmentScanner(BaseScanner):
         # upstream or downstream (e.g. re-ordering during a merge).
         return sorted(runtimes, key=lambda r: r["name"])
 
+    def _cached_version(
+        self, binary: str, flag: str, warnings: List[str]
+    ) -> Optional[str]:
+        """Return the memoized version for a binary, probing it on first use.
+
+        A warning raised by the probe is therefore recorded once per process,
+        on the run that actually measured the binary.
+        """
+        key = (binary, flag)
+
+        with _version_cache_lock:
+            if key in _version_cache:
+                return _version_cache[key]
+
+        probed = self._get_version(binary, flag, warnings)
+
+        with _version_cache_lock:
+            return _version_cache.setdefault(key, probed)
+
     def _get_version(
         self, binary: str, flag: str, warnings: List[str]
     ) -> Optional[str]:
@@ -249,13 +297,26 @@ class EnvironmentScanner(BaseScanner):
         Returns:
             Version string or None on failure.
         """
-        try:
-            result = subprocess.run(
-                [binary, flag],
-                capture_output=True,
-                text=True,
-                timeout=2,
-            )
+        for attempt in range(_VERSION_ATTEMPTS):
+            try:
+                result = subprocess.run(
+                    [binary, flag],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+            except subprocess.TimeoutExpired:
+                # Only a timeout is retried: a missing binary or a refused
+                # execution already answered the question.
+                if attempt + 1 < _VERSION_ATTEMPTS:
+                    continue
+                warnings.append(f"{binary} {flag} timed out after 2s")
+                return "unknown"
+            except FileNotFoundError:
+                return None
+            except OSError as exc:
+                warnings.append(f"{binary} {flag} failed: {exc}")
+                return "unknown"
 
             # Some tools output version to stderr (e.g., java --version)
             output = result.stdout.strip() or result.stderr.strip()
@@ -270,14 +331,7 @@ class EnvironmentScanner(BaseScanner):
             version = self._parse_version(first_line)
             return version if version else first_line
 
-        except subprocess.TimeoutExpired:
-            warnings.append(f"{binary} {flag} timed out after 2s")
-            return "unknown"
-        except FileNotFoundError:
-            return None
-        except OSError as exc:
-            warnings.append(f"{binary} {flag} failed: {exc}")
-            return "unknown"
+        return "unknown"
 
     @staticmethod
     def _parse_version(line: str) -> Optional[str]:

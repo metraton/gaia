@@ -14,7 +14,11 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from tools.scan.config import TOOL_DEFINITIONS, ToolCategory, ToolDefinition
-from tools.scan.scanners.tools import ToolScanner, _VERSION_TIMEOUT
+from tools.scan.scanners.tools import (
+    ToolScanner,
+    _VERSION_TIMEOUT,
+    reset_version_cache,
+)
 
 
 @pytest.fixture
@@ -164,6 +168,122 @@ class TestVersionExtraction:
     def test_version_timeout_value(self) -> None:
         """Verify timeout constant is 2 seconds."""
         assert _VERSION_TIMEOUT == 2
+
+    def test_timeout_is_retried_before_giving_up(self, scanner: ToolScanner) -> None:
+        """A probe that times out once still reports the version it then gets.
+
+        Contention -- including the concurrency this scanner creates itself --
+        can starve a probe past the timeout. That says nothing about the tool,
+        so the failure must not be recorded as the version on the first miss.
+        """
+        succeeded = MagicMock()
+        succeeded.returncode = 0
+        succeeded.stdout = "retry-tool 2.0.0\n"
+        succeeded.stderr = ""
+
+        with patch(
+            "tools.scan.scanners.tools.subprocess.run",
+            side_effect=[
+                subprocess.TimeoutExpired(cmd="retry-tool", timeout=2),
+                succeeded,
+            ],
+        ) as mock_run:
+            version = scanner._extract_version(
+                "/usr/bin/retry-tool", "--version", None
+            )
+
+        assert version == "retry-tool 2.0.0"
+        assert mock_run.call_count == 2
+
+    def test_nonzero_exit_is_not_retried(self, scanner: ToolScanner) -> None:
+        """A tool that answers with a non-zero status is not asked twice."""
+        refused = MagicMock()
+        refused.returncode = 1
+        refused.stdout = ""
+        refused.stderr = ""
+
+        with patch(
+            "tools.scan.scanners.tools.subprocess.run", return_value=refused
+        ) as mock_run:
+            version = scanner._extract_version("/usr/bin/bad-tool", "--version", None)
+
+        assert version == "unknown"
+        assert mock_run.call_count == 1
+
+
+class TestVersionMemoization:
+    """The probe runs once per process, so repeated scans cannot disagree."""
+
+    def test_second_probe_reuses_first_result(self, scanner: ToolScanner) -> None:
+        """A binary already probed is not probed again.
+
+        This is what makes repeated scans deterministic: re-probing let a
+        timeout under load report "unknown" for a tool that had already
+        reported a real version, so two scans of an unchanged machine
+        disagreed.
+        """
+        tool_def = ToolDefinition(name="memo-tool", category=ToolCategory.UTILITY)
+
+        measured = MagicMock()
+        measured.returncode = 0
+        measured.stdout = "memo-tool 1.2.3\n"
+        measured.stderr = ""
+
+        with patch(
+            "tools.scan.scanners.tools.shutil.which",
+            return_value="/usr/bin/memo-tool",
+        ):
+            with patch(
+                "tools.scan.scanners.tools.subprocess.run", return_value=measured
+            ):
+                first = scanner._probe_tool(tool_def)
+
+            # The binary would now time out, but must never be consulted again.
+            with patch(
+                "tools.scan.scanners.tools.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="memo-tool", timeout=2),
+            ) as mock_run:
+                second = scanner._probe_tool(tool_def)
+                assert mock_run.call_count == 0
+
+        assert first["version"] == "memo-tool 1.2.3"
+        assert second["version"] == first["version"]
+
+    def test_cache_reset_allows_reprobe(self, scanner: ToolScanner) -> None:
+        """Resetting the memo makes the next probe measure again.
+
+        The autouse fixture in conftest relies on this to keep tests hermetic.
+        """
+        tool_def = ToolDefinition(name="reset-tool", category=ToolCategory.UTILITY)
+
+        first_result = MagicMock()
+        first_result.returncode = 0
+        first_result.stdout = "reset-tool 1.0.0\n"
+        first_result.stderr = ""
+
+        second_result = MagicMock()
+        second_result.returncode = 0
+        second_result.stdout = "reset-tool 9.9.9\n"
+        second_result.stderr = ""
+
+        with patch(
+            "tools.scan.scanners.tools.shutil.which",
+            return_value="/usr/bin/reset-tool",
+        ):
+            with patch(
+                "tools.scan.scanners.tools.subprocess.run", return_value=first_result
+            ):
+                before = scanner._probe_tool(tool_def)
+
+            reset_version_cache()
+
+            with patch(
+                "tools.scan.scanners.tools.subprocess.run", return_value=second_result
+            ):
+                after = scanner._probe_tool(tool_def)
+
+        assert before["version"] == "reset-tool 1.0.0"
+        assert after["version"] == "reset-tool 9.9.9"
 
 
 # ---------------------------------------------------------------------------

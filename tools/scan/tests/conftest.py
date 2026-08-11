@@ -46,6 +46,25 @@ def _isolate_gaia_data_dir(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_scanner_version_caches():
+    """Drop the scanners' memoized `--version` probes around every test.
+
+    Both version-probing scanners memoize per process so repeated scans stay
+    consistent. That memo is shared state across tests: without this reset a
+    real probe cached by one test would be served to a later test that mocks
+    the same binary, and the mock would appear not to take effect.
+    """
+    from tools.scan.scanners import environment as environment_scanner
+    from tools.scan.scanners import tools as tools_scanner
+
+    tools_scanner.reset_version_cache()
+    environment_scanner.reset_version_cache()
+    yield
+    tools_scanner.reset_version_cache()
+    environment_scanner.reset_version_cache()
+
+
 # ---------------------------------------------------------------------------
 # Basic project fixtures
 # ---------------------------------------------------------------------------
