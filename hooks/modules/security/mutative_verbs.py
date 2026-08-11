@@ -19,11 +19,20 @@ Categories retained internally for verb classification:
 import functools
 import logging
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, FrozenSet, List, Optional, Tuple, Union
 
 from .approval_messages import build_t3_approval_instructions
-from .command_semantics import CommandSemantics, analyze_command, _is_flag
+from .command_semantics import (
+    BOOLEAN_SHORT_FLAGS,
+    CommandSemantics,
+    absorbs_next_token,
+    analyze_command,
+    is_boolean_short_flag,
+    tokenize_command,
+    _is_flag,
+    _is_short_value_flag,
+)
 
 try:
     from .capability_classes import (
@@ -1907,7 +1916,12 @@ def _git_worktree_positionals(tokens: tuple) -> List[str]:
     Mirrors the flag grammar analyze_command applies -- a single-letter short
     flag appearing before the first positional consumes the next token as its
     value, so the path in ``git -C /repo worktree remove wt`` is absorbed and
-    never mistaken for a subcommand or a removal target.
+    never mistaken for a subcommand or a removal target.  The grammar is ASKED
+    FOR rather than restated: ``absorbs_next_token`` knows that git's ``-p``
+    and ``-P`` take nothing, so ``git -p worktree remove wt`` keeps ``worktree``
+    at the head here exactly as it does in ``non_flag_tokens``.  A second copy
+    of the rule would drift from the first and put the two views into
+    disagreement about where the subcommand starts.
 
     semantics.non_flag_tokens cannot be used here: it lowercases every token,
     which corrupts any path with an uppercase component on a case-sensitive
@@ -1918,19 +1932,15 @@ def _git_worktree_positionals(tokens: tuple) -> List[str]:
     skip_next = False
     seen_positional = False
     args = list(tokens[1:])
+    base_cmd = str(tokens[0]).rsplit("/", 1)[-1].lower() if tokens else ""
     for index, token in enumerate(args):
         if skip_next:
             skip_next = False
             continue
         if token.startswith("-") and token != "-":
-            is_short_value_flag = (
-                not token.startswith("--")
-                and len(token) == 2
-                and token[1].isalpha()
-            )
             if (
                 not seen_positional
-                and is_short_value_flag
+                and absorbs_next_token(base_cmd, token)
                 and index + 1 < len(args)
                 and not args[index + 1].startswith("-")
             ):
@@ -2719,8 +2729,110 @@ def _classify_leading_shell_assignments(
 # Main Detection Function
 # ============================================================================
 
-@functools.lru_cache(maxsize=128)
+
+def _absorbing_form(command: str) -> "Optional[str]":
+    """Rewrite *command* as the pre-table tokenizer read it, or None if identical.
+
+    ``BOOLEAN_SHORT_FLAGS`` narrowed which short flags spend the token after
+    them.  For a flag it newly declares valueless, the token that used to be
+    spent is now a positional, which moves every later positional one place
+    toward the head.  This produces the string whose positionals are what the
+    OLD grammar produced -- the flag stays, the token it used to swallow is
+    dropped -- so the two readings can be classified against each other.
+
+    Returns ``None`` when no declared flag fires, which is every command on a
+    CLI outside the table and most commands on one inside it.
+
+    The rebuilt string is a CLASSIFICATION artifact only, in the same sense as
+    ``_peel_release_track_prefix``'s: nothing executes it and it never reaches
+    an approval signature, which is built by
+    ``approval_scopes.build_approval_signature`` from the command as the user
+    wrote it.
+    """
+    tokens = tokenize_command(command)
+    if len(tokens) < 3:
+        return None
+
+    base_cmd = tokens[0].rsplit("/", 1)[-1].lower()
+    if base_cmd not in BOOLEAN_SHORT_FLAGS:
+        return None
+
+    kept: List[str] = [tokens[0]]
+    args = list(tokens[1:])
+    changed = False
+    skip_next = False
+    seen_non_flag = False
+    for index, token in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if _is_flag(token):
+            kept.append(token)
+            if (
+                not seen_non_flag
+                and _is_short_value_flag(token)
+                and index + 1 < len(args)
+                and not _is_flag(args[index + 1])
+            ):
+                skip_next = True
+                changed = changed or is_boolean_short_flag(base_cmd, token)
+            continue
+        kept.append(token)
+        seen_non_flag = True
+
+    if not changed:
+        return None
+    return shlex.join(kept)
+
+
 def detect_mutative_command(
+    command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
+    _depth: int = 0,
+) -> MutativeResult:
+    """Classify *command*, then hold the result to a non-regression floor.
+
+    ``BOOLEAN_SHORT_FLAGS`` decides, per CLI, which short flags take no value.
+    A correct entry restores the reading the long form already had.  A WRONG
+    entry -- a flag that really does take a value -- leaves that value standing
+    as a positional and shifts the head by one, which drops every anchor path
+    and subcommand key that matches from position 0.  That failure would open a
+    gate, and a table of hand-audited facts about a dozen CLIs is not something
+    to bet a gate on.
+
+    So the verdict is the HIGHER of the two readings: the command as tokenized
+    today, and the same command as the old absorbing grammar read it.  The
+    floor is what makes the direction of a table error one-way -- a wrong entry
+    can only cost a spurious approval prompt, never a mutation that walks
+    through.  It runs at most once per command, only when a declared flag
+    actually fires AND the primary reading came back non-mutative, so the
+    ordinary path pays nothing for it.
+
+    The floor is deliberately not symmetric: it never LOWERS a verdict.  The
+    old reading is the corrupted one, and it is consulted only as a source of
+    escalation.
+    """
+    result = _detect_mutative_command(command, from_source_code, cwd, _depth)
+    if result.is_mutative:
+        return result
+
+    absorbing = _absorbing_form(command)
+    if absorbing is None or absorbing == command:
+        return result
+
+    floor = _detect_mutative_command(absorbing, from_source_code, cwd, _depth)
+    if not floor.is_mutative:
+        return result
+    return replace(
+        floor,
+        reason=(
+            f"{floor.reason} (held at the pre-narrowing reading of the command: "
+            f"a short flag declared valueless may have taken a value)"
+        ),
+    )
+
+
+@functools.lru_cache(maxsize=128)
+def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step per lane
     command: str, from_source_code: bool = False, cwd: "Optional[str]" = None,
     _depth: int = 0,
 ) -> MutativeResult:
@@ -3706,6 +3818,14 @@ def detect_mutative_command(
     )
 
 
+# The memoization lives on the implementation, but callers -- tests that mutate
+# module tables between assertions, above all -- reach for it through the public
+# name.  Forwarding keeps that one cache the thing a caller clears; caching the
+# wrapper separately would leave a second, stale one behind it.
+detect_mutative_command.cache_clear = _detect_mutative_command.cache_clear
+detect_mutative_command.cache_info = _detect_mutative_command.cache_info
+
+
 # ============================================================================
 # Helpers
 # ============================================================================
@@ -4343,13 +4463,19 @@ def _peel_release_track_prefix(command: str) -> "Tuple[str, bool]":
     * the word is the FIRST non-flag token, agreed on by two views -- the raw
       token walk here and ``analyze_command``'s own ``non_flag_tokens``. The
       agreement matters where the two can disagree: ``analyze_command`` absorbs
-      the token after a single-letter short flag as that flag's value, so in
-      ``gcloud -q alpha storage buckets add-iam-policy-binding`` the raw walk
-      sees ``alpha`` at the head while the semantic view has already spent it
-      on ``-q``. Peeling on the raw view alone would then shift a DIFFERENT
-      token into the flag's mouth and could break an anchor that was matching.
-      Requiring both views to name the same word confines this to the case
-      where removing it is a pure shift.
+      the token after a single-letter short flag as that flag's value, so the
+      raw walk can see a word at the head that the semantic view has already
+      spent on a flag. Peeling on the raw view alone would then shift a
+      DIFFERENT token into the flag's mouth and could break an anchor that was
+      matching. Requiring both views to name the same word confines this to the
+      case where removing it is a pure shift.
+
+      ``gcloud -q alpha ...`` used to be that disagreement and no longer is:
+      ``BOOLEAN_SHORT_FLAGS`` declares gcloud's ``-q`` valueless, so ``alpha``
+      stays at the head in both views and the form peels -- which is what makes
+      it classify T3, where stacking the two tricks had put it at T0. The guard
+      still stands for every single-letter flag NOT declared valueless, which is
+      every flag that really does take a value.
 
     Leading flags are stepped over rather than treated as a stop, because the
     track can legally follow a global flag (``gcloud --project=x alpha ...``);

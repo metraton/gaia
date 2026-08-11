@@ -14,11 +14,87 @@ import functools
 import re
 import shlex
 from dataclasses import dataclass
-from typing import Iterable, Tuple
+from typing import Dict, FrozenSet, Iterable, Tuple
 
 # Scan enough semantic tokens to cover CLIs with multiple resource segments and
 # several global flag/value pairs before the real verb.
 SEMANTIC_SCAN_LIMIT = 12
+
+
+# ---------------------------------------------------------------------------
+# Short flags that take no value
+# ---------------------------------------------------------------------------
+# A single-letter short flag before the first positional is READ AS TAKING THE
+# NEXT TOKEN AS ITS VALUE (see ``_is_short_value_flag``).  That is the POSIX
+# convention and it is right for ``git -C <path>`` and ``kubectl -n <ns>``.  It
+# is wrong for a flag that takes nothing: ``gcloud -q storage buckets
+# add-iam-policy-binding`` had ``storage`` eaten by ``-q``, so every anchor path
+# declared for that CLI missed at position 0 and a public-IAM grant classified
+# T0 while both the unflagged and the ``--quiet`` spellings classified T3.
+#
+# WHY A TABLE AND NOT A HEURISTIC.  The choice is between the shape of the next
+# token and a declaration per CLI, and shape cannot decide it: ``-q storage``
+# and ``-n prod`` are the same shape -- a bare lowercase word -- and the first
+# is a subcommand while the second is a value.  Any shape rule strong enough to
+# separate them (a bare word is a subcommand, say) misreads ``kubectl -n prod``,
+# which is the single most common form this layer sees.  Shape does still carry
+# the one case it can decide, and that guard predates this table and stays: a
+# next token that is itself flag-shaped is never absorbed.
+#
+# WHY THE UNIT IS THE CLI'S GLOBAL FLAGS.  Absorption only fires while no
+# positional has been seen, so a flag written after the subcommand never
+# absorbed and still never does.  What has to be enumerated is therefore not a
+# CLI's flag surface but the far smaller, closed, documented set of flags it
+# accepts BEFORE its subcommand.  ``-v`` is ``--volume`` at ``docker run`` and
+# ``--version`` at ``docker``; only the second one is reachable here.
+#
+# WHY OMISSION IS THE SAFE ERROR.  An unlisted flag keeps the absorbing
+# behaviour exactly as it is today, so a missing entry cannot introduce
+# anything -- it only leaves the pre-existing hole open for that flag.  A WRONG
+# entry is the dangerous one: the value it declines to absorb stands as a
+# positional and shifts the head by one, which is the same corruption in the
+# other direction.  Two things hold that down.  Structurally, the entries are
+# keyed by base command and drawn only from the global set above, so each is a
+# fact about one documented CLI rather than a guess generalized across CLIs.
+# Operationally, ``test_boolean_short_flag_equivalence.py`` inserts EVERY flag
+# declared here into every corpus form for that CLI and asserts the verdict does
+# not move -- a flag that really takes a value fails that immediately.  The
+# runtime floor in ``mutative_verbs._detect_with_absorption_floor`` catches what
+# neither does: it re-reads a non-mutative command under the old absorbing
+# grammar and keeps the higher verdict, so a wrong entry costs a spurious
+# approval prompt and cannot open a gate.
+#
+# Matching is CASE-SENSITIVE.  ``-D`` and ``-d`` are different flags on the same
+# CLI (``gsutil -D`` is debug output, ``-d`` is a different debug level), and
+# folding case would let an entry answer for a flag nobody audited.
+BOOLEAN_SHORT_FLAGS: Dict[str, FrozenSet[str]] = {
+    # `-h` and `-q` are the only single-letter globals gcloud publishes; every
+    # other global (`--project`, `--format`, `--verbosity`) is long-form only.
+    "gcloud": frozenset({"-q", "-h"}),
+    # `-m` (multithreaded) is the one people actually type. `-h` is NOT here:
+    # on gsutil it takes a header value (`gsutil -h "Content-Type:x" cp`).
+    "gsutil": frozenset({"-q", "-m", "-d", "-D"}),
+    # `-p`/`--paginate` and `-P`/`--no-pager` are booleans; `-c` (name=value)
+    # and `-C` (path) are git's two value-taking globals and stay absent.
+    "git": frozenset({"-p", "-P", "-v", "-h"}),
+    # kubectl's other single-letter globals all take a value, including `-v`,
+    # which is a verbosity LEVEL rather than a boolean.
+    "kubectl": frozenset({"-h"}),
+    "helm": frozenset({"-h"}),
+    "flux": frozenset({"-h"}),
+    # `-D`/`--debug` and `-v`/`--version`; `-H` (host) and `-l` (log level) take
+    # values and stay absent.
+    "docker": frozenset({"-D", "-v", "-h"}),
+    "npm": frozenset({"-g", "-y", "-f", "-q", "-s", "-D", "-S", "-E"}),
+    # apt's value-taking short options are `-t`, `-o`, `-c`; none is listed.
+    "apt": frozenset({"-y", "-q", "-f", "-s", "-d", "-u", "-v", "-V", "-h"}),
+    "apt-get": frozenset({"-y", "-q", "-f", "-s", "-d", "-u", "-v", "-V", "-h"}),
+    # `-C` is --cacheonly here, not a path; `-x` and `-c` take values.
+    "yum": frozenset({"-y", "-q", "-v", "-C", "-h"}),
+    "dnf": frozenset({"-y", "-q", "-v", "-C", "-h"}),
+    "pip": frozenset({"-q", "-v", "-h"}),
+    "pip3": frozenset({"-q", "-v", "-h"}),
+}
 
 
 @dataclass(frozen=True)
@@ -200,11 +276,12 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
             #   git -C <path>   kubectl -n <namespace>   tar -f <file>
             # Mark the next token for absorption if:
             #   1. It is a single-letter short flag (not combined like -rf)
+            #      and the CLI does not declare it valueless
             #   2. No non-flag token (subcommand) has been seen yet
             #   3. The next token exists and is not itself a flag
             if (
                 not seen_non_flag
-                and _is_short_value_flag(token)
+                and absorbs_next_token(base_cmd, token)
                 and i + 1 < len(args)
                 and not _is_flag(args[i + 1])
             ):
@@ -278,6 +355,27 @@ def _is_short_value_flag(token: str) -> bool:
     body = token[1:]
     # Exactly one character (letter or uppercase, e.g., -C, -n, -f)
     return len(body) == 1 and body.isalpha()
+
+
+def is_boolean_short_flag(base_cmd: str, token: str) -> bool:
+    """Return True when *base_cmd* declares *token* as a valueless short flag.
+
+    ``base_cmd`` is the pathless, lowercased executable name; ``token`` keeps
+    its original case, because ``-D`` and ``-d`` are different flags.
+    """
+    return token in BOOLEAN_SHORT_FLAGS.get(base_cmd, frozenset())
+
+
+def absorbs_next_token(base_cmd: str, token: str) -> bool:
+    """Return True when *token* consumes the token after it as its value.
+
+    This is the single statement of the flag grammar.  Anything that walks a
+    command's tokens to find its positionals -- here, or the original-case walks
+    in ``mutative_verbs`` that cannot use the lowercased ``non_flag_tokens`` --
+    must ask this rather than re-deriving it, or the two views disagree about
+    where a command's subcommand starts.
+    """
+    return _is_short_value_flag(token) and not is_boolean_short_flag(base_cmd, token)
 
 
 def _normalize_flag_token(token: str) -> Tuple[str, ...]:

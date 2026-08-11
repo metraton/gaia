@@ -298,6 +298,19 @@ PEELED_FORMS = [
         "gcloud --project=x compute instances list",
     ),
     ("track-alone", "gcloud alpha", "gcloud"),
+    # This form used to sit in UNTOUCHED_FORMS below, refused because the raw
+    # walk and the semantic view disagreed about the head: `-q` had swallowed
+    # `alpha`. `BOOLEAN_SHORT_FLAGS` declares gcloud's `-q` valueless, so the
+    # two views now name the same word and the guard has nothing to refuse.
+    # The form stacked both bypasses -- a valueless flag and a track word -- and
+    # classified T0; peeled, it is T3 like every other spelling of the grant.
+    (
+        "track-after-valueless-short-flag",
+        "gcloud -q alpha storage buckets add-iam-policy-binding gs://b "
+        "--member=allUsers --role=roles/storage.objectViewer",
+        "gcloud -q storage buckets add-iam-policy-binding gs://b "
+        "--member=allUsers --role=roles/storage.objectViewer",
+    ),
 ]
 
 UNTOUCHED_FORMS = [
@@ -312,12 +325,15 @@ UNTOUCHED_FORMS = [
     ("undeclared-kubectl", "kubectl get pods -n beta"),
     ("undeclared-aws", "aws alpha iam remove-user-from-group --user-name u"),
     # The two views disagree here: the raw walk sees `alpha` at the head, while
-    # analyze_command has already spent it as the value of the single-letter
-    # `-q`. Peeling on the raw view alone would feed `storage` to that flag
-    # instead and drop the anchor that was matching, so the guard refuses.
+    # analyze_command has already spent it as the value of a single-letter flag
+    # that gcloud does NOT declare valueless. Peeling on the raw view alone
+    # would feed `storage` to that flag instead and drop the anchor that was
+    # matching, so the guard refuses. `-q` no longer reaches this case (it is
+    # declared valueless and now peels, in PEELED_FORMS above); an undeclared
+    # flag still does, which is what keeps the guard load-bearing.
     (
         "short-flag-absorbed-value",
-        "gcloud -q alpha storage buckets add-iam-policy-binding gs://b "
+        "gcloud -Z alpha storage buckets add-iam-policy-binding gs://b "
         "--member=allUsers --role=roles/storage.objectViewer",
     ),
 ]
