@@ -79,7 +79,7 @@ from ..security.approval_messages import (
     build_t3_blocked_denial_message,
     build_t3_degraded_block_message,
 )
-from ..security.fail_open import note_mutative_classification
+from ..security.fail_open import clear_classification, note_mutative_classification
 from ..security.shell_unwrapper import ShellUnwrapper
 from ..security.gaia_db_write_guard import check as check_gaia_db_write
 from ..security.subagent_memory_write_guard import (
@@ -510,6 +510,16 @@ class BashValidator:
         Returns:
             BashValidationResult with validation details
         """
+        # The fail-open breadcrumb describes THE COMMAND BEING GATED, so it is
+        # dropped here rather than left to expire with the process. Entering
+        # this method is the only moment at which a new command becomes the
+        # subject of the gate; anything noted before it belongs to a previous
+        # command, and a later gate failure reading it would deny this one on a
+        # classification that was never about it. Ahead of Phase 0 because that
+        # guard can return early, and an early return must not be a way for the
+        # stale mark to survive. See modules.security.fail_open.
+        clear_classification()
+
         # ================================================================
         # PHASE 0: GAIA CLI ONLY GUARD (orchestrator role closure)
         # First guard in the pipeline -- ahead of the three write guards
@@ -1900,7 +1910,7 @@ def decide_t3_outcome(
         except Exception as _store_err:
             logger.warning(
                 "DB insert_requested failed after retries for subagent; "
-                "degrading to non-blocking allow: %s -- %s",
+                "denying the already-classified T3 command: %s -- %s",
                 command[:80], _store_err,
             )
             # ---- Q1 sensor: persist-failure (always-on) ----------------------

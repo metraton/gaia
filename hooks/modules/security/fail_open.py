@@ -88,7 +88,16 @@ def record_fail_open(
         pass
 
 
-def build_fail_open_message(reason: str, detail: str) -> str:
+# How the gate came to have no verdict. The default is the historical case, an
+# exception mid-decision. The second is the gate never running at all: the tool
+# call payload did not reach the hook, so there was nothing to decide about.
+# They degrade identically and are told apart only so the notice does not
+# report an error that never happened.
+CAUSE_ERROR = "raised an error before reaching a verdict"
+CAUSE_NO_INPUT = "never received the tool call payload on stdin, so it never ran"
+
+
+def build_fail_open_message(reason: str, detail: str, cause: str = CAUSE_ERROR) -> str:
     """Return the user-visible notice for a gate that failed open.
 
     States the three things a reader needs and cannot infer: that the gate did
@@ -96,8 +105,8 @@ def build_fail_open_message(reason: str, detail: str) -> str:
     not an approval.
     """
     return (
-        f"{FAIL_OPEN_MARKER} The security gate raised an error before reaching a "
-        f"verdict and the operation was allowed to proceed unvalidated.\n"
+        f"{FAIL_OPEN_MARKER} The security gate {cause} "
+        f"and the operation was allowed to proceed unvalidated.\n"
         f"Reason: {reason}\n"
         f"Detail: {detail}\n"
         f"This is NOT an approval: the command was never classified. A "
@@ -123,12 +132,33 @@ def build_fail_open_block_message(reason: str, detail: str, verb: str) -> str:
 # ---------------------------------------------------------------------------
 # Classification breadcrumb
 # ---------------------------------------------------------------------------
-# Process-local on purpose: the host runs one hook process per tool call, so
-# this never outlives the single command it describes. It is written the moment
-# a command is known to be T3 and read only by the fail-open path, which needs
-# to know what the gate knew BEFORE it crashed -- including when the crash is in
-# the classifier itself, where re-classifying to find out would fail the same
-# way.
+# Written the moment a command is known to be T3, read only by the fail-open
+# path -- which needs to know what the gate knew BEFORE it crashed, including
+# when the crash is in the classifier itself, where re-classifying to find out
+# would fail the same way.
+#
+# The state is module-level, so its LIFETIME is the thing that has to be
+# right. It used to rest on "the host runs one hook process per tool call",
+# which is true today and enforced by nothing: under a persistent or batched
+# hook the first mutation would mark the process for good, and every later
+# read would inherit that mark and be denied on the strength of a push it had
+# nothing to do with -- the bounded exception escaping its bound in the
+# direction that stops harmless work.
+#
+# So the lifetime is now bound to the validation instead of to the process:
+# BashValidator.validate() clears the breadcrumb for every command it is about
+# to gate, which means the mark can only ever describe the command currently
+# being decided. Process isolation is no longer load-bearing.
+#
+# Deliberately NOT done: having known_mutative_classification() verify that
+# the mark's command matches the one being gated. The string reaching the T3
+# decision is the NORMALIZED one, not the one validate() was entered with:
+# `nohup terraform apply &` and `terraform apply > out.txt` both mark plain
+# `terraform apply`, because the sanitizer strips the backgrounding and the
+# redirect before classification. A mismatch is therefore ordinary, and a
+# guard that silently returned None on it would disarm the block in the
+# direction that lets a mutation through -- the expensive direction to be
+# wrong in.
 
 
 @dataclass(frozen=True)
@@ -164,17 +194,32 @@ def known_mutative_classification() -> Optional[Classification]:
 
 
 def clear_classification() -> None:
-    """Drop the breadcrumb. Exists for tests; a real hook process is short-lived."""
+    """Drop the breadcrumb, so it cannot outlive the command it describes.
+
+    Called by BashValidator.validate() before it gates a command: whatever is
+    recorded at that point belongs to a previous command, and carrying it
+    forward would deny the current one on someone else's classification.
+    """
     global _classification
     _classification = None
 
 
-def decide_fail_open(reason: str, detail: str) -> FailOpenOutcome:
+def decide_fail_open(
+    reason: str, detail: str, cause: str = CAUSE_ERROR
+) -> FailOpenOutcome:
     """Record a gate failure and decide whether the operation still proceeds.
 
     Blocks only when a mutating classification was already reached; otherwise
     the operation passes, instrumented. Recording happens on both branches, so
     the audit sink carries the failure regardless of which way it resolved.
+
+    Args:
+        reason: Short machine tag for the lane that failed.
+        detail: Underlying exception text or human-readable detail.
+        cause: How the gate came to have no verdict -- see CAUSE_ERROR /
+            CAUSE_NO_INPUT. Affects only the wording of the notice, never the
+            outcome: a gate that never ran and a gate that crashed mid-decision
+            leave the operation equally unvalidated.
     """
     known = known_mutative_classification()
     if known is None:
@@ -182,7 +227,7 @@ def decide_fail_open(reason: str, detail: str) -> FailOpenOutcome:
             reason=reason, detail=detail, context={"outcome": "allowed"}
         )
         return FailOpenOutcome(
-            message=build_fail_open_message(reason, detail),
+            message=build_fail_open_message(reason, detail, cause),
             exit_code=1,
             blocked=False,
         )
