@@ -326,3 +326,90 @@ class TestGenerateSummaryResilience:
 
         summary = generate_summary(days=7, logs_dir=logs_dir)
         assert summary["command_type_distribution"]["general"] == 1
+
+
+# ---------------------------------------------------------------------------
+# generate_summary — security_events (t3_degraded_block sensor reconnection)
+#
+# The degraded-T3 sensor was renamed by commit 273e2bb from
+# "t3_degraded_allow" to "t3_degraded_block". These tests pin: (1) a record
+# emitted TODAY under the current tag is counted, (2) a pre-rename record
+# under the legacy tag is still counted (not evaporated by the rename), and
+# (3) the new "hook_fail_open" tag has a counter at all.
+# ---------------------------------------------------------------------------
+
+
+def _make_event_record(event: str, reason: str = None, timestamp: str = None, **extra):
+    if timestamp is None:
+        timestamp = datetime.now().isoformat()
+    record = {"timestamp": timestamp, "event": event}
+    if reason is not None:
+        record["reason"] = reason
+    record.update(extra)
+    return record
+
+
+class TestGenerateSummarySecurityEvents:
+    def test_current_tag_t3_degraded_block_is_counted(self, tmp_path):
+        """A degradation event emitted TODAY, under the current tag, must
+        appear in the panel."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        now = datetime.now()
+        _write_audit_record(
+            logs_dir,
+            _make_event_record("t3_degraded_block", reason="approval_persist_failed", timestamp=now.isoformat()),
+        )
+
+        summary = generate_summary(days=7, logs_dir=logs_dir)
+        assert summary["security_events"]["t3_degraded_block"]["total"] == 1
+
+    def test_legacy_tag_still_counted_after_rename(self, tmp_path):
+        """Historical records under the pre-rename tag must not evaporate."""
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        now = datetime.now()
+        for _ in range(12):
+            _write_audit_record(
+                logs_dir,
+                _make_event_record("t3_degraded_allow", reason="approval_persist_failed", timestamp=now.isoformat()),
+            )
+
+        summary = generate_summary(days=7, logs_dir=logs_dir)
+        assert summary["security_events"]["t3_degraded_block"]["total"] == 12
+
+    def test_current_and_legacy_tags_combine_in_one_total(self, tmp_path):
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        now = datetime.now()
+        _write_audit_record(logs_dir, _make_event_record("t3_degraded_block", timestamp=now.isoformat()))
+        for _ in range(12):
+            _write_audit_record(logs_dir, _make_event_record("t3_degraded_allow", timestamp=now.isoformat()))
+
+        summary = generate_summary(days=7, logs_dir=logs_dir)
+        events = summary["security_events"]["t3_degraded_block"]
+        assert events["total"] == 13
+        assert events["by_outcome"] == {"blocked": 1, "allowed": 12}
+
+    def test_hook_fail_open_has_a_counter(self, tmp_path):
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        now = datetime.now()
+        _write_audit_record(
+            logs_dir,
+            _make_event_record("hook_fail_open", reason="unhandled_exception", timestamp=now.isoformat()),
+        )
+
+        summary = generate_summary(days=7, logs_dir=logs_dir)
+        assert summary["security_events"]["hook_fail_open"]["total"] == 1
+        assert summary["security_events"]["hook_fail_open"]["by_reason"] == {"unhandled_exception": 1}
+
+    def test_empty_security_events_shape(self, tmp_path):
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        summary = generate_summary(days=7, logs_dir=logs_dir)
+        assert summary["security_events"] == {
+            "t3_degraded_block": {"total": 0, "by_reason": {}, "by_outcome": {"blocked": 0, "allowed": 0}},
+            "approval_persist_failed": 0,
+            "hook_fail_open": {"total": 0, "by_reason": {}},
+        }

@@ -43,6 +43,7 @@ from cli.metrics import (
     _calculate_tier_usage,
     _calculate_command_type_breakdown,
     _calculate_top_commands,
+    _calculate_security_events,
     _calculate_agent_invocations,
     _calculate_agent_outcomes,
     _calculate_token_usage,
@@ -262,6 +263,55 @@ class TestCalculateTierUsage(unittest.TestCase):
         result = _calculate_tier_usage(logs)
         self.assertEqual(result["today_count"], 1)
         self.assertEqual(result["today_t3"], 1)
+
+
+class TestCalculateSecurityEvents(unittest.TestCase):
+    """t3_degraded_block sensor reconnection (commit 273e2bb renamed the tag
+    from t3_degraded_allow, since it now blocks instead of allowing).
+    """
+
+    def test_current_tag_is_counted(self):
+        """A degradation event emitted TODAY, under the current tag, appears
+        in the panel."""
+        logs = [{"event": "t3_degraded_block", "reason": "approval_persist_failed"}]
+        result = _calculate_security_events(logs)
+        self.assertEqual(result["t3_degraded_block"]["total"], 1)
+
+    def test_legacy_tag_still_counted(self):
+        """The 12 pre-rename historical records must not evaporate."""
+        logs = [{"event": "t3_degraded_allow", "reason": "approval_persist_failed"}] * 12
+        result = _calculate_security_events(logs)
+        self.assertEqual(result["t3_degraded_block"]["total"], 12)
+
+    def test_current_and_legacy_combine_with_outcome_split(self):
+        logs = [{"event": "t3_degraded_block"}] + [{"event": "t3_degraded_allow"}] * 12
+        result = _calculate_security_events(logs)
+        self.assertEqual(result["t3_degraded_block"]["total"], 13)
+        self.assertEqual(
+            result["t3_degraded_block"]["by_outcome"], {"blocked": 1, "allowed": 12}
+        )
+
+    def test_hook_fail_open_has_a_counter(self):
+        logs = [{"event": "hook_fail_open", "reason": "unhandled_exception"}]
+        result = _calculate_security_events(logs)
+        self.assertEqual(result["hook_fail_open"]["total"], 1)
+        self.assertEqual(result["hook_fail_open"]["by_reason"], {"unhandled_exception": 1})
+
+    def test_approval_persist_failed_still_counted_separately(self):
+        logs = [{"event": "error", "error_type": "approval_persist_failed"}]
+        result = _calculate_security_events(logs)
+        self.assertEqual(result["approval_persist_failed"], 1)
+
+    def test_empty(self):
+        result = _calculate_security_events([])
+        self.assertEqual(
+            result,
+            {
+                "t3_degraded_block": {"total": 0, "by_reason": {}, "by_outcome": {"blocked": 0, "allowed": 0}},
+                "approval_persist_failed": 0,
+                "hook_fail_open": {"total": 0, "by_reason": {}},
+            },
+        )
 
 
 class TestCalculateCommandTypeBreakdown(unittest.TestCase):

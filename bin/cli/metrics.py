@@ -933,33 +933,69 @@ def _calculate_error_rate(audit_logs: list) -> dict:
     }
 
 
+# The degraded-T3 sensor was renamed by commit 273e2bb from "t3_degraded_allow"
+# to "t3_degraded_block" (the branch used to let a T3 through non-blocking when
+# approval persistence failed; it now denies instead). Both tags name the SAME
+# sensor firing -- only the outcome changed -- so both are folded into one
+# counter under the CURRENT tag name. Without this, every pre-rename record
+# (the legacy tag, still real audit history on disk) would silently stop being
+# counted the moment the emitter's spelling changed.
+_DEGRADED_T3_CURRENT_EVENT = "t3_degraded_block"
+_DEGRADED_T3_LEGACY_EVENT = "t3_degraded_allow"
+
+# Mirrors hooks/modules/security/fail_open.py::FAIL_OPEN_EVENT, kept as a
+# literal rather than imported -- this CLI package does not otherwise depend
+# on the hooks package, and that module is under concurrent edit elsewhere.
+_HOOK_FAIL_OPEN_EVENT = "hook_fail_open"
+
+
 def _calculate_security_events(event_logs: list) -> dict:
     """Aggregate always-on synthetic security events over the window.
 
     ``event_logs`` are the audit records carrying an ``event`` key (error /
-    t3_degraded_allow) -- NOT tool executions. Discriminating them here (and
-    out of tier usage / command breakdown / error rate) keeps the degraded-allow
-    and persist-failure sensors from being miscounted as executed T3 commands.
+    t3_degraded_block / hook_fail_open) -- NOT tool executions. Discriminating
+    them here (and out of tier usage / command breakdown / error rate) keeps
+    these sensors from being miscounted as executed T3 commands.
 
-    Surfaces the two complementary Q3 sensors:
-      * ``t3_degraded_allow`` -- total + ``by_reason`` breakdown so a query like
-        "degraded T3 allows grouped by reason" is answerable.
+    Surfaces the three complementary sensors:
+      * ``t3_degraded_block`` -- total + ``by_reason`` breakdown, folding in
+        the legacy ``t3_degraded_allow`` tag so the pre-rename history is not
+        dropped, plus ``by_outcome`` (blocked = current tag, allowed = legacy
+        tag) so the behavior change stays visible even though the count is
+        combined.
       * ``approval_persist_failed`` -- the raw persist-failure error count.
+      * ``hook_fail_open`` -- total + ``by_reason`` breakdown for the security
+        gate itself failing before reaching a verdict.
     """
-    degraded = [e for e in event_logs if e.get("event") == "t3_degraded_allow"]
+    degraded_current = [e for e in event_logs if e.get("event") == _DEGRADED_T3_CURRENT_EVENT]
+    degraded_legacy = [e for e in event_logs if e.get("event") == _DEGRADED_T3_LEGACY_EVENT]
+    degraded = degraded_current + degraded_legacy
     persist_failed = [
         e
         for e in event_logs
         if e.get("event") == "error"
         and e.get("error_type") == "approval_persist_failed"
     ]
+    fail_open = [e for e in event_logs if e.get("event") == _HOOK_FAIL_OPEN_EVENT]
     by_reason = {}
     for e in degraded:
         r = e.get("reason") or "unknown"
         by_reason[r] = by_reason.get(r, 0) + 1
+    fail_open_by_reason = {}
+    for e in fail_open:
+        r = e.get("reason") or "unknown"
+        fail_open_by_reason[r] = fail_open_by_reason.get(r, 0) + 1
     return {
-        "t3_degraded_allow": {"total": len(degraded), "by_reason": by_reason},
+        "t3_degraded_block": {
+            "total": len(degraded),
+            "by_reason": by_reason,
+            "by_outcome": {
+                "blocked": len(degraded_current),
+                "allowed": len(degraded_legacy),
+            },
+        },
         "approval_persist_failed": len(persist_failed),
+        "hook_fail_open": {"total": len(fail_open), "by_reason": fail_open_by_reason},
     }
 
 
@@ -1317,8 +1353,9 @@ class MetricsSnapshot:
     context_snapshots: Optional[dict]
     context_updates: Optional[dict]
     agent_filter: Optional[str] = None
-    # Q3: always-on security-event counts (t3_degraded_allow +
-    # approval_persist_failed) discriminated out of the execution aggregates.
+    # Q3: always-on security-event counts (t3_degraded_block, folding in the
+    # legacy t3_degraded_allow tag, + approval_persist_failed +
+    # hook_fail_open) discriminated out of the execution aggregates.
     security_events: Optional[dict] = None
 
     def to_dict(self) -> dict:
@@ -1341,9 +1378,9 @@ class MetricsSnapshot:
     ) -> "MetricsSnapshot":
         win = window or _DEFAULT_WINDOW
         # Q3: split synthetic security-event records (carrying an ``event`` key:
-        # error / t3_degraded_allow) out of the execution-oriented audit logs so
-        # tier usage / command breakdown / top commands / error rate count only
-        # real tool executions. The events feed security_events instead.
+        # error / t3_degraded_block / hook_fail_open) out of the execution-oriented
+        # audit logs so tier usage / command breakdown / top commands / error rate
+        # count only real tool executions. The events feed security_events instead.
         exec_logs = [l for l in audit_logs if not l.get("event")]
         event_logs = [l for l in audit_logs if l.get("event")]
         gaia_metrics, native_metrics = _split_native_agents(workflow_metrics)
