@@ -11,6 +11,7 @@ Three things hold for every README, whatever it documents, and are stated here o
 
 - **Every tree is annotated.** One line per entry, giving the reason that entry exists. A bare tree adds nothing over `ls`.
 - **Every link is relative.** An absolute link points at one host, one account, one branch; it breaks in a clone, in a fork, and on every branch it was not written on.
+- **Every flow is plain text** -- numbered steps and simple `->` arrows in a code block. Never mermaid, never any format that must be rendered to be read. A rendered diagram can only be verified by looking at it rendered, which needs a tool that may not be installed; one shipped recently that nobody could validate for exactly that reason. Plain text reads identically on the web, in a terminal, and in a diff, so what is in the file is what the reader sees.
 - **The concreteness test in Step 3** is the same test for all three cases below.
 
 ## Step 1: Name the gate
@@ -33,7 +34,7 @@ A repo root and one of its folders are two separate passes, each through its own
 
 1. **Title and one line** -- what this is, under 120 characters.
 2. **What it is and why it exists** -- the problem it solves, who uses it, what it produces.
-3. **Flow** -- one diagram, and what it interacts with. One diagram, not several.
+3. **Flow** -- one plain-text flow, and what it interacts with. One, not several.
 4. **Requirements** -- tools with their versions, permissions, credentials.
 5. **How it is used** -- the real invocation, with the output it is expected to produce.
 6. **Structure** -- annotated tree, one line per entry.
@@ -44,7 +45,7 @@ Requirements sit before usage on purpose: a reader who tries the invocation with
 ### Component folder -- five sections
 
 1. **Narrative** (2-4 paragraphs, prose, no bullets) -- what lives here; why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy; who touches it -- developer, agent at runtime, CI, admin.
-2. **When it activates** -- the concrete trigger: the event, condition, or code path that fires this. An ASCII diagram when more than two steps chain. A step list where the diagram is not enough. And what happens if this folder is absent or broken.
+2. **When it activates** -- the concrete trigger: the event, condition, or code path that fires this. A plain-text flow when more than two steps chain. And what happens if this folder is absent or broken.
 3. **What's here** -- annotated tree, one line per file or subdirectory, with generated files marked so nobody hand-edits them.
 4. **Conventions** -- how to name new files, what internal structure they must follow, what to update elsewhere when something is added here, what validation runs against this folder.
 5. **See also** -- adjacent components, each link carrying its one-line reason.
@@ -90,4 +91,4 @@ A README routes to where each thing lives; it does not contain it. Long-form doc
 - **Absolute links** -- they encode one host, one account, one branch, and break in every clone and every branch that is not that one.
 - **Reproducing what another artifact already documents** -- the copy and the original are two sources of truth. They do not diverge one at a time; they both become unreliable, because a reader who finds a conflict cannot tell which side is stale.
 
-Filled examples and a blank skeleton for the component-folder gate are in [`reference.md`](reference.md).
+A filled example and a blank skeleton for each of the three gates are in [`reference.md`](reference.md). Open your gate's part only.
