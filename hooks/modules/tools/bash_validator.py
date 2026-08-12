@@ -829,22 +829,39 @@ class BashValidator:
         # PHASE 5: AGGREGATE
         # 3e. Dispatch to per-stage classifiers (single or compound)
         # and combine into the final BashValidationResult.
+        #
+        # ``payload_cwd`` seeds the directory fold with the REAL invocation
+        # directory the harness already sent in ``hook_payload["cwd"]``,
+        # instead of leaving the fold to start at ``None`` -- which resolves,
+        # deep inside ``detect_mutative_command`` / ``_resolve_dir_against_cwd``,
+        # to the HOOK PROCESS's own cwd via ``os.getcwd()``, not the caller's.
+        # A relative script path with no leading ``cd`` was resolving against
+        # that wrong directory, missing, and falling to the conservative
+        # ``script-file-unreadable`` T3 verdict -- 66 measured approvals for
+        # scripts that were always readable, just looked up in the wrong place.
+        # A later explicit ``cd`` in the chain still overrides this seed
+        # exactly as before (``_peel_leading_cd`` / ``cwd_after_component``
+        # replace an absolute target and join a relative one onto whatever
+        # cwd is already in effect), so the already-covered "behind a cd"
+        # case is unaffected.
         # ================================================================
+        payload_cwd = (hook_payload or {}).get("cwd") or None
         if not has_operators:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type,
                 tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
+                cwd=payload_cwd,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
             result = self._validate_compound_command(
                 parsed_components, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type,
+                agent_type=agent_type, cwd=payload_cwd,
             )
         else:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
-                agent_type=agent_type,
+                agent_type=agent_type, cwd=payload_cwd,
             )
 
         # Attach cleaned command for hook to emit via updatedInput.
@@ -1229,6 +1246,7 @@ class BashValidator:
         is_subagent: bool = False,
         session_id: str = "",
         agent_type: str = "",
+        cwd: Optional[str] = None,
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
@@ -1251,6 +1269,11 @@ class BashValidator:
         component that is hard-blocked) the original per-component pass runs
         unchanged: a hard block fails the chain fast, a lone T3 keeps the
         singular grant path, and an all-granted/safe chain is allowed.
+
+        ``cwd`` is the SEED for the directory fold below (the real invocation
+        directory from the hook payload, or ``None`` when the caller has
+        none) -- not the fold's final value. A leading ``cd`` component still
+        overrides it exactly as before.
         """
         logger.info(f"Compound command detected with {len(components)} components")
 
@@ -1261,8 +1284,12 @@ class BashValidator:
         # its script under the wrong cwd, finds it unreadable, and the
         # conservative `script-file-unreadable` default falsely trips has_t3
         # -- denying the whole chain for a mutation that was never there.
+        # Seeded with the payload's real invocation directory (``cwd``, see
+        # this method's docstring) rather than ``None``, so a chain with NO
+        # leading `cd` at all still resolves its first relative script
+        # against where the user actually ran it.
         has_t3 = False
-        scan_cwd: Optional[str] = None
+        scan_cwd: Optional[str] = cwd
         for comp in components:
             detected = detect_mutative_command(comp, cwd=scan_cwd)
             flagged = classify_by_flags(comp)
@@ -1293,9 +1320,11 @@ class BashValidator:
         # later `node rel.mjs` component resolves against X, not the hook's cwd.
         # `cd` and the script land in SEPARATE components (the chain is split on
         # `&&`), so the fold must happen here -- detect_mutative_command only
-        # sees one component at a time.  running_cwd=None keeps the hook-cwd
-        # default for a chain with no leading cd.
-        running_cwd: Optional[str] = None
+        # sees one component at a time. Seeded with the payload cwd (see
+        # scan_cwd above) rather than ``None``, so a chain with no leading cd
+        # still resolves its first component's relative script correctly; an
+        # explicit `cd` still overrides it via cwd_after_component below.
+        running_cwd: Optional[str] = cwd
         for i, component in enumerate(components, 1):
             result = self._validate_single_command(
                 component, is_subagent=is_subagent, session_id=session_id,

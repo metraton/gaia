@@ -2911,6 +2911,85 @@ class TestRelativeScriptCwdResolution:
         assert cwd_after_component("node build.mjs", None) is None
 
 
+class TestRelativeScriptNoCdHookPayloadCwd:
+    """The single-command dispatch of ``BashValidator.validate()`` must seed
+    the directory fold from ``hook_payload["cwd"]`` -- the real invocation
+    directory the harness already sends -- instead of leaving it at ``None``,
+    which resolves to the HOOK PROCESS's own cwd and not the caller's.
+
+    Before the fix, a relative script with NO leading ``cd`` was measured
+    costing 66 approvals: the script was always readable, just looked up
+    against the wrong directory, so it fell to the conservative
+    ``script-file-unreadable`` T3 default. This class pins the property that
+    must hold afterward -- classification by CONTENT, exactly as if the
+    invocation ran behind a ``cd`` -- and its counterfactual.
+
+    Every ``hook_payload`` here carries ``agent_id`` -- an unrelated
+    dependency of the harness shape, not part of what this class measures:
+    without it the payload classifies as the ORCHESTRATOR role and the
+    "gaia CLI only" guard (a different gate) denies ``node ...`` outright,
+    which would make every case here fail for the wrong reason.
+    """
+
+    _SUBAGENT_MARKER = {"agent_id": "test-subagent"}
+
+    def test_relative_script_no_cd_readonly_resolves_free_via_payload_cwd(
+        self, tmp_path
+    ):
+        """A read-only relative script with no leading ``cd``, and the real
+        invocation directory present in the hook payload, is no longer
+        conservatively denied -- it classifies by its content, T0."""
+        (tmp_path / "report.mjs").write_text("console.log('report ready');\n")
+        result = BashValidator().validate(
+            "node report.mjs",
+            hook_payload={**self._SUBAGENT_MARKER, "cwd": str(tmp_path)},
+        )
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+    def test_relative_script_no_cd_mutative_content_stays_t3(self, tmp_path):
+        """The SAME shape (no leading ``cd``, real directory in the payload)
+        but with mutative content must still classify T3 -- proving the fix
+        classifies by content and did not simply stop looking."""
+        (tmp_path / "report.mjs").write_text(
+            'const fs = require("fs");\nfs.rmSync("/tmp/t", { recursive: true });\n'
+        )
+        result = BashValidator().validate(
+            "node report.mjs",
+            hook_payload={**self._SUBAGENT_MARKER, "cwd": str(tmp_path)},
+        )
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+    def test_relative_script_no_cd_behind_cd_case_stays_green(self, tmp_path):
+        """The already-covered shape -- a relative script behind an explicit
+        ``cd`` -- is unaffected by seeding the fold from the payload cwd: the
+        explicit ``cd`` target still overrides the seed."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "report.mjs").write_text("console.log('report ready');\n")
+        result = BashValidator().validate(
+            f"cd {repo} && node report.mjs",
+            hook_payload={**self._SUBAGENT_MARKER, "cwd": str(tmp_path)},
+        )
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+    def test_relative_script_no_cd_counterfactual_without_payload_cwd(
+        self, tmp_path
+    ):
+        """Counterfactual: strip the payload's ``cwd`` (leaving everything
+        else, including the subagent marker, unchanged) and the SAME clean,
+        readable script reverts to the conservative T3 verdict -- proving the
+        payload's directory, not some other change, produced the fix."""
+        (tmp_path / "report.mjs").write_text("console.log('report ready');\n")
+        result = BashValidator().validate(
+            "node report.mjs", hook_payload=dict(self._SUBAGENT_MARKER),
+        )
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+
 class TestNpmPrefixCwdResolution:
     """``npm run <s> --prefix <dir>`` / ``--prefix=<dir>`` / ``-C <dir>`` must
     resolve ``<dir>/package.json`` -- npm's own cwd-fixing option -- exactly as
