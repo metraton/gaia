@@ -239,6 +239,60 @@ CLASSIFIER_TRUTH_TABLE = [
     ),
     # ---- FREE: bare init on the sibling CLI stays free too ----
     ("read-terragrunt-init", FREE, "terragrunt init", False, T0),
+    # ---- FREE: --prune on `git fetch` no longer taxes local ref cleanup ----
+    # Previously GATED (True, T3): `--prune` sat in DANGEROUS_FLAGS as an
+    # ALWAYS entry, so it escalated `fetch` -- a read-only verb -- to T3 on
+    # EVERY CLI that carried the exact flag, regardless of what the flag
+    # actually does there. On `git fetch` it only removes LOCAL
+    # remote-tracking refs whose branch is already gone on the remote --
+    # bookkeeping the caller has already lost, not a destruction of anything
+    # they own. Measured: 15 approvals. Recorded here as the deliberate edit
+    # the table's own convention calls for -- moving a row's expected verdict
+    # is how a closed gap stays visible instead of reading as though nobody
+    # measured it. Anchored to the exact (git, fetch, --prune) path in
+    # COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS -- see the GATED controls
+    # immediately below, which the SAME table leaves untouched on purpose.
+    ("prune-git-fetch", FREE, "git fetch --prune", False, T0),
+    # ---- GATED: the identical flag, where it destroys real state ----
+    # These did not move. They pin the property this fix exists to protect:
+    # the flag scales where it actually destroys, not where the ALWAYS entry
+    # merely says so. `kubectl apply --prune` deletes live cluster resources
+    # not present in the applied set -- gated independently of the ALWAYS
+    # mechanism, since `apply` is itself a MUTATIVE_VERBS verb. The two
+    # `state list --prune` forms are read-only verbs relying on the SAME
+    # ALWAYS mechanism the fetch exemption narrows, on the two infrastructure
+    # CLIs this repository observes -- narrowing the flag's reach to one exact
+    # git path must not narrow it here. The compound git form proves the
+    # narrowing is scoped to the FLAG TOKEN, not to the command: a second,
+    # non-exempted ALWAYS flag on the identical exempted path still escalates.
+    (
+        "control-prune-kubectl-apply",
+        GATED,
+        "kubectl apply -f k8s/ --prune -l app=guestbook",
+        True,
+        T3,
+    ),
+    (
+        "control-prune-terraform-state",
+        GATED,
+        "terraform state list --prune",
+        True,
+        T3,
+    ),
+    (
+        "control-prune-terragrunt-state",
+        GATED,
+        "terragrunt state list --prune",
+        True,
+        T3,
+    ),
+    (
+        "control-prune-fetch-plus-force",
+        GATED,
+        "git fetch --prune --force",
+        True,
+        T3,
+    ),
     # ---- FREE: the tee anchor's sibling reads, which had no row at all ----
     # The sensitive-write row above landed without a single free counterpart,
     # so nothing in this table could tell a path predicate that discriminates

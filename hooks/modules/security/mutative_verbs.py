@@ -2551,6 +2551,67 @@ DANGEROUS_FLAGS: Dict[str, str] = {
     "-fr": "ALWAYS",
 }
 
+
+# ============================================================================
+# ALWAYS-flag exemptions (anchored) — the family-scoped narrowing of an
+# ALWAYS entry in DANGEROUS_FLAGS.
+# ============================================================================
+# An ALWAYS flag escalates a read-only verb regardless of CLI (see
+# ``_scan_always_dangerous_flags``): that is the right default for a flag that
+# destroys real state on every CLI it appears on (``--force``, ``--cascade``,
+# ``--grace-period=0``, ``--now``). ``--prune`` is not that kind of flag — its
+# effect depends entirely on WHAT is being pruned. ``git fetch --prune``
+# deletes only LOCAL remote-tracking refs whose branch no longer exists on the
+# remote: bookkeeping that mirrors reality the user has already lost, not a
+# destruction of anything they own. The same literal flag on a cluster or
+# infrastructure CLI reaches live state instead (measured: ``kubectl apply
+# --prune`` deletes resources not present in the applied set; a bare
+# read-only verb carrying ``--prune`` on ``terraform``/``terragrunt`` stays
+# gated by the unmodified ALWAYS default). Making the flag universally safe
+# would free the one case that only cleans up local bookkeeping and the ones
+# that destroy live state in the same stroke — the exact overcorrection this
+# table exists to prevent.
+#
+# This table narrows an ALWAYS flag's reach to an exact (CLI, path) anchor,
+# reusing the SAME ``MutativeAnchor`` shape and ``_validated_anchor_table``
+# guard as ``COMMAND_PATH_MUTATIVE_UPGRADES`` — the family-scoped-by-flag
+# capability that table already expresses (built for the M2 IAM/run/init
+# anchors), applied here in the opposite direction: subtracting one flag from
+# the escalation set for one exact path, rather than adding a verdict. An
+# anchor here can only ever narrow an ALWAYS flag's reach; it never touches a
+# verb already decided MUTATIVE by an earlier step (that verdict is returned
+# long before this table is consulted), and it never exempts any OTHER
+# ALWAYS flag on the same command — ``git fetch --prune --force`` still
+# escalates on ``--force``, because the exemption is keyed to the exact flag
+# token, not to the command as a whole.
+COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS: Dict[str, Tuple[MutativeAnchor, ...]] = _validated_anchor_table({
+    "git": (
+        # Scoped to `fetch` alone, not to `git` as a whole: `git push --prune`
+        # (deletes REMOTE branches) stays gated -- unaffected by this table
+        # anyway, since `push` is already a MUTATIVE_VERBS verb decided before
+        # Step 5 ever runs -- and `git gc --prune=<date>` carries a different
+        # token entirely (`--prune=<date>` is not the exact string `--prune`),
+        # so it was never matched by the ALWAYS scan in the first place.
+        MutativeAnchor(path=("fetch",), flags=frozenset({"--prune"})),
+    ),
+})
+
+
+def _always_flag_exemptions(base_cmd: str, semantics: "CommandSemantics") -> FrozenSet[str]:
+    """Return the ALWAYS-dangerous flags exempted for this exact command path.
+
+    Consulted only from the read-only-verb ALWAYS-flag escalation branch of
+    Step 4, so a verb already decided MUTATIVE by an earlier step never
+    reaches this table and can never be downgraded by it.
+    """
+    exempted: set = set()
+    for anchor in COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS.get(base_cmd, ()):
+        matched = anchor.matched_flags(semantics)
+        if matched is not None:
+            exempted.update(matched)
+    return frozenset(exempted)
+
+
 # Git-specific flags that promote a normally local-safe subcommand to T3.
 # ``git reset`` and ``git reset --soft`` only adjust the index and HEAD
 # without touching the working tree, but ``git reset --hard`` discards
@@ -2843,10 +2904,14 @@ def _scan_always_dangerous_flags(
     This exists so the read-only-verb path can escalate on an ALWAYS flag
     WITHOUT pulling in CONTEXT-flag handling (which is family-gated and must
     not fire on a read-only verb just because a benign ``-r``/``-f`` appears).
-    A read-only verb carrying an ALWAYS flag -- e.g. ``git fetch --prune``,
-    which deletes stale remote-tracking refs -- is a real mutation that the
-    Step 5 scan would catch, but the read-only early-return returns before
-    Step 5 is ever reached. Escalating here closes that hole.
+    A read-only verb carrying an ALWAYS flag -- e.g. ``terraform state list
+    --prune``, a form the Step 5 scan would catch on its own -- is a real
+    mutation, but the read-only early-return returns before Step 5 is ever
+    reached. Escalating here closes that hole. The caller narrows this further
+    per (CLI, path) via ``COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS`` for a flag
+    whose destructive meaning does not hold on every CLI that carries it --
+    see that table for ``git fetch --prune``, which this function still
+    reports as ALWAYS-dangerous.
     """
     found: List[str] = []
     for token in tokens:
@@ -4110,32 +4175,50 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             verb = candidate if candidate in READ_ONLY_VERBS else full_lower
             # An ALWAYS-dangerous flag escalates even a read-only verb: the
             # Step 5 flag scan below never runs for a read-only verb because
-            # this early-return fires first, so `git fetch --prune` (fetch is
-            # read-only, --prune deletes stale remote-tracking refs) would
-            # otherwise skip the ALWAYS escalation entirely. Only ALWAYS flags
-            # override here -- CONTEXT flags are family-gated and a benign
-            # `-r`/`-f` on a read-only verb must NOT be treated as mutative.
+            # this early-return fires first, so `terraform state list --prune`
+            # (`list` is read-only, `--prune` reaches live state on that CLI)
+            # would otherwise skip the ALWAYS escalation entirely. Only ALWAYS
+            # flags override here -- CONTEXT flags are family-gated and a
+            # benign `-r`/`-f` on a read-only verb must NOT be treated as
+            # mutative.
+            #
+            # An exact (CLI, path, flag) anchor in
+            # COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS narrows this further: an
+            # ALWAYS flag whose destructive meaning is real on some CLIs and
+            # inert on this one is subtracted from the escalating set before
+            # the decision, never removed from DANGEROUS_FLAGS itself -- every
+            # OTHER CLI keeps the unmodified ALWAYS default.
             always_flags = _scan_always_dangerous_flags(tokens)
-            if always_flags:
+            exempt_flags = _always_flag_exemptions(base_cmd, semantics)
+            escalating_flags = tuple(
+                flag for flag in always_flags if flag not in exempt_flags
+            )
+            if escalating_flags:
                 return MutativeResult(
                     is_mutative=True,
                     category=CATEGORY_MUTATIVE,
                     verb=verb,
-                    dangerous_flags=always_flags,
+                    dangerous_flags=escalating_flags,
                     cli_family=family,
                     confidence="high",
                     reason=(
                         f"Read-only verb '{verb}' escalated by ALWAYS-dangerous "
-                        f"flag(s) {always_flags}"
+                        f"flag(s) {escalating_flags}"
                     ),
                 )
+            exempted_detail = (
+                f" ({tuple(sorted(exempt_flags & set(always_flags)))} exempted "
+                f"for this path)"
+                if always_flags
+                else ""
+            )
             return MutativeResult(
                 is_mutative=False,
                 category=CATEGORY_READ_ONLY,
                 verb=verb,
                 cli_family=family,
                 confidence=confidence,
-                reason=f"Read-only verb '{verb}'",
+                reason=f"Read-only verb '{verb}'{exempted_detail}",
             )
 
         # Check command aliases as verb (e.g., "docker rm" -> rm is alias)

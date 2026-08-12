@@ -4225,18 +4225,27 @@ class TestGaiaScanWriteModeIsMutative:
 
 class TestReadOnlyVerbEscalatedByAlwaysFlag:
     """An ALWAYS-dangerous flag escalates even a read-only verb. The read-only
-    verb early-return fires before the Step 5 flag scan, so `git fetch --prune`
-    (fetch is read-only; --prune deletes stale remote-tracking refs) would
-    otherwise skip the ALWAYS escalation. This suite pins that hole closed.
+    verb early-return fires before the Step 5 flag scan, so an ALWAYS flag on
+    a read-only verb -- e.g. `git fetch --force` -- would otherwise skip the
+    escalation entirely. This suite pins that hole closed.
+
+    `git fetch --prune` is no longer an example of it: `--prune` on `fetch`
+    only deletes LOCAL remote-tracking refs already gone on the remote, and is
+    exempted per (CLI, path) by COMMAND_PATH_ALWAYS_FLAG_EXEMPTIONS. See
+    ``test_prune_flag_family_scope.py`` for that exemption's own suite,
+    including the counterfactual and the forms that must keep escalating.
     """
 
-    def test_git_fetch_prune_is_escalated(self):
-        result = detect_mutative_command("git fetch --prune")
+    def test_git_fetch_force_is_escalated(self):
+        # --force is not exempted anywhere, so it still demonstrates the
+        # general property this class pins: an ALWAYS flag escalates a
+        # read-only verb.
+        result = detect_mutative_command("git fetch --force")
         assert result.is_mutative is True, (
-            f"git fetch --prune deletes remote-tracking refs and must escalate "
-            f"on the ALWAYS --prune flag. Got {result.category}: {result.reason}"
+            f"git fetch --force must escalate on the ALWAYS --force flag. "
+            f"Got {result.category}: {result.reason}"
         )
-        assert "--prune" in result.dangerous_flags
+        assert "--force" in result.dangerous_flags
 
     def test_git_fetch_without_prune_stays_read_only(self):
         # Control: the same read-only verb without an ALWAYS flag is unchanged.
