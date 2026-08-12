@@ -857,6 +857,48 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("config", "delete")),
         MutativeAnchor(path=("config", "edit")),
     ),
+    # `git remote add` creates a NEW remote destination the repository will
+    # push to and fetch from thereafter -- the same "grants a new capability"
+    # shape as the IAM bindings above, reached through the same door: "add" is
+    # deliberately absent from MUTATIVE_VERBS, so the whole command fell
+    # through to Step 4 and classified READ_ONLY by elimination. Two sibling
+    # forms already gate today and are deliberately NOT re-anchored here:
+    # `git worktree add` has its own family classifier (_check_git_worktree),
+    # and `git remote set-url` -- repointing an EXISTING destination -- is
+    # already caught by the generic verb scan on "set". The one residual open
+    # surface is standing up a NEW remote, so only `remote add` is anchored.
+    # `git remote -v` / `git remote show` / `git remote rename` are untouched
+    # and stay free: the anchor path requires "add" as the second token.
+    "git": (
+        MutativeAnchor(path=("remote", "add")),
+    ),
+    # `terraform init` / `terragrunt init` re-run against a workspace that
+    # already has provider plugins and remote state -- bare init is idempotent
+    # bootstrapping and stays free. But three flags turn the same subcommand
+    # into a state-mutating operation: `-upgrade` rewrites installed provider
+    # versions, `-migrate-state` moves the backend's state to a new
+    # configuration, and `-reconfigure` discards the existing backend config
+    # and re-initializes it. None of the three carries a verb in
+    # MUTATIVE_VERBS ("init" names no lifecycle action the taxonomy tracks),
+    # so all three fell through to Step 4 and classified READ_ONLY by
+    # elimination alongside the harmless bare form. One flag-conditioned
+    # anchor per CLI (the mechanism built in the M2 PREVIA task) scopes the
+    # escalation to exactly the flags that mutate, on both infra CLIs this
+    # repository observed in use -- `terraform` and `terragrunt` do not share
+    # a base_cmd, so each needs its own entry; a bare `terraform init` /
+    # `terragrunt init` with none of the three flags is untouched.
+    "terraform": (
+        MutativeAnchor(
+            path=("init",),
+            flags=frozenset({"-upgrade", "-migrate-state", "-reconfigure"}),
+        ),
+    ),
+    "terragrunt": (
+        MutativeAnchor(
+            path=("init",),
+            flags=frozenset({"-upgrade", "-migrate-state", "-reconfigure"}),
+        ),
+    ),
 })
 
 
@@ -1661,6 +1703,7 @@ COMMAND_ALIASES: Dict[str, str] = {
     "chown": CATEGORY_MUTATIVE,
     "chgrp": CATEGORY_MUTATIVE,
     "nohup": CATEGORY_MUTATIVE,
+    "tee": CATEGORY_MUTATIVE,
 }
 
 
@@ -1808,6 +1851,87 @@ def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
 
 
 # ============================================================================
+# tee -- path-sensitive tier override (T3 for sensitive paths, T0 otherwise)
+# ============================================================================
+# `tee` writes stdin verbatim to every file argument it is given, and carried
+# no verb in MUTATIVE_VERBS or any base_cmd entry at all -- it fell through
+# every step of detection and classified READ_ONLY by elimination regardless
+# of what it targeted. Modeled on `mkdir`'s path-sensitive override rather
+# than a blanket T3: the destination decides, not the tool. Writing into the
+# working tree, the user's home, or the Gaia scratch directory stays T0 --
+# taxing every ordinary use of `tee` (piping a command's output through it to
+# watch it while also saving it) would be a toll on writing where the user
+# already has every right to. A target is sensitive when it resolves onto:
+#
+#   * a privileged OS directory (MKDIR_SENSITIVE_PATH_PREFIXES -- the same
+#     set mkdir already gates, minus scratch space by the same reasoning), or
+#   * Gaia's own live hooks tree (_gaia_hooks_root) -- a direct write onto the
+#     security-enforcement code itself is sensitive on every machine Gaia
+#     runs on, regardless of whether that tree happens to sit under one of
+#     the fixed OS prefixes; docs (``.md``) are exempt because they do not
+#     execute, mirroring the same carve-out in protected_path_guard.py for
+#     the installed ``.claude/hooks`` tree -- this is that guard's
+#     SOURCE-tree sibling, reached through the tier classifier instead of a
+#     categorical block, because a source checkout is not `.claude/`.
+#
+# Conservative by design, mirroring mkdir: `tee` with no file argument at all
+# (a pure stdin-to-stdout passthrough, `cmd | tee`) is ambiguous -- there is
+# no destination to confirm as safe -- and stays at the alias default (T3).
+
+def _tee_targets_sensitive_path(tokens: tuple) -> bool:
+    """Return True if any file argument to tee falls under a sensitive path.
+
+    Scans all non-flag tokens after the base command (skipping `--` and
+    tee's own valueless flags: -a/--append, -i, -p, --output-error[=MODE]).
+    A path is sensitive when it is absolute and resolves onto a privileged OS
+    directory or Gaia's own live hooks tree (see the module comment above).
+
+    Args:
+        tokens: Full token tuple from tokenize_command (includes base cmd).
+
+    Returns:
+        True  -> at least one file argument targets a sensitive path (T3).
+        False -> every file argument is a working-tree/scratch path (T0
+                 eligible).
+    """
+    import os
+    seen_end_of_opts = False
+    i = 1  # skip base_cmd at index 0
+    while i < len(tokens):
+        token = tokens[i]
+        i += 1
+
+        if token == "--":
+            seen_end_of_opts = True
+            continue
+
+        if not seen_end_of_opts and token.startswith("-"):
+            # tee's own flags take no separate value argument.
+            continue
+
+        # token is a file argument (positional, or after --)
+        if token.startswith("~/") or token == "~":
+            # Home-relative paths are always safe -- they resolve under $HOME.
+            continue
+
+        if not os.path.isabs(token):
+            # Relative path -> working-tree, not sensitive.
+            continue
+
+        norm = os.path.normpath(token)
+        for prefix in MKDIR_SENSITIVE_PATH_PREFIXES:
+            if norm == prefix or norm.startswith(prefix + "/"):
+                return True
+
+        if not norm.endswith(".md"):
+            hooks_root = _gaia_hooks_root()
+            if hooks_root and (norm == hooks_root or norm.startswith(hooks_root + os.sep)):
+                return True
+
+    return False
+
+
+# ============================================================================
 # rm -- scratch-directory tier override (T0 inside Gaia scratch, T3 otherwise)
 # ============================================================================
 # `rm` (including `rm -rf`) is normally a MUTATIVE command alias requiring T3
@@ -1847,6 +1971,31 @@ def _gaia_scratch_root() -> "str | None":
     try:
         from gaia.paths.resolver import scratch_dir
         return os.path.realpath(str(scratch_dir()))
+    except Exception:
+        return None
+
+
+def _gaia_hooks_root() -> "str | None":
+    """Return the canonical (realpath) Gaia hooks directory this module ships in.
+
+    Resolved from ``__file__`` (this module lives at
+    ``hooks/modules/security/mutative_verbs.py``), so it names whichever hooks
+    tree is ACTUALLY governing this process -- a source checkout under active
+    development, an installed dev-pack, or a published package -- rather than a
+    single hardcoded install location that would be wrong for every layout but
+    one. Used by the tee sensitive-path override below: a direct write onto
+    Gaia's own security-enforcement code is a sensitive target whose location
+    cannot be a fixed prefix (unlike ``/etc`` or ``/usr``, which are the same
+    path on every machine), so it is resolved live instead of declared.
+
+    Fail-closed, mirroring ``_gaia_scratch_root``: any resolution failure
+    returns None, which makes the sensitivity check decline to match rather
+    than silently treat every path as safe.
+    """
+    import os
+    try:
+        here = os.path.dirname(os.path.realpath(__file__))
+        return os.path.realpath(os.path.join(here, "..", ".."))
     except Exception:
         return None
 
@@ -3164,6 +3313,31 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     "scratch via realpath"
                 ),
             )
+
+        # tee path-sensitive override: classify as T0 when every file argument
+        # is a working-tree/scratch path and NOT a privileged OS directory or
+        # Gaia's own live hooks tree (see _tee_targets_sensitive_path).
+        # Conservative fallback: no file argument at all (a pure stdin-to-
+        # stdout passthrough) falls through to T3, mirroring mkdir's own
+        # "cannot confirm safety" fallback.
+        if base_cmd == "tee":
+            path_tokens = [
+                t for t in tokens[1:]
+                if not t.startswith("-") and t != "--"
+            ]
+            if path_tokens and not _tee_targets_sensitive_path(tuple(tokens)):
+                return MutativeResult(
+                    is_mutative=False,
+                    category=CATEGORY_READ_ONLY,
+                    verb=base_cmd,
+                    cli_family="system",
+                    confidence="high",
+                    reason=(
+                        "tee targeting working-tree/scratch paths only "
+                        "(no sensitive system prefix or Gaia hooks tree)"
+                    ),
+                )
+            # No file arguments or a sensitive target -> fall through to T3.
 
         return MutativeResult(
             is_mutative=True,

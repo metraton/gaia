@@ -228,6 +228,9 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             "kubectl",
             "gh",
             "npm",
+            "git",
+            "terraform",
+            "terragrunt",
         }
 
     def test_project_cli_paths_are_the_previously_declared_ones(self):
@@ -313,14 +316,41 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("kubectl", "run"),
         }
 
-    def test_only_the_reviewed_shipped_anchor_carries_a_flag_condition(self):
-        """The flag half of the seam has exactly one shipped user: kubectl run.
+    def test_state_destination_paths_are_the_reviewed_ones(self):
+        """A new remote destination, and infra init that migrates/reconfigures state.
 
-        Every other shipped anchor still decides by path alone -- a bare
-        ``kubectl run`` names no form that actually starts a workload, so the
-        condition is carried by the flag that does: an explicit image. A new
-        flagged entry arriving here is a review point same as any other
-        addition.
+        ``git remote add`` carries no verb in MUTATIVE_VERBS (``add`` is
+        deliberately excluded) so it fell through to Step 4 and classified
+        READ_ONLY by elimination -- the two forms already gated (worktree
+        creation, and repointing an EXISTING destination via ``set-url``) are
+        deliberately NOT re-anchored here. ``terraform``/``terragrunt init``
+        carry no verb either; the condition is carried by the flags that
+        actually mutate state (module upgrade, state migration,
+        reconfiguration), not the bare subcommand, so a plain ``init`` stays
+        free on both CLIs this repository observed.
+        """
+        paths = {
+            (base_cmd,) + anchor.path
+            for base_cmd, anchors in COMMAND_PATH_MUTATIVE_UPGRADES.items()
+            for anchor in anchors
+            if base_cmd in ("git", "terraform", "terragrunt")
+        }
+        assert paths == {
+            ("git", "remote", "add"),
+            ("terraform", "init"),
+            ("terragrunt", "init"),
+        }
+
+    def test_only_the_reviewed_shipped_anchors_carry_a_flag_condition(self):
+        """The flag half of the seam has three shipped users.
+
+        ``kubectl run`` -- a bare invocation names no form that actually
+        starts a workload, so the condition is carried by the flag that does:
+        an explicit image. ``terraform``/``terragrunt init`` -- a bare
+        invocation is idempotent bootstrapping, so the condition is carried
+        by the three flags that actually mutate state. Every other shipped
+        anchor still decides by path alone. A new flagged entry arriving here
+        is a review point same as any other addition.
         """
         flagged = {
             (base_cmd,) + anchor.path: anchor.flags
@@ -328,8 +358,11 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             for anchor in anchors
             if anchor.flags
         }
+        state_flags = frozenset({"-upgrade", "-migrate-state", "-reconfigure"})
         assert flagged == {
             ("kubectl", "run"): frozenset({"--image"}),
+            ("terraform", "init"): state_flags,
+            ("terragrunt", "init"): state_flags,
         }
 
 

@@ -191,23 +191,54 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-gh-workflow-list", FREE, "gh workflow list", False, T0),
     ("read-gh-workflow-view", FREE, "gh workflow view deploy.yml", False, T0),
     ("read-gh-run-view", FREE, "gh run view 123456", False, T0),
-    # ---- OPEN: state, destination and direct write ----
-    ("state-upgrade", OPEN, "terraform init -upgrade", False, T0),
-    ("state-migrate", OPEN, "terraform init -migrate-state", False, T0),
+    # ---- CLOSED: state, destination and direct write ----
+    # These four were recorded OPEN (False, T0). None of the three verbs
+    # behind them sits in MUTATIVE_VERBS -- `init` names no lifecycle action
+    # the taxonomy tracks, `add` is deliberately excluded (git add stays
+    # free), and `tee` carries no verb at all -- so every one fell through to
+    # Step 4 (or, for tee, every step) and classified READ_ONLY by
+    # elimination. `state-reconfigure` and the three `terragrunt` rows below
+    # were not in the original OPEN pair: surfaced while anchoring `-upgrade`
+    # /`-migrate-state` as the third flag sharing the same mutating shape, and
+    # as the sibling CLI this repository observed alongside terraform.
+    # Anchored per (family, subcommand)/(family, flag) in
+    # COMMAND_PATH_MUTATIVE_UPGRADES; the direct write is anchored by a
+    # sensitive-path predicate on `tee` itself, never by widening a verb or
+    # prohibiting the tool.
+    ("state-upgrade", GATED, "terraform init -upgrade", True, T3),
+    ("state-migrate", GATED, "terraform init -migrate-state", True, T3),
+    ("state-reconfigure", GATED, "terraform init -reconfigure", True, T3),
+    ("state-upgrade-terragrunt", GATED, "terragrunt init -upgrade", True, T3),
+    (
+        "state-migrate-terragrunt",
+        GATED,
+        "terragrunt init -migrate-state",
+        True,
+        T3,
+    ),
+    (
+        "state-reconfigure-terragrunt",
+        GATED,
+        "terragrunt init -reconfigure",
+        True,
+        T3,
+    ),
     (
         "remote-add",
-        OPEN,
+        GATED,
         "git remote add upstream git@github.com:other/repo.git",
-        False,
-        T0,
+        True,
+        T3,
     ),
     (
         "sensitive-write",
-        OPEN,
+        GATED,
         "tee /home/jorge/ws/me/gaia/hooks/pre_tool_use.py",
-        False,
-        T0,
+        True,
+        T3,
     ),
+    # ---- FREE: bare init on the sibling CLI stays free too ----
+    ("read-terragrunt-init", FREE, "terragrunt init", False, T0),
     # ---- GATED controls: already T3, must stay T3 ----
     ("control-pr-merge", GATED, "gh pr merge 42 --squash", True, T3),
     (
@@ -259,7 +290,7 @@ CLASSIFIER_TRUTH_TABLE = [
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 44
+_MINIMUM_MEASURED_CASES = 49
 
 
 @pytest.mark.parametrize(
