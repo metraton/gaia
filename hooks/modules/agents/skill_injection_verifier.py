@@ -60,8 +60,9 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
     ],
     "coding-standards": [
         "why-not-what test",
-        "Redundancy is the threshold, not a line count",
-        "No tooling, AI, or plan-system traces",
+        "Zero redundant comments",
+        "The seven protected categories",
+        "No temporal, attribution, or process traces",
     ],
 }
 
