@@ -31,20 +31,32 @@ no table anywhere in the module).
   script-file lane. A direct write onto a privileged OS directory or onto
   Gaia's own live hooks tree is what makes a ``tee`` target sensitive; every
   other destination, including the Gaia scratch directory, stays free. This
-  is a PATH predicate, not a ban on the tool -- prohibiting ``tee`` outright
-  would charge the user for writing where they already have every right to.
+  is decided by the DESTINATION, not by the tool -- prohibiting ``tee``
+  outright would charge the user for writing where they already have every
+  right to.
 
 So the repair anchors the first two families in COMMAND_PATH_MUTATIVE_UPGRADES
 by exact (family, subcommand)/(family, flag) -- the mechanism built in the M2
-PREVIA task -- and the third by a sensitive-path predicate on ``tee`` itself,
-mirroring the ``mkdir`` override this repository already ships. None widens a
-verb globally.
+PREVIA task -- and decides the third with a discriminator, ``_check_tee_write``.
+None widens a verb globally.
+
+WHY A DISCRIMINATOR AND NOT A COMMAND-ALIAS ENTRY. ``tee`` was first anchored by
+adding it to COMMAND_ALIASES -- a GLOBAL table keyed by TOOL NAME -- and
+subtracting the safe destinations back out. That inverts the default: with no
+file argument there is nothing to subtract, so the bare form stayed gated. But
+an absent file argument is not an unanalyzable write, it is the whole of the
+READ idiom: ``cmd | tee`` copies stdin to stdout and writes nothing, and since
+the validator splits a pipeline on its operators and classifies each component,
+the bare ``tee`` component denied entire read-only pipelines. The discriminator
+stands aside by default and only ever ADDS a verdict, so the passthrough is free
+in a pipeline and loose, with flags and without, while the sensitive write it
+was built to catch is unchanged.
 
 Every closed form carries its counterfactual: withdraw the anchor (or, for
-``tee``, its COMMAND_ALIASES entry), drop the memoized verdicts, and the form
-must return to exactly what it classified before this work. A present entry
-is not a firing one -- this repository has shipped a whole table that read as
-coverage and decided nothing.
+``tee``, make the discriminator stand aside), drop the memoized verdicts, and
+the form must return to exactly what it classified before this work. A present
+entry is not a firing one -- this repository has shipped a whole table that read
+as coverage and decided nothing.
 """
 
 import sys
@@ -57,13 +69,14 @@ REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
 sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(REPO_ROOT))  # for the `gaia` package (resolver)
 
+from modules.security import mutative_verbs as mutative_verbs_module
 from modules.security import tiers as tiers_module
 from modules.security.mutative_verbs import (
-    COMMAND_ALIASES,
     COMMAND_PATH_MUTATIVE_UPGRADES,
     detect_mutative_command,
 )
 from modules.security.tiers import SecurityTier, classify_command_tier
+from modules.tools.shell_parser import ShellCommandParser
 
 T0 = SecurityTier.T0_READ_ONLY
 T2 = SecurityTier.T2_DRY_RUN
@@ -87,6 +100,7 @@ CLOSED = [
         "git remote add upstream git@github.com:other/repo.git",
     ),
     ("tee-sensitive-write", f"tee {_HOOKS_SENSITIVE_TARGET}"),
+    ("tee-privileged-path-write", "tee /etc/hosts"),
 ]
 
 # The exact anchors this work adds, keyed by base command -- used only to
@@ -105,6 +119,21 @@ FREE = [
     ("git-remote-list", "git remote -v"),
     ("tee-relative-write", "tee output.log"),
     ("tee-tmp-write", "tee /tmp/probe.txt"),
+    # The passthrough that writes nothing, in the SAME table as the writes
+    # that escalate -- a table holding only the escalating forms cannot tell a
+    # discriminator from a ban on the tool.
+    ("tee-passthrough-no-file", "tee"),
+    ("tee-passthrough-append-flag", "tee -a"),
+    ("tee-passthrough-end-of-options", "tee --"),
+]
+
+# Read-only pipelines whose LAST component is the bare passthrough. The
+# compound path in bash_validator classifies each component on its own, so a
+# component that classifies mutative denies the whole chain -- which is how
+# the passthrough sank these two.
+PASSTHROUGH_PIPELINES = [
+    ("pipeline-ls", "ls -la | tee"),
+    ("pipeline-kubectl", "kubectl get pods | tee"),
 ]
 
 
@@ -149,9 +178,16 @@ def without_the_state_destination_anchors(monkeypatch):
 
 
 @pytest.fixture
-def without_the_tee_alias(monkeypatch):
-    """Withdraw the ``tee`` entry from COMMAND_ALIASES, caches cleared on both edges."""
-    monkeypatch.delitem(COMMAND_ALIASES, "tee", raising=False)
+def without_the_tee_discriminator(monkeypatch):
+    """Make ``_check_tee_write`` stand aside unconditionally.
+
+    The discriminator's whole contract is that standing aside leaves the
+    verdict untouched, so neutralising it is the exact counterfactual: what it
+    escalates must fall back to what the classifier said before it existed.
+    """
+    monkeypatch.setattr(
+        mutative_verbs_module, "_check_tee_write", lambda base_cmd, tokens: None
+    )
     _clear_classifier_caches()
     yield
     _clear_classifier_caches()
@@ -191,7 +227,11 @@ def test_state_destination_or_direct_write_free_forms_stay_free(case_id, command
     )
 
 
-@pytest.mark.parametrize("case_id,command", CLOSED[:7], ids=[c for c, _ in CLOSED[:7]])
+@pytest.mark.parametrize(
+    "case_id,command",
+    [(i, c) for i, c in CLOSED if not i.startswith("tee-")],
+    ids=[i for i, _ in CLOSED if not i.startswith("tee-")],
+)
 def test_state_destination_counterfactual_without_the_anchor(
     case_id, command, without_the_state_destination_anchors
 ):
@@ -200,7 +240,7 @@ def test_state_destination_counterfactual_without_the_anchor(
 
     A present entry is not a firing one -- this proves the entry is what
     moved the verdict, not some unrelated rule that happened to agree with
-    it. Excludes the tee case, which is anchored a different way (see below).
+    it. Excludes the tee cases, which are decided a different way (see below).
     """
     result = detect_mutative_command(command)
     assert result.is_mutative is False, (
@@ -211,17 +251,46 @@ def test_state_destination_counterfactual_without_the_anchor(
     assert classify_command_tier(command) == T0
 
 
-def test_direct_write_counterfactual_without_the_tee_alias(without_the_tee_alias):
-    """The tee sensitive-write case returns to READ_ONLY once the alias
-    entry itself is withdrawn -- proving the classification depends on the
-    new entry, not on some unrelated rule."""
-    command = f"tee {_HOOKS_SENSITIVE_TARGET}"
+@pytest.mark.parametrize(
+    "case_id,command",
+    [(i, c) for i, c in CLOSED if i.startswith("tee-")],
+    ids=[i for i, _ in CLOSED if i.startswith("tee-")],
+)
+def test_direct_write_counterfactual_without_the_tee_discriminator(
+    case_id, command, without_the_tee_discriminator
+):
+    """Every tee sensitive-write case returns to READ_ONLY once the
+    discriminator stands aside -- proving the classification depends on it,
+    not on some unrelated rule that happened to agree."""
     result = detect_mutative_command(command)
     assert result.is_mutative is False, (
-        f"with the tee alias withdrawn this form must classify exactly as "
-        f"it did before this work -- got {result.category}: {result.reason}"
+        f"{case_id}: with the tee discriminator standing aside this form must "
+        f"classify exactly as it did before this work -- "
+        f"got {result.category}: {result.reason}"
     )
     assert classify_command_tier(command) == T0
+
+
+@pytest.mark.parametrize(
+    "case_id,command",
+    PASSTHROUGH_PIPELINES,
+    ids=[c for c, _ in PASSTHROUGH_PIPELINES],
+)
+def test_read_only_pipeline_through_the_passthrough_stays_free(case_id, command):
+    """A read-only pipeline ending in the bare passthrough costs nothing --
+    measured the way the validator measures it, component by component.
+
+    Asserting only the joined string would miss the regression entirely: the
+    joined string never classified mutative. What denied these pipelines was
+    the trailing ``tee`` component, judged on its own by the compound path.
+    """
+    for index, component in enumerate(ShellCommandParser().parse(command), 1):
+        result = detect_mutative_command(component)
+        assert result.is_mutative is False, (
+            f"{case_id}: component {index} {component!r} makes the whole "
+            f"pipeline cost consent -- got {result.category}: {result.reason}"
+        )
+        assert classify_command_tier(component) == T0
 
 
 @pytest.mark.parametrize("case_id,command", FREE, ids=[c for c, _ in FREE])

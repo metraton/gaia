@@ -97,7 +97,7 @@ class TestCommandAliases:
 
     def test_all_aliases_in_constant(self):
         """Verify all expected command aliases are registered."""
-        expected_aliases = {"rm", "rmdir", "mkdir", "mv", "cp", "ln", "dd", "mkfs", "fdisk", "chmod", "chown", "chgrp", "nohup", "tee"}
+        expected_aliases = {"rm", "rmdir", "mkdir", "mv", "cp", "ln", "dd", "mkfs", "fdisk", "chmod", "chown", "chgrp", "nohup"}
         assert expected_aliases == set(COMMAND_ALIASES.keys())
 
 

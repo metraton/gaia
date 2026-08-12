@@ -1703,7 +1703,6 @@ COMMAND_ALIASES: Dict[str, str] = {
     "chown": CATEGORY_MUTATIVE,
     "chgrp": CATEGORY_MUTATIVE,
     "nohup": CATEGORY_MUTATIVE,
-    "tee": CATEGORY_MUTATIVE,
 }
 
 
@@ -1851,17 +1850,30 @@ def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
 
 
 # ============================================================================
-# tee -- path-sensitive tier override (T3 for sensitive paths, T0 otherwise)
+# tee write discriminator (stands aside unless the destination is sensitive)
 # ============================================================================
-# `tee` writes stdin verbatim to every file argument it is given, and carried
-# no verb in MUTATIVE_VERBS or any base_cmd entry at all -- it fell through
-# every step of detection and classified READ_ONLY by elimination regardless
-# of what it targeted. Modeled on `mkdir`'s path-sensitive override rather
-# than a blanket T3: the destination decides, not the tool. Writing into the
-# working tree, the user's home, or the Gaia scratch directory stays T0 --
-# taxing every ordinary use of `tee` (piping a command's output through it to
-# watch it while also saving it) would be a toll on writing where the user
-# already has every right to. A target is sensitive when it resolves onto:
+# `tee` writes stdin verbatim onto every file argument it is given, and carries
+# no verb in MUTATIVE_VERBS -- it falls through every step of detection and
+# classifies READ_ONLY by elimination regardless of what it targets. So a
+# direct write onto a privileged OS directory or onto Gaia's own live hooks
+# tree needs a decision of its own.
+#
+# It cannot be that decision's home in COMMAND_ALIASES. That table classifies by
+# TOOL NAME, and `tee` is neither mutative nor harmless by its name -- its
+# ARGUMENT decides. Anchoring the name and subtracting the safe cases back out
+# inverts the default: with no file argument at all, there is nothing to subtract
+# and the command stays gated. But an absent file argument is not a write that
+# could not be analyzed; it is the whole of the READ idiom. `cmd | tee` copies
+# stdin to stdout and writes nothing, and because the validator splits a pipeline
+# on its operators and classifies each component, the bare `tee` component denied
+# the entire pipeline -- charging consent for looking at what flows through it.
+#
+# `git tag` and `git config` had the identical shape (one spelling, two modes,
+# separated by arguments rather than by name) and took the identical answer: a
+# discriminator that STANDS ASIDE by default and only ever ADDS a verdict. Every
+# form it does not recognize as a sensitive write returns None and keeps the
+# classification it already had, so a mistake here cannot start charging for a
+# read. A target is sensitive when it resolves onto:
 #
 #   * a privileged OS directory (MKDIR_SENSITIVE_PATH_PREFIXES -- the same
 #     set mkdir already gates, minus scratch space by the same reasoning), or
@@ -1874,12 +1886,12 @@ def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
 #     SOURCE-tree sibling, reached through the tier classifier instead of a
 #     categorical block, because a source checkout is not `.claude/`.
 #
-# Conservative by design, mirroring mkdir: `tee` with no file argument at all
-# (a pure stdin-to-stdout passthrough, `cmd | tee`) is ambiguous -- there is
-# no destination to confirm as safe -- and stays at the alias default (T3).
+# Everything else -- no file at all, a relative path, the working tree, the
+# user's home, /tmp, the Gaia scratch directory -- is left exactly where it was.
 
-def _tee_targets_sensitive_path(tokens: tuple) -> bool:
-    """Return True if any file argument to tee falls under a sensitive path.
+
+def _tee_sensitive_targets(tokens: tuple) -> Tuple[str, ...]:
+    """Return the tee file arguments that resolve onto a sensitive path.
 
     Scans all non-flag tokens after the base command (skipping `--` and
     tee's own valueless flags: -a/--append, -i, -p, --output-error[=MODE]).
@@ -1890,11 +1902,12 @@ def _tee_targets_sensitive_path(tokens: tuple) -> bool:
         tokens: Full token tuple from tokenize_command (includes base cmd).
 
     Returns:
-        True  -> at least one file argument targets a sensitive path (T3).
-        False -> every file argument is a working-tree/scratch path (T0
-                 eligible).
+        The sensitive targets, in the order they appear. Empty when there is
+        no file argument at all, or when every one of them is an ordinary
+        working-tree/scratch destination.
     """
     import os
+    sensitive: List[str] = []
     seen_end_of_opts = False
     i = 1  # skip base_cmd at index 0
     while i < len(tokens):
@@ -1919,16 +1932,52 @@ def _tee_targets_sensitive_path(tokens: tuple) -> bool:
             continue
 
         norm = os.path.normpath(token)
-        for prefix in MKDIR_SENSITIVE_PATH_PREFIXES:
-            if norm == prefix or norm.startswith(prefix + "/"):
-                return True
+        if any(
+            norm == prefix or norm.startswith(prefix + "/")
+            for prefix in MKDIR_SENSITIVE_PATH_PREFIXES
+        ):
+            sensitive.append(token)
+            continue
 
         if not norm.endswith(".md"):
             hooks_root = _gaia_hooks_root()
-            if hooks_root and (norm == hooks_root or norm.startswith(hooks_root + os.sep)):
-                return True
+            if hooks_root and (
+                norm == hooks_root or norm.startswith(hooks_root + os.sep)
+            ):
+                sensitive.append(token)
 
-    return False
+    return tuple(sensitive)
+
+
+def _check_tee_write(
+    base_cmd: str,
+    tokens: tuple,
+) -> "Optional[MutativeResult]":
+    """Classify a `tee` write onto a sensitive path, or return None to stand aside.
+
+    Stands aside for every other form -- including the bare stdin-to-stdout
+    passthrough, which writes nothing -- so the read side of this tool keeps
+    whatever verdict it already had.
+    """
+    if base_cmd != "tee":
+        return None
+
+    sensitive = _tee_sensitive_targets(tokens)
+    if not sensitive:
+        return None
+
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="tee",
+        dangerous_flags=_scan_dangerous_flags(list(tokens), base_cmd),
+        cli_family="system",
+        confidence="high",
+        reason=(
+            f"tee writes directly onto a sensitive path "
+            f"({', '.join(sensitive)})"
+        ),
+    )
 
 
 # ============================================================================
@@ -3314,31 +3363,6 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 ),
             )
 
-        # tee path-sensitive override: classify as T0 when every file argument
-        # is a working-tree/scratch path and NOT a privileged OS directory or
-        # Gaia's own live hooks tree (see _tee_targets_sensitive_path).
-        # Conservative fallback: no file argument at all (a pure stdin-to-
-        # stdout passthrough) falls through to T3, mirroring mkdir's own
-        # "cannot confirm safety" fallback.
-        if base_cmd == "tee":
-            path_tokens = [
-                t for t in tokens[1:]
-                if not t.startswith("-") and t != "--"
-            ]
-            if path_tokens and not _tee_targets_sensitive_path(tuple(tokens)):
-                return MutativeResult(
-                    is_mutative=False,
-                    category=CATEGORY_READ_ONLY,
-                    verb=base_cmd,
-                    cli_family="system",
-                    confidence="high",
-                    reason=(
-                        "tee targeting working-tree/scratch paths only "
-                        "(no sensitive system prefix or Gaia hooks tree)"
-                    ),
-                )
-            # No file arguments or a sensitive target -> fall through to T3.
-
         return MutativeResult(
             is_mutative=True,
             category=alias_category,
@@ -3687,6 +3711,18 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 confidence="high",
                 reason=f"Git local-only subcommand '{git_subcmd}' is safe",
             )
+
+    # --- Step 3e-tee: direct write onto a sensitive path ---
+    # `tee` is a mutative UPGRADE from safe-by-elimination like the anchors
+    # below, but its write form is defined by the DESTINATION rather than by a
+    # subcommand path or a flag, which an anchor cannot express -- so a
+    # discriminator decides it the way `git config` and `git tag` are decided.
+    # Stands aside (None) for the passthrough and for every ordinary
+    # destination, which keeps their verdict unchanged. Placed here, with the
+    # anchors, so simulation (Step 3) and --help (Step 3.5) still outrank it.
+    tee_result = _check_tee_write(base_cmd, tuple(tokens))
+    if tee_result is not None:
+        return tee_result
 
     # --- Step 3e.5: Command-path mutative UPGRADE (anchored) ---
     # The symmetric opposite of the downgrade exception in Step 3e: anchor an

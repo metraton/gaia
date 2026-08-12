@@ -265,22 +265,27 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
-    # ---- OPEN: the tee anchor charges for a passthrough that writes nothing --
-    # MEASURED REGRESSION, recorded with its current verdict rather than the
-    # desired one, per the OPEN convention at the top of this file.
+    # ---- FREE: the passthrough that writes nothing costs nothing again ----
+    # Recorded OPEN (True, T3) as a measured regression, now closed -- the edit
+    # to this row is the deliberate record the OPEN convention asks for.
     #
-    # `tee` was anchored by adding it to COMMAND_ALIASES -- a GLOBAL base
-    # command table -- and then subtracting the safe cases back out with
-    # `_tee_targets_sensitive_path`. That subtraction is deliberately skipped
-    # when there is NO file argument, so the bare form falls through to T3.
+    # `tee` had been anchored by adding it to COMMAND_ALIASES -- a GLOBAL base
+    # command table -- and subtracting the safe cases back out with a path
+    # predicate. That subtraction was skipped when there was NO file argument,
+    # so the bare form fell through to T3. But bare `tee` is not an incomplete
+    # write; it is the complete stdin-to-stdout passthrough of `cmd | tee`,
+    # which writes nothing at all, and the validator splits a pipeline on its
+    # operators and classifies each component -- so this exact string denied
+    # the whole pipeline.
     #
-    # But bare `tee` is not an incomplete write; it is the complete
-    # stdin-to-stdout passthrough of `cmd | tee`, which writes nothing at all.
-    # The validator splits a pipeline on its operators and classifies each
-    # component, so `ls -la | tee` reaches the classifier as this exact string
-    # and the whole pipeline is denied. The tree that predates this anchor
-    # classifies the same pipelines free, so the toll is new.
-    ("write-tee-passthrough-no-file", OPEN, "tee", True, T3),
+    # The repair withdraws the global-table entry entirely and decides `tee`
+    # with a discriminator that stands aside by default and escalates only on
+    # the destination, the way `git config` and `git tag` are decided. The
+    # sensitive-write row above is unchanged, which is what makes this a
+    # narrowing rather than a retreat.
+    ("write-tee-passthrough-no-file", FREE, "tee", False, T0),
+    ("write-tee-passthrough-append-flag", FREE, "tee -a", False, T0),
+    ("write-tee-privileged-path", GATED, "tee /etc/hosts", True, T3),
     # ---- GATED controls: already T3, must stay T3 ----
     ("control-pr-merge", GATED, "gh pr merge 42 --squash", True, T3),
     (
@@ -525,7 +530,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 53
+_MINIMUM_MEASURED_CASES = 55
 
 
 @pytest.mark.parametrize(
