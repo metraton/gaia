@@ -4111,11 +4111,29 @@ class ClaudeCodeAdapter(HookAdapter):
 
                 # A degraded close exits 0, and on exit 0 the harness reads
                 # stdout JSON and sends stderr to the debug log where the model
-                # never sees it. So the notice travels by the two channels that
-                # ARE read: additionalContext reaches the model as a system
-                # reminder, systemMessage reaches the user. `decision: block` is
-                # deliberately NOT used -- blocking the stop is the retry loop
-                # this breaker exists to end.
+                # never sees it. Of the two stdout channels, only ONE is inert.
+                # hookSpecificOutput.additionalContext is FEEDBACK: the harness
+                # hands it back to the subagent as a system reminder, which
+                # RESUMES the very turn this branch is cutting -- so a cut that
+                # emits it is not a cut. Measured by suppression against the
+                # live harness, everything else held identical: with the key
+                # emitted, the same tripped turn came back through this gate 7
+                # times; with the key suppressed, once, and the turn ended by
+                # itself. systemMessage survived that same suppression and the
+                # turn still ended -- it reaches the USER and does not continue
+                # the conversation, so it is the one channel the notice can
+                # travel by without reopening the loop, and it is why the cut is
+                # not silent. `decision: block` is deliberately NOT used for the
+                # same reason: blocking the stop IS the retry loop this breaker
+                # exists to end.
+                #
+                # The gate's last verdict is deliberately not re-emitted here.
+                # It already travels on contract_degraded_close_reason and in
+                # the preserved relay evidence, both of which the orchestrator
+                # reads; carrying it in additionalContext is precisely what
+                # resumed the turn. The block is still emitted, carrying the
+                # event echo alone -- that exact shape is what the suppression
+                # probe proved lets the stop through.
                 _cut_notice = (
                     f"El turno de {agent_type} fue CORTADO por el circuito de "
                     f"rechazos tras {_circuit.attempt} rechazos de contrato "
@@ -4125,13 +4143,7 @@ class ClaudeCodeAdapter(HookAdapter):
                     "como un cierre valido, aunque declare COMPLETE."
                 )
                 result["systemMessage"] = _cut_notice
-                result["hookSpecificOutput"] = {
-                    "hookEventName": "SubagentStop",
-                    "additionalContext": (
-                        f"{_cut_notice}\n\nUltimo veredicto de la compuerta:\n"
-                        f"{contract_rejection_reason}"
-                    ),
-                }
+                result["hookSpecificOutput"] = {"hookEventName": "SubagentStop"}
 
             # A rejection sends the turn back to the SUBAGENT, whose repair
             # message then REPLACES the rejected one in everything the

@@ -486,9 +486,10 @@ def test_an_unidentifiable_turn_is_never_cut_and_says_so(tmp_path):
     assert "NOT in force" in unavailable[0]["message"]
 
 
-def test_the_cut_notice_reaches_the_channels_that_are_read(tmp_path):
+def test_the_cut_notice_reaches_the_channel_that_does_not_resume_the_turn(tmp_path):
     """On exit 0 the harness sends stderr to the debug log -- the model never
-    sees it. The notice has to travel by stdout JSON instead."""
+    sees it. The notice has to travel by stdout JSON instead, and by the ONE
+    stdout channel that does not hand the turn back to the subagent."""
     session = "sess-circuit-channels"
     db = tmp_path / "gaia_data" / "gaia.db"
     _birth_row(db, session)
@@ -497,17 +498,44 @@ def test_the_cut_notice_reaches_the_channels_that_are_read(tmp_path):
         response = _reject_once(session, _self_declared_complete_message(), db=db)
 
     assert response.exit_code == 0
-    hook_output = response.output["hookSpecificOutput"]
-    assert hook_output["hookEventName"] == "SubagentStop"
-    assert "CORTADO" in hook_output["additionalContext"], (
-        "the model must be told the turn was cut"
+    assert "CORTADO" in response.output["systemMessage"], (
+        "the user must be told the turn was cut -- a silent cut is not the fix"
     )
-    assert "aunque declare COMPLETE" in hook_output["additionalContext"], (
+    assert "aunque declare COMPLETE" in response.output["systemMessage"], (
         "and told not to read its last message as a valid close"
     )
-    assert "CORTADO" in response.output["systemMessage"], "the user is told too"
+    hook_output = response.output["hookSpecificOutput"]
+    assert hook_output["hookEventName"] == "SubagentStop"
+    assert "additionalContext" not in hook_output, (
+        "additionalContext is FEEDBACK: the harness hands it back to the "
+        "subagent and the cut turn resumes, which is the loop this breaker "
+        "exists to end"
+    )
     assert "decision" not in response.output, (
         "blocking the stop would restart the very loop the breaker ends"
+    )
+
+
+def test_the_cut_verdict_survives_on_the_channels_that_do_not_resume(tmp_path):
+    """Omitting additionalContext must not lose the verdict: the gate's last
+    word stays on the result and in the preserved relay evidence."""
+    session = "sess-circuit-verdict-kept"
+    db = tmp_path / "gaia_data" / "gaia.db"
+    _birth_row(db, session)
+
+    for _ in range(3):
+        response = _reject_once(session, _self_declared_complete_message(), db=db)
+
+    reason = response.output["contract_degraded_close_reason"]
+    assert "[CONTRACT CIRCUIT OPEN]" in reason
+    assert "Ultimo veredicto de la compuerta:" in reason, (
+        "the verdict that ended the turn travels with the degraded close"
+    )
+    assert "Evidencia preservada en:" in reason, (
+        "and points at the relay file that kept the rejected turn's work"
+    )
+    assert response.output["preserved_output_path"], (
+        "the relay evidence of the cut turn is preserved, not deleted"
     )
 
 
