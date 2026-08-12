@@ -222,7 +222,13 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
     """
 
     def test_the_anchored_clis_are_the_reviewed_ones(self):
-        assert set(COMMAND_PATH_MUTATIVE_UPGRADES) == {"gaia", "gcloud"}
+        assert set(COMMAND_PATH_MUTATIVE_UPGRADES) == {
+            "gaia",
+            "gcloud",
+            "kubectl",
+            "gh",
+            "npm",
+        }
 
     def test_project_cli_paths_are_the_previously_declared_ones(self):
         paths = {a.path for a in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]}
@@ -239,7 +245,11 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
         verb scan already decides them; the three-token ones are here because
         the hyphen split never reaches that depth.
         """
-        paths = {a.path for a in COMMAND_PATH_MUTATIVE_UPGRADES["gcloud"]}
+        paths = {
+            a.path
+            for a in COMMAND_PATH_MUTATIVE_UPGRADES["gcloud"]
+            if a.path[0] != "config"
+        }
         assert paths == {
             ("projects", "add-iam-policy-binding"),
             ("secrets", "add-iam-policy-binding"),
@@ -247,6 +257,38 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("storage", "buckets", "remove-iam-policy-binding"),
             ("iam", "service-accounts", "add-iam-policy-binding"),
             ("iam", "service-accounts", "remove-iam-policy-binding"),
+        }
+
+    def test_configuration_write_paths_are_the_reviewed_ones(self):
+        """Writes to a CLI's own configuration, which a read-only noun shadowed.
+
+        `config` is a READ_ONLY_VERBS entry and the verb scan returns on it, so
+        the verb behind it was never read. These paths are the write forms that
+        held open; the read forms of the same noun carry no anchor and are what
+        the surrounding suite checks stayed free.
+        """
+        paths = {
+            (base_cmd,) + anchor.path
+            for base_cmd, anchors in COMMAND_PATH_MUTATIVE_UPGRADES.items()
+            for anchor in anchors
+            if anchor.path[0] == "config"
+        }
+        assert paths == {
+            ("gcloud", "config", "set"),
+            ("gcloud", "config", "configurations", "create"),
+            ("gcloud", "config", "configurations", "delete"),
+            ("kubectl", "config", "set"),
+            ("kubectl", "config", "set-cluster"),
+            ("kubectl", "config", "set-context"),
+            ("kubectl", "config", "set-credentials"),
+            ("kubectl", "config", "delete-cluster"),
+            ("kubectl", "config", "delete-context"),
+            ("kubectl", "config", "delete-user"),
+            ("kubectl", "config", "rename-context"),
+            ("gh", "config", "set"),
+            ("npm", "config", "set"),
+            ("npm", "config", "delete"),
+            ("npm", "config", "edit"),
         }
 
     def test_no_shipped_anchor_carries_a_flag_condition(self):

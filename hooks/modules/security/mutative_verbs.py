@@ -782,6 +782,51 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(
             path=("iam", "service-accounts", "remove-iam-policy-binding")
         ),
+        # `config` is a READ_ONLY_VERBS entry, so the Step 4 scan stops at it
+        # and returns before it ever reads the verb behind it: `gcloud config
+        # set project other-project` and `gcloud config set account
+        # someone@else.com` redirect every later command onto another project
+        # and another identity, and both were T0. Measured directly -- withdraw
+        # `config` from the read-only table and the same commands come back
+        # MUTATIVE on `set`. The noun is not wrong; deciding alone is.
+        #
+        # Anchored per path rather than by dropping `config` from the read-only
+        # table: that noun heads the read forms this user runs dozens of times a
+        # day (`gcloud config list`, `gcloud config get-value project`), and
+        # those must keep costing nothing. An anchor fires on the exact write
+        # paths and leaves every sibling read where it was.
+        MutativeAnchor(path=("config", "set")),
+        MutativeAnchor(path=("config", "configurations", "create")),
+        MutativeAnchor(path=("config", "configurations", "delete")),
+    ),
+    # The same noun shadows the same class of write in three more CLIs, each
+    # measured the same way. `kubectl config set-context` repoints the cluster
+    # and namespace every later kubectl reaches; `npm config set registry`
+    # repoints where every later install downloads from. Anchored per CLI so
+    # closing one cannot tax another.
+    #
+    # NOT anchored, and left open on purpose: `kubectl config use-context` and
+    # `gcloud config configurations activate` hide no mutative verb -- `use` and
+    # `activate` are absent from the verb taxonomy, so the shadow is not what
+    # holds them at T0 and removing it would not move them. They redirect as
+    # hard as the forms above and need their own decision.
+    "kubectl": (
+        MutativeAnchor(path=("config", "set")),
+        MutativeAnchor(path=("config", "set-cluster")),
+        MutativeAnchor(path=("config", "set-context")),
+        MutativeAnchor(path=("config", "set-credentials")),
+        MutativeAnchor(path=("config", "delete-cluster")),
+        MutativeAnchor(path=("config", "delete-context")),
+        MutativeAnchor(path=("config", "delete-user")),
+        MutativeAnchor(path=("config", "rename-context")),
+    ),
+    "gh": (
+        MutativeAnchor(path=("config", "set")),
+    ),
+    "npm": (
+        MutativeAnchor(path=("config", "set")),
+        MutativeAnchor(path=("config", "delete")),
+        MutativeAnchor(path=("config", "edit")),
     ),
 })
 
@@ -2077,6 +2122,97 @@ def _check_git_worktree(
 
 
 # ============================================================================
+# git config read-vs-write discriminator
+# ============================================================================
+# `git config` writes the identity every later commit is signed with and the
+# URLs every later fetch and push resolve through, yet it reached T0 -- and NOT
+# because `config` sits in READ_ONLY_VERBS, which is what covers the sibling
+# `gcloud config set`. Withdrawing that noun leaves `git config user.email x`
+# at T0 all the same: it carries no verb at all, so it arrives at "safe by
+# elimination". Two forms with the same effect, held open by two different
+# mechanisms.
+#
+# It also cannot be an anchor in COMMAND_PATH_MUTATIVE_UPGRADES. That seam
+# matches a subcommand path plus the PRESENCE of a flag, while git's write form
+# is defined by the ABSENCE of a read flag together with a key AND a value --
+# `git config user.email` reads, `git config user.email x` writes, and both
+# spell the same path. `git tag` had the identical shape and took the identical
+# answer: a discriminator, invoked from the git family guard.
+#
+# This lane only ever ADDS a verdict. Every read form -- and any form it does
+# not recognize -- returns None and keeps the classification it already had, so
+# a mistake here cannot start charging for a read.
+
+# Editing, adding, replacing, or removing a value or a whole section. Each of
+# these writes on its own, with no positional value needed.
+GIT_CONFIG_WRITE_FLAGS: FrozenSet[str] = frozenset({
+    "--add",
+    "--replace-all",
+    "--unset",
+    "--unset-all",
+    "--remove-section",
+    "--rename-section",
+    "--edit", "-e",
+})
+
+# Query modes. Their positionals are names and patterns to look up, never a
+# value to store, so arity says nothing about them and they are answered first.
+GIT_CONFIG_READ_FLAGS: FrozenSet[str] = frozenset({
+    "--get",
+    "--get-all",
+    "--get-regexp",
+    "--get-urlmatch",
+    "--get-color",
+    "--get-colorbool",
+    "--list", "-l",
+})
+
+
+def _check_git_config(
+    semantics: CommandSemantics,
+    tokens: tuple,
+    family: str,
+) -> "Optional[MutativeResult]":
+    """Classify a `git config` WRITE, or return None to stand aside.
+
+    Stands aside for every read form and for anything unrecognized, so the
+    read side of this command keeps whatever verdict it already had.
+    """
+    non_flag = semantics.non_flag_tokens
+    if not non_flag or non_flag[0] != "config":
+        return None
+
+    flags = frozenset(semantics.flag_tokens)
+    if flags & GIT_CONFIG_READ_FLAGS:
+        return None
+
+    write_flags = flags & GIT_CONFIG_WRITE_FLAGS
+    if write_flags:
+        reason = (
+            f"git config writes configuration with "
+            f"{', '.join(sorted(write_flags))}"
+        )
+    elif len(non_flag) >= 3:
+        # A name alone is a query; a name followed by a value is an assignment.
+        reason = (
+            f"git config assigns '{non_flag[1]}', writing configuration that "
+            f"every later git command reads"
+        )
+    else:
+        return None
+
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="config",
+        dangerous_flags=_scan_dangerous_flags(list(tokens), "git"),
+        cli_family=family,
+        confidence="high",
+        reason=reason,
+    )
+
+
+# ============================================================================
 # Simulation Flags (--dry-run and equivalents)
 # ============================================================================
 
@@ -3319,6 +3455,13 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         worktree_result = _check_git_worktree(semantics, tuple(tokens), family)
         if worktree_result is not None:
             return worktree_result
+
+        # Step 3e-cfg: `git config` is dual-mode and its write form carries no
+        # verb, so the scanner below reaches it as safe by elimination. Stands
+        # aside (None) for every read form, which keeps its verdict unchanged.
+        config_result = _check_git_config(semantics, tuple(tokens), family)
+        if config_result is not None:
+            return config_result
 
         git_subcmd = semantics.non_flag_tokens[0]
         if git_subcmd in GIT_LOCAL_SAFE_SUBCOMMANDS:

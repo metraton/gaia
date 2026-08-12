@@ -121,10 +121,51 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
-    # ---- OPEN: a read-only noun decides before the mutating verb is read ----
-    ("redirect-project", OPEN, "gcloud config set project other-project", False, T0),
-    ("redirect-account", OPEN, "gcloud config set account someone@else.com", False, T0),
-    ("git-config-write", OPEN, "git config user.email someone@else.com", False, T0),
+    # ---- CLOSED: a read-only noun no longer decides before the verb is read --
+    # These three were recorded OPEN (False, T0). `config` is a READ_ONLY_VERBS
+    # entry and the verb scan returned on it, so `set` was never read; the two
+    # gcloud forms redirect every later command onto another project and another
+    # identity. Anchored per command path -- the noun stays in the read-only
+    # table, and its read forms below stay free.
+    #
+    # `git config` reached T0 by a different route and took a different repair:
+    # it carries no verb at all, so withdrawing the noun leaves it READ_ONLY by
+    # elimination. Its write form is the absence of a read flag plus a key AND a
+    # value, which an anchor cannot express, so a discriminator decides it the
+    # way `git tag` is decided.
+    (
+        "redirect-project",
+        GATED,
+        "gcloud config set project other-project",
+        True,
+        T3,
+    ),
+    (
+        "redirect-account",
+        GATED,
+        "gcloud config set account someone@else.com",
+        True,
+        T3,
+    ),
+    ("git-config-write", GATED, "git config user.email someone@else.com", True, T3),
+    # ---- FREE: the reads of that same noun are the volume, and stay free ----
+    ("read-gcloud-config-list", FREE, "gcloud config list", False, T0),
+    ("read-git-config-list", FREE, "git config --list", False, T0),
+    ("read-git-config-get", FREE, "git config --get user.email", False, T0),
+    # ---- OPEN: redirection the read-only noun does NOT shadow ----
+    # Recorded rather than closed: `activate` and `use` are absent from the verb
+    # taxonomy, so the short-circuit is not what holds these at T0 and removing
+    # it would not move them. Both redirect as hard as the three forms above --
+    # one switches project and account together, the other switches the cluster
+    # every later kubectl reaches -- and each needs a decision of its own.
+    (
+        "configurations-activate",
+        OPEN,
+        "gcloud config configurations activate other",
+        False,
+        T0,
+    ),
+    ("context-switch", OPEN, "kubectl config use-context prod", False, T0),
     # ---- OPEN: indirect trigger and live workload ----
     ("workflow-trigger", OPEN, "gh workflow run deploy.yml --ref main", False, T0),
     ("workflow-retrigger", OPEN, "gh run rerun 123456", False, T0),
@@ -204,7 +245,7 @@ CLASSIFIER_TRUTH_TABLE = [
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 36
+_MINIMUM_MEASURED_CASES = 41
 
 
 @pytest.mark.parametrize(
