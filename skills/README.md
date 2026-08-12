@@ -12,36 +12,40 @@ The assignment matrix below shows which skills each agent receives. The first tw
 
 Skills reach an agent through two distinct routes, and understanding both matters when troubleshooting why a skill is or is not present in a session.
 
-**Route 1 — Startup injection via frontmatter:**
+**Route 1 — Preload from frontmatter (dispatched subagents only):**
 
 ```
-Orchestrator dispatches agent
-        |
-pre_tool_use.py intercepts the Task/Agent tool call
-        |
-Reads agents/<name>.md frontmatter -> skills: list
-        |
-For each skill in the list:
-  reads skills/<skill>/SKILL.md from disk
-  appends content to agent's system context
-        |
-Agent starts with all listed skills already in context
+1. The agent's .md declares `skills: [agent-protocol, security-tiers]`
+     -> the HOST (Claude Code) reads that frontmatter when it dispatches the subagent
+2. The host preloads each SKILL.md into the subagent's context
+     -> the agent holds the process before its first tool call
+3. At SubagentStop, hooks/adapters/claude_code.py::adapt_subagent_stop calls
+   verify_skill_injection with the frontmatter list
+     -> the transcript is searched for that skill's SKILL_FINGERPRINTS, and a
+        declared skill that never appeared is reported as an advisory anomaly
 ```
+
+No Gaia hook reads frontmatter to inject a skill, and none opens a `SKILL.md` at
+all. `pre_tool_use.py` validates the dispatch and births the contract row; step 3
+only verifies, after the fact, that what should have been preloaded actually
+turned up. So a skill that fails to load produces an anomaly, never a repair.
+
+The primary agent has no equivalent: `gaia-orchestrator.md` carries no `skills:`
+field, because on the main thread the host inherits only system prompt, tool
+restrictions, and model.
 
 **Route 2 — On-demand via Skill tool:**
 
 ```
-Agent is running and encounters a situation
-requiring a workflow skill (e.g. approval, execution, git-conventions)
-        |
-Agent calls Skill tool: Skill("subagent-request-approval")
-        |
-Claude Code reads skills/subagent-request-approval/SKILL.md from disk
-        |
-Content is injected into the agent's active context window
-        |
-Agent follows the newly loaded protocol
+1. The agent hits a situation needing a workflow skill (approval, execution, git-conventions)
+     -> it calls Skill("subagent-request-approval")
+2. Claude Code reads skills/subagent-request-approval/SKILL.md from disk
+     -> the content enters the agent's active context window
+3. The agent follows the newly loaded protocol
 ```
+
+`hooks/hooks.json` carries no `Skill` matcher, so a `Skill(...)` call never
+reaches PreToolUse. This route is entirely host-side too.
 
 Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation.
 
@@ -88,7 +92,7 @@ skills/
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
 ├── readme-writing/        # How to write a README, branching by gate: repository root, component folder, or shipped template
-│   └── reference.md       # filled example + blank skeleton for the component-folder gate
+│   └── reference.md       # per gate (repo root / component folder / shipped template): a filled example + a blank skeleton
 ├── subagent-request-approval/ # Plan-first T3 set / blocked-single producer branch
 │   ├── reference.md
 │   └── examples.md
@@ -186,6 +190,6 @@ relevant (see the skill list above), not a machine-read property.
 ## Ver también
 
 - [`agents/README.md`](../agents/README.md) — agent frontmatter and skills: field
-- [`hooks/pre_tool_use.py`](../hooks/pre_tool_use.py) — where skill injection happens at runtime
+- [`hooks/modules/agents/skill_injection_verifier.py`](../hooks/modules/agents/skill_injection_verifier.py) — checks at SubagentStop that expected skills reached the transcript; it verifies, it does not inject
 - [`skills/skill-creation/SKILL.md`](./skill-creation/SKILL.md) — how to design a new skill
 - [`skills/gaia-patterns/reference.md`](./gaia-patterns/reference.md) — full component inventory
