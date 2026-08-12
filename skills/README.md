@@ -87,7 +87,8 @@ skills/
 │   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
 ├── pending-approvals/     # Present and manage pending approval requests
-├── readme-writing/        # How to write READMEs for Gaia component folders
+├── readme-writing/        # How to write a README, branching by gate: repository root, component folder, or shipped template
+│   └── reference.md       # filled example + blank skeleton for the component-folder gate
 ├── subagent-request-approval/ # Plan-first T3 set / blocked-single producer branch
 │   ├── reference.md
 │   └── examples.md

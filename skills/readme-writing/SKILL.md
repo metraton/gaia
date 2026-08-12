@@ -1,68 +1,93 @@
 ---
 name: readme-writing
-description: Use when writing or updating a README for a Gaia component folder (agents/, skills/, hooks/, commands/, config/, bin/, tests/, build/, or the repo root)
+description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a component folder (Gaia's agents/, skills/, hooks/, config/, bin/, tests/, build/, or the equivalent folder in any repo), or the README shipped inside a template or scaffold that is handed to someone else. Triggers -- "escribí el README", "actualizá el README", "limpiá el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
 ---
 
 # README Writing
 
-A folder README is not a table of contents. It is the mental model a developer or agent needs before touching anything in that folder. A README that only lists files is worse than none -- it creates the impression the folder is understood when it is not.
+A README is the mental model someone needs before they touch or adopt the thing it describes. One that only lists files is worse than none: it leaves the reader believing they understand something they do not, and they act on that belief.
 
-Gaia is event-driven. Every component has a trigger: a hook fires, a skill is injected, a command is dispatched, a config file is loaded. A README that does not explain WHEN and HOW a component activates leaves the reader guessing the most important thing.
+Three things hold for every README, whatever it documents, and are stated here once rather than repeated per case:
 
-## Step 1: Choose your target
+- **Every tree is annotated.** One line per entry, giving the reason that entry exists. A bare tree adds nothing over `ls`.
+- **Every link is relative.** An absolute link points at one host, one account, one branch; it breaks in a clone, in a fork, and on every branch it was not written on.
+- **The concreteness test in Step 3** is the same test for all three cases below.
 
-Write or update a README when:
-- A new folder is created (agents/, skills/<name>/, hooks/, etc.)
-- You add a file that changes what the folder does or when it activates
-- A drift report in `cross_layer_impacts` flags a README as stale
+## Step 1: Name the gate
 
-## Step 2: Write the 5 sections in order
+This comes first because it decides everything after it. Three READMEs, three readers, three questions the reader arrives with:
 
-Every README uses this structure. Order is not optional -- a reader skimming top-to-bottom should understand activation before they see a file tree.
+| Gate | Who is reading | The question they arrive with |
+|------|----------------|-------------------------------|
+| **Repository root** | Someone evaluating -- they may clone it, adopt it, inherit it, or walk away | "Does this serve me?" |
+| **Component folder** | Someone about to touch that folder | "When does this activate, and what do I break?" |
+| **Shipped template** | Whoever receives what was generated | "What is mine now, and what do I have to do?" |
 
-**Section 1: Intro narrative** (2-4 paragraphs, no bullets, conversational)
-- One sentence on what lives here
-- Why this folder exists separately (the conceptual contract)
-- How to think about this folder (mental model or analogy)
-- Who touches it: developer, agent at runtime, CI, admin
+The root of a client's Terraform repo, a service, a library, a CLI -- all one gate: repository root. A folder inside a repo that holds one kind of component -- `agents/`, `modules/`, `hooks/` -- is the second gate. A README that travels inside generated output, into a repo its author will never see again, is the third.
 
-**Section 2: When activated** (the core -- do not skip)
-- The concrete trigger: what event, condition, or code path fires this
-- ASCII diagram if more than 2 steps chain together
-- Step-by-step list as complement when the diagram is not enough
-- What happens if this folder is absent or broken
+A repo root and one of its folders are two separate passes, each through its own gate. Naming the gate wrong is the expensive failure: the work is done correctly and the artifact is the wrong one.
 
-**Section 3: What's here** (annotated tree)
-- One-line comment per file or subdirectory
-- Mark generated files so they are not edited by hand
+## Step 2: Write that gate's sections, in order
 
-**Section 4: Conventions** (concrete rules, not aspirations)
-- How to name new files
-- What internal structure new files must follow
-- What to update elsewhere when adding something here
-- What validation runs against this folder
+### Repository root -- seven sections
 
-**Section 5: See also** (relative links with reason)
-- Adjacent components with a one-line reason per link
+1. **Title and one line** -- what this is, under 120 characters.
+2. **What it is and why it exists** -- the problem it solves, who uses it, what it produces.
+3. **Flow** -- one diagram, and what it interacts with. One diagram, not several.
+4. **Requirements** -- tools with their versions, permissions, credentials.
+5. **How it is used** -- the real invocation, with the output it is expected to produce.
+6. **Structure** -- annotated tree, one line per entry.
+7. **License or ownership**.
 
-## Step 3: Write the activation section for judgment
+Requirements sit before usage on purpose: a reader who tries the invocation without them gets a failure they cannot interpret, and a failed first run is what makes them walk away.
 
-The activation section fails when it describes intent ("skills are injected at startup") without describing mechanism ("the pre_tool_use hook reads `skills:` from agent frontmatter, then calls `skill_injection.py`, which reads each SKILL.md and prepends it to the agent context").
+### Component folder -- five sections
 
-Concrete mechanism is the test. If the description would be true for any event-driven system, it is not concrete enough.
+1. **Narrative** (2-4 paragraphs, prose, no bullets) -- what lives here; why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy; who touches it -- developer, agent at runtime, CI, admin.
+2. **When it activates** -- the concrete trigger: the event, condition, or code path that fires this. An ASCII diagram when more than two steps chain. A step list where the diagram is not enough. And what happens if this folder is absent or broken.
+3. **What's here** -- annotated tree, one line per file or subdirectory, with generated files marked so nobody hand-edits them.
+4. **Conventions** -- how to name new files, what internal structure they must follow, what to update elsewhere when something is added here, what validation runs against this folder.
+5. **See also** -- adjacent components, each link carrying its one-line reason.
 
-## Step 4: Integration points
+**Inside Gaia, this gate carries three integration points.** Finishing a new skill includes updating [`skills/README.md`](../README.md) so the index lists it -- that is the closing step of `skill-creation`, not optional cleanup. An agent that adds a file to `agents/`, `hooks/`, `skills/` or any top-level folder reports the stale README through `cross_layer_impacts` and stops there; the orchestrator dispatches the README work as its own task, so the update is a deliberate pass rather than an afterthought squeezed into the middle of feature work, where it gets written from what the author happens to remember. And nothing mechanical catches a stale or missing one: [`tests/system/test_directory_structure.py`](../../tests/system/test_directory_structure.py) checks that the key folders hold their required files -- agent `.md`s, hooks, critical tools -- and never looks for a README, so that drift report is the only thing keeping these current.
 
-**With skill-creation:** When completing a new skill, update the `skills/` README to reflect the new entry. This is the last step of the skill-creation workflow, not optional cleanup.
+### Shipped template -- four sections, all short
 
-**With gaia-patterns (Documentation Drift Awareness):** When an agent adds a file to `agents/`, `skills/`, `hooks/`, or any top-level folder, it must include the relevant README in `cross_layer_impacts` if the README no longer accurately describes the folder. The orchestrator dispatches a readme-writing task from that signal. The agent that added the file does NOT update the README itself -- it reports drift and stops.
+1. **What this is and whose it is now.**
+2. **What runs on its own.**
+3. **What you run, once.**
+4. **Where to go for the rest.**
 
-**With test_directory_structure.py:** The system test verifies README existence for all key folders. Adding a new top-level folder without a README will cause a test failure. See `tests/system/test_directory_structure.py`.
+The reader of this gate did not choose to be here and has no context to spend. Length is what makes it unread.
 
-## Anti-Patterns
+## Step 3: Get the load-bearing section concrete
 
-- **Activation section describes intent, not mechanism** -- "agents use skills" is intent; "pre_tool_use.py reads frontmatter and calls skill_injection.py" is mechanism.
-- **File tree without comments** -- a bare tree adds no value over `ls`; every entry needs a reason.
-- **Conventions that are aspirational** -- "files should be well-named" is not a convention; "skill folders use kebab-case matching the `name:` field in frontmatter" is.
-- **See also without reasons** -- a link list without context shifts the burden to the reader.
-- **Updating README inline during feature work** -- drift reporting exists so README updates happen as deliberate tasks, not rushed afterthoughts mid-feature.
+Each gate has exactly one section that carries the weight. If that one is vague, the rest cannot compensate.
+
+| Gate | Load-bearing section |
+|------|----------------------|
+| Repository root | 3 -- Flow |
+| Component folder | 2 -- When it activates |
+| Shipped template | 3 -- What you run, once |
+
+**The test, and it can fail:** if what you wrote would be equally true of any other system of the same type, it is not concrete enough yet.
+
+"Skills are injected at startup" passes for every plugin system ever built, so it fails. "The host reads `skills:` from the agent's frontmatter and preloads each `SKILL.md` before the subagent's first turn" is true of this system and false of the next one, so it passes. The same test on a root README: "deploys infrastructure to the cloud" fails; "`terraform apply` against the `prod` workspace creates the VPC, the GKE cluster, and the Cloud SQL instance the `app-*` modules depend on" passes. And on a template: "configure your settings" fails; "run `make bootstrap` once to write `.env` from your project id" passes.
+
+## Step 4: The README is the map, not the territory
+
+A README routes to where each thing lives; it does not contain it. Long-form documentation goes to its own folder and is linked. Examples go to theirs. History goes to the changelog. Whatever is generated carries its own README, and the generator links to it. When a README already holds one of these, cleaning it up means moving the content to where it belongs and leaving the link -- not deleting it and not keeping a summary of it beside the link.
+
+**The rule that decides the factory case:** a repo whose product is another document or another repo documents the *generation contract* -- what goes in, what comes out, how it is run -- and links to what it generated. It never reproduces it. A copy and its original are two sources of truth, and they diverge on the first edit that lands in only one of them.
+
+**Length is the signal for this step.** Past roughly 100 lines, stop and ask what belongs somewhere else. It is an alarm, not a limit -- a genuinely large surface can justify more, but the length is almost always telling you that the README started holding what it should have been pointing at.
+
+## Anti-patterns
+
+- **A tree with no comments** -- it reproduces `ls` and costs the reader a scroll to learn nothing. The reason an entry exists is the only part they cannot get from the filesystem.
+- **Conventions that are aspirational** -- "files should be well-named" cannot be complied with or violated, so it constrains nobody. "Skill folders use kebab-case matching the `name:` field in frontmatter" can be checked.
+- **Links with no reason** -- a bare list shifts the deciding onto the reader, who has to open each one to find out whether it was for them.
+- **Absolute links** -- they encode one host, one account, one branch, and break in every clone and every branch that is not that one.
+- **Reproducing what another artifact already documents** -- the copy and the original are two sources of truth. They do not diverge one at a time; they both become unreliable, because a reader who finds a conflict cannot tell which side is stale.
+
+Filled examples and a blank skeleton for the component-folder gate are in [`reference.md`](reference.md).
