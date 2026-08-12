@@ -438,6 +438,34 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
+    # A simulation-shaped flag on the invocation line cannot, BY ITSELF,
+    # absolve a script whose content mutates. `scripts/release-prepare.mjs` is
+    # this repository's own release-notes writer: an unconditional
+    # `fs.writeFileSync` that never reads `process.argv`, so no flag changes
+    # what it does. It was freed by appending `--dry-run`, and freed again by
+    # `--report-duplicates` -- a flag that belongs to `gaia workspace merge`
+    # and means nothing here -- because the simulation override ran before the
+    # content was read. Both spellings are rows so the property is pinned
+    # against the plausible flag AND the unrelated one; the exemption is now
+    # granted inside the script-file lane only when the script's own
+    # executable text names the flag (see the friction_residual class in
+    # test_mutative_verbs.py, where the freed sibling and its counterfactual
+    # live with hermetic fixtures).
+    (
+        "friction_residual_sim_flag_alone_cannot_absolve_mutating_script",
+        GATED,
+        "node /home/jorge/ws/me/gaia/scripts/release-prepare.mjs --dry-run",
+        True,
+        T3,
+    ),
+    (
+        "friction_residual_unrelated_sim_flag_cannot_absolve_mutating_script",
+        GATED,
+        "node /home/jorge/ws/me/gaia/scripts/release-prepare.mjs "
+        "--report-duplicates",
+        True,
+        T3,
+    ),
     # ---- Controls: the packed r+f bundle still fires where it is genuinely
     # destructive -- unaffected by scoping the heuristic to cli membership.
     (

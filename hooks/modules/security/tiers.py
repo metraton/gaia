@@ -105,9 +105,26 @@ def _classify_command_tier_cached(
     if has_blocked_patterns:
         return SecurityTier.T3_BLOCKED
 
+    # Imported inside the function: mutative_verbs imports this module back, so
+    # a module-level import would close the cycle at import time.
+    from .mutative_verbs import (
+        detect_mutative_command,
+        CATEGORY_MUTATIVE,
+        CATEGORY_READ_ONLY,
+        CATEGORY_SIMULATION,
+    )
+
     # Check for dry-run operations (T2)
+    # Subordinated to the mutative detector, not short-circuiting past it: the
+    # flag is a claim made by the invocation line, and this check is a raw
+    # substring test that cannot tell a flag the payload READS from one it
+    # ignores -- or from one merely quoted inside another argument. Where the
+    # detector finds a real mutation anyway (a script whose content writes and
+    # never reads the flag), returning T2 here would hand back, at tier level,
+    # exactly the absolution the detector withheld.
     if "--dry-run" in command or "--plan-only" in command:
-        return SecurityTier.T2_DRY_RUN
+        if not detect_mutative_command(command).is_mutative:
+            return SecurityTier.T2_DRY_RUN
 
     # Check for simulation operations (T2: plan, diff, template)
     for pattern in T2_PATTERNS:
@@ -120,12 +137,6 @@ def _classify_command_tier_cached(
             return SecurityTier.T1_VALIDATION
 
     # Use the mutative verb detector for T3 classification
-    from .mutative_verbs import (
-        detect_mutative_command,
-        CATEGORY_MUTATIVE,
-        CATEGORY_READ_ONLY,
-        CATEGORY_SIMULATION,
-    )
     result = detect_mutative_command(command)
     if result.is_mutative:
         return SecurityTier.T3_BLOCKED

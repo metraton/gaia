@@ -3161,34 +3161,47 @@ class TestFrictionResidualNpmRunBodyResolution:
         assert result.tier == SecurityTier.T3_BLOCKED
 
 
-class TestFrictionResidualSimulationFlagBeforeScriptContent:
-    """M4 (task 12): a script invoked with its own ``--dry-run`` (or
-    equivalent) flag now short-circuits to SIMULATION before its content is
-    read, instead of paying the full toll for a mutation that sits behind a
-    runtime guard the flag ensures never executes.
+class TestFrictionResidualSimulationFlagHonoredByScript:
+    """M4 (task 12): a script invoked with a simulation flag IT READS is
+    freed; a simulation flag the script never reads absolves nothing.
 
-    Measured: ``node bin/pre-publish-validate.js --dry-run`` classified
-    MUTATIVE (``fs-write``) even though the write it found lives behind
-    ``if (this.dryRun) { return; }`` and never runs when the caller passes
-    ``--dry-run``. The fix moves the existing simulation-flag override (Step
-    3) ahead of script-file/npm-run content inspection (Step 1d/1e) instead
-    of leaving it to run only after they already returned -- the SAME flag
-    set, the SAME verdict, just consulted before the content lanes instead of
-    after them.
+    Measured friction: ``node bin/pre-publish-validate.js --dry-run``
+    classified MUTATIVE (``fs-write``) even though the write it found lives
+    behind ``if (this.dryRun) { return; }`` and never runs when the caller
+    passes ``--dry-run``.
+
+    The first delivery of this group freed it by running the simulation-flag
+    override (Step 3) BEFORE script content inspection (Step 1d/1e), which
+    freed every script carrying such a token, unconditionally and without
+    reading it. The exemption now lives inside the script-file lane, after the
+    file is read, and is granted only when the script's own executable text
+    names the flag that was passed -- so the promise of doing nothing is
+    backed by what the script does, not by what its invocation line says.
+
+    ``GUARDED_SCRIPT`` reads the flag and skips the write; ``UNGUARDED_SCRIPT``
+    writes unconditionally and never reads ``process.argv``. Both bodies are
+    shared by every case so the ONLY difference between a freed row and a
+    gated one is the property under test.
     """
+
+    GUARDED_SCRIPT = (
+        "const fs = require('fs');\n"
+        "function bump(dryRun) {\n"
+        "  if (dryRun) { return; }\n"
+        "  fs.writeFileSync('package.json', '{}');\n"
+        "}\n"
+        "bump(process.argv.includes('--dry-run'));\n"
+    )
+
+    UNGUARDED_SCRIPT = (
+        "const fs = require('fs');\n"
+        "fs.writeFileSync('package.json', '{}');\n"
+    )
 
     def test_friction_residual_local_build_script_dry_run_resolves_free(
         self, tmp_path
     ):
-        script = tmp_path / "release-prepare.mjs"
-        script.write_text(
-            "const fs = require('fs');\n"
-            "function bump(dryRun) {\n"
-            "  if (dryRun) { return; }\n"
-            "  fs.writeFileSync('package.json', '{}');\n"
-            "}\n"
-            "bump(process.argv.includes('--dry-run'));\n"
-        )
+        (tmp_path / "release-prepare.mjs").write_text(self.GUARDED_SCRIPT)
         result = detect_mutative_command(
             "node release-prepare.mjs --dry-run", cwd=str(tmp_path)
         )
@@ -3198,20 +3211,80 @@ class TestFrictionResidualSimulationFlagBeforeScriptContent:
     def test_friction_residual_local_build_script_without_flag_stays_t3(
         self, tmp_path
     ):
-        """Control: the identical script, invoked WITHOUT --dry-run, is
-        still read by content and still escalates -- the fix short-circuits
-        on the FLAG, it does not stop reading the script."""
-        script = tmp_path / "release-prepare.mjs"
-        script.write_text(
+        """Control: the identical guarded script, invoked WITHOUT --dry-run,
+        is still read by content and still escalates -- the exemption keys on
+        the flag being passed, it does not stop reading the script."""
+        (tmp_path / "release-prepare.mjs").write_text(self.GUARDED_SCRIPT)
+        result = detect_mutative_command(
+            "node release-prepare.mjs", cwd=str(tmp_path)
+        )
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+    def test_friction_residual_simulation_flag_alone_does_not_absolve_mutating_script(
+        self, tmp_path
+    ):
+        """The case the first delivery never covered, and the hole it left.
+
+        A script that writes unconditionally and never reads ``process.argv``
+        was freed by appending ``--dry-run`` to its invocation. The flag is a
+        claim made by the caller; the content is the evidence, and the content
+        says the write runs."""
+        (tmp_path / "release-prepare.mjs").write_text(self.UNGUARDED_SCRIPT)
+        result = detect_mutative_command(
+            "node release-prepare.mjs --dry-run", cwd=str(tmp_path)
+        )
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+    def test_friction_residual_unrelated_simulation_flag_does_not_absolve(
+        self, tmp_path
+    ):
+        """Same unguarded script, absolved by a flag that belongs to another
+        CLI entirely (``--report-duplicates`` is ``gaia workspace merge``'s).
+        Membership in the simulation SET was enough; nothing tied the flag to
+        this script."""
+        (tmp_path / "release-prepare.mjs").write_text(self.UNGUARDED_SCRIPT)
+        result = detect_mutative_command(
+            "node release-prepare.mjs --report-duplicates", cwd=str(tmp_path)
+        )
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+    def test_friction_residual_simulation_flag_named_only_in_a_comment_does_not_absolve(
+        self, tmp_path
+    ):
+        """The flag is matched against the source with comments removed: a
+        usage line in a header comment is the script DOCUMENTING a flag, not
+        reading it, and a raw text search could not tell the two apart."""
+        (tmp_path / "release-prepare.mjs").write_text(
+            "// Usage: node release-prepare.mjs --dry-run\n"
+            + self.UNGUARDED_SCRIPT
+        )
+        result = detect_mutative_command(
+            "node release-prepare.mjs --dry-run", cwd=str(tmp_path)
+        )
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+    def test_friction_residual_local_build_script_dry_run_counterfactual(
+        self, tmp_path
+    ):
+        """Counterfactual on the freed row: keep the runtime guard, remove the
+        script's only reference to the flag literal (read it from an
+        environment variable instead). The exemption is no longer reachable
+        and the same invocation reverts to its content verdict -- which proves
+        the freed row above goes through this entry and is not dead code."""
+        (tmp_path / "release-prepare.mjs").write_text(
             "const fs = require('fs');\n"
             "function bump(dryRun) {\n"
             "  if (dryRun) { return; }\n"
             "  fs.writeFileSync('package.json', '{}');\n"
             "}\n"
-            "bump(process.argv.includes('--dry-run'));\n"
+            "bump(Boolean(process.env.DRY));\n"
         )
         result = detect_mutative_command(
-            "node release-prepare.mjs", cwd=str(tmp_path)
+            "node release-prepare.mjs --dry-run", cwd=str(tmp_path)
         )
         assert result.is_mutative is True
         assert result.verb == "fs-write"

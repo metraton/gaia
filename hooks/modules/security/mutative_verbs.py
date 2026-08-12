@@ -3600,34 +3600,6 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if ps_result is not None:
         return ps_result
 
-    # --- Step 3: Simulation flag override (relocated ahead of Step 1d/1e) ---
-    # Conceptually still "Step 3" -- the same flag set and the same verdict as
-    # everywhere else this label is referenced -- but moved physically ahead
-    # of script-file and npm-run content inspection instead of running after
-    # them.  Step 1d/1e read and statically analyze a script's REAL content,
-    # and a script commonly reaches a mutation only behind its OWN runtime
-    # guard (``if (!dryRun) { fs.writeFileSync(...) }``) that static analysis
-    # cannot evaluate -- so a caller who explicitly passed ``--dry-run`` still
-    # paid the full T3 toll for a write that never executes.  Measured:
-    # ``node bin/pre-publish-validate.js --dry-run`` classified MUTATIVE
-    # (fs-write) although the write sits behind exactly that guard and never
-    # runs in dry-run mode.  Running this check first means a caller's
-    # explicit simulation flag is honored the same way for a script/npm
-    # invocation as for every other command shape, without asking the
-    # content-inspection lanes to understand conditional control flow they
-    # were never built to evaluate.
-    if any(t.lower() in SIMULATION_FLAGS for t in tokens):
-        # Find the first non-flag token after base_cmd for the verb
-        verb, _ = _find_first_non_flag(semantics.semantic_head_tokens)
-        return MutativeResult(
-            is_mutative=False,
-            category=CATEGORY_SIMULATION,
-            verb=verb,
-            cli_family=family,
-            confidence="high",
-            reason=f"Simulation flag detected (command has --dry-run or equivalent)",
-        )
-
     # --- Step 1d: Script-file analysis (python3 deploy.py, bash setup.sh, ./x) ---
     # An interpreter invoked with a script FILE as a positional argument, or a
     # direct ``./script`` invocation, hides its mutations inside the file --
@@ -3664,6 +3636,33 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             cli_family=family,
             confidence="low",
             reason=f"Single-token command '{base_cmd}' with no verb",
+        )
+
+    # --- Step 3: Simulation flag override ---
+    # Deliberately AFTER the content-inspection lanes (Step 1d/1e), not before
+    # them.  A simulation-shaped flag is a claim made by the invocation line;
+    # it is not evidence about what the invoked payload does.  Running it first
+    # made ANY script invocation carrying such a token non-mutative
+    # unconditionally, without reading the script and without checking that the
+    # script honors the flag -- measured on this repository's own
+    # ``scripts/release-prepare.mjs`` (an unconditional ``fs.writeFileSync``
+    # that never reads ``process.argv``): it classified MUTATIVE bare, and free
+    # with ``--dry-run`` appended, and free again with a simulation-set flag
+    # belonging to an unrelated CLI.  The legitimate case it was moved for -- a
+    # script whose mutation sits behind its own ``--dry-run`` guard -- is served
+    # instead inside the script-file lane by ``_script_honored_simulation_flag``,
+    # which frees the invocation only when the script's own executable text
+    # references the flag that was passed.
+    if any(t.lower() in SIMULATION_FLAGS for t in tokens):
+        # Find the first non-flag token after base_cmd for the verb
+        verb, _ = _find_first_non_flag(semantics.semantic_head_tokens)
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_SIMULATION,
+            verb=verb,
+            cli_family=family,
+            confidence="high",
+            reason=f"Simulation flag detected (command has --dry-run or equivalent)",
         )
 
     # --- Step 3.5: --help exemption (whitelist + positional boundary) ---
@@ -5495,6 +5494,66 @@ def _check_stdin_script_payload(
     )
 
 
+_HASH_COMMENT_RE = _re.compile(r"#.*$", _re.MULTILINE)
+
+
+def _script_honored_simulation_flag(
+    content: str, script_path: str, base_cmd: str,
+    semantics: "CommandSemantics",
+) -> "Optional[str]":
+    """Return the simulation flag this script actually honors, or ``None``.
+
+    A simulation-shaped flag on the invocation line is a claim, not evidence:
+    the caller asserts the run will not mutate, but only the script decides
+    whether the flag changes anything. Absolving a script on the flag alone
+    lets any mutation be laundered by appending ``--dry-run``, including a
+    flag that belongs to a different CLI entirely. So the exemption is granted
+    only when the script's own EXECUTABLE text names the flag that was passed
+    -- the minimum observable evidence that the payload reads it at all.
+
+    The flag is matched against the source with comments removed and string
+    contents kept: a guard is written as ``argv.includes('--dry-run')``, so the
+    literal legitimately lives inside a string, while a usage line in a header
+    comment (``node x.mjs --dry-run``) is exactly the false evidence to
+    discard. The lexer supplies that projection for the languages it models;
+    for the rest (python, shell) a ``#``-to-end-of-line strip is used, which
+    can only remove more text than a true lexer would and therefore only ever
+    withholds the exemption.
+
+    A ``--flag=value`` token is matched on its name part, so ``--dry-run=client``
+    is honored by a script that reads ``--dry-run``.
+
+    Args:
+        content: Raw script source.
+        script_path: Resolved path of the script (extension drives the spec).
+        base_cmd: The interpreter token, or the script path for ``./x``.
+        semantics: Parsed command semantics of the invocation.
+
+    Returns:
+        The first passed simulation flag the script references, else ``None``.
+    """
+    passed = [
+        token for token in semantics.tokens
+        if token.lower() in SIMULATION_FLAGS
+    ]
+    if not passed:
+        return None
+
+    code_view = None
+    if _spec_for_script is not None and _strip_source is not None:
+        spec = _spec_for_script(base_cmd, script_path)
+        if spec is not None:
+            code_view = _strip_source(content, spec).exec_view
+    if code_view is None:
+        code_view = _HASH_COMMENT_RE.sub("", content)
+
+    for token in passed:
+        name = token.split("=", 1)[0]
+        if name in code_view:
+            return token
+    return None
+
+
 def _check_script_file(
     command: str, base_cmd: str, family: str, semantics: "CommandSemantics",
     cwd: "Optional[str]" = None, _depth: int = 0,
@@ -5588,6 +5647,32 @@ def _check_script_file(
     )
     if gaia_result is not None:
         return gaia_result
+
+    # --- Simulation flag the SCRIPT honors (bounded Step 3, content-level) ---
+    # A build/release script commonly reaches its mutation only behind its own
+    # runtime guard (``if (dryRun) { return; }``), which static analysis cannot
+    # evaluate -- so `node bin/pre-publish-validate.js --dry-run` paid the full
+    # T3 toll for a write that never executes. The exemption is granted here,
+    # after the file has been read, and only when the script's own executable
+    # text names the flag that was passed; a flag the script never reads leaves
+    # this branch and is classified by the content below, exactly as if it had
+    # not been passed.
+    honored_flag = _script_honored_simulation_flag(
+        content, script_path, base_cmd, semantics,
+    )
+    if honored_flag is not None:
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_SIMULATION,
+            verb="script-honored-simulation-flag",
+            cli_family=family,
+            confidence="high",
+            reason=(
+                f"Script '{script_path}' reads simulation flag "
+                f"'{honored_flag}', which the invocation passed -- the run is "
+                f"a simulation the script itself implements"
+            ),
+        )
 
     if lane == "python" and _analyze_python_inline is not None:
         ast_result = _analyze_python_inline(content)
