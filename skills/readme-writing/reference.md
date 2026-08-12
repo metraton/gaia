@@ -7,22 +7,20 @@ Filled examples and blank skeletons for the readme-writing skill.
 | Gate | Its filled example | Its blank skeleton |
 |------|--------------------|--------------------|
 | **Repository root** | "Repository root -- filled example" | "Repository root -- skeleton" |
-| **Component folder** | "Component folder -- filled example: `skills/`" | "Component folder -- skeleton" |
+| **Component folder** | "Component folder -- filled example: a migrations folder" | "Component folder -- skeleton" |
 | **Shipped template** | "Shipped template -- filled example" | "Shipped template -- skeleton" |
 
 ## Fill every section of your gate, and only of your gate
 
-**Within a gate, every section is mandatory.** An omitted section signals the author never analyzed that dimension, and a reader cannot tell a section that was skipped from one that was judged unnecessary. So do not delete a section of your own gate because it looks thin -- write the sentence that says why it is thin.
+Within a gate every section is written, and a thin one is declared thin rather than deleted or invented -- that rule and the home for a decision record are in [`SKILL.md`](SKILL.md), Step 2.
 
-**Across gates, the opposite holds.** A repository root gets no "When it activates", and a shipped template gets no "Conventions", because those sections answer a question that gate's reader never asks. Carrying a section over is not rigor; it is filling in the wrong template carefully. When a section from another gate feels unfillable, that is the correct signal -- it was never yours to fill.
+**Across gates, the opposite holds.** A repository root gets no "How it is wired in", and a shipped template gets no "Conventions", because those sections answer a question that gate's reader never asks. Carrying a section over is not rigor; it is filling in the wrong template carefully. When a section from another gate feels unfillable, that is the correct signal -- it was never yours to fill.
 
 The cost of getting this backwards is not a rough draft. It is a finished, well-written README that answers the wrong reader's question, which is far harder to notice than an incomplete one.
 
 ## Every flow in this file is plain text
 
-A flow is numbered steps and simple `->` arrows inside a plain code block. Never mermaid, never any format that must be rendered before it can be read.
-
-The reason is verification. A rendered diagram can only be checked by looking at it rendered, which needs a tool that may not be installed -- one shipped recently that nobody could validate for exactly that reason, the install being blocked. A plain-text flow has no such gap: what is in the file is what the reader sees, identically on the web, in a terminal, and in a diff. This is the same standard as the phantom-reference rule -- a claim you cannot verify with what you have at hand does not go in.
+Numbered steps and simple `->` arrows inside a plain code block, never mermaid -- the reason is in [`SKILL.md`](SKILL.md) and is not repeated here. Every flow below is written that way, including the ones inside the filled examples.
 
 ---
 
@@ -184,176 +182,205 @@ the failure a reader gets when it is missing.>
 
 ---
 
-## Component folder -- filled example: `skills/`
+## Component folder -- filled example: a migrations folder
 
-An abridged illustration modeled on Gaia's `skills/` folder. Use it as the standard for voice, section depth, and activation detail **for this gate**. It is not a copy of [`skills/README.md`](../README.md) and does not track it -- that file is the live one and is longer; this is shortened to show the shape.
+Written against the real `prisma/migrations/` of a Next.js mail application -- 17 migration folders, a `migration_lock.toml`, and a GitHub Actions job that applies them. Use it as the standard for voice, section depth, and the detail the wiring section needs **for this gate**.
+
+It is deliberately **applied in order** rather than triggered. That folder does have a trigger -- a merge to `main` runs the apply job -- and the trigger is still not the load-bearing fact: what a person changing something there needs to know is that the past is frozen and corrections only go forward. Read how the mode is named, and how the second half names the mistakes the folder actually punishes rather than what would break if the folder disappeared.
 
 ````markdown
-# Skills
+# Migrations
 
-Las skills son conocimiento procedimental inyectado en los agentes. No son código que se ejecuta -- son texto que el agente recibe y sigue. Piénsalas como el manual de procedimientos que le das a un contractor: le dices cómo clasificar riesgos, cómo reportar resultados, cómo ejecutar comandos. El agente trae su identidad (qué es, qué puede hacer); la skill trae el proceso (cómo lo hace).
+This folder is the database's history, not its description. Every subfolder is one
+irreversible step that has already run somewhere, and the schema you end up with is
+the sum of them applied in order -- never any single file in isolation. What the
+database looks like right now is described in [`../schema.prisma`](../schema.prisma);
+this folder is how it got there.
 
-Esta carpeta existe separada de `agents/` porque el mismo procedimiento aplica a múltiples agentes. `security-tiers` la siguen seis agentes distintos. Si esa lógica viviera inline en cada `.md`, tendríamos seis copias divergiendo. Una skill es la SSOT del proceso.
+It exists separately from that schema for one reason: the schema can be edited and
+this cannot. `prisma migrate dev` diffs the edited schema against the history here
+and writes the difference as a new folder. From the moment that folder has been
+applied anywhere, its SQL is frozen -- correcting it means adding another step, never
+changing the step that ran.
 
-Mental model: una skill es como un módulo importable, pero para texto. El agente la "importa" en el dispatch (si está en su frontmatter) o la "requiere" en runtime (si la lee bajo demanda).
+The mental model is an append-only ledger with a counterpart on the other side.
+Postgres keeps a `_prisma_migrations` table naming every folder it has already
+executed. Applying compares the two lists and runs only the difference. Nothing here
+is ever re-run and nothing here is ever rolled back.
 
-Las skills las toca el developer cuando crea o refina procedimientos, y el agente en runtime cuando las lee on-demand. El hook layer nunca las lee ni las inyecta.
-
----
-
-## Cuándo se activa
-
-Hay dos rutas de activación.
-
-**RUTA 1 -- Preload por frontmatter (solo subagentes)**
-
-```
-1. El .md del agente declara `skills: [agent-protocol, security-tiers]`
-     -> el HOST (Claude Code) lee ese frontmatter al despachar el subagente
-2. El host precarga cada SKILL.md en el contexto del subagente
-     -> el agente tiene el proceso antes de su primera tool call
-3. En SubagentStop, hooks/modules/agents/skill_injection_verifier.py
-   busca en el transcript los SKILL_FINGERPRINTS de cada skill esperada
-     -> una skill declarada que nunca apareció se reporta como anomalía advisory
-```
-
-Ningún hook de Gaia lee el frontmatter ni inyecta skills: `pre_tool_use.py` valida el dispatch y no carga nada. El paso 3 solo VERIFICA después del hecho.
-
-El agente primario no tiene equivalente -- `gaia-orchestrator.md` no lleva campo `skills:`, porque en el hilo principal el host solo hereda system prompt, restricciones de tools y modelo.
-
-Lo que se lista en frontmatter se carga en cada dispatch. Mantené la lista corta: todo lo que esté acá cuesta tokens siempre.
-
-**RUTA 2 -- On-demand**
-
-```
-1. El agente encuentra una tarea cuyo proceso no trae
-     -> lee skills/<nombre>/SKILL.md, o invoca Skill(<nombre>)
-2. Sigue el proceso inline
-```
-
-Las skills de workflow (execution, investigation) se leen on-demand porque solo hacen falta para ciertos tipos de tarea. Listarlas en frontmatter gastaría tokens en cada invocación.
-
-**Qué se rompe si falta o se corrompe `skills/`:**
-- Preload por frontmatter: el agente sigue sin el proceso, en silencio. Sin error. Comportamiento incorrecto.
-- On-demand: el agente recibe file-not-found y tiene que improvisar o frenar. Improvisar produce resultados inconsistentes entre agentes.
+A developer creates folders here by running `prisma migrate dev` locally; nobody
+writes one by hand. CI is what applies them to production. No application code
+imports anything from this folder.
 
 ---
 
-## Qué hay aquí
+## How it is wired in
+
+**Mode: applied in order.** The order is the lexicographic sort of the folder names,
+which is why each one carries a UTC timestamp prefix and why the hand-named
+`0001_init` baseline sorts ahead of all of them. The record of what has already run
+lives in the target database, in `_prisma_migrations` -- not in this repository. That
+split is the whole mechanic: this folder is the intent, that table is the fact, and
+the two can disagree.
 
 ```
-skills/
-├── README.md                  <- este archivo
-├── gaia-patterns/
-│   └── reference.md           <- índice de componentes (incluye skills) con tipo y descripción
-├── agent-protocol/
-│   ├── SKILL.md               <- protocol: response contract, state machine
-│   └── examples.md            <- filled agent_contract_handoff examples
-├── security-tiers/
-│   ├── SKILL.md               <- reference: T0-T3 tier definitions
-│   └── reference.md           <- cloud CLI examples, conditional commands
-├── skill-creation/
-│   ├── SKILL.md               <- technique: how to build a skill
-│   └── reference.md           <- tone guide by skill type
-└── ... (una carpeta por skill)
+1. A developer edits ../schema.prisma and runs `prisma migrate dev`
+     -> a new folder appears here, its SQL generated by diffing schema against history
+2. The pull request merges to main
+     -> .github/workflows/migrate.yml runs `bun prisma migrate deploy`
+3. deploy reads _prisma_migrations from the production database
+     -> it applies only the folders absent from that table, in lexicographic order
+4. Each folder it applies is recorded there by name
+     -> that folder will never be considered again
+```
+
+Applying is also the only place production credentials appear: the workflow injects
+`DATABASE_URL` and `DIRECT_URL` from repository secrets, and nothing else in this
+repository holds them.
+
+**What breaks if you get it wrong here**, in descending order of how often it happens:
+
+*Editing a folder that has already been applied.* It will not re-run -- its name is
+already in `_prisma_migrations` -- so the edit reaches no database, while the file now
+misrepresents what the schema actually did. The next `migrate deploy` reports drift
+and refuses to continue, on a machine that is not yours.
+
+*Renaming a folder.* The name **is** the ledger key. `20260406032340_rename_allow_users_tabel_to_allowed`
+carries a typo in the word "tabel" and it stays, because renaming it would make deploy
+see one migration missing and one it has never heard of. Names here are permanent,
+typos included.
+
+*Fixing a mistake in place instead of forward.* The three folders
+`..._added_allow_users_table`, `..._rename_allow_users_tabel_to_allowed` and
+`..._renamed_allowed_users_to_allowed_token` are one table renamed twice, the second
+time reshaped. That is the correct shape of a fix here: new steps, forward. Two of
+them `DROP TABLE` to rebuild it, which was safe only because it was empty at the
+time -- the same generated SQL against a populated table is data loss no later
+migration recovers.
+
+---
+
+## What's here
+
+```
+migrations/
+├── migration_lock.toml   <- generated; pins the provider (postgresql). Never hand-edit: a changed provider invalidates every folder here
+├── 0001_init/            <- the baseline, hand-named; sorts first because "0" precedes "2"
+│   └── migration.sql     <- generated SQL, frozen once applied
+├── 20260317065147_added_timezone_field_in_draft_pref/
+│   └── migration.sql
+└── ...                   <- one folder per step, 17 so far, ordered oldest to newest by name
 ```
 
 ---
 
-## Convenciones
+## Conventions
 
-- El nombre de la carpeta = campo `name:` del frontmatter de `SKILL.md`, en kebab-case
-- Toda carpeta de skill contiene como mínimo un `SKILL.md`
-- El frontmatter de `SKILL.md` debe traer `name:` y `description:`
-- `description:` contiene condiciones de disparo únicamente -- nunca un resumen del proceso
-- `SKILL.md` respeta su presupuesto: bajo 100 líneas si se carga siempre, bajo 500 si se carga on-demand; el contenido pesado va a `reference.md`
-- Al crear una skill nueva, actualizá la sección "Qué hay aquí" de este README
-- Al crear una skill nueva, actualizá el inventario de componentes en `skills/gaia-patterns/reference.md`
+- One migration per folder, the file always named `migration.sql`; the folder is
+  `<utc-timestamp>_<snake_case_description>` and is generated, never chosen by hand
+- Never edit or rename a folder that exists on any branch someone else has merged --
+  add a new one instead
+- Never delete a folder: the ledger still names it, and deploy fails on the gap
+- A migration that drops or renames a populated column carries the data move in the
+  same file, or it is data loss
+- Every change starts in [`../schema.prisma`](../schema.prisma), never here. A folder
+  written by hand and not derived from the schema makes the two disagree permanently
+- Read the generated `migration.sql` before merging -- `migrate dev` reaches for
+  DROP-and-recreate more often than an author expects
 
-Validación: `tests/layer1_prompt_regression/test_skills_cross_reference.py` verifica en `TestSkillDirectoryStructure` que toda carpeta de skill tenga `SKILL.md` (`test_every_skill_dir_has_skill_md`), que su frontmatter sea válido, y que `name:` coincida con el nombre de la carpeta. `gaia doctor` corre las mismas dos verificaciones estructurales: `check_component_naming` (chequeo 52) y `check_skill_cross_refs` (chequeo 53).
-
-Nada verifica que este README exista ni que esté al día. Mantenerlo es responsabilidad del reporte de drift.
+Nothing validates this folder locally. The only check is `migrate deploy` against the
+real database in CI, which means a bad migration is discovered at deploy time.
 
 ---
 
-## Ver también
+## See also
 
-- `agents/` -- definiciones de agentes que consumen skills vía frontmatter
-- `hooks/modules/agents/skill_injection_verifier.py` -- chequea en SubagentStop que las skills esperadas hayan aparecido en el transcript; no inyecta nada
-- `skills/skill-creation/SKILL.md` -- cómo construir una skill (tipo, presupuesto de líneas, reglas del description)
-- `tests/layer1_prompt_regression/test_skills_cross_reference.py` -- verifica la estructura de las carpetas de skill y los cross-refs con los agentes
+- [`../schema.prisma`](../schema.prisma) -- the current shape of the database, and the
+  source every folder here is derived from
+- [`../generated/prisma/`](../generated/prisma/) -- the typed client, regenerated from
+  the schema at build time; it is not derived from this folder
+- [`../../.github/workflows/migrate.yml`](../../.github/workflows/migrate.yml) -- the
+  job that applies these on a merge to `main`
 ````
+
+Three things to copy deliberately. **The mode is named in the first two words of the section**, so a reader knows which question the rest answers. **The wiring is stated as a split between two stores** -- the folder is the intent, `_prisma_migrations` is the fact -- which is the sentence that makes every rule below it derivable instead of arbitrary. And **the frozen typo is left in and explained**: it is the single most convincing line in that README, because it proves the rule is real rather than aspirational.
 
 ## Component folder -- skeleton
 
 ````markdown
 # <Folder Name>
 
-<Párrafo 1: en una frase, qué vive acá.>
+<Paragraph 1: in one sentence, what lives here.>
 
-<Párrafo 2: por qué esta carpeta existe separada -- su contrato conceptual.>
+<Paragraph 2: why this folder exists separately -- its conceptual contract.>
 
-<Párrafo 3: cómo pensarla -- modelo mental o analogía.>
+<Paragraph 3: how to think about it -- a mental model or analogy.>
 
-<Párrafo 4: quién la toca: developer / agente en runtime / CI / admin.>
-
----
-
-## Cuándo se activa
-
-<El trigger concreto: qué evento, condición o code path la dispara.>
-
-```
-1. <paso>
-     -> <lo que produce>
-2. <paso>
-     -> <lo que produce>
-```
-
-<Texto plano: pasos numerados y flechas `->`. Nada que haya que renderizar.>
-
-<Qué se rompe si esta carpeta falta o está corrupta.>
+<Paragraph 4: who touches it, naming the real actors -- developer, CI job,
+operator by hand, build step, runtime process, agent, end user.>
 
 ---
 
-## Qué hay aquí
+## How it is wired in
+
+**Mode: <triggered | consumed / composed | applied in order | invoked>.**
+<The fact that mode demands: the event and the code path that reaches it; or the
+consumer and the composition boundary; or the ordering rule and where the record of
+what already ran lives; or the exact invocation and who runs it.>
+
+```
+1. <step>
+     -> <what it produces>
+2. <step>
+     -> <what it produces>
+```
+
+<Plain text only: numbered steps and `->` arrows. Nothing that must be rendered.
+Include the flow only when more than two steps chain.>
+
+**What breaks if you get it wrong here.**
+
+<The mistake this folder punishes, and what the reader sees when they make it.
+Not "what if the folder disappeared" -- that question only has an answer in the
+triggered mode.>
+
+---
+
+## What's here
 
 ```
 <folder>/
-├── <file>      <- <comentario de una línea>
-└── <subdir>/   <- <comentario de una línea; marcá lo generado>
+├── <file>      <- <one-line reason this exists>
+└── <subdir>/   <- <one-line reason; mark whatever is generated>
 ```
 
 ---
 
-## Convenciones
+## Conventions
 
-- <Regla de nombre para archivos nuevos>
-- <Estructura interna obligatoria>
-- <Qué actualizar en otro lado al agregar algo acá>
-- <Qué validación corre contra esta carpeta -- nombrando archivo y símbolo>
+- <Naming rule for new files, and what the name is for>
+- <Required internal structure>
+- <What to update elsewhere when something is added here>
+- <What validation runs against this folder -- naming the file and symbol, or
+  stating plainly that nothing does>
 
 ---
 
-## Ver también
+## See also
 
-- `<path>` -- <razón en una línea>
+- `<path>` -- <one-line reason>
 ````
 
-## Component folder -- section depth guide
+## Component folder -- what the wiring section needs, by mode
 
-How much the activation section of *this gate* typically needs, by folder type:
+The mode from [`SKILL.md`](SKILL.md) Step 2 decides the section's depth, not the folder's name:
 
-| Folder | Activation complexity | Flow block? |
-|--------|----------------------|-------------|
-| `hooks/` | High -- event-driven, multi-module | Yes |
-| `agents/` | Medium -- routing dispatch | Optional |
-| `skills/` | Medium -- two activation routes | Yes |
-| `commands/` | Low -- user-invoked slash commands | No |
-| `config/` | Low -- read at startup or on-demand | No |
-| `bin/` | Low -- CLI tools, user-invoked | No |
-| `tests/` | Low -- run by CI or developer | No |
-| `build/` | Medium -- triggered by the pack step | Optional |
+| Mode | The section is not done until it names | Flow block? |
+|------|----------------------------------------|-------------|
+| **Triggered** | the event, the code path that reaches this folder, and what happens when the trigger fires and finds nothing here | Yes -- the chain from event to effect is the content |
+| **Consumed / composed** | every consumer, and the composition boundary: which imports are legal, which are not, and what enforces that | Optional -- only when composition is multi-step; a boundary rule is prose |
+| **Applied in order** | what fixes the order, where the record of what already ran lives, and the point past which a step is frozen | Yes -- intent, apply, record is a chain, and the reader needs where it can diverge |
+| **Invoked** | the exact invocation, who runs it, and what state it expects to already exist | No -- a command and its preconditions are two lines, and a flow inflates them |
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: readme-writing
-description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a component folder (Gaia's agents/, skills/, hooks/, config/, bin/, tests/, build/, or the equivalent folder in any repo), or the README shipped inside a template or scaffold that is handed to someone else. Triggers -- "escribí el README", "actualizá el README", "limpiá el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
+description: Use when writing, rewriting, cleaning up, or updating a README -- the root README of a repository, the README of a folder that holds one kind of thing (modules, migrations, components, services, scripts, environments, workloads; Gaia's own agents/, skills/ and hooks/ are one instance of that same shape), or the README shipped inside a template or scaffold handed to someone else. Triggers -- "escribí el README", "actualizá el README", "limpiá el README", "el README de este repo está desactualizado", "falta el README de esta carpeta", "write the README", "the README is stale", or a drift report flagging a README as stale.
 ---
 
 # README Writing
@@ -21,12 +21,14 @@ This comes first because it decides everything after it. Three READMEs, three re
 | Gate | Who is reading | The question they arrive with |
 |------|----------------|-------------------------------|
 | **Repository root** | Someone evaluating -- they may clone it, adopt it, inherit it, or walk away | "Does this serve me?" |
-| **Component folder** | Someone about to touch that folder | "When does this activate, and what do I break?" |
+| **Component folder** | Someone about to add, change, or remove something in that folder | "What is this wired to, and what do I break?" |
 | **Shipped template** | Whoever receives what was generated | "What is mine now, and what do I have to do?" |
 
-The root of a client's Terraform repo, a service, a library, a CLI -- all one gate: repository root. A folder inside a repo that holds one kind of component -- `agents/`, `modules/`, `hooks/` -- is the second gate. A README that travels inside generated output, into a repo its author will never see again, is the third.
+The root of a client's Terraform repo, a service, a library, a CLI -- all one gate: repository root. A folder inside a repo that holds one kind of thing -- `migrations/`, `modules/`, `components/`, `services/`, `agents/` -- is the second gate. A README that travels inside generated output, into a repo its author will never see again, is the third.
 
 A repo root and one of its folders are two separate passes, each through its own gate. Naming the gate wrong is the expensive failure: the work is done correctly and the artifact is the wrong one.
+
+**The one collision worth a tie-breaker: a generated repo that someone then lives in.** It was rendered by a generator, which points at the template gate, and it is somebody's repository root, which points at the first. The axis that separates them is the reader's relationship to the thing, not who wrote it. A shipped template's reader did not choose to be there and has one thing to do, once -- so its README is a handover note that expires when the last step is done. A repository root's reader is deciding whether to take this on and then lives with it -- so its README has to keep answering questions long after the first day. A generated client repo whose owners will work in it for a year takes the root gate, generator or not; the template gate is for output whose entire relationship with its reader is the first hour.
 
 ## Step 2: Write that gate's sections, in order
 
@@ -44,13 +46,26 @@ Requirements sit before usage on purpose: a reader who tries the invocation with
 
 ### Component folder -- five sections
 
-1. **Narrative** (2-4 paragraphs, prose, no bullets) -- what lives here; why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy; who touches it -- developer, agent at runtime, CI, admin.
-2. **When it activates** -- the concrete trigger: the event, condition, or code path that fires this. A plain-text flow when more than two steps chain. And what happens if this folder is absent or broken.
+1. **Narrative** (2-4 paragraphs, prose, no bullets) -- what lives here; why this folder exists separately, which is its conceptual contract; how to think about it, as a mental model or analogy; who touches it -- name the actual actors, whichever they are: a developer, a CI job, an operator by hand, a build step, a runtime process, an agent, an end user running a command.
+2. **How it is wired in** -- this folder's relation to everything outside it, answering the question its reader actually arrives with: *if I add, change, or remove something here, what happens, and what else has to move?* Two halves, both required -- see below.
 3. **What's here** -- annotated tree, one line per file or subdirectory, with generated files marked so nobody hand-edits them.
 4. **Conventions** -- how to name new files, what internal structure they must follow, what to update elsewhere when something is added here, what validation runs against this folder.
 5. **See also** -- adjacent components, each link carrying its one-line reason.
 
-**Inside Gaia, this gate carries three integration points.** Finishing a new skill includes updating [`skills/README.md`](../README.md) so the index lists it -- that is the closing step of `skill-creation`, not optional cleanup. An agent that adds a file to `agents/`, `hooks/`, `skills/` or any top-level folder reports the stale README through `cross_layer_impacts` and stops there; the orchestrator dispatches the README work as its own task, so the update is a deliberate pass rather than an afterthought squeezed into the middle of feature work, where it gets written from what the author happens to remember. And nothing mechanical catches a stale or missing one: [`tests/system/test_directory_structure.py`](../../tests/system/test_directory_structure.py) checks that the key folders hold their required files -- agent `.md`s, hooks, critical tools -- and never looks for a README, so that drift report is the only thing keeping these current.
+**Section 2, first half: name the mode this folder lives in, and give the fact that mode demands.**
+
+| Mode | The relation | What the section has to name |
+|------|--------------|------------------------------|
+| **Triggered** | something outside fires what is here | the event, and the code path that reaches it |
+| **Consumed / composed** | something imports, references, or renders what is here | the consumer, and the composition boundary -- what may cross it and what may not |
+| **Applied in order** | the contents run as a sequence against something that records what already ran | the ordering rule, and where that record lives -- which is what makes the past irreversible |
+| **Invoked** | a person or a CI job runs it by name | the exact invocation, and who runs it |
+
+**Do not reach for "triggered" by default.** It is the mode a README writer assumes and rarely the true one: across six folders sampled from unrelated repositories -- React components, database migrations, Terragrunt environments, IAM units, a services folder, and a GitOps workloads folder -- exactly one had a genuine trigger. Five did not, and a trigger invented for them would be the one claim in the README a reader cannot check.
+
+A folder can sit in more than one mode: a migrations folder applied in order *by* a CI job is both applied-in-order and triggered. Name the one that decides what breaks -- the other is a detail of it.
+
+**Section 2, second half: what breaks if you get it wrong here.** Not what breaks if the folder vanishes -- a folder rarely vanishes, and that question only has an interesting answer in the triggered mode. The question that survives all four is which mistake this folder punishes. In a migrations folder it is editing one that already ran. In a component library it is an import that crosses the boundary. In a module catalog it is changing an input without bumping the tag consumers pin. Add a plain-text flow when more than two steps chain.
 
 ### Shipped template -- four sections, all short
 
@@ -61,6 +76,14 @@ Requirements sit before usage on purpose: a reader who tries the invocation with
 
 The reader of this gate did not choose to be here and has no context to spend. Length is what makes it unread.
 
+### A section can be thin; it cannot be missing -- and a decision has a home
+
+Write every section of your gate. A reader cannot tell a section that was skipped from one that was judged unnecessary, so an omission reads as an unanalyzed dimension. But the rule that every section is mandatory is what manufactures invented content: an author facing a folder whose contents genuinely share no convention writes a plausible-sounding one, and that sentence becomes the one part of the README nobody can check.
+
+**So a thin section is declared thin, in one sentence that says why.** "These services share no framework and no layout -- each carries its own README; the only rule that holds across all of them is that the port is fixed in `compose.yaml`, never in code" is a complete Conventions section. It tells the reader the heterogeneity is deliberate rather than undocumented, which is exactly what they needed and could not have assumed.
+
+**And a decision worth recording gets a place.** Why this tool and not the obvious one, why the boundary sits here, what the rejected alternative would have cost -- that is often the most valuable paragraph in a README, and it fits none of the standard sections, so it gets dropped. Put it in the section whose rule it explains: the reason a tool is pinned to a non-default binary belongs in Requirements, beside the pin. Give it its own short section only when the decision governs the whole folder or repo rather than one section's rule. Either way it has to carry the alternative that was rejected and the reason -- a decision recorded without its rejected alternative is just a description of the present, which the code already provides.
+
 ## Step 3: Get the load-bearing section concrete
 
 Each gate has exactly one section that carries the weight. If that one is vague, the rest cannot compensate.
@@ -68,12 +91,12 @@ Each gate has exactly one section that carries the weight. If that one is vague,
 | Gate | Load-bearing section |
 |------|----------------------|
 | Repository root | 3 -- Flow |
-| Component folder | 2 -- When it activates |
+| Component folder | 2 -- How it is wired in |
 | Shipped template | 3 -- What you run, once |
 
-**The test, and it can fail:** if what you wrote would be equally true of any other system of the same type, it is not concrete enough yet.
+**The test, and it can fail:** if what you wrote would be equally true of any other system of the same type, it is not concrete enough yet. Apply it against the mode you declared -- a folder that says "applied in order" and then describes ordering in general has named the mode without paying for it.
 
-"Skills are injected at startup" passes for every plugin system ever built, so it fails. "The host reads `skills:` from the agent's frontmatter and preloads each `SKILL.md` before the subagent's first turn" is true of this system and false of the next one, so it passes. The same test on a root README: "deploys infrastructure to the cloud" fails; "`terraform apply` against the `prod` workspace creates the VPC, the GKE cluster, and the Cloud SQL instance the `app-*` modules depend on" passes. And on a template: "configure your settings" fails; "run `make bootstrap` once to write `.env` from your project id" passes.
+"Migrations run in order and should not be edited afterwards" is true of every migration folder ever built, so it fails. "`prisma migrate deploy` applies only the folders absent from the `_prisma_migrations` ledger, in the lexicographic order of their timestamp prefixes, and never re-runs one -- so a correction is always another folder, never an edit" is true of this repo and false of the next one, so it passes. The same test on a root README: "deploys infrastructure to the cloud" fails; "`terraform apply` against the `prod` workspace creates the VPC, the GKE cluster, and the Cloud SQL instance the `app-*` modules depend on" passes. And on a template: "configure your settings" fails; "run `make bootstrap` once to write `.env` from your project id" passes.
 
 ## Step 4: The README is the map, not the territory
 
@@ -86,7 +109,7 @@ A README routes to where each thing lives; it does not contain it. Long-form doc
 ## Anti-patterns
 
 - **A tree with no comments** -- it reproduces `ls` and costs the reader a scroll to learn nothing. The reason an entry exists is the only part they cannot get from the filesystem.
-- **Conventions that are aspirational** -- "files should be well-named" cannot be complied with or violated, so it constrains nobody. "Skill folders use kebab-case matching the `name:` field in frontmatter" can be checked.
+- **Conventions that are aspirational** -- "files should be well-named" cannot be complied with or violated, so it constrains nobody. "Every folder here is named `<utc-timestamp>_<verb>_<object>`, and the timestamp prefix is what fixes the apply order" can be checked, and tells the reader what the name is *for*.
 - **Links with no reason** -- a bare list shifts the deciding onto the reader, who has to open each one to find out whether it was for them.
 - **Absolute links** -- they encode one host, one account, one branch, and break in every clone and every branch that is not that one.
 - **Reproducing what another artifact already documents** -- the copy and the original are two sources of truth. They do not diverge one at a time; they both become unreliable, because a reader who finds a conflict cannot tell which side is stale.
