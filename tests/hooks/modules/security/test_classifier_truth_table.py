@@ -382,6 +382,78 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-kubectl-get", FREE, "kubectl get pods -o json", False, T0),
     ("read-terraform-init", FREE, "terraform init", False, T0),
     ("read-git-remote", FREE, "git remote -v", False, T0),
+    # ---- M4 (task 12): two of the four remaining friction groups measured
+    # by most volume, plus the one required sibling that only these two
+    # naturally pair with here (the npm-run-body and script-file-content
+    # groups are cwd-dependent and live in their own BashValidator classes in
+    # test_mutative_verbs.py -- see the classes carrying "friction_residual"
+    # in their method names). Case ids are prefixed "friction_residual_" on
+    # purpose: this file's own oracle test has no marker in its name, so
+    # `pytest -k friction_residual` selects these PARAMETRIZED INSTANCES by
+    # id rather than the whole table, while the rows themselves still live in
+    # the SAME shared table task 1 built -- extending it, not forking it.
+    #
+    # `terraform`/`terragrunt init` was already free for a bare invocation
+    # (see "read-terraform-init" above) and for the flag-bearing form that
+    # merely disables the backend: `-backend=false`/`-input=false` carry no
+    # verb MUTATIVE_VERBS tracks and match none of the three flags anchored
+    # in COMMAND_PATH_MUTATIVE_UPGRADES (`-upgrade`/`-migrate-state`/
+    # `-reconfigure`, landed in task 8) -- so this form was ALREADY T0 by the
+    # same "safe by elimination + flag-scoped anchor" mechanism task 8 built,
+    # with no further code change needed here. Recorded as a deliberate row
+    # (not left silently free) so the SAME selected run also carries its
+    # sibling: a state-migrating init on the exact same command shape stays
+    # T3, proving the anchor discriminates the flag rather than "init" as a
+    # whole.
+    (
+        "friction_residual_terraform_init_no_backend_free",
+        FREE,
+        "terraform init -backend=false -input=false",
+        False,
+        T0,
+    ),
+    (
+        "friction_residual_terraform_init_migrate_state_sibling",
+        GATED,
+        "terraform init -input=false -migrate-state",
+        True,
+        T3,
+    ),
+    # `pytest -rf` (pytest's OWN report-selection flag: show extra summary
+    # for Failed tests) used to read exactly like `rm -rf` -- the packed
+    # short-flag scan treated any cli carrying both letters in one bundle as
+    # dangerous, agnostic of what those letters mean on THAT cli. Fixed by
+    # scoping the compound r+f branch (and dropping the unconditional exact
+    # "-rf"/"-fr" ALWAYS entries) to cli membership in BOTH
+    # R_FLAG_MEANS_RECURSIVE_DELETE and F_FLAG_MEANS_FORCE -- `rm -rf` and
+    # `cp -rf` (below, as controls) are unaffected; `pytest` is in neither
+    # set. This is the exact command this project's own testing discipline
+    # requires (security-tiers: no ad-hoc inline probes to verify the
+    # classifier -- pytest is the sanctioned method), so gating it taxed the
+    # one tool mandated to check it.
+    (
+        "friction_residual_pytest_packed_report_flag_free",
+        FREE,
+        "python3 -m pytest tests/hooks/modules/security/ -q -rf",
+        False,
+        T0,
+    ),
+    # ---- Controls: the packed r+f bundle still fires where it is genuinely
+    # destructive -- unaffected by scoping the heuristic to cli membership.
+    (
+        "friction_residual_packed_rf_control_rm",
+        GATED,
+        "rm -rf /home/jorge/.gaia/scratch/friction-residual-probe",
+        True,
+        T3,
+    ),
+    (
+        "friction_residual_packed_rf_control_cp",
+        GATED,
+        "cp -rf /home/jorge/.gaia/scratch/src /home/jorge/.gaia/scratch/dst",
+        True,
+        T3,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -584,7 +656,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 55
+_MINIMUM_MEASURED_CASES = 65
 
 
 @pytest.mark.parametrize(

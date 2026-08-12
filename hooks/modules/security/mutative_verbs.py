@@ -2547,8 +2547,18 @@ DANGEROUS_FLAGS: Dict[str, str] = {
     "--recursive": "CONTEXT",
     "--delete": "CONTEXT",
     "--hard": "CONTEXT",
-    "-rf": "ALWAYS",
-    "-fr": "ALWAYS",
+    # "-rf"/"-fr" are deliberately NOT listed here as exact-match ALWAYS
+    # entries.  An exact-match ALWAYS entry escalates the literal token on
+    # EVERY cli, command-agnostic -- which is exactly the failure this pair
+    # produced: pytest's own "-rf" report flag (show extra summary for
+    # Failed tests) is spelled identically to `rm -rf` and paid the same T3
+    # toll on every command carrying it, regardless of cli. The packed-bundle
+    # scan in ``_scan_dangerous_flags`` below already matches "-rf"/"-fr" (and
+    # every other packed r+f bundle, "-rfi"/"-rfv"/...) through
+    # ``_is_posix_short_flag_cluster``, scoped to cli membership in BOTH
+    # R_FLAG_MEANS_RECURSIVE_DELETE and F_FLAG_MEANS_FORCE -- an entry here
+    # would short-circuit that scoping and reintroduce the same bug for these
+    # two exact spellings alone.
 }
 
 
@@ -2820,7 +2830,10 @@ def _scan_dangerous_flags(
     - "-D" is only dangerous if cli is in D_FLAG_MEANS_FORCE_DELETE
     - "-M" is only dangerous if cli is in M_FLAG_MEANS_FORCE_MOVE
     - "--delete" is only dangerous if cli is in DELETE_FLAG_IS_DESTRUCTIVE
-    - Compound flags like "-rf" are always dangerous
+    - A packed compound like "-rf" is dangerous only if cli is in BOTH
+      R_FLAG_MEANS_RECURSIVE_DELETE and F_FLAG_MEANS_FORCE (both letters must
+      mean something destructive on THIS cli); a cli dangerous on only one
+      letter still escalates through that letter's own context rule
 
     Args:
         tokens: Tokenized command.
@@ -2878,10 +2891,35 @@ def _scan_dangerous_flags(
         # EVERY PowerShell invocation (Claude Code prepends ``-NoProfile``) into
         # a spurious T3.  ``_is_posix_short_flag_cluster`` gates the branch so a
         # word-flag no longer matches, while real packed bundles still do.
+        #
+        # The r+f branch used to fire unconditionally once the bundle shape
+        # matched, regardless of *cli* -- a bare-string match ("does the
+        # token contain both letters") agnostic to what those letters mean on
+        # THIS command.  ``pytest``'s own ``-r`` is its report-selection flag
+        # (``-rf`` = show extra summary for Failed tests), not "recursive",
+        # and pytest carries no "-f" force meaning either, so `pytest -rf`
+        # read exactly like `rm -rf` and paid the same T3 toll -- on the one
+        # command the project's own testing discipline requires running to
+        # verify the classifier itself (see ``security-tiers``: ad-hoc inline
+        # probes are explicitly disallowed, so pytest is the ONLY sanctioned
+        # way to check a fix here).  Scoped the same way the two single-flag
+        # branches below already are: the combo only means "recursive force"
+        # when the CLI is independently known to give BOTH letters that
+        # meaning (``rm``, ``cp``) -- membership in both context sets, not
+        # one.  A CLI known dangerous on only one of the two letters (e.g.
+        # ``kubectl``/``docker``/``git`` for ``-f``, ``chmod``/``find`` for
+        # ``-r``) is unaffected: it still escalates via the two ``elif``
+        # branches below, which each check their own single-letter context
+        # set independently of this one.
         elif len(token) > 2 and token[0] == "-" and token[1] != "-":
             flag_chars = token[1:]
             if _is_posix_short_flag_cluster(flag_chars):
-                if "r" in flag_chars and "f" in flag_chars:
+                if (
+                    "r" in flag_chars
+                    and "f" in flag_chars
+                    and cli in R_FLAG_MEANS_RECURSIVE_DELETE
+                    and cli in F_FLAG_MEANS_FORCE
+                ):
                     found.append(token)
                 elif "f" in flag_chars and cli in F_FLAG_MEANS_FORCE:
                     found.append(token)
@@ -3562,6 +3600,34 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     if ps_result is not None:
         return ps_result
 
+    # --- Step 3: Simulation flag override (relocated ahead of Step 1d/1e) ---
+    # Conceptually still "Step 3" -- the same flag set and the same verdict as
+    # everywhere else this label is referenced -- but moved physically ahead
+    # of script-file and npm-run content inspection instead of running after
+    # them.  Step 1d/1e read and statically analyze a script's REAL content,
+    # and a script commonly reaches a mutation only behind its OWN runtime
+    # guard (``if (!dryRun) { fs.writeFileSync(...) }``) that static analysis
+    # cannot evaluate -- so a caller who explicitly passed ``--dry-run`` still
+    # paid the full T3 toll for a write that never executes.  Measured:
+    # ``node bin/pre-publish-validate.js --dry-run`` classified MUTATIVE
+    # (fs-write) although the write sits behind exactly that guard and never
+    # runs in dry-run mode.  Running this check first means a caller's
+    # explicit simulation flag is honored the same way for a script/npm
+    # invocation as for every other command shape, without asking the
+    # content-inspection lanes to understand conditional control flow they
+    # were never built to evaluate.
+    if any(t.lower() in SIMULATION_FLAGS for t in tokens):
+        # Find the first non-flag token after base_cmd for the verb
+        verb, _ = _find_first_non_flag(semantics.semantic_head_tokens)
+        return MutativeResult(
+            is_mutative=False,
+            category=CATEGORY_SIMULATION,
+            verb=verb,
+            cli_family=family,
+            confidence="high",
+            reason=f"Simulation flag detected (command has --dry-run or equivalent)",
+        )
+
     # --- Step 1d: Script-file analysis (python3 deploy.py, bash setup.sh, ./x) ---
     # An interpreter invoked with a script FILE as a positional argument, or a
     # direct ``./script`` invocation, hides its mutations inside the file --
@@ -3598,19 +3664,6 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             cli_family=family,
             confidence="low",
             reason=f"Single-token command '{base_cmd}' with no verb",
-        )
-
-    # --- Step 3: Simulation flag override ---
-    if any(t.lower() in SIMULATION_FLAGS for t in tokens):
-        # Find the first non-flag token after base_cmd for the verb
-        verb, _ = _find_first_non_flag(semantics.semantic_head_tokens)
-        return MutativeResult(
-            is_mutative=False,
-            category=CATEGORY_SIMULATION,
-            verb=verb,
-            cli_family=family,
-            confidence="high",
-            reason=f"Simulation flag detected (command has --dry-run or equivalent)",
         )
 
     # --- Step 3.5: --help exemption (whitelist + positional boundary) ---

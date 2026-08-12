@@ -544,9 +544,13 @@ class TestScanDangerousFlags:
     # --- compound short flags (lines 906-913) ----------------------------
     def test_compound_rf_always(self):
         # `len(token) > 2 and token[0] == "-" and token[1] != "-"` then
-        # `"r" in flag_chars and "f" in flag_chars`. -rf is also an exact
-        # ALWAYS match, so use a non-listed compound to exercise the elif.
-        assert self._scan(["x", "-rfi"], "anything") == ("-rfi",)
+        # `"r" in flag_chars and "f" in flag_chars and cli in
+        # R_FLAG_MEANS_RECURSIVE_DELETE and cli in F_FLAG_MEANS_FORCE` (task
+        # 12, M4: the r+f branch used to fire regardless of cli -- "rm" is
+        # dangerous on BOTH letters, so it still exercises the elif; "-rf" is
+        # no longer an exact ALWAYS-dict match either, so any packed r+f
+        # spelling reaches this same branch).
+        assert self._scan(["x", "-rfi"], "rm") == ("-rfi",)
 
     def test_compound_f_only_force_cli(self):
         # elif `"f" in flag_chars and cli in F_FLAG_MEANS_FORCE`.

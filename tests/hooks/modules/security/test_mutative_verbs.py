@@ -3085,6 +3085,138 @@ class TestNpmPrefixCwdResolution:
         assert result.verb != "npm-run-unresolved"
 
 
+class TestFrictionResidualNpmRunBodyResolution:
+    """M4 (task 12): the middle sibling defines the group.
+
+    Today an npm-run script whose body CANNOT be resolved falls to the
+    conservative ``npm-run-unresolved`` T3 default -- correctly, since the
+    classifier cannot prove the payload safe. What was measured costing 36
+    approvals is the DIFFERENT case: the body DOES resolve (package.json is
+    present and readable under the real invocation directory, exactly as
+    task 10 fixed the fold for) and the resolved content is read-only, yet it
+    still paid the toll before that fix landed. This class pins the property
+    that must hold with the fold seeded from ``hook_payload["cwd"]`` -- no
+    further code change was needed here, the fold task 10 built already
+    resolves it -- alongside the two required siblings in the SAME class:
+    the same script name resolving to a body that DOES mutate, and a script
+    name that does not resolve at all. Widening either sibling into "free"
+    would be exactly the regression this class exists to catch.
+    """
+
+    _SUBAGENT_MARKER = {"agent_id": "test-subagent"}
+
+    def test_friction_residual_npm_run_readonly_body_resolves_free(self, tmp_path):
+        (tmp_path / "package.json").write_text(
+            '{"scripts": {"lint": "eslint ."}}'
+        )
+        result = BashValidator().validate(
+            "npm run lint",
+            hook_payload={**self._SUBAGENT_MARKER, "cwd": str(tmp_path)},
+        )
+        assert result.allowed is True
+        assert result.tier == SecurityTier.T0_READ_ONLY
+
+    def test_friction_residual_npm_run_mutative_body_sibling_stays_t3(self, tmp_path):
+        """Sibling 1: the SAME resolution path, a body that DOES mutate."""
+        (tmp_path / "package.json").write_text(
+            '{"scripts": {"reset-db": "rm -rf var/db && touch var/db"}}'
+        )
+        result = detect_mutative_command("npm run reset-db", cwd=str(tmp_path))
+        assert result.is_mutative is True
+        assert result.verb != "npm-run-unresolved"
+
+    def test_friction_residual_npm_run_unresolved_sibling_stays_t3(self, tmp_path):
+        """Sibling 2: a real, readable package.json with NO matching script
+        entry -- the body cannot be resolved, so the conservative default
+        must still apply, exactly as it does today."""
+        (tmp_path / "package.json").write_text(
+            '{"scripts": {"lint": "eslint ."}}'
+        )
+        result = detect_mutative_command(
+            "npm run does-not-exist", cwd=str(tmp_path)
+        )
+        assert result.is_mutative is True
+        assert result.verb == "npm-run-unresolved"
+
+    def test_friction_residual_npm_run_readonly_counterfactual_without_payload_cwd(
+        self, tmp_path
+    ):
+        """Counterfactual: the SAME readable, read-only package.json, minus
+        the payload's ``cwd`` (the fold task 10 built). Without it,
+        resolution looks in the wrong directory -- the hook process's own
+        cwd, not this fixture -- and the invocation reverts to the
+        conservative T3 default, proving the freed form above is reached
+        through that fold and is not dead code. The script name is unique to
+        this fixture (not a real entry of this repo's OWN package.json,
+        which the process cwd would otherwise resolve against and mask the
+        counterfactual by coincidentally also resolving free)."""
+        (tmp_path / "package.json").write_text(
+            '{"scripts": {"friction-residual-probe-lint": "eslint ."}}'
+        )
+        result = BashValidator().validate(
+            "npm run friction-residual-probe-lint",
+            hook_payload=dict(self._SUBAGENT_MARKER),
+        )
+        assert result.allowed is False
+        assert result.tier == SecurityTier.T3_BLOCKED
+
+
+class TestFrictionResidualSimulationFlagBeforeScriptContent:
+    """M4 (task 12): a script invoked with its own ``--dry-run`` (or
+    equivalent) flag now short-circuits to SIMULATION before its content is
+    read, instead of paying the full toll for a mutation that sits behind a
+    runtime guard the flag ensures never executes.
+
+    Measured: ``node bin/pre-publish-validate.js --dry-run`` classified
+    MUTATIVE (``fs-write``) even though the write it found lives behind
+    ``if (this.dryRun) { return; }`` and never runs when the caller passes
+    ``--dry-run``. The fix moves the existing simulation-flag override (Step
+    3) ahead of script-file/npm-run content inspection (Step 1d/1e) instead
+    of leaving it to run only after they already returned -- the SAME flag
+    set, the SAME verdict, just consulted before the content lanes instead of
+    after them.
+    """
+
+    def test_friction_residual_local_build_script_dry_run_resolves_free(
+        self, tmp_path
+    ):
+        script = tmp_path / "release-prepare.mjs"
+        script.write_text(
+            "const fs = require('fs');\n"
+            "function bump(dryRun) {\n"
+            "  if (dryRun) { return; }\n"
+            "  fs.writeFileSync('package.json', '{}');\n"
+            "}\n"
+            "bump(process.argv.includes('--dry-run'));\n"
+        )
+        result = detect_mutative_command(
+            "node release-prepare.mjs --dry-run", cwd=str(tmp_path)
+        )
+        assert result.is_mutative is False
+        assert result.category == "SIMULATION"
+
+    def test_friction_residual_local_build_script_without_flag_stays_t3(
+        self, tmp_path
+    ):
+        """Control: the identical script, invoked WITHOUT --dry-run, is
+        still read by content and still escalates -- the fix short-circuits
+        on the FLAG, it does not stop reading the script."""
+        script = tmp_path / "release-prepare.mjs"
+        script.write_text(
+            "const fs = require('fs');\n"
+            "function bump(dryRun) {\n"
+            "  if (dryRun) { return; }\n"
+            "  fs.writeFileSync('package.json', '{}');\n"
+            "}\n"
+            "bump(process.argv.includes('--dry-run'));\n"
+        )
+        result = detect_mutative_command(
+            "node release-prepare.mjs", cwd=str(tmp_path)
+        )
+        assert result.is_mutative is True
+        assert result.verb == "fs-write"
+
+
 class TestScriptFileEvasionNoFalsePositiveRegression:
     """Pins the explicitly-cited false-positive complaints
     (atom_t3_classification_overbroad) so the file-argument fix never
@@ -4615,13 +4747,53 @@ class TestPackedShortFlagClusterGate:
         assert self._scan(["x", "-rf"], "rm") == ("-rf",)
 
     def test_rfi_packed_still_detected(self):
-        assert self._scan(["x", "-rfi"], "anything") == ("-rfi",)
+        # "rm" carries both meanings (recursive AND force) -- the pair a
+        # packed r+f bundle is dangerous on. This used to read "anything" as
+        # the cli, asserting the bundle fired regardless of what cli carried
+        # it -- exactly the command-agnostic bug M4 (task 12) closed; see
+        # test_friction_residual_packed_rf_unrelated_cli_no_longer_fires
+        # below for the case that must NOT fire post-fix.
+        assert self._scan(["x", "-rfi"], "rm") == ("-rfi",)
 
     def test_fv_force_cli_still_detected(self):
         assert self._scan(["x", "-fv"], "mv") == ("-fv",)
 
     def test_rv_recursive_cli_still_detected(self):
         assert self._scan(["x", "-rv"], "rm") == ("-rv",)
+
+    # --- M4 (task 12): the packed r+f bundle is scoped to cli, not agnostic --
+    def test_friction_residual_packed_rf_unrelated_cli_no_longer_fires(self):
+        """`pytest -rf` (report-selection flag, "Failed") used to read like
+        `rm -rf` on ANY cli. "pytest" is in neither R_FLAG_MEANS_RECURSIVE_
+        DELETE nor F_FLAG_MEANS_FORCE, so the bundle must not fire for it --
+        while the identical bundle on "rm" (test_rf_exact_still_detected,
+        above) still does."""
+        assert self._scan(["x", "-rf"], "pytest") == ()
+
+    def test_friction_residual_packed_rf_grouped_report_combo_no_longer_fires(self):
+        """The fix is a scoping rule, not an exemption for the one exact
+        `-rf` spelling: a different packed combo carrying the same two
+        letters (pytest's `-rfE`, report Failed+Error) must be equally
+        unaffected, or the same false positive returns on the next
+        combination."""
+        assert self._scan(["x", "-rfE"], "pytest") == ()
+
+    def test_friction_residual_packed_rf_single_letter_context_still_wins(self):
+        """A cli dangerous on only ONE of the two letters still escalates
+        through that letter's own context rule -- the scoping narrows the
+        COMBINED r+f branch, it does not touch the single-letter branches."""
+        assert self._scan(["x", "-fv"], "docker") == ("-fv",)   # docker: -f only
+        assert self._scan(["x", "-rv"], "chmod") == ("-rv",)    # chmod: -r only
+
+    def test_friction_residual_packed_rf_counterfactual_matches_control(self):
+        """Counterfactual, read together with the two controls above: the
+        SAME bundle shape ("-rf") is detected on "rm" (dangerous on both
+        letters) and not on "pytest" (dangerous on neither) -- the only
+        variable is cli membership in R_FLAG_MEANS_RECURSIVE_DELETE and
+        F_FLAG_MEANS_FORCE, proving the scoping is what decides the verdict
+        rather than the bundle being silently unreachable."""
+        assert self._scan(["x", "-rf"], "rm") == ("-rf",)
+        assert self._scan(["x", "-rf"], "pytest") == ()
 
     # --- BUG 1: long single-dash word flags NO LONGER false-positive ---------
     def test_noprofile_not_treated_as_rf(self):
