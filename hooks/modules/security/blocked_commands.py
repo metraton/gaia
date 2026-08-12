@@ -228,7 +228,8 @@ class SemanticBlockedRule:
 # - gcloud storage rm
 # - kubectl delete pod/deployment/service/configmap/secret/clusterrole/clusterrolebinding
 # - flux delete (single resource)
-# - terraform destroy -target=<resource> (targeted)
+# - terraform/terragrunt destroy (single module, targeted or whole-state);
+#   only the terragrunt multi-module sweeps stay permanently blocked
 # - helm uninstall (any release)
 # - docker rm, docker rmi (individual containers/images)
 # ============================================================================
@@ -323,12 +324,17 @@ BLOCKED_PATTERNS: Dict[str, List[re.Pattern]] = {
         re.compile(r"kubectl\s+delete\s+\w+\s+.*--all\b", re.IGNORECASE),
     ],
 
-    # Terraform / Terragrunt - Whole-state destruction
-    "terraform_destroy": [
-        # terraform destroy WITHOUT -target (bare destroy is destructive)
-        # Uses negative lookahead to allow "terraform destroy -target=X" through
-        re.compile(r"terraform\s+destroy\b(?!.*-target)", re.IGNORECASE),
-        re.compile(r"terragrunt\s+destroy\b(?!.*-target)", re.IGNORECASE),
+    # Terragrunt - Multi-module sweep destruction.
+    #
+    # Only the SWEEP forms are permanently denied.  Single-module destroy
+    # (``terraform destroy`` / ``terragrunt destroy``, bare or flagged) is
+    # deliberately NOT here: it destroys one state the operator is standing
+    # in, which is a legitimate operation to consent to case by case, so it
+    # routes through the T3 approval flow (mutative_verbs.py) instead of
+    # being rejected outright.  The sweep forms below destroy EVERY module
+    # in one invocation -- a different blast radius, and one no single
+    # consent prompt describes honestly -- so they stay permanently blocked.
+    "terragrunt_destroy_all": [
         re.compile(r"terragrunt\s+run-all\s+destroy\b", re.IGNORECASE),
         re.compile(r"terragrunt\s+destroy-all\b", re.IGNORECASE),
     ],
@@ -463,11 +469,12 @@ BLOCKED_COMMAND_SUGGESTIONS = {
     "kubectl drain": "[BLOCKED] Node draining can cause service disruption",
     "kubectl delete --all": "[BLOCKED] Bulk deletion of all resources is irreversible",
 
-    # Terraform / Terragrunt suggestions
-    "terraform destroy": "[BLOCKED] terraform destroy without -target destroys entire state - use terraform destroy -target=<resource>",
-    "terragrunt destroy": "[BLOCKED] terragrunt destroy without -target destroys entire state",
-    "terragrunt run-all destroy": "[BLOCKED] Recursive destruction of all modules",
-    "terragrunt destroy-all": "[BLOCKED] Recursive destruction of all modules",
+    # Terragrunt sweep suggestions.  The single-module destroy keys were
+    # removed with their rules: the regex fallback below matches these keys as
+    # SUBSTRINGS, so a stale key would attach a "this is permanently blocked"
+    # suggestion to a command that is now merely awaiting consent.
+    "terragrunt run-all destroy": "[BLOCKED] Recursive destruction of all modules - destroy one module at a time",
+    "terragrunt destroy-all": "[BLOCKED] Recursive destruction of all modules - destroy one module at a time",
 
     # Docker suggestions
     "docker system prune": "[BLOCKED] docker system prune with -a or --volumes removes all unused resources",
@@ -623,21 +630,13 @@ SEMANTIC_BLOCKED_RULES = (
     ),
     SemanticBlockedRule("kubernetes_critical", ("kubectl", "drain"), "kubectl drain"),
 
-    # Terraform / Terragrunt (semantic rules use forbidden_flags to allow -target through)
-    SemanticBlockedRule(
-        "terraform_destroy",
-        ("terraform", "destroy"),
-        "terraform destroy",
-        forbidden_flags=("-target", "--target"),
-    ),
-    SemanticBlockedRule(
-        "terraform_destroy",
-        ("terragrunt", "destroy"),
-        "terragrunt destroy",
-        forbidden_flags=("-target", "--target"),
-    ),
-    SemanticBlockedRule("terraform_destroy", ("terragrunt", "run-all", "destroy"), "terragrunt run-all destroy"),
-    SemanticBlockedRule("terraform_destroy", ("terragrunt", "destroy-all"), "terragrunt destroy-all"),
+    # Terragrunt sweeps.  Single-module destroy is approvable (T3) and has no
+    # rule here; only the multi-module sweep forms are permanently denied.
+    # These carry no ``forbidden_flags``: a -target on a sweep still walks
+    # every module, so the exemption that makes sense for a single state
+    # would be unsound here.
+    SemanticBlockedRule("terragrunt_destroy_all", ("terragrunt", "run-all", "destroy"), "terragrunt run-all destroy"),
+    SemanticBlockedRule("terragrunt_destroy_all", ("terragrunt", "destroy-all"), "terragrunt destroy-all"),
 
     # Docker
     SemanticBlockedRule("docker_critical", ("docker", "system", "prune"), "docker system prune", required_flags=("-a",)),

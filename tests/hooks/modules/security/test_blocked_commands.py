@@ -389,7 +389,7 @@ class TestBlockedPatternsCategories:
         "aws_critical",
         "gcp_critical",
         "kubernetes_critical",
-        "terraform_destroy",
+        "terragrunt_destroy_all",
         "docker_critical",
         "flux_critical",
         "git_destructive",
@@ -410,29 +410,62 @@ class TestBlockedPatternsCategories:
 
 
 class TestTerraformDestroyBlocked:
-    """Test terraform/terragrunt destroy patterns."""
+    """Where the destroy family sits on the permanent-deny floor.
+
+    The floor was split: single-module destroy is approvable T3 (it stops and
+    asks), and only the terragrunt multi-module SWEEPS are permanently denied.
+    Both halves are asserted here so the split cannot silently drift back.
+    """
 
     @pytest.mark.parametrize("command", [
-        "terraform destroy",
-        "terraform destroy --auto-approve",
-        "terragrunt destroy",
         "terragrunt run-all destroy",
         "terragrunt destroy-all",
+        # A sweep is denied WITH a target too: -target still walks every
+        # module, so the exemption that applies to a single state is unsound
+        # here and must not leak in.
+        "terragrunt run-all destroy -target=aws_instance.web",
+        "terragrunt destroy-all -target=module.vpc",
     ])
-    def test_terraform_destroy_blocked(self, command):
-        """Bare terraform/terragrunt destroy is blocked."""
+    def test_terragrunt_sweep_destroy_blocked(self, command):
+        """Multi-module sweeps stay permanently blocked (never approvable)."""
         result = is_blocked_command(command)
         assert result.is_blocked is True
+        assert result.category == "terragrunt_destroy_all"
 
     @pytest.mark.parametrize("command", [
+        # bare whole-state destroy -- was permanently blocked, now approvable
+        "terraform destroy",
+        "terraform destroy --auto-approve",
+        "terraform destroy -auto-approve",
+        "terragrunt destroy",
+        # targeted destroy -- unchanged, was already off the floor
         "terraform destroy -target=aws_instance.web",
         "terraform destroy -target=module.vpc",
         "terragrunt destroy -target=aws_s3_bucket.data",
     ])
-    def test_terraform_destroy_with_target_not_blocked(self, command):
-        """terraform destroy -target=X is NOT blocked (approvable)."""
+    def test_single_module_destroy_not_blocked(self, command):
+        """Single-module destroy is NOT on the deny floor -- it is approvable.
+
+        Not blocked is not the same as free: these still classify T3 and stop
+        for consent (asserted in ``test_single_module_destroy_is_t3`` below).
+        """
         result = is_blocked_command(command)
         assert result.is_blocked is False
+
+    @pytest.mark.parametrize("command", [
+        "terraform destroy",
+        "terraform destroy -auto-approve",
+        "terragrunt destroy",
+    ])
+    def test_single_module_destroy_is_t3(self, command):
+        """Off the floor, these must still require consent -- not pass free.
+
+        This is the half that makes the change safe: removing the permanent
+        deny must land the command in the T3 approval flow, never at T0.
+        """
+        from modules.security.tiers import SecurityTier, classify_command_tier
+
+        assert classify_command_tier(command) == SecurityTier.T3_BLOCKED
 
 
 class TestDockerCriticalBlocked:
@@ -659,7 +692,7 @@ class TestBlockedCommandsFalsePositiveFix:
         ("aws eks delete-cluster --name prod", "aws_critical"),
         ("git push --force origin main", "git_destructive"),
         ("git push -f origin main", "git_destructive"),
-        ("terraform destroy", "terraform_destroy"),
+        ("terragrunt run-all destroy", "terragrunt_destroy_all"),
         ("flux uninstall", "flux_critical"),
         ("dd if=/dev/zero of=/dev/sda", "disk_operations"),
     ])
@@ -752,7 +785,7 @@ class TestBlockedCommandsEnvPrefixEvasion:
         ("env FOO=bar gsutil rm -r gs://x", "gcp_critical"),
         ("env X=y kubectl delete namespace prod", "kubernetes_critical"),
         ("env gsutil rm -r gs://x", "gcp_critical"),
-        ("env TF_LOG=debug terraform destroy", "terraform_destroy"),
+        ("env TF_LOG=debug terragrunt run-all destroy", "terragrunt_destroy_all"),
         # env-wrapper defeating the ^-anchored disk_operations regexes
         ("env X=y dd if=/dev/zero of=/dev/sda", "disk_operations"),
         # bare NAME=value assignment prefix defeating the ^-anchored disk regexes

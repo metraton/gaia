@@ -269,31 +269,42 @@ class TestIsFalsePositiveCarrier:
 
 # ===========================================================================
 # SemanticBlockedRule.matches -- forbidden/required flags (9 survivors).
-# Anchored via is_blocked_command end-to-end so the rule table is real.
+#
+# The required_flags half is anchored end-to-end through is_blocked_command
+# (docker prune), so that rule table is real.  The forbidden_flags half is
+# NOT: since the destroy floor was split, no shipped rule uses
+# forbidden_flags -- the single-module destroy rules that did were removed
+# because those commands are now approvable rather than denied.  The
+# mechanism is still supported and still mutation-covered, but only by the
+# DIRECT SemanticBlockedRule constructions below.  If a future rule needs a
+# flag exemption, this is the coverage that keeps it working.
 # ===========================================================================
 class TestSemanticRuleMatches:
-    # --- terraform destroy (no -target) is BLOCKED ----------------------
-    def test_terraform_destroy_blocked(self):
-        assert is_blocked_command("terraform destroy").is_blocked is True
-
-    # --- terraform destroy -target=<res> is NOT blocked -----------------
-    # Kills line 111 forbidden-flag branch:
-    #   `if flag_token == forbidden or flag_token.startswith(forbidden + "=")`
-    # The Eq flips (Eq_Is/Eq_Gt/Eq_GtE/Eq_NotEq/Eq_Lt/Eq_LtE) and AddNot on
-    # this guard would mis-evaluate the forbidden-flag exemption.
+    # --- terragrunt SWEEP destroy is BLOCKED -----------------------------
+    # The permanent-deny floor was split: only the multi-module sweeps are
+    # denied outright.
     @pytest.mark.parametrize("command", [
+        "terragrunt run-all destroy",
+        "terragrunt destroy-all",
+    ])
+    def test_terragrunt_sweep_destroy_blocked(self, command):
+        assert is_blocked_command(command).is_blocked is True
+
+    # --- single-module destroy is NOT blocked ----------------------------
+    # The other half of the split: these leave the floor and route to the T3
+    # approval flow, so `is_blocked` must be False for bare AND targeted
+    # forms alike.  (That they still classify T3 is asserted in
+    # test_blocked_commands.py::test_single_module_destroy_is_t3 -- here we
+    # only pin that the deny floor does not catch them.)
+    @pytest.mark.parametrize("command", [
+        "terraform destroy",
         "terraform destroy -target=aws_instance.web",
         "terraform destroy --target=aws_instance.web",
+        "terraform destroy -target",
         "terragrunt destroy -target=module.db",
     ])
-    def test_terraform_destroy_targeted_not_blocked(self, command):
+    def test_single_module_destroy_not_blocked(self, command):
         assert is_blocked_command(command).is_blocked is False
-
-    # --- exact forbidden flag (no =value) also exempts -------------------
-    # Kills the `==` half of the or (line 111): `-target` as a standalone
-    # token must match via equality, not only via startswith("-target=").
-    def test_terraform_destroy_bare_target_flag_not_blocked(self):
-        assert is_blocked_command("terraform destroy -target").is_blocked is False
 
     # --- ordered-sequence guard (line 99/100) ---------------------------
     # Kills AddNot on `if not _contains_ordered_sequence(...)`: a command that

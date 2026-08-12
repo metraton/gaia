@@ -288,8 +288,13 @@ CLASSIFICATION_SCENARIOS = [
     ("rm -rf ~", False, "BLOCKED"),
     ("kubectl delete namespace production", False, "BLOCKED"),
     ("kubectl delete ns staging", False, "BLOCKED"),
-    ("terraform destroy", False, "BLOCKED"),
-    ("terragrunt destroy", False, "BLOCKED"),
+    # Single-module destroy left the permanent-deny floor: still denied
+    # without consent, but as an approvable T3 rather than a flat rejection.
+    ("terraform destroy", False, "T3"),
+    ("terragrunt destroy", False, "T3"),
+    # The multi-module sweeps stayed on the floor.
+    ("terragrunt run-all destroy", False, "BLOCKED"),
+    ("terragrunt destroy-all", False, "BLOCKED"),
     ("git push --force origin main", False, "BLOCKED"),
     ("git push -f origin main", False, "BLOCKED"),
     # git reset --hard moved from BLOCKED to T3-approvable in the
@@ -386,6 +391,17 @@ class TestClassificationEdgeCases:
             "terraform destroy -target=aws_instance.web"
         )
         # -target makes it pass blocked_commands, but it is still mutative
+        assert allowed is False
+        assert tier == "T3"
+
+    def test_bare_terraform_destroy_not_blocked_but_t3(self):
+        """Bare destroy now classifies exactly like the targeted form.
+
+        Since the destroy floor was split, the whole-state form is no longer
+        permanently denied -- but it must not fall through as safe either. It
+        lands on T3 and waits for consent, same as -target above.
+        """
+        allowed, tier = _classify_command_via_adapter("terraform destroy")
         assert allowed is False
         assert tier == "T3"
 

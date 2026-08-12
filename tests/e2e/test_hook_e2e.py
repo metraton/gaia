@@ -28,7 +28,8 @@ from tests.e2e.fixtures import (
     PRETOOL_AGENT_DEVOPS,
     PRETOOL_BASH_BLOCKED,
     PRETOOL_BASH_BLOCKED_GIT_RESET_HARD,
-    PRETOOL_BASH_BLOCKED_TERRAFORM_DESTROY,
+    PRETOOL_BASH_BLOCKED_TERRAGRUNT_SWEEP_DESTROY,
+    PRETOOL_BASH_MUTATIVE_TERRAFORM_DESTROY,
     PRETOOL_BASH_MUTATIVE,
     PRETOOL_BASH_MUTATIVE_KUBECTL_APPLY,
     PRETOOL_BASH_SAFE,
@@ -191,10 +192,27 @@ class TestPreToolUseBlocked:
         code, response, stderr = run_hook(self.HOOK, PRETOOL_BASH_BLOCKED)
         assert code == 2, f"Expected exit 2 (permanent block), got {code}. stderr: {stderr}"
 
-    def test_terraform_destroy_blocked(self):
-        """terraform destroy (no -target) is permanently blocked (exit 2)."""
-        code, response, stderr = run_hook(self.HOOK, PRETOOL_BASH_BLOCKED_TERRAFORM_DESTROY)
+    def test_terragrunt_sweep_destroy_blocked(self):
+        """A terragrunt multi-module sweep is permanently blocked (exit 2)."""
+        code, response, stderr = run_hook(
+            self.HOOK, PRETOOL_BASH_BLOCKED_TERRAGRUNT_SWEEP_DESTROY
+        )
         assert code == 2, f"Expected exit 2 (permanent block), got {code}. stderr: {stderr}"
+
+    def test_single_module_destroy_t3_approvable(self):
+        """Single-module destroy is T3-approvable (exit 0 with deny), not exit 2.
+
+        Contract change: the destroy floor was split. A single-module destroy
+        no longer hits the permanent-deny path -- it stops and asks for
+        consent, like any other T3 mutation. Only the multi-module sweep
+        above keeps exit 2.
+        """
+        code, response, stderr = run_hook(
+            self.HOOK, PRETOOL_BASH_MUTATIVE_TERRAFORM_DESTROY
+        )
+        assert code == 0, (
+            f"Expected exit 0 (T3-approvable deny), got {code}. stderr: {stderr}"
+        )
 
     def test_git_reset_hard_t3_approvable(self):
         """git reset --hard is T3-approvable (exit 0 with deny + approval_id).

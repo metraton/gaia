@@ -57,13 +57,25 @@ PRETOOL_BASH_MUTATIVE_KUBECTL_APPLY = {
     "session_id": "e2e-test-mutative-002",
 }
 
+# Single-module destroy: permanently blocked until the destroy floor was
+# split, now T3-approvable -- it stops and asks instead of being rejected.
+PRETOOL_BASH_MUTATIVE_TERRAFORM_DESTROY = {
+    "tool_name": "Bash",
+    "tool_input": {"command": "terraform destroy"},
+    "hook_event_name": "PreToolUse",
+    "session_id": "e2e-test-mutative-003",
+}
+
 # ============================================================================
 # PreToolUse Bash -- Blocked (permanently denied, exit 2)
 # ============================================================================
 
-PRETOOL_BASH_BLOCKED_TERRAFORM_DESTROY = {
+# Multi-module sweep: still permanently denied after the split, because one
+# invocation walks every module and no single consent prompt states that
+# honestly.
+PRETOOL_BASH_BLOCKED_TERRAGRUNT_SWEEP_DESTROY = {
     "tool_name": "Bash",
-    "tool_input": {"command": "terraform destroy"},
+    "tool_input": {"command": "terragrunt run-all destroy"},
     "hook_event_name": "PreToolUse",
     "session_id": "e2e-test-blocked-002",
 }

@@ -242,12 +242,33 @@ class TestBlockedCommandFlow:
         assert bash_result.block_response is None
         assert response.exit_code == 2
 
-    def test_terraform_destroy_blocked(self):
-        """Blocked: terraform destroy (without -target) -> exit 2."""
+    def test_terragrunt_sweep_destroy_blocked(self):
+        """Blocked: a terragrunt multi-module sweep -> exit 2."""
+        event, bash_result, response = _run_pretool_bash_flow(
+            "terragrunt run-all destroy"
+        )
+
+        assert bash_result.allowed is False
+        assert bash_result.block_response is None
+        assert response.exit_code == 2
+
+    def test_single_module_destroy_t3_approvable(self):
+        """T3-approvable: single-module destroy -> denied via approval (exit 0).
+
+        Contract change: the destroy floor was split. A single-module destroy
+        left the permanent-deny list and now follows the same nonce-based
+        approval flow as any other T3 mutation -- it stops and asks rather
+        than being rejected outright. Only the sweep form above keeps exit 2.
+        """
         event, bash_result, response = _run_pretool_bash_flow("terraform destroy")
 
         assert bash_result.allowed is False
-        assert response.exit_code == 2
+        assert bash_result.tier == SecurityTier.T3_BLOCKED
+        # A block_response is what distinguishes the approvable path from the
+        # permanent block, where it is None.
+        assert bash_result.block_response is not None
+        assert response.exit_code == 0
+        assert response.output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
     def test_git_reset_hard_t3_approvable(self):
         """T3-approvable: git reset --hard -> denied with approval flow (exit 0).

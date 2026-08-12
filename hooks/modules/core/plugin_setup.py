@@ -183,10 +183,17 @@ _DENY_RULES = [
     # Kubernetes — all delete and drain operations
     "Bash(kubectl delete:*)",
     "Bash(kubectl drain:*)",
-    # Terraform / Terragrunt — destroy
-    "Bash(terraform destroy:*)",
-    "Bash(terragrunt destroy:*)",
+    # Terragrunt — multi-module sweep destroy only.
+    #
+    # Single-module destroy (terraform/terragrunt) is intentionally absent:
+    # it is approvable T3, and a harness deny here would reject it before the
+    # hook could ever offer consent.  The hyphen-all form needs its OWN entry
+    # because these patterns match by PREFIX -- it used to be covered
+    # incidentally by the single-module wrapper entry that this change
+    # removes, so without the explicit line below it would silently stop
+    # being denied.
     "Bash(terragrunt run-all destroy:*)",
+    "Bash(terragrunt destroy-all:*)",
     # Helm — uninstall
     "Bash(helm uninstall:*)",
     "Bash(helm delete:*)",

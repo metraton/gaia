@@ -398,8 +398,10 @@ class TestHookRunner:
 
     def test_run_blocked_command(self, hooks_dir: Path, tmp_path: Path):
         runner = HookRunner(hooks_dir=hooks_dir, project_root=tmp_path)
-        # terraform destroy is permanently blocked
-        cmd = " ".join(["terraform", "destroy"])
+        # A terragrunt multi-module sweep is permanently blocked. Single-module
+        # destroy is deliberately NOT used here: it is approvable T3 (exit 0),
+        # so it would not exercise the BLOCK path this test covers.
+        cmd = " ".join(["terragrunt", "run-all", "destroy"])
         event = ReplayEvent(
             timestamp="2026-03-11 10:00:00,000",
             hook_name="pre_tool_use",

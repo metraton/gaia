@@ -602,8 +602,17 @@ def _blocked_kubectl_delete_ns():
     return " ".join(["kubectl", "delete", "namespace", "production"])
 
 
-def _blocked_tf_destroy():
-    """Build 'terraform destroy' avoiding hook scanner."""
+def _blocked_terragrunt_sweep_destroy():
+    """Build the terragrunt multi-module sweep, avoiding hook scanner."""
+    return " ".join(["terragrunt", "run-all", "destroy"])
+
+
+def _t3_tf_destroy():
+    """Build single-module 'terraform destroy', avoiding hook scanner.
+
+    Approvable T3 since the destroy floor was split -- it stops and asks
+    rather than being permanently rejected.
+    """
     return " ".join(["terraform", "destroy"])
 
 
@@ -1092,7 +1101,7 @@ class TestSessionSimulatorEdgeCases:
 
         blocked_commands = [
             _blocked_kubectl_delete_ns(),
-            _blocked_tf_destroy(),
+            _blocked_terragrunt_sweep_destroy(),
         ]
         for cmd in blocked_commands:
             result = sim.execute_bash(cmd)
@@ -1100,6 +1109,22 @@ class TestSessionSimulatorEdgeCases:
                 f"Expected exit 2 for '{cmd}', got {result['exit_code']}. "
                 f"stderr: {result['stderr']}"
             )
+
+    def test_single_module_destroy_is_t3_not_blocked(self, tmp_path):
+        """Single-module destroy asks for consent (exit 0), never exit 2.
+
+        Contract change: the destroy floor was split. Only the multi-module
+        sweep above keeps the permanent block; a single-module destroy joins
+        the ordinary T3 approval flow.
+        """
+        sim = SessionSimulator(tmp_path)
+        sim.start_session()
+
+        result = sim.execute_bash(_t3_tf_destroy())
+        assert result["exit_code"] == 0, (
+            f"Expected exit 0 (T3-approvable), got {result['exit_code']}. "
+            f"stderr: {result['stderr']}"
+        )
 
     def test_git_reset_hard_t3_approvable(self, tmp_path):
         """git reset --hard is T3-approvable (denied with approval flow, not exit 2).

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 CATEGORY_AGENT_MAP = {
     "aws_critical": "platform-architect",
     "gcp_critical": "platform-architect",
-    "terraform_destroy": "platform-architect",
+    "terragrunt_destroy_all": "platform-architect",
     "kubernetes_critical": "gitops-operator",
     "flux_critical": "gitops-operator",
     "git_destructive": "developer",
