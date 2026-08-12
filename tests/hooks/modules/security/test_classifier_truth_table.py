@@ -239,6 +239,48 @@ CLASSIFIER_TRUTH_TABLE = [
     ),
     # ---- FREE: bare init on the sibling CLI stays free too ----
     ("read-terragrunt-init", FREE, "terragrunt init", False, T0),
+    # ---- FREE: the tee anchor's sibling reads, which had no row at all ----
+    # The sensitive-write row above landed without a single free counterpart,
+    # so nothing in this table could tell a path predicate that discriminates
+    # from one that simply gates the tool. These are the forms that must stay
+    # free for `tee` to be anchored by WHERE it writes rather than by its name.
+    (
+        "write-tee-working-tree",
+        FREE,
+        "tee /home/jorge/ws/me/gaia/notes.txt",
+        False,
+        T0,
+    ),
+    (
+        "write-tee-append-working-tree",
+        FREE,
+        "tee -a /home/jorge/ws/me/gaia/README.md",
+        False,
+        T0,
+    ),
+    (
+        "write-tee-scratch",
+        FREE,
+        "tee /home/jorge/.gaia/scratch/out.txt",
+        False,
+        T0,
+    ),
+    # ---- OPEN: the tee anchor charges for a passthrough that writes nothing --
+    # MEASURED REGRESSION, recorded with its current verdict rather than the
+    # desired one, per the OPEN convention at the top of this file.
+    #
+    # `tee` was anchored by adding it to COMMAND_ALIASES -- a GLOBAL base
+    # command table -- and then subtracting the safe cases back out with
+    # `_tee_targets_sensitive_path`. That subtraction is deliberately skipped
+    # when there is NO file argument, so the bare form falls through to T3.
+    #
+    # But bare `tee` is not an incomplete write; it is the complete
+    # stdin-to-stdout passthrough of `cmd | tee`, which writes nothing at all.
+    # The validator splits a pipeline on its operators and classifies each
+    # component, so `ls -la | tee` reaches the classifier as this exact string
+    # and the whole pipeline is denied. The tree that predates this anchor
+    # classifies the same pipelines free, so the toll is new.
+    ("write-tee-passthrough-no-file", OPEN, "tee", True, T3),
     # ---- GATED controls: already T3, must stay T3 ----
     ("control-pr-merge", GATED, "gh pr merge 42 --squash", True, T3),
     (
@@ -283,6 +325,199 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-git-remote", FREE, "git remote -v", False, T0),
 ]
 
+# ---------------------------------------------------------------------------
+# No-overcorrection census
+# ---------------------------------------------------------------------------
+# Closing gaps is paid for in overcorrection: a rule widened until reading
+# costs consent. This census is the control on the anchors landed for M2, and
+# it is deliberately built out of the two directions that can each hide the
+# other's failure.
+#
+# CONTROL_GATED -- the six operations that were already gated correctly before
+# any of this work and must still be gated after it. If an anchor is rewritten
+# in a way that drops one of these, the repair has traded a false negative for
+# a worse one.
+#
+# MENTION_FREE -- the subtle half. A mutative command QUOTED INSIDE another
+# command's argument is being written down, not run, and must not escalate.
+# One spelling proves nothing here, because each quoting shape reaches the
+# classifier differently, so the same mutation is mentioned several ways.
+#
+# MENTION_OPEN -- recorded, not desired. A mention that DOES escalate today.
+# It is kept with its current (wrong) verdict for the reason the OPEN family
+# exists at the top of this file: a gap recorded as a passing expectation stays
+# visible, and closing it costs a deliberate edit here, whereas a gap left out
+# of the table is indistinguishable from one nobody found.
+
+CONTROL_GATED = "control_gated"
+MENTION_FREE = "mention_free"
+MENTION_OPEN = "mention_open"
+
+# (case_id, kind, command, expected_gated)
+NO_OVERCORRECTION_CENSUS = [
+    # ---- The six that must keep costing consent ----
+    ("census-pr-merge", CONTROL_GATED, "gh pr merge 42 --squash", True),
+    (
+        "census-api-write-method",
+        CONTROL_GATED,
+        "gh api -X POST /repos/o/r/issues -f title=x",
+        True,
+    ),
+    ("census-release-create", CONTROL_GATED, "gh release create v1.2.3", True),
+    (
+        "census-secret-add-gh",
+        CONTROL_GATED,
+        "gh secret set MY_SECRET --body hunter2",
+        True,
+    ),
+    (
+        "census-secret-add-gcloud",
+        CONTROL_GATED,
+        "gcloud secrets create my-secret --data-file=-",
+        True,
+    ),
+    (
+        "census-rollout-restart",
+        CONTROL_GATED,
+        "kubectl rollout restart deployment/api",
+        True,
+    ),
+    (
+        "census-iam-capacity-removal",
+        CONTROL_GATED,
+        "gcloud projects remove-iam-policy-binding my-proj "
+        "--member=user:a@b.c --role=roles/owner",
+        True,
+    ),
+    # ---- Mention, not use: quoted into another command's argument ----
+    # Each row quotes a command that IS gated on its own (every one of them
+    # appears above or in the truth table), so a row turning red means the
+    # quoting shape stopped protecting it, not that the inner command is safe.
+    (
+        "mention-double-quoted",
+        MENTION_FREE,
+        'gaia contract add evidence_report.key_outputs "ran gh pr merge 42 --squash"',
+        False,
+    ),
+    (
+        "mention-single-quoted",
+        MENTION_FREE,
+        "gaia contract add evidence_report.key_outputs 'ran gh pr merge 42 --squash'",
+        False,
+    ),
+    (
+        "mention-kubectl-delete",
+        MENTION_FREE,
+        'gaia contract add evidence_report.open_gaps '
+        '"kubectl delete pod my-pod was never run"',
+        False,
+    ),
+    (
+        "mention-terraform-apply",
+        MENTION_FREE,
+        'gaia contract set evidence_report.verification.command '
+        '"terraform apply -auto-approve"',
+        False,
+    ),
+    (
+        "mention-iam-grant",
+        MENTION_FREE,
+        'gaia contract add evidence_report.key_outputs '
+        '"gcloud projects add-iam-policy-binding my-proj '
+        '--member=user:a@b.c --role=roles/owner"',
+        False,
+    ),
+    (
+        "mention-rm-recursive",
+        MENTION_FREE,
+        'gaia contract add evidence_report.open_gaps "never ran rm -rf /etc"',
+        False,
+    ),
+    (
+        "mention-in-memory-body",
+        MENTION_FREE,
+        'gaia memory save --slug x --body "gh release create v1.2.3 was the trigger"',
+        False,
+    ),
+    (
+        "mention-prose-carrying-verbs",
+        MENTION_FREE,
+        'gaia contract add evidence_report.key_outputs '
+        '"the apply step creates the secret and restarts the deployment"',
+        False,
+    ),
+    (
+        "mention-workflow-run",
+        MENTION_FREE,
+        'gaia contract add evidence_report.key_outputs '
+        '"gh workflow run deploy.yml --ref main is the trigger"',
+        False,
+    ),
+    # ---- OPEN: a mention that escalates today ----
+    # Measured, not desired. The escalation does not come from any anchor this
+    # plan added -- it comes from the permanently-blocked pattern table
+    # (`blocked_commands.py`, category `git_destructive`), which this plan's
+    # diff does not touch, and the same verdict is produced by the tree that
+    # predates the M2 anchors. It is recorded here so the census carries it
+    # rather than looking clean by omission.
+    #
+    # The asymmetry that makes it a false positive rather than a policy: the
+    # SAME quoted text behind `echo` classifies free, because `echo` is in
+    # READ_ONLY_BASE_CMDS and the Gaia CLI is not. The block therefore depends
+    # on which read-only command is carrying the prose, not on what runs.
+    (
+        "mention-force-push-escalates",
+        MENTION_OPEN,
+        'gaia contract add evidence_report.key_outputs '
+        '"git push --force origin main is forbidden"',
+        True,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "case_id,kind,command,expected_gated",
+    NO_OVERCORRECTION_CENSUS,
+    ids=[row[0] for row in NO_OVERCORRECTION_CENSUS],
+)
+def test_no_overcorrection_census(case_id, kind, command, expected_gated):
+    """Gated stays gated, and a quoted mention does not become a use."""
+    tier = classify_command_tier(command)
+    gated = tier == T3
+
+    if kind == CONTROL_GATED:
+        assert gated, (
+            f"[{kind}] {case_id}: an operation that was correctly gated before "
+            f"this work no longer costs consent -- {command!r} classified {tier}"
+        )
+    elif kind == MENTION_FREE:
+        assert not gated, (
+            f"[{kind}] {case_id}: OVERCORRECTION -- a mutative command merely "
+            f"QUOTED inside another command's argument escalated to {tier}. "
+            f"Writing a command down is not running it: {command!r}"
+        )
+    else:
+        assert gated is expected_gated, (
+            f"[{kind}] {case_id}: recorded verdict drifted for {command!r} -- "
+            f"expected gated={expected_gated}, got {tier}. If this is a "
+            f"deliberate fix, move the row to {MENTION_FREE!r}."
+        )
+
+
+def test_no_overcorrection_census_carries_both_directions():
+    """The census keeps the six controls and more than one quoting shape.
+
+    A census of controls alone cannot see overcorrection, and a census of
+    mentions alone cannot see the trade that causes it.
+    """
+    kinds = [row[1] for row in NO_OVERCORRECTION_CENSUS]
+    assert kinds.count(CONTROL_GATED) >= 6
+    assert kinds.count(MENTION_FREE) >= 5
+
+    ids = [row[0] for row in NO_OVERCORRECTION_CENSUS]
+    assert len(ids) == len(set(ids)), "duplicate case id in the census"
+
+
 # The floor exists so a row cannot leave the table quietly, which only works
 # while it EQUALS the number of rows. It had drifted to ten below: the six IAM
 # forms closed most recently, and four others, could all have been deleted with
@@ -290,7 +525,7 @@ CLASSIFIER_TRUTH_TABLE = [
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 49
+_MINIMUM_MEASURED_CASES = 53
 
 
 @pytest.mark.parametrize(
