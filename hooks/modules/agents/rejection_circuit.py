@@ -20,7 +20,18 @@ Three things were missing and are supplied here:
     2 of 3, 1 remaining" can change strategy; an agent handed the same bytes
     twice cannot tell the two attempts apart.
   * A CEILING. At :data:`DEFAULT_MAX_REJECTIONS` the breaker trips and the turn
-    ENDS instead of being invited to repair again.
+    ENDS instead of being invited to repair again. This module only SIGNALS
+    that: ``CircuitState.tripped`` is a fact about the count, not an action on
+    the turn. What actually ends the turn is the CALLER's choice of output
+    channel on the trip branch (``adapt_subagent_stop`` in
+    ``hooks/adapters/claude_code.py``) -- specifically, NOT re-emitting
+    ``hookSpecificOutput.additionalContext``, the one stdout key the harness
+    hands back to the subagent as a system reminder and that therefore RESUMES
+    the very turn being cut. Measured by suppression against the live harness:
+    with that key emitted, a tripped turn crossed the gate 7 more times; with
+    it suppressed, the turn ended by itself on the next pass. A caller that
+    reads ``tripped=True`` and still emits that key has counted correctly and
+    not cut anything.
 
 The trip is DEGRADED AND LOUD, and the hard constraint is that it is degraded:
 ending a turn is not certifying it. Nothing here finalizes a contract row,
