@@ -63,7 +63,8 @@ skills/
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── coding-standards/      # Language-agnostic code + inline documentation conventions
-│   └── reference.md       # per-stack table of where input docs natively live (Terraform description, JSDoc, docstrings, ...)
+│   ├── reference.md       # per-stack tables: where docs natively live, stacks with no native slot, which checker verifies which rule
+│   └── examples.md        # worked before/after pairs (why-not-what, repeated rationale, provenance vs process trace)
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
 ├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (thinking method + section/component dialect + authoring modes)

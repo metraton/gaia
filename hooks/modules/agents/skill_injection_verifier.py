@@ -61,7 +61,7 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
     "coding-standards": [
         "why-not-what test",
         "Zero redundant comments",
-        "The seven protected categories",
+        "protected categories",
         "No temporal, attribution, or process traces",
     ],
 }

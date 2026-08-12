@@ -25,6 +25,15 @@ this skill. Redundancy is the threshold, never length. And "the code documents
 itself" is not a neutral reading of that dispute: it is the first of the four
 rationalizations one school names and calls a myth.
 
+## Is it contract? The caller test
+
+**Would a caller who cannot see this implementation still get it right?** If the
+information is needed by someone reading only the interface, it is contract and
+the second obligation applies. If it is needed only by someone reading the body,
+it is implementation commentary and the first one does. Without this test the
+second obligation certifies itself — an agent simply declares contract whatever
+it already wrote — and confident compliance is worse than an absent rule.
+
 ## Fix the code first
 
 Renaming, extracting and typing come before commenting. A comment explaining a
@@ -35,29 +44,24 @@ Commenting is the second move, reached when the first cannot carry the meaning.
 
 ## The why-not-what test
 
-Before writing a comment, ask whether the next line already says it.
+Before writing a comment, ask whether the next line already says it. One that
+narrates the code is deleted; one that states a constraint the code cannot show
+earns its line. Worked pairs are in `examples.md`.
 
-```
-# narrates — delete
-# loop over the items
-for item in items:
+A separator or banner that carries no information is not a comment at all — it
+is layout. Neither obligation reaches it, so leave it as the repository has it:
+matching an existing pattern outranks a preference about decoration.
 
-# earns its line — states the non-obvious constraint
-# insertion order matters: downstream dedup relies on last-write-wins
-for item in items:
-```
+## The six protected categories
 
-## The seven protected categories
-
-Seven kinds of information no code carries, however well written. These are
-never removed as noise: deleting one deletes a contract, and the loss does not
-show in the diff — it shows months later, in the reader who guessed wrong.
+Six kinds of information no code carries, however well written. These are never
+removed as noise: deleting one deletes a contract, and the loss does not show in
+the diff — it shows months later, in the reader who guessed wrong.
 
 | Protected | What is lost with it |
 |-----------|----------------------|
 | Why, and which alternatives were rejected | The next reader re-litigates a settled decision, or reverts to an option already ruled out |
-| The interface contract | The caller infers it from one implementation and couples to an accident |
-| Precision the type does not carry — units, bounds, invariants, the meaning of empty or absent | A call that type-checks and is still wrong |
+| The caller's contract, including the precision the type does not carry — units, bounds, invariants, the meaning of empty or absent | The caller infers the contract from one implementation, couples to an accident, and writes a call that type-checks and is still wrong |
 | The high-level intuition | Every part is legible and the whole is not |
 | External cause — a dependency defect, a regulatory duty, a provider quota, a standard dictating the shape | The workaround reads as arbitrary, gets "cleaned up", and restores the defect |
 | Why THIS value and not another | A constant nobody dares change and nobody can justify |
@@ -72,9 +76,10 @@ show in the diff — it shows months later, in the reader who guessed wrong.
 | The idea is intrinsically hard to explain | The difficulty is in the problem; no arrangement of code removes it |
 
 **The burden of proof sits on whoever invokes the exception**: state which
-restructuring you tried and why it did not serve. This is the easiest section to
-reach for as an excuse, and an untested "extraction would tangle" is exactly the
-rationalization the first obligation exists to stop.
+restructuring you tried and why it did not serve. An exception claimed without
+that account is indistinguishable from one never tested — which is why this is
+the easiest section to reach for as an excuse, and why an untested "extraction
+would tangle" is exactly the rationalization the first obligation exists to stop.
 
 ## Audit in both directions
 
@@ -98,15 +103,20 @@ can live, and deleting it deletes the contract. The bar inverts by stack: with a
 doc mechanism, a comment restating it is redundant; without one, that same
 comment IS the contract.
 
+A slot can also be present and insufficient — capped in length, or rendered to
+an audience the rationale is not for. Treat the overflow as having no slot: the
+native field carries the summary, the comment carries what does not fit, and for
+that remainder the comment is mandatory again.
+
 ## Cleanup is bounded by the radius of what you touch
 
 Dead code inside what you are modifying: delete it. Outside it: report, do not
 touch — even when it is wrong, because matching a repository's existing patterns
 is worth more than correcting them in passing. The counterpart holds too: inside
 the module you improve what you touch, rather than leaving it as found because it
-was not the assignment. What you see and do not touch gets REPORTED — through
-whatever channel the work already reports through — so the defect is not lost to
-respecting the boundary.
+was not the assignment. What you see and do not touch gets REPORTED: a defect
+seen and recorded nowhere is indistinguishable from one never seen, and the
+boundary exists to protect the repository, not to lose the finding.
 
 ## Anchor the rule to what a tool can verify
 
@@ -124,11 +134,11 @@ change description already own that, and none of it means anything to a reader
 without the originating ticket open. Strip the pointer; keep the durable
 rationale, if any survives once it is gone.
 
-## Not in scope here
-
-Project-specific numeric knobs — a line-length limit, a timeout constant, a lint
-threshold — are that project's configuration, not a rule of this skill. The
-principle is taught here; the number lives in the project's own config.
+**Provenance is not a process trace.** A ticket identifier points at a process;
+a source citation points at a fact that can be re-checked. The second survives —
+deleting "verified against \<source\>" from a security-sensitive list destroys
+the only record of how that list was validated.
 
 For the per-stack tables — where documentation natively lives, which stacks have
 no native slot, and which checker verifies which rule — see `reference.md`.
+Worked before/after pairs are in `examples.md`.

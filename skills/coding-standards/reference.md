@@ -36,10 +36,11 @@ documentation, and its absence is the defect.
 | Dockerfile, Makefile, CI pipeline definitions | Directive-only formats. A non-obvious ordering or cache constraint survives only as a comment. |
 | CSS / stylesheets | No symbol-level doc mechanism. |
 
-A partial slot behaves like no slot for whatever exceeds it: when a native
-field exists but is length-capped or rendered to end users, the rationale that
-does not fit belongs in a comment beside it, with the native field carrying the
-summary and pointing at it.
+Two stack-specific instances of the partially-sufficient slot rule stated in
+`SKILL.md`: a cloud provider's resource `description` is commonly capped (300
+bytes is a frequent limit) and is rendered in consoles the rationale is not
+written for, and a package manifest's `description` field is end-user copy. In
+both, the summary belongs in the field and the remainder in a comment.
 
 ## Which checker verifies which rule
 
