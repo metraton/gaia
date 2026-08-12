@@ -166,17 +166,31 @@ CLASSIFIER_TRUTH_TABLE = [
         T0,
     ),
     ("context-switch", OPEN, "kubectl config use-context prod", False, T0),
-    # ---- OPEN: indirect trigger and live workload ----
-    ("workflow-trigger", OPEN, "gh workflow run deploy.yml --ref main", False, T0),
-    ("workflow-retrigger", OPEN, "gh run rerun 123456", False, T0),
-    ("workflow-cancel", OPEN, "gh run cancel 123456", False, T0),
+    # ---- CLOSED: indirect trigger and live workload ----
+    # These four were recorded OPEN (False, T0). None carries a verb in
+    # MUTATIVE_VERBS -- `run` is deliberately excluded ("safe by elimination"),
+    # and `rerun`/`cancel` were never in the taxonomy -- so all four fell
+    # through to Step 4 and classified READ_ONLY by elimination despite
+    # provoking a remote execution or bringing a live workload to life.
+    # `workflow-cancel` was not in the original brief; it surfaced while
+    # closing the other three as the same gap reached from the opposite
+    # direction (reaching INTO a running execution instead of starting one).
+    # Anchored per (family, subcommand)/(family, flag) in
+    # COMMAND_PATH_MUTATIVE_UPGRADES, never by widening `run` globally.
+    ("workflow-trigger", GATED, "gh workflow run deploy.yml --ref main", True, T3),
+    ("workflow-retrigger", GATED, "gh run rerun 123456", True, T3),
+    ("workflow-cancel", GATED, "gh run cancel 123456", True, T3),
     (
         "workload-create",
-        OPEN,
+        GATED,
         "kubectl run debug-pod --image=alpine:3.20 -- sleep 3600",
-        False,
-        T0,
+        True,
+        T3,
     ),
+    # ---- FREE: reads of the same flows/runs/cluster stay free ----
+    ("read-gh-workflow-list", FREE, "gh workflow list", False, T0),
+    ("read-gh-workflow-view", FREE, "gh workflow view deploy.yml", False, T0),
+    ("read-gh-run-view", FREE, "gh run view 123456", False, T0),
     # ---- OPEN: state, destination and direct write ----
     ("state-upgrade", OPEN, "terraform init -upgrade", False, T0),
     ("state-migrate", OPEN, "terraform init -migrate-state", False, T0),
@@ -245,7 +259,7 @@ CLASSIFIER_TRUTH_TABLE = [
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 41
+_MINIMUM_MEASURED_CASES = 44
 
 
 @pytest.mark.parametrize(

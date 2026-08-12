@@ -819,9 +819,38 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("config", "delete-context")),
         MutativeAnchor(path=("config", "delete-user")),
         MutativeAnchor(path=("config", "rename-context")),
+        # `run` is deliberately absent from MUTATIVE_VERBS ("safe by
+        # elimination" -- a global entry would gate every `docker run` and
+        # similar dev-workflow invocation), so `kubectl run` fell through to
+        # Step 4 and classified READ_ONLY by elimination even though it
+        # creates a live, scheduled workload against whatever cluster the
+        # current context points at. Scoped to the one shape that actually
+        # brings a workload to life -- an explicit container image -- rather
+        # than the bare subcommand, so a hypothetical future `kubectl run`
+        # invocation that cannot start a pod (none exists today; every real
+        # invocation carries `--image`) is not gated on the path alone.
+        MutativeAnchor(path=("run",), flags=frozenset({"--image"})),
     ),
     "gh": (
         MutativeAnchor(path=("config", "set")),
+        # Three more forms hidden the same way `add-iam-policy-binding` was:
+        # no verb in MUTATIVE_VERBS sits behind them, so all three fell
+        # through to Step 4 and classified READ_ONLY by elimination.
+        #
+        # `gh workflow run` dispatches a `workflow_dispatch` run against
+        # whatever ref is given -- a remote trigger indistinguishable in
+        # effect from pushing the commit that would have triggered it.
+        # `gh run rerun` re-dispatches a COMPLETED run, which is the same
+        # remote-execution effect reached from a different entry point.
+        # `gh run cancel` was not in the original brief -- observed while
+        # closing the other two as the same property from the other
+        # direction: it reaches into a run that is CURRENTLY EXECUTING and
+        # changes its outcome, which is exactly the "provoke or reach into a
+        # remote execution" property the anchor exists to gate, not merely
+        # its trigger half.
+        MutativeAnchor(path=("workflow", "run")),
+        MutativeAnchor(path=("run", "rerun")),
+        MutativeAnchor(path=("run", "cancel")),
     ),
     "npm": (
         MutativeAnchor(path=("config", "set")),

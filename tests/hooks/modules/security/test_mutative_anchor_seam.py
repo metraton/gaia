@@ -291,14 +291,46 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("npm", "config", "edit"),
         }
 
-    def test_no_shipped_anchor_carries_a_flag_condition(self):
-        """The flag half of the seam is still unused by any shipped entry."""
-        for anchors in COMMAND_PATH_MUTATIVE_UPGRADES.values():
-            for anchor in anchors:
-                assert anchor.flags == frozenset(), (
-                    f"{anchor} declares a flag condition -- no shipped entry "
-                    f"has needed one yet, so its arrival is a review point"
-                )
+    def test_indirect_trigger_and_live_workload_paths_are_the_reviewed_ones(self):
+        """Remote triggers, a re-trigger, a cancel, and a live workload create.
+
+        None of these carries a verb in MUTATIVE_VERBS -- ``run`` is
+        deliberately excluded ("safe by elimination"), and ``rerun``/``cancel``
+        were never in the taxonomy -- so all four fell through to Step 4 and
+        classified READ_ONLY by elimination.
+        """
+        paths = {
+            (base_cmd,) + anchor.path
+            for base_cmd, anchors in COMMAND_PATH_MUTATIVE_UPGRADES.items()
+            for anchor in anchors
+            if base_cmd == "gh" and anchor.path[0] in ("workflow", "run")
+            or base_cmd == "kubectl" and anchor.path[0] == "run"
+        }
+        assert paths == {
+            ("gh", "workflow", "run"),
+            ("gh", "run", "rerun"),
+            ("gh", "run", "cancel"),
+            ("kubectl", "run"),
+        }
+
+    def test_only_the_reviewed_shipped_anchor_carries_a_flag_condition(self):
+        """The flag half of the seam has exactly one shipped user: kubectl run.
+
+        Every other shipped anchor still decides by path alone -- a bare
+        ``kubectl run`` names no form that actually starts a workload, so the
+        condition is carried by the flag that does: an explicit image. A new
+        flagged entry arriving here is a review point same as any other
+        addition.
+        """
+        flagged = {
+            (base_cmd,) + anchor.path: anchor.flags
+            for base_cmd, anchors in COMMAND_PATH_MUTATIVE_UPGRADES.items()
+            for anchor in anchors
+            if anchor.flags
+        }
+        assert flagged == {
+            ("kubectl", "run"): frozenset({"--image"}),
+        }
 
 
 class TestAnchorDeclarationIsValidated:
