@@ -32,6 +32,13 @@ event (``harness_events``), both reachable with ``gaia defects``.
 A trip is STICKY: once a key has tripped, further rejections of that key report
 the trip again rather than starting a fresh count, so a re-entered turn can
 never restart the loop it was cut out of.
+
+The count also carries the loop's remaining insumo gap: an agent that repeats
+a rejection knew WHICH FIELD was wrong and nothing else -- not what it was
+dispatched to do, not what it was told last time. :func:`retry_notice` now
+reinjects the dispatch's own objective (bounded) and the PREVIOUS attempt's
+typed rejection codes (one attempt's worth, carried in this same counter) --
+both degrading to nothing, silently, when their input is absent.
 """
 
 from __future__ import annotations
@@ -43,7 +50,7 @@ import re
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +114,18 @@ class CircuitState:
         error: why the count could not be persisted, when it could not. The
             breaker then degrades to the pre-existing behavior (keep
             rejecting), but never silently -- the caller surfaces this.
+        previous_codes: the typed rejection codes of the PRECEDING attempt for
+            this same turn (empty on the first attempt, in 3-case mode, or
+            whenever the prior pass carried no typed codes). Exactly one
+            attempt's worth, never an accumulating history -- see
+            :func:`record_rejection`.
     """
 
     attempt: int
     limit: int
     tripped: bool
     error: Optional[str] = None
+    previous_codes: Tuple[str, ...] = ()
 
     @property
     def remaining(self) -> int:
@@ -202,8 +215,18 @@ def reset(key: str) -> None:
         logger.debug("Rejection circuit: reset failed for %s: %s", key, exc)
 
 
-def record_rejection(key: str) -> CircuitState:
+def record_rejection(key: str, codes: Iterable[str] = ()) -> CircuitState:
     """Count one rejection of ``key`` and say whether the breaker trips.
+
+    ``codes`` are THIS rejection's typed codes (the gate's anomaly codes;
+    empty in 3-case mode or whenever the gate produced none). They are
+    persisted into the SAME counter the attempt count already lives in -- the
+    counter already survives between passes, so carrying one more field costs
+    nothing new -- so the NEXT call can read them back as
+    :attr:`CircuitState.previous_codes`. Only the immediately PRECEDING
+    attempt's codes ever travel forward: each write replaces the prior codes
+    rather than appending to them, which is what keeps a later retry message
+    from growing with the number of attempts.
 
     Never raises: a persistence failure comes back as a state carrying
     ``error`` with ``tripped=False``, so the caller keeps the pre-existing
@@ -211,6 +234,7 @@ def record_rejection(key: str) -> CircuitState:
     does not have.
     """
     limit = max_rejections()
+    codes_tuple = tuple(dict.fromkeys(str(c) for c in codes if c))
     try:
         state = _read(key)
         if state.get("tripped"):
@@ -218,9 +242,10 @@ def record_rejection(key: str) -> CircuitState:
             # re-enter it with a fresh count.
             return CircuitState(int(state.get("attempts", limit)), limit, True)
 
+        previous_codes = tuple(str(c) for c in (state.get("codes") or ()) if c)
         attempt = int(state.get("attempts", 0)) + 1
         tripped = attempt >= limit
-        _write(key, {"attempts": attempt, "tripped": tripped})
+        _write(key, {"attempts": attempt, "tripped": tripped, "codes": list(codes_tuple)})
         if tripped:
             logger.error(
                 "Rejection circuit OPEN for %s: rejection %d of %d -- the turn "
@@ -231,7 +256,7 @@ def record_rejection(key: str) -> CircuitState:
             logger.warning(
                 "Rejection circuit: rejection %d of %d for %s.", attempt, limit, key,
             )
-        return CircuitState(attempt, limit, tripped)
+        return CircuitState(attempt, limit, tripped, previous_codes=previous_codes)
     except Exception as exc:
         logger.warning(
             "Rejection circuit: could not record the rejection for %s: %s -- "
@@ -254,14 +279,60 @@ def inline_budget(attempt: int, base: int) -> int:
     return max(base // (2 ** (attempt - 1)), 2000)
 
 
-def retry_notice(state: CircuitState) -> str:
+# Characters of the dispatch objective reinjected into a retry notice. Fixed
+# and bounded so the section never dominates the message and, together with
+# previous_codes carrying only ONE attempt's worth (see record_rejection),
+# keeps the notice from growing with the number of attempts.
+_OBJECTIVE_CHAR_BUDGET = 400
+
+
+def _bounded_objective(dispatch_prompt: Optional[str]) -> str:
+    """The dispatch's own goal, trimmed to a fixed budget -- or "" when unusable.
+
+    "" is the only signal the caller reads: a missing or blank
+    ``dispatch_prompt`` (no born row, or a row that never recorded one)
+    degrades to "" and the objective section is omitted entirely, without
+    exception. Never raises -- an untrusted value in, a string out, always.
+    """
+    try:
+        text = (dispatch_prompt or "").strip()
+    except Exception:
+        return ""
+    if not text:
+        return ""
+    if len(text) <= _OBJECTIVE_CHAR_BUDGET:
+        return text
+    return text[:_OBJECTIVE_CHAR_BUDGET].rstrip() + "…"
+
+
+def retry_notice(state: CircuitState, *, dispatch_prompt: Optional[str] = None) -> str:
     """The attempt counter appended to a rejection that still invites repair.
 
     The message on attempt 2 differs from the message on attempt 1 because it
     carries a different number -- which is the only thing that lets an agent
-    notice it is repeating itself.
+    notice it is repeating itself. Two more insumos ride along, both aimed at
+    the SAME repeated-mistake defect: an agent that only knows WHICH FIELD is
+    wrong -- not what it was dispatched to do, nor what it was told last time
+    -- reproduces the identical wrong fix on every pass.
+
+      * the dispatch's own OBJECTIVE (``dispatch_prompt`` off the born row),
+        bounded by :data:`_OBJECTIVE_CHAR_BUDGET`;
+      * the TYPED CODES of the PREVIOUS rejection
+        (``state.previous_codes``, one attempt's worth, not a history).
+
+    Both degrade to nothing, silently and without exception, when their input
+    is absent: no ``dispatch_prompt`` -> no objective section; no
+    ``previous_codes`` (first rejection, or 3-case mode, which carries no
+    typed codes at all) -> no codes section. A retry notice that fails to
+    build is worse than one missing a nicety, so neither addition can raise.
+
+    Both sections are appended AFTER the actionable "what to fix" paragraph,
+    and the error of form itself lives entirely BEFORE this function's output
+    (the caller prepends the gate's own rejection reason ahead of it) -- a
+    reader hunting only for what to fix never needs to read past that
+    paragraph into either section below it.
     """
-    return (
+    notice = (
         f"\n\n=== INTENTO {state.attempt} DE {state.limit} ===\n"
         f"Este es el rechazo n.{state.attempt} de ESTE turno. Te "
         f"{'queda' if state.remaining == 1 else 'quedan'} {state.remaining} "
@@ -272,6 +343,15 @@ def retry_notice(state: CircuitState) -> str:
         "contrato valido, cerra en BLOCKED con la razon -- un cierre honesto "
         "vale mas que otro reintento identico.\n"
     )
+    objective = _bounded_objective(dispatch_prompt)
+    if objective:
+        notice += f"\n--- PARA QUE FUISTE DESPACHADO ---\n{objective}\n"
+    if state.previous_codes:
+        notice += (
+            "\n--- CODIGOS DEL RECHAZO ANTERIOR ---\n"
+            f"{', '.join(state.previous_codes)}\n"
+        )
+    return notice
 
 
 def degraded_close_reason(state: CircuitState, rejection_reason: str) -> str:

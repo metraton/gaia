@@ -108,7 +108,9 @@ def _self_declared_complete_message() -> str:
     )
 
 
-def _birth_row(db: Path, session_id: str) -> str:
+def _birth_row(
+    db: Path, session_id: str, dispatch_prompt: str | None = None,
+) -> str:
     """A genuinely born dispatch row, left unfinalized -- as a real turn leaves it."""
     from gaia.store.writer import insert_dispatched_handoff, stamp_harness_agent_id
 
@@ -118,6 +120,7 @@ def _birth_row(db: Path, session_id: str) -> str:
         agent_id=MINTED_AGENT_ID,
         workspace="me",
         session_id=session_id,
+        dispatch_prompt=dispatch_prompt,
         db_path=db,
     )
     stamp_harness_agent_id(contract_id, HARNESS_AGENT_ID, db_path=db)
@@ -684,3 +687,152 @@ def test_contract_attempts_reports_the_real_count_not_a_constant_zero():
     assert _reject_once(session).output["contract_attempts"] == 1
     assert _reject_once(session).output["contract_attempts"] == 2
     assert _reject_once(session).output["contract_attempts"] == 3
+
+
+# ---------------------------------------------------------------------------
+# The two new repair insumos: the dispatch objective and the previous
+# attempt's typed rejection codes (AC-3, AC-4)
+# ---------------------------------------------------------------------------
+
+DISPATCH_OBJECTIVE = (
+    "Arreglar resolve_minted_agent_id para que no caiga al harness agent_id "
+    "cuando el fence no trae agent_status, evitando que resolve_draft_id "
+    "explore un espacio de claves donde ningun draft vive."
+)
+
+
+def test_the_second_rejection_carries_objective_and_previous_codes_with_the_error_still_legible(tmp_path):
+    """(a) A second rejection on a row born WITH a known dispatch_prompt: the
+    emitted text carries the objective verbatim (bounded), the previous
+    attempt's typed codes, and the missing/invalid-field detail stays present
+    and identifiable -- not buried under the new sections."""
+    session = "sess-circuit-objective"
+    db = tmp_path / "gaia_data" / "gaia.db"
+    _birth_row(db, session, dispatch_prompt=DISPATCH_OBJECTIVE)
+
+    first = _reject_once(session, SUBSTANTIVE, db=db)
+    second = _reject_once(session, SUBSTANTIVE, db=db)
+
+    first_reason = first.output["contract_rejection_reason"]
+    second_reason = second.output["contract_rejection_reason"]
+
+    # The error of form heads BOTH messages, unchanged and first.
+    assert first_reason.startswith("[CONTRACT REJECTED]")
+    assert second_reason.startswith("[CONTRACT REJECTED]")
+    attempt_block_start = second_reason.index("=== INTENTO")
+    assert "[CONTRACT REJECTED]" in second_reason[:attempt_block_start], (
+        "the error of form must precede the attempt block, not be buried by it"
+    )
+
+    # The objective is present, verbatim, on BOTH -- it does not depend on
+    # there being a previous attempt.
+    assert DISPATCH_OBJECTIVE in first_reason
+    assert DISPATCH_OBJECTIVE in second_reason
+    assert "PARA QUE FUISTE DESPACHADO" in second_reason
+
+    # Only the SECOND rejection carries a previous-codes section -- the first
+    # rejection has no preceding attempt to report.
+    assert "CODIGOS DEL RECHAZO ANTERIOR" not in first_reason
+    assert "CODIGOS DEL RECHAZO ANTERIOR" in second_reason
+    assert "ROW_NOT_FINALIZED" in second_reason.split("CODIGOS DEL RECHAZO ANTERIOR")[1]
+
+    # A reader hunting only for what to fix finds it before either new
+    # section: the error of form and the attempt block both precede the
+    # objective section, and the concrete repair instruction is readable
+    # without reaching either.
+    objective_pos = second_reason.index("PARA QUE FUISTE DESPACHADO")
+    assert attempt_block_start < objective_pos, (
+        "the error of form and attempt block must precede the objective section"
+    )
+    assert "gaia contract finalize --draft-id" in second_reason[:objective_pos], (
+        "the concrete repair instruction must be readable without reaching "
+        "the objective section"
+    )
+
+
+def test_a_rejection_on_a_row_with_no_dispatch_prompt_omits_the_objective_section(tmp_path):
+    """(b) A row born with NO dispatch_prompt: the rejection is complete, still
+    carries the error of form, raises nothing -- and has no objective section,
+    without exception."""
+    session = "sess-circuit-no-objective"
+    db = tmp_path / "gaia_data" / "gaia.db"
+    _birth_row(db, session, dispatch_prompt=None)
+
+    response = _reject_once(session, SUBSTANTIVE, db=db)
+
+    reason = response.output["contract_rejection_reason"]
+    assert response.exit_code == 2
+    assert "[CONTRACT REJECTED]" in reason
+    assert "PARA QUE FUISTE DESPACHADO" not in reason
+
+
+def test_a_rejection_with_no_reachable_row_at_all_also_omits_the_objective_section():
+    """The same degradation when there is no born row to read from at all --
+    the ordinary shape for most of this file's other tests."""
+    session = "sess-circuit-no-row"
+
+    response = _reject_once(session, SUBSTANTIVE)
+
+    reason = response.output["contract_rejection_reason"]
+    assert response.exit_code == 2
+    assert "[CONTRACT REJECTED]" in reason
+    assert "PARA QUE FUISTE DESPACHADO" not in reason
+
+
+def test_first_attempt_and_three_case_mode_carry_no_codes_section(monkeypatch):
+    """(c) The codes section is absent -- and nothing fails -- on a first
+    attempt (no previous rejection to report) and in legacy 3-case mode (no
+    typed codes exist at all)."""
+    first = _reject_once("sess-circuit-first-no-codes", SUBSTANTIVE)
+    first_reason = first.output["contract_rejection_reason"]
+    assert first.exit_code == 2
+    assert "CODIGOS DEL RECHAZO ANTERIOR" not in first_reason
+
+    monkeypatch.setenv("GAIA_CONTRACT_FULL_VERDICT_GATE", "0")
+    session_legacy = "sess-circuit-three-case-mode"
+    legacy_first = _reject_once(session_legacy, SUBSTANTIVE)
+    legacy_second = _reject_once(session_legacy, SUBSTANTIVE)
+
+    assert legacy_first.exit_code == 2
+    assert legacy_second.exit_code == 2
+    assert "CODIGOS DEL RECHAZO ANTERIOR" not in legacy_first.output["contract_rejection_reason"]
+    assert "CODIGOS DEL RECHAZO ANTERIOR" not in legacy_second.output["contract_rejection_reason"]
+
+
+def test_the_objective_section_is_bounded_by_a_fixed_character_budget():
+    """R3: the objective is a DESIGN-BOUNDED insert, not a pass-through of
+    whatever dispatch_prompt happens to be -- a long objective is trimmed, a
+    short one is carried verbatim."""
+    circuit = _circuit()
+    budget = circuit._OBJECTIVE_CHAR_BUDGET
+
+    short = "Arreglar X."
+    assert circuit._bounded_objective(short) == short
+
+    long_prompt = "x" * (budget * 5)
+    bounded = circuit._bounded_objective(long_prompt)
+    assert len(bounded) <= budget + 1, "the ellipsis marker is the only overage allowed"
+    assert bounded.startswith("x" * 10)
+    assert bounded != long_prompt
+
+
+def test_the_retry_notice_does_not_grow_with_the_attempt_number():
+    """R3: the size of what is ADDED to a rejection must not scale with how
+    many times the turn has already been rejected -- previous_codes carries
+    exactly one attempt's worth, and the objective is a fixed budget, on
+    every attempt alike."""
+    circuit = _circuit()
+    long_prompt = "y" * (circuit._OBJECTIVE_CHAR_BUDGET * 10)
+
+    state_2 = circuit.CircuitState(2, 3, False, previous_codes=("CODE_A", "CODE_B"))
+    state_9 = circuit.CircuitState(
+        9, 10, False, previous_codes=("CODE_A", "CODE_B"),
+    )
+
+    notice_2 = circuit.retry_notice(state_2, dispatch_prompt=long_prompt)
+    notice_9 = circuit.retry_notice(state_9, dispatch_prompt=long_prompt)
+
+    # Both carry the SAME bounded objective and the SAME one-attempt's-worth
+    # of codes -- the only difference is the attempt/limit numbers themselves,
+    # not the size of what was appended.
+    assert len(notice_2) == len(notice_9) or abs(len(notice_2) - len(notice_9)) <= 2

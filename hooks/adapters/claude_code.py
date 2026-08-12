@@ -3418,7 +3418,20 @@ class ClaudeCodeAdapter(HookAdapter):
 
                     _circuit_key = rejection_circuit.counter_key(session_id, task_info)
                     if _circuit_key:
-                        _circuit = rejection_circuit.record_rejection(_circuit_key)
+                        # This rejection's own typed codes (empty in 3-case
+                        # mode, or whenever the gate produced none) -- handed
+                        # to the counter so the NEXT pass can read them back
+                        # as CircuitState.previous_codes for its own retry
+                        # notice. Same extraction _record_contract_rejection_defect
+                        # already uses for the event-log codes list.
+                        _current_codes = [
+                            str(a.get("code", ""))
+                            for a in _gate.anomalies
+                            if isinstance(a, dict) and a.get("code")
+                        ]
+                        _circuit = rejection_circuit.record_rejection(
+                            _circuit_key, codes=_current_codes,
+                        )
                     else:
                         # No per-dispatch identity -> no key that belongs to this
                         # turn alone. Cutting on a shared key ends turns that
@@ -4156,7 +4169,18 @@ class ClaudeCodeAdapter(HookAdapter):
                         # is not being invited to read anything.
                         contract_rejection_reason = _relay["reason"]
                         if _circuit is not None and not _circuit.error:
-                            contract_rejection_reason += rejection_circuit.retry_notice(_circuit)
+                            # dispatch_prompt off the SAME born row the gate
+                            # already treats as authoritative (_bound_dispatch_row,
+                            # resolved above); None when no row was reachable,
+                            # which retry_notice degrades to "no objective
+                            # section" without exception.
+                            contract_rejection_reason += rejection_circuit.retry_notice(
+                                _circuit,
+                                dispatch_prompt=(
+                                    _bound_dispatch_row.get("dispatch_prompt")
+                                    if _bound_dispatch_row else None
+                                ),
+                            )
                         result["contract_rejection_reason"] = contract_rejection_reason
                     elif _circuit_tripped and _relay["path"]:
                         result["contract_degraded_close_reason"] += (
