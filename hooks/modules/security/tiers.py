@@ -21,6 +21,7 @@ from enum import Enum
 from functools import lru_cache
 
 from .shell_grouping import strip_grouping_wrappers
+from .shell_substitution import extract_substitutions
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,7 @@ def classify_command_tier(
     command = command.strip()
 
     # Import here to avoid circular imports
-    from .blocked_commands import get_blocked_patterns
+    from .blocked_commands import get_blocked_patterns, is_blocked_command
     blocked_patterns = get_blocked_patterns()
 
     # Check for blocked operations first (T3)
@@ -218,6 +219,36 @@ def classify_command_tier(
         ungrouped = strip_grouping_wrappers(command)
         if ungrouped != command:
             has_blocked = _matches_any(ungrouped, blocked_patterns)
+
+    # Same reasoning one token further right: a command substitution is
+    # evaluated by the shell BEFORE the outer command runs, so ``echo $(rm -rf
+    # /)`` reaches the same effect while presenting ``echo`` at position 0.
+    # ``extract_substitutions`` returns only what would genuinely execute -- a
+    # single-quoted, escaped or commented-out mention yields nothing.
+    #
+    # TWO departures from the two scans above, both deliberate:
+    #
+    # 1. Bodies go through ``is_blocked_command`` rather than the raw regexes.
+    #    The raw scan has no false-positive fast path, so a body that merely
+    #    QUOTES a dangerous form (``x=$(grep -rn "git push --force" .)``) would
+    #    match a non-anchored deny pattern and escalate a search to permanent
+    #    deny. ``is_blocked_command`` applies the READ_ONLY_BASE_CMDS carrier
+    #    check first, which is what tells that mention from a use -- and it is
+    #    the same function bash_validator phase 3a runs, so the two layers
+    #    cannot disagree about a body.
+    #
+    # 2. The verdict returns T3 HERE instead of setting ``has_blocked``. The
+    #    cached classifier consults its ultra-common fast path (``echo``,
+    #    ``ls``, ``cat``, ``pwd`` ...) BEFORE it reads that flag, so a flag set
+    #    on ``echo $(rm -rf /)`` would be discarded on the way in. Reordering
+    #    the cached function instead was considered and rejected: the fast path
+    #    is what currently keeps the raw-regex scan on line 208 from escalating
+    #    a quoted mention carried by ``echo``, and moving the flag ahead of it
+    #    would convert that suppression into a fresh false-positive class --
+    #    the exact trade this work is forbidden to make.
+    for inner in extract_substitutions(command):
+        if is_blocked_command(inner).is_blocked:
+            return SecurityTier.T3_BLOCKED
 
     # Use cached classification
     return _classify_command_tier_cached(command, has_blocked)

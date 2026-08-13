@@ -51,6 +51,7 @@ import shlex
 from typing import List, Optional, Tuple
 
 from .shell_grouping import strip_grouping_wrappers
+from .shell_substitution import extract_substitutions
 
 # ---------------------------------------------------------------------------
 # Write-capability sets
@@ -206,6 +207,23 @@ def targets_protected_path(command: str) -> Optional[str]:
         hit = _component_writes_protected_path(component)
         if hit is not None:
             return hit
+
+    # A command substitution runs BEFORE the command that contains it, so
+    # ``echo $(cp payload.py .claude/hooks/pre_tool_use.py)`` overwrites the
+    # hook while presenting ``echo`` as tokens[0] -- the categorical boundary
+    # never fired. Scan what would actually execute. The extraction runs on the
+    # FULL command rather than per component, because it is quoting that tells
+    # a use from a mention and the operator split above breaks quoting; and it
+    # yields nothing at all for a single-quoted or escaped mention, so a
+    # protected path merely NAMED inside an argument stays free.
+    for inner in extract_substitutions(command):
+        for inner_component in _OPERATOR_SPLIT.split(inner):
+            inner_component = inner_component.strip()
+            if not inner_component:
+                continue
+            hit = _component_writes_protected_path(inner_component)
+            if hit is not None:
+                return hit
 
     return None
 

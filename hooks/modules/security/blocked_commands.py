@@ -32,6 +32,7 @@ from dataclasses import dataclass
 
 from .command_semantics import CommandSemantics, analyze_command, _contains_ordered_sequence
 from .shell_grouping import strip_grouping_wrappers
+from .shell_substitution import extract_substitutions
 
 logger = logging.getLogger(__name__)
 
@@ -729,6 +730,23 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
         ungrouped_result = _classify_stripped_command(ungrouped)
         if ungrouped_result.is_blocked:
             return ungrouped_result
+
+    # ------------------------------------------------------------------
+    # Command-substitution guard.
+    # ------------------------------------------------------------------
+    # The wrapper guard above reaches position 0 only. One token to the right,
+    # ``echo $(rm -rf /)`` put ``echo`` at position 0 and walked past this
+    # permanent-deny floor, even though the shell runs the delete BEFORE echo
+    # ever starts. ``shell_substitution`` returns what would actually execute,
+    # decided by the shell's own quoting rules -- so a quoted MENTION of the
+    # same text yields nothing and is not classified here at all. Strictly
+    # additive, like the two guards above: the command as written was already
+    # classified, so this can only ADD a block.
+    for inner in extract_substitutions(command):
+        for candidate in (inner, strip_grouping_wrappers(inner)):
+            inner_result = _classify_stripped_command(candidate)
+            if inner_result.is_blocked:
+                return inner_result
 
     return result
 

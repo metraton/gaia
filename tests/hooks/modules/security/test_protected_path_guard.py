@@ -146,6 +146,67 @@ class TestGroupingWrappedWritesBlocked:
         assert allowed is True, f"{cmd!r} is not a write, got {reason!r}"
 
 
+class TestMidStringSubstitutionWritesBlocked:
+    """The same boundary, one token to the right of the wrapper family above.
+
+    Unwrapping reaches position 0 only. A substitution in the MIDDLE of a chain
+    puts ``echo`` at position 0 and the write inside the parens -- and the
+    shell evaluates that substitution BEFORE ``echo`` ever starts, so the hook
+    file is overwritten whatever ``echo`` then does with the output. Every form
+    here passed the guard outright, which is the breach in its purest form: not
+    a price, an absence.
+
+    Double-quoted forms are here rather than among the mentions on purpose. A
+    substitution inside DOUBLE quotes still executes; only single quotes make
+    it text.
+    """
+
+    @pytest.mark.parametrize("cmd", [
+        "echo $(cp payload.py .claude/hooks/pre_tool_use.py)",
+        'echo "$(cp payload.py .claude/hooks/pre_tool_use.py)"',
+        "echo `cp payload.py .claude/hooks/pre_tool_use.py`",
+        "echo $(git mv payload.py .claude/hooks/pre_tool_use.py)",
+        "ls $(tee .claude/hooks/pre_tool_use.py)",
+        "echo $(mv payload.py .claude/settings.json)",
+        "echo $(sed -i s/a/b/ .claude/hooks/pre_tool_use.py)",
+        "echo $(echo $(cp payload.py .claude/hooks/pre_tool_use.py))",
+        "diff /tmp/a <(cp payload.py .claude/hooks/pre_tool_use.py)",
+        "echo ${FOO:-$(cp payload.py .claude/hooks/pre_tool_use.py)}",
+        # A pipe inside the body: extraction runs on the FULL command, so the
+        # body survives intact and is only then split on operators.
+        "echo $(cat payload.py | tee .claude/hooks/pre_tool_use.py)",
+    ])
+    def test_substituted_writer_into_claude_blocked(self, cmd):
+        allowed, reason = check(cmd)
+        assert allowed is False, f"{cmd!r} should be categorically blocked"
+        assert "[PROTECTED_PATH]" in reason
+
+    @pytest.mark.parametrize("cmd", [
+        # Single quotes: the characters are there, the execution is not.
+        "echo 'literal $(cp payload.py .claude/hooks/pre_tool_use.py)'",
+        "grep -rn '$(cp payload.py .claude/hooks/pre_tool_use.py)' hooks/",
+        "gaia contract add evidence_report.open_gaps "
+        "'echo $(cp payload.py .claude/hooks/pre_tool_use.py) was free'",
+        "gaia memory search '`cp payload.py .claude/hooks/pre_tool_use.py`'",
+        r'echo "\$(cp payload.py .claude/hooks/pre_tool_use.py)"',
+        "ls -la # $(cp payload.py .claude/hooks/pre_tool_use.py)",
+        # A read reached through a substitution is still a read.
+        "echo $(cat .claude/settings.json)",
+        "echo $(grep -rn SessionStart .claude/settings.local.json)",
+        "wc -l $(ls .claude/hooks/)",
+    ])
+    def test_substituted_read_or_mention_still_allowed(self, cmd):
+        """Quoting, not position, is what separates a mention from a use.
+
+        A guard that reached into the middle of a string by looking for the
+        CHARACTERS would gate every one of these -- and the first three are
+        exactly what an agent types to report a finding about this boundary.
+        Gating them makes the system unusable for discussing its own security.
+        """
+        allowed, reason = check(cmd)
+        assert allowed is True, f"{cmd!r} is not a write, got {reason!r}"
+
+
 # ----------------------------------------------------------------------------
 # Reads and non-.claude writes must pass through (no false positives)
 # ----------------------------------------------------------------------------

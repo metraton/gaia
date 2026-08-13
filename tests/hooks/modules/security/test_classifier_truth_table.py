@@ -561,6 +561,94 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
+    # ---- CLOSED: a command substitution in the MIDDLE of a chain ------------
+    # The residual the grouping work above declared and left open, recorded
+    # there as measured-and-pre-existing: the wrapper normalization reaches
+    # position 0 only, and one token to the right the same boundary was fully
+    # open. Every row below was FREE (False, T0), because the classifier keys
+    # on the first token and the first token is `echo` or `ls`.
+    #
+    # It is a USE, not a mention: the shell evaluates a substitution BEFORE the
+    # outer command runs, so the delete happens whatever `echo` then does with
+    # its output -- and unlike a quoted mention, a substitution inside DOUBLE
+    # quotes still executes. What separates the two is shell quoting, not
+    # position, which is why `shell_substitution` runs the shell's own quoting
+    # state instead of a positional heuristic; the mention controls that pin
+    # the other side of that line live in the census below.
+    #
+    # `is_mutative` stays False on nearly every row: these reach T3 through the
+    # permanent-deny floor, not through the verb detector, which still sees
+    # `echo` as the command. That divergence is the reason this table asserts
+    # the pair.
+    ("cmdsub_mid_rm_root", GATED, "echo $(rm -rf /)", False, T3),
+    ("cmdsub_mid_rm_root_backtick", GATED, "echo `rm -rf /`", False, T3),
+    (
+        "cmdsub_mid_rm_root_double_quoted",
+        GATED,
+        'echo "result: $(rm -rf /)"',
+        False,
+        T3,
+    ),
+    (
+        "cmdsub_mid_dd_device",
+        GATED,
+        "echo $(dd if=/dev/zero of=/dev/sda)",
+        False,
+        T3,
+    ),
+    (
+        "cmdsub_mid_dd_device_as_arg",
+        GATED,
+        "ls $(dd if=/dev/zero of=/dev/sda)",
+        False,
+        T3,
+    ),
+    ("cmdsub_mid_mkfs", GATED, "echo $(mkfs.ext4 /dev/sda1)", False, T3),
+    ("cmdsub_mid_mkfs_backtick", GATED, "echo `mkfs.ext4 /dev/sda1`", False, T3),
+    ("cmdsub_mid_nested", GATED, "echo $(echo $(rm -rf /))", False, T3),
+    ("cmdsub_mid_assignment", GATED, "X=$(rm -rf /)", True, T3),
+    # Process substitution executes too, but -- unlike ``$()`` -- it is NOT
+    # expanded inside double quotes, so it is collected from unquoted text only.
+    ("cmdsub_mid_process_substitution", GATED, "diff /tmp/a <(rm -rf /)", False, T3),
+    # Parameter expansion is not execution and is untouched; a substitution
+    # NESTED inside one still is, and the linear scan reaches it on its own
+    # terms rather than by parsing the braces.
+    ("cmdsub_mid_inside_param_expansion", GATED, "echo ${FOO:-$(rm -rf /)}", False, T3),
+    # ---- Controls: substitution is ordinary syntax and stays free -----------
+    # A rule that closed the family above by taxing these would have traded the
+    # hole for consent demanded on reading. Each of these executes exactly what
+    # it says, and what it says is a read.
+    (
+        "cmdsub_free_double_quoted_git_read",
+        FREE,
+        'echo "branch: $(git branch --show-current)"',
+        False,
+        T0,
+    ),
+    (
+        "cmdsub_free_cd_to_repo_root",
+        FREE,
+        "cd $(git rev-parse --show-toplevel)",
+        False,
+        T0,
+    ),
+    ("cmdsub_free_nested_reads", FREE, "echo $(dirname $(pwd))", False, T0),
+    ("cmdsub_free_assignment_of_read", FREE, "FOO=$(hostname)", False, T0),
+    ("cmdsub_free_arithmetic_expansion", FREE, "echo $((2 + 2))", False, T0),
+    (
+        "cmdsub_free_param_expansion_with_read_fallback",
+        FREE,
+        'echo "${NOPE:-$(pwd)}"',
+        False,
+        T0,
+    ),
+    (
+        "cmdsub_free_date_in_commit_message",
+        FREE,
+        'git commit -m "chore: release $(date +%F)"',
+        False,
+        T0,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -734,6 +822,78 @@ NO_OVERCORRECTION_CENSUS = [
         'grep -rn "(rm -rf /)" /home/jorge/ws/me/gaia/README.md',
         False,
     ),
+    # ---- Mention, not use: the mentioned command is a SUBSTITUTION ----------
+    # The sharpest edge of the substitution scan, and the reason it runs the
+    # shell's own quoting state rather than looking for the characters. In
+    # SINGLE quotes `$(...)` is literal text and nothing runs, so writing the
+    # form down -- in a search, in a commit message, in a contract field, in a
+    # memory query -- must stay free. The distinction is not a judgement about
+    # intent: it is what bash does with the same bytes.
+    #
+    # No double-quoted twin of these rows exists, deliberately. Inside double
+    # quotes a substitution DOES execute, so `"... $(rm -rf /) ..."` is not a
+    # mention at all -- it is the use, and it is gated in the truth table above.
+    (
+        "mention-cmdsub-in-grep",
+        MENTION_FREE,
+        "grep -rn 'echo $(rm -rf /)' hooks/",
+        False,
+    ),
+    (
+        "mention-cmdsub-in-contract-write",
+        MENTION_FREE,
+        "gaia contract add evidence_report.open_gaps "
+        "'echo $(rm -rf /) classified free'",
+        False,
+    ),
+    (
+        "mention-cmdsub-in-memory-search",
+        MENTION_FREE,
+        "gaia memory search 'echo $(mkfs.ext4 /dev/sda1)'",
+        False,
+    ),
+    (
+        "mention-cmdsub-in-commit-message",
+        MENTION_FREE,
+        "git commit -m 'fix: gate echo $(dd if=/dev/zero of=/dev/sda)'",
+        False,
+    ),
+    (
+        "mention-cmdsub-hooks-overwrite-quoted",
+        MENTION_FREE,
+        "echo 'literal $(cp payload.py .claude/hooks/pre_tool_use.py)'",
+        False,
+    ),
+    (
+        "mention-backtick-quoted",
+        MENTION_FREE,
+        "gaia memory search '`rm -rf /`'",
+        False,
+    ),
+    (
+        "mention-cmdsub-escaped-dollar",
+        MENTION_FREE,
+        'echo "\\$(rm -rf /)"',
+        False,
+    ),
+    (
+        "mention-cmdsub-in-trailing-comment",
+        MENTION_FREE,
+        "ls -la # $(mkfs.ext4 /dev/sda1)",
+        False,
+    ),
+    (
+        "mention-process-substitution-quoted",
+        MENTION_FREE,
+        "git commit -m 'docs: note that <(rm -rf /) executes'",
+        False,
+    ),
+    (
+        "mention-parens-without-dollar-double-quoted",
+        MENTION_FREE,
+        'echo "(rm -rf /)"',
+        False,
+    ),
     # ---- OPEN: a mention that escalates today ----
     # Measured, not desired. The escalation does not come from any anchor this
     # plan added -- it comes from the permanently-blocked pattern table
@@ -806,7 +966,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 87
+_MINIMUM_MEASURED_CASES = 105
 
 
 @pytest.mark.parametrize(
