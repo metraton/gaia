@@ -1,289 +1,150 @@
 ---
 name: coding-standards
-description: Use when writing, editing, or reviewing code — its naming and structure as much as its written documentation: module headers, inline comments, docstrings, doc comments — in any language or stack
+description: Use when writing new code, when editing or refactoring code that already exists, or
+  when reviewing code you will not touch — any language or stack, application, infrastructure,
+  configuration, or Gaia's own components. Also when asked to apply, audit, or clean up the coding
+  standards of a file or module. Covers how the code is named and shaped, and every sentence
+  written about it — docstrings, descriptions, doc comments, headers, inline comments.
 ---
 
 # Coding Standards
 
-Code is read far more often than it is written, and it outlives the session,
-ticket, or conversation that produced it. These are the language-agnostic rules
-for writing code so a future reader — human or agent, holding none of today's
-context — can trust what they see without a second source.
+Code carries its own meaning — the name, the structure, the types. Sentences about it are the
+exception, and this skill decides which ones survive. How to implement was settled before you
+arrived.
 
-## Names carry the small scale; the sentence lives at the boundary
+## Iron law
 
-A component is a box. Inside it the code itself carries the meaning: an
-attribute's name says what it holds, a method's name says the behavior it
-performs, a type says what a value may be. Renaming, extracting and typing are
-how meaning gets into the code, and they come before any sentence about it — a
-comment explaining a confusing name leaves the confusion in place for whoever
-reads only the code, where the rename dissolves it. Both schools agree here, so
-it is shared floor — invoking "comments help" against a rename invokes nothing.
+**A promise you write is a promise the code ALREADY keeps** — not what it will do, should do, or
+you plan to implement. If the code does not keep it, one of the two is wrong and you fix that
+one; it is never left standing for someone to make true later. **Documentation is not a plan.**
 
-What earns a written sentence is the boundary, and the boundary has two slots:
-the header, which states what this thing IS, and the entry's documentation,
-which states its intent — what a call promises. Writing is the second move,
-reached where a name cannot carry the meaning: no name can state what a module
-is for, and no signature can state what a call guarantees.
+## The default is delete
 
-## The sentence states the promise
+Every comment starts condemned. Surviving is the exception, earned by one test:
 
-What the boundary sentence says is the promise, and what the body does to
-keep that promise stays in the body, where the reader who needs it goes. The reason is durability, not
-taste. A sentence describing the mechanism ("retries three times with
-exponential backoff") becomes false at the next refactor, silently, with
-nothing at the sentence's site changing. A sentence describing the promise
-("delivers or raises") can only become false if someone deliberately breaks
-the promise — a contract change, which is visible, versioned, and precisely
-the moment anyone updates the documentation. A claim about the contract does
-not rot from drift; it rots only from decision, and decisions are seen. That
-is why this rule lives here and not in a style guide.
+**Does it state a fact the code cannot show?** A trap, an external cause, why THIS value and not
+another. If yes it survives — in **at most two lines**, describing the fact, not arguing it and
+not teaching it. If no, delete it. What fails is removed, never reworded into a better version
+of a sentence that states nothing.
 
-**The caller test decides which side a sentence is on: would a caller who
-cannot see this implementation still get it right?** Information needed by
-someone reading only the interface is promise. Information needed only by
-someone reading the body is mechanism, and a sentence carrying it is narration
-the next refactor falsifies. Without this test the rule certifies itself — an
-agent simply declares "promise" whatever it already wrote — and confident
-compliance is worse than an absent rule.
+**Two lines is the price of ONE fact, not of one comment.** A decision plus the alternatives it
+rejected is several facts, and they render as a dry list — one line each, never a paragraph
+each. The protection covers the fact and never the essay around it: a real trap escorted by ten
+lines of pedagogy is one surviving fact and nine deleted lines.
 
-The rule carries exactly one exception — mechanism that hides a trap the code
-cannot show — and it is bounded: its full statement and its enumeration are
-"The exception clause: the seven protected categories" below.
+**"Why THIS value" is the why of the CHOICE** — what the alternative would have cost. What the
+value is FOR is narration, and when the value's own name already carries it there is no fact at
+all.
 
-## Deliberate incompleteness
+## The code comes first
 
-Documentation is written to leave the reader needing the code, never to spare
-them from it. The doubt is natural — if the sentence says what the thing is,
-has the reader in effect already read the code? — and it answers itself: the
-sentence's job is to tell the reader WHETHER they need to open the
-implementation, and to carry deliberately less than would let them skip it. A
-header that lets the reader route — this is the box I need, that one is not —
-has done its whole job; the how lives in the body, and the reader who needs
-the how goes there.
+Naming, extracting, typing, simplifying — all four before any sentence about them. The sentence
+you are forced to write measures the code you wrote: a fact that needs three lines, or that
+cannot be stated without describing the body, is reporting bad code, and the fix is the code.
 
-Incompleteness is also what makes the sentence safe to read. The substitution
-hazard measured in "Reading: a claim, never evidence" — models absorbing false
-comments and inventing details to fit — worked because those comments
-described implementation, so the prose could stand in for the code. A sentence
-that never describes the implementation cannot be mistaken for it: at worst it
-misroutes the reader, which the open file corrects, but it cannot substitute
-for the body it deliberately does not describe.
+## Contracts are always documented
 
-## The two obligations
+The one obligation the default never deletes. Every callable or declared surface carries its
+promise in the language's native slot — docstring, JSDoc, doc comment, rustdoc, `description` —
+in **one sentence**: what a caller may take as true without opening the body. Where the language
+has no slot, the comment IS the contract, and deleting it deletes the contract.
 
-**Zero redundant comments. One hundred percent of contract comments.** The
-promise rule, counted across a file: every promise written, no mechanism
-narrated. Both at once, or neither is met: cutting narration while leaving an
-interface undocumented trades one defect for another, and documenting every
-interface while restating the code buries the contract in noise.
+Which home a sentence gets is decided by who reads it. A fact for the CALLER belongs in the slot
+that renders — a header comment never reaches them. A structural fact, for whoever maintains,
+belongs in the header. Two audiences that cannot both reach one site are not a duplication; the
+same test catches an internal rationale leaking into a string the end user reads.
 
-What NOT to comment has been settled for fifty years and is not in dispute — a
-comment restating the code is a second thing to keep in sync, and it drops the
-first time it drifts. HOW MUCH to comment is an open disagreement between two
-schools and will stay open, so no line count, ratio or density target appears in
-this skill. Redundancy is the threshold, never length. That refusal is the state
-of the evidence, not caution: every circulating target traces to a source that
-cannot be checked, the one maintainability metric that scored comment density
-was dropped by its own adopters, and the strongest replicated result in the
-field runs the other way — comment-code inconsistencies, hunted automatically,
-turned out to be confirmed defects. A density target measures the harmless
-dimension and misses the harmful one. And "the code documents itself" is not a
-neutral reading of that dispute: it is the first of the four rationalizations
-one school names and calls a myth.
+## Never
 
-## The why-not-what test
+None of this survives the test, whatever else recommends it:
 
-Before writing a comment, ask whether the next line already says it — the
-promise rule at the scale of a single line. One that narrates the code is
-deleted; one that states a constraint the code cannot show earns its line.
-Worked pairs are in `examples.md`.
+- **Narrating what the code does.** The code already says it, and says it correctly. Naming
+  which expression, output, or branch is used is narration too — that token is right there.
+- **Asserting what another file, module, or system currently does.** Nothing that edits the
+  other side ever re-reads your sentence, so it rots where it stands. Write the constraint on
+  THIS code — "must stay idempotent: deliveries can repeat" — never the other side's current
+  implementation. WHERE the other half of a split contract lives is elsewhere-state too — that
+  address moves the day it moves, and the durable form is this unit's own restraint: "this unit
+  deliberately grants this SA nothing".
+- **Repeating a rationale that already exists elsewhere.** And do not swap the copy for a
+  pointer — every pointer, with no exception to be found here: the one carrying a rationale and
+  the one that only helps you navigate to a name, which is searchable already. A relative
+  pointer ("above", "below", "the other arm") additionally rots on the first reordering. The
+  second site stays silent, carrying only what is new at the second site.
+- **Process traces** — phase, status, date, ticket id, authorship, tooling, "generated by", the
+  environment or client it was run against. None of it means anything without a system the
+  reader cannot open, and version history already carries authorship and timing.
 
-A separator or banner that carries no information is not a comment at all — it
-is layout. Neither obligation reaches it, so leave it as the repository has it:
-matching an existing pattern outranks a preference about decoration.
+A separator or a banner is exempt as FORM only, and the repository's own layout decides whether
+it stays. The words inside it are not exempt: a banner carrying a phase, a status, or a date is
+carrying a claim, and that claim faces the test like any other — the banner stays, the claim
+riding inside it goes.
 
-## The exception clause: the seven protected categories
+## The motive sits with its item
 
-Alone, "describe the promise" is too strong, and the counterexample is real: a
-comment in a production repository explains that a CEL expression must stay
-parenthesized because `&&` binds tighter than `||` — without the parentheses a
-tag token from ANY repository bypasses the repository lock entirely. That is
-mechanism, not promise, and deleting it opens a security hole: the trap is
-real, and the code cannot show it. So the complete rule has two parts —
-describe the promise; describe the mechanism exactly where it hides a trap the
-code cannot show — and the seven categories below are that exception clause
-enumerated, not a separate list beside the rule. One of them IS the promise
-itself, carried to the precision the type cannot reach; the others are what no
-code shows, however well written. None is ever removed as noise: deleting one
-deletes a contract, and the loss does not show in the diff — it shows months
-later, in the reader who guessed wrong.
+**A surviving fact adheres to the item it explains, never to the block that contains it** —
+beside the item when it fits the line, immediately above when it does not. Separated from its
+referent it is misplaced however true it is: whoever later edits that item never sees it.
 
-| Protected | What is lost with it |
-|-----------|----------------------|
-| Why, and which alternatives were rejected | The next reader re-litigates a settled decision, or reverts to an option already ruled out |
-| The caller's contract, including the precision the type does not carry — units, bounds, invariants, the meaning of empty or absent | The caller infers the contract from one implementation, couples to an accident, and writes a call that type-checks and is still wrong |
-| The high-level intuition | Every part is legible and the whole is not |
-| External cause — a dependency defect, a regulatory duty, a provider quota, a standard dictating the shape | The workaround reads as arbitrary, gets "cleaned up", and restores the defect |
-| Why THIS value and not another | A constant nobody dares change and nobody can justify |
-| Legal and licensing notices | A compliance obligation silently dropped |
-| Provenance — the source a fact was verified against | The only record that the claim was ever checked; without it the fact can be trusted or re-derived, never re-verified |
+**The relocation test** decides the hard case: could each sentence of a block comment sit beside
+one member without losing meaning? Yes — misplaced, move it down. No — it is a claim about the
+set, and it stays. A file or module header is a synthesis, unrelocatable by construction.
 
-## When commenting beats restructuring
+## Durability
 
-| Case | Why restructuring loses |
-|------|-------------------------|
-| Extraction produces tangle | The reader reconstructs the original anyway, jumping between units |
-| Restructuring degrades something real | A witness case introduced a concurrency defect and a performance regression |
-| The idea is intrinsically hard to explain | The difficulty is in the problem; no arrangement of code removes it |
+Two claims cannot rot: the semantics of the language, the platform, or the provider; and a
+decision together with the alternative it rejected — the past stays true. When one surviving
+fact mixes durable and perishable — a rejected alternative argued from today's state of another
+repository — keep the durable half and cut the clause that expires.
 
-**The burden of proof sits on whoever invokes the exception**: state which
-restructuring you tried and why it did not serve. An exception claimed without
-that account is indistinguishable from one never tested — which is why this is
-the easiest section to reach for as an excuse, and why an untested "extraction
-would tangle" is exactly the rationalization the first obligation exists to stop.
+Design LINEAGE is that same cut, and it is not provenance. Why the platform behaves this way is
+durable; "the same baseline the other codebase uses", "the lesson from that other module" is a
+comparison against a codebase that moves — a direction to elsewhere and an environment trace at
+once. Keep the fact, drop the ancestor. Provenance is a source a reader can re-check; lineage is
+a claim about someone else's current code.
 
-## Audit in both directions
+## Your radius, and who decides
 
-A review that only hunts comments to delete will always find some and will never
-find the interface nobody documented. Sweep for redundancy AND for missing
-contract, or the audit reports half its subject as though it were the whole.
+The dispatch sets the radius, not this skill.
 
-## One rationale, one place
+- **Ordinary work.** Your radius is what you write and what you touch. New code is born under
+  these rules; a sentence your own edit made false is yours — reconcile it or delete it. The
+  rest of the file is NOT refactored: it is reported.
+- **Explicit mandate** — "apply the coding standards to X", "refactor X to the standards". The
+  whole named scope is the radius, and the pass is EXHAUSTIVE ADJUDICATION: every comment in
+  that scope faces the test one at a time and leaves with a verdict — it survives with its
+  lines counted per fact, it dies, or it is rewritten into the durable form. Hunting the
+  failures you recognize is not this standard applied but a search, and everything it failed to
+  recognize leaves unjudged because nothing ever asked. No comment is BORN in a cleanup pass
+  without passing the test either: writing narration while removing narration is the failure in
+  its purest form.
 
-Said once it is documentation; said twice it is drift waiting, because the
-copies will not update together. Before adding one, check the module header, the
-entry's own documentation, and the comments just above. A second site references
-the first — it never repeats it.
+**Every case named in this skill illustrates the test; none of them is a list to hunt.** The
+test is the rule. A comment resembling nothing named here still faces it, and one resembling
+something named here is adjudicated, not condemned by the resemblance.
 
-## Cache what the reader cannot look up
+One gate governs both modes, and reviewing too: code contradicting a comment is a FACT — fix it
+without asking. Taste, tidiness, or anything whose scope you do not own is a JUDGMENT — propose
+it, do not do it. What you saw and did not fix, you report: a defect seen and recorded nowhere
+is indistinguishable from one never seen.
 
-The environment is a source of truth in its own right: configuration files,
-scripts, the directory layout, a tool's own `--help`. A sentence restating what
-one of those already answers is a cache — a copy of a lookup — and a cache is
-justified only when the lookup is expensive. What earns the sentence is what no
-lookup returns: the unwritten convention, the reason behind a choice, the gotcha
-no config confesses. Asked while writing, this converts staleness from a
-maintenance problem someone inherits into a question settled at the moment of
-authorship. (Formulation adapted from `writing-for-agents` in mattpocock/skills
-— cited per the seventh protected category.)
+Reviewing mutates nothing, and hunts both directions — surplus AND missing contract. A comment
+is a claim about the code, never evidence of it: verify it against the implementation or state
+that you did not.
 
-## The four durabilities of a written claim
+## Traps
 
-Whether a prose claim about code can silently become false is decided by what
-the claim is ABOUT, and the question takes a second to ask:
+| Rationalization | Why it fails |
+|---|---|
+| The label claimed instead of the test passed — "it is a protected category", "it is just a separator", "that is structural, not elsewhere-state" | Every exemption covers a FACT or a FORM, never the words riding along with it: not the pedagogy escorting the trap, not the phase inside the banner, not the address inside the structural note |
+| Trimming or rewording a comment that failed the test | The test is pass/fail, not a length dial — what fails is deleted |
+| "The next reader might not know this" | A surviving comment describes a fact; teaching the domain is what made the file unreadable |
+| "The code documents itself", or calling "promise" whatever you already wrote | Self-certification is free; the test asks about the code, not about your confidence |
+| "I am matching the repository" | Matching decides FORM and bounds radius; it never authorizes a redundancy you author |
+| The radius read wide — "I touched the file, so the file is mine" — or narrow — "not my task", of a sentence your own edit falsified | The radius is the modification, not the file; the falsified sentence is yours by authorship |
+| Documentation written before the implementation | The false contract in its purest form: born false rather than becoming false |
+| "I fixed everything the skill names", or "this file is already fairly clean" | Under a mandate the unit is the comment, not the file: a verdict per comment, or the pass never happened |
 
-| The claim is about | Durability |
-|--------------------|------------|
-| The language, the platform, the provider's semantics | Cannot rot |
-| A decision and the alternative it rejected | Cannot rot — it is past tense, and the past stays true |
-| The current state of another file or system | Rots silently: the target moves, and nothing at the claim's site changes |
-| What the code below it already shows | Rots on the next edit, and carried nothing while it lasted |
-
-This table is the promise rule generalized to every prose claim about code. A
-promise-claim sits with the durable rows: its only falsifier is a deliberate
-contract change, visible and versioned, so the sentence and the change meet. A
-mechanism-claim is the fourth row wearing a docstring — it asserts what the
-body currently does, and the next refactor falsifies it without touching the
-sentence. The last row is what the why-not-what test already deletes, and the
-first two are where the protected categories live — a rationale is durable
-precisely because it asserts history, not state. The third row is the one
-that needs its own treatment: in a real audit of a 33-file repository, every
-false claim found — six — asserted state outside the file it lived in, and
-none was about the language, a decision, or the code below. Falsehood accumulates exactly there,
-because nothing that edits the target ever re-reads the claim. The more of a
-document is made of that row, the faster it rots — a README is the limiting
-case, and `readme-writing` carries that consequence.
-
-So a claim about elsewhere is a cost accepted knowingly, not a default: prefer
-the durable forms — the decision, the constraint, the why. When the state of
-another file or system genuinely must be asserted, give the claim the
-coordinate that makes it checkable: the file and the symbol. A symbol survives
-edits; a line number drifts on the first insertion above it. And be honest
-about what the coordinate buys: pointers rot too — of the millions of links
-found in published source comments, roughly one in ten is dead. The coordinate
-lowers the cost of checking the claim; it does not make the claim durable.
-
-## Reading: a claim, never evidence
-
-A comment or a document is a claim about code, never evidence of it. Reading
-code to decide something, verify the claim against the implementation it
-describes, or state that you did not — those are the two honest outcomes, and
-both are cheap next to what absorbing a falsehood costs. Measured: models
-handed deliberately false comments described the program the prose claimed
-rather than the one the code implemented, invented details to reconcile the
-two, and flagged no contradiction — in the experimenters' own words, "LLMs
-believe that all provided input is true and correct". The same models,
-explicitly asked to hunt for inaccuracies, found most of them: the capacity to
-verify exists, and it engages when the reading posture demands it. The posture
-matters more for an agent than it ever did for a human — a human skims past
-comments; a model ingests them with the same weight as the code and reasons
-more fluently over prose than over configuration syntax. And the prose being
-read is increasingly agent-written, at a measured error rate near one claim in
-five, so a reader trusting by default is trusting a previous session of
-itself. Accurate comments measurably help comprehension — the enemy is
-falsehood absorbed unverified, never prose itself, which is why this rule asks
-for verification, not for suspicion of volume.
-
-## Where documentation belongs
-
-Documentation of an entry lives in the language's native mechanism when one
-exists; a comment is its destination only when none does. Where there is no
-native slot the comment stops being optional — it is the only place the contract
-can live, and deleting it deletes the contract. The bar inverts by stack: with a
-doc mechanism, a comment restating it is redundant; without one, that same
-comment IS the contract.
-
-A slot can also be present and insufficient — capped in length, or rendered to
-an audience the rationale is not for. Treat the overflow as having no slot: the
-native field carries the summary, the comment carries what does not fit, and for
-that remainder the comment is mandatory again.
-
-The inversion has a volume consequence. A slot steers contract out of comments,
-so a comment-heavy file there signals contract sitting in the wrong place; no
-slot steers every contract into them — the standards that govern slot-less
-formats set floors ("document every property") and none, anywhere, sets a
-ceiling or a ratio, in either direction, and canonical shipped configurations
-are majority comment by explicit design. So in a slot-less format a high
-comment-to-content proportion is not itself a defect, and cannot be cut down to
-one: the cut runs comment by comment against what the file already shows. A
-comment restating a value visible in the lines below it is redundant, and it is
-the first thing to go stale when the data changes. One carrying a constraint, a
-boundary, or a consequence that appears nowhere in the file has no other home:
-deleting it does not deduplicate, it destroys.
-
-## Cleanup is bounded by the radius of what you touch
-
-Dead code inside what you are modifying: delete it. Outside it: report, do not
-touch — even when it is wrong, because matching a repository's existing patterns
-is worth more than correcting them in passing. The counterpart holds too: inside
-the module you improve what you touch, rather than leaving it as found because it
-was not the assignment. What you see and do not touch gets REPORTED: a defect
-seen and recorded nowhere is indistinguishable from one never seen, and the
-boundary exists to protect the repository, not to lose the finding.
-
-## Anchor the rule to what a tool can verify
-
-A rule a tool can check outweighs one only a human can judge; where a checker
-exists for the stack, bind the rule to it. Note the asymmetry: these tools detect
-MISSING documentation and none detects surplus. The contract obligation is
-therefore mechanically enforceable and the redundancy obligation is not — which
-is why redundancy needs the discipline, since nothing else will catch it.
-
-## No temporal, attribution, or process traces
-
-No dates, authors, task identifiers, acceptance-criterion numbers, Finding or
-Risk labels, "generated by", or changelog in a comment. Version history and the
-change description already own that, and none of it means anything to a reader
-without the originating ticket open. Strip the pointer; keep the durable
-rationale, if any survives once it is gone.
-
-**Provenance is not a process trace — it is the seventh protected category.** A
-ticket identifier points at a process; a source citation points at a fact that
-can be re-checked. The second survives: deleting "verified against \<source\>"
-from a security-sensitive list destroys the only record of how that list was
-validated.
-
-For the per-stack tables — where documentation natively lives, which stacks have
-no native slot, and which checker verifies which rule — see `reference.md`.
-Worked before/after pairs are in `examples.md`.
+Evidence, sources, native slots per stack, checkers, edge cases: `reference.md`. Worked pairs,
+each showing the cut: `examples.md`.

@@ -59,10 +59,10 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
         "Start with supplied evidence, not a fixed diagnostic script.",
     ],
     "coding-standards": [
-        "why-not-what test",
-        "Zero redundant comments",
-        "protected categories",
-        "No temporal, attribution, or process traces",
+        "The default is delete",
+        "Does it state a fact the code cannot show?",
+        "Contracts are always documented",
+        "The relocation test",
     ],
 }
 

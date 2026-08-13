@@ -350,7 +350,7 @@ class TestArtifactDerivedExpectation:
         fingerprint -- no gap."""
         result = verify_skill_injection(
             agent_type="developer",
-            transcript_text="Applied the why-not-what test before committing.",
+            transcript_text="The default is delete, so I cut the narration.",
             declared_skills=[],
             written_paths=["gaia/hooks/modules/agents/some_module.py"],
         )
