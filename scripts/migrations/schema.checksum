@@ -5,4 +5,4 @@
 # Do NOT edit by hand: bump EXPECTED_SCHEMA_VERSION + add a migration,
 # then re-run the guard to refresh this file.
 version=48
-sha256=9dd0fcf6bd0ebe0fe12a0d7831a5e1498397b0b8254ff5250c710184fe57216c
+sha256=dcf95dd5398ef03ac80c26f86b5d906d882d405d1caef78e830cb5762b3fe973

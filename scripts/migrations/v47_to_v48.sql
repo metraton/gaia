@@ -1,4 +1,6 @@
--- Migration v47 -> v48: usage telemetry columns on curated memory rows.
+-- Migration v47 -> v48: usage telemetry columns on curated memory rows, plus
+-- the memory_au FTS re-index trigger recreated with a WHEN clause so the new
+-- telemetry columns cannot amplify write-per-read on the search index.
 --
 -- WHAT CHANGES
 --   Four columns on `memory`, one ADD COLUMN per line:
@@ -8,8 +10,12 @@
 --     last_injected_at   TEXT (nullable)
 --     last_deliberate_at TEXT (nullable)
 --
---   Purely additive. No existing column is altered or dropped. The two
---   counters default to 0 (never NULL) so the 1295 rows live today on
+--   Plus memory_au (the memory_fts re-index trigger) dropped and recreated
+--   with a WHEN clause -- see "MEMORY_AU: SAME DELIVERY, SAME VERIFICATION
+--   WINDOW" below.
+--
+--   The column additions are purely additive. No existing column is altered
+--   or dropped. The two counters default to 0 (never NULL) so the 1295 rows live today on
 --   schema_version=47 read as "never yet measured" -- the same answer a
 --   fresh install gives. The two timestamps are nullable by design: NULL
 --   means "never accessed by that surface", not "accessed at time zero".
@@ -47,13 +53,14 @@
 --   excludes columns it does not name -- adding a column to `memory` never
 --   implicitly adds it to an existing trigger's WHEN.
 --
--- WHAT DOES NOT GO HERE
---   The memory_au FTS re-index trigger has no WHEN clause today, so every
---   UPDATE -- including a future telemetry-only one -- re-indexes
---   memory_fts. That is a separate, already-identified fix (F2 in the plan)
---   and ships in its own task with its own six-check gate. Touching it here
---   would conflate a schema addition with a trigger behavior change; this
---   migration is schema only.
+-- MEMORY_AU: SAME DELIVERY, SAME VERIFICATION WINDOW
+--   The memory_au FTS re-index trigger had no WHEN clause, so every UPDATE
+--   -- including this migration's own telemetry-only writes -- re-indexed
+--   memory_fts. That is the packaging decision recorded here: it ships in
+--   THIS migration, not a follow-up version, because it is the same v48
+--   entry and the runner already has a proven precedent for a DROP+CREATE
+--   trigger statement passing through untouched (see IDEMPOTENCY below).
+--   The recreated trigger is defined below, after the column additions.
 --
 -- IDEMPOTENCY
 --   SQLite has no `ADD COLUMN IF NOT EXISTS`. Idempotency is supplied by the
@@ -65,9 +72,35 @@
 --   (idempotent) CREATE TABLE IF NOT EXISTS never has to reconcile a missing
 --   column against a live table. Both mechanisms depend on the statement
 --   being ONE `ALTER TABLE ... ADD COLUMN ...` per LINE, which is why the
---   four are written flat below rather than combined.
+--   four are written flat below rather than combined. The filter only
+--   matches `ALTER TABLE ... ADD COLUMN` lines (`_ADD_COLUMN_RE`) -- every
+--   other line, including the DROP/CREATE TRIGGER pair below, passes through
+--   verbatim. v40_to_v41.sql already proved this precedent live: it drops
+--   and recreates trg_memory_history in the same shipped migration file with
+--   no special-casing from the runner.
 
 ALTER TABLE memory ADD COLUMN injection_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE memory ADD COLUMN deliberate_count INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE memory ADD COLUMN last_injected_at TEXT;
 ALTER TABLE memory ADD COLUMN last_deliberate_at TEXT;
+
+-- memory_au: recreate with a WHEN clause scoping the re-index to the four
+-- columns the trigger body actually writes into memory_fts (workspace, name,
+-- description, body) -- see schema.sql for the full rationale. On a DB that
+-- already has SOME version of memory_au (any prior schema version always
+-- shipped one), schema.sql's own `CREATE TRIGGER IF NOT EXISTS` is a no-op,
+-- so only this explicit DROP+CREATE actually changes the trigger's
+-- definition on an existing installation.
+DROP TRIGGER IF EXISTS memory_au;
+
+CREATE TRIGGER memory_au AFTER UPDATE ON memory
+WHEN OLD.workspace IS NOT NEW.workspace
+   OR OLD.name IS NOT NEW.name
+   OR OLD.description IS NOT NEW.description
+   OR OLD.body IS NOT NEW.body
+BEGIN
+    INSERT INTO memory_fts(memory_fts, rowid, workspace, name, description, body)
+    VALUES ('delete', old.rowid, old.workspace, old.name, old.description, old.body);
+    INSERT INTO memory_fts(rowid, workspace, name, description, body)
+    VALUES (new.rowid, new.workspace, new.name, new.description, new.body);
+END;

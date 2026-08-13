@@ -790,7 +790,23 @@ CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN
     VALUES ('delete', old.rowid, old.workspace, old.name, old.description, old.body);
 END;
 
-CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN
+-- v48: memory_au's WHEN clause scopes the re-index to the four columns the
+-- INSERT statements below actually write into memory_fts (workspace, name,
+-- description, body). Before this, the trigger had no WHEN clause and fired
+-- on EVERY UPDATE -- including a future telemetry-only write that touches
+-- only injection_count/deliberate_count/last_injected_at/last_deliberate_at.
+-- Those columns carry no search content, so re-indexing on their account
+-- amplified write-per-read for no benefit: any surface that reads a curated
+-- row (gaia memory show, get-relevant --initiative) would have re-indexed
+-- that row's full FTS document on every read. The WHEN clause makes such a
+-- write a no-op for this trigger while a real name/description/body/
+-- workspace change still re-indexes exactly as before.
+CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory
+WHEN OLD.workspace IS NOT NEW.workspace
+   OR OLD.name IS NOT NEW.name
+   OR OLD.description IS NOT NEW.description
+   OR OLD.body IS NOT NEW.body
+BEGIN
     INSERT INTO memory_fts(memory_fts, rowid, workspace, name, description, body)
     VALUES ('delete', old.rowid, old.workspace, old.name, old.description, old.body);
     INSERT INTO memory_fts(rowid, workspace, name, description, body)
