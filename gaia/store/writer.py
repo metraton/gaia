@@ -3407,6 +3407,95 @@ def list_memory(
 
 
 # ---------------------------------------------------------------------------
+# Public API: curated-memory usage telemetry (v48, best-effort)
+# ---------------------------------------------------------------------------
+#
+# telemetria-de-uso-en-memoria-curada, P1: what counts is a property, not a
+# command list. "Deliberate" is any surface that renders a row's full BODY on
+# someone's explicit request (gaia memory show, get-relevant --initiative);
+# "injection" is a row actually rendered inside an automatic context block
+# (get-relevant digest/sections/types, the subagent kernel). A projection --
+# name, description, snippet, count, delta -- is neither and never calls this.
+#
+# Two hard constraints, both load-bearing for the rest of the entry:
+#   * NARROW UPDATE ONLY. This never goes through upsert_memory/
+#     update_memory_field (the normal save path): those rewrite `body` and
+#     `updated_at` and trip trg_memory_history. The UPDATE below touches
+#     exactly one counter and its own timestamp column -- both are outside
+#     trg_memory_history's WHEN clause and memory_au's WHEN clause by design
+#     (see the v48 notes on both triggers in schema.sql), so a telemetry write
+#     lands zero memory_history rows, zero FTS re-index, and never moves
+#     `updated_at` -- the sort key the injected block's ordering depends on.
+#   * BEST-EFFORT. This runs on every deliberate read and every automatic
+#     injection, so a failure here (a busy DB, a locked file, anything) must
+#     never surface to the caller: measuring usage can never cost the read it
+#     is measuring. Every failure mode -- connect, execute, commit -- is
+#     swallowed and reported back only as `False`.
+#
+# Deliberately does NOT call _assert_dispatch_can_write_memory(): that gate
+# gags subagents from authoring curated memory, but reading a row (show,
+# get-relevant --initiative) is not authoring it, and any dispatched agent
+# must be able to trigger this write when it reads.
+_MEMORY_TELEMETRY_COLUMNS: dict[str, tuple[str, str]] = {
+    "injection": ("injection_count", "last_injected_at"),
+    "deliberate": ("deliberate_count", "last_deliberate_at"),
+}
+
+
+def record_memory_access(
+    workspace: str,
+    name: str,
+    kind: str,
+    *,
+    db_path: Path | None = None,
+) -> bool:
+    """Best-effort telemetry bump for one curated-memory row access.
+
+    ``kind`` selects which counter/timestamp pair to bump -- ``"deliberate"``
+    for a row whose full body was rendered on explicit request, ``"injection"``
+    for a row rendered inside an automatic context block. Raises ``ValueError``
+    for any other ``kind`` (a programming error, not a runtime condition worth
+    degrading for). Every other failure -- DB locked, connect/execute/commit
+    raising for any reason -- is caught and reported as ``False``; this
+    function never raises past the ``kind`` check and never blocks or breaks
+    the read it is instrumenting.
+
+    Returns ``True`` iff the UPDATE committed (whether or not a row matched --
+    a miss is not treated as a failure, since the caller already resolved the
+    row before calling this).
+    """
+    if kind not in _MEMORY_TELEMETRY_COLUMNS:
+        raise ValueError(
+            f"invalid telemetry kind {kind!r}; must be one of "
+            f"{list(_MEMORY_TELEMETRY_COLUMNS)}"
+        )
+    count_col, ts_col = _MEMORY_TELEMETRY_COLUMNS[kind]
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return False
+    try:
+        con.execute(
+            f"UPDATE memory SET {count_col} = {count_col} + 1, "
+            f"{ts_col} = ? WHERE workspace = ? AND name = ?",
+            (_now_iso(), workspace, name),
+        )
+        con.commit()
+        return True
+    except Exception:
+        try:
+            con.rollback()
+        except Exception:
+            pass
+        return False
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Public API: brief field patch
 # ---------------------------------------------------------------------------
 

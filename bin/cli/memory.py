@@ -1871,6 +1871,11 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
+    try:
+        from gaia.store.writer import record_memory_access
+    except ImportError:
+        record_memory_access = None
+
     header = f"## Memory — Pendientes de {label}"
     lines = [header, ""]
     items: list[dict] = []
@@ -1889,6 +1894,14 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             "description": description,
             "body": r.get("body"),
         })
+        # P1: --initiative is the retrieval surface -- it renders the WHOLE
+        # body-bearing corpus of one initiative on explicit request, so every
+        # row emitted here counts deliberate, never injection (it shares the
+        # get-relevant command family with the digest/sections/types
+        # renderers, but those are unrequested SessionStart blocks; this one
+        # was asked for by name).
+        if record_memory_access is not None:
+            record_memory_access(workspace, name, "deliberate")
 
     block = "\n".join(lines) + "\n\n" + _MEMORY_POINTER
 
@@ -2099,7 +2112,7 @@ def _cmd_curated_show(args) -> int:
     want_history = getattr(args, "history", False)
 
     try:
-        from gaia.store.writer import get_memory
+        from gaia.store.writer import get_memory, record_memory_access
         from gaia.store.reader import (
             get_memory_class_status, memory_links_for, memory_history_for,
         )
@@ -2112,6 +2125,11 @@ def _cmd_curated_show(args) -> int:
             f"memory '{name}' not found in workspace '{workspace}'",
             as_json,
         )
+    # P1 (telemetria-de-uso-en-memoria-curada): `show` renders the row's full
+    # body on explicit request -- the deliberate surface. Best-effort, narrow
+    # UPDATE; never allowed to affect this command's outcome (see
+    # record_memory_access's own docstring for the isolation guarantees).
+    record_memory_access(workspace, name, "deliberate")
 
     # Fill the class/status gap: get_memory projects neither column.
     cs = get_memory_class_status(workspace, name)
