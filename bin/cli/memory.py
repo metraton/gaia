@@ -430,7 +430,7 @@ def _cmd_stats(args) -> int:
         for ep in episodes_sample:
             try:
                 days = _days_old(ep.get("timestamp", ""))
-                rc = int(ep.get("retrieval_score", 0) or 0)
+                rc = int(ep.get("retrieval_count", 0) or 0)
                 scores.append(score_memory(days_old=days, retrieval_count=rc))
             except Exception:
                 pass
