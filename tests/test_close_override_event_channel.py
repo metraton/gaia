@@ -699,13 +699,15 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
     # own (asserted structurally above, against the live schema -- not this
     # number). v38 (plan_task_id index) through v47 landed afterward for
     # unrelated work; v48 (injection_count/deliberate_count/last_injected_at/
-    # last_deliberate_at on `memory`, scripts/migrations/v47_to_v48.sql) and
-    # v49 (memory_au recreated with its WHEN clause on installations that
+    # last_deliberate_at on `memory`, scripts/migrations/v47_to_v48.sql), v49
+    # (memory_au recreated with its WHEN clause on installations that
     # stamped v48 before that DDL existed, scripts/migrations/v48_to_v49.sql)
-    # are the latest reviewed additions -- both touch only the `memory` table
-    # and its FTS mirror, not `harness_events`, so this channel again needed
-    # no migration of its own.
-    # v41-v49 are the actual current floor -- tracked dynamically by
+    # and v50 (created_at/kernel_count/last_kernel_at on `memory`, plus the
+    # new memory_deliberate_capture_v50 table, scripts/migrations/
+    # v49_to_v50.sql) are the latest reviewed additions -- all touch only the
+    # `memory` table, its FTS mirror, or a new table of their own, not
+    # `harness_events`, so this channel again needed no migration of its own.
+    # v41-v50 are the actual current floor -- tracked dynamically by
     # tests/cli/test_schema_version_lockstep.py, which is the real drift
     # guard. This assertion only pins the number this test module itself
     # depends on: it is a deliberate, reviewed bump, not a mechanical one --
@@ -717,12 +719,12 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 49
+    assert int(match.group(1)) == 50
 
 
 def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     # Same baseline as the test above, same reason it can go stale: v38
-    # through v49 are real, reviewed-and-unrelated migrations, not drift in
+    # through v50 are real, reviewed-and-unrelated migrations, not drift in
     # this channel. The actual lockstep invariant (EXPECTED_SCHEMA_VERSION ==
     # migration floor) lives in tests/cli/test_schema_version_lockstep.py --
     # this only pins what this module itself was written against, and it must
@@ -735,4 +737,4 @@ def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     )
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 49
+    assert max(migrations) == 50

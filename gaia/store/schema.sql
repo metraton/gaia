@@ -759,6 +759,9 @@ CREATE TABLE IF NOT EXISTS memory (
     deliberate_count   INTEGER NOT NULL DEFAULT 0,  -- v48: times a caller that IDENTIFIED this row read it -- by slug (show, story) or by naming the initiative holding it (get-relevant --initiative). A filtered window over the table identifies nothing it returns and never counts, however much of each row it renders. Kept SEPARATE from injection_count on purpose: mixing the two would let a row already selected for injection reinforce itself every time it is shown, freezing the ranking. Column added v48; existing rows default/backfill to 0, never NULL.
     last_injected_at   TEXT,  -- v48: ISO8601 timestamp of the most recent automatic injection; NULL = never injected. Column added v48.
     last_deliberate_at TEXT,  -- v48: ISO8601 timestamp of the most recent deliberate read; NULL = never deliberately read. Column added v48.
+    created_at         TEXT,  -- v50: row age. Forward-only BY DECISION -- no backfill, here or ever. NULL means "age unknown", never "age zero"; a pre-v50 row has no knowable birth date and every substitute (now, updated_at) is a fabrication that would distort a recency-weighted ranking. Column added v50.
+    kernel_count       INTEGER NOT NULL DEFAULT 0,  -- v50: third access axis, separate from injection_count for the same reason injection and deliberate were kept apart in v48 -- mixing signals of different natures freezes the ranking. Fires on every subagent dispatch over type=user AND audience=executor rows. Column added v50; existing rows default/backfill to 0, never NULL.
+    last_kernel_at     TEXT,  -- v50: ISO8601 timestamp of the most recent kernel injection; NULL = never injected into a kernel. Column added v50.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -812,6 +815,26 @@ BEGIN
     INSERT INTO memory_fts(rowid, workspace, name, description, body)
     VALUES (new.rowid, new.workspace, new.name, new.description, new.body);
 END;
+
+-- ---------------------------------------------------------------------------
+-- memory_deliberate_capture_v50: durable record of the deliberate-read axis
+-- as it stood one statement before v49_to_v50.sql zeroed it. Deliberately
+-- carries NO foreign key to memory or workspaces: the point of the table is
+-- to outlive the row it describes, including a row later hard-deleted or a
+-- workspace later dropped. Written by the migration exactly once, inside the
+-- same transaction as the reset it precedes -- see
+-- scripts/migrations/v49_to_v50.sql for the safety argument. Declared here
+-- (CREATE TABLE IF NOT EXISTS) so a fresh install produces the same final
+-- DDL shape as an installation that walked the migration.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS memory_deliberate_capture_v50 (
+    workspace          TEXT NOT NULL,
+    name               TEXT NOT NULL,
+    deliberate_count   INTEGER NOT NULL,
+    last_deliberate_at TEXT,
+    captured_at        TEXT NOT NULL,
+    PRIMARY KEY (workspace, name)
+);
 
 -- ---------------------------------------------------------------------------
 -- memory_links (v4): graph primitives between curated memory rows.
