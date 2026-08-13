@@ -23,6 +23,7 @@ from __future__ import annotations
 import sqlite3
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -365,6 +366,160 @@ def test_memory_block_empty_when_only_non_matching_rows_exist(tmp_path):
         con.close()
 
     assert build_memory_block(WORKSPACE, db_path=db) == ""
+
+
+# ---------------------------------------------------------------------------
+# P1 injection telemetry (telemetria-de-uso-en-memoria-curada, task 6):
+# every row rendered into "How the user works" is an automatic-injection
+# surface. Bumps injection_count only, never deliberate_count, never
+# updated_at, never a memory_history row -- and never breaks kernel assembly
+# if the telemetry write itself fails, because this block ships on EVERY
+# subagent dispatch.
+# ---------------------------------------------------------------------------
+
+def _telemetry_row(db_path, name, workspace=WORKSPACE):
+    con = sqlite3.connect(str(db_path))
+    con.row_factory = sqlite3.Row
+    try:
+        return dict(con.execute(
+            "SELECT injection_count, deliberate_count, last_injected_at, "
+            "       updated_at "
+            "FROM memory WHERE workspace=? AND name=?",
+            (workspace, name),
+        ).fetchone())
+    finally:
+        con.close()
+
+
+def _history_count(db_path):
+    con = sqlite3.connect(str(db_path))
+    try:
+        return con.execute("SELECT COUNT(*) FROM memory_history").fetchone()[0]
+    finally:
+        con.close()
+
+
+class TestMemoryBlockInjectionTelemetry:
+    def test_rendered_rows_bump_injection_only(self, tmp_path):
+        db = tmp_path / "gaia.db"
+        from gaia.store.writer import _connect
+
+        con = _connect(db)
+        try:
+            _seed_memory_row(
+                con, name="user_prefers_live_verification",
+                body="Live state and code outrank memory when they disagree.",
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        before = _telemetry_row(db, "user_prefers_live_verification")
+        before_history = _history_count(db)
+
+        block = build_memory_block(WORKSPACE, db_path=db)
+
+        after = _telemetry_row(db, "user_prefers_live_verification")
+        after_history = _history_count(db)
+
+        assert "Live state and code outrank memory" in block
+        assert after["injection_count"] == before["injection_count"] + 1
+        assert after["last_injected_at"] is not None
+        assert after["deliberate_count"] == before["deliberate_count"] == 0
+        assert after["updated_at"] == before["updated_at"]
+        assert after_history == before_history
+
+    def test_row_dropped_for_wrong_audience_never_bumps(self, tmp_path):
+        """A row the query candidate-selected out entirely (wrong audience)
+        is not the object under test -- this pins that the telemetry loop
+        only ever iterates rows that made it into ``rows``/the block, never
+        a row the SQL WHERE clause already excluded."""
+        db = tmp_path / "gaia.db"
+        from gaia.store.writer import _connect
+
+        con = _connect(db)
+        try:
+            _seed_memory_row(
+                con, name="orchestrator_only", audience="orchestrator", body="b",
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        before = _telemetry_row(db, "orchestrator_only")
+        build_memory_block(WORKSPACE, db_path=db)
+        after = _telemetry_row(db, "orchestrator_only")
+
+        assert after == before
+
+    def test_body_over_hard_ceiling_is_dropped_and_never_bumped(self, tmp_path):
+        """A candidate SELECTed by the query but then dropped by this
+        builder (body over the hard ceiling) must not bump injection --
+        selected is not emitted, the same property the get-relevant
+        renderers are held to."""
+        db = tmp_path / "gaia.db"
+        from gaia.store.writer import _connect
+        from modules.context.kernel_builder import _MEMORY_BODY_HARD_CEILING
+
+        con = _connect(db)
+        try:
+            _seed_memory_row(
+                con, name="user_pathological_preference",
+                body="y" * (_MEMORY_BODY_HARD_CEILING + 1),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        before = _telemetry_row(db, "user_pathological_preference")
+        block = build_memory_block(WORKSPACE, db_path=db)
+        after = _telemetry_row(db, "user_pathological_preference")
+
+        assert block == ""
+        assert after == before
+
+    def test_second_call_renders_byte_identical_block(self, tmp_path):
+        db = tmp_path / "gaia.db"
+        from gaia.store.writer import _connect
+
+        con = _connect(db)
+        try:
+            _seed_memory_row(
+                con, name="user_prefers_live_verification",
+                body="Live state and code outrank memory when they disagree.",
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        first = build_memory_block(WORKSPACE, db_path=db)
+        second = build_memory_block(WORKSPACE, db_path=db)
+        assert first == second
+
+    def test_degrades_when_telemetry_raises(self, tmp_path):
+        """Higher stakes than a single CLI call: this block renders on
+        EVERY subagent dispatch, so a telemetry defect must never surface
+        as a broken kernel."""
+        db = tmp_path / "gaia.db"
+        from gaia.store.writer import _connect
+
+        con = _connect(db)
+        try:
+            _seed_memory_row(
+                con, name="user_prefers_live_verification",
+                body="Live state and code outrank memory when they disagree.",
+            )
+            con.commit()
+        finally:
+            con.close()
+
+        with mock.patch(
+            "gaia.store.writer.record_memory_access",
+            side_effect=RuntimeError("boom"),
+        ):
+            block = build_memory_block(WORKSPACE, db_path=db)
+
+        assert "Live state and code outrank memory" in block
 
 
 def test_kernel_context_joins_and_requires_identity(tmp_path):

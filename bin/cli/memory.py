@@ -1319,6 +1319,26 @@ _DIGEST_DEFAULT_MAX_CHARS = 1500
 _OTHERS_BUCKET = "otros"
 
 
+def _bump_injection_telemetry(workspace: str, names) -> None:
+    """Best-effort P1 injection bump, shared by every automatic-injection
+    renderer below (digest / sections / legacy types) -- one call site so
+    the isolation contract is enforced once, not re-typed per renderer.
+    Reuses ``gaia.store.writer.record_memory_access`` (never a second
+    implementation) and swallows every failure mode, including one raised
+    by ``record_memory_access`` itself: a caller here has already computed
+    the block it is about to return, and measuring it must never cost it.
+    """
+    try:
+        from gaia.store.writer import record_memory_access
+    except ImportError:
+        return
+    for name in names:
+        try:
+            record_memory_access(workspace, name, "injection")
+        except Exception:
+            pass
+
+
 def _cmd_get_relevant(args) -> int:
     """Emit a compact Workspace Memory block for SessionStart injection.
 
@@ -1505,6 +1525,19 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
     items_flat: list[dict] = []
 
+    # P1 injection telemetry bookkeeping, kept OUT of items_flat/block on
+    # purpose: this renderer SELECTS more rows than it ultimately EMITS (the
+    # char-budget trim below removes lines from `lines` after items_flat is
+    # already built), and injection must count only what a reader actually
+    # saw. One name per rendered "- " line, appended in the exact same
+    # top-to-bottom order as that section's bullet lines -- so popping this
+    # list's tail in lockstep with _trim_one's line pop (below) always
+    # removes the matching entry, never items_flat itself (which stays the
+    # existing, unmodified JSON surface).
+    telemetry_names_by_section: dict[str, list[str]] = {
+        "carry_forward": [], "anchor": [], "thread_open": [],
+    }
+
     def _truncate_desc(text: str) -> str:
         """Cap a rendered description to _RELEVANT_ITEM_DESC_MAX + ellipsis.
 
@@ -1556,6 +1589,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 "description": desc,
                 "project_ref": r.get("project_ref"),
             })
+            telemetry_names_by_section[section_key].append(name)
         out.append("")  # blank line between sections
         return out
 
@@ -1606,6 +1640,10 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
         for j in range(section_end - 1, section_start, -1):
             if lines[j].startswith("- "):
                 lines.pop(j)
+                # Mirror the pop into the telemetry name list -- see the
+                # comment on telemetry_names_by_section's declaration above.
+                if telemetry_names_by_section.get(target_section):
+                    telemetry_names_by_section[target_section].pop()
                 # If section is now empty (only header + blank), drop
                 # header + blank line too.
                 body_remains = any(
@@ -1645,6 +1683,18 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     if total_dropped > 0:
         # Space was reserved above, so this always fits under max_chars.
         block = block + _overflow_footer(total_dropped)
+
+    # P1 injection telemetry: bump only rows that survived every cap above
+    # (the carry_forward sub-cap already excluded, the char-budget trim
+    # mirrored into telemetry_names_by_section) -- one bump per row a reader
+    # actually saw, never per row merely selected. Fired after the block/
+    # payload are fully computed, so a telemetry failure can never affect
+    # what this command returns.
+    _bump_injection_telemetry(
+        workspace,
+        [n for sec in ("carry_forward", "anchor", "thread_open")
+         for n in telemetry_names_by_section[sec]],
+    )
 
     # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
     # pointer is never the line that gets dropped; its length was reserved from
@@ -1822,6 +1872,14 @@ def _render_digest(args, workspace: str, as_json: bool) -> int:
     while len(block) > max_chars and len(shown) > 1:
         shown = shown[:-1]
         block, items_flat, overflow_projects = _build(shown)
+
+    # P1 injection telemetry: items_flat is rebuilt on every trim iteration
+    # above, so by the time the loop exits it already names exactly the rows
+    # that made it into the final block -- one bullet per shown initiative's
+    # freshest ("top") pending row. The other rows in a multi-pending
+    # initiative are never individually rendered (only counted in the
+    # "+N más" hint) and are correctly never bumped here.
+    _bump_injection_telemetry(workspace, [i["name"] for i in items_flat])
 
     block = block + "\n\n" + _MEMORY_POINTER
 
@@ -2039,6 +2097,18 @@ def _cmd_get_relevant_by_type(args, workspace: str, max_chars: int) -> int:
             )
             if len(block) + len(footer) <= max_chars:
                 block = block + footer
+
+    # P1 injection telemetry: the char-budget trim above always removes from
+    # the TAIL of the remaining "- " lines, in the same order items_flat was
+    # appended (one append per bullet, strictly left to right), so the
+    # surviving rendered rows are exactly items_flat's first
+    # `len(items_flat) - overflow_count` entries -- never the ones the trim
+    # discarded.
+    _rendered = (
+        items_flat[: len(items_flat) - overflow_count]
+        if overflow_count else items_flat
+    )
+    _bump_injection_telemetry(workspace, [i["name"] for i in _rendered])
 
     if as_json:
         print(json.dumps({

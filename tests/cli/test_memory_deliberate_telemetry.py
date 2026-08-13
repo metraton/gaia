@@ -222,11 +222,13 @@ class TestProjectionsMoveNothing:
         assert rc == 0
         assert after == before
 
-    def test_digest_mode_does_not_move_either_counter(self, tmp_db, capsys):
-        """Regression guard: the no-flag digest is an INJECTION surface
-        (task 6's job, not wired yet) -- until task 6 lands, it must move
-        NEITHER counter. This is the shared-file boundary the plan calls out
-        between tasks 5 and 6."""
+    def test_digest_mode_bumps_injection_only(self, tmp_db, capsys):
+        """Regression guard: the no-flag digest is an INJECTION surface,
+        wired in task 6 (telemetria-de-uso-en-memoria-curada) -- it must bump
+        ONLY injection_count, never deliberate_count. This is the
+        shared-file boundary the plan calls out between tasks 5 and 6; see
+        test_memory_injection_telemetry.py for the full P1 injection
+        coverage (over-select-vs-emit, --initiative exclusion, kernel)."""
         _insert(tmp_db, "digest_row", initiative="demoproj", class_="thread",
                 status="open")
         before = _row(tmp_db, "digest_row")
@@ -240,4 +242,6 @@ class TestProjectionsMoveNothing:
         after = _row(tmp_db, "digest_row")
 
         assert rc == 0
-        assert after == before
+        assert after["injection_count"] == before["injection_count"] + 1
+        assert after["deliberate_count"] == before["deliberate_count"]
+        assert after["updated_at"] == before["updated_at"]
