@@ -755,6 +755,10 @@ CREATE TABLE IF NOT EXISTS memory (
     deleted_at        TEXT,  -- tombstone marker (scan-v2 SV3). NULL = live row; non-NULL ISO8601 = soft-deleted. delete_memory() sets this instead of DELETE so the row + body survive; hard DELETE is reserved for explicit human curation (delete_memory(hard=True)). All read paths filter `deleted_at IS NULL`. Column added v26.
     initiative        TEXT,  -- canonical project/initiative grouping key (clean, vantage-independent). Distinct from project_ref (the git-common-dir path): initiative is the human-facing key that unifies git projects (basename of project_ref sans .git -> 'gaia', 'balance') AND logical initiatives that are NOT git repos ('branchkinect', 'buildwiz', 'axisio', ...). NULL when no initiative can be resolved without guessing. Populated at write time (upsert_memory / gaia memory add: --project -> basename(project_ref); --initiative -> normalized key). Column added v32; existing rows backfilled by scripts/migrations/v31_to_v32.sql.
     audience          TEXT CHECK (audience IN ('orchestrator', 'executor', 'any')) DEFAULT 'any',  -- v45: which agent role the row is for (see note above). Column added v45; existing rows default/backfill to 'any' (no behavior change on migration).
+    injection_count    INTEGER NOT NULL DEFAULT 0,  -- v48: times this row was rendered inside an automatic context-injection block (get-relevant digest/sections/types, subagent kernel). Written by a narrow, dedicated UPDATE -- never the upsert path, never updated_at (see note on trg_memory_history below: telemetry columns are deliberately outside its WHEN clause). Column added v48; existing rows default/backfill to 0, never NULL.
+    deliberate_count   INTEGER NOT NULL DEFAULT 0,  -- v48: times this row's full body was rendered on explicit request (show, get-relevant --initiative). Kept SEPARATE from injection_count on purpose -- P1 in telemetria-de-uso-en-memoria-curada: mixing the two would let a row already selected for injection reinforce itself every time it is shown, freezing the ranking. Column added v48; existing rows default/backfill to 0, never NULL.
+    last_injected_at   TEXT,  -- v48: ISO8601 timestamp of the most recent automatic injection; NULL = never injected. Column added v48.
+    last_deliberate_at TEXT,  -- v48: ISO8601 timestamp of the most recent deliberate read; NULL = never deliberately read. Column added v48.
     PRIMARY KEY (workspace, name),
     FOREIGN KEY (workspace) REFERENCES workspaces(name) ON DELETE CASCADE
 );
@@ -875,6 +879,13 @@ CREATE INDEX IF NOT EXISTS idx_memory_history_workspace_name ON memory_history(w
 -- (falsy) and would silently miss it. Runs independently of the memory_au
 -- trigger (that one only re-indexes memory_fts and is unaffected by this
 -- trigger's columns).
+--
+-- v48: injection_count/deliberate_count/last_injected_at/last_deliberate_at
+-- are deliberately ABSENT from the WHEN clause below. A telemetry UPDATE runs
+-- on every deliberate read and every automatic injection -- if it tripped
+-- this trigger, memory_history would grow without bound on every session
+-- start. The WHEN clause is the enforcement point: adding a telemetry column
+-- to it would silently turn every read into an audited write.
 CREATE TRIGGER IF NOT EXISTS trg_memory_history
 AFTER UPDATE ON memory
 WHEN OLD.name IS NOT NEW.name
