@@ -1124,6 +1124,9 @@ def _cmd_list(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     type_filter = getattr(args, "type", None)
     audience_filter = getattr(args, "audience", None)
+    class_filter = getattr(args, "cls", None)
+    status_filter = getattr(args, "status", None)
+    order_by = getattr(args, "sort", None) or "name"
     fmt = getattr(args, "format", None) or "table"
     limit = getattr(args, "limit", None)
     if as_json:
@@ -1134,7 +1137,13 @@ def _cmd_list(args) -> int:
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
-    rows = list_memory(workspace, type=type_filter, audience=audience_filter)
+    try:
+        rows = list_memory(
+            workspace, type=type_filter, audience=audience_filter,
+            class_=class_filter, status=status_filter, order_by=order_by,
+        )
+    except ValueError as exc:
+        return _err(str(exc), as_json)
     if limit is not None and limit > 0:
         rows = rows[:limit]
 
@@ -1150,16 +1159,29 @@ def _cmd_list(args) -> int:
         return 0
     name_w = max(4, max(len(r["name"]) for r in rows))
     type_w = max(4, max(len(r["type"] or "") for r in rows))
+    class_w = max(5, max(len(r.get("class") or "") for r in rows))
+    status_w = max(6, max(len(r.get("status") or "") for r in rows))
     desc_w = max(
         11,
         max(min(len(r.get("description") or ""), 60) for r in rows),
     )
-    print(f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'DESCRIPTION':<{desc_w}}")
-    print("-" * (name_w + type_w + desc_w + 4))
+    header = (
+        f"{'NAME':<{name_w}}  {'TYPE':<{type_w}}  {'CLASS':<{class_w}}  "
+        f"{'STATUS':<{status_w}}  {'INJ':>3}  {'DELIB':>5}  "
+        f"{'DESCRIPTION':<{desc_w}}"
+    )
+    print(header)
+    print("-" * len(header))
     for r in rows:
         desc = (r.get("description") or "")[:desc_w]
-        print(f"{r['name']:<{name_w}}  {(r['type'] or ''):<{type_w}}  "
-              f"{desc:<{desc_w}}")
+        print(
+            f"{r['name']:<{name_w}}  {(r['type'] or ''):<{type_w}}  "
+            f"{(r.get('class') or ''):<{class_w}}  "
+            f"{(r.get('status') or ''):<{status_w}}  "
+            f"{r.get('injection_count', 0):>3}  "
+            f"{r.get('deliberate_count', 0):>5}  "
+            f"{desc:<{desc_w}}"
+        )
     return 0
 
 
@@ -1422,8 +1444,8 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    # Pull class/status-aware rows via raw SQL (list_memory doesn't expose
-    # those columns yet, and we need a supersedes-NOT-IN subquery).
+    # Pull class/status-aware rows via raw SQL: list_memory has no
+    # supersedes-NOT-IN subquery, which this selection needs.
     rows_by_section: dict[str, list[dict]] = {
         "carry_forward": [],
         "anchor": [],
@@ -1933,6 +1955,7 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
         from gaia.store.writer import record_memory_access
     except ImportError:
         record_memory_access = None
+    renders_body = as_json
 
     header = f"## Memory — Pendientes de {label}"
     lines = [header, ""]
@@ -1952,13 +1975,9 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             "description": description,
             "body": r.get("body"),
         })
-        # P1: --initiative is the retrieval surface -- it renders the WHOLE
-        # body-bearing corpus of one initiative on explicit request, so every
-        # row emitted here counts deliberate, never injection (it shares the
-        # get-relevant command family with the digest/sections/types
-        # renderers, but those are unrequested SessionStart blocks; this one
-        # was asked for by name).
-        if record_memory_access is not None:
+        # Only the JSON payload carries `body`; the text block renders name
+        # plus collapsed description, a projection that counts as neither.
+        if renders_body and record_memory_access is not None:
             record_memory_access(workspace, name, "deliberate")
 
     block = "\n".join(lines) + "\n\n" + _MEMORY_POINTER
@@ -2173,13 +2192,18 @@ def _cmd_curated_show(args) -> int:
       * ``--history``  -- ``memory_history`` versions (changed_at, fields
                           changed, body size delta -- NOT full bodies).
     ``--links`` / ``--history`` are additive: either or both can be combined
-    with ``--json`` to enrich the emitted payload.
+    with ``--json`` to enrich the emitted payload; in text mode either one
+    replaces the body. Bumps the row's deliberate-read counter exactly when
+    it emits the body.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
     want_links = getattr(args, "links", False)
     want_history = getattr(args, "history", False)
+    # JSON always carries `body`; text renders it only when neither
+    # --links nor --history has taken its place.
+    renders_body = as_json or not (want_links or want_history)
 
     try:
         from gaia.store.writer import get_memory, record_memory_access
@@ -2195,11 +2219,11 @@ def _cmd_curated_show(args) -> int:
             f"memory '{name}' not found in workspace '{workspace}'",
             as_json,
         )
-    # P1 (telemetria-de-uso-en-memoria-curada): `show` renders the row's full
-    # body on explicit request -- the deliberate surface. Best-effort, narrow
-    # UPDATE; never allowed to affect this command's outcome (see
-    # record_memory_access's own docstring for the isolation guarantees).
-    record_memory_access(workspace, name, "deliberate")
+    if renders_body:
+        record_memory_access(workspace, name, "deliberate")
+        # This call is itself one of the reads it is about to report, so the
+        # counters are re-read rather than the held row's incremented by hand.
+        row = get_memory(workspace, name) or row
 
     # Fill the class/status gap: get_memory projects neither column.
     cs = get_memory_class_status(workspace, name)
@@ -2235,6 +2259,12 @@ def _cmd_curated_show(args) -> int:
     print(f"# class: {row.get('class')}  status: {row.get('status')}")
     print(f"# audience: {row.get('audience')}")
     print(f"# updated_at: {row.get('updated_at')}")
+    # Kept on separate lines rather than summed: one combined number would let
+    # a row's automatic injections pass for deliberate reads.
+    print(f"# injection_count: {row.get('injection_count', 0)}  "
+          f"last_injected_at: {row.get('last_injected_at') or '(never)'}")
+    print(f"# deliberate_count: {row.get('deliberate_count', 0)}  "
+          f"last_deliberate_at: {row.get('last_deliberate_at') or '(never)'}")
 
     if links_payload is not None:
         print()
@@ -2984,6 +3014,8 @@ def register(subparsers):
             "Examples:\n"
             "  gaia memory list --type=feedback\n"
             "  gaia memory list --limit=10\n"
+            "  gaia memory list --sort=deliberate   # most deliberately-read first\n"
+            "  gaia memory list --class=thread --status=carry_forward\n"
         ),
     )
     list_p.add_argument(
@@ -2995,6 +3027,22 @@ def register(subparsers):
         "--audience", default=None,
         choices=("orchestrator", "executor", "any"),
         help="v45: filter by memory.audience (which agent role the row is FOR).",
+    )
+    list_p.add_argument(
+        "--class", dest="cls", default=None,
+        choices=("anchor", "thread", "log"),
+        help="Filter by memory.class.",
+    )
+    list_p.add_argument(
+        "--status", default=None,
+        choices=("open", "carry_forward", "graduated", "closed"),
+        help="Filter by memory.status (meaningful for class=thread rows).",
+    )
+    list_p.add_argument(
+        "--sort", default="name",
+        choices=("name", "injection", "deliberate"),
+        help="Sort key (default: name). 'injection' and 'deliberate' each "
+             "sort DESC by that counter alone; there is no combined ranking.",
     )
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")

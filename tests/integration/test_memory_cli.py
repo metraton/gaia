@@ -604,6 +604,238 @@ def test_curated_show_not_found(tmp_db, tmp_path, monkeypatch, capsys):
     assert "not found" in capsys.readouterr().err.lower()
 
 
+def test_curated_show_prints_telemetry_counters_text(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """telemetria-de-uso-en-memoria-curada: `show` must display the two
+    usage counters and their timestamps SEPARATELY -- never summed or
+    averaged into one number. Body-rendering text mode also bumps
+    deliberate_count itself, so the displayed value is the pre-seeded
+    count PLUS this call's own access."""
+    from cli.memory import _cmd_curated_show
+    from gaia.store.writer import record_memory_access
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "counted", "project", "body")
+    record_memory_access("me", "counted", "injection", db_path=tmp_db)
+    record_memory_access("me", "counted", "injection", db_path=tmp_db)
+    record_memory_access("me", "counted", "deliberate", db_path=tmp_db)
+
+    args = argparse.Namespace(name="counted", workspace="me", json=False)
+    rc = _cmd_curated_show(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "injection_count: 2" in out
+    assert "deliberate_count: 2" in out  # 1 pre-seeded + 1 from this call
+    assert "last_injected_at: 2026" in out
+    assert "last_deliberate_at: 2026" in out
+
+
+def test_curated_show_prints_telemetry_counters_json(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    from cli.memory import _cmd_curated_show
+    from gaia.store.writer import record_memory_access
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "counted_json", "project", "body")
+    record_memory_access("me", "counted_json", "injection", db_path=tmp_db)
+    record_memory_access("me", "counted_json", "deliberate", db_path=tmp_db)
+    record_memory_access("me", "counted_json", "deliberate", db_path=tmp_db)
+
+    args = argparse.Namespace(name="counted_json", workspace="me", json=True)
+    rc = _cmd_curated_show(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["injection_count"] == 1
+    assert payload["deliberate_count"] == 3  # 2 pre-seeded + 1 from this call
+    assert payload["last_injected_at"] is not None
+    assert payload["last_deliberate_at"] is not None
+
+
+def test_curated_show_never_accessed_shows_never_marker(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """injection_count is never bumped by `show` -- stays 0/(never)
+    regardless. deliberate_count/last_deliberate_at reflect THIS call's own
+    access: a fresh row's first body-rendering `show` shows count 1 and a
+    real timestamp, not the pre-call 0/(never)."""
+    from cli.memory import _cmd_curated_show
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "fresh", "project", "body")
+
+    args = argparse.Namespace(name="fresh", workspace="me", json=False)
+    rc = _cmd_curated_show(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "injection_count: 0" in out
+    assert "last_injected_at: (never)" in out
+    assert "deliberate_count: 1" in out
+    assert "last_deliberate_at: (never)" not in out
+    assert "last_deliberate_at: 2026" in out
+
+
+def test_curated_show_text_links_only_does_not_bump_deliberate(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """Text mode + --links replaces the body with the edge list, so it
+    renders no body and must not count as a deliberate read."""
+    from cli.memory import _cmd_curated_show
+    from gaia.store.writer import _connect
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "links_only", "project", "the actual body text")
+
+    args = argparse.Namespace(
+        name="links_only", workspace="me", json=False, links=True, history=False,
+    )
+    rc = _cmd_curated_show(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "the actual body text" not in out
+    assert "deliberate_count: 0" in out
+
+    con = _connect(tmp_db)
+    row = con.execute(
+        "SELECT deliberate_count, last_deliberate_at FROM memory "
+        "WHERE workspace='me' AND name='links_only'",
+    ).fetchone()
+    con.close()
+    assert row["deliberate_count"] == 0
+    assert row["last_deliberate_at"] is None
+
+
+def test_curated_show_text_history_only_does_not_bump_deliberate(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """Same property as --links, for --history."""
+    from cli.memory import _cmd_curated_show
+    from gaia.store.writer import _connect
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "history_only", "project", "the actual body text")
+
+    args = argparse.Namespace(
+        name="history_only", workspace="me", json=False, links=False, history=True,
+    )
+    rc = _cmd_curated_show(args)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "the actual body text" not in out
+    assert "deliberate_count: 0" in out
+
+    con = _connect(tmp_db)
+    row = con.execute(
+        "SELECT deliberate_count FROM memory "
+        "WHERE workspace='me' AND name='history_only'",
+    ).fetchone()
+    con.close()
+    assert row["deliberate_count"] == 0
+
+
+def test_curated_show_json_with_links_still_emits_body_and_bumps(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """The property is "renders the body", not "no --links/--history flag" --
+    JSON mode always includes body (dict(row)) even with --links, so it must
+    still count."""
+    from cli.memory import _cmd_curated_show
+    from gaia.store.writer import _connect
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "json_links", "project", "the actual body text")
+
+    args = argparse.Namespace(
+        name="json_links", workspace="me", json=True, links=True, history=False,
+    )
+    rc = _cmd_curated_show(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["body"] == "the actual body text"
+    assert payload["deliberate_count"] == 1
+
+    con = _connect(tmp_db)
+    row = con.execute(
+        "SELECT deliberate_count FROM memory "
+        "WHERE workspace='me' AND name='json_links'",
+    ).fetchone()
+    con.close()
+    assert row["deliberate_count"] == 1
+
+
+def test_list_sort_by_deliberate_is_desc_and_independent_of_injection(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    """P1: the two counters are never combined into one sort key -- sorting
+    by 'deliberate' must not be influenced by injection_count."""
+    from cli.memory import _cmd_list
+    from gaia.store.writer import record_memory_access
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "low_delib_high_inj", "project", "b")
+    _seed_curated(tmp_db, "high_delib_low_inj", "project", "b")
+    for _ in range(5):
+        record_memory_access(
+            "me", "low_delib_high_inj", "injection", db_path=tmp_db,
+        )
+    record_memory_access("me", "high_delib_low_inj", "deliberate", db_path=tmp_db)
+    record_memory_access("me", "high_delib_low_inj", "deliberate", db_path=tmp_db)
+
+    args = argparse.Namespace(
+        type=None, workspace="me", format="json", json=False,
+        cls=None, status=None, sort="deliberate", limit=None,
+    )
+    rc = _cmd_list(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [r["name"] for r in payload] == [
+        "high_delib_low_inj", "low_delib_high_inj",
+    ]
+
+
+def test_list_filters_by_class_and_status(tmp_db, tmp_path, monkeypatch, capsys):
+    """Resolves the carry_forward gap: list must be able to project AND
+    filter by class/status in aggregate, not just gaia memory show for one
+    row at a time."""
+    from cli.memory import _cmd_list
+    from gaia.store.writer import reclassify_memory
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "stale_thread", "project", "b")
+    _seed_curated(tmp_db, "plain_log", "project", "b")
+    reclassify_memory(
+        "me", "stale_thread", class_="thread", status="carry_forward",
+        db_path=tmp_db,
+    )
+
+    args = argparse.Namespace(
+        type=None, workspace="me", format="json", json=False,
+        cls="thread", status="carry_forward", sort="name", limit=None,
+    )
+    rc = _cmd_list(args)
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [r["name"] for r in payload] == ["stale_thread"]
+    assert payload[0]["class"] == "thread"
+    assert payload[0]["status"] == "carry_forward"
+
+
+def test_list_invalid_sort_errors_cleanly(tmp_db, tmp_path, monkeypatch, capsys):
+    from cli.memory import _cmd_list
+
+    monkeypatch.chdir(tmp_path)
+    _seed_curated(tmp_db, "p1", "project", "b")
+
+    args = argparse.Namespace(
+        type=None, workspace="me", format="json", json=False,
+        cls=None, status=None, sort="bogus", limit=None,
+    )
+    rc = _cmd_list(args)
+    assert rc == 1
+    assert "invalid memory list order" in capsys.readouterr().err.lower()
+
+
 def test_delete_curated_with_yes(tmp_db, tmp_path, monkeypatch, capsys):
     """scan-v2 SV3: the default `gaia memory delete` is a SOFT delete
     (tombstone). The row and its body survive; it just becomes invisible to

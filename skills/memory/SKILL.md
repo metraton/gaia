@@ -72,6 +72,17 @@ truth becomes stale; a durable reference to the canonical object is enough.
 6. **Verify the durable result.** Read back the affected rows, lifecycle, scope,
    and links. Report partial batch failures per operation.
 
+## Reading a row leaves a trace
+
+Two counters bump as a side effect of being read; two questions classify any
+surface, including one not built yet — who asked, and did the answer carry the
+BODY? **Injection**: an automatic block rendered it for someone who did not ask
+(digest, sections, kernel); rows trimmed out of the block do not count.
+**Deliberate**: someone asked and got the body (`show`, `query --json`,
+`--initiative` in JSON). **Neither**: a projection stood in (`search`, `list`,
+`show --links`, `--initiative` in text). Never rank them together: a blended
+number lets injection read as demand, and selection ignores both anyway.
+
 ## When curated memory earns attention
 
 - **Decision:** it was accepted, is not already captured canonically, and will

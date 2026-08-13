@@ -3344,13 +3344,18 @@ def get_memory(
     default so a soft-deleted memory reads as absent. Pass
     ``include_deleted=True`` to reach a tombstoned row (e.g. for an explicit
     hard-delete or a recovery inspection).
+
+    Projects the v48 telemetry pair (``injection_count``/``last_injected_at``,
+    ``deliberate_count``/``last_deliberate_at``) alongside the row's content.
+    Reading never bumps either counter; only ``record_memory_access`` does.
     """
     con = _connect(db_path)
     try:
         sql = (
             "SELECT workspace, name, type, description, body, project_ref, "
             "       initiative, origin_session_id, updated_at, deleted_at, "
-            "       audience "
+            "       audience, injection_count, deliberate_count, "
+            "       last_injected_at, last_deliberate_at "
             "FROM memory WHERE workspace = ? AND name = ?"
         )
         if not include_deleted:
@@ -3363,26 +3368,54 @@ def get_memory(
         con.close()
 
 
+_MEMORY_LIST_ORDERS: dict[str, str] = {
+    "name": "name",
+    "injection": "injection_count DESC, name",
+    "deliberate": "deliberate_count DESC, name",
+}
+
+
 def list_memory(
     workspace: str,
     *,
     type: str | None = None,
     audience: str | None = None,
+    class_: str | None = None,
+    status: str | None = None,
     include_deleted: bool = False,
+    order_by: str = "name",
     db_path: Path | None = None,
 ) -> list[dict]:
-    """List curated memory rows, optionally filtered by ``type``/``audience``.
+    """List curated memory rows, optionally filtered by ``type``/``audience``/
+    ``class_``/``status``.
 
     Tombstoned rows (``deleted_at`` non-NULL, scan-v2 SV3) are excluded by
     default; pass ``include_deleted=True`` to include them. ``audience``
     (v45) filters to rows tagged with exactly that value -- it must be one of
     :data:`VALID_MEMORY_AUDIENCES` when set; ``None`` (the default) applies no
-    audience filter.
+    audience filter. ``class_``/``status`` (memory.class/memory.status, same
+    trailing-underscore convention as ``reclassify_memory``) filter the same
+    way when set; ``None`` applies no filter on either.
+
+    Projects ``class``, ``status`` and the v48 telemetry pair
+    (``injection_count``/``last_injected_at``, ``deliberate_count``/
+    ``last_deliberate_at``) alongside the content columns.
+
+    ``order_by`` selects the sort key: ``"name"`` (the default) or one of
+    ``"injection"``/``"deliberate"``, each sorting DESC by its own counter
+    with ties broken by name. The two counters are never combined into one
+    key -- a single blended score would let automatic injections pass for
+    deliberate reads.
     """
     if audience is not None and audience not in VALID_MEMORY_AUDIENCES:
         raise ValueError(
             f"invalid memory audience {audience!r}; must be one of "
             f"{list(VALID_MEMORY_AUDIENCES)}"
+        )
+    if order_by not in _MEMORY_LIST_ORDERS:
+        raise ValueError(
+            f"invalid memory list order {order_by!r}; must be one of "
+            f"{list(_MEMORY_LIST_ORDERS)}"
         )
     con = _connect(db_path)
     try:
@@ -3394,11 +3427,20 @@ def list_memory(
         if audience is not None:
             where.append("audience = ?")
             params.append(audience)
+        if class_ is not None:
+            where.append("class = ?")
+            params.append(class_)
+        if status is not None:
+            where.append("status = ?")
+            params.append(status)
         if not include_deleted:
             where.append("deleted_at IS NULL")
         sql = (
-            "SELECT name, type, description, updated_at, audience "
-            "FROM memory WHERE " + " AND ".join(where) + " ORDER BY name"
+            "SELECT name, type, description, updated_at, audience, class, "
+            "       status, injection_count, deliberate_count, "
+            "       last_injected_at, last_deliberate_at "
+            "FROM memory WHERE " + " AND ".join(where) +
+            " ORDER BY " + _MEMORY_LIST_ORDERS[order_by]
         )
         rows = con.execute(sql, params).fetchall()
         return [dict(r) for r in rows]

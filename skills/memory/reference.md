@@ -155,6 +155,52 @@ this section holds the query mechanics behind it.
   three-section combination today; it is reachable only by an explicit
   manual invocation.
 
+## Access telemetry: exact columns and call sites
+
+The `memory` table carries two independent counter/timestamp pairs --
+`injection_count` / `last_injected_at` and `deliberate_count` /
+`last_deliberate_at` -- bumped by one shared helper,
+`gaia.store.writer.record_memory_access(workspace, name, kind, *,
+db_path=None)`; `kind` is exactly `"injection"` or `"deliberate"`, anything
+else raises `ValueError`. The UPDATE touches only the counter and its
+timestamp, never `updated_at` or `body`, so it fires no `memory_history`
+row and never reorders the digest, which still sorts by `updated_at`
+alone. It is best-effort: every failure is swallowed and reported as
+`False`, so a locked or unreachable DB never breaks the read it instruments.
+
+`SKILL.md`'s "Reading a row leaves a trace" carries the property that decides
+which kind a surface is; these are the places code applies it today, and a new
+surface is classified by that property rather than added to this list:
+
+| Call site | Symbol | Kind |
+|---|---|---|
+| `get-relevant` (no flag), `--sections=`, `--types=` | `_bump_injection_telemetry` (`bin/cli/memory.py`) | injection |
+| Subagent kernel's "How the user works" block | `_record_kernel_injection_telemetry` (`hooks/modules/context/kernel_builder.py`) | injection |
+| `memory show <slug>`, whenever it emits the body | `_cmd_curated_show` (`bin/cli/memory.py`) | deliberate |
+| `get-relevant --initiative=<key> --json`, which projects `body` | `_render_project_mode` (`bin/cli/memory.py`) | deliberate |
+| `query --json` over the memory surface, which dumps `raw` including `body` | `_bump_deliberate_memory_telemetry` (`bin/cli/query.py`) | deliberate |
+
+The two body-less shapes of those same commands write nothing: `memory show
+--links`/`--history` in text replaces the body with the edge or version list,
+and `get-relevant --initiative` in text prints name plus collapsed
+description. So does every pure projection -- `search`, `list`, `query` in
+table form, `--count`, `--group-by`.
+
+Two surfaces read the counters back. `gaia memory show <slug>` prints each
+pair on its own line (`injection_count`/`last_injected_at`,
+`deliberate_count`/`last_deliberate_at`). `gaia memory list` prints an `INJ`
+and a `DELIB` column and takes `--sort=injection` or `--sort=deliberate`
+(`_cmd_list` -> `gaia.store.writer.list_memory`, `_MEMORY_LIST_ORDERS`),
+sorting DESC by the named counter with ties broken by name; `--sort=name`
+stays the default. Neither surface ever combines the two into one number or
+one sort key -- the same never-merge rule as the write side.
+
+Reading them back is their only consumer. Automatic SessionStart selection --
+`get-relevant`'s digest, `--sections=`, `--types=`, and the kernel's "How
+the user works" block -- still ignores both counters and orders by
+`updated_at` alone, unchanged. Wiring injection SELECTION itself to
+either counter remains a separate, undecided step.
+
 ## Promoted defect: the `gaia_system` initiative shape
 
 `episode_anomalies` is the raw defect floor. It is written unrequested at

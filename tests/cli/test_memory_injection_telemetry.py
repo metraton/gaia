@@ -381,3 +381,25 @@ class TestInitiativeModeStaysDeliberateOnly:
         assert rc == 0
         assert after["injection_count"] == before["injection_count"] == 0
         assert after["deliberate_count"] == before["deliberate_count"] + 1
+
+    def test_initiative_text_mode_counts_as_neither(self, tmp_db, capsys):
+        """Text mode renders `- name: description`, never the body, so it is
+        a projection and must move neither counter -- the same property that
+        keeps `show --links` from counting."""
+        _insert(tmp_db, "text_only", initiative="demoproj",
+                class_="thread", status="open", body="the actual body text")
+
+        args = SimpleNamespace(
+            workspace=_WORKSPACE, limit=8, max_chars=1500, types=None,
+            sections=None, initiative="demoproj", json=False,
+            func=memory_mod._cmd_get_relevant,
+        )
+        rc = memory_mod._cmd_get_relevant(args)
+        out = capsys.readouterr().out
+        after = _row(tmp_db, "text_only")
+
+        assert rc == 0
+        assert "the actual body text" not in out
+        assert after["injection_count"] == 0
+        assert after["deliberate_count"] == 0
+        assert after["last_deliberate_at"] is None
