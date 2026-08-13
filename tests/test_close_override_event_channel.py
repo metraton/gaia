@@ -697,27 +697,34 @@ def test_the_channels_own_sources_declare_no_ddl():
 def test_the_expected_schema_version_matches_the_channels_authored_baseline():
     # This channel was authored against v37 and needed no migration of its
     # own (asserted structurally above, against the live schema -- not this
-    # number). v38 (plan_task_id index), v39 (cut_reason column), v40
-    # (harness_agent_id column), and v41-v47 landed afterward for unrelated
-    # work, and are the actual current floor -- tracked dynamically by
+    # number). v38 (plan_task_id index) through v47 landed afterward for
+    # unrelated work; v48 (injection_count/deliberate_count/last_injected_at/
+    # last_deliberate_at on `memory`, scripts/migrations/v47_to_v48.sql) is
+    # the latest reviewed addition -- it touches only the `memory` table, not
+    # `harness_events`, so this channel again needed no migration of its own.
+    # v41-v48 are the actual current floor -- tracked dynamically by
     # tests/cli/test_schema_version_lockstep.py, which is the real drift
     # guard. This assertion only pins the number this test module itself
-    # depends on: it must be bumped in lockstep with any future migration,
-    # the same as every other caller of EXPECTED_SCHEMA_VERSION.
+    # depends on: it is a deliberate, reviewed bump, not a mechanical one --
+    # every future migration must be checked against `harness_events` before
+    # this number moves again, the same as every other caller of
+    # EXPECTED_SCHEMA_VERSION.
     doctor_py = (_REPO_ROOT / "bin" / "cli" / "doctor.py").read_text(encoding="utf-8")
     match = re.search(r"^EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)", doctor_py,
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 47
+    assert int(match.group(1)) == 48
 
 
 def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     # Same baseline as the test above, same reason it can go stale: v38
-    # through v47 are real, unrelated migrations, not drift in this channel.
-    # The actual lockstep invariant (EXPECTED_SCHEMA_VERSION == migration
-    # floor) lives in tests/cli/test_schema_version_lockstep.py -- this only
-    # pins what this module itself was written against.
+    # through v48 are real, reviewed-and-unrelated migrations, not drift in
+    # this channel. The actual lockstep invariant (EXPECTED_SCHEMA_VERSION ==
+    # migration floor) lives in tests/cli/test_schema_version_lockstep.py --
+    # this only pins what this module itself was written against, and it must
+    # move again only after the next migration is checked against
+    # `harness_events`.
     migrations = sorted(
         int(m.group(1))
         for path in (_REPO_ROOT / "scripts" / "migrations").glob("v*_to_v*.sql")
@@ -725,4 +732,4 @@ def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     )
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 47
+    assert max(migrations) == 48
