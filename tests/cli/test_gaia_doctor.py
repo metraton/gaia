@@ -906,15 +906,6 @@ class TestSummaryLineFormat:
     (brew/npm doctor pattern). Tests the actionable presentation contract."""
 
     def test_summary_counts_present(self, healthy_project, monkeypatch, capsys):
-        # Same isolation pattern as test_json_healthy_status -- the memory
-        # scoring import flakes under pytest sys.path pollution.
-        import types
-        fake_tm = types.ModuleType("tools.memory")
-        fake_scoring = types.ModuleType("tools.memory.scoring")
-        fake_tm.scoring = fake_scoring
-        monkeypatch.setitem(sys.modules, "tools.memory", fake_tm)
-        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
-
         args = SimpleNamespace(json=False, fix=False, workspace=str(healthy_project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
 
@@ -973,7 +964,7 @@ class TestCmdDoctorJson:
         assert "status" in data
         assert "checks" in data
         assert isinstance(data["checks"], list)
-        # 26 = 11 base + 3 memory v2 + 4 Pass 4 (package-integrity,
+        # 28 = 11 base + 2 memory v2 + 4 Pass 4 (package-integrity,
         # last-install-error, workspace-initialized, schema-version) +
         # 1 schema-DDL-consistency added by the migration framework rewrite +
         # 1 schema-v12-tables added by Wave 3 approval-model-redesign (M1) +
@@ -994,7 +985,7 @@ class TestCmdDoctorJson:
         # 1 global-cli-alignment (order 58 -- PATH gaia vs workspace-expected
         #   install; catches a stale global CLI shadowing the workspace's own
         #   gaia without warning).
-        assert len(data["checks"]) == 29
+        assert len(data["checks"]) == 28
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1042,18 +1033,6 @@ class TestCmdDoctorJson:
             con.close()
 
         monkeypatch.setenv("GAIA_DATA_DIR", str(db_dir))
-
-        # Isolate from sys.path pollution: other tests (e.g. layer1_prompt_regression)
-        # insert tests/ into sys.path, which makes 'import tools.memory.scoring'
-        # resolve to tests/tools/ (a package without memory/), yielding ImportError
-        # and a spurious warning from check_memory_scoring. Inject fake modules so
-        # the check resolves to pass without hitting the real import.
-        import types
-        fake_tm = types.ModuleType("tools.memory")
-        fake_scoring = types.ModuleType("tools.memory.scoring")
-        fake_tm.scoring = fake_scoring
-        monkeypatch.setitem(sys.modules, "tools.memory", fake_tm)
-        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
 
         args = SimpleNamespace(json=True, fix=False, workspace=str(healthy_project), subcommand="doctor")
         doctor_mod.cmd_doctor(args)
@@ -1340,7 +1319,7 @@ class TestDeriveWorkspace:
 
 
 # ---------------------------------------------------------------------------
-# Tests: T3 memory checks (check_memory_fts5_db, check_memory_fts5_count, check_memory_scoring)
+# Tests: T3 memory checks (check_memory_fts5_db, check_memory_fts5_count)
 # ---------------------------------------------------------------------------
 
 class TestCheckMemoryFts5Db:
@@ -1449,39 +1428,6 @@ class TestCheckMemoryFts5Count:
         r = doctor_mod.check_memory_fts5_count(tmp_path)
         assert r["severity"] == "warning", f"Expected warning but got {r['severity']}: {r['detail']}"
         assert "5/10" in r["detail"]
-
-
-class TestCheckMemoryScoring:
-    """Test check_memory_scoring."""
-
-    def test_scoring_importable_returns_pass(self, monkeypatch):
-        """Importable scoring module should return pass."""
-        import types
-        fake_scoring = types.ModuleType("tools.memory.scoring")
-        monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
-        r = doctor_mod.check_memory_scoring(REPO_ROOT)
-        assert r["severity"] == "pass"
-
-    def test_scoring_not_importable_returns_warning(self, monkeypatch):
-        """ImportError for scoring should return warning."""
-        # Remove from sys.modules if present, then mock the import to fail
-        monkeypatch.delitem(sys.modules, "tools.memory.scoring", raising=False)
-
-        original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
-
-        def _mock_import(name, *args, **kwargs):
-            if name == "tools.memory.scoring" or (name == "tools.memory" and args and "scoring" in str(args)):
-                raise ImportError("mocked: scoring not available")
-            return original_import(name, *args, **kwargs)
-
-        # Use monkeypatch on builtins to block the import
-        import builtins
-        monkeypatch.setattr(builtins, "__import__", _mock_import)
-        # Remove from sys.modules so it hits the import statement
-        monkeypatch.delitem(sys.modules, "tools.memory.scoring", raising=False)
-
-        r = doctor_mod.check_memory_scoring(REPO_ROOT)
-        assert r["severity"] == "warning"
 
 
 # ---------------------------------------------------------------------------

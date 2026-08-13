@@ -261,7 +261,7 @@ class TestCmdStatusJson:
 # ---------------------------------------------------------------------------
 
 class TestMemoryV2Stats:
-    """Test enhanced memory line with indexed count and avg_score."""
+    """Test enhanced memory line with indexed count."""
 
     def test_status_json_includes_indexed(self, project_dir, monkeypatch, capsys):
         """JSON output must include 'indexed' key with predictable count.
@@ -270,7 +270,7 @@ class TestMemoryV2Stats:
         Patch _get_memory_v2_stats directly to return a controlled value so
         the test is independent of the live DB state.
         """
-        fake_stats = {"indexed": 42, "avg_score": None}
+        fake_stats = {"indexed": 42}
 
         with patch.object(status_mod, "_find_project_root", return_value=project_dir):
             with patch.object(status_mod, "_get_memory_v2_stats", return_value=fake_stats):
@@ -287,7 +287,7 @@ class TestMemoryV2Stats:
 
         T6 migration: patch _get_memory_v2_stats for predictable output.
         """
-        fake_stats = {"indexed": 7, "avg_score": 0.75}
+        fake_stats = {"indexed": 7}
 
         with patch.object(status_mod, "_find_project_root", return_value=project_dir):
             with patch.object(status_mod, "_get_memory_v2_stats", return_value=fake_stats):
@@ -313,7 +313,6 @@ class TestMemoryV2Stats:
             stats = status_mod._get_memory_v2_stats(project_dir)
 
         assert stats["indexed"] == 0
-        assert stats["avg_score"] is None
 
 
 # ---------------------------------------------------------------------------

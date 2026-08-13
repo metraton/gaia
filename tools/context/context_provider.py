@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
-# Ensure the package root is on sys.path so that `tools.memory.scoring` and
-# `gaia.store.reader` resolve when this module is imported in-process by hooks
+# Ensure the package root is on sys.path so that `gaia.store.reader` resolves
+# when this module is imported in-process by hooks
 # (the dispatch-kernel path in hooks/adapters/claude_code.py) or invoked via
 # the CLI entry point.
 # Pattern: same as hooks/pre_tool_use.py line 22.
@@ -459,19 +459,6 @@ def get_context_update_contract(
 # EPISODIC MEMORY
 # ============================================================================
 
-try:
-    from tools.memory.scoring import rank_episodes as _rank_episodes
-    _HAS_SCORING = True
-except ImportError:
-    try:
-        import importlib, sys as _sys
-        _scoring = importlib.import_module("tools.memory.scoring")
-        _rank_episodes = _scoring.rank_episodes
-        _HAS_SCORING = True
-    except ImportError:
-        _rank_episodes = None
-        _HAS_SCORING = False
-
 def _estimate_tokens(text: str) -> int:
     """Rough token estimate: 1 token ≈ 4 characters."""
     return len(text) // 4
@@ -484,9 +471,7 @@ def _build_memory_index_table(index_episodes: List[Dict[str, Any]]) -> str:
     for i, ep in enumerate(index_episodes, 1):
         title = ep.get("title", "")[:40]
         ep_type = ep.get("type", "unknown")
-        score = ep.get("relevance_score")
-        if score is None:
-            score = ep.get("_score", 0.0)
+        score = ep.get("_score", 0.0)
         # Calculate age from timestamp field
         ts = ep.get("timestamp", "")
         try:
@@ -502,8 +487,8 @@ def _build_memory_index_table(index_episodes: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _fallback_keyword_score(episode: Dict[str, Any], user_task: str) -> float:
-    """Keyword-based relevance scoring fallback when scoring module is unavailable."""
+def _keyword_relevance_score(episode: Dict[str, Any], user_task: str) -> float:
+    """Score an episode's relevance to *user_task* by tag and title overlap."""
     task_lower = user_task.lower()
     task_words = set(task_lower.split())
     score = 0.0
@@ -514,7 +499,7 @@ def _fallback_keyword_score(episode: Dict[str, Any], user_task: str) -> float:
     common_words = task_words & title_words
     if common_words:
         score += 0.3 * (len(common_words) / max(len(title_words), 1))
-    return score * episode.get("relevance_score", 0.5)
+    return score
 
 
 def load_relevant_episodes(
@@ -534,8 +519,8 @@ def load_relevant_episodes(
     (~200 tokens), returned under the ``memory_index`` key.
 
     Layer 2 (selective): the top-N episodes ranked by
-    ``tools.memory.scoring.rank_episodes()``, included only within the
-    remaining token budget.
+    :func:`_keyword_relevance_score`, included only within the remaining
+    token budget.
 
     Parameters
     ----------
@@ -607,15 +592,12 @@ def load_relevant_episodes(
         layer1_tokens = _estimate_tokens(layer1_text)
         remaining_budget = max_tokens - layer1_tokens
 
-        # --- Rank by keyword relevance x memory strength (decay) ---
-        if _HAS_SCORING and _rank_episodes is not None:
-            ranked = _rank_episodes(all_episodes, user_task)
-        else:
-            ranked = sorted(
-                [dict(ep, _score=_fallback_keyword_score(ep, user_task)) for ep in all_episodes],
-                key=lambda x: x["_score"],
-                reverse=True,
-            )
+        # --- Rank by keyword relevance ---
+        ranked = sorted(
+            [dict(ep, _score=_keyword_relevance_score(ep, user_task)) for ep in all_episodes],
+            key=lambda x: x["_score"],
+            reverse=True,
+        )
 
         # Prefer episodes with positive relevance; if scoring finds none
         # (matched only on tags/enriched text), fall back to FTS rank order so

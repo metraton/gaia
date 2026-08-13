@@ -26,7 +26,6 @@ Checks (in order):
  110. memory-store       - episodes table present in gaia.db (DB-canonical)
  120. memory_fts5_db     - episodes_fts present in gaia.db
  130. memory_fts5_count  - FTS5 index complete
- 140. memory_scoring     - scoring module importable
  145. hooks-importable   - every hooks/ module imports on this platform (noisy fail)
  150. hooks-active-fresh - running session's hooks == currently wired build
 
@@ -2041,26 +2040,6 @@ def check_memory_fts5_count(project_root: Path) -> dict:
             "Run: gaia doctor --fix",
         )
     return _result("memory_fts5_count", "pass", f"{indexed}/{total} episodes indexed ({pct:.0%})")
-
-
-@register_check("memory_scoring", order=140)
-def check_memory_scoring(project_root: Path) -> dict:
-    """Check that tools.memory.scoring is importable (scoring module available)."""
-    try:
-        import sys as _sys
-        pkg_root = str(_package_root())
-        if pkg_root not in _sys.path:
-            _sys.path.insert(0, pkg_root)
-        import tools.memory.scoring  # noqa: F401, PLC0415
-        return _result("memory_scoring", "pass", "Scoring module importable")
-    except ImportError as exc:
-        return _result(
-            "memory_scoring",
-            "warning",
-            f"Scoring module unavailable: {exc} (scoring disabled)",
-        )
-    except Exception as exc:
-        return _result("memory_scoring", "warning", f"Scoring module error: {exc}")
 
 
 @register_check("hooks-importable", order=145)

@@ -142,84 +142,35 @@ def _get_context_last_updated(project_root: Path):
 
 
 def _get_memory_v2_stats(project_root: Path) -> dict:
-    """Get Memory v2 stats: indexed count and avg score from gaia.db.
+    """Get Memory v2 stats: the FTS5-indexed episode count from gaia.db.
 
-    T6 migration: reads episodes_fts count and episode timestamps from gaia.db.
+    T6 migration: reads the episodes_fts count from gaia.db.
     No longer reads from episodic-memory/index.json.
-    Returns {"indexed": 0, "avg_score": None} on any failure.
+    Returns {"indexed": 0} on any failure.
     """
     import sys as _sys
     _PLUGIN_ROOT = Path(__file__).resolve().parent.parent.parent
     if str(_PLUGIN_ROOT) not in _sys.path:
         _sys.path.insert(0, str(_PLUGIN_ROOT))
 
-    base = {"indexed": 0, "avg_score": None}
-
-    try:
-        import tools.memory.scoring as scoring  # noqa: PLC0415
-    except ImportError:
-        scoring = None
+    base = {"indexed": 0}
 
     try:
         from gaia.store.writer import _connect as _store_connect
-        from gaia.project import current as _project_current
     except ImportError:
         return base
 
     try:
-        ws = _project_current(cwd=project_root)
-    except Exception:
-        ws = None
-
-    try:
         con = _store_connect()
         try:
-            # FTS5 indexed count from episodes_fts
             row = con.execute("SELECT COUNT(*) FROM episodes_fts").fetchone()
             indexed = row[0] if row else 0
-
-            # avg_score from a sample of episodes timestamps
-            avg_score = None
-            if scoring is not None:
-                if ws:
-                    ep_rows = con.execute(
-                        "SELECT timestamp FROM episodes WHERE workspace = ? "
-                        "ORDER BY timestamp DESC LIMIT 50",
-                        (ws,),
-                    ).fetchall()
-                else:
-                    ep_rows = con.execute(
-                        "SELECT timestamp FROM episodes ORDER BY timestamp DESC LIMIT 50"
-                    ).fetchall()
-                if ep_rows:
-                    now = __import__("datetime").datetime.now(
-                        __import__("datetime").timezone.utc
-                    )
-                    scores = []
-                    for ep_row in ep_rows:
-                        ts = ep_row[0] if ep_row else None
-                        if ts:
-                            try:
-                                dt = __import__("datetime").datetime.fromisoformat(
-                                    ts.replace("Z", "+00:00")
-                                )
-                                days_old = max(0.0, (now - dt).total_seconds() / 86400)
-                            except Exception:
-                                days_old = 0.0
-                        else:
-                            days_old = 0.0
-                        try:
-                            scores.append(scoring.score_memory(days_old, 0))
-                        except Exception:
-                            pass
-                    if scores:
-                        avg_score = sum(scores) / len(scores)
         finally:
             con.close()
     except Exception:
         return base
 
-    return {"indexed": indexed, "avg_score": avg_score}
+    return {"indexed": indexed}
 
 
 def _get_contract_stats(project_root: Path):
@@ -285,7 +236,6 @@ def _collect_status(project_root: Path) -> dict:
         "context_updated": context_updated,
         "contract_stats": contract_stats,
         "indexed": memory_v2["indexed"],
-        "avg_score": memory_v2["avg_score"],
     }
 
 
@@ -331,11 +281,7 @@ def _print_human(status: dict) -> None:
     ep_str = f"{ep} episodes" if ep else "no episodic-memory"
     ag_str = f"{ag} agent sessions" if ag > 0 else "no agent sessions"
     indexed = status.get("indexed", 0)
-    avg_score = status.get("avg_score")
-    if avg_score is not None:
-        print(f"  Memory:       {ep_str}  |  {ag_str}  |  {indexed} indexed  |  avg score {avg_score:.2f}")
-    else:
-        print(f"  Memory:       {ep_str}  |  {ag_str}  |  {indexed} indexed")
+    print(f"  Memory:       {ep_str}  |  {ag_str}  |  {indexed} indexed")
 
     # Contracts
     cs = status["contract_stats"]

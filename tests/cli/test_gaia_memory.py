@@ -32,7 +32,7 @@ import cli.memory as memory_mod
 # ---------------------------------------------------------------------------
 
 def _make_fake_modules(monkeypatch, *, search_results=None, episode=None,
-                       count=0, conflicts=None, score=0.5):
+                       count=0, conflicts=None):
     """Inject fake tools.memory.* modules via monkeypatch.
 
     ``search_results``/``count`` are accepted for call-site compatibility but
@@ -48,12 +48,6 @@ def _make_fake_modules(monkeypatch, *, search_results=None, episode=None,
     tools_memory_mod = types.ModuleType("tools.memory")
     monkeypatch.setitem(sys.modules, "tools", tools_mod)
     monkeypatch.setitem(sys.modules, "tools.memory", tools_memory_mod)
-
-    # --- scoring ---
-    fake_scoring = types.ModuleType("tools.memory.scoring")
-    fake_scoring.score_memory = lambda days_old, retrieval_count, **kw: score
-    monkeypatch.setitem(sys.modules, "tools.memory.scoring", fake_scoring)
-    tools_memory_mod.scoring = fake_scoring
 
     # --- episodic ---
     fake_episodic = types.ModuleType("tools.memory.episodic")
@@ -74,7 +68,7 @@ def _make_fake_modules(monkeypatch, *, search_results=None, episode=None,
     monkeypatch.setitem(sys.modules, "tools.memory.conflict_detector", fake_cd)
     tools_memory_mod.conflict_detector = fake_cd
 
-    return fake_scoring, fake_episodic, fake_cd
+    return fake_episodic, fake_cd
 
 
 # ---------------------------------------------------------------------------
@@ -336,8 +330,8 @@ class TestCmdStats:
     """_cmd_stats via cmd_memory dispatch."""
 
     def test_stats_returns_required_keys(self, memory_project, monkeypatch, capsys):
-        """Stats output must contain total_episodes, indexed, avg_score, conflicts, warnings."""
-        _make_fake_modules(monkeypatch, count=2, conflicts=[], score=0.4)
+        """Stats output must contain total_episodes, indexed, conflicts, warnings."""
+        _make_fake_modules(monkeypatch, count=2, conflicts=[])
         _patch_db_stats(monkeypatch, episode_count=2, fts_count=2)
 
         monkeypatch.chdir(memory_project)
@@ -352,7 +346,6 @@ class TestCmdStats:
         data = json.loads(capsys.readouterr().out)
         assert "total_episodes" in data
         assert "indexed" in data
-        assert "avg_score" in data
         assert "conflicts" in data
         assert "warnings" in data
         # Healthy path: no warnings emitted
@@ -364,7 +357,7 @@ class TestCmdStats:
         T6 migration: sentinel now comes from _count_episodes_fts_from_db()
         returning -1 when episodes_fts is not reachable in gaia.db.
         """
-        _make_fake_modules(monkeypatch, count=0, conflicts=[], score=0.4)
+        _make_fake_modules(monkeypatch, count=0, conflicts=[])
         _patch_db_stats(monkeypatch, episode_count=0, fts_count=-1)
 
         monkeypatch.chdir(memory_project)
@@ -387,7 +380,7 @@ class TestCmdStats:
 
     def test_stats_human_output_shows_unknown_on_sentinel(self, memory_project, monkeypatch, capsys):
         """Human-readable stats prints 'unknown' (not '-1' or '0') when sentinel returned."""
-        _make_fake_modules(monkeypatch, count=0, conflicts=[], score=0.4)
+        _make_fake_modules(monkeypatch, count=0, conflicts=[])
         _patch_db_stats(monkeypatch, episode_count=0, fts_count=-1)
 
         monkeypatch.chdir(memory_project)
@@ -410,7 +403,7 @@ class TestCmdStats:
         T6 migration: now reads from DB via _count_episodes_from_db() instead of index.json.
         The fixture still creates index.json (for pre-T6 compat tests) but stats ignores it.
         """
-        _make_fake_modules(monkeypatch, count=2, score=0.5)
+        _make_fake_modules(monkeypatch, count=2)
         # T6: patch the DB functions -- index.json is ignored by _cmd_stats
         _patch_db_stats(monkeypatch, episode_count=2, fts_count=2)
 
@@ -429,7 +422,7 @@ class TestCmdStats:
         T6 migration: indexed count now comes from _count_episodes_fts_from_db()
         instead of search_store.count() (legacy FTS5 file).
         """
-        _make_fake_modules(monkeypatch, count=0, score=0.5)
+        _make_fake_modules(monkeypatch, count=0)
         _patch_db_stats(monkeypatch, episode_count=7, fts_count=7)
 
         monkeypatch.chdir(memory_project)
@@ -443,7 +436,7 @@ class TestCmdStats:
 
     def test_stats_human_output_no_crash(self, memory_project, monkeypatch, capsys):
         """Human mode should print stats table without crashing."""
-        _make_fake_modules(monkeypatch, count=2, score=0.3)
+        _make_fake_modules(monkeypatch, count=2)
         _patch_db_stats(monkeypatch, episode_count=2, fts_count=2)
 
         monkeypatch.chdir(memory_project)
@@ -461,7 +454,7 @@ class TestCmdStats:
         Verifies that no filesystem read of the legacy directory happens.
         The DB functions are patched; no .claude/ dir is created.
         """
-        _make_fake_modules(monkeypatch, count=0, score=0.5)
+        _make_fake_modules(monkeypatch, count=0)
         _patch_db_stats(monkeypatch, episode_count=5, fts_count=5)
 
         monkeypatch.chdir(tmp_path)
@@ -484,18 +477,16 @@ class TestCmdShow:
     """_cmd_show via cmd_memory dispatch."""
 
     def test_show_found_returns_all_keys(self, monkeypatch, capsys):
-        """Existing episode_id → JSON with id/title/content/score/tags/retrieval_count/age_days."""
+        """Existing episode_id → JSON with id/title/content/tags/age_days."""
         _make_fake_modules(
             monkeypatch,
             episode={
                 "episode_id": "ep_001",
                 "title": "Test Episode",
                 "timestamp": "2026-04-10T08:00:00Z",
-                "retrieval_count": 3,
                 "tags": ["infra", "dev"],
                 "enriched_prompt": "Full content here.",
             },
-            score=0.55,
         )
 
         args = SimpleNamespace(
@@ -510,9 +501,7 @@ class TestCmdShow:
         assert data["id"] == "ep_001"
         assert data["title"] == "Test Episode"
         assert data["content"] == "Full content here."
-        assert isinstance(data["score"], float)
         assert isinstance(data["tags"], list)
-        assert isinstance(data["retrieval_count"], int)
         assert isinstance(data["age_days"], float)
 
     def test_show_not_found_returns_exit_1(self, monkeypatch, capsys):
@@ -554,11 +543,9 @@ class TestCmdShow:
                 "episode_id": "ep_001",
                 "title": "Human Title",
                 "timestamp": "2026-04-12T00:00:00Z",
-                "retrieval_count": 0,
                 "tags": [],
                 "enriched_prompt": "Some content.",
             },
-            score=0.3,
         )
 
         args = SimpleNamespace(json=False, episode_id="ep_001", func=memory_mod._cmd_show)
@@ -697,7 +684,7 @@ class TestJsonFlag:
         em_dir = tmp_path / ".claude" / "project-context" / "episodic-memory"
         em_dir.mkdir(parents=True)
         (em_dir / "index.json").write_text(json.dumps({"episodes": []}))
-        _make_fake_modules(monkeypatch, count=0, score=0.0)
+        _make_fake_modules(monkeypatch, count=0)
         monkeypatch.chdir(tmp_path)
         args = SimpleNamespace(json=True, func=memory_mod._cmd_stats)
         memory_mod.cmd_memory(args)

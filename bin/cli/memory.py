@@ -7,9 +7,9 @@ on curated memory rows:
 
   search <query> [--scope=memory|episodes|both] [--limit N] [--json]
                                           FTS5 search with hybrid scoring
-  stats [--json]                         Episode count, index count, scores, conflicts
+  stats [--json]                         Episode count, index count, conflicts
   show <name> [--json]                  Curated memory row by (project, name)
-  episode-show <episode_id> [--json]    Full episode with metadata and score
+  episode-show <episode_id> [--json]    Full episode with metadata
   list [--type=...] [--audience=...] [--workspace=<ws>]
                                           Enumerate curated memory rows
   get-relevant [--workspace=<ws>]       Compact SessionStart injection block
@@ -154,14 +154,6 @@ def _import_episodic():
     try:
         from tools.memory.episodic import EpisodicMemory
         return EpisodicMemory
-    except ImportError:
-        return None
-
-
-def _import_scoring():
-    try:
-        from tools.memory.scoring import score_memory
-        return score_memory
     except ImportError:
         return None
 
@@ -406,7 +398,6 @@ def _cmd_stats(args) -> int:
     """
     as_json = getattr(args, "json", False)
 
-    score_memory = _import_scoring()
     detect_conflicts = _import_conflict_detector()
 
     warnings: list[str] = []
@@ -421,21 +412,6 @@ def _cmd_stats(args) -> int:
             "episodes_fts table not reachable in gaia.db — DB may be missing or corrupt. "
             "Run: gaia doctor"
         )
-
-    # avg_score from a sample of episodes in DB
-    avg_score = 0.0
-    if score_memory is not None and total_episodes > 0:
-        episodes_sample = _query_episodes_from_db()[:100]
-        scores = []
-        for ep in episodes_sample:
-            try:
-                days = _days_old(ep.get("timestamp", ""))
-                rc = int(ep.get("retrieval_count", 0) or 0)
-                scores.append(score_memory(days_old=days, retrieval_count=rc))
-            except Exception:
-                pass
-        if scores:
-            avg_score = round(sum(scores) / len(scores), 4)
 
     # Conflict count (curated memory conflicts -- unrelated to episodes)
     project_root = _find_project_root()
@@ -454,7 +430,6 @@ def _cmd_stats(args) -> int:
     output = {
         "total_episodes": total_episodes,
         "indexed": indexed,
-        "avg_score": avg_score,
         "conflicts": conflicts_count,
         "warnings": warnings,
     }
@@ -466,7 +441,6 @@ def _cmd_stats(args) -> int:
         print(f"\n  Memory Stats")
         print(f"  Total episodes : {total_episodes}")
         print(f"  FTS5 indexed   : {indexed_display}")
-        print(f"  Avg score      : {avg_score:.4f}")
         print(f"  Conflicts      : {conflicts_count}")
         for w in warnings:
             print(f"  WARN: {w}", file=sys.stderr)
@@ -516,8 +490,6 @@ def _cmd_episode_show(args) -> int:
     as_json = getattr(args, "json", False)
     episode_id = args.episode_id
 
-    score_memory = _import_scoring()
-
     episode = _get_episode_from_db(episode_id)
 
     if episode is None:
@@ -534,16 +506,7 @@ def _cmd_episode_show(args) -> int:
     if episode is None:
         return _err(f"Episode not found: {episode_id}", as_json)
 
-    # Compute score
     days = _days_old(episode.get("timestamp", ""))
-    retrieval_count = int(episode.get("retrieval_count", 0) or 0)
-    if score_memory is not None:
-        try:
-            score = round(score_memory(days_old=days, retrieval_count=retrieval_count), 4)
-        except Exception:
-            score = 0.0
-    else:
-        score = 0.0
 
     # Parse tags from JSON string if stored as JSON
     raw_tags = episode.get("tags") or []
@@ -557,9 +520,7 @@ def _cmd_episode_show(args) -> int:
         "id": episode.get("episode_id") or episode.get("id") or episode_id,
         "title": episode.get("title") or "",
         "content": episode.get("enriched_prompt") or episode.get("prompt") or "",
-        "score": score,
         "tags": raw_tags,
-        "retrieval_count": retrieval_count,
         "age_days": round(days, 2),
     }
 
@@ -568,10 +529,8 @@ def _cmd_episode_show(args) -> int:
     else:
         print(f"\n  Episode: {output['id']}")
         print(f"  Title  : {output['title']}")
-        print(f"  Score  : {output['score']}")
         print(f"  Age    : {output['age_days']} days")
         print(f"  Tags   : {', '.join(output['tags']) if output['tags'] else 'none'}")
-        print(f"  Retrievals: {output['retrieval_count']}")
         print(f"\n  Content:\n  {output['content'][:500]}\n")
 
     return 0
@@ -2953,7 +2912,7 @@ def register(subparsers):
     stats_p = actions.add_parser(
         "stats",
         help="Memory diagnostics",
-        description="Episode count, FTS5 index size, avg score, conflict count.",
+        description="Episode count, FTS5 index size, conflict count.",
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia memory stats --json\n",
     )
@@ -2992,7 +2951,7 @@ def register(subparsers):
     # -- episode-show -------------------------------------------------------
     episode_show_p = actions.add_parser(
         "episode-show",
-        help="Print a full episode + score",
+        help="Print a full episode",
         description="Inspect an episodic memory entry by episode_id.",
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia memory episode-show ep_20260420_152233_abc\n",
