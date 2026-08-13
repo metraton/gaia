@@ -32,7 +32,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest: E
 | `security/` | `blocked_commands`, `mutative_verbs`, `tiers`, `command_semantics`, `approval_grants`, `approval_scopes`, `approval_cleanup`, `approval_constants`, `approval_messages`, `blocked_message_formatter`, `prompt_validator` | T3 gate, blocked commands, approval nonce lifecycle |
 | `audit/` | `logger`, `metrics`, `event_detector`, `workflow_auditor`, `workflow_recorder` | Structured logging, metrics collection, workflow audit trail |
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
-| `context/` | `context_injector`, `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Project-context injection, freshness checks, contract loading |
+| `context/` | `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Context freshness checks, contract loading, context writing |
 | `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | agent_contract_handoff validation, skill verification, transcript analysis |
 | `session/` | `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders; `pending_scanner` is retired (cross-session pending surfacing removed -- formatting helpers only remain) |
 | `orchestrator/` | `delegate_mode` | Delegation mode detection |
@@ -56,14 +56,13 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest: E
 | gaia-planner | `agents/gaia-planner.md` | Feature planning, briefs, and task decomposition | `acceptEdits` |
 | gaia-verifier | `agents/gaia-verifier.md` | Clean-context verification: consumes `task_gates`, deterministic oracle for command/code, semantic rubric for semantic/self_review, promotes `NEEDS_VERIFICATION` to `COMPLETE` | (not set) |
 
-### Skills (21 directories)
+### Skills
 
 | Skill | Type | Injection |
 |-------|------|-----------|
 | `agent-contract-handoff/` | Reference | On-demand |
 | `agent-protocol/` | Protocol | Injected (all agents) |
 | `agent-response/` | Protocol | Injected (orchestrator) |
-| `approval/` | Technique | On-demand |
 | `blog-writing/` | Technique | Injected (gaia-operator) |
 | `command-execution/` | Discipline | Injected |
 | `execution/` | Discipline | On-demand |
@@ -80,7 +79,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest: E
 | `security-tiers/` | Reference | Injected (all agents) |
 | `skill-creation/` | Technique | Injected (gaia-system) |
 
-### Tools (7 subsystems)
+### Tools
 
 | Subsystem | Location | Purpose |
 |-----------|----------|---------|
@@ -88,14 +87,12 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest: E
 | fast-queries | `tools/fast-queries/` | Triage scripts for cloud/gitops/terraform/appservices |
 | gaia_simulator | `tools/gaia_simulator/` | Routing simulator: `cli`, `extractor`, `reporter`, `routing_simulator`, `runner`, `skills_mapper` |
 | memory | `tools/memory/` | `episodic` -- episodic memory store |
-| review | `tools/review/` | (deprecated; `review_engine` removed -- review logic lives in skills/code-review) |
 | scan | `tools/scan/` | Project scanner: `core` (single nucleus -- all entry points call `scan_workspace`), `orchestrator`, `registry`, `scanners/`, `config`, `merge`, `verify`, `walk`, `workspace`, `ui` |
 | validation | `tools/validation/` | `approval_gate`, `validate_skills` |
-| (top-level) | `tools/persist_transcript_analysis.py` | Transcript persistence utility |
 
 ### CLI Tools
 
-The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Python subcommands discovered under `bin/cli/<name>.py`. Each subcommand is a self-contained module loaded by name.
+The package ships a single `gaia` entry point (`bin/gaia`, mapped by the `bin` field in `package.json`) that dispatches to Python subcommands discovered under `bin/cli/<name>.py`. Each subcommand is a self-contained module loaded by name.
 
 | Subcommand | File | Purpose |
 |------------|------|---------|
@@ -116,14 +113,12 @@ The package ships a single `gaia` binary (`bin/gaia.js`) that dispatches to Pyth
 | `gaia uninstall` | `bin/cli/uninstall.py` | Disconnect Gaia from the current workspace (wraps cleanup + preuninstall mode) |
 | `gaia update` | `bin/cli/update.py` | Refresh DB schema, .claude/ config, and symlinks after a package upgrade |
 
-### Config Files
+### Seeded Configuration (DB-backed)
 
-| File | Purpose |
-|------|---------|
-| `config/context-contracts.json` | Seeding source for per-agent context contracts (applied to gaia.db on install; runtime SSOT is DB) |
+| Source | Purpose |
+|--------|---------|
+| `agent_contract_permissions` table (gaia.db) | Per-agent context contracts; source of truth is each agent's `project_context_contracts:` frontmatter, seeded by `tools/scan/seed_contract_permissions.py` (runtime SSOT is DB) |
 | `surface_routing` table (gaia.db) | Surface routing table (intent to agent mapping); source of truth is agent `routing:` frontmatter, seeded by `tools/scan/seed_surface_routing.py` |
-| `config/cloud/aws.json` | AWS service patterns and commands |
-| `config/cloud/gcp.json` | GCP service patterns and commands |
 
 ---
 
@@ -285,11 +280,11 @@ After `npm install -g @jaguilar87/gaia` (or via the local symlink) the dispatche
 
 ```bash
 # In any project directory:
-ln -sf /home/jorge/ws/me/gaia-dev/agents   .claude/agents
-ln -sf /home/jorge/ws/me/gaia-dev/hooks    .claude/hooks
-ln -sf /home/jorge/ws/me/gaia-dev/skills   .claude/skills
-ln -sf /home/jorge/ws/me/gaia-dev/tools    .claude/tools
-ln -sf /home/jorge/ws/me/gaia-dev/config   .claude/config
+ln -sf /home/jorge/ws/me/gaia/agents   .claude/agents
+ln -sf /home/jorge/ws/me/gaia/hooks    .claude/hooks
+ln -sf /home/jorge/ws/me/gaia/skills   .claude/skills
+ln -sf /home/jorge/ws/me/gaia/tools    .claude/tools
+ln -sf /home/jorge/ws/me/gaia/config   .claude/config
 ```
 
 Changes to source files take effect immediately (no build step).
@@ -307,9 +302,9 @@ npm install @jaguilar87/gaia
 cd /tmp
 mkdir test-project && cd test-project
 npm init -y
-npm install ~/ws/me/gaia-dev        # installs from local source
+npm install ~/ws/me/gaia            # installs from local source
 gaia doctor                          # verify installation
-npm test                             # run L1 suite from gaia-dev
+npm test                             # run L1 suite from the source tree
 ```
 
 ### Version Bump + Publish
@@ -399,6 +394,5 @@ Do not cache the result in project-context. A stale live-state field silently mi
 
 ### Enforcement
 
-- `config/cloud/gcp.json` and `config/cloud/aws.json`: `section_schemas` for live-state fields removed in B6. Scanner-populated fields go through the store API from B2+.
 - `gaia/store/schema.sql`: DDL defines no columns for live-state narratives (`ci_cd_findings`, `cluster_discrepancy`). The schema cannot store what it does not define.
 - `tests/unit/test_surface_routing_live_state.py`: guards that no `signals.keywords` in the DB-backed routing (seeded from agent `routing:` frontmatter) references a retired live-state field name.

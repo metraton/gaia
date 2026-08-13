@@ -144,13 +144,7 @@ def check_text(text: str, repo_root: Path = REPO_ROOT, skill_dir=None):
 # Quarantined rather than silently tolerated: xfail is strict, so repairing a
 # file here turns the run red until its entry is deleted, which is what keeps the
 # list from outliving the debt it records.
-KNOWN_STALE = {
-    "gaia-patterns/reference.md": (
-        "component inventory cites tools/persist_transcript_analysis.py and "
-        "config/context-contracts.json, neither of which exists, and calls the "
-        "CLI entry point bin/gaia.js when the shipped binary is bin/gaia"
-    ),
-}
+KNOWN_STALE: dict[str, str] = {}
 
 
 def _skill_markdown_files():

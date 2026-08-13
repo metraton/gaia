@@ -53,7 +53,7 @@ Entry points (`hooks/*.py`) are stdin/stdout glue only. All logic lives in the a
 hooks/pre_tool_use.py          -- reads stdin, calls adapter, writes stdout
   -> adapters/claude_code.py   -- parses event, dispatches to modules
     -> modules/security/*      -- blocked_commands, mutative_verbs
-    -> modules/context/*       -- context_injector, contracts_loader
+    -> modules/context/*       -- contracts_loader, kernel_builder
     -> modules/agents/*        -- dispatch_binding, artifact_skill_map
 ```
 
