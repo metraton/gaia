@@ -85,13 +85,29 @@ WHAT IS DELIBERATELY OUT OF SCOPE:
                  any static scan. This is the same accepted ceiling every other
                  lane in this package carries.
 
-HEREDOCS, the one quoting construct still unmodelled, stated because the answer
-is asymmetric. An unquoted heredoc body expands substitutions and a quoted one
-(``<<'EOF'``) does not; the scanner does not model heredoc delimiters, so a body
-is read as ordinary text. That is correct for the unquoted form and over-strict
-for the quoted form -- the error can only cost a false positive on a rare
-spelling, never a missed execution, which is why it is left open while the
-ANSI-C divergence, whose error ran the other way, was not.
+  ``<<EOF``      heredoc with an UNQUOTED delimiter. The body expands, so it is
+                 scanned like ordinary text.
+  ``<<'EOF'``    heredoc with a QUOTED delimiter (single, double, or a
+                 backslash anywhere in the word). The body is literal and is
+                 skipped entirely -- scanning it would gate text the shell only
+                 ever prints.
+  ``<<-EOF``     the same two, with leading TABS stripped from the terminator.
+  ``<<<word``    a here-STRING, not a heredoc. It expands and has no body, so
+                 it is deliberately NOT treated as an opener.
+
+HEREDOCS WERE THE ONE CONSTRUCT LEFT UNMODELLED, on a stated argument that the
+error could only cost a false positive and never a missed execution. That
+argument was FALSE, and the way it failed is worth keeping: leaving the body as
+ordinary text does not merely misread the body, it desynchronises the QUOTING
+STATE for everything after it. One ordinary apostrophe in a heredoc body -- an
+English contraction, the most mundane content there is -- opened a single-quote
+state that never closed, and every character to the right of it, on every later
+line, was then treated as quoted. A real substitution on a line AFTER the
+heredoc became invisible, and a write into the protected hooks directory
+classified as a read. The false positive was real too, in the other direction:
+a QUOTED heredoc whose body merely names a substitution was permanently denied.
+So one missing model cost an execution AND a spurious denial, and modelling it
+is what closes both.
 
 The result is an ANALYSIS form only. Nothing here executes, rewrites, or
 returns a command to run; callers feed the extracted bodies back through their
@@ -130,6 +146,107 @@ _MAX_NESTING_DEPTH = 12
 _MAX_SUBSTITUTIONS = 64
 
 _PROCESS_SUBSTITUTION_OPENERS = ("<(", ">(")
+
+
+def _carries_an_opener(text: str) -> bool:
+    """Return whether *text* could contain any substitution at all.
+
+    A cheap necessary condition, not a parse: used to skip whole strings and to
+    tell "nothing more to find" from "stopped looking", which are the same
+    length of list and opposite verdicts.
+    """
+    return bool(text) and (
+        "$(" in text or "`" in text or "<(" in text or ">(" in text
+    )
+
+
+def _read_heredoc_opener(text: str, i: int) -> "Tuple[str, bool, bool, int] | None":
+    """Parse a heredoc redirection beginning at *i*, or return None.
+
+    Args:
+        text: The string being scanned.
+        i: Index of the first ``<`` of a candidate ``<<``.
+
+    Returns:
+        ``(delimiter, expands, strip_tabs, next_index)`` where *expands* is
+        True for an UNQUOTED delimiter (the body runs substitutions) and False
+        when any quoting appears in the delimiter word (the body is literal);
+        *next_index* is the index just past the delimiter word, so the rest of
+        the LINE keeps being scanned as ordinary command text.
+
+        ``None`` when this is not a heredoc: a here-string ``<<<``, or a ``<<``
+        with no delimiter word after it.
+    """
+    if text.startswith("<<<", i):
+        return None
+    if not text.startswith("<<", i):
+        return None
+
+    cursor = i + 2
+    strip_tabs = False
+    if cursor < len(text) and text[cursor] == "-":
+        strip_tabs = True
+        cursor += 1
+    while cursor < len(text) and text[cursor] in " \t":
+        cursor += 1
+
+    delimiter: List[str] = []
+    expands = True
+    while cursor < len(text):
+        ch = text[cursor]
+        if ch in " \t\n;&|<>()":
+            break
+        if ch == "\\":
+            expands = False
+            cursor += 1
+            if cursor < len(text):
+                delimiter.append(text[cursor])
+                cursor += 1
+            continue
+        if ch in ("'", '"'):
+            expands = False
+            closing = text.find(ch, cursor + 1)
+            if closing == -1:
+                return None
+            delimiter.append(text[cursor + 1:closing])
+            cursor = closing + 1
+            continue
+        delimiter.append(ch)
+        cursor += 1
+
+    word = "".join(delimiter)
+    if not word:
+        return None
+    return word, expands, strip_tabs, cursor
+
+
+def _heredoc_body_span(
+    text: str, start: int, delimiter: str, strip_tabs: bool,
+) -> "Tuple[int, int, bool]":
+    """Locate the body of a heredoc whose lines begin at *start*.
+
+    Returns:
+        ``(body_start, resume_index, terminated)``. *resume_index* is where
+        scanning continues after the terminator line. *terminated* is False
+        when no terminator line exists, which the caller must treat as the
+        conservative case rather than the convenient one: a delimiter this
+        scanner failed to recognise would otherwise let it skip the remainder
+        of a real command line.
+    """
+    cursor = start
+    length = len(text)
+    while cursor < length:
+        line_end = text.find("\n", cursor)
+        if line_end == -1:
+            line_end = length
+        line = text[cursor:line_end]
+        candidate = line.lstrip("\t") if strip_tabs else line
+        if candidate.rstrip("\r") == delimiter:
+            return start, min(line_end + 1, length), True
+        if line_end >= length:
+            break
+        cursor = line_end + 1
+    return start, length, False
 
 # Quoting states. Three of the four are the obvious ones; the fourth exists
 # because the shell has TWO single-quote forms whose escaping rules are
@@ -205,6 +322,29 @@ def _find_matching_paren(text: str, start: int) -> int:
         if text.startswith("${", i):
             i = _skip_parameter_expansion(text, i)
             continue
+        if text.startswith("<<<", i):
+            # Here-string: consumed whole, so its second ``<`` is never read as
+            # a heredoc opener -- see the same step in ``_collect``.
+            i += 3
+            continue
+        if ch == "<" and text.startswith("<<", i):
+            # A heredoc body is DATA. A paren inside it closes nothing, so the
+            # body is skipped wholesale here regardless of whether it expands --
+            # which is also what keeps this walker's idea of where a body ends
+            # identical to ``_collect``'s.
+            opener = _read_heredoc_opener(text, i)
+            if opener is not None:
+                delimiter, _expands, strip_tabs, after_word = opener
+                newline = text.find("\n", after_word)
+                if newline != -1:
+                    _body, resume, terminated = _heredoc_body_span(
+                        text, newline + 1, delimiter, strip_tabs,
+                    )
+                    if terminated:
+                        i = resume
+                        continue
+                i = after_word
+                continue
         if ch in ("'", '"'):
             quote = ch
             i += 1
@@ -266,7 +406,7 @@ def _find_closing_backtick(text: str, start: int) -> int:
 
 def _collect(
     command: str, depth: int, out: List[str], recurse: bool = True,
-) -> None:
+) -> bool:
     """Append every executing substitution body in *command* to *out*.
 
     Walks the string once, left to right, holding the shell's own quoting state
@@ -280,9 +420,22 @@ def _collect(
     the context its parent establishes and once with the context of whoever
     holds the flat list, and those two differ the moment the parent begins with
     a ``cd``.
+
+    Returns:
+        True when the body-count cap stopped the walk with input still
+        unexamined -- NOT merely when the cap was reached. A command carrying
+        exactly the cap's worth of substitutions and nothing more has been read
+        completely, and reporting that as truncated made a long-but-honest
+        command demand consent for nothing.
     """
-    if depth > _MAX_NESTING_DEPTH or len(out) >= _MAX_SUBSTITUTIONS:
-        return
+    if len(out) >= _MAX_SUBSTITUTIONS:
+        # No room left. That only LOSES something if this text actually carries
+        # an opener -- a body already counted, whose own content holds no
+        # substitution, has nothing further to give up.
+        return _carries_an_opener(command)
+    if depth > _MAX_NESTING_DEPTH:
+        return False
+    truncated = False
 
     i = 0
     length = len(command)
@@ -291,9 +444,41 @@ def _collect(
     # ``http://x/#frag`` are not comments, and treating them as such would blind
     # the scan to whatever followed on the line.
     at_word_start = True
+    # Heredocs declared on the current line, in declaration order. Their bodies
+    # do not start where the ``<<`` appears -- they start after the newline, and
+    # the rest of the declaring line is ordinary command text in between.
+    pending_heredocs: List[Tuple[str, bool, bool]] = []
 
     while i < length and len(out) < _MAX_SUBSTITUTIONS:
         ch = command[i]
+
+        if ch == "\n" and pending_heredocs and quote == _Q_NONE:
+            cursor = i + 1
+            for delimiter, expands, strip_tabs in pending_heredocs:
+                body_start, resume, terminated = _heredoc_body_span(
+                    command, cursor, delimiter, strip_tabs,
+                )
+                if not terminated:
+                    # No terminator line: either the string was cut short by an
+                    # upstream split, or this scanner misread the delimiter
+                    # word. Skipping to the end on that guess is the one outcome
+                    # that could hide an execution, so the remainder is left to
+                    # ordinary scanning instead.
+                    break
+                if expands:
+                    truncated = _collect(
+                        command[body_start:resume], depth + 1, out, recurse,
+                    ) or truncated
+                cursor = resume
+            else:
+                pending_heredocs = []
+                i = cursor
+                at_word_start = True
+                continue
+            pending_heredocs = []
+            i += 1
+            at_word_start = True
+            continue
 
         if quote == _Q_SINGLE:
             # A plain single quote suspends every expansion, the backslash
@@ -355,6 +540,25 @@ def _collect(
                 i = newline + 1
                 at_word_start = True
                 continue
+            if command.startswith("<<<", i):
+                # A here-string, not a heredoc: its word EXPANDS and there is no
+                # body. The whole operator is consumed in one step so its second
+                # ``<`` is never reached as a start position -- read from there,
+                # ``< "$(...)"`` parses as a heredoc whose delimiter is the
+                # quoted word, which swallowed the substitution it should run.
+                i += 3
+                at_word_start = False
+                continue
+            if ch == "<" and command.startswith("<<", i):
+                # Only the DECLARATION is here; the body begins after the
+                # newline, handled at the top of this loop.
+                opener = _read_heredoc_opener(command, i)
+                if opener is not None:
+                    delimiter, expands, strip_tabs, after_word = opener
+                    pending_heredocs.append((delimiter, expands, strip_tabs))
+                    i = after_word
+                    at_word_start = False
+                    continue
 
         if ch == "$" and command.startswith("$(", i):
             close = _find_matching_paren(command, i + 2)
@@ -363,7 +567,9 @@ def _collect(
             if body:
                 out.append(body)
                 if recurse:
-                    _collect(body, depth + 1, out, recurse)
+                    truncated = _collect(
+                        body, depth + 1, out, recurse,
+                    ) or truncated
             i = length if close == -1 else close + 1
             at_word_start = False
             continue
@@ -375,7 +581,9 @@ def _collect(
             if body:
                 out.append(body)
                 if recurse:
-                    _collect(body, depth + 1, out, recurse)
+                    truncated = _collect(
+                        body, depth + 1, out, recurse,
+                    ) or truncated
             i = length if close == -1 else close + 1
             at_word_start = False
             continue
@@ -387,13 +595,18 @@ def _collect(
             if body:
                 out.append(body)
                 if recurse:
-                    _collect(body, depth + 1, out, recurse)
+                    truncated = _collect(
+                        body, depth + 1, out, recurse,
+                    ) or truncated
             i = length if close == -1 else close + 1
             at_word_start = False
             continue
 
         at_word_start = ch.isspace() or ch in (";", "&", "|", "(", ")")
         i += 1
+
+    # Exiting with input left means the cap ended the walk, not the string.
+    return truncated or i < length
 
 
 def extract_substitutions(
@@ -443,10 +656,9 @@ def extract_substitutions_truncated(
         and a caller that gates on it must treat the remainder as unproven
         rather than absent.
     """
-    if not command or ("$(" not in command and "`" not in command
-                       and "<(" not in command and ">(" not in command):
+    if not _carries_an_opener(command):
         return [], False
 
     out: List[str] = []
-    _collect(command, 0, out, not top_level_only)
-    return out, len(out) >= _MAX_SUBSTITUTIONS
+    truncated = _collect(command, 0, out, not top_level_only)
+    return out, truncated

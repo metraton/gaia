@@ -78,11 +78,20 @@ def nest(levels: int, inner: str) -> str:
 # something (a script file, a package entry, a stdin payload); when the bound
 # stops that lane, retaining and releasing give opposite verdicts, which is what
 # makes the assertion able to bite.
+#
+# Membership is decided by ONE question: does this body's verdict change when
+# the retaining verdict is removed? A row that answers no is not evidence for
+# the bound however plausible it looks in a list, and presenting it beside rows
+# that are is worse than omitting it -- it inflates the apparent coverage of the
+# thing the test exists to prove. `python3 -` was in this list and answered no:
+# a stdin payload is resolved by its own handler BEFORE the budget guard is
+# consulted, so free was never the released answer for it. It is pinned below,
+# separately, as the placement case it actually is.
 BODIES_THAT_SPEND_DESCENT = [
     ("shell-script", "bash /nonexistent/deploy.sh"),
     ("python-script", "python3 /nonexistent/migrate.py"),
     ("npm-entry", "npm run build"),
-    ("stdin-payload", "python3 -"),
+    ("executor-payload", 'bash -c "kubectl delete deployment web -n prod"'),
 ]
 
 
@@ -111,6 +120,21 @@ def test_the_bound_holds_at_its_own_value_for_every_descending_family(
         f"verb={result.verb!r} -- a nesting level that spends the last unit of "
         f"descent budget must be retained, not released"
     )
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["below", "at", "above"])
+def test_a_stdin_payload_is_gated_by_lane_placement_not_by_the_bound(offset):
+    """Held apart from the rows above because it proves a DIFFERENT half.
+
+    A stdin payload has no file to open, so its own handler answers before the
+    budget guard is reached. It is gated at every depth by where that guard sits
+    relative to the lane's shape check -- not by the retaining verdict -- and
+    grouping it with the rows that do exercise the retaining verdict would let
+    one green row stand in for evidence it cannot give.
+    """
+    depth = _MAX_SUBSTITUTION_RECURSION_DEPTH + offset
+    result = detect_mutative_command(nest(depth, "python3 -"))
+    assert result.is_mutative is True
 
 
 def test_a_read_body_at_the_bound_is_still_free():

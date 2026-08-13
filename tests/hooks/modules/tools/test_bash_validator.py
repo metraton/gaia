@@ -756,28 +756,36 @@ class TestEdgeCases:
 
 
 class TestIndirectExecInnerVerb:
-    """Indirect execution wrappers should name the inner mutative verb.
+    """How a wrapper's payload is gated, split by what the payload DOES.
 
-    When `bash -c '...'` or similar wrapper is detected, the user-facing
-    reason string should identify the mutative verb inside the wrapper so
-    the operator has context for the approval decision.
+    A wrapper whose payload only reads still reaches the generic
+    indirect-execution confirmation. A wrapper whose payload MUTATES no longer
+    stops there: the detector now classifies the payload itself, so the command
+    is routed to the approval flow like any other mutation rather than to a
+    confirm dialog that happens to name the verb.
+
+    That split is the point. Both outcomes deny and both offer a consent path,
+    so the change is not about whether the operator is asked -- it is about
+    WHICH layer asks. A real mutation belongs to the approval flow, and reaching
+    it only through the wrapper phase meant the same payload went ungated the
+    moment it arrived by any route that phase does not see, which is exactly how
+    it stayed free inside a command substitution.
     """
 
-    def test_bash_c_mv_names_mv_in_reason(self, validator):
-        """bash -c 'mv ...' reason should mention 'mv'."""
+    def test_bash_c_mv_routes_to_the_approval_flow(self, validator):
         result = validator.validate('bash -c "mv foo bar"')
         assert result.allowed is False
-        assert result.tier == SecurityTier.T2_DRY_RUN
-        assert "'mv'" in result.reason
-        assert "inner mutative verb" in result.reason
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert result.block_response is not None
+        # The payload is shown verbatim, so the operator still sees what runs.
+        assert "mv foo bar" in result.reason
 
-    def test_bash_c_rm_names_rm_in_reason(self, validator):
-        """bash -c 'rm ...' reason should mention 'rm'."""
+    def test_bash_c_rm_routes_to_the_approval_flow(self, validator):
         result = validator.validate('bash -c "rm -rf /tmp/x"')
         assert result.allowed is False
-        assert result.tier == SecurityTier.T2_DRY_RUN
-        assert "'rm'" in result.reason
-        assert "inner mutative verb" in result.reason
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert result.block_response is not None
+        assert "rm -rf /tmp/x" in result.reason
 
     def test_bash_c_non_mutative_uses_generic_reason(self, validator):
         """bash -c 'ls ...' with non-mutative inner keeps the generic message."""
@@ -789,11 +797,9 @@ class TestIndirectExecInnerVerb:
         # Generic fallback preserves the word "wrapper" for backward compatibility
         assert "wrapper" in result.reason.lower()
 
-    def test_bash_c_for_loop_with_mv_names_mv(self, validator):
-        """Compound inner (for-loop with mv) should surface a mutative verb."""
+    def test_bash_c_for_loop_with_mv_routes_to_the_approval_flow(self, validator):
+        """A mutation inside a compound payload is still the payload's verdict."""
         result = validator.validate('bash -c "for d in *; do mv a b; done"')
         assert result.allowed is False
-        assert result.tier == SecurityTier.T2_DRY_RUN
-        # Detector returns first mutative verb found -- should be 'mv'
-        assert "'mv'" in result.reason
-        assert "inner mutative verb" in result.reason
+        assert result.tier == SecurityTier.T3_BLOCKED
+        assert result.block_response is not None

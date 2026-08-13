@@ -64,6 +64,27 @@ MUTATION_THROUGH_SUBSTITUTION = [
     ("body-compound", APPROVABLE, "ls $(true && kubectl delete deploy web -n prod)"),
     ("after-ansi-c-word", APPROVABLE, r"echo $'it\'s' $(docker rm -f web)"),
     ("read-carrier-double-quoted", APPROVABLE, f'grep -rn "$(rm -rf {USERDIR})" .'),
+    # A mutation handed to an executor AS A STRING. This axis was missing while
+    # the code was wrong on it: the validator unwraps a shell payload in an
+    # earlier phase, on the command as written, so the bare form looked gated
+    # while the detector itself reported nothing -- and every re-dispatched
+    # route (a substitution body, a line in a script) was therefore free.
+    ("executor-bash-c", APPROVABLE, 'bash -c "helm uninstall app -n prod"'),
+    ("executor-in-substitution", APPROVABLE,
+     'echo $(bash -c "helm uninstall app -n prod")'),
+    ("executor-in-substitution-backtick", APPROVABLE,
+     'echo `bash -c "kubectl delete deployment web -n prod"`'),
+    ("executor-in-process-substitution", APPROVABLE,
+     'diff /tmp/a <(bash -c "terraform apply -auto-approve")'),
+    ("executor-in-double-quoted-substitution", APPROVABLE,
+     'echo "$(sh -c "helm uninstall app -n prod")"'),
+    ("executor-eval", APPROVABLE, 'eval "kubectl delete deployment web -n prod"'),
+    ("executor-find-exec", APPROVABLE,
+     "find . -name '*.tf' -exec terraform apply -auto-approve {} ;"),
+    # The BOUNDARY of the body-count cap, the other axis the corpus missed. The
+    # cap is a scan condition, so one substitution past it is never looked at.
+    ("body-count-past-the-cap", APPROVABLE,
+     "echo " + " ".join(["$(pwd)"] * 64) + " $(rm -rf /home/jorge/projects/app)"),
 ]
 
 # The floor and the .claude boundary. These were closed BEFORE the mutative lane
@@ -83,6 +104,23 @@ PERMANENTLY_FORBIDDEN = [
      'echo "$(cp payload.py .claude/hooks/pre_tool_use.py)"'),
     ("hooks-git-mv", CATEGORICAL,
      "ls $(git mv a.py .claude/hooks/pre_tool_use.py)"),
+    # A heredoc body carrying one ordinary apostrophe used to desynchronise the
+    # quoting state for every later line, so a write into the protected tree on
+    # a line AFTER the heredoc classified as a read -- at level zero, free. The
+    # level is the assertion: this must be permanently forbidden, not merely
+    # approvable.
+    ("heredoc-apostrophe-then-hooks-write", CATEGORICAL,
+     "cat <<EOF\nok it's fine\nEOF\necho $(cp payload.py "
+     ".claude/hooks/pre_tool_use.py)"),
+    ("heredoc-apostrophe-then-root-delete", CATEGORICAL,
+     "cat <<EOF\nit's fine\nEOF\necho $(rm -rf /)"),
+    ("heredoc-dash-form-apostrophe", CATEGORICAL,
+     "cat <<-EOF\n\tit's fine\n\tEOF\necho $(cp payload.py "
+     ".claude/hooks/pre_tool_use.py)"),
+    ("heredoc-unquoted-body-executes", CATEGORICAL,
+     "cat <<EOF\n$(cp payload.py .claude/hooks/pre_tool_use.py)\nEOF"),
+    ("here-string-executes", CATEGORICAL,
+     'cat <<< "$(cp payload.py .claude/hooks/pre_tool_use.py)"'),
 ]
 
 # Read-only substitutions in their real idiomatic use. This is the half that
@@ -122,6 +160,43 @@ READ_ONLY_IDIOMS = [
     ("tail-log", "echo $(tail -1 /var/log/syslog)"),
     ("helm-list", "echo $(helm list -n prod -o json)"),
     ("read-body-at-the-descent-bound", "echo $(" * 12 + "pwd" + ")" * 12),
+    # Exactly the body-count cap and nothing beyond it. The scan finished; it
+    # did not stop. Reporting that as truncated made a long-but-honest command
+    # ask for consent to have been read completely.
+    ("body-count-exactly-at-the-cap", "echo " + " ".join(["$(pwd)"] * 64)),
+    # An interpreter payload that only READS, reached the way the payload lane
+    # actually governs it -- through a substitution. This is the row that would
+    # turn red if the lane adopted a payload's verdict unconditionally instead
+    # of only when it comes back mutative.
+    #
+    # The BARE spellings (`bash -c "ls -la"`, `eval "echo hi"`, `find -exec
+    # grep`) are deliberately NOT here: they resolve APPROVABLE, and they did so
+    # before this lane existed. That prompt belongs to the validator's
+    # indirect-execution phase, which asks for confirmation on any shell wrapper
+    # regardless of payload. Measured both ways -- with the lane live and
+    # neutralized -- those rows are identical, so listing them as free controls
+    # would assert something the tree has never done and blame this lane for a
+    # prompt that is not its.
+    ("executor-read-in-substitution", 'echo $(bash -c "git rev-parse HEAD")'),
+    ("executor-read-nested-in-substitution",
+     'echo $(echo $(sh -c "git branch --show-current"))'),
+    ("executor-version-flag", "bash --version"),
+    ("executor-no-payload", "sh -c"),
+    # Heredocs doing what heredocs are for. The body of a QUOTED delimiter is
+    # literal -- naming a substitution there is writing it down, and the shell
+    # only ever prints it.
+    ("heredoc-plain-text", "cat <<EOF\nhello world\nEOF"),
+    ("heredoc-apostrophe-plain", "cat <<EOF\nit's a normal sentence\nEOF"),
+    ("heredoc-apostrophe-then-read",
+     "cat <<EOF\nit's fine\nEOF\necho $(pwd)"),
+    ("heredoc-read-substitution-in-body",
+     "cat <<EOF\ncurrent dir: $(pwd)\nEOF"),
+    ("heredoc-two-on-one-line",
+     "diff <(cat <<A\nit's one\nA\n) <(cat <<B\nit's two\nB\n)"),
+    ("heredoc-dash-form-plain", "cat <<-EOF\n\tit's indented\n\tEOF"),
+    ("heredoc-then-read-command",
+     "cat <<'EOF'\nliteral text\nEOF\ngit status --porcelain"),
+    ("here-string-read", 'cat <<< "$(pwd)"'),
 ]
 
 # A destructive command WRITTEN DOWN rather than run. The shell decides which of

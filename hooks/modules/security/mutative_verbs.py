@@ -3249,6 +3249,131 @@ def _classify_leading_shell_assignments(
     )
 
 
+# Shells that take a command as a STRING argument to ``-c``. The payload is a
+# program, not an argument: whatever it says, the shell runs.
+_STRING_PAYLOAD_SHELLS = frozenset({
+    "bash", "sh", "zsh", "dash", "ksh", "ash", "mksh", "busybox",
+})
+
+# Wrappers whose FIRST token is not the shell -- the real shell follows.
+_SHELL_MULTICALL_WRAPPERS = frozenset({"busybox"})
+
+# `find` hands each match to a command named on its own command line. The
+# tokens between the flag and the terminator ARE a command by definition, which
+# is what makes reading them safe here rather than a heuristic.
+_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+_FIND_EXEC_TERMINATORS = frozenset({";", "\\;", "+"})
+
+
+def _resolve_executor_payload(
+    base_cmd: str, semantics: "CommandSemantics",
+) -> "Optional[str]":
+    """Return the command text *base_cmd* would hand to an executor, or None.
+
+    Three shapes, all of which pass a COMMAND as DATA:
+
+        <shell> -c "<command>"      the payload is a program
+        eval <words>                the words are re-parsed as a command
+        find ... -exec <command> ;  each match is handed to a command
+
+    Returns:
+        The payload as a command string, or ``None`` when this command is not
+        one of the three shapes. An empty or flag-only payload also returns
+        ``None`` -- there is nothing to classify and inventing a verdict for it
+        would gate the shell's own ``--help``.
+    """
+    tokens = list(semantics.tokens)
+    if not tokens:
+        return None
+
+    if base_cmd in _SHELL_MULTICALL_WRAPPERS:
+        # `busybox sh -c ...` -- the applet name is the real shell.
+        tokens = tokens[1:]
+        if not tokens:
+            return None
+        base_cmd = tokens[0].rsplit("/", 1)[-1].lower()
+
+    if base_cmd in _STRING_PAYLOAD_SHELLS:
+        for index, token in enumerate(tokens[1:], start=1):
+            if token == "-c" and index + 1 < len(tokens):
+                return tokens[index + 1].strip() or None
+        return None
+
+    if base_cmd == "eval":
+        return " ".join(tokens[1:]).strip() or None
+
+    if base_cmd == "find":
+        for index, token in enumerate(tokens):
+            if token.lower() not in _FIND_EXEC_FLAGS:
+                continue
+            payload = []
+            for token in tokens[index + 1:]:
+                if token in _FIND_EXEC_TERMINATORS:
+                    break
+                payload.append(token)
+            return " ".join(payload).strip() or None
+        return None
+
+    return None
+
+
+def _check_executor_payload(
+    base_cmd: str, semantics: "CommandSemantics", *,
+    cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Classify the command an executor is handed as a string.
+
+    The validator has always unwrapped a shell payload, but it does so in an
+    earlier phase and only on the command AS WRITTEN. Detection itself never
+    unwrapped one, so the same payload reached through any re-dispatch -- a
+    command substitution body, a line inside a script file, an assignment
+    value -- was classified by its carrier and came back free by elimination.
+    Measured both ways: the bare form reported ``is_mutative=False`` with an
+    empty verb while still being gated by that earlier phase, and a script file
+    whose only mutation sat behind ``sh -c`` classified non-mutative outright.
+
+    That measurement is what decided WHERE this belongs. Unwrapping inside the
+    substitution lane would have closed only the route that was reported, and
+    the script-file reading shows the blindness is the detector's, not that
+    lane's. Reusing the validator's own unwrapper was not available: this
+    package is imported BY the validator, so the dependency only runs one way,
+    and that unwrapper produces a confirm-dialog verdict rather than a
+    classification.
+
+    ESCALATE-ONLY, which is what keeps a payload lane from taxing every
+    ``sh -c`` in existence: the payload's verdict is adopted only when it comes
+    back mutative. ``bash -c "ls"`` returns ``None`` here and is classified
+    exactly as it was before.
+
+    Returns:
+        A mutative result when the payload is mutative, ``None`` otherwise --
+        including for every command that is not one of the executor shapes.
+    """
+    payload = _resolve_executor_payload(base_cmd, semantics)
+    if payload is None:
+        return None
+
+    # Budget exhausted: stop descending AND retain -- see the constant.
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("executor payload")
+
+    inner = detect_mutative_command(payload, cwd=cwd, _depth=_depth + 1)
+    if not inner.is_mutative:
+        return None
+    return MutativeResult(
+        is_mutative=True,
+        category=inner.category,
+        verb=inner.verb,
+        dangerous_flags=inner.dangerous_flags,
+        cli_family=inner.cli_family,
+        confidence=inner.confidence,
+        reason=(
+            f"Executor '{base_cmd}' runs mutative payload {payload!r}: "
+            f"{inner.reason}"
+        ),
+    )
+
+
 def _check_command_substitutions(
     command: str, *, cwd: "Optional[str]", _depth: int,
 ) -> "Optional[MutativeResult]":
@@ -3641,6 +3766,17 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             confidence="high",
             reason=f"Command alias '{base_cmd}' is {alias_category.lower()}",
         )
+
+    # --- Step 1a-exec: a command handed to an executor as a STRING ---
+    # Runs ahead of the read-only fast path because one of the executors that
+    # takes a command as data (`find ... -exec`) is itself on that whitelist,
+    # and the fast path would answer for the carrier before the payload is ever
+    # looked at.
+    executor_result = _check_executor_payload(
+        base_cmd, semantics, cwd=cwd, _depth=_depth,
+    )
+    if executor_result is not None:
+        return executor_result
 
     # --- Step 1b: Read-only base command fast-path ---
     # When the base_cmd is a known read-only inspection tool (grep, find, ls,
