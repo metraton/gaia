@@ -44,14 +44,36 @@ WHAT IS IN SCOPE, and why each one:
                  real execution; getting it wrong in the strict direction would
                  gate the literal text ``"a<(b)"``, which is a mention.
 
+THE QUOTING FORMS THE SCANNER MODELS. Everything above rests on the quoting
+state being RIGHT, so a form modelled wrong is a bypass of the whole module
+rather than a rough edge. Four states are carried, and the list is exhaustive
+by intent -- a reader adding a fifth quoting construct to bash would have to
+add it here:
+
+  ``'...'``      plain single quote. Suspends every expansion INCLUDING the
+                 backslash, so it is resolved before the escape handling.
+  ``$'...'``     ANSI-C quoting. Suspends expansion but HONOURS the backslash,
+                 so it is resolved after the escape handling. The two single
+                 quote forms differ on exactly this one rule, and collapsing
+                 them was a measured false negative: ``$'it\'s'`` read as a
+                 plain quote appears to close at the escaped quote, desyncs the
+                 state, and hides every substitution to its right.
+  ``"..."``      double quote. Does NOT suspend ``$()`` or backticks; does
+                 suspend process substitution.
+  ``$"..."``     locale translation. Identical to a double quote for expansion
+                 purposes, which is what falls out of treating the ``$`` as an
+                 ordinary character -- no state of its own.
+
 WHAT IS DELIBERATELY OUT OF SCOPE:
 
-  ``${ ... }``   parameter expansion is not execution. It is untouched here,
-                 exactly as ``shell_grouping`` left it. Note that a
-                 substitution NESTED inside one (``${FOO:-$(rm -rf /)}``) is
-                 still found, because the scan is linear over the whole string
-                 and does not skip the braces -- the ``$(`` inside them is
-                 reached on its own terms.
+  ``${ ... }``   parameter expansion is not execution, and is not treated as a
+                 unit by the linear scan: a substitution NESTED inside one
+                 (``${FOO:-$(rm -rf /)}``) really does execute, and it is found
+                 because the ``$(`` inside the braces is reached on its own
+                 terms. The paren counter is the one place that must know where
+                 an expansion ENDS, since a ``)`` carried as data
+                 (``${x//)/y}``) would otherwise close a substitution body
+                 early and hand the caller a truncated command.
   ``$(( ... ))`` arithmetic expansion does not run commands. It is not
                  special-cased: the uniform ``$(`` handler yields the body
                  ``(2 + 2)``, whose first token matches nothing in any table,
@@ -63,11 +85,13 @@ WHAT IS DELIBERATELY OUT OF SCOPE:
                  any static scan. This is the same accepted ceiling every other
                  lane in this package carries.
 
-HEREDOCS, stated because the answer is asymmetric. An unquoted heredoc body
-expands substitutions and a quoted one (``<<'EOF'``) does not; the scanner does
-not model heredoc delimiters, so a body is read as ordinary text. That is
-correct for the unquoted form and over-strict for the quoted form -- the error
-can only cost a false positive on a rare spelling, never a missed execution.
+HEREDOCS, the one quoting construct still unmodelled, stated because the answer
+is asymmetric. An unquoted heredoc body expands substitutions and a quoted one
+(``<<'EOF'``) does not; the scanner does not model heredoc delimiters, so a body
+is read as ordinary text. That is correct for the unquoted form and over-strict
+for the quoted form -- the error can only cost a false positive on a rare
+spelling, never a missed execution, which is why it is left open while the
+ANSI-C divergence, whose error ran the other way, was not.
 
 The result is an ANALYSIS form only. Nothing here executes, rewrites, or
 returns a command to run; callers feed the extracted bodies back through their
@@ -93,6 +117,26 @@ _MAX_SUBSTITUTIONS = 64
 
 _PROCESS_SUBSTITUTION_OPENERS = ("<(", ">(")
 
+# Quoting states. Three of the four are the obvious ones; the fourth exists
+# because the shell has TWO single-quote forms whose escaping rules are
+# opposite, and collapsing them is a false negative rather than a cosmetic
+# simplification. In a plain ``'...'`` the backslash is an ordinary character;
+# in ANSI-C ``$'...'`` it is an escape, so ``$'it\'s'`` contains a quote and
+# does NOT end there. Reading the second as the first makes the scanner believe
+# the string closed early, and every character to the right is then treated as
+# quoted -- which silently hides a real substitution:
+#
+#     echo $'it\'s' $(rm -rf /)   -> the delete runs; a collapsed state
+#                                    machine reports nothing at all
+#
+# The locale-translation form ``$"..."`` needs no state of its own: it expands
+# exactly like a double quote, which is what falls out of treating the ``$`` as
+# an ordinary character before it.
+_Q_NONE = ""
+_Q_SINGLE = "'"
+_Q_DOUBLE = '"'
+_Q_ANSI_C = "$'"
+
 
 def _find_matching_paren(text: str, start: int) -> int:
     """Return the index of the ``)`` that closes the ``(`` opened before *start*.
@@ -108,25 +152,44 @@ def _find_matching_paren(text: str, start: int) -> int:
 
     Nesting is counted only for parens that are not themselves quoted, so
     ``$(echo "a)b")`` closes on the last paren rather than on the quoted one.
+    A paren inside a PARAMETER EXPANSION does not count either: ``${x//)/y}``
+    carries a close-paren as data, and counting it ends the body early, which
+    truncates the command the caller is about to classify.
+
+    The quoting rules here must match ``_collect``'s exactly -- the two walk the
+    same grammar, and a divergence between them is a body that one finds and the
+    other cuts in half.
     """
     depth = 1
     i = start
     length = len(text)
-    quote = ""
+    quote = _Q_NONE
     while i < length:
         ch = text[i]
-        if quote == "'":
+        if quote == _Q_SINGLE:
             if ch == "'":
-                quote = ""
+                quote = _Q_NONE
             i += 1
             continue
         if ch == "\\":
             i += 2
             continue
-        if quote == '"':
-            if ch == '"':
-                quote = ""
+        if quote == _Q_ANSI_C:
+            if ch == "'":
+                quote = _Q_NONE
             i += 1
+            continue
+        if quote == _Q_DOUBLE:
+            if ch == '"':
+                quote = _Q_NONE
+            i += 1
+            continue
+        if text.startswith("$'", i):
+            quote = _Q_ANSI_C
+            i += 2
+            continue
+        if text.startswith("${", i):
+            i = _skip_parameter_expansion(text, i)
             continue
         if ch in ("'", '"'):
             quote = ch
@@ -140,6 +203,33 @@ def _find_matching_paren(text: str, start: int) -> int:
                 return i
         i += 1
     return -1
+
+
+def _skip_parameter_expansion(text: str, start: int) -> int:
+    """Return the index just past the ``${...}`` beginning at *start*.
+
+    Only the paren counter needs this. ``_collect`` deliberately does NOT skip a
+    parameter expansion, because a command substitution nested inside one
+    (``${FOO:-$(rm -rf /)}``) really does execute and must still be found; there
+    a stray ``}`` is inert anyway. Braces are counted so a nested expansion
+    closes at the right place, and an unterminated one consumes the rest of the
+    string rather than reopening the paren scan mid-expansion.
+    """
+    depth = 0
+    i = start + 1  # the "$" is not part of the brace balance
+    length = len(text)
+    while i < length:
+        if text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return length
 
 
 def _find_closing_backtick(text: str, start: int) -> int:
@@ -173,7 +263,7 @@ def _collect(command: str, depth: int, out: List[str]) -> None:
 
     i = 0
     length = len(command)
-    quote = ""
+    quote = _Q_NONE
     # A ``#`` starts a comment only at the beginning of a word. ``foo#bar`` and
     # ``http://x/#frag`` are not comments, and treating them as such would blind
     # the scan to whatever followed on the line.
@@ -182,35 +272,56 @@ def _collect(command: str, depth: int, out: List[str]) -> None:
     while i < length and len(out) < _MAX_SUBSTITUTIONS:
         ch = command[i]
 
-        if quote == "'":
-            # Single quotes suspend every expansion, including the backslash.
+        if quote == _Q_SINGLE:
+            # A plain single quote suspends every expansion, the backslash
+            # included -- so it is handled BEFORE the backslash branch below.
             if ch == "'":
-                quote = ""
+                quote = _Q_NONE
             i += 1
             continue
 
         if ch == "\\":
-            # Outside single quotes a backslash escapes the next character, so
-            # ``\$(`` and an escaped backtick are literal text, not execution.
+            # Everywhere else -- unquoted, double-quoted, and ANSI-C -- a
+            # backslash escapes the next character, so ``\$(`` and an escaped
+            # backtick are literal text rather than execution.
             i += 2
             at_word_start = False
             continue
 
-        if quote == '"':
+        if quote == _Q_ANSI_C:
+            # Reached only past the backslash branch, which is the whole point:
+            # ``$'it\'s'`` keeps going after the escaped quote, exactly as the
+            # shell does, instead of closing there and desyncing the state.
+            if ch == "'":
+                quote = _Q_NONE
+            i += 1
+            at_word_start = False
+            continue
+
+        if quote == _Q_DOUBLE:
             if ch == '"':
-                quote = ""
+                quote = _Q_NONE
                 i += 1
                 at_word_start = False
                 continue
             # Fall through: ``$(`` and backticks DO expand inside double quotes.
         else:
+            # ANSI-C quoting is a form of QUOTE, not an expansion, so it is
+            # recognized here rather than beside ``$(``. Inside double quotes a
+            # ``$'`` is an ordinary dollar followed by an ordinary quote, which
+            # is why this sits in the unquoted branch only.
+            if command.startswith("$'", i):
+                quote = _Q_ANSI_C
+                i += 2
+                at_word_start = False
+                continue
             if ch == "'":
-                quote = "'"
+                quote = _Q_SINGLE
                 i += 1
                 at_word_start = False
                 continue
             if ch == '"':
-                quote = '"'
+                quote = _Q_DOUBLE
                 i += 1
                 at_word_start = False
                 continue

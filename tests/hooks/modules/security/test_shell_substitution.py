@@ -50,6 +50,22 @@ from modules.security.shell_substitution import extract_substitutions
     ("echo $(rm -rf /", ["rm -rf /"]),
     # More than one substitution in one line.
     ("diff <(sort a) <(sort b)", ["sort a", "sort b"]),
+    # ANSI-C quoting honours the backslash, so an escaped quote does NOT end
+    # the string. Reading it as a plain single quote desynced the state and
+    # swallowed everything to the right -- a substitution included.
+    (r"echo $'it\'s' $(rm -rf /)", ["rm -rf /"]),
+    (r"echo $'don\'t' $(dd if=/dev/zero of=/dev/sda)",
+     ["dd if=/dev/zero of=/dev/sda"]),
+    (r"echo $'it\'s' `mkfs.ext4 /dev/sda1`", ["mkfs.ext4 /dev/sda1"]),
+    (r"echo $'a\'b' $'c\'d' $(rm -rf /)", ["rm -rf /"]),
+    (r"echo $'it\'s' " + '"$(cp p .claude/hooks/x.py)"', ["cp p .claude/hooks/x.py"]),
+    # The locale-translation form expands like a double quote, which is what
+    # falls out of treating the `$` as an ordinary character before it.
+    ('echo $"result: $(rm -rf /)"', ["rm -rf /"]),
+    # A parameter expansion carrying a close-paren as DATA must not end the
+    # body early; the truncated prefix used to be all the caller ever saw.
+    ("echo $(grep -rn ${x//)/y} /tmp; rm -rf /)",
+     ["grep -rn ${x//)/y} /tmp; rm -rf /"]),
 ])
 def test_executing_substitutions_are_extracted(command, expected):
     assert extract_substitutions(command) == expected
@@ -77,6 +93,17 @@ def test_executing_substitutions_are_extracted(command, expected):
     'echo "(rm -rf /)"',
     # Process substitution, unlike $(), is NOT expanded inside double quotes.
     'echo "a<(rm -rf /)b"',
+    # ANSI-C quoting, used for what it exists for. The repair must not start
+    # reading these as execution: it added a state, and a state added in the
+    # wrong direction would gate every `printf` that wants a newline.
+    r"printf $'line1\nline2\n'",
+    r"printf $'a\tb\n'",
+    r"echo $'it\'s fine'",
+    r"grep -rn $'\t' hooks/",
+    # A substitution MENTIONED inside ANSI-C quoting is still text -- the
+    # escapes it interprets are character escapes, not a second expansion pass.
+    r"echo $'literal $(rm -rf /)'",
+    r"echo $'\x24(rm -rf /)'",
     # Nothing substitution-shaped at all.
     "kubectl get pods -o json",
     "echo ${HOME}",
@@ -84,6 +111,21 @@ def test_executing_substitutions_are_extracted(command, expected):
 ])
 def test_mentions_and_non_executing_forms_yield_nothing(command):
     assert extract_substitutions(command) == []
+
+
+def test_the_two_single_quote_forms_differ_on_the_backslash():
+    """The one rule the ANSI-C state exists for, pinned from both sides.
+
+    In `'...'` the backslash is an ordinary character, so the quote closes at
+    the very next `'` and what follows is live. In `$'...'` the backslash
+    escapes, so the same bytes keep the string open. Collapsing the two states
+    -- the defect -- makes the second behave like the first, which silently
+    hides everything to the right of it.
+    """
+    assert extract_substitutions(r"echo 'it\' $(rm -rf /)") == ["rm -rf /"]
+    assert extract_substitutions(r"echo $'it\'s' $(rm -rf /)") == ["rm -rf /"]
+    assert extract_substitutions(r"echo 'a\b $(rm -rf /)'") == []
+    assert extract_substitutions(r"echo $'a\'b $(rm -rf /)'") == []
 
 
 def test_comment_marker_inside_a_word_is_not_a_comment():

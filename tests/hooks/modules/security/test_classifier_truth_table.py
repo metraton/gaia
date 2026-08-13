@@ -649,6 +649,74 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
+    # ---- CLOSED: a quoting form that desynced the substitution scan ---------
+    # The scan above decides use-vs-mention by holding the shell's quoting
+    # state, so a state it models WRONG is a bypass of everything built on it.
+    # The shell has two single-quote forms whose escaping rules are opposite:
+    # in `'...'` a backslash is an ordinary character, in ANSI-C `$'...'` it is
+    # an escape. Reading the second as the first meant `$'it\'s'` looked as
+    # though it closed at the escaped quote, and every character to the right
+    # was then treated as quoted -- so these rows were FREE (False, T0) and the
+    # substitution after the quoted word was invisible to all three consumers.
+    (
+        "quoting_ansi_c_then_rm_root",
+        GATED,
+        r"echo $'it\'s' $(rm -rf /)",
+        False,
+        T3,
+    ),
+    (
+        "quoting_ansi_c_then_dd_device",
+        GATED,
+        r"echo $'don\'t' $(dd if=/dev/zero of=/dev/sda)",
+        False,
+        T3,
+    ),
+    (
+        "quoting_ansi_c_then_mkfs_backtick",
+        GATED,
+        r"echo $'it\'s' `mkfs.ext4 /dev/sda1`",
+        False,
+        T3,
+    ),
+    (
+        "quoting_ansi_c_twice_then_rm_root",
+        GATED,
+        r"echo $'a\'b' $'c\'d' $(rm -rf /)",
+        False,
+        T3,
+    ),
+    # A parameter expansion carrying a close-paren as DATA used to end the body
+    # early, so the caller classified a truncated prefix instead of the command.
+    (
+        "quoting_param_expansion_paren_in_body",
+        GATED,
+        "echo $(grep -rn ${x//)/y} /tmp; rm -rf /)",
+        False,
+        T3,
+    ),
+    # ---- Controls: ANSI-C quoting used for what it exists for ---------------
+    # The repair ADDED a quoting state, and a state added in the wrong
+    # direction taxes every `printf` that wants a newline or a tab. These are
+    # the ordinary uses, and they must cost nothing.
+    ("quoting_free_ansi_c_newline", FREE, r"printf $'line1\nline2\n'", False, T0),
+    ("quoting_free_ansi_c_tab", FREE, r"printf $'a\tb\n'", False, T0),
+    ("quoting_free_ansi_c_escaped_quote", FREE, r"echo $'it\'s fine'", False, T0),
+    ("quoting_free_ansi_c_tab_in_search", FREE, r"grep -rn $'\t' hooks/", False, T0),
+    (
+        "quoting_free_ansi_c_then_read_substitution",
+        FREE,
+        r"printf $'a\tb\t%s\n' $(pwd)",
+        False,
+        T0,
+    ),
+    (
+        "quoting_free_param_expansion_paren_read_only",
+        FREE,
+        "echo $(grep -rn ${x//)/y} /tmp)",
+        False,
+        T0,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -894,6 +962,48 @@ NO_OVERCORRECTION_CENSUS = [
         'echo "(rm -rf /)"',
         False,
     ),
+    # ---- Mention, not use: ANSI-C quoting -----------------------------------
+    # Closing the desync meant ADDING a quoting state, and the census is where
+    # a state added in the wrong direction shows up: ANSI-C quoting is how a
+    # shell writes a newline or a tab, so gating it would tax ordinary output
+    # formatting. The escapes it interprets are CHARACTER escapes, not a second
+    # expansion pass, so a substitution named inside one is still text.
+    (
+        "mention-ansi-c-newline-is-not-execution",
+        MENTION_FREE,
+        r"printf $'line1\nline2\n'",
+        False,
+    ),
+    (
+        "mention-ansi-c-tab-in-search",
+        MENTION_FREE,
+        r"grep -rn $'\t' hooks/",
+        False,
+    ),
+    (
+        "mention-ansi-c-quoted-substitution",
+        MENTION_FREE,
+        r"echo $'literal $(rm -rf /)'",
+        False,
+    ),
+    (
+        "mention-ansi-c-hex-escape-does-not-reexpand",
+        MENTION_FREE,
+        r"echo $'\x24(rm -rf /)'",
+        False,
+    ),
+    (
+        "mention-ansi-c-in-commit-message",
+        MENTION_FREE,
+        r"git commit -m $'fix: gate a substitution\n\nit\'s closed now'",
+        False,
+    ),
+    (
+        "mention-ansi-c-hooks-path-quoted",
+        MENTION_FREE,
+        r"echo $'mention $(cp p .claude/hooks/pre_tool_use.py)'",
+        False,
+    ),
     # ---- OPEN: a mention that escalates today ----
     # Measured, not desired. The escalation does not come from any anchor this
     # plan added -- it comes from the permanently-blocked pattern table
@@ -966,7 +1076,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 105
+_MINIMUM_MEASURED_CASES = 116
 
 
 @pytest.mark.parametrize(

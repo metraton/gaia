@@ -175,6 +175,15 @@ class TestMidStringSubstitutionWritesBlocked:
         # A pipe inside the body: extraction runs on the FULL command, so the
         # body survives intact and is only then split on operators.
         "echo $(cat payload.py | tee .claude/hooks/pre_tool_use.py)",
+        # ANSI-C quoting honours the backslash, so an escaped quote does not
+        # end the string. Reading it as a plain single quote desynced the
+        # scanner and made everything to its right invisible -- this boundary
+        # included, in both substitution spellings.
+        r"echo $'it\'s' $(cp payload.py .claude/hooks/pre_tool_use.py)",
+        r"echo $'it\'s' " + '"$(cp payload.py .claude/hooks/pre_tool_use.py)"',
+        # A parameter expansion carrying a close-paren as data must not end the
+        # body early and drop the writer that follows it.
+        "echo $(grep -rn ${x//)/y} /tmp; cp payload.py .claude/hooks/pre_tool_use.py)",
     ])
     def test_substituted_writer_into_claude_blocked(self, cmd):
         allowed, reason = check(cmd)
@@ -194,6 +203,10 @@ class TestMidStringSubstitutionWritesBlocked:
         "echo $(cat .claude/settings.json)",
         "echo $(grep -rn SessionStart .claude/settings.local.json)",
         "wc -l $(ls .claude/hooks/)",
+        # ANSI-C quoting is how a shell writes a newline or a tab; a
+        # substitution merely NAMED inside one is still text.
+        r"echo $'mention $(cp payload.py .claude/hooks/pre_tool_use.py)'",
+        r"printf $'a\tb\n'",
     ])
     def test_substituted_read_or_mention_still_allowed(self, cmd):
         """Quoting, not position, is what separates a mention from a use.
