@@ -61,6 +61,24 @@ code can carry it:
 The line it annotates is a single string. The comment carries an external
 cause and a failure mode the reader would otherwise diagnose from a 403.
 
+## A claim about elsewhere, made checkable
+
+The claims that rot silently are the ones asserting state outside the file.
+When one must be made, the coordinate is what separates a checkable claim from
+folklore:
+
+```python
+# Retries are handled upstream.
+
+# Retries are handled by JobRunner.dispatch (worker/runner.py), which
+# re-delivers on timeout — so this handler must stay idempotent.
+```
+
+The first cannot be verified without already knowing the answer. The second
+names the file and symbol to check, and it also carries a constraint on THIS
+file — the idempotency requirement — that stays true even if the pointer goes
+stale.
+
 ## Provenance versus process trace
 
 ```python

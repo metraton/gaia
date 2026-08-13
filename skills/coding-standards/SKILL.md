@@ -101,6 +101,70 @@ copies will not update together. Before adding one, check the module header, the
 entry's own documentation, and the comments just above. A second site references
 the first — it never repeats it.
 
+## Cache what the reader cannot look up
+
+The environment is a source of truth in its own right: configuration files,
+scripts, the directory layout, a tool's own `--help`. A sentence restating what
+one of those already answers is a cache — a copy of a lookup — and a cache is
+justified only when the lookup is expensive. What earns the sentence is what no
+lookup returns: the unwritten convention, the reason behind a choice, the gotcha
+no config confesses. Asked while writing, this converts staleness from a
+maintenance problem someone inherits into a question settled at the moment of
+authorship. (Formulation adapted from `writing-for-agents` in mattpocock/skills
+— cited per the seventh protected category.)
+
+## The four durabilities of a written claim
+
+Whether a prose claim about code can silently become false is decided by what
+the claim is ABOUT, and the question takes a second to ask:
+
+| The claim is about | Durability |
+|--------------------|------------|
+| The language, the platform, the provider's semantics | Cannot rot |
+| A decision and the alternative it rejected | Cannot rot — it is past tense, and the past stays true |
+| The current state of another file or system | Rots silently: the target moves, and nothing at the claim's site changes |
+| What the code below it already shows | Rots on the next edit, and carried nothing while it lasted |
+
+The last row is what the why-not-what test already deletes, and the first two
+are where the protected categories live — a rationale is durable precisely
+because it asserts history, not state. The third row is the one that needs its
+own treatment: in a real audit of a 33-file repository, every false claim found
+— six — asserted state outside the file it lived in, and none was about the
+language, a decision, or the code below. Falsehood accumulates exactly there,
+because nothing that edits the target ever re-reads the claim. The more of a
+document is made of that row, the faster it rots — a README is the limiting
+case, and `readme-writing` carries that consequence.
+
+So a claim about elsewhere is a cost accepted knowingly, not a default: prefer
+the durable forms — the decision, the constraint, the why. When the state of
+another file or system genuinely must be asserted, give the claim the
+coordinate that makes it checkable: the file and the symbol. A symbol survives
+edits; a line number drifts on the first insertion above it. And be honest
+about what the coordinate buys: pointers rot too — of the millions of links
+found in published source comments, roughly one in ten is dead. The coordinate
+lowers the cost of checking the claim; it does not make the claim durable.
+
+## Reading: a claim, never evidence
+
+A comment or a document is a claim about code, never evidence of it. Reading
+code to decide something, verify the claim against the implementation it
+describes, or state that you did not — those are the two honest outcomes, and
+both are cheap next to what absorbing a falsehood costs. Measured: models
+handed deliberately false comments described the program the prose claimed
+rather than the one the code implemented, invented details to reconcile the
+two, and flagged no contradiction — in the experimenters' own words, "LLMs
+believe that all provided input is true and correct". The same models,
+explicitly asked to hunt for inaccuracies, found most of them: the capacity to
+verify exists, and it engages when the reading posture demands it. The posture
+matters more for an agent than it ever did for a human — a human skims past
+comments; a model ingests them with the same weight as the code and reasons
+more fluently over prose than over configuration syntax. And the prose being
+read is increasingly agent-written, at a measured error rate near one claim in
+five, so a reader trusting by default is trusting a previous session of
+itself. Accurate comments measurably help comprehension — the enemy is
+falsehood absorbed unverified, never prose itself, which is why this rule asks
+for verification, not for suspicion of volume.
+
 ## Where documentation belongs
 
 Documentation of an entry lives in the language's native mechanism when one
