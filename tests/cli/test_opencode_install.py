@@ -81,6 +81,49 @@ def test_second_install_is_idempotent(tmp_path):
     assert result["action"] == "noop"
 
 
+def test_uses_stable_workspace_package_link_instead_of_pnpm_store(tmp_path):
+    store_package = (
+        tmp_path
+        / "node_modules"
+        / ".pnpm"
+        / "gaia-v1"
+        / "node_modules"
+        / "@jaguilar87"
+        / "gaia"
+    )
+    plugin = store_package / "opencode" / "plugin.ts"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("export {}\n")
+    (plugin.parent / "agent-policy.json").write_text(
+        '{"default": {"mode": "subagent"}}\n'
+    )
+    agent = store_package / "agents" / "gaia-orchestrator.md"
+    agent.parent.mkdir()
+    agent.write_text(
+        "---\nname: gaia-orchestrator\ndescription: Routes work\n---\nPrompt\n"
+    )
+    skill = store_package / "skills" / "sample" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: sample\ndescription: Sample\n---\n")
+    stable_package = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+    stable_package.parent.mkdir(parents=True)
+    stable_package.symlink_to(store_package, target_is_directory=True)
+
+    _install_helpers.configure_opencode_plugin(tmp_path, store_package)
+
+    config = json.loads((tmp_path / "opencode.json").read_text())
+    stable_root = str(stable_package.absolute())
+    assert config["plugin"] == [f"{stable_root}/opencode/plugin.ts"]
+    assert config["agent"]["gaia-orchestrator"]["prompt"] == (
+        f"{{file:{stable_root}/agents/gaia-orchestrator.md}}"
+    )
+    assert ".pnpm" not in config["plugin"][0]
+    assert ".pnpm" not in config["agent"]["gaia-orchestrator"]["prompt"]
+    assert (tmp_path / ".opencode" / "skills" / "sample").readlink() == (
+        stable_package / "skills" / "sample"
+    )
+
+
 def test_translates_agent_tools_disallowed_tools_and_skills(tmp_path):
     package = tmp_path / "package"
     agent = package / "agents" / "developer.md"

@@ -151,7 +151,8 @@ def configure_opencode_plugin(
 ) -> dict[str, Any]:
     """Register Gaia's packaged OpenCode plugin without touching ``.claude/``."""
     pkg_root = plugin_root or _PACKAGE_ROOT
-    plugin_path = (pkg_root / "opencode" / "plugin.ts").resolve()
+    config_root = _opencode_package_root(workspace, pkg_root)
+    plugin_path = config_root / "opencode" / "plugin.ts"
     policy_path = pkg_root / "opencode" / "agent-policy.json"
     config_path = workspace / "opencode.json"
     if not plugin_path.is_file():
@@ -162,7 +163,7 @@ def configure_opencode_plugin(
 
     try:
         skill_links = _link_opencode_skills(
-            workspace, pkg_root, dry_run=dry_run
+            workspace, config_root, dry_run=dry_run
         )
     except OSError as exc:
         return _result("error", config_path, f"could not link OpenCode skills: {exc}")
@@ -185,7 +186,7 @@ def configure_opencode_plugin(
 
     foreign_plugins = [item for item in plugins if not _is_gaia_opencode_plugin(item)]
     desired["plugin"] = [*foreign_plugins, entry]
-    desired["agent"] = _opencode_agents(pkg_root, policy, existing.get("agent"))
+    desired["agent"] = _opencode_agents(config_root, policy, existing.get("agent"))
     desired["default_agent"] = "gaia-orchestrator"
     config_changed = existing != desired
     if not config_changed and not skills_changed:
@@ -199,6 +200,29 @@ def configure_opencode_plugin(
         config_path,
         f"registered Gaia OpenCode plugin, {len(linked_skills)} skill links, and canonical agents",
     )
+
+
+def _opencode_package_root(workspace: Path, package_root: Path) -> Path:
+    """Prefer the workspace's stable package link over pnpm's versioned store.
+
+    Python resolves the ``gaia`` executable's symlink before deriving
+    ``_PACKAGE_ROOT``.  With pnpm that turns the package root into a transient
+    ``node_modules/.pnpm/...`` directory which is removed on the next install.
+    OpenCode validates file references during startup, so persisting that
+    canonical path makes an otherwise valid configuration unloadable after an
+    upgrade.  The workspace dependency link is the package manager's stable
+    indirection and follows the currently installed package.
+    """
+    workspace_package = workspace / "node_modules" / "@jaguilar87" / "gaia"
+    try:
+        if (
+            workspace_package.is_dir()
+            and workspace_package.resolve() == package_root.resolve()
+        ):
+            return workspace_package.absolute()
+    except OSError:
+        pass
+    return package_root.absolute()
 
 
 def _link_opencode_skills(
@@ -247,7 +271,7 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
         agent = {
             "description": description,
             "mode": host_policy["mode"],
-            "prompt": f"{{file:{source.resolve()}}}",
+            "prompt": f"{{file:{source.absolute()}}}",
         }
         max_turns = frontmatter.get("maxTurns")
         if max_turns and max_turns.isdigit():
