@@ -161,6 +161,52 @@ def test_extraction_is_bounded_on_pathological_nesting():
     assert len(extract_substitutions(command)) <= 64
 
 
+def test_the_body_cap_reports_that_it_stopped_looking():
+    """A truncated list must be distinguishable from a complete one.
+
+    The cap is a scan condition, so reaching it abandons the rest of the
+    string. A caller holding only the list cannot tell "there are no more
+    substitutions" from "I stopped counting", and those demand opposite
+    verdicts -- which is how sixty-four read substitutions followed by a
+    mutation classified free.
+    """
+    from modules.security.shell_substitution import (
+        _MAX_SUBSTITUTIONS,
+        extract_substitutions_truncated,
+    )
+
+    complete = "echo " + " ".join(["$(pwd)"] * (_MAX_SUBSTITUTIONS - 1))
+    bodies, truncated = extract_substitutions_truncated(complete)
+    assert truncated is False
+    assert len(bodies) == _MAX_SUBSTITUTIONS - 1
+
+    over = "echo " + " ".join(["$(pwd)"] * _MAX_SUBSTITUTIONS) + " $(rm -rf /)"
+    bodies, truncated = extract_substitutions_truncated(over)
+    assert truncated is True
+    assert "rm -rf /" not in bodies, (
+        "the body past the cap is genuinely unseen -- which is exactly why the "
+        "caller has to be told the scan was cut short"
+    )
+
+
+def test_the_nesting_cap_is_not_below_the_descent_bound_of_its_consumers():
+    """The flat list must reach at least as deep as a per-level consumer does.
+
+    When it does not, the only reader still able to see a deeply nested body is
+    the one that re-enters per level -- and that reader is the mutative lane,
+    which answers APPROVABLE. The permanent-deny floor and the protected-path
+    guard read this flat list, so a floor body nested past this cap was
+    reported one level softer than it is.
+    """
+    from modules.security.mutative_verbs import _MAX_SUBSTITUTION_RECURSION_DEPTH
+    from modules.security.shell_substitution import _MAX_NESTING_DEPTH
+
+    assert _MAX_NESTING_DEPTH >= _MAX_SUBSTITUTION_RECURSION_DEPTH
+
+    deep = "echo $(" * 12 + "rm -rf /" + ")" * 12
+    assert "rm -rf /" in extract_substitutions(deep)
+
+
 def test_top_level_only_stops_at_the_outermost_bodies():
     """The flat list and the outermost-only list differ exactly by nesting.
 

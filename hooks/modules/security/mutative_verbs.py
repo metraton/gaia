@@ -33,7 +33,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
-from .shell_substitution import extract_substitutions
+from .shell_substitution import extract_substitutions_truncated
 
 try:
     from .capability_classes import (
@@ -1038,12 +1038,52 @@ _MAX_SCRIPT_READ_BYTES = 256 * 1024
 # ``bin/validate-sandbox.sh [--version ...]`` line -- or a mutual A->B->A cycle
 # would otherwise re-read and re-classify the same file forever, blowing Python's
 # stack ("maximum recursion depth exceeded") and crashing the PreToolUse hook.
-# Once the descent reaches this cap the body is NO LONGER opened: the invocation
-# classifies by ordinary token scan instead (safe by elimination), which breaks
-# the cycle deterministically.  Legitimate nesting is only a few levels deep
-# (`npm run x` -> `bash a.sh` -> `bash b.sh`), so this cap never truncates a real
-# chain; it exists solely to guarantee termination on a self/mutual reference.
+# Legitimate nesting is only a few levels deep (`npm run x` -> `bash a.sh` ->
+# `bash b.sh`), so this cap never truncates a real chain; it exists solely to
+# guarantee termination on a self/mutual reference.
+#
+# REACHING THE CAP STOPS THE DESCENT AND RETAINS THE VERDICT. Those are two
+# separate acts, and conflating them was a measured hole: the body was no longer
+# opened AND the invocation fell through to ordinary token classification, which
+# answers safe by elimination -- so the level that spent the last unit of budget
+# was released rather than withheld. A nesting chain whose innermost body was a
+# script invocation passed FREE at EXACTLY this value, with the levels on either
+# side of it gated. Raising the number would only move that hole.
+#
+# The principle the three exhaustion sites now share: budget exhaustion is a
+# FAILURE TO PROVE SAFETY, not a proof of safety. A lane that declines to open a
+# body because the budget ran out is in the same epistemic position as one that
+# could not read the file, and the module already resolves that position
+# conservatively (`script-file-unreadable`, `npm-run-unresolved`). Cycle-breaking
+# needs the descent to STOP; it never needed the verdict to be free.
 _MAX_SCRIPT_RECURSION_DEPTH = 12
+
+# The verdict every lane returns when the descent budget is exhausted. Built here
+# rather than inline at the three sites so the three cannot drift apart, and so a
+# fourth descending lane added later has one obvious thing to call.
+def _budget_exhausted_result(lane: str) -> MutativeResult:
+    """Return the conservative verdict for a body left unopened by the bound.
+
+    Args:
+        lane: The descending lane that ran out of budget, named in the reason so
+            an operator reading a block can tell which body went uninspected.
+
+    Returns:
+        A mutative result. Confidence is ``low`` because nothing about the body
+        was actually read -- the verdict states that safety is unproven, not that
+        a mutation was found.
+    """
+    return MutativeResult(
+        is_mutative=True,
+        category=CATEGORY_MUTATIVE,
+        verb="descent-budget-exhausted",
+        cli_family="system",
+        confidence="low",
+        reason=(
+            f"Nested {lane} exceeded the analysis depth limit; the body was "
+            f"not opened and is classified conservatively"
+        ),
+    )
 
 # Maximum descent for the command-substitution lane, counted on the SAME
 # ``_depth`` budget as the script lane above -- one command may only ever be
@@ -3252,9 +3292,17 @@ def _check_command_substitutions(
         result: this lane may only ADD a verdict, so a read-only body leaves
         classification exactly where it found it.
     """
-    bodies = extract_substitutions(command, top_level_only=True)
+    bodies, truncated = extract_substitutions_truncated(
+        command, top_level_only=True,
+    )
     if not bodies:
         return None
+
+    # The extractor stopped looking rather than finished looking, so the bodies
+    # to the right of its cap were never classified. Same rule as the descent
+    # bound below: an analysis that ran out of room retains.
+    if truncated:
+        return _budget_exhausted_result("command substitution count")
 
     if _depth >= _MAX_SUBSTITUTION_RECURSION_DEPTH:
         return MutativeResult(
@@ -4675,12 +4723,17 @@ def _check_prefix_runner(
 
     Returns ``None`` when the command is not a resolvable runner invocation.
     """
-    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
-        return None
-
     resolved = _resolve_prefix_runner_payload(base_cmd, semantics)
     if resolved is None:
         return None
+
+    # Budget exhausted: stop descending AND retain -- see the constant. Placed
+    # AFTER the shape check on purpose: the retaining verdict may only reach a
+    # command this lane has already recognized as a runner invocation, or every
+    # unrelated command that happens to be classified at this depth would be
+    # gated by a lane that has nothing to say about it.
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("runner payload")
 
     payload, rest = resolved
 
@@ -5686,25 +5739,23 @@ def _check_script_file(
     overbroad-classification complaint is not reintroduced.
 
     ``_depth`` is the current body-descent depth.  At ``_MAX_SCRIPT_RECURSION_
-    DEPTH`` the script body is NOT opened -- returning ``None`` here makes the
-    invocation classify by ordinary token scan instead, which breaks a self- or
-    mutual-reference cycle (a script whose text names its own path re-reads and
-    re-classifies itself forever otherwise -- see the constant's docstring).
+    DEPTH`` the script body is NOT opened and the invocation is retained rather
+    than released -- see the constant, which owns that rationale.
 
     Returns ``None`` when the command is not a script-file invocation.
     """
-    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
-        # Recursion budget exhausted: refuse to descend into (re-read) the
-        # referenced body. Falling through to ordinary token classification is
-        # the deterministic cycle break.
-        return None
-
     resolved = _resolve_script_argument(base_cmd, semantics)
     if resolved is None:
         # No script FILE to open -- the payload may still be a program the
         # interpreter reads from stdin, which is un-inspectable rather than
         # absent.  Every other shape returns None and classifies normally.
         return _check_stdin_script_payload(command, base_cmd, family, semantics)
+
+    # Budget exhausted: stop descending AND retain -- see the constant. Placed
+    # AFTER the shape check for the same reason as the runner lane's: only a
+    # command already recognized as a script invocation may be retained by it.
+    if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
+        return _budget_exhausted_result("script body")
 
     script_path, lane = resolved
 
@@ -6215,11 +6266,10 @@ def _check_npm_script_runner(
 
     script_name = non_flag[1]
 
-    # Recursion budget exhausted: refuse to descend into (re-resolve and
-    # re-classify) the package.json body. Returning None lets the invocation
-    # classify by ordinary token scan, breaking an npm-run self/mutual cycle.
+    # Budget exhausted: stop descending AND retain -- see the constant. Already
+    # past the shape checks above, so only a real `npm run <script>` reaches it.
     if _depth >= _MAX_SCRIPT_RECURSION_DEPTH:
-        return None
+        return _budget_exhausted_result("npm script body")
 
     body = _resolve_npm_script_body(script_name, cwd=cwd)
     if body is None:

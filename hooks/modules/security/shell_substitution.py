@@ -103,16 +103,30 @@ Public API:
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Tuple
 
 # Enough nesting depth for any honest command; past this the obfuscation-depth
 # limit in bash_validator has its own say. The bound only keeps a pathological
 # string from recursing without end.
-_MAX_NESTING_DEPTH = 8
+#
+# It must not sit BELOW the descent bound its consumers apply. A consumer that
+# re-enters per level (the mutative lane) reaches bodies deeper than a consumer
+# reading this flat list (the permanent-deny floor, the protected-path guard),
+# and when the two disagree the deeper reader is the one with the SOFTER verdict
+# -- a floor body nested between the two numbers was reported approvable rather
+# than categorical, because only the lane that could still see it was the lane
+# that cannot answer categorically. Measured at 8 against a bound of 12.
+_MAX_NESTING_DEPTH = 12
 
 # Upper bound on how many bodies one command may yield. A command long enough
 # to exceed this is already past every other size guard in the pipeline; the cap
 # exists so a degenerate string cannot turn classification into a long walk.
+#
+# Reaching it TRUNCATES the scan, so the bodies past it were never looked at --
+# which is why ``extract_substitutions_truncated`` reports that fact instead of
+# letting a short list pass for a complete one. Sixty-four read substitutions
+# followed by a mutation returned the sixty-four reads and no mutation, and the
+# command classified free.
 _MAX_SUBSTITUTIONS = 64
 
 _PROCESS_SUBSTITUTION_OPENERS = ("<(", ">(")
@@ -407,10 +421,32 @@ def extract_substitutions(
         those either. An empty list means the string carries no execution
         beyond the command as written.
     """
+    return extract_substitutions_truncated(command, top_level_only)[0]
+
+
+def extract_substitutions_truncated(
+    command: str, top_level_only: bool = False,
+) -> Tuple[List[str], bool]:
+    """Return the substitution bodies AND whether the scan ran out of room.
+
+    Same extraction as ``extract_substitutions``; the second element is what
+    that function cannot express. The body-count cap is applied as a scan
+    condition, so hitting it does not merely shorten the list -- it stops the
+    walk, and every body to the right of the cap goes unexamined. A caller that
+    reads only the list cannot tell "no more substitutions" from "stopped
+    looking", and the two demand opposite verdicts: the first is a complete
+    answer, the second is an unfinished one.
+
+    Returns:
+        ``(bodies, truncated)``. ``truncated`` is True when the cap stopped the
+        scan, meaning the list is a prefix of what the command really carries
+        and a caller that gates on it must treat the remainder as unproven
+        rather than absent.
+    """
     if not command or ("$(" not in command and "`" not in command
                        and "<(" not in command and ">(" not in command):
-        return []
+        return [], False
 
     out: List[str] = []
     _collect(command, 0, out, not top_level_only)
-    return out
+    return out, len(out) >= _MAX_SUBSTITUTIONS

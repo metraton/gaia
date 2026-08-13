@@ -71,9 +71,58 @@ def nest(levels: int, inner: str) -> str:
     return out
 
 
-def test_below_the_bound_a_read_body_stays_free():
-    at_bound = nest(_MAX_SUBSTITUTION_RECURSION_DEPTH, "pwd")
-    assert detect_mutative_command(at_bound).is_mutative is False
+# Bodies whose classification DEPENDS on a descent the bound can cut off. A
+# read-only body is useless at the boundary -- free is both the correct answer
+# and the answer a released bound produces, so the assertion cannot fail and the
+# test is decoration. Each of these is decided by a lane that must OPEN
+# something (a script file, a package entry, a stdin payload); when the bound
+# stops that lane, retaining and releasing give opposite verdicts, which is what
+# makes the assertion able to bite.
+BODIES_THAT_SPEND_DESCENT = [
+    ("shell-script", "bash /nonexistent/deploy.sh"),
+    ("python-script", "python3 /nonexistent/migrate.py"),
+    ("npm-entry", "npm run build"),
+    ("stdin-payload", "python3 -"),
+]
+
+
+@pytest.mark.parametrize(
+    "family,body", BODIES_THAT_SPEND_DESCENT,
+    ids=[f for f, _ in BODIES_THAT_SPEND_DESCENT],
+)
+@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["below", "at", "above"])
+def test_the_bound_holds_at_its_own_value_for_every_descending_family(
+    family, body, offset,
+):
+    """The bound must not open ON the value it is set to.
+
+    This is the case the previous edge test could not see, because it varied
+    only DEPTH and held the innermost body read-only. The axis that matters is
+    the FAMILY of that body: a family that spends descent budget is decided by
+    a lane whose exhaustion used to resolve the opposite way from the
+    substitution guard's, so the two met at the bound and the level that spent
+    the last unit was released -- free at exactly this value, gated one level on
+    either side of it.
+    """
+    depth = _MAX_SUBSTITUTION_RECURSION_DEPTH + offset
+    result = detect_mutative_command(nest(depth, body))
+    assert result.is_mutative is True, (
+        f"{family} at depth {depth} (bound{offset:+d}) classified free: "
+        f"verb={result.verb!r} -- a nesting level that spends the last unit of "
+        f"descent budget must be retained, not released"
+    )
+
+
+def test_a_read_body_at_the_bound_is_still_free():
+    """The other direction, so retaining does not silently become blanket-gating.
+
+    Nothing needs to be opened to classify a read, so the bound does not apply
+    to it and the answer must stay free at the same depth where a script body
+    is retained.
+    """
+    assert detect_mutative_command(
+        nest(_MAX_SUBSTITUTION_RECURSION_DEPTH, "pwd"),
+    ).is_mutative is False
 
 
 def test_past_the_bound_the_verdict_closes_rather_than_opens():
