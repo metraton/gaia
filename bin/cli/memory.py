@@ -1127,6 +1127,7 @@ def _cmd_list(args) -> int:
     class_filter = getattr(args, "cls", None)
     status_filter = getattr(args, "status", None)
     order_by = getattr(args, "sort", None) or "name"
+    direction = getattr(args, "order", None)
     fmt = getattr(args, "format", None) or "table"
     limit = getattr(args, "limit", None)
     if as_json:
@@ -1141,6 +1142,7 @@ def _cmd_list(args) -> int:
         rows = list_memory(
             workspace, type=type_filter, audience=audience_filter,
             class_=class_filter, status=status_filter, order_by=order_by,
+            direction=direction,
         )
     except ValueError as exc:
         return _err(str(exc), as_json)
@@ -1341,11 +1343,11 @@ _DIGEST_DEFAULT_MAX_CHARS = 1500
 _OTHERS_BUCKET = "otros"
 
 
-def _bump_injection_telemetry(workspace: str, names) -> None:
-    """Best-effort P1 injection bump, shared by every automatic-injection
-    renderer below (digest / sections / legacy types) -- one call site so
-    the isolation contract is enforced once, not re-typed per renderer.
-    Reuses ``gaia.store.writer.record_memory_access`` (never a second
+def _bump_memory_telemetry(workspace: str, names, kind: str) -> None:
+    """Best-effort access bump for every row in ``names``, shared by every
+    renderer below -- one call site so the isolation contract is enforced
+    once, not re-typed per renderer. Reuses
+    ``gaia.store.writer.record_memory_access`` (never a second
     implementation) and swallows every failure mode, including one raised
     by ``record_memory_access`` itself: a caller here has already computed
     the block it is about to return, and measuring it must never cost it.
@@ -1356,9 +1358,14 @@ def _bump_injection_telemetry(workspace: str, names) -> None:
         return
     for name in names:
         try:
-            record_memory_access(workspace, name, "injection")
+            record_memory_access(workspace, name, kind)
         except Exception:
             pass
+
+
+def _bump_injection_telemetry(workspace: str, names) -> None:
+    """Count one automatic-block render for each row named."""
+    _bump_memory_telemetry(workspace, names, "injection")
 
 
 def _cmd_get_relevant(args) -> int:
@@ -1931,6 +1938,10 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
     ignored here: it governs the attention-budgeted SessionStart renderers,
     and applying it to an explicitly requested corpus would silently withhold
     part of the answer. See the note above ``_DIGEST_HEADER``.
+
+    Every row returned bumps deliberate-read telemetry in both output shapes:
+    naming the initiative is what identified them, so the text block's
+    collapsed rendering is the same request as the JSON payload's.
     """
     try:
         from gaia.store.writer import normalize_initiative
@@ -1951,12 +1962,6 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             print(json.dumps({"workspace": workspace, "items": [], "block": ""}))
         return 0
 
-    try:
-        from gaia.store.writer import record_memory_access
-    except ImportError:
-        record_memory_access = None
-    renders_body = as_json
-
     header = f"## Memory — Pendientes de {label}"
     lines = [header, ""]
     items: list[dict] = []
@@ -1975,10 +1980,8 @@ def _render_project_mode(args, workspace: str, initiative_arg: str,
             "description": description,
             "body": r.get("body"),
         })
-        # Only the JSON payload carries `body`; the text block renders name
-        # plus collapsed description, a projection that counts as neither.
-        if renders_body and record_memory_access is not None:
-            record_memory_access(workspace, name, "deliberate")
+
+    _bump_memory_telemetry(workspace, [i["name"] for i in items], "deliberate")
 
     block = "\n".join(lines) + "\n\n" + _MEMORY_POINTER
 
@@ -2193,17 +2196,15 @@ def _cmd_curated_show(args) -> int:
                           changed, body size delta -- NOT full bodies).
     ``--links`` / ``--history`` are additive: either or both can be combined
     with ``--json`` to enrich the emitted payload; in text mode either one
-    replaces the body. Bumps the row's deliberate-read counter exactly when
-    it emits the body.
+    replaces the body. Every mode bumps the row's deliberate-read counter: the
+    caller named the slug, so which projection came back does not change that
+    it went looking for this row.
     """
     as_json = getattr(args, "json", False)
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     name = args.name
     want_links = getattr(args, "links", False)
     want_history = getattr(args, "history", False)
-    # JSON always carries `body`; text renders it only when neither
-    # --links nor --history has taken its place.
-    renders_body = as_json or not (want_links or want_history)
 
     try:
         from gaia.store.writer import get_memory, record_memory_access
@@ -2219,11 +2220,10 @@ def _cmd_curated_show(args) -> int:
             f"memory '{name}' not found in workspace '{workspace}'",
             as_json,
         )
-    if renders_body:
-        record_memory_access(workspace, name, "deliberate")
-        # This call is itself one of the reads it is about to report, so the
-        # counters are re-read rather than the held row's incremented by hand.
-        row = get_memory(workspace, name) or row
+    record_memory_access(workspace, name, "deliberate")
+    # This call is itself one of the reads it is about to report, so the
+    # counters are re-read rather than the held row's incremented by hand.
+    row = get_memory(workspace, name) or row
 
     # Fill the class/status gap: get_memory projects neither column.
     cs = get_memory_class_status(workspace, name)
@@ -3015,6 +3015,7 @@ def register(subparsers):
             "  gaia memory list --type=feedback\n"
             "  gaia memory list --limit=10\n"
             "  gaia memory list --sort=deliberate   # most deliberately-read first\n"
+            "  gaia memory list --sort=deliberate --order=asc --limit=20   # least-read first\n"
             "  gaia memory list --class=thread --status=carry_forward\n"
         ),
     )
@@ -3042,7 +3043,14 @@ def register(subparsers):
         "--sort", default="name",
         choices=("name", "injection", "deliberate"),
         help="Sort key (default: name). 'injection' and 'deliberate' each "
-             "sort DESC by that counter alone; there is no combined ranking.",
+             "sort by that counter alone; there is no combined ranking.",
+    )
+    list_p.add_argument(
+        "--order", default=None,
+        choices=("asc", "desc"),
+        help="Sort direction. Defaults to asc for --sort=name and desc for "
+             "the counters; --order=asc on a counter answers 'which are "
+             "barely used' without reading the tail of an untopped list.",
     )
     list_p.add_argument("--workspace", default=None, metavar="W",
                         help="Workspace identity.")

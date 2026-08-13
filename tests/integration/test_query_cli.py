@@ -658,9 +658,9 @@ def test_query_metrics_table_render(tmp_db, tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# P1 (telemetria-de-uso-en-memoria-curada): --surface=memory --json renders
-# each row's full body under `raw` -- the deliberate-read surface. Table mode
-# renders only `summary`, never `raw`, so it must never bump either counter.
+# `gaia query` is a window over the substrate: it names none of the rows it
+# returns, so no shape of its output counts as a read of one -- not even the
+# JSON shape, which does dump each body under `raw`.
 # ---------------------------------------------------------------------------
 
 def _read_memory_telemetry(db_path: Path, workspace: str, name: str) -> tuple:
@@ -676,10 +676,10 @@ def _read_memory_telemetry(db_path: Path, workspace: str, name: str) -> tuple:
         con.close()
 
 
-def test_query_json_memory_bumps_deliberate_telemetry(tmp_db, tmp_path,
-                                                       monkeypatch, capsys):
-    """--surface=memory --json bumps deliberate_count by exactly 1 and never
-    touches injection_count or updated_at (the injection-block sort key)."""
+def test_query_json_memory_never_bumps_telemetry(tmp_db, tmp_path,
+                                                  monkeypatch, capsys):
+    """The body reaches the caller under `raw` and still counts as nothing:
+    the window identified no row, and rendering is not identification."""
     from cli.query import cmd_query
 
     monkeypatch.chdir(tmp_path)
@@ -697,14 +697,13 @@ def test_query_json_memory_bumps_deliberate_telemetry(tmp_db, tmp_path,
 
     after = _read_memory_telemetry(tmp_db, "me", "project_deliberate")
     assert after[0] == 0, "injection_count must stay untouched"
-    assert after[1] == 1, "deliberate_count must bump exactly once"
+    assert after[1] == 0, "no shape of gaia query counts as a deliberate read"
     assert after[3] == "2026-05-07T05:00:00Z", "updated_at must stay byte-identical"
 
 
 def test_query_table_memory_never_bumps_telemetry(tmp_db, tmp_path,
                                                    monkeypatch, capsys):
-    """Table mode renders only `summary` (never `raw`/body); it must leave
-    both telemetry counters untouched."""
+    """Table mode renders only `summary`; it must leave both counters at rest."""
     from cli.query import cmd_query
 
     monkeypatch.chdir(tmp_path)
@@ -722,8 +721,7 @@ def test_query_table_memory_never_bumps_telemetry(tmp_db, tmp_path,
 
 def test_query_json_group_by_memory_does_not_bump_telemetry(tmp_db, tmp_path,
                                                              monkeypatch, capsys):
-    """--group-by strips rows to {group, count}; body never reaches the
-    output, so the aggregate JSON shape must not bump telemetry either."""
+    """--group-by strips rows to {group, count}, and counts nothing either."""
     from cli.query import cmd_query
 
     monkeypatch.chdir(tmp_path)

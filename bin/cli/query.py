@@ -15,6 +15,9 @@ Output shape (always the same five columns regardless of surface):
     summary     -- short human line derived from the source row
 
 JSON output preserves the same shape plus the original row under ``raw``.
+
+No mode of this command bumps curated-memory access telemetry: a filtered
+window over the table identifies no row, so dumping one is not a read of it.
 """
 
 from __future__ import annotations
@@ -57,30 +60,6 @@ def _err(msg: str, as_json: bool = False) -> int:
     else:
         print(f"Error: {msg}", file=sys.stderr)
     return 1
-
-
-def _bump_deliberate_memory_telemetry(rows: list[dict]) -> None:
-    """Count one deliberate read per memory row whose body is about to be emitted.
-
-    Best-effort: every failure is swallowed, so instrumenting a read can
-    never cost the read. Call it only from an output shape that emits
-    ``raw`` -- a projection of `summary` alone counts as neither kind.
-    """
-    try:
-        from gaia.store.writer import record_memory_access
-    except ImportError:
-        return
-    for r in rows:
-        if r.get("surface") != "memory":
-            continue
-        raw = r.get("raw") or {}
-        ws, name = raw.get("workspace"), raw.get("name")
-        if not ws or not name:
-            continue
-        try:
-            record_memory_access(ws, name, "deliberate")
-        except Exception:
-            pass
 
 
 # ---------------------------------------------------------------------------
@@ -293,7 +272,6 @@ def cmd_query(args) -> int:
         print(len(rows))
         return 0
     if as_json or fmt == "json":
-        _bump_deliberate_memory_telemetry(rows)
         print(json.dumps(rows, indent=2, default=str))
         return 0
 

@@ -9,8 +9,9 @@ appends (char delta), body edits, status transitions, link creation, and
 tombstones. It closes with a final-state table (name / class / status / role in
 the tree).
 
-Read-only (T0): all data comes from ``gaia.store.reader`` read helpers, which
-open the substrate with ``PRAGMA query_only = ON``. This module owns only the
+Read-only (T0): every narrated datum comes from ``gaia.store.reader`` read
+helpers, which open the substrate with ``PRAGMA query_only = ON``; the one
+write is the seed row's deliberate-access counter. This module owns only the
 CLI surface (argument wiring + narration render); the queries, the BFS, and the
 timeline fusion live in ``gaia.store.reader`` so they are unit-testable without
 the CLI.
@@ -143,6 +144,12 @@ def _cmd_story(args) -> int:
             f"(no live row, no lineage, no history)",
             as_json,
         )
+
+    # Only the seed: the caller named it, while the rest of the lineage is
+    # what the BFS found on its behalf.
+    if live is not None:
+        from cli.memory import _bump_memory_telemetry
+        _bump_memory_telemetry(workspace, [slug], "deliberate")
 
     if as_json:
         print(json.dumps(story, indent=2, default=str))

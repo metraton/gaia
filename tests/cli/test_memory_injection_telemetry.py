@@ -382,10 +382,10 @@ class TestInitiativeModeStaysDeliberateOnly:
         assert after["injection_count"] == before["injection_count"] == 0
         assert after["deliberate_count"] == before["deliberate_count"] + 1
 
-    def test_initiative_text_mode_counts_as_neither(self, tmp_db, capsys):
-        """Text mode renders `- name: description`, never the body, so it is
-        a projection and must move neither counter -- the same property that
-        keeps `show --links` from counting."""
+    def test_initiative_text_mode_is_deliberate_too(self, tmp_db, capsys):
+        """Text mode collapses each row to `- name: description` and still
+        counts: naming the initiative is what identified the rows, and the
+        text block answers exactly the request the JSON one does."""
         _insert(tmp_db, "text_only", initiative="demoproj",
                 class_="thread", status="open", body="the actual body text")
 
@@ -401,5 +401,5 @@ class TestInitiativeModeStaysDeliberateOnly:
         assert rc == 0
         assert "the actual body text" not in out
         assert after["injection_count"] == 0
-        assert after["deliberate_count"] == 0
-        assert after["last_deliberate_at"] is None
+        assert after["deliberate_count"] == 1
+        assert after["last_deliberate_at"] is not None

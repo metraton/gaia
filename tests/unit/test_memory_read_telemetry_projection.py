@@ -130,12 +130,49 @@ class TestListMemoryProjectsTelemetryAndLifecycle:
             "row_mid_injection", "row_low_usage",
         ]
 
+    def test_order_ascending_reverses_a_counter_key(self, tmp_path: Path) -> None:
+        """The least-used tail is reachable from the head of the list."""
+        db_path = tmp_path / "order_asc.db"
+        _seed_db(db_path)
+
+        rows = writer.list_memory(
+            _WORKSPACE, order_by="deliberate", direction="asc", db_path=db_path,
+        )
+
+        assert [r["name"] for r in rows] == [
+            "row_low_usage", "row_mid_injection",
+            "row_high_injection", "row_high_deliberate",
+        ]
+
+    def test_order_defaults_per_key(self, tmp_path: Path) -> None:
+        """A name reads alphabetically, a counter from the top of its ranking."""
+        db_path = tmp_path / "order_defaults.db"
+        _seed_db(db_path)
+
+        by_name = writer.list_memory(_WORKSPACE, db_path=db_path)
+        by_counter = writer.list_memory(
+            _WORKSPACE, order_by="deliberate", db_path=db_path,
+        )
+
+        assert [r["name"] for r in by_name] == sorted(r["name"] for r in by_name)
+        assert by_counter[0]["name"] == "row_high_deliberate"
+
     def test_invalid_order_by_raises_value_error(self, tmp_path: Path) -> None:
         db_path = tmp_path / "bad_order.db"
         _seed_db(db_path)
 
         with pytest.raises(ValueError):
             writer.list_memory(_WORKSPACE, order_by="bogus", db_path=db_path)
+
+    def test_invalid_direction_raises_value_error(self, tmp_path: Path) -> None:
+        db_path = tmp_path / "bad_direction.db"
+        _seed_db(db_path)
+
+        with pytest.raises(ValueError):
+            writer.list_memory(
+                _WORKSPACE, order_by="deliberate", direction="sideways",
+                db_path=db_path,
+            )
 
     def test_filter_by_class_and_status(self, tmp_path: Path) -> None:
         db_path = tmp_path / "filter.db"

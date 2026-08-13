@@ -676,11 +676,11 @@ def test_curated_show_never_accessed_shows_never_marker(
     assert "last_deliberate_at: 2026" in out
 
 
-def test_curated_show_text_links_only_does_not_bump_deliberate(
+def test_curated_show_text_links_only_still_bumps_deliberate(
     tmp_db, tmp_path, monkeypatch, capsys,
 ):
-    """Text mode + --links replaces the body with the edge list, so it
-    renders no body and must not count as a deliberate read."""
+    """--links withholds the body and counts anyway: the slug named the row,
+    and which projection came back does not unmake that."""
     from cli.memory import _cmd_curated_show
     from gaia.store.writer import _connect
 
@@ -694,19 +694,20 @@ def test_curated_show_text_links_only_does_not_bump_deliberate(
     assert rc == 0
     out = capsys.readouterr().out
     assert "the actual body text" not in out
-    assert "deliberate_count: 0" in out
+    assert "deliberate_count: 1" in out
 
     con = _connect(tmp_db)
     row = con.execute(
-        "SELECT deliberate_count, last_deliberate_at FROM memory "
+        "SELECT injection_count, deliberate_count, last_deliberate_at FROM memory "
         "WHERE workspace='me' AND name='links_only'",
     ).fetchone()
     con.close()
-    assert row["deliberate_count"] == 0
-    assert row["last_deliberate_at"] is None
+    assert row["deliberate_count"] == 1
+    assert row["injection_count"] == 0
+    assert row["last_deliberate_at"] is not None
 
 
-def test_curated_show_text_history_only_does_not_bump_deliberate(
+def test_curated_show_text_history_only_still_bumps_deliberate(
     tmp_db, tmp_path, monkeypatch, capsys,
 ):
     """Same property as --links, for --history."""
@@ -723,23 +724,22 @@ def test_curated_show_text_history_only_does_not_bump_deliberate(
     assert rc == 0
     out = capsys.readouterr().out
     assert "the actual body text" not in out
-    assert "deliberate_count: 0" in out
+    assert "deliberate_count: 1" in out
 
     con = _connect(tmp_db)
     row = con.execute(
-        "SELECT deliberate_count FROM memory "
+        "SELECT injection_count, deliberate_count FROM memory "
         "WHERE workspace='me' AND name='history_only'",
     ).fetchone()
     con.close()
-    assert row["deliberate_count"] == 0
+    assert row["deliberate_count"] == 1
+    assert row["injection_count"] == 0
 
 
 def test_curated_show_json_with_links_still_emits_body_and_bumps(
     tmp_db, tmp_path, monkeypatch, capsys,
 ):
-    """The property is "renders the body", not "no --links/--history flag" --
-    JSON mode always includes body (dict(row)) even with --links, so it must
-    still count."""
+    """The JSON shape of the same named read: also one deliberate bump."""
     from cli.memory import _cmd_curated_show
     from gaia.store.writer import _connect
 

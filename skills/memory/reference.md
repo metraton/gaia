@@ -169,31 +169,43 @@ alone. It is best-effort: every failure is swallowed and reported as
 `False`, so a locked or unreachable DB never breaks the read it instruments.
 
 `SKILL.md`'s "Reading a row leaves a trace" carries the property that decides
-which kind a surface is; these are the places code applies it today, and a new
-surface is classified by that property rather than added to this list:
+which kind a surface is -- whether the CALLER identified the rows, never
+whether the answer carried the body. These are the places code applies it
+today, and a new surface is classified by that property rather than added to
+this list:
 
 | Call site | Symbol | Kind |
 |---|---|---|
 | `get-relevant` (no flag), `--sections=`, `--types=` | `_bump_injection_telemetry` (`bin/cli/memory.py`) | injection |
 | Subagent kernel's "How the user works" block | `_record_kernel_injection_telemetry` (`hooks/modules/context/kernel_builder.py`) | injection |
-| `memory show <slug>`, whenever it emits the body | `_cmd_curated_show` (`bin/cli/memory.py`) | deliberate |
-| `get-relevant --initiative=<key> --json`, which projects `body` | `_render_project_mode` (`bin/cli/memory.py`) | deliberate |
-| `query --json` over the memory surface, which dumps `raw` including `body` | `_bump_deliberate_memory_telemetry` (`bin/cli/query.py`) | deliberate |
+| `memory show <slug>`, every mode including `--links`/`--history` | `_cmd_curated_show` (`bin/cli/memory.py`) | deliberate |
+| `memory story <slug>`, the seed row alone | `_cmd_story` (`bin/cli/memory_story.py`) | deliberate |
+| `get-relevant --initiative=<key>`, text and JSON alike | `_render_project_mode` (`bin/cli/memory.py`) | deliberate |
 
-The two body-less shapes of those same commands write nothing: `memory show
---links`/`--history` in text replaces the body with the edge or version list,
-and `get-relevant --initiative` in text prints name plus collapsed
-description. So does every pure projection -- `search`, `list`, `query` in
-table form, `--count`, `--group-by`.
+Whatever a window returns writes nothing, whatever it renders of each row:
+`search`, `list`, `stats`, `conflicts`, and `gaia query` in every one of its
+modes -- table, `--json`, `--count`, `--group-by`. `gaia query` is the
+substrate's event reader, auditing memory, episodes and the hook log in one
+call; it never names a row, so no shape of its output is a read of one. The
+lineage a `story` BFS discovers around its seed is the same case: the caller
+named the seed, not what the walk reached from it.
+
+`tests/integration/test_memory_access_telemetry_surfaces.py` pins every row of
+that table by running the real command and measuring the counters it moved. It
+discovers the surface set from the argument parser rather than from a list, so
+a new subcommand or a new flag on a read subcommand fails it until classified.
 
 Two surfaces read the counters back. `gaia memory show <slug>` prints each
 pair on its own line (`injection_count`/`last_injected_at`,
 `deliberate_count`/`last_deliberate_at`). `gaia memory list` prints an `INJ`
 and a `DELIB` column and takes `--sort=injection` or `--sort=deliberate`
-(`_cmd_list` -> `gaia.store.writer.list_memory`, `_MEMORY_LIST_ORDERS`),
-sorting DESC by the named counter with ties broken by name; `--sort=name`
-stays the default. Neither surface ever combines the two into one number or
-one sort key -- the same never-merge rule as the write side.
+(`_cmd_list` -> `gaia.store.writer.list_memory`, `_MEMORY_LIST_ORDERS`), with
+`--order=asc|desc` choosing the direction -- default `desc` on a counter,
+`asc` on `--sort=name` (`_MEMORY_LIST_DEFAULT_DIRECTIONS`), ties always broken
+by name ascending. `--order=asc` on a counter is how "which rows are barely
+used" is asked without reading the tail of an untopped list. Neither surface
+ever combines the two into one number or one sort key -- the same never-merge
+rule as the write side.
 
 Reading them back is their only consumer. Automatic SessionStart selection --
 `get-relevant`'s digest, `--sections=`, `--types=`, and the kernel's "How

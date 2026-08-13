@@ -3370,9 +3370,19 @@ def get_memory(
 
 _MEMORY_LIST_ORDERS: dict[str, str] = {
     "name": "name",
-    "injection": "injection_count DESC, name",
-    "deliberate": "deliberate_count DESC, name",
+    "injection": "injection_count",
+    "deliberate": "deliberate_count",
 }
+
+# The direction a key is asked for when the caller names none: a name is
+# looked up alphabetically, a counter to see the head of its ranking.
+_MEMORY_LIST_DEFAULT_DIRECTIONS: dict[str, str] = {
+    "name": "asc",
+    "injection": "desc",
+    "deliberate": "desc",
+}
+
+_MEMORY_LIST_DIRECTIONS = ("asc", "desc")
 
 
 def list_memory(
@@ -3384,6 +3394,7 @@ def list_memory(
     status: str | None = None,
     include_deleted: bool = False,
     order_by: str = "name",
+    direction: str | None = None,
     db_path: Path | None = None,
 ) -> list[dict]:
     """List curated memory rows, optionally filtered by ``type``/``audience``/
@@ -3402,10 +3413,11 @@ def list_memory(
     ``last_deliberate_at``) alongside the content columns.
 
     ``order_by`` selects the sort key: ``"name"`` (the default) or one of
-    ``"injection"``/``"deliberate"``, each sorting DESC by its own counter
-    with ties broken by name. The two counters are never combined into one
-    key -- a single blended score would let automatic injections pass for
-    deliberate reads.
+    ``"injection"``/``"deliberate"``. The two counters are never combined into
+    one key -- a single blended score would let automatic injections pass for
+    deliberate reads. ``direction`` is ``"asc"``/``"desc"``, defaulting per key
+    to :data:`_MEMORY_LIST_DEFAULT_DIRECTIONS`; ties always break by name
+    ascending, so the least-used tail is as readable as the head.
     """
     if audience is not None and audience not in VALID_MEMORY_AUDIENCES:
         raise ValueError(
@@ -3417,6 +3429,16 @@ def list_memory(
             f"invalid memory list order {order_by!r}; must be one of "
             f"{list(_MEMORY_LIST_ORDERS)}"
         )
+    direction = direction or _MEMORY_LIST_DEFAULT_DIRECTIONS[order_by]
+    if direction not in _MEMORY_LIST_DIRECTIONS:
+        raise ValueError(
+            f"invalid memory list direction {direction!r}; must be one of "
+            f"{list(_MEMORY_LIST_DIRECTIONS)}"
+        )
+    sort_column = _MEMORY_LIST_ORDERS[order_by]
+    order_clause = f"{sort_column} {direction.upper()}"
+    if sort_column != "name":
+        order_clause += ", name ASC"
     con = _connect(db_path)
     try:
         where = ["workspace = ?"]
@@ -3440,7 +3462,7 @@ def list_memory(
             "       status, injection_count, deliberate_count, "
             "       last_injected_at, last_deliberate_at "
             "FROM memory WHERE " + " AND ".join(where) +
-            " ORDER BY " + _MEMORY_LIST_ORDERS[order_by]
+            " ORDER BY " + order_clause
         )
         rows = con.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
@@ -3451,13 +3473,6 @@ def list_memory(
 # ---------------------------------------------------------------------------
 # Public API: curated-memory usage telemetry (v48, best-effort)
 # ---------------------------------------------------------------------------
-#
-# telemetria-de-uso-en-memoria-curada, P1: what counts is a property, not a
-# command list. "Deliberate" is any surface that renders a row's full BODY on
-# someone's explicit request (gaia memory show, get-relevant --initiative);
-# "injection" is a row actually rendered inside an automatic context block
-# (get-relevant digest/sections/types, the subagent kernel). A projection --
-# name, description, snippet, count, delta -- is neither and never calls this.
 #
 # Two hard constraints, both load-bearing for the rest of the entry:
 #   * NARROW UPDATE ONLY. This never goes through upsert_memory/
@@ -3494,8 +3509,9 @@ def record_memory_access(
     """Best-effort telemetry bump for one curated-memory row access.
 
     ``kind`` selects which counter/timestamp pair to bump -- ``"deliberate"``
-    for a row whose full body was rendered on explicit request, ``"injection"``
-    for a row rendered inside an automatic context block. Raises ``ValueError``
+    for a row the caller identified (by slug, or by naming the initiative that
+    holds it), ``"injection"`` for a row rendered inside an automatic context
+    block for someone who asked for neither. Raises ``ValueError``
     for any other ``kind`` (a programming error, not a runtime condition worth
     degrading for). Every other failure -- DB locked, connect/execute/commit
     raising for any reason -- is caught and reported as ``False``; this

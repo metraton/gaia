@@ -74,14 +74,18 @@ truth becomes stale; a durable reference to the canonical object is enough.
 
 ## Reading a row leaves a trace
 
-Two counters bump as a side effect of being read; two questions classify any
-surface, including one not built yet — who asked, and did the answer carry the
-BODY? **Injection**: an automatic block rendered it for someone who did not ask
-(digest, sections, kernel); rows trimmed out of the block do not count.
-**Deliberate**: someone asked and got the body (`show`, `query --json`,
-`--initiative` in JSON). **Neither**: a projection stood in (`search`, `list`,
-`show --links`, `--initiative` in text). Never rank them together: a blended
-number lets injection read as demand, and selection ignores both anyway.
+Two counters bump as a side effect of being read, and one question classifies
+any surface, including one not built yet: **did the caller identify these rows,
+or describe a window and take whatever fell in?** A slug identifies them; a
+named initiative identifies them; a filter, a search term, a date range or a
+dump of the table identifies nothing, however much of each row it prints.
+**Deliberate**: the call named them, so reaching them was its point (`show` in
+every mode, `story`, `--initiative`). **Injection**: an automatic block
+rendered the row for someone who did not ask, and the name alone is enough —
+rows trimmed out of the block do not count. **Neither**: whatever a window
+returns (`search`, `list`, `gaia query` in every mode). Never rank the two
+together: a blended number lets injection read as demand, and selection
+ignores both anyway.
 
 ## When curated memory earns attention
 
