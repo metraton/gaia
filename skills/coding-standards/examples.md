@@ -3,6 +3,43 @@
 Worked pairs for the rules in `SKILL.md`. Concrete syntax lives here rather
 than in the skill body, which stays stack-agnostic.
 
+## The sentence states the promise
+
+```python
+# mechanism — true of today's body and of nothing else
+def deliver(msg: Message) -> None:
+    """Retries three times with exponential backoff, then writes the
+    failure to the dead-letter table."""
+
+# promise — binds the callers, not the body
+def deliver(msg: Message) -> None:
+    """Delivers msg exactly once, or raises DeliveryError; callers never
+    observe a partial delivery."""
+```
+
+Switching to five retries, or to a circuit breaker, falsifies the first
+silently, with no edit at its site. The second stays true under any body that
+keeps the promise, and the edit that breaks it is a contract change every
+caller must hear about anyway — the one moment documentation reliably gets
+updated. Note what the second does NOT say: nothing about retries, backoff, or
+the dead-letter table. A caller does not need them, and a reader who does
+opens the body — which the sentence deliberately leaves them needing.
+
+## The exception clause, earned: mechanism hiding a trap
+
+```
+# Keep the parentheses: && binds tighter than ||. Unparenthesized this
+# becomes (locked-repo && protected-branch) || release-tag — and a tag
+# token from ANY repository passes, bypassing the repository lock entirely.
+request.repository == locked_repo && (ref.is_protected_branch || ref.is_release_tag)
+```
+
+Pure mechanism — operator precedence, visible in the line below — and still
+protected: the trap it names, a security bypass behind an innocent-looking
+simplification, is exactly what the code cannot show. Deleting the comment
+invites the cleanup that opens the hole. This is the promise rule's exception
+clause applied, not a violation of it.
+
 ## The why-not-what test
 
 ```python

@@ -1,6 +1,6 @@
 ---
 name: coding-standards
-description: Use when writing, editing, or reviewing code and its inline documentation — module headers, inline comments, docstrings, doc comments — in any language or stack
+description: Use when writing, editing, or reviewing code — its naming and structure as much as its written documentation: module headers, inline comments, docstrings, doc comments — in any language or stack
 ---
 
 # Coding Standards
@@ -10,12 +10,73 @@ ticket, or conversation that produced it. These are the language-agnostic rules
 for writing code so a future reader — human or agent, holding none of today's
 context — can trust what they see without a second source.
 
+## Names carry the small scale; the sentence lives at the boundary
+
+A component is a box. Inside it the code itself carries the meaning: an
+attribute's name says what it holds, a method's name says the behavior it
+performs, a type says what a value may be. Renaming, extracting and typing are
+how meaning gets into the code, and they come before any sentence about it — a
+comment explaining a confusing name leaves the confusion in place for whoever
+reads only the code, where the rename dissolves it. Both schools agree here, so
+it is shared floor — invoking "comments help" against a rename invokes nothing.
+
+What earns a written sentence is the boundary, and the boundary has two slots:
+the header, which states what this thing IS, and the entry's documentation,
+which states its intent — what a call promises. Writing is the second move,
+reached where a name cannot carry the meaning: no name can state what a module
+is for, and no signature can state what a call guarantees.
+
+## The sentence states the promise
+
+What the boundary sentence says is the promise, and what the body does to
+keep that promise stays in the body, where the reader who needs it goes. The reason is durability, not
+taste. A sentence describing the mechanism ("retries three times with
+exponential backoff") becomes false at the next refactor, silently, with
+nothing at the sentence's site changing. A sentence describing the promise
+("delivers or raises") can only become false if someone deliberately breaks
+the promise — a contract change, which is visible, versioned, and precisely
+the moment anyone updates the documentation. A claim about the contract does
+not rot from drift; it rots only from decision, and decisions are seen. That
+is why this rule lives here and not in a style guide.
+
+**The caller test decides which side a sentence is on: would a caller who
+cannot see this implementation still get it right?** Information needed by
+someone reading only the interface is promise. Information needed only by
+someone reading the body is mechanism, and a sentence carrying it is narration
+the next refactor falsifies. Without this test the rule certifies itself — an
+agent simply declares "promise" whatever it already wrote — and confident
+compliance is worse than an absent rule.
+
+The rule carries exactly one exception — mechanism that hides a trap the code
+cannot show — and it is bounded: its full statement and its enumeration are
+"The exception clause: the seven protected categories" below.
+
+## Deliberate incompleteness
+
+Documentation is written to leave the reader needing the code, never to spare
+them from it. The doubt is natural — if the sentence says what the thing is,
+has the reader in effect already read the code? — and it answers itself: the
+sentence's job is to tell the reader WHETHER they need to open the
+implementation, and to carry deliberately less than would let them skip it. A
+header that lets the reader route — this is the box I need, that one is not —
+has done its whole job; the how lives in the body, and the reader who needs
+the how goes there.
+
+Incompleteness is also what makes the sentence safe to read. The substitution
+hazard measured in "Reading: a claim, never evidence" — models absorbing false
+comments and inventing details to fit — worked because those comments
+described implementation, so the prose could stand in for the code. A sentence
+that never describes the implementation cannot be mistaken for it: at worst it
+misroutes the reader, which the open file corrects, but it cannot substitute
+for the body it deliberately does not describe.
+
 ## The two obligations
 
-**Zero redundant comments. One hundred percent of contract comments.** Both at
-once, or neither is met: cutting narration while leaving an interface
-undocumented trades one defect for another, and documenting every interface
-while restating the code buries the contract in noise.
+**Zero redundant comments. One hundred percent of contract comments.** The
+promise rule, counted across a file: every promise written, no mechanism
+narrated. Both at once, or neither is met: cutting narration while leaving an
+interface undocumented trades one defect for another, and documenting every
+interface while restating the code buries the contract in noise.
 
 What NOT to comment has been settled for fifty years and is not in dispute — a
 comment restating the code is a second thing to keep in sync, and it drops the
@@ -31,38 +92,32 @@ dimension and misses the harmful one. And "the code documents itself" is not a
 neutral reading of that dispute: it is the first of the four rationalizations
 one school names and calls a myth.
 
-## Is it contract? The caller test
-
-**Would a caller who cannot see this implementation still get it right?** If the
-information is needed by someone reading only the interface, it is contract and
-the second obligation applies. If it is needed only by someone reading the body,
-it is implementation commentary and the first one does. Without this test the
-second obligation certifies itself — an agent simply declares contract whatever
-it already wrote — and confident compliance is worse than an absent rule.
-
-## Fix the code first
-
-Renaming, extracting and typing come before commenting. A comment explaining a
-confusing name is worse than the rename that dissolves it, because it leaves the
-confusion in place for whoever reads only the code. Both schools agree here, so
-it is shared floor — invoking "comments help" against a rename invokes nothing.
-Commenting is the second move, reached when the first cannot carry the meaning.
-
 ## The why-not-what test
 
-Before writing a comment, ask whether the next line already says it. One that
-narrates the code is deleted; one that states a constraint the code cannot show
-earns its line. Worked pairs are in `examples.md`.
+Before writing a comment, ask whether the next line already says it — the
+promise rule at the scale of a single line. One that narrates the code is
+deleted; one that states a constraint the code cannot show earns its line.
+Worked pairs are in `examples.md`.
 
 A separator or banner that carries no information is not a comment at all — it
 is layout. Neither obligation reaches it, so leave it as the repository has it:
 matching an existing pattern outranks a preference about decoration.
 
-## The seven protected categories
+## The exception clause: the seven protected categories
 
-Seven kinds of information no code carries, however well written. These are
-never removed as noise: deleting one deletes a contract, and the loss does not
-show in the diff — it shows months later, in the reader who guessed wrong.
+Alone, "describe the promise" is too strong, and the counterexample is real: a
+comment in a production repository explains that a CEL expression must stay
+parenthesized because `&&` binds tighter than `||` — without the parentheses a
+tag token from ANY repository bypasses the repository lock entirely. That is
+mechanism, not promise, and deleting it opens a security hole: the trap is
+real, and the code cannot show it. So the complete rule has two parts —
+describe the promise; describe the mechanism exactly where it hides a trap the
+code cannot show — and the seven categories below are that exception clause
+enumerated, not a separate list beside the rule. One of them IS the promise
+itself, carried to the precision the type cannot reach; the others are what no
+code shows, however well written. None is ever removed as noise: deleting one
+deletes a contract, and the loss does not show in the diff — it shows months
+later, in the reader who guessed wrong.
 
 | Protected | What is lost with it |
 |-----------|----------------------|
@@ -125,12 +180,17 @@ the claim is ABOUT, and the question takes a second to ask:
 | The current state of another file or system | Rots silently: the target moves, and nothing at the claim's site changes |
 | What the code below it already shows | Rots on the next edit, and carried nothing while it lasted |
 
-The last row is what the why-not-what test already deletes, and the first two
-are where the protected categories live — a rationale is durable precisely
-because it asserts history, not state. The third row is the one that needs its
-own treatment: in a real audit of a 33-file repository, every false claim found
-— six — asserted state outside the file it lived in, and none was about the
-language, a decision, or the code below. Falsehood accumulates exactly there,
+This table is the promise rule generalized to every prose claim about code. A
+promise-claim sits with the durable rows: its only falsifier is a deliberate
+contract change, visible and versioned, so the sentence and the change meet. A
+mechanism-claim is the fourth row wearing a docstring — it asserts what the
+body currently does, and the next refactor falsifies it without touching the
+sentence. The last row is what the why-not-what test already deletes, and the
+first two are where the protected categories live — a rationale is durable
+precisely because it asserts history, not state. The third row is the one
+that needs its own treatment: in a real audit of a 33-file repository, every
+false claim found — six — asserted state outside the file it lived in, and
+none was about the language, a decision, or the code below. Falsehood accumulates exactly there,
 because nothing that edits the target ever re-reads the claim. The more of a
 document is made of that row, the faster it rots — a README is the limiting
 case, and `readme-writing` carries that consequence.
