@@ -482,6 +482,85 @@ CLASSIFIER_TRUTH_TABLE = [
         True,
         T3,
     ),
+    # ---- CLOSED: a grouping character glued to the base command -------------
+    # Every one of these was recorded FREE (False, T0): the classifier
+    # identifies a command by its FIRST WORD, and `(rm` / `$(cp` / `` `rm ``
+    # match nothing in any table, so the whole family passed as safe by
+    # elimination -- including the ``^``-anchored permanent-deny floor, which
+    # has no approval path to fall back on. They are gated now by ONE shared
+    # normalization (`shell_grouping.strip_grouping_wrappers`) applied before
+    # first-token extraction in command_semantics, blocked_commands,
+    # protected_path_guard and the tier classifier's own deny-pattern scan.
+    #
+    # The standard each row is held to is PARITY with its naked spelling, not
+    # merely "gated": a wrapped form must classify exactly as the same command
+    # written without the wrapper. `mkfs` is the row that shows why the tier
+    # value and is_mutative are asserted separately -- it reaches T3 through
+    # the deny floor with is_mutative False, exactly as bare `mkfs.ext4
+    # /dev/sda1` does, because the disk-operation regexes have no
+    # mutative-verb backup.
+    ("grouping_paren_glued_rm_root", GATED, "(rm -rf /)", True, T3),
+    ("grouping_paren_glued_rm_tmp", GATED, "(rm -rf /tmp/test)", True, T3),
+    (
+        "grouping_paren_glued_dd_device",
+        GATED,
+        "(dd if=/dev/zero of=/dev/sda)",
+        True,
+        T3,
+    ),
+    ("grouping_paren_glued_mkfs", GATED, "(mkfs.ext4 /dev/sda1)", False, T3),
+    ("grouping_paren_glued_chmod_root", GATED, "(chmod -R 777 /)", True, T3),
+    ("grouping_paren_glued_terraform_apply", GATED, "(terraform apply)", True, T3),
+    (
+        "grouping_paren_glued_terraform_destroy",
+        GATED,
+        "(terraform destroy)",
+        True,
+        T3,
+    ),
+    ("grouping_paren_glued_kubectl_delete", GATED, "(kubectl delete)", True, T3),
+    ("grouping_paren_glued_git_push", GATED, "(git push)", True, T3),
+    ("grouping_cmdsub_rm_tmp", GATED, "$(rm -rf /tmp/test)", True, T3),
+    ("grouping_backtick_rm_tmp", GATED, "`rm -rf /tmp/test`", True, T3),
+    ("grouping_paren_spaced_rm_tmp", GATED, "( rm -rf /tmp/test )", True, T3),
+    ("grouping_paren_nested_rm_root", GATED, "((rm -rf /))", True, T3),
+    (
+        "grouping_cmdsub_cp_into_hooks",
+        GATED,
+        "$(cp payload.py .claude/hooks/pre_tool_use.py)",
+        True,
+        T3,
+    ),
+    # ---- Controls: the SAME characters, used legitimately, stay free --------
+    # Grouping and substitution are ordinary, frequent shell syntax. A
+    # normalization that closed the family above by taxing these would have
+    # traded the hole for the friction that costs more: consent demanded for
+    # reading. A read-only subshell and a read-only substitution used as
+    # another read's argument are the two shapes that appear constantly.
+    ("grouping_free_readonly_subshell", FREE, "(cd /tmp && ls)", False, T0),
+    (
+        "grouping_free_readonly_subshell_repo",
+        FREE,
+        "(cd /home/jorge/ws/me/gaia && ls -la)",
+        False,
+        T0,
+    ),
+    ("grouping_free_cmdsub_as_arg", FREE, "ls -la $(pwd)", False, T0),
+    (
+        "grouping_free_cmdsub_git_rev_parse",
+        FREE,
+        "echo $(git rev-parse HEAD)",
+        False,
+        T0,
+    ),
+    ("grouping_free_backtick_as_arg", FREE, "ls -la `pwd`", False, T0),
+    (
+        "grouping_free_find_escaped_parens",
+        FREE,
+        r"find /tmp -type f \( -name a -o -name b \)",
+        False,
+        T0,
+    ),
 ]
 
 # ---------------------------------------------------------------------------
@@ -612,6 +691,49 @@ NO_OVERCORRECTION_CENSUS = [
         '"gh workflow run deploy.yml --ref main is the trigger"',
         False,
     ),
+    # ---- Mention, not use: the mentioned command carries a GROUPING wrapper --
+    # The sharpest edge of the wrapper normalization. It exists to make a
+    # grouping character glued to a command stop hiding that command -- and a
+    # normalization applied without care about POSITION would do exactly that
+    # to prose, turning every quoted `(rm -rf ...)` in a report into a real
+    # delete. Position is what separates them: the normalization only ever
+    # looks at the first and last position of a component, and a mention is
+    # neither.
+    (
+        "mention-grouped-rm",
+        MENTION_FREE,
+        "gaia contract add evidence_report.open_gaps "
+        '"the form (rm -rf /tmp/test) passed free"',
+        False,
+    ),
+    (
+        "mention-grouped-kubectl-delete",
+        MENTION_FREE,
+        "gaia contract add evidence_report.key_outputs "
+        '"(kubectl delete pod my-pod) was never run"',
+        False,
+    ),
+    (
+        "mention-grouped-hooks-overwrite",
+        MENTION_FREE,
+        "gaia contract add evidence_report.key_outputs "
+        '"(cp payload.py .claude/hooks/pre_tool_use.py) was never run"',
+        False,
+    ),
+    # The measured false positive this repository already carries, kept as a
+    # control on the wrapper work: a quoted search term read as syntax.
+    (
+        "mention-grep-quoted-search-term",
+        MENTION_FREE,
+        'grep -rn "SessionStart" /home/jorge/ws/me/.claude/settings.local.json',
+        False,
+    ),
+    (
+        "mention-grep-quoted-dangerous-form",
+        MENTION_FREE,
+        'grep -rn "(rm -rf /)" /home/jorge/ws/me/gaia/README.md',
+        False,
+    ),
     # ---- OPEN: a mention that escalates today ----
     # Measured, not desired. The escalation does not come from any anchor this
     # plan added -- it comes from the permanently-blocked pattern table
@@ -684,7 +806,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 65
+_MINIMUM_MEASURED_CASES = 87
 
 
 @pytest.mark.parametrize(

@@ -20,6 +20,8 @@ import logging
 from enum import Enum
 from functools import lru_cache
 
+from .shell_grouping import strip_grouping_wrappers
+
 logger = logging.getLogger(__name__)
 
 
@@ -149,6 +151,11 @@ def _classify_command_tier_cached(
     return SecurityTier.T0_READ_ONLY
 
 
+def _matches_any(command: str, patterns) -> bool:
+    """Return True when *command* matches any of the pre-compiled *patterns*."""
+    return any(pattern.search(command) for pattern in patterns)
+
+
 def classify_command_tier(
     command: str,
     *,
@@ -197,11 +204,20 @@ def classify_command_tier(
 
     # Check for blocked operations first (T3)
     # This must be done before caching since blocked_patterns come from module state
-    has_blocked = False
-    for pattern in blocked_patterns:
-        if pattern.search(command):
-            has_blocked = True
-            break
+    has_blocked = _matches_any(command, blocked_patterns)
+
+    # The patterns are run here directly rather than through
+    # ``is_blocked_command``, so the wrapper-normalization that function applies
+    # does not reach them: every deny regex is ``^``-anchored on the base
+    # command, and a grouping character glued to the front moves that command
+    # off position 0. ``(mkfs.ext4 /dev/sda1)`` classified T0 here while the
+    # permanent floor blocked it -- the forms with no mutative-verb backup
+    # (``^dd``/``^fdisk``/``^mkfs``) are exactly the ones that show it. Scan the
+    # unwrapped form too; strictly additive, since it can only set the flag.
+    if not has_blocked:
+        ungrouped = strip_grouping_wrappers(command)
+        if ungrouped != command:
+            has_blocked = _matches_any(ungrouped, blocked_patterns)
 
     # Use cached classification
     return _classify_command_tier_cached(command, has_blocked)

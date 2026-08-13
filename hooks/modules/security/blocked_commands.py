@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .command_semantics import CommandSemantics, analyze_command, _contains_ordered_sequence
+from .shell_grouping import strip_grouping_wrappers
 
 logger = logging.getLogger(__name__)
 
@@ -711,6 +712,23 @@ def is_blocked_command(command: str) -> BlockedCommandResult:
         peeled_result = _classify_stripped_command(remainder)
         if peeled_result.is_blocked:
             return peeled_result
+
+    # ------------------------------------------------------------------
+    # Grouping / substitution wrapper guard.
+    # ------------------------------------------------------------------
+    # Every regex in this table is ``^``-anchored on the base command, and
+    # several are ``$``-anchored on the target (``rm_critical``'s
+    # ``^rm\s+-rf\s+/\s*$``). A grouping character glued to the front moves the
+    # base command off position 0, and the matching closer at the end defeats
+    # the tail anchor -- ``(rm -rf /)`` escaped this permanent-deny floor
+    # entirely, with no approval path to fall back on. Classify the unwrapped
+    # command too. Strictly additive, exactly like the env peel above: the form
+    # as written was already classified, so this can only ADD a block.
+    ungrouped = strip_grouping_wrappers(command)
+    if ungrouped and ungrouped != command:
+        ungrouped_result = _classify_stripped_command(ungrouped)
+        if ungrouped_result.is_blocked:
+            return ungrouped_result
 
     return result
 

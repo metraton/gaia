@@ -50,6 +50,8 @@ import re
 import shlex
 from typing import List, Optional, Tuple
 
+from .shell_grouping import strip_grouping_wrappers
+
 # ---------------------------------------------------------------------------
 # Write-capability sets
 # ---------------------------------------------------------------------------
@@ -138,8 +140,16 @@ def _tokenize(component: str) -> List[str]:
 
 
 def _component_writes_protected_path(component: str) -> Optional[str]:
-    """Return the offending protected path if `component` writes to one."""
-    tokens = _tokenize(component)
+    """Return the offending protected path if `component` writes to one.
+
+    The component is unwrapped before tokenization: the write capability is
+    decided by ``tokens[0]``, so ``(cp x .claude/hooks/y.py)`` put ``(cp``
+    there and walked through this categorical boundary. Unwrapping is applied
+    to the component STRING, never per token -- a dangerous command quoted
+    inside another command's argument stays one opaque token and must keep
+    reading as a mention rather than a use.
+    """
+    tokens = _tokenize(strip_grouping_wrappers(component))
     if not tokens:
         return None
 

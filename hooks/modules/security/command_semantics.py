@@ -16,6 +16,8 @@ import shlex
 from dataclasses import dataclass
 from typing import Dict, FrozenSet, Iterable, Tuple
 
+from .shell_grouping import strip_grouping_wrappers
+
 # Scan enough semantic tokens to cover CLIs with multiple resource segments and
 # several global flag/value pairs before the real verb.
 SEMANTIC_SCAN_LIMIT = 12
@@ -266,7 +268,13 @@ def strip_redirect_tokens(tokens: Iterable[str]) -> Tuple[str, ...]:
 def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT) -> CommandSemantics:
     """Build an idempotent semantic representation for security analysis."""
     raw_command = command.strip() if command else ""
-    tokens = tokenize_command(raw_command)
+    # Tokenize the UNWRAPPED form so ``base_cmd`` is the command and not a
+    # grouping character glued to it: ``(rm -rf /)`` tokenizes to ``("(rm",
+    # "-rf", "/)")`` and every table keyed on ``base_cmd`` -- COMMAND_ALIASES,
+    # the anchor paths, the subcommand keys -- misses on ``(rm``. ``raw_command``
+    # keeps the command as written, because it is the text the approval
+    # signature and the operator reports have to show back.
+    tokens = tokenize_command(strip_grouping_wrappers(raw_command))
     if not tokens:
         return CommandSemantics(raw_command=raw_command)
 

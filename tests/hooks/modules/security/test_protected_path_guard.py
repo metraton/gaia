@@ -95,6 +95,58 @@ class TestOtherWritersBlocked:
 
 
 # ----------------------------------------------------------------------------
+# Grouping / substitution wrappers do not lift the categorical boundary
+# ----------------------------------------------------------------------------
+
+class TestGroupingWrappedWritesBlocked:
+    """A wrapper character glued to the writer must not open this boundary.
+
+    Write capability is decided by ``tokens[0]``, so ``(cp`` and ``$(cp``
+    matched nothing and the guard returned None -- the .claude/ hooks tree,
+    whose whole purpose is that no agent can rewrite the security layer, was
+    reachable through a subshell. Two of these forms did not pass outright but
+    degraded from CATEGORICAL to merely APPROVABLE, which is the same breach:
+    the boundary is not a price, it is a refusal.
+    """
+
+    @pytest.mark.parametrize("cmd", [
+        "(cp payload.py .claude/hooks/pre_tool_use.py)",
+        "( cp payload.py .claude/hooks/pre_tool_use.py )",
+        "{ cp payload.py .claude/hooks/pre_tool_use.py; }",
+        "$(cp payload.py .claude/hooks/pre_tool_use.py)",
+        "`cp payload.py .claude/hooks/pre_tool_use.py`",
+        "((cp payload.py .claude/hooks/pre_tool_use.py))",
+        "(tee .claude/hooks/pre_tool_use.py)",
+        "(git checkout -- .claude/hooks/pre_tool_use.py)",
+        "(mv payload.py .claude/settings.json)",
+        "$(sed -i s/a/b/ .claude/hooks/pre_tool_use.py)",
+    ])
+    def test_wrapped_writer_into_claude_blocked(self, cmd):
+        allowed, reason = check(cmd)
+        assert allowed is False, f"{cmd!r} should be categorically blocked"
+        assert "[PROTECTED_PATH]" in reason
+
+    @pytest.mark.parametrize("cmd", [
+        "(cat .claude/settings.json)",
+        "$(grep -r pattern .claude/hooks/)",
+        "(cd /home/jorge/ws/me && ls .claude/hooks/)",
+        'gaia contract add evidence_report.key_outputs '
+        '"(cp payload.py .claude/hooks/pre_tool_use.py) was never run"',
+        'grep -rn "SessionStart" /home/jorge/ws/me/.claude/settings.local.json',
+    ])
+    def test_wrapped_read_or_mention_still_allowed(self, cmd):
+        """Unwrapping is applied to the component STRING, never per token.
+
+        A read inside a subshell is still a read, and a dangerous command
+        QUOTED into another command's argument survives tokenization as one
+        opaque token -- neither may start costing consent because the wrapper
+        family was closed.
+        """
+        allowed, reason = check(cmd)
+        assert allowed is True, f"{cmd!r} is not a write, got {reason!r}"
+
+
+# ----------------------------------------------------------------------------
 # Reads and non-.claude writes must pass through (no false positives)
 # ----------------------------------------------------------------------------
 
