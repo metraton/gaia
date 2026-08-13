@@ -16,6 +16,7 @@ principle (one place, native to the tool) does not.
 | Rust | `///` (item) and `//!` (module) doc comments | Rendered by `rustdoc`; code inside them is compiled and run as doctests. |
 | Java / Kotlin | Javadoc / KDoc block above the declaration | Read by the compiler's doc tooling and by IDEs. |
 | C# | XML doc comments (`/// <summary>`, `<param>`, `<returns>`) | The compiler extracts these into a documentation XML file. |
+| Kubernetes manifests | `kubernetes.io/description` annotation; `description` fields in CRD/OpenAPI schemas | An annotation survives the API round-trip; a `#` comment is stripped the moment the manifest is read back from the cluster. |
 | Bash / shell scripts | A header comment block at the top of the script: purpose, usage, required environment variables | Shell has no native docstring construct; the header comment block is the native mechanism for this stack. |
 | YAML / Helm values | A comment directly above the key, or the `# --` convention if the project already uses `helm-docs` | Match whatever the repo's existing `values.yaml` already does — do not introduce a new convention mid-file. |
 
@@ -35,6 +36,14 @@ documentation, and its absence is the defect.
 | SQL migrations and views | No doc construct; the why of a migration exists only as a comment or in the change description. |
 | Dockerfile, Makefile, CI pipeline definitions | Directive-only formats. A non-obvious ordering or cache constraint survives only as a comment. |
 | CSS / stylesheets | No symbol-level doc mechanism. |
+
+The published standards for these rows set floors, never ceilings — the
+instances behind the volume rule in `SKILL.md`: Helm's chart best practices
+require every defined property in `values.yaml` to be documented, Liquibase
+ships a policy check demanding a comment on every changeset, and OpenSSH's
+shipped `sshd_config` states its own strategy in-file — options commented at
+their defaults, a handful of directives active — making the canonical config
+majority comment by design.
 
 Two stack-specific instances of the partially-sufficient slot rule stated in
 `SKILL.md`: a cloud provider's resource `description` is commonly capped (300

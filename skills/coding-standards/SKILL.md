@@ -21,9 +21,15 @@ What NOT to comment has been settled for fifty years and is not in dispute — a
 comment restating the code is a second thing to keep in sync, and it drops the
 first time it drifts. HOW MUCH to comment is an open disagreement between two
 schools and will stay open, so no line count, ratio or density target appears in
-this skill. Redundancy is the threshold, never length. And "the code documents
-itself" is not a neutral reading of that dispute: it is the first of the four
-rationalizations one school names and calls a myth.
+this skill. Redundancy is the threshold, never length. That refusal is the state
+of the evidence, not caution: every circulating target traces to a source that
+cannot be checked, the one maintainability metric that scored comment density
+was dropped by its own adopters, and the strongest replicated result in the
+field runs the other way — comment-code inconsistencies, hunted automatically,
+turned out to be confirmed defects. A density target measures the harmless
+dimension and misses the harmful one. And "the code documents itself" is not a
+neutral reading of that dispute: it is the first of the four rationalizations
+one school names and calls a myth.
 
 ## Is it contract? The caller test
 
@@ -52,11 +58,11 @@ A separator or banner that carries no information is not a comment at all — it
 is layout. Neither obligation reaches it, so leave it as the repository has it:
 matching an existing pattern outranks a preference about decoration.
 
-## The six protected categories
+## The seven protected categories
 
-Six kinds of information no code carries, however well written. These are never
-removed as noise: deleting one deletes a contract, and the loss does not show in
-the diff — it shows months later, in the reader who guessed wrong.
+Seven kinds of information no code carries, however well written. These are
+never removed as noise: deleting one deletes a contract, and the loss does not
+show in the diff — it shows months later, in the reader who guessed wrong.
 
 | Protected | What is lost with it |
 |-----------|----------------------|
@@ -66,6 +72,7 @@ the diff — it shows months later, in the reader who guessed wrong.
 | External cause — a dependency defect, a regulatory duty, a provider quota, a standard dictating the shape | The workaround reads as arbitrary, gets "cleaned up", and restores the defect |
 | Why THIS value and not another | A constant nobody dares change and nobody can justify |
 | Legal and licensing notices | A compliance obligation silently dropped |
+| Provenance — the source a fact was verified against | The only record that the claim was ever checked; without it the fact can be trusted or re-derived, never re-verified |
 
 ## When commenting beats restructuring
 
@@ -108,6 +115,19 @@ an audience the rationale is not for. Treat the overflow as having no slot: the
 native field carries the summary, the comment carries what does not fit, and for
 that remainder the comment is mandatory again.
 
+The inversion has a volume consequence. A slot steers contract out of comments,
+so a comment-heavy file there signals contract sitting in the wrong place; no
+slot steers every contract into them — the standards that govern slot-less
+formats set floors ("document every property") and none, anywhere, sets a
+ceiling or a ratio, in either direction, and canonical shipped configurations
+are majority comment by explicit design. So in a slot-less format a high
+comment-to-content proportion is not itself a defect, and cannot be cut down to
+one: the cut runs comment by comment against what the file already shows. A
+comment restating a value visible in the lines below it is redundant, and it is
+the first thing to go stale when the data changes. One carrying a constraint, a
+boundary, or a consequence that appears nowhere in the file has no other home:
+deleting it does not deduplicate, it destroys.
+
 ## Cleanup is bounded by the radius of what you touch
 
 Dead code inside what you are modifying: delete it. Outside it: report, do not
@@ -134,10 +154,11 @@ change description already own that, and none of it means anything to a reader
 without the originating ticket open. Strip the pointer; keep the durable
 rationale, if any survives once it is gone.
 
-**Provenance is not a process trace.** A ticket identifier points at a process;
-a source citation points at a fact that can be re-checked. The second survives —
-deleting "verified against \<source\>" from a security-sensitive list destroys
-the only record of how that list was validated.
+**Provenance is not a process trace — it is the seventh protected category.** A
+ticket identifier points at a process; a source citation points at a fact that
+can be re-checked. The second survives: deleting "verified against \<source\>"
+from a security-sensitive list destroys the only record of how that list was
+validated.
 
 For the per-stack tables — where documentation natively lives, which stacks have
 no native slot, and which checker verifies which rule — see `reference.md`.
