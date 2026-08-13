@@ -1,4 +1,4 @@
-# Jira Ticket Writing — Examples
+# Ticket Writing — Examples
 
 Real tickets from the AOS migration project (AOS-181..AOS-204, 2026-05-18).
 These are the patterns the formula was validated against.

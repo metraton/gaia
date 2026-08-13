@@ -1,9 +1,9 @@
 ---
-name: jira-ticket-writing
-description: Use when creating or drafting Jira/Atlassian tickets or issues, or when standardizing ticket output for a project
+name: ticket-writing
+description: Use when creating or drafting tickets or issues, or when standardizing ticket output for a project
 ---
 
-# Jira Ticket Writing
+# Ticket Writing
 
 The formula for tickets humans can read in ~15 seconds. The what and why go at
 the top; the how and evidence go in a comment. One Story per brief or theme;

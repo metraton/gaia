@@ -64,7 +64,7 @@ skills/
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── coding-standards/      # Language-agnostic code + inline documentation conventions
 │   ├── reference.md       # per-stack tables: where docs natively live, stacks with no native slot, which checker verifies which rule
-│   └── examples.md        # worked before/after pairs (why-not-what, repeated rationale, provenance vs process trace)
+│   └── examples.md        # worked before/after pairs, each showing the cut (the survival test, placement, repeated rationale, provenance vs process trace)
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
 ├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (thinking method + section/component dialect + authoring modes)
@@ -86,8 +86,6 @@ skills/
 ├── gmail-triage/          # Interactive Gmail inbox triage
 ├── gws-setup/             # Google Workspace CLI (gws) installation and configuration
 ├── investigation/         # Diagnosis methodology and pattern analysis
-├── jira-ticket-writing/   # Formula for human-readable Jira Stories and Subtasks (invocable directly via the Skill tool)
-│   └── examples.md
 ├── memory/                # Curate durable knowledge, live threads, and historical logs
 │   └── reference.md        # project_ref anchoring internals, curate-flow mechanics, knowledge-graph roadmap
 ├── orchestrator-present-approval/ # T3 approval presentation for orchestrator
@@ -154,7 +152,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 - `scheduled-task` — headless recurring task framework: crontab + `claude -p` headless run that accumulates T3 approvals and reports back via `gaia notifications`; loaded on demand by description match
 - `gaia-research` — technique for mining one or more bookmarked GitHub repos (or, in the inverse direction, finding who solves a capability the user wants) for ideas Gaia can take: burden of proof set by the claim type, code read instead of README, evidential status marked on every idea. Ends at digested ideas and deliberately produces no brief or plan — `brief-spec` picks up downstream. Loaded on demand by description match, invocable directly via the Skill tool
 - `session-reflection` — session-arc recovery, two-way reconciliation against the live corpus, and memory curation proposal
-- `jira-ticket-writing` — formula for Jira Stories and Subtasks; invocable directly via the Skill tool
+- `ticket-writing` — formula for human-readable Stories and Subtasks, tracker-agnostic; invocable directly via the Skill tool
 - `visual-verify` — technique for screenshotting a UI/HTML with a cached Chromium (no browser install) and reading the result; loaded on demand by description match when an agent produces visual output, invocable directly via the Skill tool
 - `diagram-builder` — domain skill for turning an idea into a portable, data-driven diagram deck (architecture, timeline, planner, flow); carries the dialect vocabulary so the orchestrator can propose a decomposition and the agent can author it; delegates the visual check to `visual-verify`; loaded on demand by description match, invocable directly via the Skill tool
 - `verification-oracle` — deterministically re-executes a `task_gates` entry of `verification_type` `command`/`code` (or a proposed contract `evidence_report.verification` block of the same types), comparing the actual exit code against the gate's expected value; the judgment-based `verification-rubric` skill's deterministic counterpart for `semantic`/`self_review` gates. Loaded by `gaia-verifier` (`agents/gaia-verifier.md`, `verifier: true`), the seeded verifier-role agent (Gaia harness B3, milestone M1)
