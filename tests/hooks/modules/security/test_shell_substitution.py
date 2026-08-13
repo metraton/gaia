@@ -159,3 +159,46 @@ def test_extraction_is_bounded_on_pathological_nesting():
     """A degenerate string terminates instead of recursing without end."""
     command = "echo " + "$(" * 200 + "rm -rf /" + ")" * 200
     assert len(extract_substitutions(command)) <= 64
+
+
+def test_top_level_only_stops_at_the_outermost_bodies():
+    """The flat list and the outermost-only list differ exactly by nesting.
+
+    A caller that re-classifies each body through a classifier which itself
+    calls back here wants the second: the nested body is reached by that
+    re-entry, in the context its own parent establishes. Handing it the flat
+    list would classify the inner body a second time against the OUTER
+    command's context, which is a different directory the moment the parent
+    begins with a `cd` -- and a relative path judged against the wrong
+    directory is how a legitimate command acquires a spurious approval prompt.
+    """
+    command = "echo $(cd /repo && node $(pwd)/build.mjs)"
+    assert extract_substitutions(command) == [
+        "cd /repo && node $(pwd)/build.mjs",
+        "pwd",
+    ]
+    assert extract_substitutions(command, top_level_only=True) == [
+        "cd /repo && node $(pwd)/build.mjs",
+    ]
+
+
+def test_top_level_only_keeps_siblings_and_every_opener():
+    """Outermost means outermost, not first: siblings are all top level."""
+    command = "echo $(pwd) `hostname` <(sort a.txt)"
+    assert extract_substitutions(command, top_level_only=True) == [
+        "pwd", "hostname", "sort a.txt",
+    ]
+
+
+def test_top_level_only_is_unchanged_where_there_is_no_nesting():
+    """The two modes agree on every string with nothing nested inside a body."""
+    for command in (
+        "echo $(pwd)",
+        "echo `rm -rf /`",
+        "diff /tmp/a <(sort b.txt)",
+        "echo 'a mention of $(pwd)'",
+    ):
+        assert (
+            extract_substitutions(command)
+            == extract_substitutions(command, top_level_only=True)
+        )

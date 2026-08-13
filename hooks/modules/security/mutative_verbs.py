@@ -33,6 +33,7 @@ from .command_semantics import (
     _is_flag,
     _is_short_value_flag,
 )
+from .shell_substitution import extract_substitutions
 
 try:
     from .capability_classes import (
@@ -1043,6 +1044,23 @@ _MAX_SCRIPT_READ_BYTES = 256 * 1024
 # (`npm run x` -> `bash a.sh` -> `bash b.sh`), so this cap never truncates a real
 # chain; it exists solely to guarantee termination on a self/mutual reference.
 _MAX_SCRIPT_RECURSION_DEPTH = 12
+
+# Maximum descent for the command-substitution lane, counted on the SAME
+# ``_depth`` budget as the script lane above -- one command may only ever be
+# opened so many times in total, whichever mix of routes did the opening.
+#
+# The value is shared; the EXHAUSTION RULE is not, and the difference is the
+# point.  The script lane exhausts by declining to open the body and letting
+# ordinary token classification decide, because its cycle risk is a file that
+# names itself and there is no bounded quantity to run out of.  A substitution
+# body cannot cycle -- it is a strict substring of its parent, at least three
+# characters shorter, so the descent is finite on its own -- and that is exactly
+# why exhaustion here means the string is pathological rather than merely deep.
+# So this lane exhausts CLOSED: past the cap a command that still carries an
+# executing substitution is classified mutative WITHOUT the body being read. A
+# cap that let the command through on the way out would be a bypass with
+# instructions -- nest one level past the number and the gate stops applying.
+_MAX_SUBSTITUTION_RECURSION_DEPTH = 12
 
 # Interpreter flags that CONSUME the next token as their value AND mean the
 # invocation has no script-file positional (the payload is inline code or a
@@ -3191,6 +3209,85 @@ def _classify_leading_shell_assignments(
     )
 
 
+def _check_command_substitutions(
+    command: str, *, cwd: "Optional[str]", _depth: int,
+) -> "Optional[MutativeResult]":
+    """Classify what a substitution ANYWHERE in *command* would execute.
+
+    ``_classify_leading_shell_assignments`` already applies this exact standard
+    to a substitution in the value of a leading assignment: the body is a real
+    command, so it is judged by its own effect rather than by the word that
+    happens to be at position 0.  One token further right the same body was
+    judged by nothing at all -- every layer keys on the base command, and the
+    base command of ``ls $(<a cluster deletion>)`` is ``ls``, which is
+    read-only by elimination.  The permanent-deny floor and the ``.claude``
+    boundary were closed through a substitution earlier; the APPROVABLE tier,
+    which is where ordinary destruction lives, was not.  This extends the
+    assignment policy to argument position, unchanged in standard: the same
+    classifier, on the same body, reaching the same verdict.
+
+    The verdict is deliberately the INNER one, so a mutation does not change
+    category by being written inside a substitution.  A body that needs consent
+    still needs exactly consent; a body on the permanent floor is not this
+    lane's to escalate -- ``blocked_commands`` and ``protected_path_guard``
+    already read the same bodies and answer categorically before this runs.
+
+    Args:
+        command: The command as it reaches classification, AFTER the ``cd`` /
+            env / release-track peels, so *cwd* is the directory the body would
+            really run in.  A body resolved against the wrong directory is not
+            a harmless imprecision: a relative script path that does not exist
+            THERE reads as unreadable and takes the conservative T3 default,
+            which is a false approval prompt on a legitimate command.
+        cwd: The effective working directory of *command*, inherited by every
+            body -- which is what the shell does, since a substitution runs in
+            a subshell of the current directory.  A body that starts with its
+            own ``cd`` overrides it on re-entry, exactly as it would alone.
+        _depth: Descent already spent by every lane, shared budget.
+
+    Returns:
+        A mutative result when some body is mutative, ``None`` otherwise --
+        including when there is no substitution at all, which is the common
+        case and costs one substring check.  Never returns a NON-mutative
+        result: this lane may only ADD a verdict, so a read-only body leaves
+        classification exactly where it found it.
+    """
+    bodies = extract_substitutions(command, top_level_only=True)
+    if not bodies:
+        return None
+
+    if _depth >= _MAX_SUBSTITUTION_RECURSION_DEPTH:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="substitution-depth-exceeded",
+            cli_family="system",
+            confidence="low",
+            reason=(
+                "Command substitution nested past the analysis depth limit; "
+                "the body was not read and is classified conservatively"
+            ),
+        )
+
+    for body in bodies:
+        inner = detect_mutative_command(body, cwd=cwd, _depth=_depth + 1)
+        if not inner.is_mutative:
+            continue
+        return MutativeResult(
+            is_mutative=True,
+            category=inner.category,
+            verb=inner.verb,
+            dangerous_flags=inner.dangerous_flags,
+            cli_family=inner.cli_family,
+            confidence=inner.confidence,
+            reason=(
+                f"Command substitution executes mutative command "
+                f"{body!r}: {inner.reason}"
+            ),
+        )
+    return None
+
+
 # ============================================================================
 # Main Detection Function
 # ============================================================================
@@ -3401,6 +3498,27 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
             track_remainder, from_source_code=from_source_code, cwd=cwd,
             _depth=_depth,
         )
+
+    # --- Classify what a command substitution would execute ---
+    # The shell evaluates ``$(...)`` / ``` `...` ``` / ``<(...)`` BEFORE the
+    # outer command runs, so the body executes whatever the carrier turns out to
+    # be -- and every step below this one keys on the carrier.  Placed AFTER the
+    # three peels above so the body inherits the cwd the outer command actually
+    # has: the peels are what fold a leading ``cd`` into it, and running this
+    # ahead of them would resolve a relative script in the body against the
+    # wrong directory.  Placed BEFORE the ladder so the read-only fast path
+    # cannot answer for a carrier whose argument is a mutation.
+    #
+    # ``from_source_code`` suppresses it: there, ``$(`` is a language construct
+    # (a DOM/jQuery call, a PHP variable) and not shell execution.  A shell
+    # command a source file really runs reaches this lane through the exec-sink
+    # extractor, which re-dispatches it as the shell command it is.
+    if not from_source_code:
+        substitution_result = _check_command_substitutions(
+            command, cwd=cwd, _depth=_depth,
+        )
+        if substitution_result is not None:
+            return substitution_result
 
     semantics = analyze_command(command)
     tokens = list(semantics.tokens)

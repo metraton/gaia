@@ -1,4 +1,4 @@
-"""
+r"""
 shell_substitution.py -- extract the commands a shell will EXECUTE from inside
 a command substitution, wherever in the string they sit.
 
@@ -250,13 +250,22 @@ def _find_closing_backtick(text: str, start: int) -> int:
     return -1
 
 
-def _collect(command: str, depth: int, out: List[str]) -> None:
+def _collect(
+    command: str, depth: int, out: List[str], recurse: bool = True,
+) -> None:
     """Append every executing substitution body in *command* to *out*.
 
     Walks the string once, left to right, holding the shell's own quoting state
     so that what counts as execution here is what would execute there. Recurses
     into each body it finds, so a nested substitution is reported alongside its
     parent rather than hidden inside it.
+
+    ``recurse=False`` stops at the OUTERMOST bodies. A caller that re-classifies
+    each body through a classifier which itself calls back here does not want
+    the flattened list: the nested body would then be judged twice, once with
+    the context its parent establishes and once with the context of whoever
+    holds the flat list, and those two differ the moment the parent begins with
+    a ``cd``.
     """
     if depth > _MAX_NESTING_DEPTH or len(out) >= _MAX_SUBSTITUTIONS:
         return
@@ -339,7 +348,8 @@ def _collect(command: str, depth: int, out: List[str]) -> None:
             body = body.strip()
             if body:
                 out.append(body)
-                _collect(body, depth + 1, out)
+                if recurse:
+                    _collect(body, depth + 1, out, recurse)
             i = length if close == -1 else close + 1
             at_word_start = False
             continue
@@ -350,7 +360,8 @@ def _collect(command: str, depth: int, out: List[str]) -> None:
             body = body.strip()
             if body:
                 out.append(body)
-                _collect(body, depth + 1, out)
+                if recurse:
+                    _collect(body, depth + 1, out, recurse)
             i = length if close == -1 else close + 1
             at_word_start = False
             continue
@@ -361,7 +372,8 @@ def _collect(command: str, depth: int, out: List[str]) -> None:
             body = body.strip()
             if body:
                 out.append(body)
-                _collect(body, depth + 1, out)
+                if recurse:
+                    _collect(body, depth + 1, out, recurse)
             i = length if close == -1 else close + 1
             at_word_start = False
             continue
@@ -370,13 +382,22 @@ def _collect(command: str, depth: int, out: List[str]) -> None:
         i += 1
 
 
-def extract_substitutions(command: str) -> List[str]:
+def extract_substitutions(
+    command: str, top_level_only: bool = False,
+) -> List[str]:
     """Return the body of every substitution *command* would execute.
 
     Args:
         command: A raw Bash command line, as the harness sent it -- not an
             operator-split component and not a pre-normalized form. Quoting
             decides the answer, and an upstream split can break the quoting.
+        top_level_only: Return only the OUTERMOST bodies, leaving a nested
+            substitution inside the body that contains it. The default flat
+            list is right for a caller that classifies each body in isolation;
+            this mode is for a caller whose classifier re-enters here on every
+            body it is handed, so nesting is already covered by that re-entry
+            and each level is judged in the context its own parent establishes
+            rather than the outermost one's.
 
     Returns:
         The inner command of each ``$( )``, backtick and process substitution
@@ -391,5 +412,5 @@ def extract_substitutions(command: str) -> List[str]:
         return []
 
     out: List[str] = []
-    _collect(command, 0, out)
+    _collect(command, 0, out, not top_level_only)
     return out

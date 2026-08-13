@@ -246,8 +246,27 @@ def classify_command_tier(
     #    a quoted mention carried by ``echo``, and moving the flag ahead of it
     #    would convert that suppression into a fresh false-positive class --
     #    the exact trade this work is forbidden to make.
-    for inner in extract_substitutions(command):
+    substitution_bodies = extract_substitutions(command)
+    for inner in substitution_bodies:
         if is_blocked_command(inner).is_blocked:
+            return SecurityTier.T3_BLOCKED
+
+    # The loop above answers for the permanent floor only, which left the tier
+    # ladder disagreeing with the detector about the SAME string: a body that is
+    # merely mutative (a project directory removed, a cluster workload deleted)
+    # made ``detect_mutative_command`` return mutative while this function still
+    # reported T0, because the ultra-common fast path answers for the CARRIER
+    # (``echo``, ``ls``, ``cat``) before the detector is ever consulted. A gate
+    # that fires in one layer and not the other is the discrepancy this
+    # repository has already paid for once, so the detector's own verdict is
+    # taken here, where the fast path cannot discard it.
+    #
+    # Scoped to commands that actually carry a substitution: every other command
+    # keeps the cached path and its fast path untouched, so this cannot escalate
+    # a quoted mention -- ``extract_substitutions`` returns nothing for one.
+    if substitution_bodies:
+        from .mutative_verbs import detect_mutative_command
+        if detect_mutative_command(command).is_mutative:
             return SecurityTier.T3_BLOCKED
 
     # Use cached classification

@@ -39,6 +39,7 @@ GATED = "gated"
 FREE = "free"
 
 T0 = SecurityTier.T0_READ_ONLY
+T2 = SecurityTier.T2_DRY_RUN
 T3 = SecurityTier.T3_BLOCKED
 
 # (case_id, family, command, expected_is_mutative, expected_tier)
@@ -576,44 +577,47 @@ CLASSIFIER_TRUTH_TABLE = [
     # state instead of a positional heuristic; the mention controls that pin
     # the other side of that line live in the census below.
     #
-    # `is_mutative` stays False on nearly every row: these reach T3 through the
-    # permanent-deny floor, not through the verb detector, which still sees
-    # `echo` as the command. That divergence is the reason this table asserts
-    # the pair.
-    ("cmdsub_mid_rm_root", GATED, "echo $(rm -rf /)", False, T3),
-    ("cmdsub_mid_rm_root_backtick", GATED, "echo `rm -rf /`", False, T3),
+    # `is_mutative` was False on nearly every row and is now True: these used to
+    # reach T3 through the permanent-deny floor ALONE, while the verb detector
+    # still read `echo` as the command. The detector now reads the body too, so
+    # the two halves of the pair finally agree about the same string -- and the
+    # rows where they still disagree (`mkfs`, which is floor-only and is not a
+    # mutative verb) are exactly the ones that show why this table asserts the
+    # pair rather than either half.
+    ("cmdsub_mid_rm_root", GATED, "echo $(rm -rf /)", True, T3),
+    ("cmdsub_mid_rm_root_backtick", GATED, "echo `rm -rf /`", True, T3),
     (
         "cmdsub_mid_rm_root_double_quoted",
         GATED,
         'echo "result: $(rm -rf /)"',
-        False,
+        True,
         T3,
     ),
     (
         "cmdsub_mid_dd_device",
         GATED,
         "echo $(dd if=/dev/zero of=/dev/sda)",
-        False,
+        True,
         T3,
     ),
     (
         "cmdsub_mid_dd_device_as_arg",
         GATED,
         "ls $(dd if=/dev/zero of=/dev/sda)",
-        False,
+        True,
         T3,
     ),
     ("cmdsub_mid_mkfs", GATED, "echo $(mkfs.ext4 /dev/sda1)", False, T3),
     ("cmdsub_mid_mkfs_backtick", GATED, "echo `mkfs.ext4 /dev/sda1`", False, T3),
-    ("cmdsub_mid_nested", GATED, "echo $(echo $(rm -rf /))", False, T3),
+    ("cmdsub_mid_nested", GATED, "echo $(echo $(rm -rf /))", True, T3),
     ("cmdsub_mid_assignment", GATED, "X=$(rm -rf /)", True, T3),
     # Process substitution executes too, but -- unlike ``$()`` -- it is NOT
     # expanded inside double quotes, so it is collected from unquoted text only.
-    ("cmdsub_mid_process_substitution", GATED, "diff /tmp/a <(rm -rf /)", False, T3),
+    ("cmdsub_mid_process_substitution", GATED, "diff /tmp/a <(rm -rf /)", True, T3),
     # Parameter expansion is not execution and is untouched; a substitution
     # NESTED inside one still is, and the linear scan reaches it on its own
     # terms rather than by parsing the braces.
-    ("cmdsub_mid_inside_param_expansion", GATED, "echo ${FOO:-$(rm -rf /)}", False, T3),
+    ("cmdsub_mid_inside_param_expansion", GATED, "echo ${FOO:-$(rm -rf /)}", True, T3),
     # ---- Controls: substitution is ordinary syntax and stays free -----------
     # A rule that closed the family above by taxing these would have traded the
     # hole for consent demanded on reading. Each of these executes exactly what
@@ -662,14 +666,14 @@ CLASSIFIER_TRUTH_TABLE = [
         "quoting_ansi_c_then_rm_root",
         GATED,
         r"echo $'it\'s' $(rm -rf /)",
-        False,
+        True,
         T3,
     ),
     (
         "quoting_ansi_c_then_dd_device",
         GATED,
         r"echo $'don\'t' $(dd if=/dev/zero of=/dev/sda)",
-        False,
+        True,
         T3,
     ),
     (
@@ -683,7 +687,7 @@ CLASSIFIER_TRUTH_TABLE = [
         "quoting_ansi_c_twice_then_rm_root",
         GATED,
         r"echo $'a\'b' $'c\'d' $(rm -rf /)",
-        False,
+        True,
         T3,
     ),
     # A parameter expansion carrying a close-paren as DATA used to end the body
@@ -717,6 +721,185 @@ CLASSIFIER_TRUTH_TABLE = [
         False,
         T0,
     ),
+    # ---- CLOSED: the APPROVABLE tier, reached through a substitution ---------
+    # The floor rows above were closed first, and they left the wider half open:
+    # the permanent-deny floor covers a handful of catastrophes the operating
+    # system usually refuses anyway, while ORDINARY destruction -- somebody's
+    # working tree, a running workload, an infrastructure apply, a publish --
+    # lives in the approvable tier, and that tier could not see through a
+    # substitution at all. Every row here was FREE (False, T0): prefix any read
+    # command and the mutation ran with zero consent.
+    #
+    # They land APPROVABLE, not categorical. Being written inside a substitution
+    # is not itself an aggravating fact -- the operation costs exactly the
+    # consent it would cost written plainly, and escalating it to permanent deny
+    # would be as wrong in the other direction as leaving it free.
+    (
+        "cmdsub_t3_project_dir_delete",
+        GATED,
+        "ls $(rm -rf /home/jorge/ws/me/gaia/hooks)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_user_dir_delete",
+        GATED,
+        "echo $(rm -rf /home/jorge/projects/app)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_cluster_delete",
+        GATED,
+        "echo $(kubectl delete deployment web -n prod)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_iac_apply",
+        GATED,
+        "cat $(terraform apply -auto-approve)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_iac_destroy",
+        GATED,
+        "printf '%s' $(terraform destroy -auto-approve)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_cloud_storage_write",
+        GATED,
+        "echo $(gcloud storage rm -r gs://bucket/data)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_cloud_storage_write_aws",
+        GATED,
+        "wc -l $(aws s3 rm s3://bucket/key --recursive)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_package_publish",
+        GATED,
+        "echo $(npm publish --access public)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_release_create",
+        GATED,
+        "echo $(gh release create v9.9.9)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_helm_uninstall_double_quoted",
+        GATED,
+        'echo "$(helm uninstall app -n prod)"',
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_cluster_delete_process_substitution",
+        GATED,
+        "diff /tmp/a <(kubectl delete deploy web)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_gitops_delete_mid_chain",
+        GATED,
+        "git status && echo $(flux delete kustomization apps)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_cluster_delete_in_param_expansion",
+        GATED,
+        "echo ${FOO:-$(kubectl delete deploy web)}",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_nested_user_dir_delete",
+        GATED,
+        "echo $(echo $(rm -rf /home/jorge/projects/app))",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_after_ansi_c_word",
+        GATED,
+        r"echo $'it\'s' $(docker rm -f web)",
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_t3_read_carrier_double_quoted",
+        GATED,
+        'grep -rn "$(rm -rf /home/jorge/projects/app)" .',
+        True,
+        T3,
+    ),
+    # The recursion bound, pinned from BOTH sides. Nesting past the analysis
+    # limit must tighten the verdict and never relax it: a cap that let the
+    # command through on the way out would be a documented bypass -- nest one
+    # level past the number and the gate stops applying. The body is not read at
+    # this point; the conservative answer is reached BECAUSE it was not read.
+    (
+        "cmdsub_depth_cap_closes_on_read_body",
+        GATED,
+        "echo $(" * 13 + "pwd" + ")" * 13,
+        True,
+        T3,
+    ),
+    (
+        "cmdsub_depth_below_cap_stays_free",
+        FREE,
+        "echo $(" * 12 + "pwd" + ")" * 12,
+        False,
+        T0,
+    ),
+    # ---- Controls: the approvable tier is far wider than the floor ----------
+    # This is where overcorrection would actually hurt. The floor covers a few
+    # catastrophes; the approvable tier covers the commonest verbs there are, so
+    # a rule that reads a read-only substitution as its carrier's mutation would
+    # tax the single most ordinary thing anyone types. Each of these executes a
+    # read and must keep costing nothing.
+    ("cmdsub_free_wc_of_ls", FREE, "wc -l $(ls)", False, T0),
+    ("cmdsub_free_grep_of_find", FREE, "grep -rn TODO $(find . -name '*.py')", False, T0),
+    ("cmdsub_free_head_sha_short", FREE, "echo $(git rev-parse --short HEAD)", False, T0),
+    ("cmdsub_free_describe_tags", FREE, "echo $(git describe --tags --abbrev=0)", False, T0),
+    ("cmdsub_free_porcelain_count", FREE, "echo $(git status --porcelain | wc -l)", False, T0),
+    ("cmdsub_free_basename", FREE, "echo $(basename /a/b/c.txt)", False, T0),
+    ("cmdsub_free_which_dirname", FREE, "ls -la $(dirname $(which python3))", False, T0),
+    ("cmdsub_free_cat_of_file", FREE, 'echo "$(cat /etc/hostname)"', False, T0),
+    ("cmdsub_free_whoami", FREE, "echo $(whoami)", False, T0),
+    ("cmdsub_free_uname", FREE, "echo $(uname -sr)", False, T0),
+    # T2, not T0, and for a reason that predates this work: `diff` matches a
+    # simulation pattern. Recorded at its measured value -- both tiers are free
+    # of consent, and rounding it to T0 would hide a real classification.
+    ("cmdsub_free_two_process_substitutions", FREE, "diff <(sort a.txt) <(sort b.txt)", False, T2),
+    ("cmdsub_free_kubectl_get", FREE, "echo $(kubectl get pods -o name)", False, T0),
+    ("cmdsub_free_terraform_output", FREE, "echo $(terraform output -raw ip)", False, T0),
+    ("cmdsub_free_helm_list", FREE, "echo $(helm list -n prod -o json)", False, T0),
+    (
+        "cmdsub_free_aws_identity",
+        FREE,
+        "echo $(aws sts get-caller-identity --query Account --output text)",
+        False,
+        T0,
+    ),
+    ("cmdsub_free_gh_pr_number", FREE, "echo $(gh pr view --json number -q .number)", False, T0),
+    ("cmdsub_free_npm_view", FREE, "echo $(npm view react version)", False, T0),
+    ("cmdsub_free_sed_print", FREE, "echo $(sed -n '1p' README.md)", False, T0),
+    ("cmdsub_free_tail_log", FREE, "echo $(tail -1 /var/log/syslog)", False, T0),
+    ("cmdsub_free_python_version", FREE, "echo $(python3 --version)", False, T0),
 ]
 
 # ---------------------------------------------------------------------------
@@ -1004,6 +1187,72 @@ NO_OVERCORRECTION_CENSUS = [
         r"echo $'mention $(cp p .claude/hooks/pre_tool_use.py)'",
         False,
     ),
+    # ---- Mentions of the APPROVABLE family, quoted inside another command ----
+    # The rows above pin mentions of the permanent-deny floor. The approvable
+    # tier is the wider surface by far -- it covers the verbs people write about
+    # constantly -- so the census would be measuring the easy half if it stopped
+    # at the floor. Each of these WRITES DOWN a destructive command that the
+    # classifier now gates when it is really run, and each must stay free.
+    (
+        "mention-approvable-cluster-delete-in-grep",
+        MENTION_FREE,
+        "grep -rn 'echo $(kubectl delete deployment web -n prod)' hooks/",
+        False,
+    ),
+    (
+        "mention-approvable-project-delete-single-quoted",
+        MENTION_FREE,
+        "echo '$(rm -rf /home/jorge/ws/me/gaia)'",
+        False,
+    ),
+    (
+        "mention-approvable-iac-apply-escaped-dollar",
+        MENTION_FREE,
+        'echo "\\$(terraform apply -auto-approve)"',
+        False,
+    ),
+    (
+        "mention-approvable-publish-in-trailing-comment",
+        MENTION_FREE,
+        "echo hello # $(npm publish --access public)",
+        False,
+    ),
+    (
+        "mention-approvable-cluster-delete-in-commit-message",
+        MENTION_FREE,
+        "git commit -m 'fix: gate $(kubectl delete deploy web)'",
+        False,
+    ),
+    (
+        "mention-approvable-cloud-write-in-memory-search",
+        MENTION_FREE,
+        "gaia memory search 'echo $(gcloud storage rm -r gs://b)'",
+        False,
+    ),
+    (
+        "mention-approvable-iac-destroy-in-log-grep",
+        MENTION_FREE,
+        "git log --grep='$(terraform destroy)' --oneline",
+        False,
+    ),
+    (
+        "mention-approvable-process-substitution-in-rg",
+        MENTION_FREE,
+        "rg -n 'diff <(kubectl delete deploy web)' hooks/",
+        False,
+    ),
+    (
+        "mention-approvable-ansi-c-quoted",
+        MENTION_FREE,
+        r"echo $'a substitution $(npm publish) mentioned'",
+        False,
+    ),
+    (
+        "mention-awk-field-reference",
+        MENTION_FREE,
+        "awk '{print $(NF)}' report.txt",
+        False,
+    ),
     # ---- OPEN: a mention that escalates today ----
     # Measured, not desired. The escalation does not come from any anchor this
     # plan added -- it comes from the permanently-blocked pattern table
@@ -1076,7 +1325,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 116
+_MINIMUM_MEASURED_CASES = 154
 
 
 @pytest.mark.parametrize(
