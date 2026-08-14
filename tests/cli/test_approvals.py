@@ -177,6 +177,8 @@ def db_store(tmp_path, monkeypatch):
     # Also stub the DB-backed grant writer so cmd_list's grant listing returns [].
     stub_writer = MagicMock()
     stub_writer.list_approval_grants = MagicMock(return_value=[])
+    stub_writer.count_expired_db_grants = MagicMock(return_value=0)
+    stub_writer.cleanup_expired_db_grants = MagicMock(return_value=0)
     monkeypatch.setattr(approvals_mod, "_import_writer", lambda: stub_writer)
 
     yield store, insert_pending

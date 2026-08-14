@@ -97,7 +97,8 @@ def clean_grants_dir(tmp_path, monkeypatch):
                 consumed_at           TEXT,
                 revoked_at            TEXT,
                 multi_use             INTEGER NOT NULL DEFAULT 0,
-                confirmed             INTEGER NOT NULL DEFAULT 0
+                confirmed             INTEGER NOT NULL DEFAULT 0,
+                source                TEXT NOT NULL DEFAULT 'legacy'
             );
             """
         )

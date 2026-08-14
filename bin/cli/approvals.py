@@ -576,7 +576,7 @@ def cmd_show(args) -> int:
 # Subcommand: revoke
 # ---------------------------------------------------------------------------
 
-def _revoke_grant(args) -> int:
+def _revoke_grant(args, approval_id: str | None = None) -> int:
     """Revoke an active command_set grant by its approval_id (legacy path).
 
     Calls ``writer.revoke_approval_grant(approval_id)`` to mark the grant
@@ -587,10 +587,13 @@ def _revoke_grant(args) -> int:
     fallback by the unified :func:`cmd_revoke` when an id is not found in the
     new ``approvals`` table.
 
+    ``approval_id`` overrides the one carried by ``args`` for callers that
+    already resolved the id from a prefix.
+
     Exits 0 on success, 1 if the grant is not found or already in a terminal
     state.
     """
-    approval_id: str = args.approval_id.strip()
+    approval_id = (approval_id or args.approval_id).strip()
 
     try:
         writer = _import_writer()
@@ -622,6 +625,36 @@ def _revoke_grant(args) -> int:
 # ---------------------------------------------------------------------------
 # Subcommand: reject
 # ---------------------------------------------------------------------------
+
+def _reject_live_grant(args, nonce: str) -> int:
+    """Close a still-live grant when no PENDING approval matches ``nonce``.
+
+    ``list_pending`` cannot see an approval whose decision was already taken, so
+    a set that was approved and never consumed matched nothing here and the
+    command failed -- on exactly the id with something left to close. Reject
+    means "do not let this run"; honoring that intent on a live grant is the
+    same close :func:`cmd_revoke` performs, and it leaves the recorded decision
+    untouched.
+
+    Exits 0 when a grant was closed, 1 when nothing matched the prefix.
+    """
+    try:
+        writer = _import_writer()
+        live = [
+            row for row in writer.list_approval_grants(status="PENDING", limit=500)
+            if str(row.get("approval_id", "")).startswith(f"P-{nonce}")
+        ]
+    except Exception as exc:
+        _print_error(f"Failed to look up grants: {exc}", args)
+        return 1
+
+    if len(live) != 1:
+        detail = "no pending approval or live grant" if not live else "several live grants"
+        _print_error(f"Cannot reject P-{nonce}: {detail} matches that id", args)
+        return 1
+
+    return _revoke_grant(args, live[0]["approval_id"])
+
 
 def cmd_reject(args) -> int:
     """Reject a pending approval by nonce prefix, or all pending approvals.
@@ -662,8 +695,7 @@ def cmd_reject(args) -> int:
                 matched_id = row_id
                 break
         if matched_id is None:
-            _print_error(f"No pending approval found for P-{nonce}", args)
-            return 1
+            return _reject_live_grant(args, nonce)
         store.revoke(matched_id, session_id)
     except Exception as exc:
         _print_error(f"Failed to reject approval: {exc}", args)
@@ -920,21 +952,13 @@ def cmd_clean(args) -> int:
     except Exception as exc:
         _print_error(f"DB cleanup failed: {exc}", args)
 
-    # Expire DB grant rows whose expires_at has passed.
+    # Expire DB grant rows past their deadline. Delegated rather than reproduced:
+    # this verb used to carry its own copy of the rule, which skipped the TTL-less
+    # plan-first rows the writer's sweep now reaches -- so `clean` reported success
+    # while leaving live keys behind.
     db_grants_expired = 0
     try:
-        from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        writer = _import_writer()
-        pending_grants = writer.list_approval_grants(status="PENDING", limit=1000)
-        for row in pending_grants:
-            expires_at = row.get("expires_at")
-            if expires_at and expires_at < now_iso:
-                try:
-                    writer.update_approval_grant_status(row["approval_id"], "EXPIRED")
-                    db_grants_expired += 1
-                except Exception:
-                    pass
+        db_grants_expired = _import_writer().cleanup_expired_db_grants()
     except Exception:
         pass
 
@@ -952,16 +976,9 @@ def cmd_clean(args) -> int:
 
 
 def _count_expired_db_grants() -> int:
-    """Count DB approval_grants rows with PENDING status whose expires_at has passed."""
+    """Count the PENDING grant rows a real ``clean`` would mark EXPIRED."""
     try:
-        from datetime import datetime, timezone
-        now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        writer = _import_writer()
-        rows = writer.list_approval_grants(status="PENDING", limit=1000)
-        return sum(
-            1 for r in rows
-            if r.get("expires_at") and r["expires_at"] < now_iso
-        )
+        return _import_writer().count_expired_db_grants()
     except Exception:
         return 0
 
@@ -1217,8 +1234,16 @@ def cmd_revoke(args) -> int:
 
     First looks the id up in the new ``approvals`` table. If found and
     ``pending``, inserts a REVOKED event and updates status to 'revoked'.
-    If the id is not present in the new table, falls back to the legacy
-    command_set grant path (:func:`_revoke_grant`).
+    Otherwise -- the id is unknown to the decision log, or the decision was
+    already taken -- falls through to the grant path (:func:`_revoke_grant`),
+    which closes the capability in ``approval_grants``.
+
+    An already-decided approval is the case that matters most: an approved grant
+    that no execution ever consumed is still live, and it is the only state in
+    which a loose key can exist. Refusing to act on it because the row is not
+    'pending' left the one closable state unreachable from the tool. What is
+    closed is the ability to USE the approval; the recorded decision itself is
+    never rewritten.
 
     With ``--yes``, skips the interactive confirmation prompt.
     Exits 0 on success, 1 on error.
@@ -1239,11 +1264,7 @@ def cmd_revoke(args) -> int:
 
     current_status = approval.get("status", "?")
     if current_status != "pending":
-        _print_error(
-            f"Cannot revoke approval {raw_id}: status is {current_status!r} (must be 'pending')",
-            args,
-        )
-        return 1
+        return _revoke_grant(args)
 
     if not skip_confirm:
         display = _import_approval_display()

@@ -96,6 +96,35 @@ APPROVAL_GRANT_TTL_MINUTES = 5
 
 
 # ---------------------------------------------------------------------------
+# Plan-first COMMAND_SET grant lifetime
+# ---------------------------------------------------------------------------
+#
+# PLAN_COMMAND_SET_TTL_MINUTES bounds a plan-first COMMAND_SET grant: the window
+# in which an approved, ordered batch may still reserve its remaining commands.
+#
+# It is a THIRD window, distinct from both constants above, because a plan-first
+# set is consumed differently from either. APPROVAL_GRANT_TTL_MINUTES (5) is
+# calibrated for a SINGLE command consumed at the match -- it only has to cover
+# block -> approve -> retry. A set is N commands executed one per tool call with
+# real work between them (a build, an apply, a verification read), so a 5-minute
+# window would expire a legitimately-running set mid-batch.
+# DEFAULT_PENDING_TTL_MINUTES (1440) is the opposite error: it is how long an
+# UNANSWERED approval waits for a human, and reusing it here would let an
+# approved-but-never-used key stay armed for a full day.
+#
+# 60 minutes is the point where both pressures are satisfied: it is longer than
+# any batch a user watches through in one sitting, and short enough that a key
+# nobody presented to a matching command is dead while the person who approved it
+# is still at the same desk.
+#
+# The window is measured from grant creation and is NOT extended by consuming an
+# item. What must be bounded is the grant's total authority, not the idle gap
+# between items; a sliding window would let a long enough set carry a live key
+# indefinitely, which is the property this constant exists to deny.
+PLAN_COMMAND_SET_TTL_MINUTES = 60
+
+
+# ---------------------------------------------------------------------------
 # Connection management
 # ---------------------------------------------------------------------------
 
@@ -6198,6 +6227,62 @@ def insert_approval_grant(
         con.close()
 
 
+def _plan_grant_deadline(created_at: str) -> str | None:
+    """Return when a plan-first grant born at ``created_at`` lapses, None if unreadable."""
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        born = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+    return (born + timedelta(minutes=PLAN_COMMAND_SET_TTL_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# The sweep's rule, written once: the UPDATE that expires rows and the COUNT that
+# previews it bind these same two parameters, so a preview cannot disagree with
+# the sweep it previews. The per-row question -- may THIS grant authorize now --
+# is _plan_grant_is_live; the two agree because both measure from
+# PLAN_COMMAND_SET_TTL_MINUTES.
+_LAPSED_GRANT_PREDICATE = (
+    "status = 'PENDING' "
+    "AND ((expires_at IS NOT NULL AND expires_at < ?) "
+    "     OR (expires_at IS NULL AND source = 'plan-first' AND created_at < ?))"
+)
+
+
+def _lapsed_grant_params() -> tuple[str, str]:
+    """Bind ``_LAPSED_GRANT_PREDICATE``: now, and the TTL-less plan-first cutoff."""
+    now = _now_iso()
+    return now, _plan_grant_born_before(now)
+
+
+def _plan_grant_born_before(now_iso: str) -> str:
+    """Return the created_at below which a TTL-less plan-first grant has lapsed."""
+    from datetime import datetime, timedelta, timezone
+
+    try:
+        now = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        now = datetime.now(timezone.utc)
+    return (now - timedelta(minutes=PLAN_COMMAND_SET_TTL_MINUTES)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _plan_grant_is_live(grant: dict, now_iso: str) -> bool:
+    """Return whether a plan-first grant row is still inside its authority window.
+
+    A row written before grants carried a TTL has expires_at NULL, and its deadline
+    is DERIVED from created_at rather than backfilled. Deriving gives an already-
+    issued grant exactly the window a new one gets, measured from when it really
+    began: a set approved minutes ago stays usable, one approved yesterday is
+    already lapsed. It also rewrites no row, so the user's recorded decision and
+    the grant's own history stay as they were.
+    """
+    deadline = grant.get("expires_at") or _plan_grant_deadline(grant.get("created_at") or "")
+    # No readable stamp means no window can be measured; refuse the grant rather
+    # than let an unmeasurable one authorize without bound.
+    return bool(deadline) and deadline > now_iso
+
+
 def insert_plan_command_set(
     approval_id: str,
     command_set: list[dict],
@@ -6211,6 +6296,7 @@ def insert_plan_command_set(
     """Persist an approved plan-first COMMAND_SET, failing closed on any error."""
     connection = con if con is not None else _connect(db_path)
     owned = con is None
+    created_at = _now_iso()
     try:
         if owned:
             connection.execute("BEGIN IMMEDIATE")
@@ -6218,12 +6304,20 @@ def insert_plan_command_set(
             """
             INSERT INTO approval_grants
                 (approval_id, agent_id, session_id, command_set_json, scope,
-                 created_at, status, consumed_indexes_json, confirmed,
+                 created_at, expires_at, status, consumed_indexes_json, confirmed,
                  request_fingerprint, next_index, source)
-            VALUES (?, ?, ?, ?, 'COMMAND_SET', ?, 'PENDING', '[]', 1, ?, 0,
+            VALUES (?, ?, ?, ?, 'COMMAND_SET', ?, ?, 'PENDING', '[]', 1, ?, 0,
                     'plan-first')
             """,
-            (approval_id, agent_id, session_id, _json.dumps(command_set), _now_iso(), request_fingerprint),
+            (
+                approval_id,
+                agent_id,
+                session_id,
+                _json.dumps(command_set),
+                created_at,
+                _plan_grant_deadline(created_at),
+                request_fingerprint,
+            ),
         )
         if owned:
             connection.commit()
@@ -6250,6 +6344,7 @@ def reserve_plan_command(
     from gaia.approvals.command_set import command_fingerprint
 
     con = _connect(db_path)
+    now_iso = _now_iso()
     try:
         con.execute("BEGIN IMMEDIATE")
         rows = con.execute(
@@ -6258,6 +6353,12 @@ def reserve_plan_command(
         ).fetchall()
         for row in rows:
             grant = dict(row)
+            # The deadline is enforced HERE, at the point that authorizes, and not
+            # left to cleanup_expired_db_grants alone: that sweep runs
+            # opportunistically, so a lapsed grant would keep reserving commands in
+            # every gap between two sweeps.
+            if not _plan_grant_is_live(grant, now_iso):
+                continue
             items = _json.loads(grant["command_set_json"])
             index = int(grant.get("next_index") or 0)
             if index >= len(items):
@@ -6293,10 +6394,11 @@ def pending_plan_command_exists(command: str, *, db_path: Path | None = None) ->
     from gaia.approvals.command_set import command_fingerprint
 
     con = _connect(db_path)
+    now_iso = _now_iso()
     try:
         try:
             rows = con.execute(
-                "SELECT command_set_json, next_index FROM approval_grants "
+                "SELECT command_set_json, next_index, created_at, expires_at FROM approval_grants "
                 "WHERE scope='COMMAND_SET' AND source='plan-first' AND status='PENDING'"
             ).fetchall()
         except sqlite3.OperationalError as exc:
@@ -6304,6 +6406,9 @@ def pending_plan_command_exists(command: str, *, db_path: Path | None = None) ->
                 return False
             raise
         for row in rows:
+            grant = {"created_at": row[2], "expires_at": row[3]}
+            if not _plan_grant_is_live(grant, now_iso):
+                continue
             items = _json.loads(row[0])
             index = int(row[1] or 0)
             if index < len(items):
@@ -7238,10 +7343,17 @@ def cleanup_expired_db_grants(
     *,
     db_path: Path | None = None,
 ) -> int:
-    """Mark EXPIRED any PENDING approval_grants rows whose expires_at has passed.
+    """Mark EXPIRED any PENDING approval_grants rows whose deadline has passed.
 
     Idempotent: rows already in a terminal status (CONSUMED, REVOKED, EXPIRED)
-    are not touched.  Rows with expires_at=NULL are skipped (no TTL set).
+    are not touched.
+
+    A row with expires_at=NULL carries no TTL and is skipped, EXCEPT on the
+    plan-first source, where NULL means the row predates plan-first grants
+    carrying a TTL at all rather than a deliberate no-expiry grant. Those rows
+    are swept on the deadline derived from created_at, so the sweep reaches the
+    already-issued keys instead of leaving them PENDING forever. The exception is
+    anchored to source='plan-first' so no other scope's no-TTL semantics change.
 
     Args:
         db_path: Optional explicit DB path (used by tests).
@@ -7249,23 +7361,37 @@ def cleanup_expired_db_grants(
     Returns:
         Number of rows marked EXPIRED.
     """
-    now = _now_iso()
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
         try:
             cur = con.execute(
-                "UPDATE approval_grants SET status = 'EXPIRED' "
-                "WHERE status = 'PENDING' "
-                "  AND expires_at IS NOT NULL "
-                "  AND expires_at < ?",
-                (now,),
+                f"UPDATE approval_grants SET status = 'EXPIRED' WHERE {_LAPSED_GRANT_PREDICATE}",
+                _lapsed_grant_params(),
             )
             con.commit()
             return cur.rowcount
         except Exception:
             con.rollback()
             raise
+    except Exception:
+        return 0
+    finally:
+        con.close()
+
+
+def count_expired_db_grants(
+    *,
+    db_path: Path | None = None,
+) -> int:
+    """Count the rows :func:`cleanup_expired_db_grants` would mark EXPIRED."""
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            f"SELECT COUNT(*) FROM approval_grants WHERE {_LAPSED_GRANT_PREDICATE}",
+            _lapsed_grant_params(),
+        ).fetchone()
+        return int(row[0])
     except Exception:
         return 0
     finally:
