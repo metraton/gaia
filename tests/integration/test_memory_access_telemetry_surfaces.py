@@ -337,9 +337,25 @@ BUMP_CALL_SITES: dict[str, tuple[str, ...]] = {
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def seeded(tmp_path_factory) -> dict:
-    """A scratch substrate carrying the corpus above, all counters at zero."""
+    """A fresh scratch substrate carrying the corpus above, all counters at
+    zero -- built PER TEST, not shared across the module.
+
+    Function-scoped on purpose: several recipes in ``SURFACES`` are real
+    writes (``checkpoint`` mints a brand-new ``class=anchor`` row,
+    ``add``/``reclassify``/``edit``/``link``/``delete`` mutate the corpus
+    too), and more than one read surface queries its class/type UNSCOPED
+    (the anchor section is "every ``class='anchor'`` row in the workspace",
+    not "the two rows this test seeded"). A module-scoped fixture let an
+    earlier case's write survive into a later case's exact-row assertion --
+    e.g. ``checkpoint``'s ``w_ckpt`` leaking into the anchor section a later
+    test reads -- so which cases passed depended on execution order (file
+    order under one worker, scattered/interleaved under `-n auto`, and
+    guaranteed to break the moment collection order changes). A private
+    corpus per test removes the shared mutable surface instead of tolerating
+    it: whatever a case writes dies with that case's own database.
+    """
     data_dir = tmp_path_factory.mktemp("gaia_data")
     saved = {k: os.environ.get(k) for k in
              ("GAIA_DATA_DIR", "GAIA_DB", "GAIA_DISPATCH_AGENT")}
