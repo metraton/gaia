@@ -2178,7 +2178,7 @@ class TestArtifactSkillReminder:
         )
         context = self._reminder_context(resp)
         assert context is not None, "first governed write this turn must remind"
-        assert "coding-standards" in context
+        assert "code-standards" in context
         assert resp.output["hookSpecificOutput"]["permissionDecision"] == "allow"
         assert resp.exit_code == 0
 
@@ -2204,7 +2204,7 @@ class TestArtifactSkillReminder:
             "the decision must stay 'allow' -- this is what guarantees the "
             "reminder never blocks or prompts the user"
         )
-        assert "coding-standards" in hook_specific.get("additionalContext", ""), (
+        assert "code-standards" in hook_specific.get("additionalContext", ""), (
             "the skill name must reach the agent via additionalContext -- "
             "the only field Claude Code delivers to the model when the "
             "decision is 'allow'"

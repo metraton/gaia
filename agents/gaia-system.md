@@ -26,7 +26,7 @@ skills:
   - gaia-patterns
   - investigation
   - gaia-audit
-  - coding-standards
+  - code-standards
 ---
 
 ## Identity

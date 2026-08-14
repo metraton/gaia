@@ -66,10 +66,10 @@ class TestArtifactSkillRulesStructure:
                 assert ext.startswith("."), f"{ext!r} missing leading dot"
                 assert ext == ext.lower(), f"{ext!r} is not lowercase"
 
-    def test_coding_standards_rule_present(self):
+    def test_code_standards_rule_present(self):
         """The initial scope's one registered class -- source code."""
         skills = {rule.skill for rule in ARTIFACT_SKILL_RULES}
-        assert "coding-standards" in skills
+        assert "code-standards" in skills
 
 
 # ============================================================================
@@ -77,7 +77,7 @@ class TestArtifactSkillRulesStructure:
 # ============================================================================
 
 class TestExpectedSkillForPathRecognized:
-    """Every extension registered under coding-standards resolves to it,
+    """Every extension registered under code-standards resolves to it,
     regardless of directory depth or filename."""
 
     @pytest.mark.parametrize(
@@ -94,17 +94,17 @@ class TestExpectedSkillForPathRecognized:
             "/absolute/path/to/deep/nested/file.py",
         ],
     )
-    def test_recognized_extension_maps_to_coding_standards(self, file_path):
-        assert expected_skill_for_path(file_path) == "coding-standards"
+    def test_recognized_extension_maps_to_code_standards(self, file_path):
+        assert expected_skill_for_path(file_path) == "code-standards"
 
     def test_case_insensitive_suffix_match(self):
         """A filesystem may hand back either case for the extension."""
-        assert expected_skill_for_path("Module.PY") == "coding-standards"
-        assert expected_skill_for_path("App.JS") == "coding-standards"
-        assert expected_skill_for_path("Component.TSX") == "coding-standards"
+        assert expected_skill_for_path("Module.PY") == "code-standards"
+        assert expected_skill_for_path("App.JS") == "code-standards"
+        assert expected_skill_for_path("Component.TSX") == "code-standards"
 
     def test_mixed_case_directory_does_not_affect_match(self):
-        assert expected_skill_for_path("Hooks/Modules/Thing.Py") == "coding-standards"
+        assert expected_skill_for_path("Hooks/Modules/Thing.Py") == "code-standards"
 
 
 # ============================================================================
@@ -164,14 +164,14 @@ class TestExpectedSkillsForPaths:
         paths = ["a/engine.js", "b/module.py"]
         result = expected_skills_for_paths(paths)
         assert result == {
-            "a/engine.js": "coding-standards",
-            "b/module.py": "coding-standards",
+            "a/engine.js": "code-standards",
+            "b/module.py": "code-standards",
         }
 
     def test_unrecognized_paths_are_omitted_not_mapped_to_none(self):
         paths = ["a/engine.js", "b/README.md", "c/index.html"]
         result = expected_skills_for_paths(paths)
-        assert result == {"a/engine.js": "coding-standards"}
+        assert result == {"a/engine.js": "code-standards"}
         assert "b/README.md" not in result
         assert "c/index.html" not in result
 
@@ -182,7 +182,7 @@ class TestExpectedSkillsForPaths:
     def test_duplicate_paths_collapse_to_one_key(self):
         paths = ["a/engine.js", "a/engine.js"]
         result = expected_skills_for_paths(paths)
-        assert result == {"a/engine.js": "coding-standards"}
+        assert result == {"a/engine.js": "code-standards"}
 
     def test_result_is_iterable_without_filtering_by_caller(self):
         """Callers should be able to iterate the result directly -- every

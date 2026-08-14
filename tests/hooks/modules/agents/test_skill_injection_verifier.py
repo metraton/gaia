@@ -331,8 +331,8 @@ class TestArtifactDerivedExpectation:
     """written_paths routes an expectation through artifact_skill_map,
     regardless of what declared_skills (the frontmatter) contains."""
 
-    def test_written_python_file_expects_coding_standards_undeclared(self):
-        """A .py file written with no coding-standards fingerprint in the
+    def test_written_python_file_expects_code_standards_undeclared(self):
+        """A .py file written with no code-standards fingerprint in the
         transcript, and no frontmatter declaration at all, still flags."""
         result = verify_skill_injection(
             agent_type="developer",
@@ -343,14 +343,14 @@ class TestArtifactDerivedExpectation:
         assert result is not None
         assert result["type"] == "skill_injection_gap"
         assert result["severity"] == "advisory"
-        assert "coding-standards" in result["missing_skills"]
+        assert "code-standards" in result["missing_skills"]
 
     def test_written_python_file_with_fingerprint_present_no_anomaly(self):
         """Same written file, but the transcript shows the skill's own
         fingerprint -- no gap."""
         result = verify_skill_injection(
             agent_type="developer",
-            transcript_text="The default is delete, so I cut the narration.",
+            transcript_text="A comment is the exception, not the default, so I cut the narration.",
             declared_skills=[],
             written_paths=["gaia/hooks/modules/agents/some_module.py"],
         )
@@ -377,7 +377,7 @@ class TestArtifactDerivedExpectation:
             written_paths=["hooks/modules/agents/thing.py"],
         )
         assert result is not None
-        assert "coding-standards" in result["missing_skills"]
+        assert "code-standards" in result["missing_skills"]
         assert "agent-protocol" not in result["missing_skills"]
 
     def test_no_declared_and_no_written_paths_returns_none(self):

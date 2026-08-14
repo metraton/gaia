@@ -136,7 +136,7 @@ def test_translates_agent_tools_disallowed_tools_and_skills(tmp_path):
         "disallowedTools: [Bash]\n"
         "skills:\n"
         "  - agent-protocol\n"
-        "  - coding-standards\n"
+        "  - code-standards\n"
         "---\nPrompt\n"
     )
 

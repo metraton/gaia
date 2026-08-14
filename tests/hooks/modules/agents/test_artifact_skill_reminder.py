@@ -32,42 +32,42 @@ def _isolated_cache_dir(tmp_path, monkeypatch):
 
 
 def test_first_call_reminds():
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is True
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is True
 
 
 def test_second_call_same_turn_same_skill_does_not_remind():
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is False
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is False
 
 
 def test_third_call_same_turn_same_skill_still_does_not_remind():
     """Guards against a marker that only suppresses the SECOND call."""
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is False
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is False
 
 
 def test_different_skill_same_turn_reminds_independently():
     """Dedup is keyed per artifact CLASS (skill), not globally per turn --
     a second, DIFFERENT governed class in the same turn still reminds once."""
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
     assert reminder.should_remind("sess-1", "aabc123", "terraform-standards") is True
 
 
 def test_different_agent_same_session_is_a_fresh_turn():
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
-    assert reminder.should_remind("sess-1", "adef456", "coding-standards") is True
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
+    assert reminder.should_remind("sess-1", "adef456", "code-standards") is True
 
 
 def test_different_session_same_agent_is_a_fresh_turn():
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
-    assert reminder.should_remind("sess-2", "aabc123", "coding-standards") is True
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
+    assert reminder.should_remind("sess-2", "aabc123", "code-standards") is True
 
 
 def test_repeat_after_marking_a_different_skill_first_still_dedups():
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
     reminder.should_remind("sess-1", "aabc123", "terraform-standards")
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is False
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is False
     assert reminder.should_remind("sess-1", "aabc123", "terraform-standards") is False
 
 
@@ -77,11 +77,11 @@ def test_repeat_after_marking_a_different_skill_first_still_dedups():
 
 
 def test_missing_session_id_never_reminds():
-    assert reminder.should_remind("", "aabc123", "coding-standards") is False
+    assert reminder.should_remind("", "aabc123", "code-standards") is False
 
 
 def test_missing_agent_id_never_reminds():
-    assert reminder.should_remind("sess-1", "", "coding-standards") is False
+    assert reminder.should_remind("sess-1", "", "code-standards") is False
 
 
 def test_missing_skill_never_reminds():
@@ -89,8 +89,8 @@ def test_missing_skill_never_reminds():
 
 
 def test_missing_ids_never_create_a_marker_file(tmp_path):
-    reminder.should_remind("", "aabc123", "coding-standards")
-    reminder.should_remind("sess-1", "", "coding-standards")
+    reminder.should_remind("", "aabc123", "code-standards")
+    reminder.should_remind("sess-1", "", "code-standards")
     reminder.should_remind("sess-1", "aabc123", "")
     assert not reminder.REMINDER_CACHE_DIR.exists() or not any(
         reminder.REMINDER_CACHE_DIR.glob("*.json")
@@ -109,10 +109,10 @@ def test_unwritable_cache_dir_still_reminds_without_raising(monkeypatch):
 
     monkeypatch.setattr(Path, "mkdir", _boom)
 
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is True
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is True
     # Persistence failed, so nothing was recorded -- the NEXT call reminds
     # again rather than silently going quiet forever.
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is True
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is True
 
 
 def test_corrupt_marker_file_is_treated_as_empty(tmp_path):
@@ -120,7 +120,7 @@ def test_corrupt_marker_file_is_treated_as_empty(tmp_path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not valid json", encoding="utf-8")
 
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is True
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is True
 
 
 def test_marker_file_with_wrong_shape_is_treated_as_empty(tmp_path):
@@ -128,9 +128,9 @@ def test_marker_file_with_wrong_shape_is_treated_as_empty(tmp_path):
     crash -- it degrades to an empty reminded set."""
     path = reminder._marker_path("sess-1", "aabc123")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('{"skills": "coding-standards"}', encoding="utf-8")
+    path.write_text('{"skills": "code-standards"}', encoding="utf-8")
 
-    assert reminder.should_remind("sess-1", "aabc123", "coding-standards") is True
+    assert reminder.should_remind("sess-1", "aabc123", "code-standards") is True
 
 
 # ---------------------------------------------------------------------------
@@ -139,9 +139,9 @@ def test_marker_file_with_wrong_shape_is_treated_as_empty(tmp_path):
 
 
 def test_build_reminder_context_names_file_and_skill():
-    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "code-standards")
     assert "/repo/hooks/foo.py" in text
-    assert "coding-standards" in text
+    assert "code-standards" in text
 
 
 def test_build_reminder_context_is_factual_not_imperative():
@@ -149,7 +149,7 @@ def test_build_reminder_context_is_factual_not_imperative():
     -- it must not read as a command ("load the skill", "you must") or any
     other system-directive phrasing that prompt-injection defenses could
     flag and surface to the user instead of folding into context."""
-    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "code-standards")
     assert "governed by" in text
     lowered = text.lower()
     for imperative in ("load it", "you must", "before finishing"):
@@ -162,12 +162,12 @@ def test_build_reminder_context_is_factual_not_imperative():
 def test_build_reminder_context_names_the_loadable_skill():
     """The skill must be named in its loadable form so the agent can act on
     the observation without further lookup."""
-    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
-    assert "Skill('coding-standards')" in text
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "code-standards")
+    assert "Skill('code-standards')" in text
 
 
 def test_build_reminder_context_tagged_for_easy_grepping():
-    text = reminder.build_reminder_context("/repo/hooks/foo.py", "coding-standards")
+    text = reminder.build_reminder_context("/repo/hooks/foo.py", "code-standards")
     assert text.startswith("[SKILL_REMINDER]")
 
 
@@ -182,7 +182,7 @@ def test_cleanup_noop_when_cache_dir_absent():
 
 
 def test_cleanup_removes_marker_older_than_ttl():
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
     path = reminder._marker_path("sess-1", "aabc123")
     assert path.is_file()
 
@@ -195,7 +195,7 @@ def test_cleanup_removes_marker_older_than_ttl():
 
 
 def test_cleanup_keeps_marker_within_ttl():
-    reminder.should_remind("sess-1", "aabc123", "coding-standards")
+    reminder.should_remind("sess-1", "aabc123", "code-standards")
     path = reminder._marker_path("sess-1", "aabc123")
 
     import json as _json

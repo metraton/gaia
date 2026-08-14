@@ -62,9 +62,7 @@ skills/
 ├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
-├── coding-standards/      # Language-agnostic code + inline documentation conventions
-│   ├── reference.md       # per-stack tables: where docs natively live, stacks with no native slot, which checker verifies which rule
-│   └── examples.md        # worked before/after pairs, each showing the cut (the survival test, placement, repeated rationale, provenance vs process trace)
+├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
 ├── diagram-builder/       # Domain: turn any idea into a creative, pedagogical, data-driven diagram deck (thinking method + section/component dialect + authoring modes)
@@ -126,10 +124,10 @@ skill that could theoretically apply.
 | Agent | Frontmatter (always loaded) | On-demand (loaded via `Skill(...)`) |
 |-------|------------------------------|--------------------------------------|
 | cloud-troubleshooter | agent-protocol, security-tiers, command-execution, investigation, fast-queries | — |
-| platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | — |
-| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | — |
-| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, coding-standards | — |
-| gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, coding-standards | agent-creation, skill-creation, gaia-release, gaia-verify |
+| platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | — |
+| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | — |
+| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | — |
+| gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, code-standards | agent-creation, skill-creation, gaia-release, gaia-verify |
 | gaia-verifier | agent-protocol, security-tiers, command-execution, verification-oracle, verification-rubric | — |
 | gaia-planner | agent-protocol, security-tiers, investigation, command-execution, gaia-planner | — |
 | gaia-orchestrator | agent-protocol, security-tiers, command-execution, memory | agent-response and flow-specific skills |

@@ -23,7 +23,7 @@ The map is a plain list of rules so that adding a future artifact class --
 Terraform files, Kubernetes manifests, shell scripts -- is adding one
 ``ArtifactSkillRule`` entry, never touching ``expected_skill_for_path`` or
 any caller. Today's rule set covers exactly one class per the initial scope:
-source-code files, governed by ``coding-standards``.
+source-code files, governed by ``code-standards``.
 """
 
 from pathlib import PurePosixPath
@@ -47,15 +47,15 @@ class ArtifactSkillRule(NamedTuple):
 # in this module (or its callers) needs to change.
 ARTIFACT_SKILL_RULES: List[ArtifactSkillRule] = [
     ArtifactSkillRule(
-        skill="coding-standards",
+        skill="code-standards",
         extensions=frozenset({
             ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx",
         }),
         reason=(
             "These extensions are source code meant to be read long after "
-            "the session that produced it; coding-standards is the skill "
-            "that governs the house doc-header, inline-comment, and "
-            "no-tooling-trace conventions for exactly that class of file."
+            "the session that produced it; code-standards is the skill "
+            "that governs how it is named, structured, and commented for "
+            "exactly that class of file."
         ),
     ),
 ]

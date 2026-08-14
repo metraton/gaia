@@ -12,7 +12,7 @@ sources, so a gap is caught regardless of which one names it:
       derived from the artifact, never from the frontmatter. This is
       what lets the check catch an agent that writes a class of file
       (e.g. a Python hook module) without its governing skill
-      (coding-standards) ever appearing in the transcript, even when
+      (code-standards) ever appearing in the transcript, even when
       that agent's frontmatter never declared the skill in the first
       place -- a gap the frontmatter-only check cannot see by
       construction.
@@ -58,11 +58,11 @@ SKILL_FINGERPRINTS: Dict[str, List[str]] = {
         "fast-queries",
         "Start with supplied evidence, not a fixed diagnostic script.",
     ],
-    "coding-standards": [
-        "The default is delete",
-        "Does it state a fact the code cannot show?",
-        "Contracts are always documented",
-        "The relocation test",
+    "code-standards": [
+        "Write code so that its behavior, responsibility, and intent can be understood from",
+        "Make behavior explicit",
+        "A comment is the exception, not the default",
+        "Clever compression",
     ],
 }
 
