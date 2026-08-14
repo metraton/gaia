@@ -369,12 +369,16 @@ def test_memory_block_empty_when_only_non_matching_rows_exist(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# P1 injection telemetry (telemetria-de-uso-en-memoria-curada, task 6):
-# every row rendered into "How the user works" is an automatic-injection
-# surface. Bumps injection_count only, never deliberate_count, never
-# updated_at, never a memory_history row -- and never breaks kernel assembly
-# if the telemetry write itself fails, because this block ships on EVERY
-# subagent dispatch.
+# Kernel-axis telemetry (usar-la-telemetria-de-memoria-edad-sesgo-y-pesaje,
+# task 4; formerly P1 injection telemetry from
+# telemetria-de-uso-en-memoria-curada, task 6): every row rendered into "How
+# the user works" is a kernel-dispatch surface. Bumps kernel_count only,
+# never injection_count, never deliberate_count, never updated_at, never a
+# memory_history row -- and never breaks kernel assembly if the telemetry
+# write itself fails, because this block ships on EVERY subagent dispatch.
+# Split off injection_count precisely because that shared counter used to be
+# dominated by this fixed, every-dispatch row set (measured: 37/37/26 against
+# 17 or less for everything else) -- see task 4's contract for the measurement.
 # ---------------------------------------------------------------------------
 
 def _telemetry_row(db_path, name, workspace=WORKSPACE):
@@ -382,8 +386,8 @@ def _telemetry_row(db_path, name, workspace=WORKSPACE):
     con.row_factory = sqlite3.Row
     try:
         return dict(con.execute(
-            "SELECT injection_count, deliberate_count, last_injected_at, "
-            "       updated_at "
+            "SELECT injection_count, deliberate_count, kernel_count, "
+            "       last_injected_at, last_kernel_at, updated_at "
             "FROM memory WHERE workspace=? AND name=?",
             (workspace, name),
         ).fetchone())
@@ -399,8 +403,8 @@ def _history_count(db_path):
         con.close()
 
 
-class TestMemoryBlockInjectionTelemetry:
-    def test_rendered_rows_bump_injection_only(self, tmp_path):
+class TestMemoryBlockKernelTelemetry:
+    def test_rendered_rows_bump_kernel_only(self, tmp_path):
         db = tmp_path / "gaia.db"
         from gaia.store.writer import _connect
 
@@ -423,8 +427,9 @@ class TestMemoryBlockInjectionTelemetry:
         after_history = _history_count(db)
 
         assert "Live state and code outrank memory" in block
-        assert after["injection_count"] == before["injection_count"] + 1
-        assert after["last_injected_at"] is not None
+        assert after["kernel_count"] == before["kernel_count"] + 1
+        assert after["last_kernel_at"] is not None
+        assert after["injection_count"] == before["injection_count"] == 0
         assert after["deliberate_count"] == before["deliberate_count"] == 0
         assert after["updated_at"] == before["updated_at"]
         assert after_history == before_history
@@ -454,7 +459,7 @@ class TestMemoryBlockInjectionTelemetry:
 
     def test_body_over_hard_ceiling_is_dropped_and_never_bumped(self, tmp_path):
         """A candidate SELECTed by the query but then dropped by this
-        builder (body over the hard ceiling) must not bump injection --
+        builder (body over the hard ceiling) must not bump kernel --
         selected is not emitted, the same property the get-relevant
         renderers are held to."""
         db = tmp_path / "gaia.db"

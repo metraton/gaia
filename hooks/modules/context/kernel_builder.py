@@ -310,7 +310,7 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
     unrelated projects sharing the same workspace). Returns ``name`` plus
     ``body`` -- the name never renders in the block (that would cost a
     further ``gaia memory show`` call the agent in practice never made) but
-    is needed so the P1 injection telemetry in ``build_memory_block`` can
+    is needed so the kernel-axis telemetry in ``build_memory_block`` can
     bump exactly the rows that make it into the block, never a candidate
     filtered out below. A body is injected whole; one over
     ``_MEMORY_BODY_HARD_CEILING`` is dropped entirely instead of sliced --
@@ -351,16 +351,24 @@ def _executor_user_bodies(workspace: str, db_path=None) -> list:
     return kept
 
 
-def _record_kernel_injection_telemetry(
+def _record_kernel_telemetry(
     workspace: str, names: list, *, db_path=None,
 ) -> None:
-    """Best-effort P1 injection bump for rows rendered into the kernel's
+    """Best-effort kernel-axis bump for rows rendered into the kernel's
     "How the user works" block. Reuses the same store-layer helper the
     get-relevant surfaces use (``gaia.store.writer.record_memory_access``);
-    never a second implementation. Every failure mode is swallowed here, on
-    top of ``record_memory_access``'s own internal best-effort contract --
-    this block ships on EVERY dispatch, so a telemetry defect must never
-    surface as a broken kernel, unlike a single CLI invocation.
+    never a second implementation. Bumps the ``"kernel"`` axis
+    (``kernel_count``/``last_kernel_at``), NOT ``"injection"``: this block
+    fires on EVERY subagent dispatch over the same fixed rows
+    (``type=user AND audience=executor``), which used to dominate the
+    injection axis by construction (measured: the kernel's rows led any
+    injection ranking, 37/37/26 against 17 or less for everything else).
+    Splitting it into its own axis is forward-only -- what it already added
+    to ``injection_count`` before this split stays there, unmoved. Every
+    failure mode is swallowed here, on top of ``record_memory_access``'s own
+    internal best-effort contract -- this block ships on EVERY dispatch, so a
+    telemetry defect must never surface as a broken kernel, unlike a single
+    CLI invocation.
     """
     if not names:
         return
@@ -370,10 +378,10 @@ def _record_kernel_injection_telemetry(
         return
     for name in names:
         try:
-            record_memory_access(workspace, name, "injection", db_path=db_path)
+            record_memory_access(workspace, name, "kernel", db_path=db_path)
         except Exception:
             logger.debug(
-                "memory injection telemetry failed (non-fatal)", exc_info=True,
+                "memory kernel telemetry failed (non-fatal)", exc_info=True,
             )
 
 
@@ -390,7 +398,7 @@ def build_memory_block(workspace: str, *, db_path=None) -> str:
         lines.append(f"- {body_lines[0]}")
         lines.extend(f"  {line}" if line else "" for line in body_lines[1:])
     block = "\n".join(lines)
-    _record_kernel_injection_telemetry(
+    _record_kernel_telemetry(
         workspace, [row["name"] for row in rows], db_path=db_path,
     )
     return block

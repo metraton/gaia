@@ -4,8 +4,20 @@ Each surface below is invoked for real -- ``bin/gaia`` as a subprocess for the
 CLI ones, the function itself for context assembly -- against a seeded scratch
 database, and its verdict is checked against the counter deltas that landed in
 that database. Nothing here mocks ``record_memory_access`` or asserts on a call
-count: a surface is injection, deliberate, or neither because of what the DB
-looks like afterwards.
+count: a surface is injection, deliberate, kernel, or neither because of what
+the DB looks like afterwards.
+
+v50 (usar-la-telemetria-de-memoria-edad-sesgo-y-pesaje, task 4) splits a third
+axis, ``kernel``, off ``injection``: the dispatch kernel's own "How the user
+works" block (rendered by ``build_memory_block``, fired on EVERY subagent
+dispatch over a fixed ``type=user AND audience=executor`` row set) used to
+share ``injection``'s columns and dominated that axis by construction. It has
+its own recipe (``test_kernel_memory_block_counts_the_rows_it_renders``) and
+its own dedicated cross-axis proof
+(``test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row``),
+rather than a ``SURFACES`` entry, because no CLI subprocess triggers it -- it
+is context assembly, invoked the same way ``test_kernel_memory_block_counts_
+the_rows_it_renders`` already invokes it.
 
 Three guards keep the census from going stale as a hand-written list would:
 
@@ -50,6 +62,18 @@ _GAIA = _REPO_ROOT / "bin" / "gaia"
 
 INJECTION = "injection"
 DELIBERATE = "deliberate"
+KERNEL = "kernel"
+
+#: Expected 3-tuple delta (injection, deliberate, kernel) per verdict. A
+#: surface that moves rows carries no ``KERNEL`` entry today -- nothing in
+#: ``SURFACES`` reaches the kernel block, which is a context-assembly
+#: function, not a CLI subcommand -- but the mapping is total over the three
+#: kinds so a future kernel-classified surface needs no new branch here.
+_EXPECTED_DELTA: dict[str, tuple[int, int, int]] = {
+    INJECTION: (1, 0, 0),
+    DELIBERATE: (0, 1, 0),
+    KERNEL: (0, 0, 1),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +100,11 @@ SEEDS: tuple[Seed, ...] = (
          initiative="beta"),
     Seed("a_anchor", "project", class_="anchor"),
     Seed("u_exec", "user", audience="executor"),
+    # class=anchor (not the default "log") so get-relevant's anchor section
+    # -- which pins type=user rows to the top -- can select it too: the row
+    # both the kernel block AND a session-context digest can reach, used by
+    # test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row.
+    Seed("u_kernel_and_digest", "user", class_="anchor", audience="executor"),
     Seed("atom_seeded", "atom"),
     Seed("w_edit", "project"),
     Seed("w_append", "project"),
@@ -179,8 +208,9 @@ SURFACES: tuple[Surface, ...] = (
           ["memory", "get-relevant", "--workspace", WORKSPACE,
            "--sections", "carry_forward,anchor,thread_open",
            "--max-chars", "4000", "--no-pointer"],
-          INJECTION, ["t_alpha", "t_beta", "a_anchor"], action="get-relevant",
-          contains=("t_alpha", "t_beta", "a_anchor")),
+          INJECTION, ["t_alpha", "t_beta", "a_anchor", "u_kernel_and_digest"],
+          action="get-relevant",
+          contains=("t_alpha", "t_beta", "a_anchor", "u_kernel_and_digest")),
     _read("get-relevant-types",
           ["memory", "get-relevant", "--workspace", WORKSPACE,
            "--types", "atom", "--limit", "8"],
@@ -368,26 +398,27 @@ def _seed_episode(db: Path) -> None:
 # Measurement
 # ---------------------------------------------------------------------------
 
-def _counters(db: Path) -> dict[str, tuple[int, int]]:
+def _counters(db: Path) -> dict[str, tuple[int, int, int]]:
+    """(injection_count, deliberate_count, kernel_count) per row name."""
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     try:
         return {
-            name: (injection, deliberate)
-            for name, injection, deliberate in con.execute(
-                "SELECT name, injection_count, deliberate_count FROM memory "
-                "WHERE workspace = ?", (WORKSPACE,)
+            name: (injection, deliberate, kernel)
+            for name, injection, deliberate, kernel in con.execute(
+                "SELECT name, injection_count, deliberate_count, kernel_count "
+                "FROM memory WHERE workspace = ?", (WORKSPACE,)
             )
         }
     finally:
         con.close()
 
 
-def _moved(before: dict, after: dict) -> dict[str, tuple[int, int]]:
+def _moved(before: dict, after: dict) -> dict[str, tuple[int, int, int]]:
     out = {}
-    for name, (injection, deliberate) in after.items():
-        was = before.get(name, (0, 0))
-        delta = (injection - was[0], deliberate - was[1])
-        if delta != (0, 0):
+    for name, (injection, deliberate, kernel) in after.items():
+        was = before.get(name, (0, 0, 0))
+        delta = (injection - was[0], deliberate - was[1], kernel - was[2])
+        if delta != (0, 0, 0):
             out[name] = delta
     return out
 
@@ -434,17 +465,21 @@ def test_surface_moves_exactly_the_counter_its_verdict_declares(surface, seeded)
         f"expected rows {sorted(surface.rows)} to move, measured "
         f"{ {k: v for k, v in sorted(moved.items())} }"
     )
-    expected_delta = (1, 0) if surface.kind == INJECTION else (0, 1)
-    for name, delta in moved.items():
-        assert delta == expected_delta, (
-            f"{surface.surface_id}: row {name} moved {delta} "
-            f"(injection, deliberate); its verdict {surface.kind} demands "
-            f"{expected_delta}"
-        )
+    if surface.kind is not None:
+        expected_delta = _EXPECTED_DELTA[surface.kind]
+        for name, delta in moved.items():
+            assert delta == expected_delta, (
+                f"{surface.surface_id}: row {name} moved {delta} "
+                f"(injection, deliberate, kernel); its verdict {surface.kind} "
+                f"demands {expected_delta}"
+            )
 
 
 def test_kernel_memory_block_counts_the_rows_it_renders(seeded):
-    """Context assembly's one memory renderer: injection, body-less name and all."""
+    """Context assembly's one memory renderer: kernel axis, body-less name
+    and all -- never injection, the axis it shared before this split. Every
+    type=user/audience=executor row in the corpus renders together, so both
+    seeded rows of that shape move -- not only ``u_exec``."""
     from hooks.modules.context.kernel_builder import build_memory_block
 
     before = _counters(seeded["db"])
@@ -452,11 +487,89 @@ def test_kernel_memory_block_counts_the_rows_it_renders(seeded):
     after = _counters(seeded["db"])
 
     assert "body of u_exec" in block
-    assert _moved(before, after) == {"u_exec": (1, 0)}
+    assert _moved(before, after) == {
+        "u_exec": (0, 0, 1),
+        "u_kernel_and_digest": (0, 0, 1),
+    }
+
+
+def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
+    seeded,
+):
+    """Gate 791 / AC-2, on ONE row both surfaces can reach: type=user AND
+    audience=executor (the kernel block's own query) with class=anchor so
+    get-relevant's anchor section -- which pins type=user rows to the top --
+    selects it too. A simulated subagent dispatch (the kernel's own memory
+    block, the exact function SubagentStart renders) must move kernel_count
+    ONLY. A session-context surface (get-relevant --sections anchor) over the
+    SAME row must move injection_count ONLY. deliberate_count must move in
+    NEITHER case. Both writes stay outside updated_at and memory_history."""
+    from hooks.modules.context.kernel_builder import build_memory_block
+
+    row_name = "u_kernel_and_digest"
+
+    def _row_updated_at() -> str:
+        con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
+        try:
+            return con.execute(
+                "SELECT updated_at FROM memory WHERE workspace = ? AND name = ?",
+                (WORKSPACE, row_name),
+            ).fetchone()[0]
+        finally:
+            con.close()
+
+    def _history_count() -> int:
+        con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
+        try:
+            return con.execute(
+                "SELECT COUNT(*) FROM memory_history WHERE workspace = ?",
+                (WORKSPACE,),
+            ).fetchone()[0]
+        finally:
+            con.close()
+
+    updated_at_before = _row_updated_at()
+    history_before = _history_count()
+
+    # 1) Simulate a subagent dispatch: the kernel block. Every
+    # type=user/audience=executor row renders together, so `u_exec` (the
+    # OTHER seeded row of that shape) moves alongside `row_name` -- both on
+    # the kernel axis, neither on injection or deliberate.
+    before_dispatch = _counters(seeded["db"])
+    block = build_memory_block(WORKSPACE, db_path=seeded["db"])
+    after_dispatch = _counters(seeded["db"])
+    assert f"body of {row_name}" in block
+    assert _moved(before_dispatch, after_dispatch) == {
+        row_name: (0, 0, 1),
+        "u_exec": (0, 0, 1),
+    }
+
+    # 2) A real session-context surface, over the SAME row. The other seeded
+    # anchor row (`a_anchor`, type=project) shares this section too -- both
+    # move on injection, neither on kernel or deliberate.
+    result = _run(
+        ["memory", "get-relevant", "--workspace", WORKSPACE,
+         "--sections", "anchor", "--max-chars", "4000", "--no-pointer"],
+        seeded,
+    )
+    assert result.returncode == 0, result.stderr[:2000]
+    assert row_name in result.stdout
+    after_digest = _counters(seeded["db"])
+    assert _moved(after_dispatch, after_digest) == {
+        row_name: (1, 0, 0),
+        "a_anchor": (1, 0, 0),
+    }
+
+    # Neither surface ever touched deliberate_count, updated_at, or
+    # memory_history for this row.
+    assert after_digest[row_name][1] == before_dispatch[row_name][1]
+    assert _row_updated_at() == updated_at_before
+    assert _history_count() == history_before
 
 
 def test_telemetry_never_touches_the_audited_columns(seeded):
-    """The narrow UPDATE: no updated_at movement, no memory_history row."""
+    """The narrow UPDATE: no updated_at movement, no memory_history row --
+    for all three kinds, not only the two that predate this split."""
     con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
     try:
         before_updated = dict(con.execute(
@@ -472,6 +585,8 @@ def test_telemetry_never_touches_the_audited_columns(seeded):
     assert record_memory_access(WORKSPACE, "t_alpha", DELIBERATE,
                                 db_path=seeded["db"]) is True
     assert record_memory_access(WORKSPACE, "t_alpha", INJECTION,
+                                db_path=seeded["db"]) is True
+    assert record_memory_access(WORKSPACE, "t_alpha", KERNEL,
                                 db_path=seeded["db"]) is True
 
     con = sqlite3.connect(f"file:{seeded['db']}?mode=ro", uri=True)
@@ -490,12 +605,32 @@ def test_telemetry_never_touches_the_audited_columns(seeded):
 
 
 def test_telemetry_failure_never_reaches_the_read(tmp_path):
-    """Best-effort: an unopenable substrate reports False, raises nothing."""
+    """Best-effort: an unopenable substrate reports False, raises nothing --
+    for all three kinds."""
     from gaia.store.writer import record_memory_access
     # A directory where a database file belongs: sqlite3 cannot open it, and
     # unlike a missing path the store layer will not create it either.
     assert record_memory_access(
         WORKSPACE, "t_alpha", DELIBERATE, db_path=tmp_path) is False
+    assert record_memory_access(
+        WORKSPACE, "t_alpha", INJECTION, db_path=tmp_path) is False
+    assert record_memory_access(
+        WORKSPACE, "t_alpha", KERNEL, db_path=tmp_path) is False
+
+
+def test_invalid_access_kind_is_still_rejected(seeded):
+    """The map now admits a third key; a typo must still raise, not write
+    silently anywhere -- this is the guard task instruction #1 asks to keep."""
+    from gaia.store.writer import record_memory_access
+
+    with pytest.raises(ValueError):
+        record_memory_access(WORKSPACE, "t_alpha", "kernle", db_path=seeded["db"])
+
+    before = _counters(seeded["db"])
+    with pytest.raises(ValueError):
+        record_memory_access(WORKSPACE, "t_alpha", "bogus", db_path=seeded["db"])
+    after = _counters(seeded["db"])
+    assert before == after
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +717,7 @@ def test_every_bump_call_site_belongs_to_a_classified_surface():
     """A bump wired into an unmeasured module fails here."""
     pattern = re.compile(
         r"record_memory_access|_bump_memory_telemetry|_bump_injection_telemetry"
-        r"|_record_kernel_injection_telemetry"
+        r"|_record_kernel_telemetry"
     )
     found: set[str] = set()
     for root in ("bin", "hooks", "tools", "gaia", "scripts"):

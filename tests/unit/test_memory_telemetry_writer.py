@@ -1,11 +1,16 @@
-"""gaia.store.writer.record_memory_access -- the P1 telemetry helper.
+"""gaia.store.writer.record_memory_access -- the P1/v50 telemetry helper.
 
 telemetria-de-uso-en-memoria-curada (brief), task 5: what counts is a
 property, not a command list -- "deliberate" is any surface that renders a
 row's full body on explicit request, "injection" is a row rendered inside an
-automatic context block. This module tests the SHARED low-level helper both
+automatic context block (get-relevant digest/sections/types). v50
+(usar-la-telemetria-de-memoria-edad-sesgo-y-pesaje, task 4) adds a third kind,
+"kernel", for a row rendered inside the dispatch kernel's own "How the user
+works" block -- split off "injection" because that block fires on every
+subagent dispatch over a fixed row set and used to dominate the injection
+axis by construction. This module tests the SHARED low-level helper all three
 surfaces call: it must bump exactly the requested counter/timestamp pair,
-leave the other counter alone, never touch ``updated_at`` (the sort key
+leave the other two counters alone, never touch ``updated_at`` (the sort key
 context injection depends on), and degrade to a no-op ``False`` -- never an
 exception -- when the write cannot land, so a telemetry failure never breaks
 the read it instruments.
@@ -55,8 +60,9 @@ def _read_row(db_path: Path) -> sqlite3.Row:
     con.row_factory = sqlite3.Row
     try:
         return con.execute(
-            "SELECT injection_count, deliberate_count, last_injected_at, "
-            "       last_deliberate_at, updated_at "
+            "SELECT injection_count, deliberate_count, kernel_count, "
+            "       last_injected_at, last_deliberate_at, last_kernel_at, "
+            "       updated_at "
             "FROM memory WHERE workspace=? AND name=?",
             (_WORKSPACE, _SLUG),
         ).fetchone()
@@ -87,8 +93,10 @@ class TestRecordMemoryAccessDeliberate:
         assert ok is True
         assert after["deliberate_count"] == before["deliberate_count"] + 1
         assert after["injection_count"] == before["injection_count"]
+        assert after["kernel_count"] == before["kernel_count"]
         assert after["last_deliberate_at"] is not None
         assert after["last_injected_at"] is None
+        assert after["last_kernel_at"] is None
         assert after["updated_at"] == before["updated_at"]
         assert after_history == before_history
 
@@ -104,9 +112,33 @@ class TestRecordMemoryAccessDeliberate:
         assert ok is True
         assert after["injection_count"] == before["injection_count"] + 1
         assert after["deliberate_count"] == before["deliberate_count"]
+        assert after["kernel_count"] == before["kernel_count"]
         assert after["last_injected_at"] is not None
         assert after["last_deliberate_at"] is None
+        assert after["last_kernel_at"] is None
         assert after["updated_at"] == before["updated_at"]
+
+    def test_bumps_kernel_counter_and_timestamp_only(self, tmp_path: Path) -> None:
+        """v50: the third axis, separate from injection and deliberate."""
+        db_path = tmp_path / "kernel.db"
+        _seed_db(db_path)
+        before = _read_row(db_path)
+        before_history = _history_count(db_path)
+
+        ok = writer.record_memory_access(_WORKSPACE, _SLUG, "kernel", db_path=db_path)
+
+        after = _read_row(db_path)
+        after_history = _history_count(db_path)
+
+        assert ok is True
+        assert after["kernel_count"] == before["kernel_count"] + 1
+        assert after["injection_count"] == before["injection_count"]
+        assert after["deliberate_count"] == before["deliberate_count"]
+        assert after["last_kernel_at"] is not None
+        assert after["last_injected_at"] is None
+        assert after["last_deliberate_at"] is None
+        assert after["updated_at"] == before["updated_at"]
+        assert after_history == before_history
 
     def test_repeated_calls_accumulate(self, tmp_path: Path) -> None:
         db_path = tmp_path / "repeat.db"
@@ -116,6 +148,7 @@ class TestRecordMemoryAccessDeliberate:
         after = _read_row(db_path)
         assert after["deliberate_count"] == 3
         assert after["injection_count"] == 0
+        assert after["kernel_count"] == 0
 
     def test_invalid_kind_raises_value_error(self, tmp_path: Path) -> None:
         db_path = tmp_path / "invalid_kind.db"

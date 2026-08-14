@@ -3505,9 +3505,21 @@ def list_memory(
 # gags subagents from authoring curated memory, but reading a row (show,
 # get-relevant --initiative) is not authoring it, and any dispatched agent
 # must be able to trigger this write when it reads.
+#
+# v50: "kernel" is a third, separate axis (kernel_count/last_kernel_at) for
+# the dispatch kernel's own "How the user works" block, which fires on EVERY
+# subagent dispatch over type=user AND audience=executor rows. It used to
+# share "injection"'s columns; that mixed a fixed, high-frequency dispatch
+# signal into the same counter as context-injection surfaces (get-relevant
+# digest/sections/types), letting the kernel rows dominate any ranking by
+# construction. Kept apart for the same reason injection and deliberate were
+# kept apart in v48: mixing signals of different natures freezes the
+# ranking. Forward-only -- what the kernel already added to injection_count
+# before this split is NOT retroactively moved or subtracted.
 _MEMORY_TELEMETRY_COLUMNS: dict[str, tuple[str, str]] = {
     "injection": ("injection_count", "last_injected_at"),
     "deliberate": ("deliberate_count", "last_deliberate_at"),
+    "kernel": ("kernel_count", "last_kernel_at"),
 }
 
 
@@ -3523,7 +3535,11 @@ def record_memory_access(
     ``kind`` selects which counter/timestamp pair to bump -- ``"deliberate"``
     for a row the caller identified (by slug, or by naming the initiative that
     holds it), ``"injection"`` for a row rendered inside an automatic context
-    block for someone who asked for neither. Raises ``ValueError``
+    block for someone who asked for neither (get-relevant digest/sections/
+    types), ``"kernel"`` for a row rendered inside the dispatch kernel's own
+    "How the user works" block, which fires on every subagent dispatch and is
+    kept off the ``"injection"`` axis for the same reason injection and
+    deliberate are kept apart. Raises ``ValueError``
     for any other ``kind`` (a programming error, not a runtime condition worth
     degrading for). Every other failure -- DB locked, connect/execute/commit
     raising for any reason -- is caught and reported as ``False``; this
