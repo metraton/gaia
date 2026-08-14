@@ -157,27 +157,36 @@ this section holds the query mechanics behind it.
 
 ## Access telemetry: exact columns and call sites
 
-The `memory` table carries two independent counter/timestamp pairs --
-`injection_count` / `last_injected_at` and `deliberate_count` /
-`last_deliberate_at` -- bumped by one shared helper,
-`gaia.store.writer.record_memory_access(workspace, name, kind, *,
-db_path=None)`; `kind` is exactly `"injection"` or `"deliberate"`, anything
-else raises `ValueError`. The UPDATE touches only the counter and its
-timestamp, never `updated_at` or `body`, so it fires no `memory_history`
-row and never reorders the digest, which still sorts by `updated_at`
-alone. It is best-effort: every failure is swallowed and reported as
-`False`, so a locked or unreachable DB never breaks the read it instruments.
+The `memory` table carries three independent counter/timestamp pairs --
+`injection_count` / `last_injected_at`, `deliberate_count` /
+`last_deliberate_at`, and `kernel_count` / `last_kernel_at` (v50) -- bumped
+by one shared helper, `gaia.store.writer.record_memory_access(workspace,
+name, kind, *, db_path=None)`; `kind` is exactly `"injection"`,
+`"deliberate"`, or `"kernel"`, anything else raises `ValueError`. The
+UPDATE touches only the counter and its timestamp, never `updated_at` or
+`body`, so it fires no `memory_history` row and never reorders the digest,
+which still sorts by `updated_at` alone. It is best-effort: every failure
+is swallowed and reported as `False`, so a locked or unreachable DB never
+breaks the read it instruments.
 
 `SKILL.md`'s "Reading a row leaves a trace" carries the property that decides
-which kind a surface is -- whether the CALLER identified the rows, never
-whether the answer carried the body. These are the places code applies it
-today, and a new surface is classified by that property rather than added to
-this list:
+deliberate from automatic -- whether the CALLER identified the rows, never
+whether the answer carried the body. That property alone reaches only two
+buckets; it does not by itself split the automatic bucket further. A second,
+purely mechanical test does that: an automatic surface is `kernel` when it
+renders a FIXED corpus on every subagent dispatch (the same `type=user AND
+audience=executor` rows, regardless of what the dispatch is about), and
+`injection` when the rendered rows vary with what the caller's window
+actually selects (`get-relevant`'s digest/sections/types). Splitting on that
+axis is what keeps the dispatch-kernel's fixed rows from dominating a
+demand ranking by construction. These are the places code applies both tests
+today, and a new surface is classified by them rather than added to this
+list:
 
 | Call site | Symbol | Kind |
 |---|---|---|
 | `get-relevant` (no flag), `--sections=`, `--types=` | `_bump_injection_telemetry` (`bin/cli/memory.py`) | injection |
-| Subagent kernel's "How the user works" block | `_record_kernel_injection_telemetry` (`hooks/modules/context/kernel_builder.py`) | injection |
+| Subagent kernel's "How the user works" block | `_record_kernel_telemetry` (`hooks/modules/context/kernel_builder.py`) | kernel |
 | `memory show <slug>`, every mode including `--links`/`--history` | `_cmd_curated_show` (`bin/cli/memory.py`) | deliberate |
 | `memory story <slug>`, the seed row alone | `_cmd_story` (`bin/cli/memory_story.py`) | deliberate |
 | `get-relevant --initiative=<key>`, text and JSON alike | `_render_project_mode` (`bin/cli/memory.py`) | deliberate |
@@ -190,28 +199,44 @@ call; it never names a row, so no shape of its output is a read of one. The
 lineage a `story` BFS discovers around its seed is the same case: the caller
 named the seed, not what the walk reached from it.
 
-`tests/integration/test_memory_access_telemetry_surfaces.py` pins every row of
-that table by running the real command and measuring the counters it moved. It
-discovers the surface set from the argument parser rather than from a list, so
-a new subcommand or a new flag on a read subcommand fails it until classified.
+`tests/integration/test_memory_access_telemetry_surfaces.py` pins every CLI
+row of that table by running the real command and measuring the counters it
+moved, discovering the surface set from the argument parser rather than from
+a list -- so a new subcommand or a new flag on a read subcommand fails it
+until classified. The kernel row has no subcommand to run: it is context
+assembly, not a `gaia memory` verb, so it is pinned instead by two dedicated
+recipes that invoke `build_memory_block` directly --
+`test_kernel_memory_block_counts_the_rows_it_renders` and
+`test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row`
+(the latter proves the kernel and injection axes move independently on one
+row both can reach) -- plus
+`test_every_bump_call_site_belongs_to_a_classified_surface`, which scans the
+source for `record_memory_access` call sites so a bump wired into an
+unclassified module fails too.
 
-Two surfaces read the counters back. `gaia memory show <slug>` prints each
-pair on its own line (`injection_count`/`last_injected_at`,
-`deliberate_count`/`last_deliberate_at`). `gaia memory list` prints an `INJ`
+Two surfaces read the counters back, and only two of the three pairs:
+`gaia memory show <slug>` prints the injection and deliberate pairs on their
+own lines (`injection_count`/`last_injected_at`,
+`deliberate_count`/`last_deliberate_at`); `gaia memory list` prints an `INJ`
 and a `DELIB` column and takes `--sort=injection` or `--sort=deliberate`
 (`_cmd_list` -> `gaia.store.writer.list_memory`, `_MEMORY_LIST_ORDERS`), with
 `--order=asc|desc` choosing the direction -- default `desc` on a counter,
 `asc` on `--sort=name` (`_MEMORY_LIST_DEFAULT_DIRECTIONS`), ties always broken
 by name ascending. `--order=asc` on a counter is how "which rows are barely
 used" is asked without reading the tail of an untopped list. Neither surface
-ever combines the two into one number or one sort key -- the same never-merge
-rule as the write side.
+ever combines two counters into one number or one sort key -- the same
+never-merge rule as the write side. `kernel_count`/`last_kernel_at` are
+written (see the call-site table above) but neither surface projects them --
+`get_memory()` and `list_memory()`'s own `SELECT`s name only the injection
+and deliberate columns -- so today the kernel pair is readable only by a
+direct query against the `memory` table, never through `show` or `list`.
 
-Reading them back is their only consumer. Automatic SessionStart selection --
-`get-relevant`'s digest, `--sections=`, `--types=`, and the kernel's "How
-the user works" block -- still ignores both counters and orders by
-`updated_at` alone, unchanged. Wiring injection SELECTION itself to
-either counter remains a separate, undecided step.
+Reading them back is their only consumer, for the two pairs that are read
+back at all. Automatic SessionStart selection -- `get-relevant`'s digest,
+`--sections=`, `--types=`, and the kernel's "How the user works" block --
+still ignores all three counters and orders by `updated_at` alone,
+unchanged. Wiring injection SELECTION itself to any counter remains a
+separate, undecided step.
 
 ## Promoted defect: the `gaia_system` initiative shape
 
