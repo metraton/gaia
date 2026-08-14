@@ -695,9 +695,11 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=False,
         help=(
             "Skip reconciling the global npm `gaia` (surface 4) to this source "
-            "via `npm link`. By default pack mode links the source globally so a "
-            "bare `gaia` on PATH matches the workspace build (no stale-global "
-            "drift); pass this to leave the global install untouched"
+            "via `npm link`. By default pack mode links the SOURCE CHECKOUT "
+            "globally, so a bare `gaia` on PATH runs this tree -- not the "
+            "workspace's packed build, and it diverges from that build as soon "
+            "as editing continues; pass this to leave the global install "
+            "untouched (ignored in --mode link)"
         ),
     )
     return p
