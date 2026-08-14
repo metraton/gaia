@@ -5,9 +5,9 @@ description: Use when reading, searching, saving, or curating Gaia memory, decid
 
 # Memory
 
-Memory is the curation technique that turns selected experience into useful
-continuity. It keeps durable knowledge small, keeps live work visible, and
-leaves raw operational history on the automatic event floors where it belongs.
+Memory is the curation technique that turns selected experience into continuity:
+durable knowledge kept small, live work kept visible, and raw operational
+history left on the automatic event floors where it belongs.
 
 ## The three floors
 
@@ -17,16 +17,14 @@ leaves raw operational history on the automatic event floors where it belongs.
 | Episodes | Searchable agent-turn outcomes and anomalies | Automatic, retained for diagnosis |
 | Curated memory | User-governed knowledge and work that must affect future decisions | Deliberate and long-lived |
 
-Events and episodes are evidence, not durable truth. Promote from them only
-when a future decision would change and the information has no better home.
-The table names, retention, and query mechanics live in `reference.md`.
+Events and episodes are evidence, not durable truth.
 
 ## Think in roles, not storage vocabulary
 
 Every curated item serves one human-facing role:
 
 - **Durable knowledge**: stable facts, accepted decisions, useful dead ends,
-  user preferences, and meaningful project milestones.
+  user preferences, and meaningful milestones.
 - **Live thread**: one actionable concern that must reappear in a later session.
 - **Historical log**: append-only context useful for audit but not reinjection.
 
@@ -35,13 +33,9 @@ roles. Consult `reference.md` only when materializing or debugging them.
 
 ## Other home first
 
-Before saving, ask: **does this already have a canonical home?**
-
-- Work in flight belongs in a brief, plan, or task.
-- Domain state belongs in project context or the owning system.
-- Raw execution detail belongs in events, episodes, or the transcript.
-- Curated memory holds only cross-cutting knowledge, closed decisions and dead
-  ends, meaningful milestones, and homeless work that must survive the session.
+Before saving, ask: **does this already have a canonical home?** Work in flight
+belongs in a brief, plan, or task; domain state in project context or the owning
+system; raw execution detail in events, episodes, or the transcript.
 
 Do not copy a fact into memory merely because it matters. A second source of
 truth becomes stale; a durable reference to the canonical object is enough.
@@ -54,14 +48,14 @@ truth becomes stale; a durable reference to the canonical object is enough.
    what it still owes — read its whole live-pending set with
    `gaia memory get-relevant --initiative=<key>`, uncapped and with bodies. A
    reader who only sees the digest can add rows and never retire one.
-2. **Search before writing; do not read silence as absence.** Find the existing
-   owner of the topic and its lineage — a duplicate divides relevance instead of
+2. **Search before writing; do not read silence as absence.** Find the topic's
+   existing owner and its lineage — a duplicate divides relevance instead of
    strengthening knowledge. An empty result answers "no row matches this
-   phrasing", never "this initiative owes nothing": a pending is worded in the
-   terms of the problem as it looked when it opened, not in the terms of the
-   thing that just resolved it, so step 1's sweep is what finds it.
-3. **Choose the home.** Prefer brief, plan, task, project context, event, or
-   episode when one owns the fact. Continue only for genuinely curated value.
+   phrasing", never "this initiative owes nothing": a pending is worded as the
+   problem looked when it opened, not as what just resolved it, so step 1's
+   sweep is what finds it.
+3. **Choose the home.** Run *Other home first*, and continue only for genuinely
+   curated value.
 4. **Adjudicate the change.** The orchestrator chooses scope, create/append/
    correct/transition/link, role, lifecycle, initiative, and verification.
    Preserve lineage when knowledge replaces or graduates from earlier work.
@@ -74,32 +68,42 @@ truth becomes stale; a durable reference to the canonical object is enough.
 
 ## Reading a row leaves a trace
 
-Two counters bump as a side effect of being read, and one question classifies
-any surface, including one not built yet: **did the caller identify these rows,
+Three counters bump as a side effect of being read, and two questions classify
+any surface, including one not built yet. **Did the caller identify these rows,
 or describe a window and take whatever fell in?** A slug identifies them; a
 named initiative identifies them; a filter, a search term, a date range or a
 dump of the table identifies nothing, however much of each row it prints.
-**Deliberate**: the call named them, so reaching them was its point (`show` in
-every mode, `story`, `--initiative`). **Injection**: an automatic block
-rendered the row for someone who did not ask, and the name alone is enough —
-rows trimmed out of the block do not count. **Neither**: whatever a window
-returns (`search`, `list`, `gaia query` in every mode). Never rank the two
-together: a blended number lets injection read as demand, and selection
-ignores both anyway.
+Identified, so reaching them was the point — **deliberate** (`show`, `story`,
+`get-relevant --initiative`). **When they were not: did the rows answer the
+question their caller asked, or were they assembled into somebody's context?**
+Answered — **neither** (`search`, `list`, `gaia query`): what fell in reflects
+the phrasing, not the row. Assembled — automatic, and split once more by what
+the block reaches: one fixed corpus every time it fires, the same rows whatever
+the occasion is about, is **kernel** (today, the dispatch block); a window
+picked for this occasion is **injection** (`get-relevant`, however launched).
+Rendering is what counts: a row trimmed out of a block was never reached.
+
+Never blend two into one number. A count is worth reading only if a higher one
+means the row was worth more, and each axis fires at a rate set by something
+other than the row: the kernel's corpus rides on every dispatch, so folded into
+injection it heads any ranking by construction and measures dispatch volume, not
+usefulness; injection folded into deliberate lets a row pushed at people read as
+demand. A surface built tomorrow earns its own axis by that test. None of this
+changes what gets injected — selection still orders by `updated_at` and reads no
+counter.
 
 ## When curated memory earns attention
 
-- **Decision:** it was accepted, is not already captured canonically, and will
-  constrain a future choice.
+- **Decision:** accepted, with no canonical home, and it binds a later choice.
 - **Project milestone:** it closes a meaningful arc. A routine session close is
-  not a milestone and does not automatically create a checkpoint.
+  not one; minting a checkpoint for it turns memory into session summaries.
 - **Live handoff:** one unresolved concern has no structured work object and
-  must resurface. Keep one concern per thread.
+  must resurface. One concern per thread — a single status cannot honestly
+  represent several.
 - **Learning or dead end:** it prevents repeated investigation or error.
-- **Gaia improvement:** a concrete symptom, component, evidence, and
-  reproduction deserves visible follow-up. After consent, persist it as a
-  `feedback` live thread in initiative `gaia_system`, carried forward until
-  closed or graduated.
+- **Gaia improvement:** a concrete symptom, component, evidence and reproduction
+  deserves visible follow-up. After consent, persist it as a `feedback` live
+  thread in initiative `gaia_system`, carried forward until closed or graduated.
 
 ## When curated memory loses it
 
@@ -130,25 +134,16 @@ and does not close it has moved that thread's cost onto every session after it.
 ## Handoffs
 
 - `session-reflection` recovers decisions, live work, learnings, Gaia
-  improvements, and the closures its sweep found, then produces the curation
-  proposal consumed here.
+  improvements and closures, then produces the curation proposal consumed here.
 - `gaia-compact` runs after durable persistence and carries only transient
   continuity plus references to what was saved.
 - `reference.md` contains exact CLI forms, enums, scope rules, retrieval,
-  checkpoint payloads, history coverage, and graph mechanics.
+  checkpoint payloads, the access-telemetry columns and call sites, history
+  coverage, and graph mechanics.
 - `examples.md` contains worked create/update/batch/checkpoint cases.
 
 ## Anti-patterns
 
-- **Writing without knowing what the initiative owes:** an empty search means
-  no row matched your phrasing, not that nothing is pending; the write adds a
-  parallel note and leaves open the pending it duplicates, unseen.
-- **Copying what already has a home:** briefs, plans, tasks, project state,
-  events, and episodes already retain it; a copy is a stale rival source.
-- **Treating every close as a milestone:** turns long-term memory into session
-  summaries and consumes retrieval attention.
-- **Bundling live work:** one status cannot honestly represent several
-  independent concerns; use one thread per concern.
 - **Claiming perfect history:** ordinary updates are audited, but hard deletion
-  and workspace removal can destroy records. Exact tracked fields are defined
-  by the current schema and migration, not by prose.
+  and workspace removal can destroy records. Exact tracked fields are defined by
+  the current schema and migration, not by prose.
