@@ -131,6 +131,12 @@ def _run_bootstrap_idempotent(verbose: bool) -> dict:
 
     if result.returncode == 0:
         return {"action": "noop", "details": "DB schema up to date"}
+
+    # A swallowed failure is a dead end: the migration consent gate refuses on
+    # this path and its whole message -- what stopped, and the command that
+    # continues deliberately -- lives in stderr.
+    if not verbose and result.stderr:
+        sys.stderr.write(result.stderr)
     return {"action": "error", "details": f"bootstrap exited {result.returncode}"}
 
 

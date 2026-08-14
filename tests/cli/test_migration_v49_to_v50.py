@@ -34,13 +34,20 @@ never touch the user's database.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import sys
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+import migration_guard  # noqa: E402
+
 _BOOTSTRAP_PY = _REPO_ROOT / "scripts" / "bootstrap_database.py"
 _SCHEMA_SQL = _REPO_ROOT / "gaia" / "store" / "schema.sql"
 _MIGRATION = _REPO_ROOT / "scripts" / "migrations" / "v49_to_v50.sql"
@@ -73,7 +80,12 @@ def _run_bootstrap(bootstrap, db: Path, workspace: Path, expected: int) -> int:
     bootstrap.SCHEMA_FILE = _SCHEMA_SQL
     bootstrap.WORKSPACE = workspace
     bootstrap._read_expected_schema_version = lambda: expected
-    return bootstrap.main()
+    # v49_to_v50 reaches data, and the fixture below is seeded with rows, so
+    # the runner's consent gate refuses it unattended. Naming it here is what
+    # this test bed is: a deliberate application against a throwaway database.
+    consent = {migration_guard.ENV_CONSENT: "v49_to_v50"}
+    with mock.patch.dict(os.environ, consent):
+        return bootstrap.main()
 
 
 def _seed_corpus(db: Path) -> None:

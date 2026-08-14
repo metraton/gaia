@@ -73,6 +73,7 @@
     "opencode/",
     "gaia/",
     "scripts/bootstrap_database.py",
+    "scripts/migration_guard.py",
     "scripts/bootstrap_database.sh",
     "scripts/seed_agent_permissions.py",
     "scripts/check_schema_drift.py",

@@ -35,6 +35,9 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import migration_guard  # noqa: E402
+
 # === Section 1: Variables y validacion de entorno ===
 
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -246,6 +249,13 @@ def main() -> int:
 
     con = _connect()
     try:
+        # --- Section 1.4: census of pre-existing data (migration consent gate) ---
+        # Taken before anything in this run can add a row, so it names exactly
+        # the data a migration could destroy rather than data this run produced.
+        # A database being created now yields an empty census, which is what
+        # keeps fresh installs and test environments ungated.
+        pre_run_census = migration_guard.take_census(con)
+
         # --- Section 1.5: pre-schema ADD COLUMN reconciliation ---
         _reconcile_pre_schema_add_columns(con)
 
@@ -383,6 +393,29 @@ def main() -> int:
                         f"scripts/migrations/v{prev}_to_v{n}.sql in the same commit."
                     )
                     return 1
+
+                # --- Section 3c.1: data-reachability consent gate ---
+                # Assessed on the file as committed, not on the runner-filtered
+                # copy: the risk being classified is what the source tree will
+                # execute, and the filter only ever neutralises ADD COLUMN lines,
+                # which reach no row either way.
+                verdict = migration_guard.assess(
+                    mig_file.stem,
+                    mig_file.read_text(encoding="utf-8"),
+                    pre_run_census,
+                )
+                if verdict.blocked:
+                    _err(
+                        migration_guard.format_block(
+                            verdict, mig_file, GAIA_DB, current_version
+                        )
+                    )
+                    return 1
+                if verdict.reaches:
+                    _log(
+                        f"migration v{prev}->v{n}: reaches existing data; "
+                        f"applying under {migration_guard.ENV_CONSENT}"
+                    )
 
                 _log(f"migration v{prev}->v{n}: applying {mig_file}")
                 mig_sql = _filter_add_column_idempotent(con, mig_file)

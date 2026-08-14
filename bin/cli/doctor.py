@@ -2242,7 +2242,10 @@ def check_memory_dirs(project_root: Path) -> dict:
         "Memory store",
         "warning",
         "episodes table missing from gaia.db",
-        "Run: bash scripts/bootstrap_database.sh",
+        # Deliberately not the .sh: that reference path applies pending
+        # migrations with no consent gate, and this hint is shown to a user
+        # whose database already holds data.
+        "Run: gaia install",
     )
 
 

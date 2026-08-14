@@ -80,6 +80,43 @@ never bundled.
 
 ---
 
+## 1b. A migration that reaches DATA is not applied unattended
+
+Section 3c applies whatever it finds in this directory on any invocation that
+bootstraps, so committing a file is what schedules it. That is safe for
+structure and unsafe for data: `v49_to_v50.sql` was the first file here that
+also rewrote rows, and the next arbitrary CLI call erased a counter on 1359
+live curated rows before anyone was asked.
+
+`scripts/migration_guard.py` now classifies every pending file before it runs.
+**There is nothing to declare and no header to remember** -- the classification
+reads the SQL itself, and the number of rows at risk is read from the target
+database. A file is refused only where those meet: a statement that rewrites or
+removes rows (`UPDATE`, `DELETE`, `DROP TABLE`, `ALTER TABLE ... DROP/RENAME`,
+`INSERT OR REPLACE`, or any statement the guard does not recognise) whose table
+already held rows before this run started.
+
+What this means when you author one:
+
+* **Structure-only files are unaffected.** `CREATE`, `ADD COLUMN`,
+  `DROP INDEX/TRIGGER/VIEW` and a plain `INSERT` reach no existing row and
+  apply alone, exactly as before.
+* **Fresh installs and test databases are never gated**, because their census
+  is empty. Do not add a flag to skip the guard for them; there is nothing to
+  skip.
+* **A data-reaching file will stop a real upgrade.** That is the point. The
+  refusal names the statement, the table, the row count, and the command that
+  continues -- `GAIA_MIGRATION_CONSENT=v{N-1}_to_v{N}`, which approves that one
+  file and nothing that ships after it.
+* **A test that applies such a file must name its consent**, the way
+  `tests/cli/test_migration_v49_to_v50.py` does.
+
+The guard's behaviour is pinned by `tests/cli/test_migration_consent_gate.py`,
+including a test asserting that no file currently in this directory produces an
+unrecognised statement.
+
+---
+
 ## 2. Version assertions in tests
 
 Tests that assert the schema version must use a floor check, not a point check:
