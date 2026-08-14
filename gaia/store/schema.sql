@@ -817,26 +817,6 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
--- memory_deliberate_capture_v50: durable record of the deliberate-read axis
--- as it stood one statement before v49_to_v50.sql zeroed it. Deliberately
--- carries NO foreign key to memory or workspaces: the point of the table is
--- to outlive the row it describes, including a row later hard-deleted or a
--- workspace later dropped. Written by the migration exactly once, inside the
--- same transaction as the reset it precedes -- see
--- scripts/migrations/v49_to_v50.sql for the safety argument. Declared here
--- (CREATE TABLE IF NOT EXISTS) so a fresh install produces the same final
--- DDL shape as an installation that walked the migration.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS memory_deliberate_capture_v50 (
-    workspace          TEXT NOT NULL,
-    name               TEXT NOT NULL,
-    deliberate_count   INTEGER NOT NULL,
-    last_deliberate_at TEXT,
-    captured_at        TEXT NOT NULL,
-    PRIMARY KEY (workspace, name)
-);
-
--- ---------------------------------------------------------------------------
 -- memory_links (v4): graph primitives between curated memory rows.
 -- kind enum enforced via CHECK because it is a fresh table -- no rebuild risk.
 --   relates_to     -- general association

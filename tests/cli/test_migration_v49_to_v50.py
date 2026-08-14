@@ -274,13 +274,19 @@ class TestMigrationV49ToV50(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp = Path(tmpdir)
             db = self._build_v49(tmp)
-            # schema.sql declares memory_deliberate_capture_v50 unconditionally
-            # (CREATE TABLE IF NOT EXISTS, same as every other target-schema
-            # object), so _build_v49 -- which replays schema.sql in full --
-            # already created it, empty. Poisoning it with a colliding row is
-            # enough to reproduce "something was already captured".
+            # v50_to_v51 removed the capture table from schema.sql, so a DB
+            # replayed from it no longer carries the table this collision needs.
+            # Creating it here with the migration's own DDL reproduces the state
+            # the collision describes -- something was already captured -- while
+            # leaving v49_to_v50.sql the CREATE it performs for itself.
             con = sqlite3.connect(str(db))
             try:
+                con.execute(
+                    f"CREATE TABLE IF NOT EXISTS {_CAPTURE_TABLE} ("
+                    "workspace TEXT NOT NULL, name TEXT NOT NULL, "
+                    "deliberate_count INTEGER NOT NULL, last_deliberate_at TEXT, "
+                    "captured_at TEXT NOT NULL, PRIMARY KEY (workspace, name))"
+                )
                 con.execute(
                     f"INSERT INTO {_CAPTURE_TABLE} VALUES "
                     "('ws_a', 'plain_signal', 999, NULL, '2026-01-01T00:00:00Z')"

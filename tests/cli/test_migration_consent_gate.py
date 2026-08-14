@@ -271,8 +271,17 @@ class TestFreshDatabaseIsNeverGated(unittest.TestCase):
                 _expected_version(),
                 con.execute("SELECT MAX(version) FROM schema_version").fetchone()[0],
             )
+            # Two data-reaching files ran unattended here, and each leaves its
+            # own witness: v49_to_v50 added the kernel axis and filled the
+            # capture table, v50_to_v51 dropped that table again. Presence of
+            # the column and absence of the table is the pair -- the table alone
+            # stopped being a witness the moment v51 removed it.
+            self.assertIn(
+                "kernel_count",
+                [row[1] for row in con.execute("PRAGMA table_info(memory)")],
+            )
             self.assertEqual(
-                1,
+                0,
                 con.execute(
                     "SELECT COUNT(*) FROM sqlite_master "
                     "WHERE name='memory_deliberate_capture_v50'"

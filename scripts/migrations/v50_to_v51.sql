@@ -1,0 +1,47 @@
+-- Migration v50 -> v51: discard the deliberate-read capture taken by v49_to_v50.
+--
+-- WHAT THIS DESTROYS, STATED BEFORE THE CONSENT IS GIVEN
+--   memory_deliberate_capture_v50 is the ONLY surviving record of the
+--   deliberate-read axis as it stood before v49_to_v50.sql zeroed that axis on
+--   the live corpus. The source columns it was copied from are already at zero,
+--   so this DROP is not the removal of a redundant backup: after it there is
+--   nothing left to recount the axis against, in this database or anywhere the
+--   schema reaches. The loss is total and it is not reversible by any later
+--   migration.
+--
+--   Measured on the live database at authoring time: 1124 rows, all stamped
+--   captured_at 2026-08-14T00:41:14Z. 1030 of them (91.6%) hold
+--   deliberate_count = 1, the residue of a two-minute bulk sweep produced by
+--   Gaia's own verification work; 94 hold 2 or more, which is the portion the
+--   user identified as genuine signal. Dropping the table discards both -- the
+--   contamination and the 94 genuine rows alike, because they live in the same
+--   table and this file does not separate them.
+--
+--   The decision this file executes is the user's: the axis was judged
+--   dominated by contamination and not worth keeping. The figures above are
+--   here so that judgment is re-read against the numbers at the moment consent
+--   is actually granted, which is the only moment that can still stop it.
+--
+-- WHY THE DROP TRAVELS IN A MIGRATION
+--   A direct DROP against gaia.db is a CATEGORICAL, non-approvable denial in
+--   Gaia's own guard; the guard names a migration as the sanctioned route. This
+--   file is that route -- and it does not bypass consent, it relocates it:
+--   scripts/migration_guard.py classifies DROP TABLE as row-reaching, so on any
+--   database where this table holds rows the file is refused until
+--   GAIA_MIGRATION_CONSENT names it.
+--
+-- IDEMPOTENCY
+--   IF EXISTS carries it. A fresh install replays floor+1 .. 51, so
+--   v49_to_v50.sql creates the table and fills it from a corpus that has no
+--   deliberate signal yet, and this file drops it again in the same run --
+--   ending in the v51 shape with nothing lost, which is why the guard's census
+--   (taken before either file runs) reports zero and lets the chain through
+--   unattended.
+--
+--   The declaration was removed from gaia/store/schema.sql in the same commit.
+--   That removal is load-bearing rather than cosmetic: bootstrap replays
+--   schema.sql unconditionally on EVERY invocation, before the migration loop,
+--   so a surviving CREATE TABLE IF NOT EXISTS would resurrect the table empty
+--   on the next arbitrary CLI call after this migration deleted it.
+
+DROP TABLE IF EXISTS memory_deliberate_capture_v50;
