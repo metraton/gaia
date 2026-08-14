@@ -285,3 +285,137 @@ def test_e2e_outside_absolute_is_t3(validator, scratch):
 
 def test_e2e_no_path_is_t3(validator, scratch):
     assert _tier(validator, "rm -rf") == "T3"
+
+
+# ---------------------------------------------------------------------------
+# CONTENT EVIDENCE -- the exemption reasons about the object, not only the path
+# ---------------------------------------------------------------------------
+# An object whose value lies in its contents must not become disposable by
+# being moved into scratch, and routine cleanup must stay free of friction.
+# Both axes are intrinsic to the object: the format signature in its first
+# bytes and its size.  Neither is declared by anyone.
+
+from modules.security.mutative_verbs import (      # noqa: E402
+    _DURABLE_STORE_MIN_BYTES,
+    _durable_store_under_scratch_targets,
+)
+
+SQLITE_SIGNATURE = b"SQLite format 3\x00"
+
+
+def _write_sized(path, size, prefix=b""):
+    """Create a sparse file of `size` bytes starting with `prefix`."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as handle:
+        handle.write(prefix)
+        if size > len(prefix):
+            handle.seek(size - 1)
+            handle.write(b"\x00")
+    return path
+
+
+def test_large_store_in_scratch_is_t3(validator, scratch):
+    """The measured case: a database copy parked in scratch stays gated."""
+    target = _write_sized(
+        Path(scratch) / "live_copy.db",
+        _DURABLE_STORE_MIN_BYTES * 2,
+        SQLITE_SIGNATURE,
+    )
+    assert _tier(validator, f"rm -f {target}") == "T3"
+
+
+def test_large_store_is_t3_regardless_of_its_name(validator, scratch):
+    """Renaming does not change the bytes, so it does not change the tier."""
+    target = _write_sized(
+        Path(scratch) / "notes.txt",
+        _DURABLE_STORE_MIN_BYTES * 2,
+        SQLITE_SIGNATURE,
+    )
+    assert _tier(validator, f"rm -f {target}") == "T3"
+
+
+def test_recursive_delete_reaches_a_store_it_never_names(validator, scratch):
+    """`rm -rf dir` is judged by what it reaches, not by what it spells."""
+    _write_sized(
+        Path(scratch) / "work" / "nested" / "copy.db",
+        _DURABLE_STORE_MIN_BYTES * 2,
+        SQLITE_SIGNATURE,
+    )
+    assert _tier(validator, f"rm -rf {scratch}/work") == "T3"
+
+
+def test_gated_reason_names_the_object(scratch):
+    """Informed consent needs the reason to name what is at stake."""
+    target = _write_sized(
+        Path(scratch) / "live_copy.db",
+        _DURABLE_STORE_MIN_BYTES * 2,
+        SQLITE_SIGNATURE,
+    )
+    detect_mutative_command.cache_clear()
+    result = detect_mutative_command(f"rm -f {target}")
+    assert result.is_mutative is True
+    assert "live_copy.db" in result.reason
+    assert "SQLite database" in result.reason
+
+
+def test_small_store_stays_t0(validator, scratch):
+    """A fresh bootstrap database is what a command just created -- free."""
+    target = _write_sized(Path(scratch) / "probe.db", 823296, SQLITE_SIGNATURE)
+    assert _tier(validator, f"rm -f {target}") == "T0"
+
+
+def test_large_file_without_a_signature_stays_t0(validator, scratch):
+    """Size alone is not the judgement: a big ephemeral blob stays free."""
+    target = _write_sized(
+        Path(scratch) / "dump.log", _DURABLE_STORE_MIN_BYTES * 2
+    )
+    assert _tier(validator, f"rm -f {target}") == "T0"
+
+
+def test_routine_cleanup_of_a_scratch_dir_stays_t0(validator, scratch):
+    """The frequent, legitimate case must not acquire friction."""
+    base = Path(scratch) / "turn"
+    for name in ("contract.json", "notes.md", "probe.py", "small.db"):
+        _write_sized(base / name, 4096, SQLITE_SIGNATURE if name.endswith(".db") else b"")
+    assert _tier(validator, f"rm -rf {base}") == "T0"
+
+
+def test_missing_path_is_an_absence_not_an_uncertainty(validator, scratch):
+    """Nothing can be destroyed at a path that holds nothing."""
+    assert _tier(validator, f"rm -f {scratch}/never-existed") == "T0"
+
+
+def test_budget_exhaustion_declines_the_exemption(monkeypatch, validator, scratch):
+    """An uncertified tree falls to the safe side: approval, not permission."""
+    import modules.security.mutative_verbs as mv
+
+    base = Path(scratch) / "many"
+    base.mkdir(parents=True, exist_ok=True)
+    for index in range(6):
+        (base / f"f{index}").touch()
+    monkeypatch.setattr(mv, "_SCRATCH_SCAN_ENTRY_BUDGET", 3)
+    assert _tier(validator, f"rm -rf {base}") == "T3"
+
+
+def test_unreadable_entry_declines_the_exemption(scratch):
+    """Uncertainty about an object is not evidence that it is disposable."""
+    if os.geteuid() == 0:
+        pytest.skip("root bypasses the permission bit this case relies on")
+    target = _write_sized(
+        Path(scratch) / "sealed.db",
+        _DURABLE_STORE_MIN_BYTES * 2,
+        SQLITE_SIGNATURE,
+    )
+    os.chmod(target, 0o000)
+    try:
+        assert _durable_store_under_scratch_targets((str(target),)) is not None
+    finally:
+        os.chmod(target, 0o600)
+
+
+def test_clean_tree_certifies(scratch):
+    """The predicate stays silent only when it has seen every entry."""
+    base = Path(scratch) / "clean"
+    _write_sized(base / "a.txt", 100)
+    _write_sized(base / "deep" / "b.json", 200)
+    assert _durable_store_under_scratch_targets((str(base),)) is None

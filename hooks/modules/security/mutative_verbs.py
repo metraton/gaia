@@ -2047,18 +2047,50 @@ def _check_tee_write(
 # runs BEFORE this detector (bash_validator.py phase 3a).
 #
 # Narrowly-scoped exception (Option A): `rm` is downgraded to T0 (no approval)
-# ONLY when EVERY target path resolves strictly inside the Gaia scratch
-# directory (`~/.gaia/scratch`, or the equivalent under a GAIA_DATA_DIR
-# override).  Scratch is ephemeral agent working space by design, mirroring the
-# way mkdir already treats /tmp and /run as scratch; deleting inside it carries
-# no system-state risk.  The floor cooperates via a matching, lenient
+# ONLY when BOTH conditions hold -- EVERY target path resolves strictly inside
+# the Gaia scratch directory (`~/.gaia/scratch`, or the equivalent under a
+# GAIA_DATA_DIR override), AND nothing the command reaches carries the evidence
+# of a durable store.  The floor cooperates via a matching, lenient
 # scratch-confinement check in blocked_commands.py so scratch operations reach
 # this detector instead of being swallowed by the catastrophic `~` patterns.
 #
-# The check is STRICT and fail-closed (see _rm_targets_only_scratch): globs,
-# `..` traversal, symlinks escaping scratch, or any single out-of-scratch path
-# all keep the command at T3.  `-rf` recursion is allowed only when confined
-# to scratch.
+# The containment half is STRICT and fail-closed (see _rm_targets_only_scratch):
+# globs, `..` traversal, symlinks escaping scratch, or any single out-of-scratch
+# path all keep the command at T3.  `-rf` recursion is allowed only when
+# confined to scratch.
+#
+# WHY LOCATION ALONE IS NOT THE JUDGMENT, and what the second half exists for:
+# the exemption used to reason purely from the path, so an object whose value
+# had nothing to do with where it sat became disposable by being moved there.
+# The counterexample was on disk: a 185 MB copy of the user's memory database,
+# 1358 curated rows, deleted at T0.  That mis-judgement did not merely leave the
+# deletion ungated -- it made it IMPOSSIBLE TO CONSENT TO, because the approval
+# registrar (gaia/approvals/command_set.py::_validate_commands) refuses to issue
+# a grant for anything below T3.  Classifier and registrar are the same
+# judgement, so the safer something is judged, the less it can be deliberately
+# approved.  Repairing the judgement closes both.
+#
+# THE EVIDENCE IS INTRINSIC, so nothing has to be declared: an object is treated
+# as valuable when its OWN FIRST BYTES carry a durable-store format signature
+# (_DURABLE_STORE_SIGNATURES) AND it is larger than _DURABLE_STORE_MIN_BYTES.
+# A signature survives renaming, moving and mislabelling, which an extension
+# does not; magnitude separates a store that ACCUMULATED state from one a
+# command just created.  Both axes are required, and the measurement is why:
+# the live scratch tree held 174 SQLite files, of which 172 were <= 917 KB
+# throwaway bootstraps and browser caches and 2 were the ~185 MB memory copies.
+# Signature alone would have put all 174 behind a prompt, training approval
+# without reading -- worse than no gate; magnitude alone would gate any large
+# ephemeral blob.  The SQLite change counter was measured and rejected as a
+# third axis: a copy does not inherit write history (4 vs 2).
+#
+# COST, measured on the live tree: 0.01 ms for one file, 0.03 ms for an
+# ordinary turn directory, 25.6 ms for the whole 2741-entry scratch root.  The
+# walk stats every entry but OPENS only files already big enough to matter (6
+# of 1963), which is what keeps the common case free.
+#
+# RESIDUALS, deliberately not covered: a curated store SMALLER than the
+# magnitude floor, a valuable object in a format carrying no signature (a large
+# plain-text corpus), and a git repository holding uncommitted work.
 
 _RM_GLOB_CHARS: FrozenSet[str] = frozenset("*?[]{}")
 
@@ -2107,10 +2139,11 @@ def _gaia_hooks_root() -> "str | None":
         return None
 
 
-def _rm_targets_only_scratch(tokens: tuple) -> bool:
-    """Return True only if every rm target resolves strictly inside scratch.
+def _rm_scratch_confined_targets(tokens: tuple) -> "Tuple[str, ...] | None":
+    """Return the canonical rm targets when every one is confined to scratch.
 
-    STRICT and fail-closed. Returns True only when ALL of the following hold:
+    STRICT and fail-closed. Returns the resolved paths only when ALL of the
+    following hold:
       (a) at least one positional (non-flag) path argument is present;
       (b) NO token contains an unexpanded glob metacharacter (``*?[]{}``) or
           a parent-traversal component (``..``);
@@ -2119,7 +2152,7 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
 
     Any ambiguity -- no positional path, an unresolvable scratch root, a glob,
     a ``..``, an unexpandable ``~user``, or a single path outside scratch --
-    returns False so the command keeps its T3 classification.  realpath (not
+    returns None so the command keeps its T3 classification.  realpath (not
     normpath) is used deliberately so a symlink inside scratch that points
     outside is detected and does NOT qualify for the T0 exception.
 
@@ -2128,13 +2161,13 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
             command and is skipped).
 
     Returns:
-        True  -> all path arguments resolve strictly inside scratch (T0).
-        False -> anything else (T3).
+        The canonical (realpath) target paths, or None when confinement to
+        scratch cannot be established.
     """
     import os
     scratch_root = _gaia_scratch_root()
     if not scratch_root:
-        return False
+        return None
 
     seen_end_of_opts = False
     path_tokens = []
@@ -2151,24 +2184,124 @@ def _rm_targets_only_scratch(tokens: tuple) -> bool:
         path_tokens.append(token)
 
     if not path_tokens:
-        return False  # (a) -- no clear path target
+        return None  # (a) -- no clear path target
 
+    resolved = []
     for token in path_tokens:
         # (b) reject unexpanded globs and parent traversal outright.
         if any(ch in _RM_GLOB_CHARS for ch in token):
-            return False
+            return None
         if ".." in token:
-            return False
+            return None
         expanded = os.path.expanduser(token)
         # A residual ~ (unexpandable, e.g. ~unknownuser) is not confined.
         if expanded.startswith("~"):
-            return False
+            return None
         # (c) canonicalise and require strict containment in scratch.
         real = os.path.realpath(expanded)
         if not (real == scratch_root or real.startswith(scratch_root + os.sep)):
-            return False
+            return None
+        resolved.append(real)
 
-    return True
+    return tuple(resolved)
+
+
+def _rm_targets_only_scratch(tokens: tuple) -> bool:
+    """Return True only if every rm target resolves strictly inside scratch."""
+    return _rm_scratch_confined_targets(tokens) is not None
+
+
+_DURABLE_STORE_SIGNATURES: Tuple[Tuple[bytes, str], ...] = (
+    (b"SQLite format 3\x00", "SQLite database"),
+)
+
+_DURABLE_STORE_HEADER_BYTES: int = max(
+    len(signature) for signature, _ in _DURABLE_STORE_SIGNATURES
+)
+
+# Calibrated against the measured scratch population, an order of magnitude
+# above the largest store a command creates incidentally there (a fresh Gaia
+# bootstrap, ~917 KB) and two orders below an accumulated corpus (~185 MB).
+_DURABLE_STORE_MIN_BYTES: int = 8 * 1024 * 1024
+
+# A tree larger than this is not certified: the scan stops and the exemption is
+# declined.  Sized above the whole live scratch root (2741 entries) so ordinary
+# cleanup completes, and deliberately counted in entries rather than elapsed
+# time -- a wall-clock budget would let the same command classify differently on
+# two runs, which a security classifier cannot afford.
+_SCRATCH_SCAN_ENTRY_BUDGET: int = 4096
+
+
+def _durable_store_under_scratch_targets(
+    targets: "Tuple[str, ...]",
+) -> "str | None":
+    """Return why a scratch rm must keep T3, or None if nothing valuable is reached.
+
+    Walks each target (files directly, directories by descent) and reports the
+    first object whose own first bytes carry a durable-store signature while
+    being at least _DURABLE_STORE_MIN_BYTES.  Files below that size are never
+    opened, which is what keeps the walk cheap on the hot path.
+
+    Fail-closed on uncertainty: an unreadable entry, an undescendable directory,
+    or a tree exceeding _SCRATCH_SCAN_ENTRY_BUDGET all return a reason rather
+    than silence.  A missing path is an absence, not an uncertainty -- nothing
+    can be destroyed there -- so it is skipped.  Symlinks are never followed:
+    `rm` removes the link itself, and following one would leave the tree the
+    containment check already bounded.
+
+    Args:
+        targets: Canonical paths already confirmed confined to scratch.
+
+    Returns:
+        A human-readable reason to decline the exemption, or None to allow it.
+    """
+    import os
+    import stat as stat_module
+
+    budget = _SCRATCH_SCAN_ENTRY_BUDGET
+    pending = list(targets)
+    while pending:
+        current = pending.pop()
+        budget -= 1
+        if budget < 0:
+            return (
+                f"scratch target tree exceeds {_SCRATCH_SCAN_ENTRY_BUDGET} "
+                f"entries; its contents cannot be certified ephemeral"
+            )
+        try:
+            entry_stat = os.lstat(current)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            return f"{current} cannot be inspected ({exc.strerror})"
+
+        if stat_module.S_ISDIR(entry_stat.st_mode):
+            try:
+                with os.scandir(current) as scan:
+                    pending.extend(child.path for child in scan)
+            except OSError as exc:
+                return f"{current} cannot be listed ({exc.strerror})"
+            continue
+
+        if not stat_module.S_ISREG(entry_stat.st_mode):
+            continue
+        if entry_stat.st_size < _DURABLE_STORE_MIN_BYTES:
+            continue
+
+        try:
+            with open(current, "rb") as handle:
+                header = handle.read(_DURABLE_STORE_HEADER_BYTES)
+        except OSError as exc:
+            return f"{current} cannot be read ({exc.strerror})"
+
+        for signature, label in _DURABLE_STORE_SIGNATURES:
+            if header.startswith(signature):
+                return (
+                    f"{current} is a {label} of {entry_stat.st_size} bytes; "
+                    f"its value is in its contents, not in its location"
+                )
+
+    return None
 
 
 # ============================================================================
@@ -3736,26 +3869,43 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                 )
             # No path arguments or sensitive path detected -> fall through to T3.
 
-        # rm scratch-directory override: classify as T0 when EVERY target path
-        # resolves strictly inside the Gaia scratch directory (~/.gaia/scratch).
-        # `-rf` recursion is permitted only within scratch.  Globs, `..`, and
-        # symlinks escaping scratch keep T3 (see _rm_targets_only_scratch).
-        # The catastrophic floor (rm -rf /, /*, ~) still runs first in
-        # blocked_commands.py, which defers to this detector only for
-        # scratch-confined rm commands.
-        if base_cmd == "rm" and _rm_targets_only_scratch(tuple(tokens)):
-            return MutativeResult(
-                is_mutative=False,
-                category=CATEGORY_READ_ONLY,
-                verb=base_cmd,
-                cli_family="system",
-                confidence="high",
-                reason=(
-                    "rm targeting only the Gaia scratch directory "
-                    "(~/.gaia/scratch); all paths resolve strictly inside "
-                    "scratch via realpath"
-                ),
-            )
+        # rm scratch-directory override: classify as T0 only when every target
+        # is confined to scratch AND nothing it reaches carries durable-store
+        # evidence.  Location alone is not the judgement -- an object valuable
+        # by its contents stays T3 wherever it sits, which is also what makes
+        # its deletion consentable at all.  The catastrophic floor (rm -rf /,
+        # /*, ~) still runs first in blocked_commands.py, which defers to this
+        # detector only for scratch-confined rm commands.
+        if base_cmd == "rm":
+            scratch_targets = _rm_scratch_confined_targets(tuple(tokens))
+            if scratch_targets:
+                valuable = _durable_store_under_scratch_targets(scratch_targets)
+                if valuable is None:
+                    return MutativeResult(
+                        is_mutative=False,
+                        category=CATEGORY_READ_ONLY,
+                        verb=base_cmd,
+                        cli_family="system",
+                        confidence="high",
+                        reason=(
+                            "rm targeting only the Gaia scratch directory "
+                            "(~/.gaia/scratch); all paths resolve strictly "
+                            "inside scratch via realpath and reach no "
+                            "durable store"
+                        ),
+                    )
+                return MutativeResult(
+                    is_mutative=True,
+                    category=alias_category,
+                    verb=base_cmd,
+                    dangerous_flags=dangerous_flags,
+                    cli_family="system",
+                    confidence="high",
+                    reason=(
+                        f"rm is confined to the Gaia scratch directory but "
+                        f"reaches durable content: {valuable}"
+                    ),
+                )
 
         return MutativeResult(
             is_mutative=True,
