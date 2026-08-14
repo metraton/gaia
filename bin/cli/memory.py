@@ -1077,6 +1077,28 @@ def _cmd_checkpoint(args) -> int:
 # Subcommand handlers: curated memory list / show / delete / edit
 # ---------------------------------------------------------------------------
 
+def _print_telemetry_caveats() -> None:
+    """Print the memory-telemetry caveats beside the numbers they qualify.
+
+    Goes to stderr so no stdout contract changes shape: the warning survives
+    ``--json``, a redirect, and a pipe into jq, none of which it could if it
+    were a payload key. The whole family is printed even where a surface shows
+    a subset, since naming only the displayed columns implies the unnamed ones
+    are clean.
+    """
+    try:
+        from gaia.store.writer import MEMORY_TELEMETRY_CAVEATS
+    except ImportError:
+        return
+    print(
+        "# memory telemetry caveats -- these columns are NOT equally "
+        "trustworthy:",
+        file=sys.stderr,
+    )
+    for column, caveat in MEMORY_TELEMETRY_CAVEATS.items():
+        print(f"#   {column}: {caveat}", file=sys.stderr)
+
+
 def _cmd_list(args) -> int:
     """List curated memory rows (project / user / feedback)."""
     as_json = getattr(args, "json", False)
@@ -1111,6 +1133,10 @@ def _cmd_list(args) -> int:
     if fmt == "count":
         print(len(rows))
         return 0
+
+    # Below this line every format carries the counter columns, so every one of
+    # them owes the caveats; the count format above carries no number to qualify.
+    _print_telemetry_caveats()
     if fmt == "json":
         print(json.dumps(rows, indent=2, default=str))
         return 0
@@ -2202,6 +2228,8 @@ def _cmd_curated_show(args) -> int:
         history_payload = [
             _history_view(h) for h in memory_history_for(workspace, [name])
         ]
+
+    _print_telemetry_caveats()
 
     if as_json:
         payload = dict(row)

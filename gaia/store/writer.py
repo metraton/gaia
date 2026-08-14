@@ -3552,6 +3552,42 @@ _MEMORY_TELEMETRY_COLUMNS: dict[str, tuple[str, str]] = {
 }
 
 
+# What a consumer must know before ranking on one of these columns, keyed by
+# column. Each entry names the failure mode a naive read produces -- the part a
+# column type cannot express and a CHECK constraint cannot enforce, because
+# "this value is suspect" is not a predicate over the value. Public so the
+# caveat can travel with the number to whoever displays it: the columns look
+# equally trustworthy in the row and are not.
+MEMORY_TELEMETRY_CAVEATS: dict[str, str] = {
+    "created_at": (
+        "NULL means AGE UNKNOWN, never age zero. Added in v50 forward-only by "
+        "explicit decision -- pre-v50 rows were never backfilled, and most of "
+        "the corpus is still NULL. Read as zero, those rows become the newest "
+        "in the corpus and sweep any recency ranking; sorted without an "
+        "explicit NULL branch, they land at whichever end the engine picks."
+    ),
+    "injection_count": (
+        "The prefix accumulated BEFORE v50 is suspect, not signal. Until the "
+        "v50 split the dispatch kernel bumped this column on every subagent "
+        "dispatch, so those totals mix a fixed dispatch frequency with real "
+        "context injection. The split was forward-only: nothing was "
+        "subtracted, and no row marks where the mixed prefix ends."
+    ),
+    "deliberate_count": (
+        "Zeroed across the whole corpus by v49_to_v50.sql, and no prior value "
+        "survives anywhere in this database -- v50_to_v51.sql dropped the "
+        "capture table that held them. Counts start at that reset, so this "
+        "axis spans a shorter window than injection_count and the two are not "
+        "comparable as totals."
+    ),
+    "kernel_count": (
+        "Holds no pre-v50 history: kernel injections before the split were "
+        "counted into injection_count and were not moved here. A low value on "
+        "an old row means 'not measured yet', not 'not injected'."
+    ),
+}
+
+
 def record_memory_access(
     workspace: str,
     name: str,

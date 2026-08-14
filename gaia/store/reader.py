@@ -1522,12 +1522,12 @@ def search_episodes_fts(
 #   * memory_history        -> idx_memory_history_workspace_name(workspace, name)
 #   * memory final state    -> PK (workspace, name)
 #
-# NOTE on approximate birth: the `memory` table has NO created_at column, so a
-# node's "birth" can only be APPROXIMATED as the earliest trace we can observe
-# (its first memory_history row or its first memory_links edge). Timeline birth
-# events are flagged ``approximate=True`` for exactly this reason. We do NOT add
-# columns or migrations here -- the approximation is the honest reading of the
-# current schema.
+# NOTE on approximate birth: `memory.created_at` exists since v50 but is
+# forward-only -- it is NULL on every row that predates that migration, which is
+# most of the corpus. A node's "birth" is therefore still APPROXIMATED as the
+# earliest trace we can observe (its first memory_history row or its first
+# memory_links edge), and timeline birth events stay flagged ``approximate=True``.
+# Substituting the column would date pre-v50 nodes as unborn rather than unknown.
 
 _MEMORY_LINEAGE_MAX_DEPTH = 5
 
@@ -1842,7 +1842,7 @@ def _fuse_timeline(node_set: set, history: list[dict], edges: list[dict]) -> lis
     for n, ts in earliest.items():
         ev = {
             "ts": ts, "node": n, "kind": "birth", "approximate": True,
-            "detail": "first trace (approximate birth -- memory has no created_at)",
+            "detail": "first trace (approximate birth -- created_at is NULL on pre-v50 rows)",
         }
         keyed.append(((ts, 0, 0), ev))
 
