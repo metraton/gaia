@@ -2306,8 +2306,8 @@ def upsert_memory(
                 """
                 INSERT INTO memory (workspace, name, type, description, body,
                                     project_ref, initiative, origin_session_id,
-                                    updated_at, audience)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'))
+                                    updated_at, audience, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, 'any'), ?)
                 ON CONFLICT(workspace, name) DO UPDATE SET
                     type              = excluded.type,
                     description       = excluded.description,
@@ -2326,9 +2326,17 @@ def upsert_memory(
                 # parameter, NOT `excluded.audience`, so an upsert that does
                 # not mention audience preserves the row's EXISTING value
                 # instead of resetting it to 'any').
+                #
+                # `created_at` is bound ONCE, for the INSERT branch only, and
+                # deliberately absent from the DO UPDATE SET list -- v50's row
+                # age is forward-only BY DECISION. A brand-new row is born
+                # with `now`; an existing row's `created_at` (NULL for every
+                # pre-v50 row, since backfill is refused) is never touched by
+                # this statement's UPDATE branch, so editing a row is never
+                # mistaken for it being born.
                 (workspace, name, type, description, body,
                  project_ref, initiative, origin_session_id, now, audience,
-                 audience),
+                 now, audience),
             )
             con.commit()
             return {
@@ -3081,8 +3089,8 @@ def _upsert_checkpoint_row(
         """
         INSERT INTO memory (workspace, name, type, description, body,
                             project_ref, initiative, origin_session_id,
-                            updated_at, class, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            updated_at, class, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workspace, name) DO UPDATE SET
             type              = excluded.type,
             description       = excluded.description,
@@ -3095,8 +3103,12 @@ def _upsert_checkpoint_row(
             status            = excluded.status,
             deleted_at        = NULL
         """,
+        # `created_at` (v50, forward-only): bound for the INSERT branch only,
+        # absent from DO UPDATE SET, same discipline as upsert_memory above --
+        # a brand-new checkpoint row is born with `now`; an existing row's
+        # `created_at` is never touched by this UPDATE branch.
         (workspace, name, mem_type, description, body,
-         project_ref, initiative, origin_session_id, now, class_, status),
+         project_ref, initiative, origin_session_id, now, class_, status, now),
     )
     return {
         "name": name,
