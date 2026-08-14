@@ -984,8 +984,11 @@ class TestCmdDoctorJson:
         #   PreToolUse/PostToolUse at runtime) +
         # 1 global-cli-alignment (order 58 -- PATH gaia vs workspace-expected
         #   install; catches a stale global CLI shadowing the workspace's own
-        #   gaia without warning).
-        assert len(data["checks"]) == 28
+        #   gaia without warning) +
+        # 1 source-parity (order 56 -- installed package == the source checkout
+        #   it was built from; the first link of the freshness chain, which
+        #   went undiagnosed while a package built mid-edit ran for a day).
+        assert len(data["checks"]) == 29
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -2121,3 +2124,162 @@ class TestCheckHooksActiveFresh:
         r = doctor_mod.check_hooks_active_fresh(ws)
         assert r["severity"] == "info"
         assert "no pinned build marker" in r["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: source-vs-installed parity (order 56) -- the first link of the
+# freshness chain, previously undiagnosed. A package built from a working tree
+# captured mid-edit ran for a full day while every other check passed.
+# ---------------------------------------------------------------------------
+
+def _mk_source_checkout(root: Path) -> Path:
+    """A minimal Gaia source checkout: the build/ marker, a `files` declaration,
+    and one file per compared category (executed code, an executed prompt, and
+    a README that is documentation only)."""
+    (root / "build").mkdir(parents=True)
+    (root / "build" / "gaia.manifest.json").write_text("{}")
+    (root / "package.json").write_text(json.dumps({
+        "name": "@jaguilar87/gaia", "version": "5.3.0",
+        "files": ["hooks/", "agents/"],
+    }))
+    grants = root / "hooks" / "modules" / "security"
+    grants.mkdir(parents=True)
+    (grants / "approval_grants.py").write_text("GRANT_SCOPE = 'verb-family'\n")
+    (root / "hooks" / "README.md").write_text("# hooks\n")
+    (root / "agents").mkdir()
+    (root / "agents" / "gaia-system.md").write_text("---\nname: gaia-system\n---\n")
+    return root
+
+
+def _mk_installed_copy(ws: Path, source: Path) -> Path:
+    """An installed package mirroring *source*, authored file by file so a test
+    can then diverge exactly one of them."""
+    installed = ws / "node_modules" / "@jaguilar87" / "gaia"
+    installed.mkdir(parents=True)
+    (installed / "package.json").write_text((source / "package.json").read_text())
+    for rel in ("hooks/modules/security/approval_grants.py", "hooks/README.md",
+                "agents/gaia-system.md"):
+        dest = installed / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text((source / rel).read_text())
+    return installed
+
+
+class TestCheckSourceParity:
+    """Order-56: is the installed package the source checkout it claims to be?"""
+
+    def test_identical_trees_pass(self, tmp_path, monkeypatch):
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        _mk_installed_copy(ws, source)
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: source)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "pass"
+        assert "2 shipped files identical" in r["detail"]
+
+    def test_installed_file_caught_mid_edit_is_warning(self, tmp_path, monkeypatch):
+        # The measured incident: the packed copy holds a value the source no
+        # longer has, so the approval layer's issuer and enforcer disagree.
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        installed = _mk_installed_copy(ws, source)
+        (installed / "hooks" / "modules" / "security" / "approval_grants.py").write_text(
+            "GRANT_SCOPE = 'single-use'\n"
+        )
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: source)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "warning"
+        assert "hooks/modules/security/approval_grants.py (differs)" in r["detail"]
+        assert "1 of 2" in r["detail"]
+        assert "NOT running" in r["fix"]
+        assert f"gaia dev --workspace {ws}" in r["fix"]
+
+    def test_source_file_absent_from_install_is_warning(self, tmp_path, monkeypatch):
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        installed = _mk_installed_copy(ws, source)
+        (installed / "agents" / "gaia-system.md").unlink()
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: source)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "warning"
+        assert "agents/gaia-system.md (missing from the install)" in r["detail"]
+
+    def test_readme_drift_outside_a_prompt_tree_is_quiet(self, tmp_path, monkeypatch):
+        # A hooks/README.md is documentation, not something the runtime loads.
+        # Reporting it would be the cry-wolf noise that gets the check ignored.
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        installed = _mk_installed_copy(ws, source)
+        (installed / "hooks" / "README.md").write_text("# stale docs\n")
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: source)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "pass"
+
+    def test_prompt_markdown_drift_is_reported(self, tmp_path, monkeypatch):
+        # Under agents/ the markdown IS the executed artifact, so the same
+        # suffix that stays quiet above must speak here.
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        installed = _mk_installed_copy(ws, source)
+        (installed / "agents" / "gaia-system.md").write_text("---\nname: other\n---\n")
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: source)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "warning"
+        assert "agents/gaia-system.md (differs)" in r["detail"]
+
+    def test_no_source_checkout_is_not_applicable(self, tmp_path, monkeypatch):
+        # An npm-registry install: the CLI runs from the installed copy and the
+        # workspace declares no file: spec. Nothing to compare -- and the detail
+        # says NOT verified, never that parity holds.
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        installed = _mk_installed_copy(ws, source)
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: installed)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "info"
+        assert "NOT verified" in r["detail"]
+        assert "npm-registry install" in r["detail"]
+
+    def test_link_mode_install_is_the_source_itself(self, tmp_path, monkeypatch):
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        (ws / "node_modules" / "@jaguilar87").mkdir(parents=True)
+        (ws / "node_modules" / "@jaguilar87" / "gaia").symlink_to(source)
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: source)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "pass"
+        assert "IS the source checkout" in r["detail"]
+
+    def test_file_dep_spec_pointing_at_a_checkout_resolves_the_source(self, tmp_path, monkeypatch):
+        # Route 2: the CLI runs from somewhere unrelated, but the workspace's
+        # own file: spec names a directory that is a checkout.
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        installed = _mk_installed_copy(ws, source)
+        (ws / "package.json").write_text(json.dumps(
+            {"dependencies": {"@jaguilar87/gaia": "file:../src"}}
+        ))
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: installed)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "pass"
+        assert "2 shipped files identical" in r["detail"]
+
+    def test_package_json_without_files_does_not_pass_vacuously(self, tmp_path, monkeypatch):
+        source = _mk_source_checkout(tmp_path / "src")
+        (source / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia"}))
+        ws = tmp_path / "ws"
+        _mk_installed_copy(ws, source)
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: source)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "info"
+        assert "NOT verified" in r["detail"]

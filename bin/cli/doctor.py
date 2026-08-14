@@ -15,6 +15,7 @@ Checks (in order):
   52. component-naming   - skill/agent frontmatter name matches dir/file name
   53. skill-cross-refs   - agent `skills:` refs resolve to skills/<name>/SKILL.md
   55. symlinks-freshness - .claude/hooks resolves to the installed pkg version
+  56. source-parity     - installed package == the Gaia source checkout it was built from
   57. install-provenance - local (file:) vs npm install; mode, version, symlink resolution
   58. global-cli-alignment - PATH gaia vs workspace-expected install (version/content drift)
   60. identity           - orchestrator agent configured
@@ -1195,6 +1196,132 @@ def check_symlinks_freshness(project_root: Path) -> dict:
             )
 
     return _result(name, "pass", f"hooks at {target_ver} matches installed {installed_ver}")
+
+
+def _load_source_parity():
+    """Import gaia.source_parity, inserting the package root.
+
+    Same lazy insertion and degrade-to-None contract as
+    `_load_hooks_content_hash` -- doctor.py runs as a bin/cli script whose
+    sys.path lacks the package root.
+    """
+    try:
+        import sys as _sys  # noqa: PLC0415
+        pkg_root = str(_package_root())
+        if pkg_root not in _sys.path:
+            _sys.path.insert(0, pkg_root)
+        from gaia import source_parity  # noqa: PLC0415
+        return source_parity
+    except Exception:
+        return None
+
+
+def _resolve_source_root(project_root: Path, parity) -> "Path | None":
+    """Locate the Gaia SOURCE checkout this workspace's install should mirror.
+
+    Two routes, in precedence:
+
+      1. The package root of the CLI now running. `gaia dev` npm-links the
+         global `gaia` at the source tree it packed from, so on a dev machine a
+         bare `gaia doctor` IS executing the source and this route resolves.
+      2. The workspace's ``file:`` dependency spec, when it points at a
+         DIRECTORY -- link mode, where the install is the checkout itself.
+         A dev-pack spec points at a tarball and does not resolve here.
+
+    Returns None when neither yields a checkout, which is the normal answer for
+    an npm-registry install: there is no source to compare against, and the
+    caller must report that rather than invent a verdict.
+    """
+    pkg_root = _package_root()
+    if parity.is_source_checkout(pkg_root):
+        return pkg_root
+
+    spec = _gaia_dep_spec(project_root)
+    if spec and spec.startswith("file:"):
+        target = (project_root / spec[len("file:"):]).expanduser()
+        if parity.is_source_checkout(target):
+            return target.resolve()
+    return None
+
+
+# Enough coordinates to start reading, few enough to stay one scannable line.
+_PARITY_NAMED_LIMIT = 5
+
+
+@register_check("Source parity", order=56)
+def check_source_parity(project_root: Path) -> dict:
+    """Detect an installed package whose code is not the source it claims to be.
+
+    The gap this closes, measured twice in one day: a commit landed, its tests
+    passed, and the code never ran -- because the package Claude Code loads
+    hooks and agents from had captured the working tree at a different moment
+    (once mid-edit, a state no commit ever held). Orders 55 and 150 compare
+    wired-vs-installed and running-vs-wired, so the chain was diagnosed
+    everywhere EXCEPT its first link, and the diagnostic reported perfect
+    health while the consent layer's issuer and enforcer read different code.
+
+    WARNING, never error, and the reason is the check's own usefulness: source
+    ahead of installed is also the ordinary state of a working tree between an
+    edit and the next `gaia dev`. Red-lining `gaia doctor` on that would train
+    the reader to ignore the exit code, and an ignored check diagnoses nothing.
+    The distinguishing signal is carried by the message instead -- it names the
+    diverging files, so it can never be confused with the generic staleness
+    warnings it sits beside.
+    """
+    name = "Source parity"
+
+    parity = _load_source_parity()
+    if parity is None:
+        return _result(name, "info", "gaia.source_parity unavailable -- parity NOT verified")
+
+    source_root = _resolve_source_root(project_root, parity)
+    if source_root is None:
+        return _result(
+            name, "info",
+            "no Gaia source checkout resolvable from this CLI -- parity NOT verified "
+            "(expected for an npm-registry install: there is nothing to compare against)",
+        )
+
+    nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
+    if not nm_gaia.is_dir():
+        return _result(name, "info", "no node_modules @jaguilar87/gaia install to compare against (plugin-mode?)")
+    try:
+        installed_root = nm_gaia.resolve(strict=True)
+    except OSError:
+        return _result(
+            name, "warning", "node_modules/@jaguilar87/gaia does not resolve",
+            f"Run `gaia dev --workspace {project_root}` to reinstall",
+        )
+
+    if installed_root == source_root:
+        return _result(name, "pass", f"the install IS the source checkout ({source_root}) -- nothing can drift")
+
+    trees = parity.shipped_trees(source_root)
+    if trees is None:
+        return _result(
+            name, "info",
+            f"{source_root}/package.json declares no `files` -- cannot tell what ships; parity NOT verified",
+        )
+
+    report = parity.compare(source_root, installed_root, trees)
+    divergent = report["divergent"]
+    if not divergent:
+        return _result(
+            name, "pass",
+            f"{report['compared']} shipped files identical to the source checkout at {source_root}",
+        )
+
+    named = ", ".join(f"{path} ({reason})" for path, reason in divergent[:_PARITY_NAMED_LIMIT])
+    overflow = len(divergent) - _PARITY_NAMED_LIMIT
+    more = f", +{overflow} more" if overflow > 0 else ""
+    return _result(
+        name, "warning",
+        f"{len(divergent)} of {report['compared']} shipped files diverge from the source "
+        f"checkout at {source_root}: {named}{more}",
+        "That code is written but NOT running -- Claude Code loads hooks, agents and skills "
+        f"from the install, not from the source tree. Rebuild with `gaia dev --workspace "
+        f"{project_root}`, then restart Claude Code.",
+    )
 
 
 def _gaia_dep_spec(project_root: Path) -> "str | None":
