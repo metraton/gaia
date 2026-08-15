@@ -3,12 +3,11 @@
 ``decision_grader`` is the paired grader for
 :class:`tests.evals.runner.HookLogReplayBackend`: it parses the backend's
 JSON decision payload and compares the observed ``decision`` to the
-catalog's curated ``expected_decision``. It exists because
-``contract_grader`` was declared on the security golden catalog
-(``catalogs/security_decisions.yaml``) but never actually exercised there --
-a hook_log_replay case never produces a fenced ``agent_contract_handoff``
-block, so ``contract_grader`` could only ever report "no fenced block
-found" if it were genuinely run against this payload.
+catalog's curated ``expected_decision``. It exists because the security
+golden catalog (``catalogs/security_decisions.yaml``) once declared a
+contract-shape grader it never exercised: a hook_log_replay case produces
+a hook permission decision and no agent turn at all, so only this grader
+has a subject there.
 """
 
 from __future__ import annotations

@@ -1,15 +1,19 @@
-"""Graders for the eval framework (T1 scaffold).
-
-Three graders are planned:
+"""Graders for the eval framework.
 
 - :func:`code_grader` -- v1-style keyword match (``expect_present`` /
-  ``expect_absent``). Implemented here for T1 so downstream tasks
-  (T3a tests) can exercise it immediately.
-- :func:`contract_grader` -- parses the fenced ``agent_contract_handoff`` block
-  and validates shape. Implemented in T3b.
+  ``expect_absent``).
 - :func:`tool_trace_grader` -- inspects session JSONL and audit slices
-  for tool-call ordering / presence / absence. **Stub** in T1;
-  implemented in T3c.
+  for tool-call ordering / presence / absence.
+- :func:`routing_grader` -- parses a serialized ``RoutingResult``.
+- :func:`skill_injection_consumer` -- reads audit anomalies.
+- :func:`decision_grader` -- compares a PreToolUse decision to the
+  curated oracle.
+
+A ``contract_grader`` used to live here, validating the fenced
+``agent_contract_handoff`` block in a captured agent response. It was
+removed once the CLI became the canonical contract channel: no backend in
+:mod:`tests.evals.runner` dispatches an agent turn, so nothing this
+framework produces contains such a block and the grader had no subject.
 
 All graders return a :class:`GradeResult`.
 """
@@ -94,182 +98,6 @@ def code_grader(
 
     score = matched / total
     return GradeResult(passed=matched == total, score=score, reasons=reasons)
-
-
-# ---------------------------------------------------------------------------
-# contract_grader (T3b)
-# ---------------------------------------------------------------------------
-
-# Fenced block matching the agent-protocol spec. We match the LAST such block
-# in the response (agents sometimes show example contracts earlier in their
-# narrative; the operative one is always at the tail).
-_CONTRACT_BLOCK_RE = re.compile(
-    r"```agent_contract_handoff\s*\n(.*?)```",
-    re.DOTALL,
-)
-
-_REQUIRED_TOP_KEYS = (
-    "agent_status",
-    "evidence_report",
-    "consolidation_report",
-    "approval_request",
-)
-
-_VALID_AGENT_STATES = frozenset(
-    {"IN_PROGRESS", "APPROVAL_REQUEST", "COMPLETE", "BLOCKED", "NEEDS_INPUT",
-     "NEEDS_VERIFICATION"}
-)
-
-# When plan_status == APPROVAL_REQUEST, approval_request must carry at least
-# these fields (subset of the full protocol list that we treat as load-bearing
-# for the grader -- the runtime hook is the real gate for the remaining ones).
-_APPROVAL_REQUEST_REQUIRED_FIELDS = ("operation", "exact_content", "risk_level")
-
-
-def _extract_last_contract_block(response: str) -> Optional[str]:
-    """Return the raw JSON text of the LAST ```agent_contract_handoff fenced block.
-
-    Returns ``None`` when no fenced block is present. The returned string is
-    the payload between the opening fence and the closing ``` (trailing
-    whitespace preserved -- ``json.loads`` tolerates it).
-    """
-    matches = _CONTRACT_BLOCK_RE.findall(response)
-    if not matches:
-        return None
-    return matches[-1]
-
-
-def contract_grader(
-    response: str,
-    contract_expect: Optional[dict] = None,
-) -> GradeResult:
-    """Validate the fenced ``agent_contract_handoff`` block shape.
-
-    Binary grader -- every check must pass. Checks performed in order:
-
-    1. A fenced ``agent_contract_handoff`` block exists in ``response``.
-    2. Its body parses as JSON.
-    3. All four required top-level keys are present: ``agent_status``,
-       ``evidence_report``, ``consolidation_report``, ``approval_request``
-       (values may be ``null`` where the protocol allows it, but the keys
-       themselves must be declared).
-    4. ``agent_status.agent_state`` is one of the six canonical states:
-       ``IN_PROGRESS``, ``APPROVAL_REQUEST``, ``COMPLETE``, ``BLOCKED``,
-       ``NEEDS_INPUT``, ``NEEDS_VERIFICATION``. (The field was renamed from
-       ``plan_status`` -- see ``gaia/contract/validator.py`` -- production
-       has read ``agent_state`` since that rename; this grader must match.)
-    5. When ``agent_state == "APPROVAL_REQUEST"``, the ``approval_request``
-       object must be a dict carrying at minimum ``operation``,
-       ``exact_content``, and ``risk_level``.
-    6. When ``contract_expect["plan_status"]`` is set, the observed
-       ``agent_state`` must equal that value. The catalog-facing DSL key
-       stays named ``plan_status`` (a stable external name, deliberately
-       unchanged by the envelope-field rename) -- use it to pin S6 to
-       ``APPROVAL_REQUEST``; leave it absent (or ``None``) for "any valid
-       status" scenarios like S5.
-
-    Args:
-        response: Captured agent response (stdout / final message).
-        contract_expect: Optional per-case expectations. Supported key:
-            ``plan_status`` -- expected ``agent_state`` string.
-
-    Returns:
-        :class:`GradeResult` with ``passed`` True only when every check
-        succeeds, ``score`` in ``{0.0, 1.0}``, and one reason per check.
-    """
-    expect = contract_expect or {}
-    reasons: list[str] = []
-
-    raw = _extract_last_contract_block(response)
-    if raw is None:
-        return GradeResult(
-            passed=False,
-            score=0.0,
-            reasons=["no agent_contract_handoff fenced block found"],
-        )
-    reasons.append("agent_contract_handoff fenced block found")
-
-    try:
-        contract = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return GradeResult(
-            passed=False,
-            score=0.0,
-            reasons=reasons + [f"agent_contract_handoff body is not valid JSON: {exc.msg}"],
-        )
-    reasons.append("agent_contract_handoff body parses as JSON")
-
-    if not isinstance(contract, dict):
-        return GradeResult(
-            passed=False,
-            score=0.0,
-            reasons=reasons + [f"agent_contract_handoff body is not an object (got {type(contract).__name__})"],
-        )
-
-    missing_top = [k for k in _REQUIRED_TOP_KEYS if k not in contract]
-    if missing_top:
-        return GradeResult(
-            passed=False,
-            score=0.0,
-            reasons=reasons + [f"missing required top-level keys: {missing_top}"],
-        )
-    reasons.append(f"all required top-level keys present ({len(_REQUIRED_TOP_KEYS)})")
-
-    agent_status = contract.get("agent_status")
-    if not isinstance(agent_status, dict):
-        return GradeResult(
-            passed=False,
-            score=0.0,
-            reasons=reasons + ["agent_status must be an object"],
-        )
-
-    agent_state = agent_status.get("agent_state")
-    if not isinstance(agent_state, str) or agent_state not in _VALID_AGENT_STATES:
-        return GradeResult(
-            passed=False,
-            score=0.0,
-            reasons=reasons + [
-                f"agent_state {agent_state!r} not in {sorted(_VALID_AGENT_STATES)}"
-            ],
-        )
-    reasons.append(f"agent_state={agent_state} is valid")
-
-    if agent_state == "APPROVAL_REQUEST":
-        approval = contract.get("approval_request")
-        if not isinstance(approval, dict):
-            return GradeResult(
-                passed=False,
-                score=0.0,
-                reasons=reasons + [
-                    "agent_state=APPROVAL_REQUEST but approval_request is not an object"
-                ],
-            )
-        missing_approval = [
-            f for f in _APPROVAL_REQUEST_REQUIRED_FIELDS if not approval.get(f)
-        ]
-        if missing_approval:
-            return GradeResult(
-                passed=False,
-                score=0.0,
-                reasons=reasons + [
-                    f"approval_request missing required fields: {missing_approval}"
-                ],
-            )
-        reasons.append("approval_request carries operation, exact_content, risk_level")
-
-    expected_status = expect.get("plan_status")
-    if expected_status is not None and agent_state != expected_status:
-        return GradeResult(
-            passed=False,
-            score=0.0,
-            reasons=reasons + [
-                f"agent_state mismatch: expected {expected_status!r}, got {agent_state!r}"
-            ],
-        )
-    if expected_status is not None:
-        reasons.append(f"agent_state matches contract_expect.plan_status ({expected_status})")
-
-    return GradeResult(passed=True, score=1.0, reasons=reasons)
 
 
 # ---------------------------------------------------------------------------
@@ -1192,12 +1020,9 @@ def decision_grader(
     catalog's curated ``expected_decision`` field, e.g.
     ``security_decisions.yaml``).
 
-    ``contract_grader`` does not apply here: a ``hook_log_replay`` case
-    never produces a fenced ``agent_contract_handoff`` block, only a hook
-    permission decision, so it always reported "no agent_contract_handoff
-    fenced block found" -- a declaration that was never actually true of
-    what the case exercises. ``decision_grader`` is the grader that
-    actually matches the payload this backend produces.
+    A ``hook_log_replay`` case produces a hook permission decision and
+    nothing else -- no agent turn, no contract -- so ``decision_grader`` is
+    the only grader whose subject this backend actually emits.
 
     Args:
         response: ``DispatchResult.stdout`` produced by

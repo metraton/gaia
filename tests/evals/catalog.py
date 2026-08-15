@@ -39,7 +39,6 @@ VALID_DECISIONS = ("allow", "ask", "deny")
 # a case's ``grader`` field must be in this tuple.
 VALID_GRADERS = (
     "code_grader",
-    "contract_grader",
     "tool_trace_grader",
     "routing_grader",
     "skill_injection_consumer",
@@ -50,7 +49,7 @@ VALID_GRADERS = (
 REQUIRED_TOP_LEVEL = ("name", "description", "version", "cases")
 
 # Required per-case keys. Optional expectation dicts
-# (``expect_present``, ``contract_expect``, ...) default to empty when
+# (``expect_present``, ``trace_expect``, ...) default to empty when
 # omitted.
 REQUIRED_CASE_KEYS = ("id", "agent", "task", "grader", "backend", "scoring")
 
@@ -80,7 +79,6 @@ class CaseModel:
             to ``0.8``; ignored for binary cases.
         expect_present: Keywords the response must contain.
         expect_absent: Keywords the response must NOT contain.
-        contract_expect: Expectations for :func:`graders.contract_grader`.
         trace_expect: Expectations for :func:`graders.tool_trace_grader`.
         routing_expect: Expectations for the routing-sim grader (T3d).
         anomaly_expect: Expectations for the skill_injection consumer (T4).
@@ -100,7 +98,6 @@ class CaseModel:
     threshold: float = 0.8
     expect_present: list[str] = field(default_factory=list)
     expect_absent: list[str] = field(default_factory=list)
-    contract_expect: dict = field(default_factory=dict)
     trace_expect: dict = field(default_factory=dict)
     routing_expect: dict = field(default_factory=dict)
     anomaly_expect: dict = field(default_factory=dict)
@@ -204,7 +201,6 @@ def _case_from_raw(raw: Any, path: Path, index: int) -> CaseModel:
         threshold=float(threshold),
         expect_present=_list_field("expect_present"),
         expect_absent=_list_field("expect_absent"),
-        contract_expect=_dict_field("contract_expect"),
         trace_expect=_dict_field("trace_expect"),
         routing_expect=_dict_field("routing_expect"),
         anomaly_expect=_dict_field("anomaly_expect"),

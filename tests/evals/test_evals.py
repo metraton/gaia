@@ -26,8 +26,6 @@ Routing of grader DSL by catalog ``grader`` list entry:
 
 * ``code_grader`` -- reads ``stdout``, matches ``expect_present`` /
   ``expect_absent``.
-* ``contract_grader`` -- extracts the last fenced ``agent_contract_handoff``
-  block from ``stdout`` and validates shape + optional ``plan_status`` pin.
 * ``tool_trace_grader`` -- walks ``DispatchResult.session_path`` +
   ``audit_paths`` for ordering / presence / absence / repeat-count.
 * ``routing_grader`` -- parses ``stdout`` as serialized ``RoutingResult``
@@ -48,7 +46,6 @@ from tests.evals.catalog import CaseModel, load_catalog
 from tests.evals.graders import (
     GradeResult,
     code_grader,
-    contract_grader,
     routing_grader,
     skill_injection_consumer,
     tool_trace_grader,
@@ -155,13 +152,6 @@ def _grade_case(
                     expect_present=case.expect_present,
                     expect_absent=case.expect_absent,
                 )
-            )
-        elif name == "contract_grader":
-            # Only pass the shape-relevant subset; extra keys like
-            # ``approval_request_required`` are tolerated by the grader
-            # (unknown keys in contract_expect are silently ignored).
-            outcomes.append(
-                contract_grader(result.stdout, contract_expect=case.contract_expect)
             )
         elif name == "tool_trace_grader":
             outcomes.append(

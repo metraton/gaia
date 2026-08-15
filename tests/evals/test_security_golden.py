@@ -28,9 +28,8 @@ What runs GREEN now that the replay backend landed (brief #89 AC-2 close):
   runner's "MUST NOT import from hooks/" contract holds) and reports the
   literal allow/ask/deny decision for each case. Grading goes through
   :func:`tests.evals.graders.decision_grader`, the catalog's declared grader
-  (each case lists ``decision_grader``, not ``contract_grader`` -- a
-  hook_log_replay case never produces a fenced ``agent_contract_handoff``
-  block, so ``contract_grader`` would never actually match its payload).
+  (every case lists it -- a hook_log_replay case produces a hook permission
+  decision and no agent turn, so no other grader has a subject here).
 """
 
 from __future__ import annotations
@@ -114,12 +113,10 @@ class TestGoldenLiveReplay:
         the observed allow/ask/deny matches the human oracle.
 
         Grading goes through :func:`tests.evals.graders.decision_grader` --
-        the catalog's declared grader (``contract_grader`` does not apply
-        here: a hook_log_replay case never produces a fenced
-        ``agent_contract_handoff`` block, only a hook decision payload,
-        which is exactly what ``decision_grader`` parses). A single
-        mismatch is a real security defect: the core enforced something
-        other than the curated policy.
+        the catalog's declared grader, and the only one whose subject this
+        backend emits: a hook decision payload. A single mismatch is a real
+        security defect: the core enforced something other than the curated
+        policy.
         """
         from tests.evals.graders import decision_grader
         from tests.evals.runner import HookLogReplayBackend, dispatch

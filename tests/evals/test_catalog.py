@@ -171,7 +171,6 @@ class TestLoaderSuccess:
         cat = _write(tmp_path / "cat.yaml", MINIMAL_VALID)
         cases = load_catalog(cat)
         case = cases[0]
-        assert case.contract_expect == {}
         assert case.trace_expect == {}
         assert case.routing_expect == {}
         assert case.anomaly_expect == {}
@@ -284,7 +283,7 @@ class TestCaseModel:
         )
         # Dataclass default_factory must not share state between instances.
         assert a.expect_present is not b.expect_present
-        assert a.contract_expect is not b.contract_expect
+        assert a.trace_expect is not b.trace_expect
 
     def test_required_case_keys_matches_dataclass(self):
         """Contract sanity: the REQUIRED_CASE_KEYS list must match the

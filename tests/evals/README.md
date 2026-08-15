@@ -74,7 +74,7 @@ DispatchResult(stdout, session_path, audit_paths, exit_code)
   |
   v
 per-case grader routing (test_evals._grade_case)
-  | code_grader / contract_grader / tool_trace_grader /
+  | code_grader / tool_trace_grader /
   | routing_grader / skill_injection_consumer
   v
 GradeResult(passed, score, reasons)
@@ -122,8 +122,8 @@ tests/evals/
 |                                     #   FakeBackend. Defines DispatchResult
 |                                     #   and EvalError.
 |-- graders.py                        # GradeResult + five graders:
-|                                     #   code_grader, contract_grader,
-|                                     #   tool_trace_grader, routing_grader,
+|                                     #   code_grader, tool_trace_grader,
+|                                     #   routing_grader, decision_grader,
 |                                     #   skill_injection_consumer.
 |-- reporter.py                       # save_result, load_baseline,
 |                                     #   compare_to_baseline, DriftReport,
@@ -134,7 +134,6 @@ tests/evals/
 |-- test_evals.py                     # Parametrized entry point + catalog guards.
 |-- test_runner.py                    # Runner + FakeBackend unit tests.
 |-- test_graders_code.py              # code_grader unit tests.
-|-- test_graders_contract.py          # contract_grader unit tests.
 |-- test_graders_trace.py             # tool_trace_grader unit tests.
 |-- test_graders_decision.py          # decision_grader unit tests.
 |-- test_backend_routing.py           # RoutingSimBackend + routing_grader.
@@ -316,7 +315,7 @@ alone -- nothing under `tests/evals/` carries it.)
 ```
 cd /home/jorge/ws/me/gaia
 python3 -m pytest tests/evals/test_evals.py -q -k S4
-python3 -m pytest tests/evals/test_graders_contract.py -q
+python3 -m pytest tests/evals/test_graders_decision.py -q
 ```
 
 A `-k`-narrowed run is safe against the baseline gate: the diff only walks
@@ -362,8 +361,8 @@ green after any case deletion: they close the gate from opposite sides.
    | Routing / surface classification          | routing_sim      | `routing_grader`                                  | ~0   |
    | Hook permission decision                  | hook_log_replay  | `decision_grader` (use `security_decisions.yaml`) | ~0   |
 
-   Those are the two backends that exist. `code_grader`, `contract_grader`,
-   and `tool_trace_grader` are still valid `VALID_GRADERS` entries with their
+   Those are the two backends that exist. `code_grader` and
+   `tool_trace_grader` are still valid `VALID_GRADERS` entries with their
    own unit tests, but no backend currently produces the response text or
    session transcript they read -- the one that did was the `--agent`
    dispatcher, and it is gone. Reaching for them means first building an
@@ -554,9 +553,9 @@ per-module unit tests. Signatures worth knowing:
   `FakeBackend` (unit tests only, never a catalog case).
 - `graders.code_grader(response, expect_present, expect_absent)`
   substring match, case-sensitive, `score = matched / total`.
-- `graders.contract_grader(response, contract_expect)` extracts the last
-  fenced ```` ```agent_contract_handoff ```` block, validates required keys +
-  `plan_status` enum + `approval_request` shape.
+- `graders.decision_grader(response, expected_decision)` parses the
+  `hook_log_replay` decision payload and compares the observed
+  allow/ask/deny to the catalog's curated oracle.
 - `graders.tool_trace_grader(session_path, audit_paths, trace_expect)`
   walks transcript + audit slices. Supports `must_contain`,
   `must_not_contain`, `at_most`, `ordering`, `delegated_to`. Reuses
@@ -597,7 +596,7 @@ better understanding of the problem than the one that closed it:
 | Gap | Symptom | Status                                                                                        |
 | --- | ------- | --------------------------------------------------------------------------------------------- |
 | G1  | Single-turn `claude --print` cannot observe multi-turn protocol events | **REOPENED.** `SubprocessBackend` "closed" it by dispatching `--agent <specialist>` -- a session that observes no protocol events worth having, because it is not the route Gaia dispatches through. Closing it for real needs an orchestrator-rooted session. |
-| G2  | Only keyword matching; contract shape invisible                         | `graders.contract_grader`                               |
+| G2  | Only keyword matching; contract shape invisible                         | **REOPENED.** `graders.contract_grader` closed it by parsing a fenced `agent_contract_handoff` block out of a captured response. It was removed once the CLI became the canonical contract channel: no backend here dispatches an agent turn, so nothing produced such a block and the grader had no subject. Closing it for real needs a backend that runs an agent and a grader that reads the persisted contract row. |
 | G3  | No way to check Read-before-Edit, no pipes, Agent delegated             | `graders.tool_trace_grader` (reuses `tools/gaia_simulator/extractor.py`) |
 | G4  | S4 dispatching a real orchestrator wastes tokens                        | `runner.RoutingSimBackend` (sync, free)                 |
 | G5  | Re-detecting "refused pipe" drifts from skill_injection_verifier        | `graders.skill_injection_consumer` (reads verifier anomalies) |
@@ -652,5 +651,5 @@ One entry belongs here that did not before:
   `tests/hooks/modules/context/test_context_injector.py`.
 - `tests/conftest.py` -- registers the `llm` / `e2e` markers and auto-skips
   them unless opted in with `-m llm`.
-- `.claude/skills/agent-protocol/SKILL.md` -- protocol shape that
-  `contract_grader` validates.
+- `skills/agent-protocol/SKILL.md` -- the contract protocol the eval
+  catalogs describe when a case exercises an agent turn.

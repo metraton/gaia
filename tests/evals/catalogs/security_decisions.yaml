@@ -22,8 +22,8 @@ description: >-
   real PreToolUse entry point via runner.HookLogReplayBackend; the observed
   permissionDecision is compared to the curated expected_decision below).
   Grader: decision_grader -- the paired grader for this backend's decision
-  payload (contract_grader does not apply: a hook_log_replay case never
-  produces a fenced agent_contract_handoff block, only a hook decision).
+  payload, and the only one with a subject here: a hook_log_replay case
+  produces a hook decision and no agent turn.
 
   STATUS (brief #89 AC-2, closed): the hook_log_replay backend is implemented
   in runner.py (HookLogReplayBackend) and expected_decision is a field on
