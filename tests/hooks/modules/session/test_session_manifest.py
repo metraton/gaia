@@ -552,9 +552,12 @@ class TestBuildProjectsBlockRendersTypeAndDescription:
         block = self._run_with_rows(monkeypatch, payload)
         assert "- plainproj: p" in block
 
-    def test_vanished_entry_collapses_into_one_recoverable_line(self, monkeypatch):
-        """A vanished repo must not spend a live project's worth of space, and
-        its name must survive so a bare mention still resolves."""
+    def test_vanished_entry_is_not_injected_at_all(self, monkeypatch):
+        """A removed project is asked for, not announced every session.
+
+        `gaia context get` still holds the whole record; nothing here deletes
+        it. It just stops spending context on a question almost nobody asks.
+        """
         payload = {
             "ghost": {
                 "name": "ghost",
@@ -565,11 +568,22 @@ class TestBuildProjectsBlockRendersTypeAndDescription:
             },
         }
         block = self._run_with_rows(monkeypatch, payload)
-        assert "missing (1): ghost — recover with 'gaia context get'" in block
-        # Collapsed, so the per-entry payload is not paid.
-        assert "- ghost" not in block
+        assert "ghost" not in block
+        assert "missing" not in block
         assert "curated blurb" not in block
-        assert "2026-07-01T00:00:00+00:00" not in block
+
+    def test_a_workspace_of_only_vanished_entries_renders_no_group(
+        self, monkeypatch,
+    ):
+        payload = {
+            "ghost": {
+                "name": "ghost",
+                "local_path": "/x/ghost",
+                "missing_since": "2026-07-01T00:00:00+00:00",
+            },
+        }
+        block = self._run_with_rows(monkeypatch, payload)
+        assert "###" not in block
 
 
 class TestProjectsBlockDeduplicatesAtTheSource:

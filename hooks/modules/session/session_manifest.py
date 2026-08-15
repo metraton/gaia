@@ -502,13 +502,11 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
       ``_extract_projects_from_identity`` is what lets the legacy side resolve
       to that path in the first place. Colliding entries are MERGED field by
       field, so metadata carried by only one of the two survives.
-    * **Vanished repos.** An entry marked ``missing_since`` no longer spends a
-      full line. Per group, the marked names collapse into one
-      ``missing (N): a, b, c`` line. Nothing is deleted -- not from the
-      ``projects`` table, not from the contract -- so the full record (path,
-      type, description, exact timestamp) stays one ``gaia context get`` away.
-      The name is kept in the render precisely so a bare mention of a vanished
-      project still resolves to a workspace.
+    * **Vanished repos.** An entry marked ``missing_since`` is not rendered at
+      all. Nothing is deleted -- not from the ``projects`` table, not from the
+      contract -- so the full record (path, type, description, exact timestamp)
+      stays one ``gaia context get`` away for the rare turn that asks about a
+      removed project. It is not worth a line of every session's context.
 
     Budget: bounded to ``max_chars`` (default 8000). On overflow, live projects
     are dropped from the tail and a recoverable footer stating the dropped count
@@ -624,7 +622,6 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     # computed from the LIVE paths only: a vanished repo's path should not widen
     # (or, as the sole member, define) the root every sibling renders against.
     live: list[dict] = []
-    missing_by_ws: dict = {}
     unresolved: list[str] = []
     group_order: list[str] = []
     for key in order:
@@ -637,11 +634,15 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
             # skipped as a misclassification rather than reported as a project
             # whose path was lost -- the contract row itself is untouched.
             continue
+        if e["gone"]:
+            # A vanished repo is not injected at all. It is asked for, on the
+            # rare occasion someone wants one: `gaia context get` still has the
+            # whole record, and nothing here deletes it. Injecting the names
+            # every session spent budget on a question almost nobody asks.
+            continue
         if ws and ws not in group_order:
             group_order.append(ws)
-        if e["gone"]:
-            missing_by_ws.setdefault(ws, []).append(e["name"])
-        elif not e["path"]:
+        if not e["path"]:
             unresolved.append(e["name"])
         else:
             live.append(e)
@@ -663,8 +664,7 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
             parts.append(note)
         for ws in group_order:
             group = [e for e in items if e["ws"] == ws]
-            gone = missing_by_ws.get(ws) or []
-            if not group and not gone:
+            if not group:
                 continue
             root = roots.get(ws) or ""
             lines = [f"### {ws} — {root}" if root else f"### {ws}"]
@@ -681,13 +681,6 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
                 if e["desc"]:
                     line += f" — {e['desc']}"
                 lines.append(line)
-            if gone:
-                # Collapsed, not purged: names stay so a bare mention still
-                # resolves, and the full record is one CLI call away.
-                lines.append(
-                    f"missing ({len(gone)}): {', '.join(gone)} "
-                    f"— recover with 'gaia context get'"
-                )
             parts.append("\n".join(lines))
         if unresolved:
             parts.append(
