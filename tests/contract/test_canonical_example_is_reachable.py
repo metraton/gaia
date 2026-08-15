@@ -87,13 +87,14 @@ def _with_verification(verification: dict) -> dict:
 
 
 def _fenced_json(message: str) -> dict:
-    """Parse the ```agent_contract_handoff block the repair message prints.
+    """Parse the ```json shape block the repair message prints.
 
     Parsing rather than substring-matching is the point: the block is
-    advertised as valid JSON an agent can copy, so a test that reads it the way
-    the agent does also proves that advertisement.
+    advertised as valid JSON an agent can copy into `gaia contract fill --json`,
+    so a test that reads it the way the agent does also proves that
+    advertisement.
     """
-    match = re.search(r"```agent_contract_handoff\n(.*?)```", message, re.DOTALL)
+    match = re.search(r"```json\n(.*?)```", message, re.DOTALL)
     assert match, "the repair message no longer carries a fenced envelope block"
     return json.loads(match.group(1))
 

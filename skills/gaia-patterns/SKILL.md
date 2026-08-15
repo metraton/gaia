@@ -38,7 +38,8 @@ Construction patterns for building Gaia components. Every component type follows
    preloaded -- the agent pulls sections on demand, with the verbs in
    agent-protocol/read-map.md, within its can_read menu.
    |
-5. Agent checkpoints/finalizes the DB-backed agent_contract_handoff
+5. Agent checkpoints/finalizes its agent_contract_handoffs row via
+   `gaia contract`; the final message carries no envelope
    |
 6. Post-Tool Hook -> audit + metrics
    |
@@ -99,7 +100,7 @@ CLI tools live in `bin/` and are registered in `package.json` `bin` field. Patte
 
 ## Documentation Drift Awareness
 
-When you modify any Gaia component (hook, skill, agent definition, routing config, security rule), check if existing reference docs describe that component's behavior. If drift exists, report it via `cross_layer_impacts` in your agent_contract_handoff. The orchestrator then decides whether to dispatch a documentation update task.
+When you modify any Gaia component (hook, skill, agent definition, routing config, security rule), check if existing reference docs describe that component's behavior. If drift exists, report it via `cross_layer_impacts` in your contract row. The orchestrator then decides whether to dispatch a documentation update task.
 
 **Do NOT update docs yourself** -- your job is to flag the drift and let the orchestrator choose the next action.
 

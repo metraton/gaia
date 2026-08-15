@@ -6,7 +6,7 @@ description: Use for the exact input/output schema and validation rules of agent
 # Agent Contract Handoff Reference
 
 This skill owns schema, not workflow. Use `agent-protocol` to produce a turn and
-`agent-response` to consume it. The fenced body is JSON, never YAML.
+`agent-response` to consume it. The envelope body is JSON, never YAML.
 
 **Two senses of "contract" -- do not collapse them.** This skill's "contract"
 is the *handoff* envelope: one row per turn, born at dispatch under the
@@ -185,6 +185,6 @@ scratch or from a workspace/client repo path directly.
 `WORK_PHASE_SHAPE`. `gaia.contract.crosscheck.validate` adds DB cross-checks.
 Do not reproduce those rules elsewhere.
 
-The CLI draft is primary managed data. The final fenced
-`agent_contract_handoff` remains a stop-gate compatibility requirement and must
-echo the same envelope, not a separately composed variant.
+The CLI draft is the only managed copy. The turn's final message carries no
+echo of the envelope: what `gaia contract finalize` promoted to the row is the
+whole delivery, and the stop gate reads nothing else.

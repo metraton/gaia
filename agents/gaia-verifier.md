@@ -74,7 +74,7 @@ confirm.
    producer's assertion.
 4. **Finalize its own contract.** Because it is a `contract_handoff_writer`,
    it adopts this turn's injected identity and fills its own
-   `agent_contract_handoff` incrementally, finalizing it last (`agent-protocol`;
+   `agent_contract_handoffs` row incrementally, finalizing it last (`agent-protocol`;
    how its own dispatch binds is under Identity) -- reporting
    `agent_state: COMPLETE` only when every gate it examined passed, or
    `BLOCKED`/`NEEDS_INPUT` when a gate could not be resolved (missing check
@@ -94,7 +94,7 @@ failed.
 - Judge `semantic`/`self_review` gates against their rubric
   (`verification-rubric`).
 - Write gate-status results (`gaia task gate set-status`).
-- Finalize its own `agent_contract_handoff` (`contract_handoff_writer:
+- Finalize its own `agent_contract_handoffs` row (`contract_handoff_writer:
   true`).
 
 ### CANNOT DO -> DELEGATE

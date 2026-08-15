@@ -3,7 +3,7 @@ Preservation and relay of the substantive text of a turn the contract gate
 rejected.
 
 The defect this exists for: when ``adapt_subagent_stop`` returns exit_code=2
-because the final message carried no valid fenced ``agent_contract_handoff``,
+because the turn's own persisted contract row did not close cleanly,
 the harness feeds the rejection back to the SUBAGENT, which produces one more
 turn -- and that repair turn's message REPLACES the rejected one in everything
 the orchestrator receives. Measured: an agent emitted a full diagnosis at
@@ -43,11 +43,13 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Fenced blocks that ARE the contract, not the agent's substantive prose. Both
-# spellings occur in practice: an ``agent_contract_handoff`` info string, and a
-# plain ``json`` block whose body is the envelope.
+# Fenced blocks that ARE the contract, not the agent's substantive prose. The
+# ``agent_contract_handoff`` info string was retired as a delivery channel, so
+# the only spelling left in a live turn is a plain ``json`` block whose body is
+# the envelope -- and a turn that emits none leaves nothing here to discard,
+# which costs only a stricter preservation, never a loss.
 _FENCE_RE = re.compile(r"```[^\n`]*\n.*?\n?```", re.DOTALL)
-_CONTRACT_MARKERS = ("agent_contract_handoff", '"agent_status"', "'agent_status'")
+_CONTRACT_MARKERS = ('"agent_status"', "'agent_status'")
 
 # Cap on how much text is inlined into the rejection message. The file keeps
 # the full text; the notice keeps the message deliverable. Generous on purpose:
@@ -167,13 +169,13 @@ def build_relay_notice(
     return (
         "\n\n=== PRESERVED OUTPUT OF THE REJECTED TURN -- RELAY REQUIRED ===\n"
         "The message you just sent was NOT relayed to the orchestrator: this "
-        "turn was rejected for a missing/invalid agent_contract_handoff fence, "
-        "and your repair message REPLACES it in everything the orchestrator "
-        "receives. The text below is therefore lost unless you reproduce it.\n\n"
-        "Your repair message MUST reproduce the text below VERBATIM, before the "
-        "fenced agent_contract_handoff block. Do NOT summarize it and do NOT "
-        "replace it with a thin note such as \"the contract is already "
-        "finalized, this only adds the envelope\"."
+        "turn was rejected because its persisted contract row did not close "
+        "cleanly, and your repair message REPLACES it in everything the "
+        "orchestrator receives. The text below is therefore lost unless you "
+        "reproduce it.\n\n"
+        "Your repair message MUST reproduce the text below VERBATIM. Do NOT "
+        "summarize it and do NOT replace it with a thin note such as \"the "
+        "contract is already finalized, this only re-runs finalize\"."
         f"{where}\n"
         "--- BEGIN PRESERVED OUTPUT ---\n"
         f"{body}\n"

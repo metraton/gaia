@@ -66,9 +66,14 @@ class TestAgentProtocolSkill:
         return (skills_dir / "agent-protocol" / "SKILL.md").read_text()
 
     def test_has_agent_status_section(self, content):
-        """Must document agent_contract_handoff block format."""
-        assert "agent_contract_handoff" in content, \
-            "agent-protocol must document agent_contract_handoff block format"
+        """Must document the agent_status block the row carries.
+
+        The fenced ``agent_contract_handoff`` block was retired as a delivery
+        channel, so the skill no longer names it; what it must still name is
+        the envelope's own required block.
+        """
+        assert "agent_status" in content, \
+            "agent-protocol must document the agent_status block"
 
     def test_has_agent_state(self, content):
         """Must document agent_state field."""

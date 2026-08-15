@@ -33,8 +33,10 @@ logger = logging.getLogger(__name__)
 # Each skill maps to a list of candidate fingerprints -- at least one must appear
 # in the transcript for the skill to be considered present.
 SKILL_FINGERPRINTS: Dict[str, List[str]] = {
+    # agent-protocol lost a third fingerprint, "agent_contract_handoff", when the
+    # fenced block was retired: the skill no longer names it, so the phrase could
+    # only ever prove a dead format. The two survivors are still unique to it.
     "agent-protocol": [
-        "agent_contract_handoff",
         "agent_state",
         "evidence_report",
     ],

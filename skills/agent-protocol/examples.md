@@ -1,6 +1,6 @@
 # Agent Protocol -- Status-Specific Examples
 
-Read on-demand when constructing an `agent_contract_handoff` envelope.
+Read on-demand when building this turn's contract envelope.
 See `agent-contract-handoff` for the schema definition and field rules, and
 `reference.md` for where each moment's answer lands.
 
@@ -10,14 +10,11 @@ Each example below is the envelope **as the row holds it** -- the shape your
 this turn queries it (`SKILL.md`, principle 1). Read these as the target you
 are filling toward.
 
-The same envelope is also what the closing fence carries. The final message
-still ends with the envelope in a fenced block tagged `agent_contract_handoff`
-(not `json` -- the tag is how `parse_contract` finds it). The gate itself
-never reads this copy, in any of its three cases (`reference.md`, "The gate
-at the wall") -- only the turn's own persisted row decides the close. The
-fence stays required because `parse_contract` still feeds it to the turn's
-descriptive readers: episode metrics, `key_outputs`, `update_contracts`,
-response-contract anomalies, and the T9 backstop. Emit it every time.
+There is no second copy of it. The final message carries no envelope at all:
+the gate reads the turn's own persisted row (`reference.md`, "The gate at the
+wall"), and so does every reader downstream of it -- episode metrics,
+`key_outputs`, `update_contracts`, response-contract anomalies, the T9
+backstop. What you did not write into the row was not delivered.
 
 ## 0. Building example 1 via the CLI, from first write to close
 
@@ -59,9 +56,8 @@ The draft this produces is byte-for-byte the same envelope as example 1
 below, and `finalize` writing that row is where the turn ends. The stop gate
 resolves this turn's own persisted row and validates the envelope THAT row
 holds. What the turn says in its final message is an account for whoever is
-reading, closing with the fenced envelope -- the detail behind it is queried
-from the row, at whatever granularity the question needs, whenever it is
-asked.
+reading -- the detail behind it is queried from the row, at whatever
+granularity the question needs, whenever it is asked.
 
 ## 1. COMPLETE (verified result, happy path)
 

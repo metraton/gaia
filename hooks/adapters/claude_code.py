@@ -483,9 +483,11 @@ def _three_case_verdict(
     agent_status = parsed_contract.get("agent_status")
     if not agent_status or not isinstance(agent_status, dict):
         reason = (
-            "[CONTRACT REJECTED] agent_status block missing from agent_contract_handoff.\n"
-            "The agent_contract_handoff block must include an agent_status object with "
-            "agent_state, agent_id, pending_steps, and next_action."
+            "[CONTRACT REJECTED] agent_status block missing from this turn's "
+            "contract envelope.\n"
+            "The envelope must include an agent_status object with "
+            "agent_state, agent_id, pending_steps, and next_action. Write it "
+            "with `gaia contract set` and close with `gaia contract finalize`."
         )
         return ContractGateVerdict(True, reason, (), GATE_MODE_THREE_CASE)
 
@@ -2618,7 +2620,7 @@ class ClaudeCodeAdapter(HookAdapter):
         reason = (
             f"[T3_BLOCKED] This file modification requires user approval.\n"
             f"Do NOT retry this operation. Report APPROVAL_REQUEST with this approval_id "
-            f"in your agent_contract_handoff.\n"
+            f"in your contract row.\n"
             f"File: {file_path}\n"
             f"Tool: {tool_name}\n"
             f"approval_id: {approval_id}"

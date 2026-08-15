@@ -45,11 +45,11 @@ WORKSPACE = "me"
 AGENT_ID = valid_agent_id("row-message-source")
 SESSION_ID = "sess-row-message-source"
 
-# A phrase that only makes sense when the SOURCE was the agent's own response
-# text -- must never appear in a row-sourced rejection.
-_DECLARATION_ONLY_PHRASE = "your response must carry"
+# A phrase that only makes sense when no row was the SOURCE -- must never
+# appear in a row-sourced rejection, which names the row it read.
+_DECLARATION_ONLY_PHRASE = "this turn's contract envelope"
 # A phrase that only makes sense when the SOURCE was the persisted row --
-# must never appear in a declaration-sourced (fence) rejection.
+# must never appear in a declaration-sourced rejection.
 _ROW_ONLY_PHRASE = "dispatch row"
 
 

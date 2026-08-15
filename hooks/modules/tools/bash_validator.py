@@ -637,8 +637,8 @@ class BashValidator:
                 tier=SecurityTier.T3_BLOCKED,
                 reason=mem_write_reason,
                 suggestions=[
-                    "Emit a `memorialize_suggestions` block in your "
-                    "agent_contract_handoff instead.",
+                    "Write a `memorialize_suggestions` block into your "
+                    "contract row with `gaia contract fill --json` instead.",
                 ],
             )
 

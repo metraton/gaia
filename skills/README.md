@@ -59,7 +59,7 @@ skills/
 │   ├── reference.md       # the two state machines, phase-to-section map, kernel fields, storage/recovery, edge cases
 │   ├── examples.md        # filled envelopes, one per agent_state
 │   └── read-map.md        # THE read vocabulary: what a turn can read, with which verb, and what comes back (every other skill points here)
-├── agent-response/        # Orchestrator: interpret agent agent_contract_handoff responses
+├── agent-response/        # Orchestrator: read and route a closed agent_contract_handoffs row
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place

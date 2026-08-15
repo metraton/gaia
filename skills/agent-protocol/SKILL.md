@@ -10,13 +10,8 @@ Every agent turn writes one contract -- what it was asked, what it found, what i
 
 ## 1. Your contract is the delivery; your final message is only the signal that the turn ended
 
-The gate validates only your persisted contract: one found unfinalized -- or no row at all -- rejects
-the close however complete your message reads (`_resolve_subagent_stop_gate_full`). Still end the
-message with the envelope in a fenced block tagged `agent_contract_handoff`, the tag `parse_contract`
-looks for; a `json` fence whose body is already envelope-shaped is picked up too, by a deliberate
-tolerant fallback (`_RE_JSON_FALLBACK`), so the right tag is hygiene rather than a cliff. Emit the
-fence not because the gate falls back to it -- in none of its cases does it -- but because it feeds
-readers the row does not reach: episode metrics, `update_contracts`, anomalies, the T9 backstop.
+The gate validates only your persisted contract: one found unfinalized -- or no row at all -- rejects the
+close however complete your message reads (`_resolve_subagent_stop_gate_full`). The message carries no copy.
 
 ## 2. You were born with a contract -- adopt it, do not create another
 

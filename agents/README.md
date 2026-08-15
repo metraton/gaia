@@ -1,6 +1,6 @@
 # Agents
 
-Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and — for a dispatched subagent — a list of skills the host preloads at startup. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is a `agent_contract_handoff` block with findings, changes, and a verification result.
+Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and — for a dispatched subagent — a list of skills the host preloads at startup. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is the agent's own `agent_contract_handoffs` row — findings, changes, and a verification result, written incrementally through `gaia contract` and closed by `finalize`; the agent's final message is the signal that the turn ended, not a second copy of it.
 
 Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code (the host, not any Gaia hook) reads it to know which tools the agent may use, which model to run, and — for a dispatched subagent only — which skills to preload before the first turn. No Gaia hook loads skills: `hooks/hooks.json` carries no `Skill` tool matcher, so a `Skill(...)` call never reaches PreToolUse, and the only Gaia component named "skill injection" (`hooks/modules/agents/skill_injection_verifier.py`) runs at SubagentStop and only observes — it checks the transcript for evidence the host already did the preload, it does not perform one. The primary agent (`gaia-orchestrator.md`) has no `skills:` field at all: Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread, so a `skills:` key there would have no effect. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
 
@@ -40,7 +40,8 @@ agent's .md frontmatter and spawns the subagent with:
 know about you). Project context is NOT preloaded here either -- the
 agent pulls sections on demand within its can_read menu.
         |
-Agent executes, returns agent_contract_handoff to orchestrator
+Agent executes, closing its agent_contract_handoffs row with
+`gaia contract finalize`; the orchestrator reads that row
         |
 [subagent_stop.py] fires -> validates contract, records metrics, updates episodic memory
 ```

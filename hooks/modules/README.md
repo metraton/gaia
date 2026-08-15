@@ -85,7 +85,7 @@ modules/
 └── agents/               # Subagent support
     ├── __init__.py
     ├── response_contract.py # Agent response contract validation
-    ├── contract_validator.py # Parse + resolve the agent_contract_handoff fence
+    ├── contract_validator.py # Legacy fence parser (no closing role) + envelope field resolvers
     ├── dispatch_binding.py   # Born-at-dispatch row: extract + validate + birth the nascent handoff row from dispatch metadata
     ├── handoff_persister.py  # Persist/finalize the terminal agent_contract_handoffs row
     ├── skill_injection_verifier.py # Verify required skills were injected

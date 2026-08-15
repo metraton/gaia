@@ -69,7 +69,7 @@ ALLOWED_AGENTS = frozenset({"gaia-operator"})
 REJECTION_MESSAGE = (
     "Direct memory writes are not allowed from a subagent dispatch context. "
     "Subagents propose memory impact by emitting a versioned `memory_delta` "
-    "block in their agent_contract_handoff (`memorialize_suggestions` is legacy); the orchestrator (or gaia-operator) "
+    "block in their contract row (`memorialize_suggestions` is legacy); the orchestrator (or gaia-operator) "
     "persists it on user confirmation. Do NOT retry -- this is not approvable."
 )
 

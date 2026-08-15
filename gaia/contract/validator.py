@@ -867,12 +867,11 @@ class FormValidationResult:
 # their opening sentence, because a validated envelope now has one of two
 # distinct sources (the row-first SubagentStop gate,
 # ``hooks/adapters/claude_code.py::resolve_subagent_stop_gate``): the agent's
-# own final ```agent_contract_handoff``` declaration, or the persisted
+# in-memory draft envelope with no row reachable yet, or the persisted
 # ``agent_contract_handoffs`` row it built incrementally via `gaia contract
-# set/add/fill`. Telling an agent to fix "your response" when the row -- not
-# the response text -- is what actually failed to parse sends the repair to
-# the wrong place; ``validate_form``'s ``source`` argument selects the
-# matching variant. The JSON template and build-order guidance below apply
+# set/add/fill`. Naming the row when no row was read sends the repair to the
+# wrong place; ``validate_form``'s ``source`` argument selects the matching
+# variant. The JSON template and build-order guidance below apply
 # identically either way, so only the opening clause forks.
 #
 # The verification line teaches a CONCRETE type ("command") rather than the
@@ -890,7 +889,10 @@ class FormValidationResult:
 _REPAIR_MESSAGE_BODY = (
     "\n"
     "\n"
-    "```agent_contract_handoff\n"
+    "The envelope's shape (what the ROW must hold -- write it with `gaia "
+    "contract set`/`add`/`fill --json`, never as a block in your message):\n"
+    "\n"
+    "```json\n"
     "{\n"
     '  "agent_status": {\n'
     '    "agent_state": "<IN_PROGRESS|APPROVAL_REQUEST|COMPLETE|BLOCKED|NEEDS_INPUT|NEEDS_VERIFICATION>",\n'
@@ -953,18 +955,16 @@ _REPAIR_MESSAGE_BODY = (
 )
 
 CANONICAL_REPAIR_MESSAGE = (
-    "Repair: your response must carry an agent_contract_handoff envelope whose "
-    "body is valid JSON (parsed with json.loads -- NOT YAML: comments, trailing "
-    "commas, or unquoted keys will fail to parse and the block is treated as "
-    "missing)." + _REPAIR_MESSAGE_BODY
+    "Repair: this turn's contract envelope must be valid JSON (parsed with "
+    "json.loads -- NOT YAML: comments, trailing commas, or unquoted keys will "
+    "fail to parse and the envelope is treated as missing)." + _REPAIR_MESSAGE_BODY
 )
 
 ROW_ENVELOPE_REPAIR_MESSAGE = (
     "Repair: this turn's OWN persisted dispatch row "
     "(agent_contract_handoffs.raw_handoff_json) is what the gate read and is "
-    "what needs fixing -- a fenced agent_contract_handoff block in your "
-    "response text is not consulted once that row is reachable, however well "
-    "formed. Rebuild the draft with `gaia contract set`/`add`/`fill --json` "
+    "the only thing that needs fixing -- your response text is not consulted, "
+    "however well formed. Rebuild the draft with `gaia contract set`/`add`/`fill --json` "
     "(valid JSON, parsed with json.loads -- NOT YAML) and close it with `gaia "
     "contract finalize`; that write is what repairs the row." + _REPAIR_MESSAGE_BODY
 )

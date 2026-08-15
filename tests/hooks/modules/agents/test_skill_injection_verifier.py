@@ -72,7 +72,7 @@ class TestAllFingerprintsPresent:
 
     def test_single_skill_present(self):
         """A declared skill whose fingerprint appears in transcript -> None."""
-        transcript = "The agent loaded agent_contract_handoff and plan_status correctly."
+        transcript = "The agent loaded evidence_report and plan_status correctly."
         result = verify_skill_injection(
             agent_type="developer",
             transcript_text=transcript,
@@ -83,7 +83,7 @@ class TestAllFingerprintsPresent:
     def test_multiple_skills_all_present(self):
         """Multiple declared skills all with fingerprints in transcript -> None."""
         transcript = (
-            "Using agent_contract_handoff for protocol. "
+            "Using evidence_report for protocol. "
             "T0_READ_ONLY classification applied. "
             "Evidence ladder was followed. "
             "One command, one result, one exit code. enforced."
@@ -112,7 +112,7 @@ class TestAllFingerprintsPresent:
 
     def test_fingerprint_as_substring(self):
         """Fingerprints found as substrings of larger text still match."""
-        transcript = "Before doing anything, the agent emitted an agent_contract_handoff block."
+        transcript = "Before doing anything, the agent filled an evidence_report field."
         result = verify_skill_injection(
             agent_type="developer",
             transcript_text=transcript,
@@ -144,7 +144,7 @@ class TestMissingSkillAnomaly:
 
     def test_some_present_some_missing(self):
         """When some skills are present and others missing, only missing ones are reported."""
-        transcript = "Agent used agent_contract_handoff and plan_status. No other skills."
+        transcript = "Agent used evidence_report and plan_status. No other skills."
         result = verify_skill_injection(
             agent_type="platform-architect",
             transcript_text=transcript,
@@ -372,7 +372,7 @@ class TestArtifactDerivedExpectation:
         only the one truly missing from the transcript is reported."""
         result = verify_skill_injection(
             agent_type="developer",
-            transcript_text="Using agent_contract_handoff for protocol.",
+            transcript_text="Using evidence_report for protocol.",
             declared_skills=["agent-protocol"],
             written_paths=["hooks/modules/agents/thing.py"],
         )

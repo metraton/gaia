@@ -33,7 +33,7 @@ SessionStart emits a one-shot `hookSpecificOutput.additionalContext` manifest: E
 | `audit/` | `logger`, `metrics`, `event_detector`, `workflow_auditor`, `workflow_recorder` | Structured logging, metrics collection, workflow audit trail |
 | `tools/` | `bash_validator`, `cloud_pipe_validator`, `shell_parser`, `task_validator`, `hook_response` | Command validation, pipe detection, shell parsing |
 | `context/` | `context_writer`, `context_freshness`, `contracts_loader`, `compact_context_builder`, `anchor_tracker` | Context freshness checks, contract loading, context writing |
-| `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | agent_contract_handoff validation, skill verification, transcript analysis |
+| `agents/` | `contract_validator`, `response_contract`, `skill_injection_verifier`, `task_info_builder`, `transcript_analyzer`, `transcript_reader` | agent_contract_handoffs row validation, skill verification, transcript analysis |
 | `session/` | `session_manager`, `session_context_writer`, `session_event_injector`, `session_registry`, `session_manifest`, `pending_scanner` | Session lifecycle, heartbeat-based liveness registry, SessionStart manifest builders; `pending_scanner` is retired (cross-session pending surfacing removed -- formatting helpers only remain) |
 | `orchestrator/` | `delegate_mode` | Delegation mode detection |
 | `validation/` | `commit_validator` | Git commit validation |
