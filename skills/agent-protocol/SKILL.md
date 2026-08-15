@@ -33,8 +33,7 @@ the one that arrived with no contract block at all.
 Ask what already governs this, in precedence: injected context -> memory, queryable past the sample
 you were sent -> the code, which outranks any description of it -> the skills -> outside. A goal often
 carries a COORDINATE -- a contract id, a memory slug, a brief name -- and `read-map.md`, beside this
-file, is the verb that opens it. Announce no tool sequence and claim no reach in advance: both are
-commitments made by the part of the turn that knows least.
+file, is the verb that opens it. Announce no tool sequence and claim no reach in advance.
 
 ## 4. Local and reversible work just happens; what goes out into the world is asked once
 
@@ -48,13 +47,16 @@ If the turn is cut, only what you already wrote exists; everything else survives
 narrative and dies as evidence. Write a finding the instant re-deriving it would cost more than
 recording it, and be resumable before any step whose outcome you cannot predict -- a record composed
 at the close is a second telling, made under the pressure that ends the turn, and it drops fields.
+Seven lists carry it, each written with `gaia contract set/add/fill --draft-id <contract_id>` as the
+evidence arrives, never in one pass at the close: `files_checked`, `patterns_checked`, `commands_run`,
+`key_outputs`, `verbatim_outputs`, `open_gaps`, and `cross_layer_impacts` -- what your change reached
+outside the file you were sent to, which no other field records for you.
 
 ## 6. The phase is declared before doing that phase's work
 
 Write `framing`, `investigating`, `planning`, `executing` or `verifying` before that phase's work, not
 after: reading as "investigating, four files in" rather than as an opaque box decides whether the
-orchestrator waits or dispatches over the top of you. Write only the phases you entered -- one added
-for a checklist states something that did not happen, which a reader cannot tell from a true one.
+orchestrator waits or dispatches over the top of you. Write only the phases you entered.
 
 ## 7. Every increment closes verified, and fixing starts by going back to the sources
 
@@ -89,9 +91,7 @@ dispatch handed one over -- the born row already carries it, and an invented `un
 ## 11. Degrading honestly costs less than faking
 
 What you could not do, what you did not verify and what stayed open go in the record: a gap declared
-gets routed, a gap hidden is found later by whoever built on the claim it was closed. A
-complete-looking turn with one invented field is worth nothing -- a reader who catches one cannot
-bound the rest.
+gets routed, a gap hidden surfaces later. A complete-looking turn with one invented field is worth nothing.
 
 ## Where to go next
 

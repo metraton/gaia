@@ -22,15 +22,16 @@ evidence. The purpose is both diagnosis and a reliable mutation forecast.
    or runtime query. Prefer authoritative implementation over prose.
 4. Record each material source immediately in the contract:
    `files_checked`, `patterns_checked`, `commands_run`, `key_outputs`, exact
-   excerpts in `verbatim_outputs`, and uncertainty in `open_gaps`. When the
-   finding needs a supporting file too large for `verbatim_outputs` (a full
-   command dump, a rendered report), stage it under the canonical Gaia
-   scratch directory (`~/.gaia/scratch`, never the workspace/client repo),
-   named after the current turn's `contract_id` (`<agent_id>.<token>`, bare or
-   with one trailing extension) so Gaia's own retention rule can attribute
-   and reclaim it once the contract closes, then deposit it as evidence
-   through the contract's evidence clause -- see `agent-contract-handoff` --
-   rather than leaving it as a loose file.
+   excerpts in `verbatim_outputs`, whatever your change reaches outside the
+   file you were sent to in `cross_layer_impacts`, and uncertainty in
+   `open_gaps`. When the finding needs a supporting file too large for
+   `verbatim_outputs` (a full command dump, a rendered report), stage it
+   under the canonical Gaia scratch directory (`~/.gaia/scratch`, never the
+   workspace/client repo), named after the current turn's `contract_id`
+   (`<agent_id>.<token>`, bare or with one trailing extension) so Gaia's own
+   retention rule can attribute and reclaim it once the contract closes, then
+   deposit it as evidence through the contract's evidence clause -- see
+   `agent-contract-handoff` -- rather than leaving it as a loose file.
 5. Two rules apply here, at two different levels, and they do not compete.
    Entering this phase at all is `agent-protocol`'s phase-transition floor: the
    instant work becomes investigation, write `work_phase=investigating` once
