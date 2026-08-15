@@ -2,12 +2,18 @@
 """Tests for orchestrator-side detection of a harness-cut subagent turn.
 
 The cut leaves no trace on the subagent side (SubagentStop never fires), so the
-only observable is the Task result the parent receives: a non-error status with
-no ``agent_contract_handoff`` fence, plus metrics belonging to no episode.
+only observable is the Task result the parent receives: a non-error status,
+metrics belonging to no episode, and -- the signature -- a contract row that
+either does not exist or never left DISPATCHED, addressed by the harness run id
+the result carries.
 
-Covers the signature itself (``detect_task_cut``), the harness_events row the
-observer writes (``observe_task_result``), and the PostToolUse wiring that
-reaches it.
+BOTH DIRECTIONS ARE THE PROPERTY UNDER TEST, and the fence is no longer part of
+either: a turn that closes clean WITHOUT emitting one must not be recorded as a
+cut, and a genuinely cut turn must still be.
+
+Covers the signature itself (``detect_task_cut``), the tolerance for a finalize
+still in flight, the harness_events row the observer writes
+(``observe_task_result``), and the PostToolUse wiring that reaches it.
 """
 
 import json
@@ -21,10 +27,16 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.agents.task_result_observer import (  # noqa: E402
     AGENT_CUT_EVENT,
-    REASON_NO_FENCE,
-    REASON_UNPARSEABLE_FENCE,
+    REASON_NO_CONTRACT_ROW,
+    REASON_ROW_NEVER_FINALIZED,
+    ROW_FINALIZED,
+    ROW_MISSING,
+    ROW_UNFINALIZED,
+    ROW_UNRESOLVABLE,
+    SKIP_CONTRACT_FINALIZED,
+    SKIP_CONTRACT_ROW_UNRESOLVABLE,
+    SKIP_NO_AGENT_RUN_ID,
     SKIP_TURN_NOT_ENDED,
-    SKIP_UNREADABLE_RESULT,
     SKIP_VISIBLE_FAILURE,
     detect_task_cut,
     inspect_task_result,
@@ -51,11 +63,30 @@ VALID_CONTRACT = {
 }
 
 
-def _fenced(contract: dict) -> str:
-    return (
-        "Done.\n\n```agent_contract_handoff\n"
-        + json.dumps(contract)
-        + "\n```\n"
+def _answers(*states):
+    """A row lookup returning ``states`` in order, then repeating the last.
+
+    Several states in a row is how the grace window is exercised: a finalize
+    that lands between two reads is the race the tolerance exists for.
+    """
+    seen = list(states)
+
+    def lookup(agent_run_id, session_id):
+        return seen.pop(0) if len(seen) > 1 else seen[0]
+
+    return lookup
+
+
+def _forbidden(agent_run_id, session_id):
+    """A row lookup that must never be reached."""
+    raise AssertionError("the row was queried for a payload decided before it")
+
+
+@pytest.fixture(autouse=True)
+def _no_grace_sleep(monkeypatch):
+    """What the grace window DOES is under test; how long it waits is not."""
+    monkeypatch.setattr(
+        "modules.agents.task_result_observer._FINALIZE_GRACE_SECONDS", 0,
     )
 
 
@@ -125,23 +156,55 @@ TASK_INPUT = {
 
 
 class TestCutSignature:
-    def test_completed_task_without_fence_is_a_cut(self):
-        """The measured signature: status=completed, stale text, no fence."""
+    def test_a_turn_that_left_no_contract_row_is_a_cut(self):
+        """The signature: status=completed, and no row carries its run id."""
         cut = detect_task_cut(
             TASK_INPUT,
             _task_response("Now I'll finalize the contract...", status="completed"),
             session_id="s-1",
+            row_state=_answers(ROW_MISSING),
         )
 
         assert cut is not None
         assert cut.agent == "gaia-system"
-        assert cut.reason == REASON_NO_FENCE
+        assert cut.reason == REASON_NO_CONTRACT_ROW
         assert cut.status == "completed"
         assert cut.session_id == "s-1"
 
+    def test_a_row_that_never_left_dispatched_is_a_cut(self):
+        """The other half: the row was born, and the agent never closed it."""
+        cut = detect_task_cut(
+            TASK_INPUT,
+            _task_response("Now I'll finalize the contract..."),
+            row_state=_answers(ROW_UNFINALIZED),
+        )
+
+        assert cut is not None
+        assert cut.reason == REASON_ROW_NEVER_FINALIZED
+
+    def test_a_finalized_row_is_clean_even_with_no_fence_in_the_text(self):
+        """THE acceptance property, direction one.
+
+        The result text carries no ``agent_contract_handoff`` block -- the
+        shape every turn will have once the fence is retired. Under the old
+        signature that absence WAS the cut; under the row signature it is
+        nothing at all, because the turn's row is finalized.
+        """
+        verdict = inspect_task_result(
+            TASK_INPUT,
+            _task_response("Committed a7f3c21 and closed the contract."),
+            row_state=_answers(ROW_FINALIZED),
+        )
+
+        assert verdict.cut is None
+        assert verdict.skip_reason == SKIP_CONTRACT_FINALIZED
+        assert not verdict.unprocessable
+
     def test_cut_carries_the_harness_metrics(self):
         """The metrics are the only quantitative record the cut leaves."""
-        cut = detect_task_cut(TASK_INPUT, _task_response("stale text"))
+        cut = detect_task_cut(
+            TASK_INPUT, _task_response("stale text"), row_state=_answers(ROW_MISSING),
+        )
 
         assert cut.metrics == {
             "totalDurationMs": 251_402,
@@ -154,35 +217,27 @@ class TestCutSignature:
         response = _task_response("stale text")
         del response["status"]
 
-        cut = detect_task_cut(TASK_INPUT, response)
+        cut = detect_task_cut(
+            TASK_INPUT, response, row_state=_answers(ROW_MISSING),
+        )
 
         assert cut is not None
         assert cut.status == "completed"
 
     def test_cut_carries_the_harness_agent_run_id(self):
-        """agentId is the handle that locates the orphaned contract draft."""
-        cut = detect_task_cut(TASK_INPUT, _task_response("stale text"))
+        """agentId is the coordinate the row is addressed by, and is recorded."""
+        cut = detect_task_cut(
+            TASK_INPUT, _task_response("stale text"), row_state=_answers(ROW_MISSING),
+        )
 
         assert cut.agent_run_id == "a21d060aefc6855cc"
 
     def test_agent_type_names_the_agent_when_the_input_does_not(self):
-        cut = detect_task_cut({}, _task_response("stale text"))
-
-        assert cut.agent == "gaia-system"
-
-    def test_valid_fence_is_not_a_cut(self):
-        assert (
-            detect_task_cut(TASK_INPUT, _task_response(_fenced(VALID_CONTRACT)))
-            is None
+        cut = detect_task_cut(
+            {}, _task_response("stale text"), row_state=_answers(ROW_MISSING),
         )
 
-    def test_unparseable_fence_is_a_cut_with_its_own_reason(self):
-        broken = "```agent_contract_handoff\n{not json,}\n```"
-
-        cut = detect_task_cut(TASK_INPUT, _task_response(broken))
-
-        assert cut is not None
-        assert cut.reason == REASON_UNPARSEABLE_FENCE
+        assert cut.agent == "gaia-system"
 
     @pytest.mark.parametrize(
         "overrides",
@@ -194,29 +249,83 @@ class TestCutSignature:
         ],
     )
     def test_visible_failures_are_not_the_silent_cut(self, overrides):
-        """A failure the caller already sees is not what this detector records."""
-        assert detect_task_cut(TASK_INPUT, _task_response("boom", **overrides)) is None
+        """A failure the caller already sees is not what this detector records.
+
+        ``_forbidden`` also pins the ordering: a status the harness already
+        reported as failed is decided without touching the database.
+        """
+        assert detect_task_cut(
+            TASK_INPUT, _task_response("boom", **overrides), row_state=_forbidden,
+        ) is None
 
     def test_empty_content_on_a_completed_turn_is_a_cut(self):
-        """Measured twice: a turn of 68-80 tool calls that emitted no text.
-
-        The harness offered its result channel and it was empty -- the harshest
-        cut, not an unreadable payload.
-        """
-        cut = detect_task_cut(TASK_INPUT, _task_response("", content=[]))
+        """Measured twice: a turn of 68-80 tool calls that emitted no text."""
+        cut = detect_task_cut(
+            TASK_INPUT,
+            _task_response("", content=[]),
+            row_state=_answers(ROW_MISSING),
+        )
 
         assert cut is not None
-        assert cut.reason == REASON_NO_FENCE
+        assert cut.reason == REASON_NO_CONTRACT_ROW
         assert cut.result_preview == ""
 
     def test_flat_result_shape_still_detects(self):
         """A harness version that returns the text flat is still readable."""
-        assert detect_task_cut(TASK_INPUT, {"result": "flat shape, no fence"}) is not None
+        assert detect_task_cut(
+            TASK_INPUT,
+            {"result": "flat shape", "agentId": "a21d060aefc6855cc"},
+            row_state=_answers(ROW_MISSING),
+        ) is not None
 
     def test_missing_subagent_type_degrades_to_unknown(self):
-        cut = detect_task_cut({}, {"result": "flat shape, no fence"})
+        cut = detect_task_cut(
+            {},
+            {"result": "flat shape", "agentId": "a21d060aefc6855cc"},
+            row_state=_answers(ROW_MISSING),
+        )
 
         assert cut.agent == "unknown"
+
+
+class TestFinalizeRaceTolerance:
+    """The measured risk: the finalize may not have landed when we look.
+
+    47 of the 52 measured cases finalize from inside the agent's own turn and
+    cannot race, but the 5 that reach terminal through the SubagentStop
+    machinery land in the SAME SECOND as this observation (p50 = 0s over 35
+    unambiguous pairs), so the order is not something to assume.
+    """
+
+    def test_a_finalize_landing_after_the_first_read_is_not_a_cut(self):
+        verdict = inspect_task_result(
+            TASK_INPUT,
+            _task_response("closed clean, no fence"),
+            row_state=_answers(ROW_UNFINALIZED, ROW_FINALIZED),
+        )
+
+        assert verdict.cut is None
+        assert verdict.skip_reason == SKIP_CONTRACT_FINALIZED
+
+    def test_a_row_born_after_the_first_read_is_not_a_cut(self):
+        verdict = inspect_task_result(
+            TASK_INPUT,
+            _task_response("closed clean, no fence"),
+            row_state=_answers(ROW_MISSING, ROW_MISSING, ROW_FINALIZED),
+        )
+
+        assert verdict.cut is None
+
+    def test_a_row_still_unfinalized_when_the_window_closes_is_a_cut(self):
+        """Tolerance is bounded: waiting must not swallow the real signal."""
+        cut = detect_task_cut(
+            TASK_INPUT,
+            _task_response("stale narration"),
+            row_state=_answers(ROW_UNFINALIZED),
+        )
+
+        assert cut is not None
+        assert cut.reason == REASON_ROW_NEVER_FINALIZED
 
 
 class TestNotACut:
@@ -228,31 +337,43 @@ class TestNotACut:
 
     def test_background_dispatch_is_not_a_cut(self):
         """156 of 325 real results -- a launch, not an ended turn."""
-        verdict = inspect_task_result(TASK_INPUT, _async_launch_response())
+        verdict = inspect_task_result(
+            TASK_INPUT, _async_launch_response(), row_state=_forbidden,
+        )
 
         assert verdict.cut is None
         assert verdict.skip_reason == SKIP_TURN_NOT_ENDED
 
     def test_bare_string_result_is_a_visible_failure(self):
         """The harness swaps in bare error text: 'User rejected tool use'."""
-        verdict = inspect_task_result(TASK_INPUT, "User rejected tool use")
+        verdict = inspect_task_result(
+            TASK_INPUT, "User rejected tool use", row_state=_forbidden,
+        )
 
         assert verdict.cut is None
         assert verdict.skip_reason == SKIP_VISIBLE_FAILURE
 
-    def test_unreadable_shape_is_reported_not_assumed_to_be_a_cut(self):
-        """An unknown shape means 'could not read', never 'no fence'."""
-        verdict = inspect_task_result(TASK_INPUT, {"status": "completed"})
+    def test_a_result_without_a_run_id_is_reported_not_assumed_to_be_a_cut(self):
+        """No run id means the row is unfindable, never that it is absent."""
+        verdict = inspect_task_result(
+            TASK_INPUT, {"status": "completed"}, row_state=_forbidden,
+        )
 
         assert verdict.cut is None
-        assert verdict.skip_reason == SKIP_UNREADABLE_RESULT
+        assert verdict.skip_reason == SKIP_NO_AGENT_RUN_ID
         assert verdict.unprocessable
 
-    def test_a_real_completed_turn_with_a_fence_is_clean(self):
-        verdict = inspect_task_result(TASK_INPUT, _task_response(_fenced(VALID_CONTRACT)))
+    def test_an_unresolvable_row_is_reported_not_assumed_to_be_a_cut(self):
+        """Store unavailable, or several rival rows: 'cannot tell', not a cut."""
+        verdict = inspect_task_result(
+            TASK_INPUT,
+            _task_response("closed clean, no fence"),
+            row_state=_answers(ROW_UNRESOLVABLE),
+        )
 
         assert verdict.cut is None
-        assert not verdict.unprocessable
+        assert verdict.skip_reason == SKIP_CONTRACT_ROW_UNRESOLVABLE
+        assert verdict.unprocessable
 
 
 def _cut_rows(db_path):
@@ -269,6 +390,37 @@ def _cut_rows(db_path):
         return [dict(r) for r in rows]
     finally:
         con.close()
+
+
+def _seed_finalized_row(db_path, harness_agent_id: str) -> None:
+    """Persist the row a turn that reached its own end leaves behind.
+
+    Born DISPATCHED, stamped with the harness run id at the SubagentStart
+    seam, then converged by the agent's own finalize -- the real three-step
+    lifecycle, because a row inserted straight into a terminal state could not
+    be stamped (``stamp_harness_agent_id`` refuses a terminal row) and would
+    prove nothing about the coordinate the observer joins on.
+    """
+    from gaia.store.writer import (
+        finalize_agent_contract_handoff,
+        insert_dispatched_handoff,
+        stamp_harness_agent_id,
+    )
+
+    contract_id = "a0000000000000001.clean-close"
+    agent_id = "a" + "0" * 16
+    insert_dispatched_handoff(
+        contract_id, agent_id, "me", session_id="s-43", db_path=db_path,
+    )
+    stamp_harness_agent_id(contract_id, harness_agent_id, db_path=db_path)
+    finalize_agent_contract_handoff(
+        contract_id=contract_id,
+        agent_id=agent_id,
+        workspace="me",
+        agent_state="COMPLETE",
+        raw_handoff_json=json.dumps(VALID_CONTRACT),
+        db_path=db_path,
+    )
 
 
 class TestCutIsRecorded:
@@ -299,18 +451,23 @@ class TestCutIsRecorded:
         assert row["ts"]
 
         payload = json.loads(row["payload"])
-        assert payload["reason"] == REASON_NO_FENCE
+        assert payload["reason"] == REASON_NO_CONTRACT_ROW
         assert payload["session_id"] == "s-42"
         assert payload["totalToolUseCount"] == 64
         assert payload["totalDurationMs"] == 251_402
 
-    def test_a_clean_turn_writes_nothing(self, db_path):
+    def test_a_clean_turn_with_no_fence_writes_nothing(self, db_path):
+        """THE acceptance property end to end, against a real persisted row."""
+        _seed_finalized_row(db_path, "a21d060aefc6855cc")
+
         cut = observe_task_result(
             {
                 "tool_name": "Agent",
                 "session_id": "s-43",
                 "tool_input": TASK_INPUT,
-                "tool_response": _task_response(_fenced(VALID_CONTRACT)),
+                "tool_response": _task_response(
+                    "Committed a7f3c21 and closed the contract."
+                ),
             }
         )
 
@@ -376,7 +533,7 @@ class TestFailureIsNotSilent:
 
         observed = [ln for ln in trace_lines() if ln.get("observer") == "unprocessable"]
         assert observed, "an unreadable payload must leave a trace line"
-        assert observed[-1]["skip"] == SKIP_UNREADABLE_RESULT
+        assert observed[-1]["skip"] == SKIP_NO_AGENT_RUN_ID
         assert observed[-1]["tool"] == "Agent"
 
     def test_a_detected_cut_is_traced(self, trace_lines):
@@ -391,7 +548,7 @@ class TestFailureIsNotSilent:
 
         observed = [ln for ln in trace_lines() if ln.get("observer") == AGENT_CUT_EVENT]
         assert observed, "a detected cut must leave a trace line"
-        assert observed[-1]["reason"] == REASON_NO_FENCE
+        assert observed[-1]["reason"] == REASON_NO_CONTRACT_ROW
 
     def test_a_failed_event_write_is_traced(self, trace_lines, monkeypatch):
         """Non-blocking must not mean invisible: the swallow leaves a record."""

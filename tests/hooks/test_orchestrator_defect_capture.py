@@ -53,15 +53,16 @@ from gaia.store.writer import (  # noqa: E402
 
 WORKSPACE = "orchestrator-defect-ws"
 
-# A completed Task/Agent result carrying no fence -- the minimal shape
-# observe_task_result needs to recognize the harness-cut signature. The
-# exhaustive shape coverage (background dispatch, visible failure, flat
-# result...) already lives in tests/hooks/test_task_cut_detection.py; this
-# module only needs one real instance of the signature to prove where it
+# A completed Task/Agent result whose harness run id addresses no contract row
+# -- the minimal shape observe_task_result needs to recognize the harness-cut
+# signature. The exhaustive shape coverage (background dispatch, visible
+# failure, flat result...) already lives in tests/hooks/test_task_cut_detection.py;
+# this module only needs one real instance of the signature to prove where it
 # lands, not to re-verify how it is detected.
 _CUT_TASK_INPUT = {"subagent_type": "gaia-system"}
 _CUT_TASK_RESPONSE = {
     "status": "completed",
+    "agentId": "a5ee0c0de0000cut1",
     "content": [{"type": "text", "text": "Now I'll finalize the contract..."}],
 }
 

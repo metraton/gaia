@@ -6,16 +6,21 @@ runs: ``SubagentStop`` never fires, so no ``episodes`` row and no
 place the cut IS observable is where the parent receives the Task result: the
 harness closes the Task reporting a non-error status, and surfaces as the
 result a STALE text block -- the last text the model happened to emit before
-the cut, which carries no fenced ``agent_contract_handoff``.
+the cut.
 
-That absence is the signature this module keys on. Every Gaia agent turn is
-required to close with the fence (the SubagentStop full-verdict gate rejects a
-turn without one), so a Task that came back reporting success yet carries no
-parseable fence did not reach its own end.
+THE SIGNATURE IS THE PERSISTED ROW, NOT THE MESSAGE TEXT. It used to be the
+absence of a fenced ``agent_contract_handoff`` block in that text; the fence is
+being retired as a delivery channel, so keying on its absence would have
+reclassified every successful turn as cut. What a turn that reached its own end
+leaves behind is a contract row that EXISTS and is FINALIZED, addressed by the
+harness-minted run id the result itself carries (``agentId``) -- the same
+coordinate ``gaia contract view --harness-id`` reads by, resolved through the
+one bridge that knows both identifier spaces
+(``handoff_persister.dispatch_row_by_harness_id``).
 
-Detection is a pure function of the PostToolUse payload (``detect_task_cut``);
-persistence is a separate, non-blocking step (``observe_task_result``). The
-split keeps the signature testable without a database.
+Persistence is a separate, non-blocking step (``observe_task_result``). The
+row read is injectable (``inspect_task_result(..., row_state=...)``) so the
+signature stays testable in both directions without a database.
 
 The harness names this tool ``Agent``; ``Task`` is its former name, still
 honored as a hooks.json matcher but no longer what the payload carries. Both
@@ -27,14 +32,15 @@ Gotchas:
   NOT this signature -- that failure is already visible to the caller. Only the
   silent one is recorded here.
 - Nor is a BACKGROUND dispatch: ``run_in_background`` returns immediately with
-  ``status="async_launched"`` and an ``outputFile`` instead of any result text.
-  It carries no fence because the turn has not ended, not because it was cut.
-  Measured over 325 real Agent results, that form is 156 of them -- reading it
-  as a cut would bury the true signal under ~48% false positives.
-- Detection requires a RECOGNIZED result shape. A payload whose text cannot be
-  located is reported as unprocessable (traced) rather than silently read as
-  "no fence", so the two are never confused: absence of a fence is evidence of
-  a cut only when the fence is something we could have found.
+  ``status="async_launched"`` and an ``outputFile``. Measured over 325 real
+  Agent results, that form is 156 of them -- reading it as a cut would bury the
+  true signal under ~48% false positives.
+- Detection requires the harness run id. A result that carries none, and a row
+  lookup that cannot resolve to exactly one row, are both reported as
+  unprocessable (traced) rather than read as "no row": a missing row is
+  evidence of a cut only when the row is something we could have found.
+- A finalize still in flight is tolerated rather than read as a cut -- see
+  :func:`_await_finalization` for the measurement that sizes the window.
 - The metrics (``totalDurationMs`` / ``totalTokens`` / ``totalToolUseCount``)
   are copied verbatim from the result. They are the only quantitative record
   the cut leaves behind, since the episode that would have carried them was
@@ -43,8 +49,9 @@ Gotchas:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -75,29 +82,46 @@ _PENDING_STATUSES = frozenset(
 _METRIC_KEYS = ("totalDurationMs", "totalTokens", "totalToolUseCount")
 
 # Reason codes recorded on the event, in the order they are tested.
-REASON_NO_FENCE = "no_contract_fence"
-REASON_UNPARSEABLE_FENCE = "unparseable_contract_fence"
+REASON_NO_CONTRACT_ROW = "no_contract_row"
+REASON_ROW_NEVER_FINALIZED = "contract_row_never_finalized"
 
 # Why a result was NOT recorded as a cut. The first three are ordinary
-# outcomes; the last two mean the payload could not be read at all and are the
-# ones surfaced to the hook trace.
+# outcomes; the last three mean the payload or the row could not be read at all
+# and are the ones surfaced to the hook trace.
 SKIP_VISIBLE_FAILURE = "visible_failure"
 SKIP_TURN_NOT_ENDED = "turn_not_ended"
-SKIP_CONTRACT_PRESENT = "contract_fence_present"
+SKIP_CONTRACT_FINALIZED = "contract_row_finalized"
 SKIP_UNKNOWN_STATUS = "unknown_task_status"
-SKIP_UNREADABLE_RESULT = "unreadable_result_shape"
+SKIP_NO_AGENT_RUN_ID = "no_agent_run_id"
+SKIP_CONTRACT_ROW_UNRESOLVABLE = "contract_row_unresolvable"
 
 # Skip codes that mean "the observer could not process this payload". They are
 # traced so a harness shape change surfaces instead of silently suppressing
 # every future detection.
-UNPROCESSABLE_SKIPS = frozenset({SKIP_UNKNOWN_STATUS, SKIP_UNREADABLE_RESULT})
+UNPROCESSABLE_SKIPS = frozenset(
+    {SKIP_UNKNOWN_STATUS, SKIP_NO_AGENT_RUN_ID, SKIP_CONTRACT_ROW_UNRESOLVABLE}
+)
 
-# The fence tag every agent turn must close with.
-_CONTRACT_TAG = "agent_contract_handoff"
+# What the row lookup can answer. Only MISSING and UNFINALIZED are cuts.
+ROW_FINALIZED = "finalized"
+ROW_UNFINALIZED = "unfinalized"
+ROW_MISSING = "missing"
+ROW_UNRESOLVABLE = "unresolvable"
+
+# The agent_state a row carries between birth and the agent's own close
+# (gaia.store.writer.insert_dispatched_handoff). Every other value is a
+# terminal verdict, which is what agent_contract_handoff_finalized keys on too.
+_DISPATCHED_STATE = "DISPATCHED"
 
 # How much of the stale result text to keep on the event, in characters. Enough
 # to recognize WHICH block the harness surfaced, not enough to bloat the row.
 _PREVIEW_CHARS = 400
+
+# Grace window for a finalize still in flight -- see _await_finalization. Two
+# sleeps of a quarter second bound the added latency at half a second, and only
+# on the path that is about to record a cut (163 events in two months).
+_FINALIZE_GRACE_ATTEMPTS = 3
+_FINALIZE_GRACE_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -148,30 +172,24 @@ class TaskResultVerdict:
         return self.skip_reason in UNPROCESSABLE_SKIPS
 
 
-def _extract_result_text(tool_response: Any) -> Optional[str]:
-    """Flatten a Task tool_response into its result text, or None if unreadable.
+def _extract_result_text(tool_response: Any) -> str:
+    """Flatten a Task tool_response into its result text, "" when unreadable.
 
     The measured shape (325 real Agent results) is a dict whose ``content`` is
     a list of typed blocks; ``result``/``output``/``stdout``/``text`` are
     accepted as flat alternatives other harness versions have used.
 
-    Returns None -- NOT the empty string -- when no known key yields text. The
-    distinction is load-bearing: "" means the turn genuinely ended with nothing
-    to say, while None means the observer does not understand this payload and
-    must not infer a missing fence from a shape it never read.
+    Text no longer decides anything -- the row does. This feeds only
+    ``TaskCut.result_preview``, so a shape yielding nothing costs a preview,
+    never a verdict.
     """
     if not isinstance(tool_response, Mapping):
-        return None
+        return ""
 
     content = tool_response.get("content")
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        # An EMPTY list is a read, not a miss: the harness offered its result
-        # channel and it held no text. That is a turn which ended saying
-        # nothing -- the most severe cut, and two were measured (68 and 80 tool
-        # calls, no final message at all). Returning "" keeps it a cut; falling
-        # through to None would have downgraded it to "shape not understood".
         parts = []
         for block in content:
             if isinstance(block, str):
@@ -186,7 +204,7 @@ def _extract_result_text(tool_response: Any) -> Optional[str]:
         value = tool_response.get(key)
         if isinstance(value, str) and value:
             return value
-    return None
+    return ""
 
 
 def _extract_metrics(tool_response: Any) -> Dict[str, Any]:
@@ -227,16 +245,73 @@ def _reports_visible_failure(tool_response: Any, status: str) -> bool:
     return False
 
 
-def _parse_contract(result_text: str) -> Optional[dict]:
-    """Parse the handoff fence via the canonical parser, never raising."""
+def _extract_agent_run_id(tool_response: Any) -> str:
+    """The harness-minted run id of the dispatch, or "" when absent."""
+    if not isinstance(tool_response, Mapping):
+        return ""
+    return str(tool_response.get("agentId") or "")
+
+
+def contract_row_state(agent_run_id: str, session_id: str = "") -> str:
+    """Classify the contract row this harness run id addresses.
+
+    Resolution goes through ``handoff_persister.dispatch_row_by_harness_id``,
+    the one bridge that joins the harness's per-run id to the minted contract
+    identity, so a continuation chain collapses to its live tip instead of
+    reading as several rival rows.
+
+    That bridge answers None for two different situations, and only one of them
+    is a cut: no row carries the id at all (the turn left nothing behind), or a
+    row does but the bridge declined to pick between candidates. The second
+    query separates them, and it runs only on the None path.
+
+    Fails toward ROW_UNRESOLVABLE: an unavailable store must degrade to "cannot
+    tell", never to a cut recorded against a turn that closed perfectly.
+    """
     try:
-        from .contract_validator import parse_contract
-    except ImportError:  # pragma: no cover - defensive, module is a sibling
-        return None
-    try:
-        return parse_contract(result_text)
-    except Exception:  # pragma: no cover - parser is defensive already
-        return None
+        from .handoff_persister import dispatch_row_by_harness_id
+
+        row = dispatch_row_by_harness_id(
+            {"agent_id": agent_run_id}, session_id or None,
+        )
+        if row is not None:
+            state = str(row.get("agent_state") or "")
+            return ROW_UNFINALIZED if state == _DISPATCHED_STATE else ROW_FINALIZED
+
+        from gaia.store.writer import list_agent_contract_handoffs
+
+        rows = list_agent_contract_handoffs(harness_agent_id=agent_run_id, limit=2)
+        return ROW_UNRESOLVABLE if rows else ROW_MISSING
+    except Exception as exc:
+        logger.debug("Contract-row lookup failed for run id %s: %s", agent_run_id, exc)
+        return ROW_UNRESOLVABLE
+
+
+def _await_finalization(
+    lookup: Callable[[str, str], str], agent_run_id: str, session_id: str,
+) -> str:
+    """Read the row state, tolerating a finalize that has not landed yet.
+
+    MEASURED over the 163 real ``agent.cut`` events, against the rows their
+    ``agent_run_id`` addresses: of the 52 whose row had reached a terminal
+    state, 47 carry ``cut_reason IS NULL`` -- the agent finalized ITSELF with
+    the CLI, a tool call inside its own turn and therefore strictly before the
+    Task result could reach the parent. That dominant path cannot race.
+
+    The remaining 5 (3 reaped, 2 salvaged) were finalized by the SubagentStop
+    machinery instead, and the ordering there is NOT established: comparing
+    each cut event against the ``agent.complete`` of the same turn puts the two
+    hooks in the SAME SECOND for 21 of 35 unambiguous pairs (p50 = 0s). So the
+    race is real, confined to backstop-finalized turns, and answered by
+    re-reading rather than by assuming an order the harness does not promise.
+    """
+    state = lookup(agent_run_id, session_id)
+    for _ in range(_FINALIZE_GRACE_ATTEMPTS - 1):
+        if state in (ROW_FINALIZED, ROW_UNRESOLVABLE):
+            break
+        time.sleep(_FINALIZE_GRACE_SECONDS)
+        state = lookup(agent_run_id, session_id)
+    return state
 
 
 def _extract_agent(tool_input: Any, tool_response: Any) -> str:
@@ -255,19 +330,23 @@ def inspect_task_result(
     tool_response: Any,
     *,
     session_id: str = "",
+    row_state: Optional[Callable[[str, str], str]] = None,
 ) -> TaskResultVerdict:
     """Classify a Task result as a cut, or say why it is not one.
 
     The cut signature is: the harness reports the turn as ENDED and not failed,
-    AND the result it surfaces carries no parseable ``agent_contract_handoff``
-    fence. Every other outcome returns a skip code instead of a bare None, so
-    the caller can tell an ordinary clean turn apart from a payload the
-    observer could not read.
+    AND the contract row its ``agentId`` addresses either does not exist or
+    never left ``DISPATCHED``. Every other outcome returns a skip code instead
+    of a bare None, so the caller can tell an ordinary clean turn apart from a
+    payload the observer could not read.
 
     Args:
         tool_input:    The Task ``tool_input`` dict (source of ``subagent_type``).
         tool_response: The Task ``tool_response``, in any of its harness shapes.
         session_id:    Session the Task ran under, recorded on the event.
+        row_state:     Row lookup, ``(agent_run_id, session_id) -> ROW_*``.
+            Defaults to :func:`contract_row_state`; tests substitute it to
+            exercise both directions of the signature without a database.
     """
     status = _extract_status(tool_response)
     normalized = status.strip().lower()
@@ -283,19 +362,31 @@ def inspect_task_result(
             detail=f"status={status!r} is neither terminal nor pending",
         )
 
-    result_text = _extract_result_text(tool_response)
-    if result_text is None:
+    agent_run_id = _extract_agent_run_id(tool_response)
+    if not agent_run_id:
         keys = sorted(tool_response) if isinstance(tool_response, Mapping) else []
         return TaskResultVerdict(
-            skip_reason=SKIP_UNREADABLE_RESULT,
+            skip_reason=SKIP_NO_AGENT_RUN_ID,
             status=status,
-            detail=f"no result text in {type(tool_response).__name__} keys={keys[:12]}",
+            detail=f"no agentId in {type(tool_response).__name__} keys={keys[:12]}",
         )
 
-    if _parse_contract(result_text) is not None:
-        return TaskResultVerdict(skip_reason=SKIP_CONTRACT_PRESENT, status=status)
+    state = _await_finalization(
+        row_state or contract_row_state, agent_run_id, session_id,
+    )
+    if state == ROW_FINALIZED:
+        return TaskResultVerdict(skip_reason=SKIP_CONTRACT_FINALIZED, status=status)
+    if state == ROW_UNRESOLVABLE:
+        return TaskResultVerdict(
+            skip_reason=SKIP_CONTRACT_ROW_UNRESOLVABLE,
+            status=status,
+            detail=f"agentId={agent_run_id} resolves no single contract row",
+        )
 
-    reason = REASON_UNPARSEABLE_FENCE if _CONTRACT_TAG in result_text else REASON_NO_FENCE
+    result_text = _extract_result_text(tool_response)
+    reason = (
+        REASON_NO_CONTRACT_ROW if state == ROW_MISSING else REASON_ROW_NEVER_FINALIZED
+    )
     return TaskResultVerdict(
         cut=TaskCut(
             agent=_extract_agent(tool_input, tool_response),
@@ -304,9 +395,7 @@ def inspect_task_result(
             metrics=_extract_metrics(tool_response),
             result_preview=result_text[-_PREVIEW_CHARS:].strip(),
             session_id=session_id,
-            agent_run_id=str(tool_response.get("agentId") or "")
-            if isinstance(tool_response, Mapping)
-            else "",
+            agent_run_id=agent_run_id,
         ),
         status=status,
     )
@@ -317,6 +406,7 @@ def detect_task_cut(
     tool_response: Any,
     *,
     session_id: str = "",
+    row_state: Optional[Callable[[str, str], str]] = None,
 ) -> Optional[TaskCut]:
     """Return a :class:`TaskCut` when the payload matches the cut signature.
 
@@ -324,7 +414,7 @@ def detect_task_cut(
     the verdict, not the reason a result was skipped.
     """
     return inspect_task_result(
-        tool_input, tool_response, session_id=session_id
+        tool_input, tool_response, session_id=session_id, row_state=row_state,
     ).cut
 
 
@@ -385,7 +475,8 @@ def observe_task_result(hook_data: Mapping[str, Any]) -> Optional[TaskCut]:
             AGENT_CUT_EVENT,
             "hook",
             cut.agent,
-            f"subagent cut mid-turn ({cut.reason}); no contract fence in Task result",
+            f"subagent cut mid-turn ({cut.reason}); no finalized contract row "
+            f"for its harness run id",
             severity="warning",
             meta=cut.to_meta(),
         )
@@ -405,17 +496,23 @@ def observe_task_result(hook_data: Mapping[str, Any]) -> Optional[TaskCut]:
 
 __all__ = [
     "AGENT_CUT_EVENT",
-    "REASON_NO_FENCE",
-    "REASON_UNPARSEABLE_FENCE",
-    "SKIP_CONTRACT_PRESENT",
+    "REASON_NO_CONTRACT_ROW",
+    "REASON_ROW_NEVER_FINALIZED",
+    "ROW_FINALIZED",
+    "ROW_MISSING",
+    "ROW_UNFINALIZED",
+    "ROW_UNRESOLVABLE",
+    "SKIP_CONTRACT_FINALIZED",
+    "SKIP_CONTRACT_ROW_UNRESOLVABLE",
+    "SKIP_NO_AGENT_RUN_ID",
     "SKIP_TURN_NOT_ENDED",
     "SKIP_UNKNOWN_STATUS",
-    "SKIP_UNREADABLE_RESULT",
     "SKIP_VISIBLE_FAILURE",
     "TASK_TOOL_NAMES",
     "UNPROCESSABLE_SKIPS",
     "TaskCut",
     "TaskResultVerdict",
+    "contract_row_state",
     "detect_task_cut",
     "inspect_task_result",
     "observe_task_result",
