@@ -98,7 +98,9 @@ SEEDS: tuple[Seed, ...] = (
     Seed("t_alpha", "project", class_="thread", status="open", initiative="alpha"),
     Seed("t_beta", "project", class_="thread", status="carry_forward",
          initiative="beta"),
-    Seed("a_anchor", "project", class_="anchor"),
+    # type=user: the anchor section carries the user's instructions, so a
+    # type=project anchor sharing the workspace no longer reaches it.
+    Seed("a_anchor", "user", class_="anchor"),
     Seed("u_exec", "user", audience="executor"),
     # class=anchor (not the default "log") so get-relevant's anchor section
     # -- which pins type=user rows to the top -- can select it too: the row
@@ -561,8 +563,8 @@ def test_kernel_dispatch_and_context_digest_move_disjoint_axes_on_the_same_row(
     }
 
     # 2) A real session-context surface, over the SAME row. The other seeded
-    # anchor row (`a_anchor`, type=project) shares this section too -- both
-    # move on injection, neither on kernel or deliberate.
+    # anchor row (`a_anchor`) shares this section too -- both move on
+    # injection, neither on kernel or deliberate.
     result = _run(
         ["memory", "get-relevant", "--workspace", WORKSPACE,
          "--sections", "anchor", "--max-chars", "4000", "--no-pointer"],
