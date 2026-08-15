@@ -521,7 +521,24 @@ TOP_LEVEL_FIELD_TYPES = {
     "evidence_report": (dict,),
     "consolidation_report": (dict,),
     "approval_request": (dict,),
+    "report_prose": (str,),
 }
+
+# ``report_prose`` is the one entry above with NO persisted population behind
+# it, and that absence is what makes typing it safe rather than unsupported:
+# it is a new key, so no already-written envelope can hold a malformed one,
+# and no turn that closes today starts being rejected. That is the exact
+# inversion ADVISORY_UNTYPED_FIELDS below refuses to perform on
+# ``user_facing_summary``, and the reason the two are separate fields instead
+# of one -- a line the orchestrator relays nearly verbatim (776 characters on
+# average over 294 rows) and a full narrative of thousands of words are not
+# the same object, and only the second can be typed without breaking history.
+#
+# It is OPTIONAL in this delivery, and the mechanism is the table's own: a
+# type is enforced only where the key is PRESENT, requiredness is enumerated
+# by hand in ``validate_form`` (agent_status, its two keys, evidence_report),
+# and a key in this table is not in that enumeration. Adding one here can
+# never make a field mandatory.
 
 # ``failure_report`` and ``work_phase`` are declared fields whose type IS
 # checked -- by the dedicated code that already owned them,

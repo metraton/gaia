@@ -36,7 +36,10 @@ Subcommands (the 6 draft verbs + the ``fill --json`` batch mode, plus
     finalize                      [--draft-id ID]  Validate and persist/converge the handoff row
     fill     --json JSON          [--draft-id ID]  Batch-merge a JSON patch (validate-on-write)
              --json-file PATH                      ... or read the patch from a file (avoids shell
-                                                     quoting a payload that carries report prose)
+                                                     quoting a payload that carries report prose --
+                                                     the channel for the top-level `report_prose`
+                                                     narrative, read back with
+                                                     `view --field report_prose`)
     chain    --contract-id ID                      Print the whole continuation chain from ANY of
                                                      its links (see "Continuation" below)
     reconcile --contract-id ID | --harness-id ID   Clear the cut mark on a hook-written residue row
@@ -2391,7 +2394,11 @@ def _build_subcommands(sub) -> None:
             "Read the JSON patch from PATH instead of a shell argument -- "
             "write it with the Write tool first when the patch carries "
             "report prose (apostrophes, embedded quotes) that is fragile "
-            "to pass as a single shell-quoted --json value"
+            "to pass as a single shell-quoted --json value. This is the "
+            "channel for the top-level 'report_prose' field, whose whole "
+            "point is a multi-paragraph narrative: newlines, accents and "
+            "quotes survive a file untouched, and are read back verbatim "
+            "with 'view --field report_prose'"
         ),
     )
     _add_common_draft_arg(p_fill)
