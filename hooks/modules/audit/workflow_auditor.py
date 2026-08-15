@@ -8,6 +8,7 @@ Provides:
     - signal_gaia_analysis(): Create flag file for Gaia analysis
 """
 
+import json
 import logging
 import re
 from collections import deque
@@ -76,7 +77,7 @@ def _check_investigation_skip(
 
 def _check_context_update_missing(
     analysis: TranscriptAnalysis,
-    agent_output: str,
+    row_envelope: Optional[Dict[str, Any]],
     metrics: Dict[str, Any],
 ) -> Optional[Dict[str, str]]:
     """Info if the agent can write context but emitted no update_contracts clause.
@@ -87,6 +88,15 @@ def _check_context_update_missing(
     agent is expected to be able to emit an ``update_contracts`` clause when it
     discovers indexable state. The prior trigger keyed on the deleted
     ``context-updater`` skill being injected; that skill no longer exists.
+
+    The clause is looked for in the SERIALIZED envelope rather than by key
+    lookup, because that is what preserves the measurement across the move off
+    the message text: the pre-migration check scanned the whole message for the
+    substring, so a turn that only NAMED the clause in prose was exempted too.
+    Census over the 10822 historical rows: 112 carry the substring somewhere
+    other than the top-level key, and a key lookup would newly flag every one
+    of them. Tightening that looseness is a separate decision, not a side
+    effect of changing where the envelope is read from.
     """
     snapshot = metrics.get("default_skills_snapshot")
     if not isinstance(snapshot, dict):
@@ -94,7 +104,10 @@ def _check_context_update_missing(
     write_contracts = snapshot.get("context_write_contracts") or []
     if not write_contracts:
         return None
-    if "update_contracts" not in agent_output:
+    serialized = (
+        json.dumps(row_envelope, default=str) if isinstance(row_envelope, dict) else ""
+    )
+    if "update_contracts" not in serialized:
         return {
             "type": "context_update_missing",
             "severity": "info",
@@ -431,10 +444,10 @@ def _check_tool_call_velocity(
 
 def audit(
     metrics: Dict[str, Any],
-    agent_output: str = "",
     task_info: Optional[Dict[str, Any]] = None,
     rejected_sections: Optional[List[str]] = None,
     transcript_analysis: Optional[TranscriptAnalysis] = None,
+    row_envelope: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, str]]:
     """
     Detect anomalies in workflow execution.
@@ -442,8 +455,8 @@ def audit(
     Checks:
     - execution_failure: exit_code != 0
     - consecutive_failures: 3+ failures in a row for same agent
-    - missing_evidence: COMPLETE but no evidence in agent_contract_handoff block
-    - empty_evidence: agent_contract_handoff evidence exists but commands_run empty or all "not run"
+    - missing_evidence: COMPLETE but no evidence in the turn's envelope
+    - empty_evidence: envelope evidence exists but commands_run empty or all "not run"
     - skipped_verification: task has verify command in injected_context but not in commands_run
     - scope_escalation: rejected_sections exist (agent tried to write outside its scope)
 
@@ -491,12 +504,20 @@ def audit(
 
     Args:
         metrics: Workflow metrics dict (from workflow_recorder.record()).
-        agent_output: Complete agent output string (for evidence checks).
         task_info: Task metadata including injected_context (for verification checks).
         rejected_sections: List of context sections rejected by permission validation.
         transcript_analysis: Optional TranscriptAnalysis from transcript_analyzer.
             When None (default), transcript-based checks are skipped for backward
             compatibility.
+        row_envelope: The turn's contract envelope, resolved by the caller and
+            passed in -- this function performs no DB read and no parse of the
+            response text. The production caller
+            (``ClaudeCodeAdapter.adapt_subagent_stop``) hands its
+            ``_authoritative_envelope``, i.e. the persisted
+            ``agent_contract_handoffs`` row the SubagentStop gate already
+            resolved, so the four envelope checks below measure the record the
+            turn actually left behind rather than what its final message
+            happened to restate. None means no envelope was reachable.
 
     Returns:
         List of anomaly descriptions
@@ -512,72 +533,73 @@ def audit(
             "message": f"Agent {metrics['agent']} failed with exit code {metrics['exit_code']}"
         })
 
+    # The guard the three checks below used to carry was `if agent_output:` --
+    # "audit only a turn that said something". Its row-lane equivalent would be
+    # "audit only a turn with a reachable envelope", and missing_evidence
+    # deliberately does not adopt it: a COMPLETE turn that left no reachable
+    # record has no evidence by definition, which is what it reports.
     # --- NEW: missing_evidence ---
-    if agent_output:
-        plan_status = metrics.get("plan_status", "")
-        if "COMPLETE" in plan_status:
-            from ..agents.contract_validator import parse_contract
-            contract = parse_contract(agent_output)
-            has_evidence = (
-                contract is not None
-                and isinstance(contract.get("evidence_report"), dict)
-                and bool(contract["evidence_report"])
-            )
-            if not has_evidence:
-                anomalies.append({
-                    "type": "missing_evidence",
-                    "severity": "warning",
-                    "message": (
-                        f"Agent {metrics['agent']} completed but "
-                        f"did not include evidence in agent_contract_handoff block"
-                    ),
-                })
+    plan_status = metrics.get("plan_status", "")
+    if "COMPLETE" in plan_status:
+        has_evidence = (
+            isinstance(row_envelope, dict)
+            and isinstance(row_envelope.get("evidence_report"), dict)
+            and bool(row_envelope["evidence_report"])
+        )
+        if not has_evidence:
+            anomalies.append({
+                "type": "missing_evidence",
+                "severity": "warning",
+                "message": (
+                    f"Agent {metrics['agent']} completed but "
+                    f"left no evidence in its contract envelope"
+                ),
+            })
 
     # --- NEW: empty_evidence ---
-    if agent_output:
-        from ..agents.contract_validator import parse_contract
-        contract = parse_contract(agent_output)
-        if contract is not None:
-            evidence = contract.get("evidence_report")
-            if isinstance(evidence, dict):
-                commands_run = evidence.get("commands_run", [])
-                if isinstance(commands_run, list):
-                    not_run_pattern = re.compile(
-                        r"\b(not\s+run|not\s+executed|skipped|n/a|none)\b",
-                        re.IGNORECASE,
-                    )
-                    if not commands_run:
-                        # commands_run key exists but is empty list
-                        anomalies.append({
-                            "type": "empty_evidence",
-                            "severity": "warning",
-                            "message": (
-                                f"Agent {metrics['agent']} has evidence in "
-                                f"agent_contract_handoff but commands_run is empty"
-                            ),
-                        })
-                    elif all(
-                        isinstance(c, str) and not_run_pattern.search(c)
-                        for c in commands_run
-                    ):
-                        anomalies.append({
-                            "type": "empty_evidence",
-                            "severity": "warning",
-                            "message": (
-                                f"Agent {metrics['agent']} has evidence in "
-                                f"agent_contract_handoff but all commands_run entries "
-                                f"indicate 'not run'"
-                            ),
-                        })
+    if isinstance(row_envelope, dict):
+        evidence = row_envelope.get("evidence_report")
+        if isinstance(evidence, dict):
+            commands_run = evidence.get("commands_run", [])
+            if isinstance(commands_run, list):
+                not_run_pattern = re.compile(
+                    r"\b(not\s+run|not\s+executed|skipped|n/a|none)\b",
+                    re.IGNORECASE,
+                )
+                if not commands_run:
+                    # commands_run key exists but is empty list
+                    anomalies.append({
+                        "type": "empty_evidence",
+                        "severity": "warning",
+                        "message": (
+                            f"Agent {metrics['agent']} has evidence in its "
+                            f"contract envelope but commands_run is empty"
+                        ),
+                    })
+                elif all(
+                    isinstance(c, str) and not_run_pattern.search(c)
+                    for c in commands_run
+                ):
+                    anomalies.append({
+                        "type": "empty_evidence",
+                        "severity": "warning",
+                        "message": (
+                            f"Agent {metrics['agent']} has evidence in its "
+                            f"contract envelope but all commands_run entries "
+                            f"indicate 'not run'"
+                        ),
+                    })
 
     # --- NEW: skipped_verification ---
     injected = task_info.get("injected_context") or {}
     investigation_brief = injected.get("agent_contract_handoff") or injected.get("investigation_brief", {}) or {}  # dual-key lookup during M2 dual-mode window
     required_checks = investigation_brief.get("required_checks", [])
-    if required_checks and agent_output:
-        # Extract commands that were actually run from evidence
-        from ..agents.contract_validator import extract_commands_from_evidence
-        commands_run = extract_commands_from_evidence(agent_output)
+    if required_checks:
+        # Extract commands that were actually run from evidence. The row
+        # envelope goes through the SAME normalizer the fenced text used to,
+        # so a tolerated {"command": ...} entry still resolves to a command.
+        from ..agents.contract_validator import _commands_from_contract_dict
+        commands_run = _commands_from_contract_dict(row_envelope)
 
         # Check if any required check mentions a verify command
         for check in required_checks:
@@ -622,9 +644,9 @@ def audit(
             if result is not None:
                 anomalies.append(result)
 
-        # Checks that need agent_output and metrics
+        # Checks that need the envelope and metrics
         result = _check_context_update_missing(
-            transcript_analysis, agent_output, metrics
+            transcript_analysis, row_envelope, metrics
         )
         if result is not None:
             anomalies.append(result)

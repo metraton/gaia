@@ -218,12 +218,17 @@ def subagent_stop_hook(task_info, agent_output):
         )
         save_validation_result(task_info, response_contract)
 
+        # This backward-compatible entry point resolves no dispatch row -- it is
+        # handed (task_info, agent_output) and nothing else -- so the envelope it
+        # can offer the auditor is the one it already parsed from the text. The
+        # production path is the adapter, which passes the persisted row's
+        # envelope (`_authoritative_envelope`) instead.
         anomalies = audit_workflow(
             workflow_metrics,
-            agent_output,
             task_info,
             rejected_sections=(context_update_result or {}).get("rejected", []),
             transcript_analysis=transcript_analysis,
+            row_envelope=parsed_contract,
         )
         if transcript_checks_skipped_reason:
             anomalies.append({

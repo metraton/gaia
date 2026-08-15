@@ -143,8 +143,8 @@ class TestContextUpdateMissing:
         )
         anomalies = audit(
             metrics,
-            agent_output="some output without context update",
             transcript_analysis=ta,
+            row_envelope={"evidence_report": {"commands_run": ["ls"]}},
         )
         types = [a["type"] for a in anomalies]
         assert "context_update_missing" in types
@@ -162,11 +162,12 @@ class TestContextUpdateMissing:
         )
         anomalies = audit(
             metrics,
-            agent_output=(
-                'blah "update_contracts": [{"contract": "application_services", '
-                '"payload": {}}] blah'
-            ),
             transcript_analysis=ta,
+            row_envelope={
+                "update_contracts": [
+                    {"contract": "application_services", "payload": {}}
+                ]
+            },
         )
         types = [a["type"] for a in anomalies]
         assert "context_update_missing" not in types
@@ -182,11 +183,61 @@ class TestContextUpdateMissing:
         )
         anomalies = audit(
             metrics,
-            agent_output="no update here",
             transcript_analysis=ta,
+            row_envelope={"evidence_report": {"commands_run": ["ls"]}},
         )
         types = [a["type"] for a in anomalies]
         assert "context_update_missing" not in types
+
+    def test_no_anomaly_when_the_message_mentioned_it_but_the_row_does_not(self):
+        """The clause is read from the row; the response text is not consulted.
+
+        The pre-migration check scanned the message, so a turn whose prose
+        merely named the clause was exempted. Post-migration the text has no
+        vote at all -- an envelope without the clause is flagged even when the
+        turn talked about it.
+        """
+        ta = _base_analysis(skills_injected=["investigation"])
+        metrics = _base_metrics(
+            default_skills_snapshot={
+                "model": "",
+                "skills": [],
+                "context_write_contracts": ["application_services"],
+            }
+        )
+        anomalies = audit(
+            metrics,
+            transcript_analysis=ta,
+            row_envelope={"evidence_report": {"commands_run": ["ls"]}},
+        )
+        assert "context_update_missing" in [a["type"] for a in anomalies]
+
+    def test_no_anomaly_when_the_clause_is_named_inside_the_envelope(self):
+        """A substring anywhere in the envelope exempts, as the text scan did.
+
+        Deliberate: the migration off the message text must not tighten what
+        the check measures. Measured on the 10822-row corpus, 112 rows carry
+        the string somewhere other than the top-level key, and a key lookup
+        would newly flag every one of them.
+        """
+        ta = _base_analysis(skills_injected=["investigation"])
+        metrics = _base_metrics(
+            default_skills_snapshot={
+                "model": "",
+                "skills": [],
+                "context_write_contracts": ["application_services"],
+            }
+        )
+        anomalies = audit(
+            metrics,
+            transcript_analysis=ta,
+            row_envelope={
+                "evidence_report": {
+                    "open_gaps": ["never emitted an update_contracts clause"]
+                }
+            },
+        )
+        assert "context_update_missing" not in [a["type"] for a in anomalies]
 
 
 # ===========================================================================
@@ -466,7 +517,7 @@ class TestBackwardCompatibility:
     def test_no_transcript_checks_without_analysis(self):
         """When transcript_analysis is None, no transcript-based anomalies appear."""
         metrics = _base_metrics(exit_code=0)
-        anomalies = audit(metrics, agent_output="", transcript_analysis=None)
+        anomalies = audit(metrics, transcript_analysis=None)
         transcript_types = {
             "investigation_skip",
             "context_update_missing",
@@ -503,3 +554,114 @@ class TestBackwardCompatibility:
         )
         types = [a["type"] for a in anomalies]
         assert "scope_escalation" in types
+
+
+# ===========================================================================
+# The evidence checks read the persisted row envelope
+# ===========================================================================
+
+
+def _verification_task_info():
+    return {
+        "injected_context": {
+            "agent_contract_handoff": {"required_checks": ["verify the change"]}
+        }
+    }
+
+
+class TestEvidenceChecksReadTheRow:
+    """missing_evidence / empty_evidence / skipped_verification, both directions.
+
+    Each case is stated twice on purpose -- the envelope that must fire and the
+    envelope that must not -- because the pre-migration versions of these three
+    were guarded on the response text, and a check that reads the wrong source
+    inverts rather than degrades: it fires on everything or on nothing.
+    """
+
+    def test_missing_evidence_fires_when_the_row_carries_no_evidence(self):
+        anomalies = audit(
+            _base_metrics(plan_status="COMPLETE"),
+            row_envelope={"agent_status": {"agent_state": "COMPLETE"}},
+        )
+        assert "missing_evidence" in [a["type"] for a in anomalies]
+
+    def test_missing_evidence_silent_when_the_row_carries_evidence(self):
+        anomalies = audit(
+            _base_metrics(plan_status="COMPLETE"),
+            row_envelope={"evidence_report": {"commands_run": ["pytest -q"]}},
+        )
+        assert "missing_evidence" not in [a["type"] for a in anomalies]
+
+    def test_missing_evidence_silent_when_the_turn_did_not_complete(self):
+        anomalies = audit(
+            _base_metrics(plan_status="IN_PROGRESS"),
+            row_envelope={"agent_status": {"agent_state": "IN_PROGRESS"}},
+        )
+        assert "missing_evidence" not in [a["type"] for a in anomalies]
+
+    def test_missing_evidence_fires_when_no_row_was_reachable(self):
+        """A COMPLETE turn that left no record has no evidence by definition."""
+        anomalies = audit(_base_metrics(plan_status="COMPLETE"), row_envelope=None)
+        assert "missing_evidence" in [a["type"] for a in anomalies]
+
+    def test_empty_evidence_fires_on_an_empty_commands_run(self):
+        anomalies = audit(
+            _base_metrics(),
+            row_envelope={"evidence_report": {"commands_run": []}},
+        )
+        assert "empty_evidence" in [a["type"] for a in anomalies]
+
+    def test_empty_evidence_fires_when_every_entry_says_not_run(self):
+        anomalies = audit(
+            _base_metrics(),
+            row_envelope={
+                "evidence_report": {"commands_run": ["pytest -- not run", "n/a"]}
+            },
+        )
+        assert "empty_evidence" in [a["type"] for a in anomalies]
+
+    def test_empty_evidence_silent_on_a_real_command(self):
+        anomalies = audit(
+            _base_metrics(),
+            row_envelope={"evidence_report": {"commands_run": ["pytest -q"]}},
+        )
+        assert "empty_evidence" not in [a["type"] for a in anomalies]
+
+    def test_empty_evidence_silent_when_no_row_was_reachable(self):
+        anomalies = audit(_base_metrics(), row_envelope=None)
+        assert "empty_evidence" not in [a["type"] for a in anomalies]
+
+    def test_skipped_verification_fires_when_the_row_ran_nothing(self):
+        anomalies = audit(
+            _base_metrics(),
+            _verification_task_info(),
+            row_envelope={"evidence_report": {"commands_run": []}},
+        )
+        assert "skipped_verification" in [a["type"] for a in anomalies]
+
+    def test_skipped_verification_silent_when_the_row_ran_something(self):
+        anomalies = audit(
+            _base_metrics(),
+            _verification_task_info(),
+            row_envelope={"evidence_report": {"commands_run": ["pytest -q"]}},
+        )
+        assert "skipped_verification" not in [a["type"] for a in anomalies]
+
+    def test_skipped_verification_silent_without_required_checks(self):
+        anomalies = audit(
+            _base_metrics(),
+            {"injected_context": {"agent_contract_handoff": {}}},
+            row_envelope={"evidence_report": {"commands_run": []}},
+        )
+        assert "skipped_verification" not in [a["type"] for a in anomalies]
+
+    def test_a_command_entry_shaped_as_a_dict_still_counts(self):
+        """The row goes through the same COMMANDS_RUN normalizer the fence did."""
+        anomalies = audit(
+            _base_metrics(),
+            _verification_task_info(),
+            row_envelope={
+                "evidence_report": {"commands_run": [{"command": "pytest -q"}]}
+            },
+        )
+        assert "skipped_verification" not in [a["type"] for a in anomalies]
