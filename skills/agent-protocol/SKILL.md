@@ -45,7 +45,10 @@ at the close is a second telling, made under the pressure that ends the turn, an
 Seven lists carry it, each written with `gaia contract set/add/fill --draft-id <contract_id>` as the
 evidence arrives, never in one pass at the close: `files_checked`, `patterns_checked`, `commands_run`,
 `key_outputs`, `verbatim_outputs`, `open_gaps`, and `cross_layer_impacts` -- what your change reached
-outside the file you were sent to, which no other field records for you.
+outside the file you were sent to, which no other field records for you. `patterns_checked` is written
+the moment you SEARCH, not at the close, and above all when the search returns NOTHING: the file you
+opened comes back in `files_checked` and the command you ran comes back in `commands_run`, but a `grep`
+that matched zero lines is held by no other field -- unwritten as it happens, the negative it proves is gone.
 
 ## 6. The phase is declared before doing that phase's work
 
