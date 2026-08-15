@@ -3644,10 +3644,10 @@ class ClaudeCodeAdapter(HookAdapter):
 
             anomalies = audit_workflow(
                 workflow_metrics,
-                agent_output,
                 task_info,
                 rejected_sections=(context_update_result or {}).get("rejected", []),
                 transcript_analysis=transcript_analysis,
+                row_envelope=_authoritative_envelope,
             )
             # ----------------------------------------------------------
             # Shape-invalidity anomalies (T16 / AC-9 "exactly one anomaly per
@@ -4249,8 +4249,8 @@ class ClaudeCodeAdapter(HookAdapter):
         parsed_contract,
         session_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
-        """M4 missing-fence footgun (Option A): rebuild the envelope from a
-        FINALIZED draft when the agent forgot to echo the fence.
+        """M4 missing-fence footgun (Option A): rebuild the envelope from the
+        FINALIZED ROW when the agent forgot to echo the fence.
 
         The SubagentStop gate parses the fenced ``agent_contract_handoff`` out
         of the agent's response TEXT -- not its finalized DB row. So a turn that
@@ -4258,22 +4258,33 @@ class ClaudeCodeAdapter(HookAdapter):
         finalize`` (writing a valid terminal row) but never echoed the fence in
         its last message is hard-rejected by the full-verdict gate, and has to
         be resumed by hand. This addresses that hole: when the fence is missing
-        but the agent's OWN draft was already finalized (a row exists keyed on
-        its draft_id), reconstruct the envelope FROM that draft so the gate
-        parses a valid contract instead of rejecting completed, persisted work.
+        but the agent's OWN contract was already finalized, reconstruct the
+        envelope FROM the row's ``raw_handoff_json`` so the gate parses a valid
+        contract instead of rejecting completed, persisted work.
 
-        It closes the hole only as far as the draft is FINDABLE, and finding it
-        is the fragile half. With no fence there is no envelope to read the
-        minted agent id from, so the draft is located through
-        ``resolve_minted_agent_id`` -- which, for the CURRENT dispatch shape,
-        can only get there by the ``harness_agent_id`` bridge on the row, since
-        a turn born with its draft already open never runs ``gaia contract
-        init`` and so leaves no mint report in its transcript. ``session_id`` is
-        threaded in for exactly that bridge; without it the join is unscoped.
+        THE ROW IS THE ONLY SOURCE READ, and that is the whole point rather
+        than an implementation detail. The on-disk draft holds the same
+        envelope but has the shorter life: a draft becomes collectable by
+        ``contract_drafts_gc`` precisely BECAUSE its turn is already durable in
+        the row, so a reader still reaching for the file after finalize can
+        find it reclaimed and report a completed turn as having recorded
+        nothing. Reading the row instead makes this lane read the same artifact
+        the close gate already reads.
+
+        Locating the turn is the fragile half, and it has two lanes for two
+        different turn shapes. An agent that minted its own draft is found
+        through ``resolve_minted_agent_id`` + ``resolve_draft_id``, so its own
+        contract wins over the dispatch it was born under. A turn born with its
+        draft already open never runs ``gaia contract init``, leaves no mint
+        report, and -- with no fence either -- is reachable only through the
+        ``harness_agent_id`` bridge on the row itself
+        (``dispatch_row_by_harness_id``), which is also the lane that still
+        answers once the draft file is gone. ``session_id`` is threaded in for
+        that bridge; without it the join is unscoped.
 
         Fires ONLY when ``parsed_contract`` lacks a usable ``agent_status`` (no
         fence). "Finalized" is discriminated by the EXISTENCE of the terminal
-        row for the draft_id -- without it the draft is merely in-progress
+        row for the contract_id -- without it the turn is merely in-progress
         (truncation-salvage / T9-backstop territory, which correctly produce
         ``degraded=true`` rows), NOT a finished turn missing only its fence.
 
@@ -4294,64 +4305,73 @@ class ClaudeCodeAdapter(HookAdapter):
         ):
             return None
         try:
-            from gaia.contract.drafts import load_draft, resolve_draft_id
+            from gaia.contract.drafts import resolve_draft_id
             from gaia.store import writer as _writer
-            from modules.agents.handoff_persister import resolve_minted_agent_id
+            from modules.agents.handoff_persister import (
+                dispatch_row_by_harness_id,
+                resolve_minted_agent_id,
+            )
         except Exception as exc:
             logger.debug("M4 reconstruction: core import failed (non-fatal): %s", exc)
             return None
 
-        # Fence absent -> the minted id comes from the transcript's mint report
-        # or, for a turn born with its draft already open, from the row itself
-        # via the harness_agent_id bridge. The harness agent_id is a different
-        # id space and is never used as a draft key.
-        minted_agent_id = resolve_minted_agent_id(
-            parsed_contract, task_info, session_id=session_id,
-        )
-        if not minted_agent_id:
-            logger.warning(
-                "M4 reconstruction: fence missing AND no minted agent id "
-                "resolvable (agent=%s session=%s) -- no draft can be located, "
-                "so a finalized turn's envelope (including any update_contracts "
-                "it carried) is NOT recovered.",
-                task_info.get("agent"), session_id,
-            )
-            return None
-
         try:
-            draft_id = resolve_draft_id(explicit=None, agent_id=str(minted_agent_id))
-            if not draft_id:
-                logger.warning(
-                    "M4 reconstruction: no draft resolves for minted agent id %s "
-                    "(agent=%s session=%s); nothing to reconstruct from.",
-                    minted_agent_id, task_info.get("agent"), session_id,
-                )
-                return None
             db_path_str = task_info.get("db_path")
             db_path = Path(db_path_str) if db_path_str else None
+            # Locating the turn must not depend on the draft FILE, because the
+            # file is the copy with the shorter life: once the turn finalized,
+            # `contract_drafts_gc` may reclaim it at any moment, while the row
+            # is what the close gate itself reads. The minted-id lane runs
+            # first so an agent that minted its own draft mid-turn still
+            # resolves to THAT draft's contract rather than to the dispatch it
+            # was born under; the row bridge is what still answers once the
+            # file is gone.
+            minted_agent_id = resolve_minted_agent_id(
+                parsed_contract, task_info, session_id=session_id,
+            )
+            contract_id = (
+                resolve_draft_id(explicit=None, agent_id=str(minted_agent_id))
+                if minted_agent_id
+                else None
+            )
+            if not contract_id:
+                dispatch_row = dispatch_row_by_harness_id(task_info, session_id)
+                contract_id = (dispatch_row or {}).get("contract_id")
+            if not contract_id:
+                logger.warning(
+                    "M4 reconstruction: fence missing AND no contract id "
+                    "resolvable (agent=%s session=%s) -- neither a draft nor a "
+                    "dispatch row locates this turn, so a finalized turn's "
+                    "envelope (including any update_contracts it carried) is "
+                    "NOT recovered.",
+                    task_info.get("agent"), session_id,
+                )
+                return None
             # "Finalized" == the agent's own `gaia contract finalize` already
-            # wrote the TERMINAL row for this draft_id. If no terminal row exists,
-            # the draft is not finalized -- do NOT reconstruct (that is the
-            # salvage / backstop path's job, which marks the row degraded).
+            # wrote the TERMINAL row for this contract_id. If no terminal row
+            # exists, the turn is not finalized -- do NOT reconstruct (that is
+            # the salvage / backstop path's job, which marks the row degraded).
             # v37 born-at-dispatch: a NASCENT 'DISPATCHED' row born at dispatch is
             # NOT finalized, so use the terminal-row check (not "any row exists")
             # -- a born-but-orphaned row must not be mistaken for a completed one.
-            if not _writer.agent_contract_handoff_finalized(draft_id, db_path=db_path):
+            if not _writer.agent_contract_handoff_finalized(contract_id, db_path=db_path):
                 logger.info(
-                    "M4 reconstruction: draft %s exists but its row is not "
+                    "M4 reconstruction: contract %s exists but its row is not "
                     "finalized -- salvage/backstop territory, not a completed "
                     "turn missing only its fence.",
-                    draft_id,
+                    contract_id,
                 )
                 return None
-            envelope = load_draft(draft_id)
+            envelope = _writer.agent_contract_handoff_envelope(
+                contract_id, db_path=db_path
+            )
             if not isinstance(envelope, dict) or not isinstance(
                 envelope.get("agent_status"), dict
             ):
                 logger.warning(
-                    "M4 reconstruction: draft %s is finalized but its on-disk "
-                    "envelope is unusable (%s) -- cannot rebuild the fence.",
-                    draft_id, type(envelope).__name__,
+                    "M4 reconstruction: row for contract %s is finalized but its "
+                    "raw_handoff_json is unusable (%s) -- cannot rebuild the fence.",
+                    contract_id, type(envelope).__name__,
                 )
                 return None
             recon = dict(envelope)
@@ -4359,11 +4379,12 @@ class ClaudeCodeAdapter(HookAdapter):
             # consumer (agent_state resolution, the gate, update_contracts)
             # treats it uniformly, plus a provenance marker for the audit trail.
             recon["_contract_tag"] = "agent_contract_handoff"
-            recon["reconstructed_from_finalized_draft"] = draft_id
+            recon["reconstructed_from_finalized_draft"] = contract_id
             logger.info(
-                "M4 reconstruction: fence missing but finalized draft %s found; "
-                "envelope reconstructed so the gate parses the completed contract.",
-                draft_id,
+                "M4 reconstruction: fence missing but finalized contract %s found; "
+                "envelope reconstructed from its row so the gate parses the "
+                "completed contract.",
+                contract_id,
             )
             return recon
         except Exception as exc:

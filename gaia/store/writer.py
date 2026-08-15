@@ -8273,6 +8273,48 @@ def agent_contract_handoff_finalized(
     return state is not None and state != "DISPATCHED"
 
 
+def agent_contract_handoff_envelope(
+    contract_id: str,
+    *,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """Return the envelope stored in the row's ``raw_handoff_json``, or None.
+
+    The row-side counterpart of ``gaia.contract.drafts.load_draft``. The two
+    read the SAME envelope from two different substrates, and only this one
+    survives ``contract_drafts_gc`` reclaiming the on-disk draft: a draft is
+    collectable precisely BECAUSE its turn is already durable here, so any
+    reader that still needs the file after finalize is reading the copy with
+    the shorter life.
+
+    Returns None when no row exists, when the column is empty, or when it does
+    not parse as a JSON object -- never a partial or fabricated envelope, so a
+    caller can tell "nothing recoverable" from "recovered something empty".
+
+    Args:
+        contract_id: The draft/contract id to read. A falsy value returns None.
+        db_path:     Optional explicit DB path (used by tests).
+    """
+    if not contract_id:
+        return None
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT raw_handoff_json FROM agent_contract_handoffs "
+            "WHERE contract_id = ? LIMIT 1",
+            (contract_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if row is None:
+        return None
+    try:
+        envelope = json.loads(row["raw_handoff_json"] or "null")
+    except (TypeError, ValueError):
+        return None
+    return envelope if isinstance(envelope, dict) else None
+
+
 def find_orphaned_dispatched_handoff(
     session_id: "str | None",
     agent_id: "str | Iterable[str] | None",

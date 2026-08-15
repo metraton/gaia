@@ -48,6 +48,7 @@ from adapters.claude_code import (  # noqa: E402
     evaluate_contract_gate,
 )
 from gaia.contract.drafts import (  # noqa: E402
+    draft_path,
     mint_draft_id,
     resolve_draft_id,
     save_draft,
@@ -261,6 +262,67 @@ def test_reconstructed_envelope_passes_the_gate(db):
     )
     assert recon_verdict.rejected is False, (
         f"reconstructed envelope must pass the gate: {recon_verdict.rejection_reason}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The row is the source: the draft FILE is not required to read a turn back
+# ---------------------------------------------------------------------------
+
+def test_reconstructs_from_the_row_after_the_draft_file_is_deleted(db):
+    """THE ADVERSE CASE (brief AC-6). A finalized draft is collectable by
+    ``contract_drafts_gc`` precisely because its turn is already durable in the
+    row, so the file can vanish at any moment after finalize. If reconstruction
+    still needed it, every descriptive reader of a fence-less turn would lose
+    the whole envelope silently the moment the collector ran.
+    """
+    draft_id = mint_draft_id(VALID_AGENT_ID)
+    env = _complete_envelope()
+    save_draft(draft_id, env)
+    _born_and_stamped(draft_id, db)
+    _finalize(draft_id, env, db)
+
+    draft_path(draft_id).unlink()
+    assert not draft_path(draft_id).exists()
+
+    recon = _adapter()._reconstruct_contract_from_finalized_draft(
+        task_info=_task_info(db), parsed_contract=None,
+    )
+
+    assert recon is not None, (
+        "the draft file is gone but the row still holds the envelope; needing "
+        "the file to read a turn back means the lane was never unified on the row"
+    )
+    assert recon["agent_status"] == env["agent_status"]
+    assert recon["evidence_report"] == env["evidence_report"], (
+        "the envelope must come back COMPLETE, not a shell with the lists dropped"
+    )
+    assert recon["reconstructed_from_finalized_draft"] == draft_id
+
+
+def test_reconstruction_reads_the_row_not_a_diverging_draft_file(db):
+    """Unified means one source, not two that usually agree. The row is what
+    the close gate reads, so a draft file that says something else -- a partial
+    write left behind, a stale copy -- must not be what a descriptive reader
+    gets back.
+    """
+    draft_id = mint_draft_id(VALID_AGENT_ID)
+    env = _complete_envelope()
+    _born_and_stamped(draft_id, db)
+    _finalize(draft_id, env, db)
+
+    stale = _complete_envelope()
+    stale["evidence_report"]["key_outputs"] = ["stale on-disk copy"]
+    save_draft(draft_id, stale)
+
+    recon = _adapter()._reconstruct_contract_from_finalized_draft(
+        task_info=_task_info(db), parsed_contract=None,
+    )
+
+    assert recon is not None
+    assert recon["evidence_report"]["key_outputs"] == ["did the thing"], (
+        "reconstruction returned the on-disk draft's evidence, so the lane is "
+        "still sourced from the filesystem"
     )
 
 
