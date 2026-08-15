@@ -8315,6 +8315,61 @@ def agent_contract_handoff_envelope(
     return envelope if isinstance(envelope, dict) else None
 
 
+# Enough rows to see a continuation chain whole rather than truncate it into a
+# false ambiguity; mirrors the bridge's own bound in
+# modules.agents.handoff_persister._HARNESS_ID_ROW_FETCH_LIMIT.
+_HANDLE_ROW_FETCH_LIMIT = 16
+
+
+def find_finalized_handoff_by_agent_id(
+    agent_id: str,
+    *,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """The finalized row of the turn a MINTED agent id keys, or None.
+
+    The row-side counterpart of ``gaia.contract.drafts.resolve_draft_id``,
+    which locates the same turn by globbing the drafts directory and therefore
+    stops answering the moment ``contract_drafts_gc`` reclaims the file -- for a
+    finalized turn, exactly the file that is collectable. Matching is on the
+    ``{agent_id}.{token}`` shape of ``contract_id``, so it needs nothing but the
+    handle.
+
+    Ambiguity is DECLINED, never resolved by recency, for the reason
+    ``resolve_draft_id`` declines it: the handle is minted per turn with no
+    uniqueness mechanism, so two finalized rows under one handle are two
+    unrelated turns and the most recent is a coin flip. A continuation chain is
+    not an ambiguity and is collapsed to its live link first
+    (:func:`collapse_continuation_chains`).
+
+    Args:
+        agent_id: The minted handle. A falsy value returns None.
+        db_path:  Optional explicit DB path (used by tests).
+    """
+    if not agent_id:
+        return None
+    escaped = (
+        str(agent_id).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    )
+    con = _connect(db_path)
+    try:
+        rows = [
+            dict(r)
+            for r in con.execute(
+                "SELECT * FROM agent_contract_handoffs "
+                "WHERE contract_id LIKE ? ESCAPE '\\' AND agent_state != 'DISPATCHED' "
+                "ORDER BY created_at DESC LIMIT ?",
+                (f"{escaped}.%", _HANDLE_ROW_FETCH_LIMIT),
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+    rows = collapse_continuation_chains(rows)
+    if len(rows) != 1:
+        return None
+    return rows[0]
+
+
 def find_orphaned_dispatched_handoff(
     session_id: "str | None",
     agent_id: "str | Iterable[str] | None",

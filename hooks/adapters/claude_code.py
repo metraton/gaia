@@ -4321,19 +4321,27 @@ class ClaudeCodeAdapter(HookAdapter):
             # Locating the turn must not depend on the draft FILE, because the
             # file is the copy with the shorter life: once the turn finalized,
             # `contract_drafts_gc` may reclaim it at any moment, while the row
-            # is what the close gate itself reads. The minted-id lane runs
-            # first so an agent that minted its own draft mid-turn still
-            # resolves to THAT draft's contract rather than to the dispatch it
-            # was born under; the row bridge is what still answers once the
-            # file is gone.
+            # is what the close gate itself reads. So the minted handle is
+            # resolved against the drafts directory FIRST -- a live file is the
+            # cheapest answer and the only one that also covers a turn whose
+            # row is not written yet -- and against the ROWS when that comes
+            # back empty, which is what the collector's aftermath looks like.
+            # The harness bridge is last and serves the shape the handle cannot
+            # reach at all: a turn born with its draft already open, which
+            # mints nothing and, with no fence, is identified only by its row.
             minted_agent_id = resolve_minted_agent_id(
                 parsed_contract, task_info, session_id=session_id,
             )
-            contract_id = (
-                resolve_draft_id(explicit=None, agent_id=str(minted_agent_id))
-                if minted_agent_id
-                else None
-            )
+            contract_id = None
+            if minted_agent_id:
+                contract_id = resolve_draft_id(
+                    explicit=None, agent_id=str(minted_agent_id)
+                )
+                if not contract_id:
+                    handle_row = _writer.find_finalized_handoff_by_agent_id(
+                        str(minted_agent_id), db_path=db_path
+                    )
+                    contract_id = (handle_row or {}).get("contract_id")
             if not contract_id:
                 dispatch_row = dispatch_row_by_harness_id(task_info, session_id)
                 contract_id = (dispatch_row or {}).get("contract_id")

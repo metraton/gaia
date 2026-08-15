@@ -326,6 +326,48 @@ def test_reconstruction_reads_the_row_not_a_diverging_draft_file(db):
     )
 
 
+def test_reconstructs_by_the_minted_handle_after_the_draft_file_is_deleted(db):
+    """The other turn shape, and the one the harness bridge cannot serve: an
+    agent that minted its OWN draft leaves a mint report but no dispatch row
+    under its harness id, so the handle is the only coordinate there is. With
+    the file collected, the handle has to reach the ROW or the turn is lost.
+    """
+    draft_id = mint_draft_id(VALID_AGENT_ID)
+    env = _complete_envelope()
+    _finalize(draft_id, env, db)  # a finalized row, deliberately never born/stamped
+
+    assert not draft_path(draft_id).exists()
+
+    recon = _adapter()._reconstruct_contract_from_finalized_draft(
+        task_info={**_task_info(db), "minted_agent_id": VALID_AGENT_ID},
+        parsed_contract=None,
+    )
+
+    assert recon is not None, (
+        "the minted handle keys the row as surely as it keyed the file; "
+        "resolving only through the drafts directory loses the turn to the collector"
+    )
+    assert recon["reconstructed_from_finalized_draft"] == draft_id
+
+
+def test_reconstruction_declines_a_handle_two_finalized_turns_share(db):
+    """A minted handle is per turn with no uniqueness mechanism, and collisions
+    are measured, not hypothetical. Two finalized rows under one handle are two
+    unrelated turns: returning the most recent would attribute one turn's
+    evidence to another, which is worse than reconstructing nothing.
+    """
+    env = _complete_envelope()
+    _finalize(mint_draft_id(VALID_AGENT_ID), env, db)
+    _finalize(mint_draft_id(VALID_AGENT_ID), env, db)
+
+    recon = _adapter()._reconstruct_contract_from_finalized_draft(
+        task_info={**_task_info(db), "minted_agent_id": VALID_AGENT_ID},
+        parsed_contract=None,
+    )
+
+    assert recon is None
+
+
 # ---------------------------------------------------------------------------
 # Negative cases
 # ---------------------------------------------------------------------------
