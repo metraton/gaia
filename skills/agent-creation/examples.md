@@ -4,13 +4,13 @@ Two real Gaia agents analyzed by component. The goal is not "correct vs incorrec
 
 ---
 
-## Example 1: `developer` -- a builder (D0 contract-first, D1=yes, D2=no, D3=yes)
+## Example 1: `developer` -- a builder (D0 contract-first, D1=yes, D2=yes)
 
 **Dimensions:**
 - D0: `read` = the slices an app engineer reasons over; `write` = `application_services`, the contract this domain owns
 - D1=yes: writes files, runs tests, commits to VCS
-- D2=no: terminal node; CANNOT DO table is for orchestrator routing, not for the agent to dispatch
-- D3=yes: enters automatic routing for application-code requests
+- D2=yes: enters automatic routing for application-code requests
+- Terminal by runtime, not by choice: the CANNOT DO table is for orchestrator routing, not for the agent to dispatch
 
 ### The contract comes first
 
@@ -94,13 +94,13 @@ resource as a prerequisite for your task.
 
 ---
 
-## Example 2: `cloud-troubleshooter` -- read-only-into-prod (D1=no, D2=no, D3=yes)
+## Example 2: `cloud-troubleshooter` -- read-only-into-prod (D1=no, D2=yes)
 
 **Dimensions:**
 - D0: `read` = the infrastructure/gitops slices it compares against; `write` = the single observation contract it curates
 - D1=no: read-only, enforced at the frontmatter level by a hard denylist
-- D2=no: never dispatches; surfaces recommendations back to the orchestrator
-- D3=yes: enters automatic routing for live-state diagnosis
+- D2=yes: enters automatic routing for live-state diagnosis
+- Terminal by runtime: never dispatches; surfaces recommendations back to the orchestrator
 
 ### Frontmatter
 

@@ -5,71 +5,72 @@ description: Use when creating a new specialist agent for Gaia, or reviewing whe
 
 # Agent Creation
 
-## What is an agent?
+Every section below is tagged **universal** -- it holds for any agent, the orchestrator included -- or **specialist** -- it holds for an agent dispatched as a subagent, and the orchestrator is exempt from it by role rather than by oversight. The exemptions are structural: the orchestrator carries no `routing:` block because it is what routes, no `skills:` field because the host preloads skills only for a dispatched subagent, and no CANNOT DO -> DELEGATE table in the specialist sense because delegating is its function rather than its edge.
 
-A specialist agent is a contract over project-context plus a small identity that points at a domain. The contract is the load-bearing part: a `read` list that defines the menu of project-context slices the agent may pull on demand (surfaced to the turn as `can_read` in its dispatch kernel -- nothing is preloaded) and a `write` list that confines what the agent may persist back (the security lever). The identity that wraps the contract is mostly *shared* — for the builder agents (`developer`, `platform-architect`, `gitops-operator`) it is nearly the same essence — and the only genuinely per-agent pieces are the contract, the skills, and a small subset of "what this agent builds." If the component you are building has no distinct contract, no delegation surface, and could work as injected text, it is a skill, not an agent. That decision belongs upstream — this skill assumes it has been made.
+## What is an agent? -- universal
 
-## The contract-first model
+An agent is a contract over project-context plus a small identity. For a specialist that identity points at one domain surface; the orchestrator's points at the conversation and the routing between surfaces. If the component you are building has no distinct contract, no delegation surface, and could work as injected text, it is a skill, not an agent -- that decision belongs upstream and this skill assumes it has been made.
 
-Creating an agent is **contract + skills + a small domain subset**, not a personality authored from scratch. Three facts drive every decision below:
+What the identity buys is posture, not capability: measured, a persona does not improve factual accuracy at all, and irrelevant persona attributes cost up to 30 points of it. What it genuinely moves is tone, escalation threshold, refusal bar and report shape, so write it for those and drop the seniority decoration -- "senior architect" buys nothing and is charged for.
 
-1. **The contract is the first design decision.** Before identity, before tools, before skills, decide the `project_context_contracts` block. The `read` list is what scopes the agent — it is the menu (`can_read` in the dispatch kernel) of the slices this domain may pull on demand, so the agent reasons over its own domain instead of wandering the whole substrate. The `write` list is what makes the agent safe — it is the allowlist the runtime checks before accepting any `update_contracts` clause; a contract not in the `write` list cannot be persisted, no matter what the agent emits. Get this wrong and every other section is built on the wrong foundation.
+## Step 0: Route every rule to a place that can hold it -- universal
 
-2. **Builder identity is shared essence + a small subset.** The builder agents do not each invent a personality. They share one essence: defer to what already exists over a clean-slate design; verify that the change produced the intended outcome rather than trusting an exit code; emit a Realization Package XOR a Findings Report, never a hybrid; be a disciplined citizen of the system (flag what is out of lane, do not edit across boundaries; propose, do not persist beyond the contract); and operate with capability that is free under T3 consent rather than fenced by a fixed toolbox. What is actually per-builder is small: the contract, the skills list, and a one-paragraph subset naming *what this agent builds* (application code / infrastructure-as-code / Kubernetes desired-state) and which neighbors own the adjacent surfaces. Write the shared essence the same way each time; spend your design effort on the subset and the contract.
+Ask of each thing you want true of the agent: can it be enforced?
 
-3. **Base skills come from `agent-protocol`; soft governance comes from T3.** `agent-protocol` and `security-tiers` are non-negotiable for every agent and carry the response contract and tier discipline — you do not re-teach them in the identity. The builders are governed *softly*: their mutations are gated by T3 consent and their contract, not by a hard tool denylist. Hard `disallowedTools` is reserved for one case (see Step 1, D1).
+| Can it be enforced? | Where it goes |
+|---|---|
+| Yes | The `write` contract, the frontmatter (`tools`, `disallowedTools`, `permissionMode`), a PreToolUse hook, or simply not granting the tool |
+| No, but it is posture | The prose, carrying the consequence that justifies it |
+| No, and it is not posture | Nowhere -- cut it |
 
-## Step 1: Answer the bifurcating dimensions
+The third row is the one authors skip, and skipping it is not free: a line no mechanism can hold and no posture can bias lowers the odds that every other line holds, and adds one more pair that can conflict.
 
-Answer these before writing a line. They determine the contract shape, the tool set, and the failure model.
+Prefer the enforceable destination whenever one exists, because prose is a probability shift while a mechanism is a boundary: a PreToolUse hook that returns `deny` blocks the tool without consulting `permissionMode` at all (`hooks/adapters/claude_code.py::_is_protected` never reads it), which is the same reason the sandboxing documentation puts the frontier in the operating system "regardless of what the model chose to run". A hook is gaia-system's to implement -- propose one rather than settle for a sentence. And when an agent crosses a line already written, what the crossing reopens is the destination, not the wording: "do not cheat" left cheating exactly where it was at 80%, and "solve it the way the designer intended" raised it to 95%.
 
-**D0 (decide first): What is the contract?**
-Name the `read` slices this domain reasons over and the `write` slices it owns. Scope `read` to what the agent actually consults — nothing is preloaded, but every extra slice widens the menu the agent is told it may pull, diluting its focus and its evidence scope. Scope `write` to the contracts the agent's domain *owns* — `developer` writes `application_services`, `platform-architect` writes `infrastructure` and `infrastructure_topology`, a read-only diagnostic agent writes nothing or only the one observation contract it curates. This is the answer that makes the agent efficient and safe; the rest of the inventory derives from it.
+## Step 1: Answer the bifurcating dimensions -- tagged per dimension
 
-**D1: Does the agent mutate system state?**
-A "yes" means: Write/Edit in tools, `permissionMode: acceptEdits` in frontmatter, the T3 approval flow in failure handling, and a "Realization Package" output type. A "no" means: no Write/Edit, no T3 surface, read-only output.
-The hard `disallowedTools: [Write, Edit, NotebookEdit]` denylist is reserved for the **read-only-into-prod** case — an agent that inspects live production state and must be incapable of mutating it, e.g. `cloud-troubleshooter`. That is the one place a hard tool constraint earns its keep, because an accidental write to a live cloud resource is a real incident. The builder agents are *not* governed this way: they may need Write/Edit/Bash across their whole domain, so they carry no hard denylist (at most `[NotebookEdit]`, the surface no Gaia builder uses) and are governed softly by T3 consent. Do not reach for `disallowedTools` to "lock down" a builder — that is what T3 is for.
+**D0 (decide first): What is the contract? -- universal, and degenerate for the orchestrator**
+Every agent carries one; the orchestrator's is `read: [project_identity]` and `write: []`, because it holds no domain and persists no domain artifact. For a specialist, name the `read` slices this domain reasons over and the `write` slices it owns. `read` is the token lever -- the menu (`can_read` in the dispatch kernel) the agent may pull on demand, nothing preloaded, so every extra slice dilutes its focus and its evidence scope. `write` is the security lever -- the allowlist the runtime checks before accepting any `update_contracts` clause, so a contract absent from it cannot be persisted whatever the agent emits. `developer` writes `application_services`, `platform-architect` writes `infrastructure` and `infrastructure_topology`, a read-only diagnostic writes nothing or the single observation contract it curates. Get this wrong and every other decision is built on it.
 
-**D2: Does the agent delegate to other agents?**
-Almost always "no" for specialists — and the runtime forces it. A Gaia specialist runs *as a subagent* under the orchestrator, and a subagent cannot spawn subagents: `Agent`/`Task` are inert in a subagent's frontmatter even if listed (per Anthropic's subagents doc). D2=yes applies only to an agent run as the main thread via `--agent` — in practice the orchestrator. A specialist surfaces work it cannot do through its CANNOT DO → DELEGATE table; the orchestrator routes. That table is required regardless of D2.
+**D1: Does the agent mutate system state? -- universal**
+A "yes" means Write/Edit in `tools`, `permissionMode: acceptEdits`, the T3 approval flow in failure handling, and a Realization Package output type; a "no" means none of those and a read-only output. The hard `disallowedTools: [Write, Edit, NotebookEdit]` denylist is reserved for the read-only-into-prod case -- an agent that inspects live production and must be incapable of mutating it, e.g. `cloud-troubleshooter` -- because an accidental write to a live resource is a real incident. Builders are governed softly instead, by T3 consent and their contract, carrying at most `[NotebookEdit]`. Withhold a tool for what the role must not do, never as a rank: the orchestrator keeps `Read` deliberately, so it can settle a claim it is able to see for itself instead of spending a dispatch to have it confirmed.
 
-**D3: Does the agent enter the orchestrator's automatic routing?**
-Almost always "yes." A "yes" means the description field is written as triggering conditions (not a role summary) and a `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks) is proposed for the agent. Those signals are proposals — gaia-system applies them to the agent's own frontmatter, from which `tools/scan/seed_surface_routing.py` seeds the `surface_routing` DB table at install time; `tools/context/surface_router.py` reads that table (not a JSON file) at runtime.
+**D2: Does the agent enter the orchestrator's automatic routing? -- specialist**
+Almost always "yes" for a specialist. A "yes" means the description is written as triggering conditions and a `routing:` block (surface, adjacent_surfaces, commands, artifacts, required_checks) is proposed for it. Those signals are proposals -- gaia-system applies them to the agent's own frontmatter, `tools/scan/seed_surface_routing.py` seeds the `surface_routing` table at install time, and `tools/context/surface_router.py` reads that table at runtime.
 
-## Step 2: Apply the component inventory
+One fact that is not a dimension: a subagent cannot spawn subagents -- `Agent`/`Task` are inert in a subagent's frontmatter even when listed. A specialist surfaces what it cannot do through its CANNOT DO -> DELEGATE table and the orchestrator routes; only an agent run as the main thread via `--agent` dispatches.
 
-**Obligatory in every specialist:**
+## Step 2: Apply the component inventory -- tagged per component
 
-1. **`project_context_contracts`** (frontmatter block): the per-agent `read`/`write` contract lists from D0. The `write` list is what the runtime checks before accepting an `update_contracts` entry in the agent's `agent_contract_handoff` envelope (see `agent-contract-handoff`) — a contract absent from `write` cannot be persisted. This is listed first because it is the first design decision, even though it sits in the frontmatter alongside the other fields.
-2. **Frontmatter**: `name`, `description` (triggering conditions only), `model`, `tools`. Add `permissionMode: acceptEdits` if D1=yes. Add `disallowedTools` only for the read-only-into-prod case (`[Write, Edit, NotebookEdit]`); a builder needs no hard denylist beyond at most `[NotebookEdit]`. Add `maxTurns` for long-running agents.
-3. **Identity** (1-2 paragraphs): for a builder, the *shared essence* plus the *small subset* — what this agent builds and which neighbors own the adjacent surfaces. Do not re-author the essence from scratch; carry the same five commitments (defer-to-authority, verify-the-outcome, Realization-Package-XOR-Findings, disciplined-citizen, capability-free-under-T3) and let the subset do the differentiating. For a non-builder (read-only diagnostic), the identity names the constraint that fences it instead.
-4. **Workflow** (numbered steps): the operational sequence for this domain. Put it before Identity when the sequence is the agent's primary reference.
-5. **Scope — CAN DO / CANNOT DO → DELEGATE**: boundaries with reasons. Every CANNOT DO entry names a concrete delegate agent and, ideally, the decision point where a naive agent would cross.
-6. **Failure handling / Domain Errors**: concrete errors with concrete actions. "Report the error" is not an action.
-7. **Response protocol**: the agent loads `agent-protocol`. Reference it in the skills list; do not replicate its content.
+Obligatory in every agent, tagged where it is not:
 
-**Optional by dimension:**
-- **Delegation table** (D2=yes): only meaningful for the main-thread orchestrator — a subagent specialist cannot dispatch, so this does not apply to specialists.
-- **Surface signals** (D3=yes): a proposed `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks) for gaia-system to apply to the agent's own file — the source of truth `tools/scan/seed_surface_routing.py` seeds into the `surface_routing` DB table at install time.
-- **Domain reference inline**: lookup tables or decision logic that apply only to this agent and do not warrant a skill.
+1. **`project_context_contracts`** (frontmatter): the `read`/`write` lists from D0.
+2. **Frontmatter**: `name`, `description` (triggering conditions only), `model`, `tools`; `permissionMode: acceptEdits` if D1=yes; `disallowedTools` only for the read-only-into-prod case; `maxTurns` for long-running agents.
+3. **Identity** (1-2 paragraphs): for a builder, the shared essence plus a small subset. The builders share one essence by design -- defer to what already exists over a clean-slate design, verify the outcome rather than the exit code, emit a Realization Package XOR a Findings Report and never a hybrid, so the turn lands in one clean state instead of mutating files and returning a summary of them, flag what is out of lane instead of editing across boundaries, and operate with capability that is free under T3 consent rather than fenced by a fixed toolbox. Carry it the same way each time: inventing a fresh personality per builder drifts the fleet and spends the effort that belongs in the subset -- what this agent builds, and which neighbors own the adjacent surfaces. A non-builder names the constraint that fences it instead.
+4. **Workflow** (numbered steps): the operational sequence for this domain, placed before Identity when the sequence is the agent's primary reference.
+5. **Scope -- CAN DO / CANNOT DO -> DELEGATE** -- specialist: every CANNOT DO entry names a concrete delegate agent and the situation that triggers the handoff.
+6. **Termination**: the condition under which this agent's work is finished, stated in its domain's own terms -- tests green and the change behaving as claimed, the component installed and exercised, the diagnosis anchored to a symbol. `agent-protocol` owns the closing states; what it cannot know is what "done" means here. Not knowing when to stop is the third-heaviest measured failure in multi-agent systems (12.4%), and adding a high-level goal check is the heaviest measured gain (+15.6%).
+7. **Adjudication**: who has the last word when this agent disagrees -- with the evidence, with another agent's return, or with the instruction it received. Name the tie-break concretely: live state and code over memory, the codebase's pattern over the agent's own prior, the user for anything that needs consent. Stating it explicitly measures +9.4%; left implicit, the agent improvises one under pressure.
+8. **Domain Errors**: concrete errors with concrete actions -- "report the error" is not an action.
+9. **Response protocol**: `agent-protocol` and `security-tiers` are non-negotiable for every agent and carry the response contract and tier discipline. List them in `skills:` and never re-teach them in the identity.
 
-## Step 3: Write for judgment, not compliance
+Optional: a **domain reference inline** -- lookup tables or decision logic that apply only to this agent and do not warrant a skill.
 
-Each obligatory component must carry enough weight to change behavior. The test: if the section were removed, would the agent behave differently? If not, it is decorative.
+## Step 3: Write for judgment, not compliance -- universal
 
-**Contract:** A `read` list bloated with slices the agent never consults silently taxes every call; a `write` list wider than the domain owns is a security hole the runtime will partially catch but should never have been asked to. The weight test for the contract is whether each `read` slice is actually consulted and each `write` slice is actually owned.
+**Weight test.** If the section were removed, would the agent behave differently? If not, it is decorative. A boundary stated as a category ("cloud infrastructure") carries less weight than one naming the situation that triggers it ("if the resource type is managed by IaC, creating it belongs to platform-architect even when you need it as a prerequisite").
 
-**Identity:** For a builder, the essence is shared on purpose — its weight comes from being *present and consistent*, not from being novel. The differentiating weight lives in the subset: "what this agent builds" must narrow the action space enough that the agent stops at the right boundary. If the subset were removed and the agent still behaved identically to a generic builder, the subset needs more weight.
+**Polarity, with the why in the same sentence.** Each line names the behavior wanted rather than the one forbidden, and arrives with the consequence that justifies it. Requirements hold flat across a long session while prohibitions decay from 73% at turn 5 to 33% by turn 16, and 87.5% of those violations are priming -- naming the forbidden behavior is what activates it. The reason travels with the rule for the same kind of reason: training on the reasoning behind aligned behavior reached 3% misalignment where the behavior alone stopped at 15%. This reaches table columns too. A column describing where a naive agent crosses states the transgression vividly and in the agent's own voice, so keep the discrimination it carries and flip its polarity: the column states the condition that triggers the wanted action ("hand the search to the owning surface when the question is which files implement a behavior"), not the moment of crossing.
 
-**Scope boundaries:** A boundary stated as a category ("cloud infrastructure") is weaker than one that names the decision point ("if the resource type is managed by IaC, creating it belongs to platform-architect even if you need it as a prerequisite").
+The polarity rule governs what is written INTO an agent, and not a document like this one. An identity is held by a model under context pressure across a long session, which is the condition every measurement above was taken in; an authoring document is read once, by a person or by gaia-system, for a bounded task. That is why the Anti-patterns section below names its failures directly, and why applying this rule to it would delete the failure catalogue without buying any of the adherence the rule exists to protect.
 
-**Failure handling:** A row whose action equals the default does nothing. Each row should describe what a naive agent would do wrong and redirect.
+**A budget of seven always-on norms.** Count the rules the agent must hold on every turn whatever the situation -- identity commitments, workflow steps, standing principles. Seven is the ceiling, and the number does not go up: the agent gets cut. What sets it there is that per-instruction reliability barely moves (0.94 to 0.85) while the odds of satisfying all of them collapse from 94% to 21% between one instruction and ten; at seven that measured band still leaves roughly a third to a half of turns holding every norm, and each addition past it costs more than the one before it. Conditional rows are exempt because they do not multiply: an error table or a delegation table is looked up, at most a row or two fires per turn, and rows naming genuinely distinct situations do not compete. `developer` sits at the budget today; `gaia-orchestrator` runs at roughly double it, which is where the triage is owed.
 
-**Output type declaration:** Builders declare "Realization Package XOR Findings Report — never a hybrid" so the agent reaches a clean state at completion instead of mutating files *and* returning a summary.
+**Deconflict in pairs.** The weight test reads each section alone, and conflict lives between them, so make a second pass over the pairs and ask which pair a single turn could satisfy only one half of -- "be exhaustive" against "make the minimal change", "verify before claiming" against a turn budget. Soft conflict between pairs grows with the square of the count and correlates -0.37 with adherence. Fewer rules and fewer collisions is the lever; ordering is not -- the claim that important rules go first does not survive measurement, which splits between primacy and recency and finds no consistent effect.
 
-## Step 4: Write the description field as triggering conditions
+## Step 4: Write the description field as triggering conditions -- universal
 
-The description is what the orchestrator reads to decide when to dispatch. It must describe *when to use this agent*, not *what it is*. A role summary satisfies the read without triggering the dispatch.
+The description is what the orchestrator reads to decide when to dispatch, so it must describe *when to use this agent*, not *what it is*. A role summary satisfies the read without triggering the dispatch.
 
 ```yaml
 # Wrong -- describes the role
@@ -79,29 +80,24 @@ description: Senior infrastructure architect that manages the cloud lifecycle
 description: Use when provisioning, modifying, or validating infrastructure-as-code (Terraform, Pulumi, CloudFormation, OpenTofu), or managing the infrastructure lifecycle
 ```
 
-## Step 5: Evaluate the skills catalog and propose applicable skills
+## Step 5: Evaluate the skills catalog -- specialist
 
-Do not hardcode a tool-to-skill mapping — the catalog changes and a fixed mapping goes stale silently. Evaluate the current catalog at `.claude/skills/` and propose which skills address a recurring risk or discipline gap for this agent's tool set and domain. `agent-protocol` and `security-tiers` are non-negotiable for every agent; beyond those, let the tool set and domain guide selection (e.g. `command-execution` if it runs Bash, `investigation` if it diagnoses complex state).
+The host preloads `skills:` for a dispatched subagent only, which is why this step has nothing to apply to the orchestrator. Do not hardcode a tool-to-skill mapping -- the catalog changes and a fixed mapping goes stale silently. Read the current catalog at `.claude/skills/` and propose the skills that address a recurring risk or discipline gap for this agent's tool set and domain (`command-execution` if it runs Bash, `investigation` if it diagnoses complex state).
 
-## Step 6: Propose surface signals (if D3=yes)
+## Step 6: Propose surface signals (if D2=yes) -- specialist
 
-For agents in automatic routing, propose a `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks — `keywords` is retired, the matcher scores from `commands`/`artifacts` only) written for gaia-system to apply directly to the agent's own file. Do not apply it yourself, and check existing agents' `routing:` blocks so the new agent's surface and signals do not overlap a sibling's.
+Propose the `routing:` block written for gaia-system to apply to the agent's own file -- `keywords` is retired, the matcher scores `commands`/`artifacts` only. Do not apply it yourself, and read the siblings' `routing:` blocks so the new surface and its signals do not overlap one.
 
-## Step 7: Register the agent so it ships — manifest, then marketplace
+## Step 7: Register it so it ships, then prove it governs -- universal
 
-Writing `agents/<name>.md` is necessary but not sufficient: a component absent from `build/gaia.manifest.json` is not part of the publishable plugin (see the Release Surface pillar), and a component that is only in the manifest is still absent from every already-installed marketplace copy until a release carries it there. This is the exact gap `gaia-verifier` fell into — committed to `agents/`, later added to the manifest, yet never reached by a release, so it never appeared in any installed `~/.claude/plugins/marketplaces/*` copy. Close both halves, and verify each with a concrete command:
+Writing `agents/<name>.md` is necessary and not sufficient, in three stages that each need their own verification. `gaia-verifier` is the standing case for the first two: committed to `agents/`, later added to the manifest, never carried by a release, and therefore absent from every installed copy.
 
-1. **Add the agent to the build manifest.** Append `"agents/<name>.md"` to the `agents` array in `build/gaia.manifest.json`. Verify with `grep -c "agents/<name>.md" build/gaia.manifest.json` returning `>= 1` — an entry that does not grep back has not landed.
-2. **Ship it through a release, then confirm the marketplace actually carries it.** The manifest entry alone does not reach a workspace that already added the marketplace: an installed `~/.claude/plugins/marketplaces/<name>` copy is a git checkout of the source repo, and it does not track new commits until it is explicitly refreshed. Getting the agent from "in the manifest" to "in the installed marketplace" is a `gaia-release` action (see that skill), not a hand-edit of the `.claude/` copy — never `git -C ~/.claude/plugins/marketplaces/<name> pull` or a manual file copy. After the release/update step runs, verify the file actually landed: `find ~/.claude/plugins/marketplaces -name <name>.md` returning `>= 1`.
+1. **Manifest.** Append `"agents/<name>.md"` to the `agents` array in `build/gaia.manifest.json`. Verify with `grep -c "agents/<name>.md" build/gaia.manifest.json` returning `>= 1` -- an entry that does not grep back has not landed.
+2. **Marketplace.** An installed `~/.claude/plugins/marketplaces/<name>` copy is a git checkout that does not track new commits until a release refreshes it. Getting there is a `gaia-release` action, never a hand-edit or a `git pull` of the `.claude/` copy. Verify with `find ~/.claude/plugins/marketplaces -name <name>.md` returning `>= 1`.
+3. **Governance.** Arriving is not governing, and the gap is wide: against a long policy document, the best of thirty configurations satisfied 36.2% of 824 criteria, and what failed was not the work but the control -- the approval gate, the wait condition, the scope limit. So exercise the agent on a real task WITH its tools and read the artifacts it produced. Conversing with it proves nothing: the same prompt under the same policy went from perfect compliance to 85% violations on the single change of granting tools. Its own account proves less than nothing -- nearly every failing trajectory ends by confidently claiming it followed the manual, citing the sections it violated.
 
-Skipping step 2 (or treating step 1 alone as "done") reproduces the gaia-verifier gap verbatim: correct in source, correct in the manifest, absent from every install.
+## Anti-patterns -- universal
 
-## Anti-patterns
-
-- **Designing identity before the contract**: the contract is the first decision because it sets token cost and write safety. Authoring a personality first and bolting a contract on after produces an agent that reads too much and may write where it should not.
-- **Re-authoring the builder essence from scratch**: the builders share one essence by design. Inventing a fresh personality per builder drifts the fleet and wastes the differentiating effort that belongs in the contract and the subset.
-- **Reaching for `disallowedTools` to govern a builder**: hard denylists are for the read-only-into-prod case. A builder is governed by T3 consent; a hard denylist on it either blocks legitimate work or signals a misunderstanding of where the security boundary lives.
-- **Treating this as a form**: filling sections without the weight test produces a well-structured agent the LLM ignores in favor of baseline behavior.
-- **Writing the description as a role summary**: the orchestrator reads it to decide *when* to dispatch; a summary satisfies the read without triggering the dispatch.
-- **Domain Errors that only say "report"**: every row should redirect to a concrete action a naive agent would not take by default.
-- **Stopping at the manifest entry**: adding `agents/<name>.md` to `build/gaia.manifest.json` makes the agent part of the publishable artifact, but not yet part of any installed marketplace copy. Skipping Step 7's second half is exactly how `gaia-verifier` shipped in source and manifest while staying invisible to every installed workspace until a release/update carried it forward — verify the marketplace copy, do not assume the manifest entry alone is enough.
+- **Designing identity before the contract**: the contract sets token cost and write safety, so authoring a personality first and bolting a contract on after produces an agent that reads too much and may write where it should not.
+- **Reaching for `disallowedTools` to govern a builder**: hard denylists are for the read-only-into-prod case; one on a builder either blocks legitimate work or signals a misunderstanding of where the security boundary lives.
+- **Treating this as a form**: filling sections without the weight test produces a well-structured agent the model ignores in favor of its baseline behavior.

@@ -69,7 +69,7 @@ If the same logic would help another agent, extract it to a skill instead.
 |-------|--------|
 | <specific error or condition> | <concrete action, not "report the error"> |
 
-## Surface Signals (proposed)         [CONDITIONAL -- if D3=yes, remove after gaia-system applies]
+## Surface Signals (proposed)         [CONDITIONAL -- if D2=yes, remove after gaia-system applies]
 
 ```json
 {
@@ -117,24 +117,18 @@ The identity, the tool set, and the skills all derive from the contract: "this a
 - No T3 surface in failure handling
 - Output type is "Diagnostic Report" or "Findings Report"
 
-### D2: Does the agent delegate to other agents?
+### Not a dimension: delegation
 
-Specialist agents are terminal -- and the runtime forces this, not just convention. A Gaia specialist runs *as a subagent* under the orchestrator, and a subagent cannot spawn other subagents. The `Agent`/`Task` tools are inert in a subagent's frontmatter even when listed (per Anthropic's subagents doc), so a specialist cannot dispatch even if its tools say otherwise. Delegation is real only for an agent run as the *main thread* via `--agent` -- in Gaia, that is the orchestrator.
+Whether a specialist delegates is not a design decision, because the runtime settles it. A Gaia specialist runs *as a subagent* under the orchestrator, and a subagent cannot spawn other subagents. The `Agent`/`Task` tools are inert in a subagent's frontmatter even when listed (per Anthropic's subagents doc), so a specialist cannot dispatch even if its tools say otherwise. Delegation is real only for an agent run as the *main thread* via `--agent` -- in Gaia, that is the orchestrator, which carries `Agent` in its tools and a table of which agents it dispatches and under what conditions.
 
-**D2=yes implications (orchestrator only, not specialists):**
-- `Agent` in tools list (effective only when the agent is the main thread)
-- A delegation table in the body describing which agents it dispatches and under what conditions
+For every specialist this means: do not list `Agent`/`Task`, since they add surface area with no effect in a subagent, and write the CANNOT DO -> DELEGATE table for the orchestrator's routing rather than for the agent to act on directly.
 
-**D2=no implications (every specialist):**
-- Do not list `Agent`/`Task` -- they add surface area with no effect in a subagent
-- CANNOT DO -> DELEGATE table is for the orchestrator's reference, not for the agent to act on directly
-
-### D3: Does the agent enter the orchestrator's automatic routing?
+### D2: Does the agent enter the orchestrator's automatic routing?
 
 Almost all specialists do. The exception would be a utility agent that is only dispatched explicitly, never via intent routing.
 
-**D3=yes implications:**
-- Description field written as triggering conditions (see Step 5 in SKILL.md)
+**D2=yes implications:**
+- Description field written as triggering conditions (see Step 4 in SKILL.md)
 - Surface signals proposed as the agent's own `routing:` frontmatter block (surface, adjacent_surfaces, commands, artifacts, required_checks)
 - Description must not overlap with signals of existing agents (check the `routing:` block of comparable agents under `agents/*.md`, or query the seeded `surface_routing` DB table, before finalizing)
 
