@@ -54,7 +54,7 @@ class TestBuildEnvironmentBlock:
         )
 
         result = build_environment_block()
-        assert "Workspace: my-workspace" in result
+        assert "Gaia workspace (memory/db scope): my-workspace" in result
 
     def test_block_includes_version_when_available(self, monkeypatch):
         monkeypatch.setattr(

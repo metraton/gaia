@@ -130,7 +130,7 @@ class TestCarryForwardFirst:
     """carry_forward rows appear in section 1, before anchors."""
 
     def test_carry_forward_appears_in_section_1(self, tmp_db, capsys):
-        _insert_memory(tmp_db, "atom_anchor_1", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_anchor_1", "user", "anchor", None,
                        "anchor first", "2026-05-22T10:00:00Z")
         _insert_memory(tmp_db, "atom_carry_1", "atom", "thread", "carry_forward",
                        "carry this", "2026-05-22T09:00:00Z")
@@ -173,12 +173,12 @@ class TestCarryForwardFirst:
 
 
 class TestAnchorQuota:
-    """anchor section is bounded to quota (4)."""
+    """anchor section carries every user instruction, bounded only by the row cap."""
 
-    def test_anchor_quota_4_max(self, tmp_db, capsys):
+    def test_recency_quota_no_longer_drops_instructions(self, tmp_db, capsys):
         for i in range(7):
             _insert_memory(
-                tmp_db, f"atom_anchor_{i}", "atom", "anchor", None,
+                tmp_db, f"atom_anchor_{i}", "user", "anchor", None,
                 f"d{i}", f"2026-05-22T{i:02d}:00:00Z",
             )
 
@@ -188,15 +188,64 @@ class TestAnchorQuota:
 
         payload = json.loads(out)
         anchors = [i for i in payload["items"] if i["section"] == "anchor"]
-        assert len(anchors) == 4
+        assert len(anchors) == 7
+
+    def test_row_limit_bounds_the_section(self, tmp_db, capsys):
+        limit = memory_mod._RELEVANT_USER_ANCHOR_ROW_LIMIT
+        for i in range(limit + 3):
+            _insert_memory(
+                tmp_db, f"atom_anchor_{i:03d}", "user", "anchor", None,
+                f"d{i}", f"2026-05-22T{i % 24:02d}:{i % 60:02d}:00Z",
+            )
+
+        rc = memory_mod._cmd_get_relevant(_args(max_chars=100_000))
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        anchors = [i for i in payload["items"] if i["section"] == "anchor"]
+        assert len(anchors) == limit
+
+    def test_non_user_anchor_excluded(self, tmp_db, capsys):
+        _insert_memory(tmp_db, "atom_project_anchor", "atom", "anchor", None,
+                       "a project anchor", "2026-05-22T10:00:00Z")
+        _insert_memory(tmp_db, "user_instruction", "user", "anchor", None,
+                       "an instruction", "2026-05-22T09:00:00Z")
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        names = {i["name"] for i in payload["items"] if i["section"] == "anchor"}
+        assert names == {"user_instruction"}
+
+    def test_body_rendered_whole(self, tmp_db, capsys):
+        _insert_memory(tmp_db, "user_long", "user", "anchor", None,
+                       "short description", "2026-05-22T10:00:00Z",
+                       body="w" * 900)
+
+        rc = memory_mod._cmd_get_relevant(_args())
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert "w" * 900 in payload["block"]
+
+    def test_body_past_the_ceiling_is_dropped_not_sliced(self, tmp_db, capsys):
+        ceiling = memory_mod._RELEVANT_USER_ANCHOR_BODY_CEILING
+        _insert_memory(tmp_db, "user_huge", "user", "anchor", None,
+                       "d", "2026-05-22T10:00:00Z", body="w" * (ceiling + 1))
+        _insert_memory(tmp_db, "user_normal", "user", "anchor", None,
+                       "d", "2026-05-22T09:00:00Z", body="fits")
+
+        rc = memory_mod._cmd_get_relevant(_args(max_chars=100_000))
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        names = {i["name"] for i in payload["items"] if i["section"] == "anchor"}
+        assert names == {"user_normal"}
 
     def test_anchor_orderby_updated_at_desc(self, tmp_db, capsys):
         # Insert in random order, expect newest first.
-        _insert_memory(tmp_db, "atom_old", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_old", "user", "anchor", None,
                        "old", "2026-05-20T00:00:00Z")
-        _insert_memory(tmp_db, "atom_new", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_new", "user", "anchor", None,
                        "new", "2026-05-22T00:00:00Z")
-        _insert_memory(tmp_db, "atom_mid", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_mid", "user", "anchor", None,
                        "mid", "2026-05-21T00:00:00Z")
 
         rc = memory_mod._cmd_get_relevant(_args())
@@ -249,7 +298,7 @@ class TestLogNeverAppears:
     def test_log_class_excluded(self, tmp_db, capsys):
         _insert_memory(tmp_db, "atom_log_1", "atom", "log", None,
                        "log entry", "2026-05-22T00:00:00Z")
-        _insert_memory(tmp_db, "atom_anchor_1", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_anchor_1", "user", "anchor", None,
                        "anchor", "2026-05-22T00:00:00Z")
 
         rc = memory_mod._cmd_get_relevant(_args())
@@ -265,9 +314,9 @@ class TestSupersedesExclusion:
     """Rows that are the dst of a supersedes edge are excluded."""
 
     def test_dst_of_supersedes_excluded(self, tmp_db, capsys):
-        _insert_memory(tmp_db, "atom_old_anchor", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_old_anchor", "user", "anchor", None,
                        "old", "2026-05-22T10:00:00Z")
-        _insert_memory(tmp_db, "atom_new_anchor", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_new_anchor", "user", "anchor", None,
                        "new", "2026-05-22T11:00:00Z")
         # new supersedes old: old must be excluded.
         _insert_link(tmp_db, "atom_new_anchor", "atom_old_anchor", "supersedes")
@@ -282,9 +331,9 @@ class TestSupersedesExclusion:
 
     def test_other_link_kinds_do_not_exclude(self, tmp_db, capsys):
         """relates_to / derived_from do NOT trigger exclusion."""
-        _insert_memory(tmp_db, "atom_a", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_a", "user", "anchor", None,
                        "a", "2026-05-22T10:00:00Z")
-        _insert_memory(tmp_db, "atom_b", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_b", "user", "anchor", None,
                        "b", "2026-05-22T11:00:00Z")
         _insert_link(tmp_db, "atom_b", "atom_a", "relates_to")
 
@@ -297,14 +346,14 @@ class TestSupersedesExclusion:
 
 
 class TestCharBudgetTrimOrder:
-    """Char budget trims thread_open first, then anchor; never carry_forward."""
+    """Char budget trims thread_open first, then carry_forward; anchors never."""
 
-    def test_trim_thread_open_before_anchor(self, tmp_db, capsys):
+    def test_trim_drains_thread_open_and_spares_the_anchors(self, tmp_db, capsys):
         # Wide rows ensure overflow.
         _insert_memory(tmp_db, "atom_carry", "atom", "thread", "carry_forward",
                        "x" * 60, "2026-05-22T12:00:00Z")
         for i in range(4):
-            _insert_memory(tmp_db, f"atom_anch_{i}", "atom", "anchor", None,
+            _insert_memory(tmp_db, f"atom_anch_{i}", "user", "anchor", None,
                            "y" * 60, f"2026-05-22T{10+i:02d}:00:00Z")
         for i in range(2):
             _insert_memory(tmp_db, f"atom_open_{i}", "atom", "thread", "open",
@@ -318,18 +367,23 @@ class TestCharBudgetTrimOrder:
         # carry_forward survives.
         names = {i["name"] for i in payload["items"]}
         assert "atom_carry" in names, "carry_forward MUST never be trimmed"
-        # thread/open should be the first to go.
-        open_count = sum(1 for i in payload["items"]
-                         if i["section"] == "thread_open")
-        anchor_count = sum(1 for i in payload["items"]
-                           if i["section"] == "anchor")
-        # In a tight budget thread_open should be empty before anchor is drained.
-        assert open_count == 0 or anchor_count > 0, (
-            "Expected trim order to drain thread_open before anchor"
+        # items_flat records selection; the rendered block is what was emitted.
+        block = payload["block"]
+        open_count = sum(1 for i in range(2) if f"- atom_open_{i}" in block)
+        anchor_count = sum(1 for i in range(4) if f"- atom_anch_{i}" in block)
+        assert open_count == 0, "Expected thread_open to absorb the trim"
+        assert anchor_count == 4, (
+            "An instruction is all-or-nothing: the anchor section is exempt "
+            "from char-budget trimming"
         )
-        assert len(payload["block"]) <= 300 + 100, (
-            "Block still must roughly fit budget (allow footer fudge)"
-        )
+        # max_chars still governs everything outside the exempt section.
+        anchor_header = memory_mod._SECTION_HEADERS["anchor"]
+        before_anchors, _, after_anchors = block.partition(anchor_header)
+        pointer_and_rest = after_anchors.partition(
+            memory_mod._MEMORY_POINTER
+        )[2]
+        outside = before_anchors + pointer_and_rest
+        assert len(outside) <= 300 + 100
 
     def test_carry_forward_hard_cap_respected(self, tmp_db, capsys):
         """Many large carry_forwards can no longer blow the budget: max_chars
@@ -366,7 +420,7 @@ class TestCharBudgetTrimOrder:
                 "y" * 500, f"2026-05-22T{i:02d}:00:00Z",
             )
         # A couple of anchors and open threads too.
-        _insert_memory(tmp_db, "anchor_1", "atom", "anchor", None,
+        _insert_memory(tmp_db, "anchor_1", "user", "anchor", None,
                        "z" * 400, "2026-05-22T23:00:00Z")
         _insert_memory(tmp_db, "open_1", "atom", "thread", "open",
                        "w" * 400, "2026-05-19T00:00:00Z")
@@ -381,7 +435,7 @@ class TestCharBudgetTrimOrder:
         """A small workspace under budget emits no overflow footer."""
         _insert_memory(tmp_db, "atom_cf_1", "atom", "thread", "carry_forward",
                        "short carry", "2026-05-22T10:00:00Z")
-        _insert_memory(tmp_db, "atom_anchor_1", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_anchor_1", "user", "anchor", None,
                        "short anchor", "2026-05-22T09:00:00Z")
 
         rc = memory_mod._cmd_get_relevant(_args())
@@ -397,7 +451,7 @@ class TestPerItemTruncation:
 
     def test_long_description_truncated(self, tmp_db, capsys):
         cap = memory_mod._RELEVANT_ITEM_DESC_MAX
-        _insert_memory(tmp_db, "atom_long", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_long", "atom", "thread", "open",
                        "q" * 500, "2026-05-22T10:00:00Z")
 
         rc = memory_mod._cmd_get_relevant(_args())
@@ -414,7 +468,7 @@ class TestPerItemTruncation:
         assert len(long_line) <= len("- atom_long: ") + cap + 1
 
     def test_short_description_not_truncated(self, tmp_db, capsys):
-        _insert_memory(tmp_db, "atom_short", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_short", "atom", "thread", "open",
                        "brief", "2026-05-22T10:00:00Z")
         rc = memory_mod._cmd_get_relevant(_args())
         payload = json.loads(capsys.readouterr().out)
@@ -452,10 +506,10 @@ class TestProjectTag:
     """project_ref renders as a short per-bullet tag when present."""
 
     def test_project_ref_git_path_renders_basename_tag(self, tmp_db, capsys):
-        _insert_memory(tmp_db, "atom_tagged", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_tagged", "atom", "thread", "open",
                        "tagged row", "2026-05-22T10:00:00Z",
                        project_ref="/home/jorge/ws/me/gaia/.git")
-        _insert_memory(tmp_db, "atom_untagged", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_untagged", "atom", "thread", "open",
                        "no tag", "2026-05-22T09:00:00Z", project_ref=None)
 
         rc = memory_mod._cmd_get_relevant(_args())
@@ -480,7 +534,7 @@ class TestEmptySectionsOmitHeader:
     """If a section has zero items, its header is omitted."""
 
     def test_only_anchors_no_threads(self, tmp_db, capsys):
-        _insert_memory(tmp_db, "atom_only_1", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_only_1", "user", "anchor", None,
                        "alone", "2026-05-22T10:00:00Z")
 
         rc = memory_mod._cmd_get_relevant(_args())
@@ -512,11 +566,11 @@ class TestProjectAwareInjection:
     def _seed(self, tmp_db, proj_dir):
         _insert_project(tmp_db, "p1", str(proj_dir.resolve()), "id/p1")
         # anchor rows across three anchoring states.
-        _insert_memory(tmp_db, "atom_mine", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_mine", "user", "anchor", None,
                        "mine", "2026-05-22T10:00:00Z", project_ref="id/p1")
-        _insert_memory(tmp_db, "atom_legacy", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_legacy", "user", "anchor", None,
                        "legacy null", "2026-05-22T09:00:00Z", project_ref=None)
-        _insert_memory(tmp_db, "atom_other", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_other", "user", "anchor", None,
                        "other project", "2026-05-22T11:00:00Z",
                        project_ref="id/other")
 
@@ -554,7 +608,7 @@ class TestHeaderStructure:
     def test_headers_render_with_em_dash(self, tmp_db, capsys):
         _insert_memory(tmp_db, "atom_carry_1", "atom", "thread", "carry_forward",
                        "carry", "2026-05-22T10:00:00Z")
-        _insert_memory(tmp_db, "atom_anchor_1", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_anchor_1", "user", "anchor", None,
                        "anchor", "2026-05-22T09:00:00Z")
         _insert_memory(tmp_db, "atom_open_1", "atom", "thread", "open",
                        "open", "2026-05-22T08:00:00Z")
@@ -587,7 +641,7 @@ class TestSectionsFilter:
     def _seed_all_three(self, tmp_db):
         _insert_memory(tmp_db, "atom_carry_1", "atom", "thread", "carry_forward",
                        "carry", "2026-05-22T10:00:00Z")
-        _insert_memory(tmp_db, "atom_anchor_1", "atom", "anchor", None,
+        _insert_memory(tmp_db, "atom_anchor_1", "user", "anchor", None,
                        "anchor", "2026-05-22T09:00:00Z")
         _insert_memory(tmp_db, "atom_open_1", "atom", "thread", "open",
                        "open", "2026-05-22T08:00:00Z")

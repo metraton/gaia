@@ -98,6 +98,7 @@ if str(_REPO_ROOT) not in _sys.path:
     _sys.path.insert(0, str(_REPO_ROOT))
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -587,17 +588,28 @@ def _cmd_conflicts(args) -> int:
 # ---------------------------------------------------------------------------
 
 def _resolve_workspace(explicit: str | None) -> str:
-    """Return the workspace identity, defaulting to ``gaia.project.current()``.
+    """Return the workspace whose curated memory this call should read.
 
-    Mirrors the resolver in ``bin/cli/brief.py`` so memory and brief subcommands
-    behave identically. Falls back to ``"me"`` when no workspace can be
-    inferred from the cwd.
+    Honours the dispatch env vars ahead of the cwd, mirroring
+    ``gaia.project.resolve_workspace``: a dispatched agent runs from a cwd that
+    is not necessarily its target workspace, and the env var carries the
+    intended attribution. The cwd step asks which workspace CONTAINS the
+    directory rather than what the directory is called -- naming it directly
+    made a read from inside a project resolve to the project, which is how
+    agents working in the gaia repo read an empty corpus.
+
+    Falls back to ``"me"`` rather than ``resolve_workspace``'s ``"global"``:
+    this is the personal-memory surface and "global" holds no curated rows.
     """
     if explicit:
         return explicit
+    for env_key in ("GAIA_DISPATCH_WORKSPACE", "GAIA_WORKSPACE"):
+        value = os.environ.get(env_key)
+        if value:
+            return value
     try:
-        from gaia.project import current as _project_current
-        ws = _project_current()
+        from gaia.project import containing_workspace
+        ws = containing_workspace()
         if ws:
             return ws
     except Exception:
@@ -1143,6 +1155,7 @@ def _cmd_list(args) -> int:
 
     if not rows:
         print("(no curated memory)")
+        _print_memory_pointer(as_json)
         return 0
     name_w = max(4, max(len(r["name"]) for r in rows))
     type_w = max(4, max(len(r["type"] or "") for r in rows))
@@ -1169,6 +1182,7 @@ def _cmd_list(args) -> int:
             f"{r.get('deliberate_count', 0):>5}  "
             f"{desc:<{desc_w}}"
         )
+    _print_memory_pointer(as_json)
     return 0
 
 
@@ -1205,12 +1219,25 @@ _RELEVANT_PER_TYPE_QUOTA = {
 # so max_chars is a genuinely HARD cap (see the char-budget block below).
 # anchors and thread/open rows get bounded quotas; class=log never injects.
 _RELEVANT_PER_CLASS_QUOTA = {
-    "anchor": 4,
     # Raised from 2 -> 4 now that each item is length-capped (below): stale
     # open threads are the rows that need attention, so we can afford to show
     # more of them without blowing the budget (they trim first under pressure).
     "thread_open": 4,
 }
+
+# The anchor section is INSTRUCTION, not an index, and a recency quota of 4 was
+# measured selecting against it: on 2026-08-15 editing two unrelated anchors
+# pushed user_intent_over_literal_request and user_registro_llano_ademas_del_
+# tecnico -- the rows governing how the user is read and addressed -- out of the
+# orchestrator's block, while the subagent kernel kept receiving them. So this
+# section mirrors the kernel's own selector (kernel_builder._executor_user_bodies):
+# type='user' rather than class='anchor' (which mixed in project anchors from
+# unrelated projects sharing the workspace), whole bodies rather than a capped
+# description, and a row bound high enough that it never adjudicates between two
+# instructions. A body past the ceiling is dropped rather than sliced -- half an
+# instruction reads as a whole one.
+_RELEVANT_USER_ANCHOR_ROW_LIMIT = 20
+_RELEVANT_USER_ANCHOR_BODY_CEILING = 20_000
 
 # Recency sub-cap for the carry_forward section. Before this cap, carry_forward
 # was unbounded and never trimmed, so a workspace with many carried threads blew
@@ -1266,19 +1293,46 @@ def _project_tag(project_ref) -> str:
 # verbatim from `gaia memory --help` (measured gap: the orchestrator once
 # called the non-existent `gaia memory get`, a natural blend of the two
 # verbs it HAD seen -- `show` via this pointer, `search` via the overflow
-# footer -- against the CLI's real fifteen subcommands). Every write/curate
-# verb (add, edit, append, reclassify, link, delete, checkpoint) is instead
-# routed to `Skill('memory')`, which owns the judgment those operations
-# need, rather than invited as a command to improvise. Its length is
-# RESERVED from the char budget before trimming, so block + pointer always
-# respects max_chars -- this guide must never be the line dropped by trim.
+# footer -- against the CLI's real fifteen subcommands).
+#
+# It routes by SUBJECT, not by class of operation. Routing by operation --
+# reads get a verb list, writes get the skill -- was measured wrong on
+# 2026-08-15: a turn asked for an executive summary read the anchor with
+# `show`, complied with the published mechanism exactly, and still produced a
+# complete and coherent analysis missing the row that OWNED the work, because
+# what skills/memory holds is the reading TECHNIQUE (sweep the initiative's
+# whole live-pending set before saying what it owes) and not the verb list.
+# The expensive error available in memory is a bad READ: reading a slice and
+# believing it was the corpus produces an answer nothing downstream catches.
+#
+# Its length is RESERVED from the char budget before trimming, so
+# block + pointer always respects max_chars -- this guide must never be the
+# line dropped by trim.
 _MEMORY_POINTER = (
-    "> Read — never invent a verb: `show <slug>`, `search <term>`, "
+    "> Memory is this turn's subject — reading it to decide something, "
+    "curating it, or triaging what a session injected: load `Skill('memory')` "
+    "BEFORE the first verb. It carries the reading technique, not just the "
+    "verb list, and the expensive error is reading a slice and taking it for "
+    "the corpus. Verbs, never invented: `show <slug>`, `search <term>`, "
     "`list --type <t>`, `get-relevant`, `story <slug>`, `conflicts`, "
-    "`stats`, `episode-show`. Write, close a thread, graduate, reclassify, "
-    "or delete: load `Skill('memory')` — it owns curation."
+    "`stats`, `episode-show`."
 )
 _MEMORY_POINTER_RESERVE = len(_MEMORY_POINTER) + 2  # +2 for the "\n\n" join
+
+
+def _print_memory_pointer(as_json: bool) -> None:
+    """Emit the pointer under a human-readable listing.
+
+    `list` and `search` are how a turn reaches memory when it does not already
+    know a slug, so they are the two surfaces where the guidance is most likely
+    to be the caller's only one -- until this, the pointer travelled with
+    `get-relevant` alone. Suppressed for JSON and for the bare-count format,
+    whose readers are programs.
+    """
+    if as_json:
+        return
+    print()
+    print(_MEMORY_POINTER)
 
 # Section headers (T7). Coordinated with T6 (skills/memory/SKILL.md):
 # the legacy "## Workspace Memory (<ws>)" block is retired in favor of
@@ -1450,8 +1504,8 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
             # supersedes edge. A row A with an incoming `supersedes` from B
             # means "B replaces A" -- A drops out of the injection.
             base_select = (
-                "SELECT name, type, description, updated_at, class, status, "
-                "       project_ref "
+                "SELECT name, type, description, body, updated_at, class, "
+                "       status, project_ref "
                 "FROM memory "
                 "WHERE workspace = ? "
                 # scan-v2 SV3: a soft-deleted (tombstoned) row must not be
@@ -1484,19 +1538,14 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 )
                 rows_by_section["carry_forward"] = [dict(r) for r in cur.fetchall()]
 
-            # Section 2: anchor.
+            # Section 2: anchor -- the user's durable instructions, whole.
             if "anchor" in active_sections:
-                anchor_quota = _RELEVANT_PER_CLASS_QUOTA["anchor"]
                 cur = con.execute(
                     base_select
-                    + "  AND class = 'anchor' "
-                    # Pin identity anchors (type=user) to the top so pure
-                    # recency can never bury the user's own anchor, then most
-                    # recent first within each group.
+                    + "  AND type = 'user' AND class = 'anchor' "
                     + "ORDER BY " + order_prefix
-                    + "CASE WHEN type = 'user' THEN 0 ELSE 1 END, "
                     + "COALESCE(updated_at, '') DESC "
-                    + f"LIMIT {anchor_quota}",
+                    + f"LIMIT {_RELEVANT_USER_ANCHOR_ROW_LIMIT}",
                     _section_params(),
                 )
                 rows_by_section["anchor"] = [dict(r) for r in cur.fetchall()]
@@ -1569,6 +1618,41 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
             return cut.rstrip() + "…"
         return text
 
+    def _build_anchor_section() -> list[str]:
+        """Render the user's instructions with their bodies intact.
+
+        Separate from _build_section because the two sections answer different
+        questions: the thread sections are an index a reader queries from, this
+        one is the instruction itself, and an instruction cut at 150 chars still
+        reads as complete while no longer saying what it said.
+        """
+        sub = rows_by_section.get("anchor", [])
+        if not sub:
+            return []
+        out = [_SECTION_HEADERS["anchor"], ""]
+        for r in sub:
+            name = r.get("name") or ""
+            body = (r.get("body") or "").strip()
+            if not body or len(body) > _RELEVANT_USER_ANCHOR_BODY_CEILING:
+                continue
+            body_lines = body.splitlines()
+            out.append(f"- {name}: {body_lines[0]}")
+            out.extend(f"  {line}" if line else "" for line in body_lines[1:])
+            out.append("")
+            items_flat.append({
+                "name": name,
+                "type": r.get("type"),
+                "class": r.get("class"),
+                "memory_status": r.get("status"),
+                "section": "anchor",
+                "description": body,
+                "project_ref": r.get("project_ref"),
+            })
+            telemetry_names_by_section["anchor"].append(name)
+        if len(out) <= 2:
+            return []
+        return out
+
     def _build_section(section_key: str) -> list[str]:
         sub = rows_by_section.get(section_key, [])
         if not sub:
@@ -1611,7 +1695,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     # contribute nothing (no header).
     lines: list[str] = []
     lines.extend(_build_section("carry_forward"))
-    lines.extend(_build_section("anchor"))
+    lines.extend(_build_anchor_section())
     lines.extend(_build_section("thread_open"))
 
     # Drop trailing blanks.
@@ -1684,7 +1768,10 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 
     overflow_count = 0
     if len(block) > trim_budget:
-        for trim_target in ("thread_open", "anchor", "carry_forward"):
+        # The anchor section is absent from the trim order on purpose: it is the
+        # only section whose value is all-or-nothing, so the char budget spends
+        # itself on the index sections and leaves the instructions whole.
+        for trim_target in ("thread_open", "carry_forward"):
             while len(block) > trim_budget and _trim_one(trim_target):
                 overflow_count += 1
                 while lines and lines[-1] == "":
@@ -2813,6 +2900,7 @@ def _cmd_search_scoped(args) -> int:
                     print(f"\n{i}. [{r['rank']:.4f}] {r['title'] or r['id']}")
                     print(f"   Date: {r['date']}")
                     print(f"   {r['snippet']}")
+        _print_memory_pointer(as_json)
         return 0
 
     # Curated-memory path (used by --scope=memory and --scope=both).
@@ -2837,6 +2925,7 @@ def _cmd_search_scoped(args) -> int:
                         print(f"   {r['description']}")
                     if r.get("snippet"):
                         print(f"   {r['snippet']}")
+        _print_memory_pointer(as_json)
         return 0
 
     # both: run episode FTS5 search (from gaia.db) + curated memory search
@@ -2861,6 +2950,7 @@ def _cmd_search_scoped(args) -> int:
         print(f"Curated ({len(curated)}):")
         for r in curated:
             print(f"  [{r['rank']:.4f}] {r['name']}  ({r['type']})")
+    _print_memory_pointer(as_json)
     return 0
 
 

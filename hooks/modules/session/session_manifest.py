@@ -100,10 +100,10 @@ def _read_workspace_identity() -> Optional[str]:
     import sqlite3
 
     try:
-        from gaia.project import current as _project_current
+        from gaia.project import containing_workspace
         from gaia.paths import db_path as _db_path
 
-        workspace = _project_current()
+        workspace = containing_workspace()
         if not workspace:
             return None
 
@@ -185,7 +185,12 @@ def build_environment_block() -> str:
 
         lines = ["## Environment"]
         if workspace:
-            lines.append(f"- Workspace: {workspace}")
+            # Not "Workspace": the bare word reads as "where we are working",
+            # and this value is where GAIA is installed -- the orchestrator is
+            # born in the installation's workspace (me) even when the session's
+            # subject lives in another one. The value stays because memory and
+            # the database are scoped by it; only the label was lying.
+            lines.append(f"- Gaia workspace (memory/db scope): {workspace}")
         lines.append(f"- Machine: {machine}")
         if version:
             lines.append(f"- Gaia: {_describe_gaia_version(version)}")

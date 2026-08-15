@@ -354,6 +354,60 @@ def merge(
     return result
 
 
+def containing_workspace(cwd: Path | str | None = None) -> str:
+    """Resolve which workspace a directory BELONGS TO, not what it is called.
+
+    :func:`current` answers "what repository am I in" and names its answer a
+    workspace identity, which is the same string only when the repository IS a
+    workspace root. Standing inside a project of a workspace it answers with
+    the project: measured on 2026-08-14, a read from ``/home/jorge/ws/me/gaia``
+    resolved to workspace ``gaia`` -- a real row with zero curated memory -- so
+    every agent working inside that repo read an empty corpus while the same
+    command one directory up returned 1128 rows.
+
+    The projects table already records the relation (workspace, path), so the
+    containing workspace is a lookup rather than an inference. The longest
+    matching path wins, since a project nested inside another must resolve to
+    its own row. Falls back to :func:`current` when no project contains the
+    directory -- a workspace root, or a directory Gaia has never scanned.
+    """
+    target = Path(cwd) if cwd is not None else Path.cwd()
+    try:
+        target = target.resolve()
+    except (OSError, RuntimeError):
+        return current(cwd)
+
+    try:
+        import sqlite3
+        from gaia.paths import db_path
+
+        db_file = db_path()
+        if not db_file or not db_file.exists():
+            return current(cwd)
+        con = sqlite3.connect(str(db_file))
+        try:
+            rows = con.execute(
+                "SELECT workspace, path FROM projects WHERE path IS NOT NULL"
+            ).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return current(cwd)
+
+    best_workspace = ""
+    best_length = -1
+    for workspace, path in rows:
+        if not workspace or not path:
+            continue
+        candidate = Path(path)
+        if target != candidate and candidate not in target.parents:
+            continue
+        if len(str(candidate)) > best_length:
+            best_workspace = workspace
+            best_length = len(str(candidate))
+    return best_workspace or current(cwd)
+
+
 # ---------------------------------------------------------------------------
 # Discovery: list_known()
 # ---------------------------------------------------------------------------

@@ -206,7 +206,12 @@ class TestDigestModeInjection:
 class TestSectionsModeInjection:
     def _args(self, **overrides):
         base = {
-            "workspace": _WORKSPACE, "limit": 8, "max_chars": 560,
+            # The scenario is pinned to the CONTENT budget the renderer is left
+            # with, not to a raw number: the pointer's width is reserved off
+            # max_chars first, so hardcoding the total re-tunes the fixture
+            # every time the pointer's wording changes.
+            "workspace": _WORKSPACE, "limit": 8,
+            "max_chars": 306 + memory_mod._MEMORY_POINTER_RESERVE,
             "types": None, "sections": "anchor,thread_open",
             "initiative": None, "json": True,
             "func": memory_mod._cmd_get_relevant,
@@ -220,8 +225,9 @@ class TestSectionsModeInjection:
         # section span, and section rows are fetched stalest-first) while
         # the anchor and the stalest thread_open row both survive. Verified
         # empirically against the real renderer before being pinned here.
-        _insert(tmp_db, "anchor_1", class_="anchor", status=None,
-                desc="y" * 60, updated_at="2026-08-12T09:00:00Z")
+        _insert(tmp_db, "anchor_1", type_="user", class_="anchor", status=None,
+                desc="y" * 60, body="y" * 60,
+                updated_at="2026-08-12T09:00:00Z")
         _insert(tmp_db, "open_old", class_="thread", status="open",
                 desc="z" * 80, updated_at="2026-08-12T08:00:00Z")
         _insert(tmp_db, "open_new", class_="thread", status="open",
