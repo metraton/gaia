@@ -4145,6 +4145,52 @@ class ClaudeCodeAdapter(HookAdapter):
                 result["systemMessage"] = _cut_notice
                 result["hookSpecificOutput"] = {"hookEventName": "SubagentStop"}
 
+            # ----------------------------------------------------------
+            # user_facing_summary relay.
+            #
+            # The envelope's one human-audience field, delivered off the SAME
+            # envelope the gate treated as authoritative -- so what the user
+            # reads and the verdict that let the turn close come from one
+            # artifact, not from the message text the fence retirement removes.
+            # It travels by systemMessage because the other stdout channel,
+            # hookSpecificOutput.additionalContext, is handed back to the
+            # subagent as a system reminder and RESUMES the turn being closed.
+            # A rejected or cut turn is excluded: its systemMessage already
+            # says its work is not a valid close, which relaying a summary
+            # would contradict.
+            #
+            # N is NOT decided here. This seam sees one subagent closing and
+            # cannot know how many ran, so the field's own rule -- relayed
+            # near-verbatim at N=1, ignored at N>1 -- stays the orchestrator's
+            # to apply; the relay only makes the value reachable without a
+            # second read.
+            # ----------------------------------------------------------
+            if (
+                not contract_rejected
+                and not _circuit_tripped
+                and isinstance(_authoritative_envelope, dict)
+            ):
+                try:
+                    from modules.agents.contract_validator import (
+                        parse_user_facing_summary,
+                    )
+
+                    _user_summary = parse_user_facing_summary(_authoritative_envelope)
+                except Exception as _summary_exc:
+                    _user_summary = None
+                    logger.debug(
+                        "user_facing_summary relay skipped (non-fatal): %s",
+                        _summary_exc,
+                    )
+                if _user_summary:
+                    result["user_facing_summary"] = _user_summary
+                    result["systemMessage"] = (
+                        f"Resumen de {agent_type} para el usuario: {_user_summary}"
+                    )
+                    result.setdefault(
+                        "hookSpecificOutput", {"hookEventName": "SubagentStop"}
+                    )
+
             # A rejection sends the turn back to the SUBAGENT, whose repair
             # message then REPLACES the rejected one in everything the
             # orchestrator receives -- so the substantive work of the rejected

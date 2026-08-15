@@ -22,14 +22,12 @@ import pytest
 HOOKS_DIR = Path(__file__).resolve().parents[4] / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
+from modules.agents import response_contract as response_contract_module  # noqa: E402
 from modules.agents.contract_validator import (  # noqa: E402
     parse_user_facing_summary as cv_parse_user_facing_summary,
     validate,
 )
-from modules.agents.response_contract import (  # noqa: E402
-    parse_user_facing_summary as rc_parse_user_facing_summary,
-    validate_response_contract,
-)
+from modules.agents.response_contract import validate_response_contract  # noqa: E402
 
 
 _BASE_EVIDENCE = {
@@ -148,11 +146,17 @@ class TestParseUserFacingSummary:
         parsed = parse_contract(_wrap(_contract(with_summary=False)))
         assert cv_parse_user_facing_summary(parsed) is None
 
-    def test_response_contract_parser_from_raw_output(self):
-        """The response_contract variant parses straight from agent_output."""
-        output = _wrap(_contract(with_summary=True))
-        text = rc_parse_user_facing_summary(output)
-        assert text is not None and "Restart Claude Code" in text
+    def test_only_one_definition_exists(self):
+        """One parser, one calling convention.
+
+        The field used to be parsed by two bodies: this dict-in one, beside its
+        sibling clause parsers, and a text-in copy in response_contract that
+        front-doored through parse_contract(agent_output). The text front door
+        is the delivery channel being retired, and the authoritative envelope
+        is already a dict, so the copy went rather than being kept in sync.
+        """
+        assert not hasattr(response_contract_module, "parse_user_facing_summary")
+        assert "parse_user_facing_summary" not in response_contract_module.__all__
 
     def test_blank_summary_is_none(self):
         from modules.agents.contract_validator import parse_contract
