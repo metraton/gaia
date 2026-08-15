@@ -188,27 +188,25 @@ if __name__ == "__main__":
         except Exception as _ag_exc:
             logger.debug("cleanup_expired_grants failed (non-fatal): %s", _ag_exc)
 
-        # TTL-sweep stale DB pending approvals (AC-2). This is pure hygiene:
-        # pendings are no longer surfaced into the session context, but the DB
-        # is still the canonical pending store (read on demand by `gaia
-        # approvals` and by session-agnostic grant matching), so orphans that
-        # aged past DEFAULT_PENDING_TTL_MINUTES must still be reaped. The sweep
-        # also runs at SubagentStop (via approval_cleanup.cleanup()); running it
-        # here too -- GLOBAL across sessions, same as the SubagentStop sweep --
-        # transitions genuinely stale rows to 'expired' even when no subagent is
-        # dispatched (or a session dies). force=True semantics do not apply here
-        # (there is no throttle on this sweep); non-fatal like the grant cleanup
-        # above.
+        # Stale DB pendings are REPORTED here, never reaped. An approval belongs
+        # to the user's session, so a sweep firing at launch can transition one
+        # the user is about to grant in another window -- and a pending goes
+        # stale at the moment its own agent finishes without using it, which is
+        # SubagentStop (approval_cleanup.cleanup()), the only place that
+        # knowledge exists. The count goes to the log, not into the injected
+        # context: the actionable pendings block was withdrawn deliberately, and
+        # `gaia approvals` is where the user inspects them on demand.
         try:
-            from modules.security.approval_cleanup import expire_db_pendings
-            _expired_pendings = expire_db_pendings(agent_type="session_start", session_id=_sid)
-            if _expired_pendings:
+            from modules.security.approval_cleanup import count_stale_db_pendings
+            _stale_pendings = count_stale_db_pendings()
+            if _stale_pendings:
                 logger.info(
-                    "approval_cleanup: expired %d stale DB pending(s) at SessionStart",
-                    _expired_pendings,
+                    "approval_cleanup: %d DB pending(s) past TTL at SessionStart "
+                    "(reported only; SubagentStop reaps them)",
+                    _stale_pendings,
                 )
         except Exception as _pend_exc:
-            logger.debug("expire_db_pendings failed (non-fatal): %s", _pend_exc)
+            logger.debug("count_stale_db_pendings failed (non-fatal): %s", _pend_exc)
 
         # Throttled DB auto-backup (AC-7). The user DB (~/.gaia/gaia.db) is
         # precious; back it up automatically, but SessionStart fires many

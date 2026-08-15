@@ -25,8 +25,13 @@ widening to all sessions cannot regress the P-3d23 invariant.
 Also performs DB-backed soft-expire of PENDING approval_grants rows whose
 expires_at timestamp has passed (M3 addition).
 
+Reaping belongs to SubagentStop and nowhere else. SessionStart calls
+count_stale_db_pendings() instead: an approval is the user's, and a sweep at
+launch can transition one they are about to grant in another window.
+
 Provides:
     - cleanup(): Expire genuinely-aged pending DB approvals for the session
+    - count_stale_db_pendings(): Count past-TTL pendings, transitioning none
     - expire_db_pendings(): TTL-sweep PENDING approvals past their pending TTL
     - expire_db_grants(): Soft-expire PENDING DB grants past their expires_at
     - consume_approval_file(): Backward-compatible alias for cleanup()
@@ -86,6 +91,38 @@ def expire_db_grants(session_id: Optional[str] = None) -> int:
     except Exception as exc:
         logger.debug("expire_db_grants (non-fatal): %s", exc)
         return 0
+
+
+def count_stale_db_pendings() -> int:
+    """Count pendings past their TTL WITHOUT transitioning any of them.
+
+    SessionStart used to run the expiry sweep itself. It must not: an approval
+    belongs to the USER's session, and a sweep firing at launch can transition
+    one the user is about to grant in another window. The moment a pending
+    genuinely goes stale is the moment its own agent finishes without using it,
+    which is SubagentStop -- the only place where that knowledge exists.
+
+    So SessionStart reports and SubagentStop reaps. Returns 0 on any failure:
+    a count is never worth blocking session start over.
+    """
+    try:
+        from gaia.approvals.store import list_pending
+        from modules.security.approval_grants import DEFAULT_PENDING_TTL_MINUTES
+    except ImportError as exc:
+        logger.debug("count_stale_db_pendings: unavailable (non-fatal): %s", exc)
+        return 0
+
+    try:
+        rows = list_pending(session_id=None, all_sessions=True)
+    except Exception as exc:
+        logger.debug("count_stale_db_pendings: list_pending failed: %s", exc)
+        return 0
+
+    ttl_seconds = DEFAULT_PENDING_TTL_MINUTES * 60
+    return sum(
+        1 for row in rows
+        if (row.get("age_seconds", 0.0) or 0.0) >= ttl_seconds
+    )
 
 
 def expire_db_pendings(
