@@ -117,10 +117,28 @@ _DISPATCHED_STATE = "DISPATCHED"
 # to recognize WHICH block the harness surfaced, not enough to bloat the row.
 _PREVIEW_CHARS = 400
 
-# Grace window for a finalize still in flight -- see _await_finalization. Two
-# sleeps of a quarter second bound the added latency at half a second, and only
-# on the path that is about to record a cut (163 events in two months).
-_FINALIZE_GRACE_ATTEMPTS = 3
+# Grace window for a finalize still in flight -- see _await_finalization.
+#
+# NOT calibrated on a fine measurement, and cannot be: both timestamp sources
+# this signature has (harness_events, agent_contract_handoffs) record
+# whole-second resolution with no sub-second component, coarser than any
+# sub-second window -- so no measurement can validate a shorter number over a
+# longer one here. Do not shorten this on the impression that it "looks long";
+# that impression is not backed by data that could exist.
+#
+# Sized instead by cost asymmetry: the wait is paid only on the rare path about
+# to record a cut (163 events in two months, never on an ordinary turn), so
+# widening it is nearly free, while misreading a clean close as a cut
+# contaminates exactly the cut data this signature exists to measure -- so
+# under-sizing it is not free at all. That asymmetry, not precision, is why the
+# total sits at 2.5s.
+#
+# The quarter-second interval is unchanged: it re-queries the row directly
+# rather than reading a clock, so shortening it loses no information, and it is
+# what lets the dominant race (p50 = 0s, see _await_finalization) resolve
+# almost immediately. Only the retry count moved, 3 -> 11 (2 -> 10 retries),
+# to raise the bound from ~0.5s to 2.5s without slowing the common, fast case.
+_FINALIZE_GRACE_ATTEMPTS = 11
 _FINALIZE_GRACE_SECONDS = 0.25
 
 
