@@ -4164,8 +4164,9 @@ class ClaudeCodeAdapter(HookAdapter):
             # N is NOT decided here. This seam sees one subagent closing and
             # cannot know how many ran, so the field's own rule -- relayed
             # near-verbatim at N=1, ignored at N>1 -- stays the orchestrator's
-            # to apply; the relay only makes the value reachable without a
-            # second read.
+            # to apply. The relay reaches the USER, the one place systemMessage
+            # lands; the orchestrator never receives this value on this channel
+            # and reads it from the contract row when it needs it.
             # ----------------------------------------------------------
             if (
                 not contract_rejected
