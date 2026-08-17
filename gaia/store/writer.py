@@ -6052,6 +6052,41 @@ def relocate_memory(
 # `--decision` handling; this writer is only invoked for 'movido').
 # ---------------------------------------------------------------------------
 
+def _project_child_fk_tables(con: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    """Discover every table FK'd to ``projects(workspace, name)``.
+
+    Derived from the live schema via ``PRAGMA foreign_key_list`` rather than
+    hard-coded, so a future child table (a new scanner-owned facet) is picked
+    up automatically instead of silently bypassing the re-key below.
+
+    Returns:
+        List of (table, workspace_column, project_column) tuples -- the two
+        columns in ``table`` that together form the FK to
+        ``projects(workspace, name)``.
+    """
+    tables = [
+        row["name"]
+        for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    ]
+    child_fks: list[tuple[str, str, str]] = []
+    for table in tables:
+        if table == "projects":
+            continue
+        fk_rows = con.execute(f"PRAGMA foreign_key_list({table})").fetchall()
+        by_id: dict[int, list[sqlite3.Row]] = {}
+        for fk_row in fk_rows:
+            if fk_row["table"] != "projects":
+                continue
+            by_id.setdefault(fk_row["id"], []).append(fk_row)
+        for fk_group in by_id.values():
+            to_from = {row["to"]: row["from"] for row in fk_group}
+            if "name" in to_from and "workspace" in to_from:
+                child_fks.append((table, to_from["workspace"], to_from["name"]))
+    return child_fks
+
+
 def resolve_move_candidate(
     from_workspace: str,
     from_name: str,
@@ -6072,7 +6107,14 @@ def resolve_move_candidate(
       * successor row ABSENT  -> re-key the old row in place: update its
         (workspace, name) to the successor location, flip status back to
         'active', clear missing_since. The row's data travels intact.
-        action='rekeyed'.
+        action='rekeyed'. Every scanner-owned child table FK'd to
+        ``projects(workspace, name)`` (``project_facets``, ``apps``,
+        ``libraries``, ``services``, ``features``, ``tf_modules``, ``tf_live``,
+        ``releases``, ``workloads``, ``clusters_defined``) is re-keyed in the
+        same transaction, under ``PRAGMA defer_foreign_keys = ON`` -- neither
+        parent-first nor child-first order satisfies the FK mid-transaction
+        (the row not yet updated points at a key that does not exist), so
+        enforcement is deferred to COMMIT, when the whole set is consistent.
 
     Curated memory / PCC are NOT moved here -- they are proposed for a separate
     `move-memory` / `move-contracts` step. This function only touches the
@@ -6091,7 +6133,11 @@ def resolve_move_candidate(
         {"status": "applied"|"preview", "action": "superseded"|"rekeyed",
          "from": {"workspace","name"}, "to": {"workspace","name"},
          "superseded_by": <successor project_identity or None>,
-         "proposed_relocations": {"memory": <n>, "contracts": <n>}}.
+         "proposed_relocations": {"memory": <n>, "contracts": <n>},
+         "children_migrated": {<table>: <row count re-keyed>, ...}}.
+         ``children_migrated`` is empty for the 'superseded' action (children
+         stay on the surviving successor row; nothing to migrate) and for a
+         childless 'rekeyed' row (migrating zero children is a no-op).
 
     Raises:
         ValueError: when the old row does not exist, or from == to.
@@ -6159,12 +6205,30 @@ def resolve_move_candidate(
                         "WHERE workspace = ? AND name = ?",
                         (to_workspace, to_name),
                     )
+                children_migrated: dict[str, int] = {}
             else:
                 # Successor slot is free: re-key the old row in place. The row's
                 # identity + description + remote travel with it (data preserved).
                 action = "rekeyed"
                 superseded_by = old["project_identity"]
+                children_migrated = {}
                 if not dry_run:
+                    # Deferred FK enforcement: neither migrating the children
+                    # first (they would momentarily point at a parent key that
+                    # no longer exists once renamed) nor the parent first
+                    # (children still point at the OLD key, now orphaned)
+                    # satisfies `FOREIGN KEY ... ON DELETE CASCADE` mid-flight
+                    # -- these FKs have no ON UPDATE clause. Deferring checks
+                    # to COMMIT lets both writes land before enforcement runs.
+                    con.execute("PRAGMA defer_foreign_keys = ON")
+                    for table, ws_col, proj_col in _project_child_fk_tables(con):
+                        cur = con.execute(
+                            f"UPDATE {table} SET {ws_col} = ?, {proj_col} = ? "
+                            f"WHERE {ws_col} = ? AND {proj_col} = ?",
+                            (to_workspace, to_name, from_workspace, from_name),
+                        )
+                        if cur.rowcount:
+                            children_migrated[table] = cur.rowcount
                     con.execute(
                         "UPDATE projects SET workspace = ?, name = ?, "
                         "status = 'active', missing_since = NULL "
@@ -6189,6 +6253,7 @@ def resolve_move_candidate(
             "memory": proposed_memory,
             "contracts": proposed_contracts,
         },
+        "children_migrated": children_migrated,
     }
 
 

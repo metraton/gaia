@@ -15,7 +15,7 @@ NOTE (scan-v2 SV4): a `delete_projects` writer + `gaia context delete-projects`
 CLI verb previously lived here (targeted hard-deletion of `projects` rows).
 Both were removed -- agents must never hold the power to hard-delete project
 rows; it was a one-time reconciliation tool, not a standing capability. See
-`tests/unit/test_resolve_move_candidate.py` for the sanctioned move-adjudication
+the `TestResolveMove*` classes below for the sanctioned move-adjudication
 path (re-key + tombstone via `superseded_by`, never a hard delete).
 
 All tests run against a fresh temp DB (writer._connect materializes schema.sql
@@ -681,6 +681,107 @@ class TestResolveMoveMovidoRekey:
         n = con.execute("SELECT COUNT(*) c FROM projects").fetchone()["c"]
         con.close()
         assert n == 1
+
+
+def _seed_project_facet(db_path: Path, workspace: str, project: str,
+                        scope: str, key: str, value: str = "v") -> None:
+    con = _conn(db_path)
+    try:
+        con.execute(
+            "INSERT INTO project_facets (workspace, project, scope, key, value) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (workspace, project, scope, key, value),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _seed_app(db_path: Path, workspace: str, project: str, name: str,
+              kind: str = "service") -> None:
+    con = _conn(db_path)
+    try:
+        con.execute(
+            "INSERT INTO apps (workspace, project, name, kind) VALUES (?, ?, ?, ?)",
+            (workspace, project, name, kind),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+class TestResolveMoveMovidoRekeyChildren:
+    """AC-4: re-keying a project with children in MULTIPLE scanner-owned
+    tables must complete without a FOREIGN KEY IntegrityError, and every
+    child row must land on the new (workspace, name) key -- none orphaned,
+    none lost."""
+
+    def test_migrates_children_across_multiple_tables(self, db):
+        _seed_workspace(db, "old-ws")
+        _seed_project(db, "old-ws", "moved-proj",
+                      status="missing", path="/old/moved-proj",
+                      pid="stable/identity/.git")
+        _seed_workspace(db, "new-ws")  # successor slot is free
+
+        # Children in two DIFFERENT tables, project_facets with two rows.
+        _seed_project_facet(db, "old-ws", "moved-proj", "language", "python")
+        _seed_project_facet(db, "old-ws", "moved-proj", "framework", "nestjs")
+        _seed_app(db, "old-ws", "moved-proj", "api")
+
+        res = resolve_move_candidate(
+            "old-ws", "moved-proj", "new-ws", "moved-proj", db_path=db
+        )
+
+        assert res["action"] == "rekeyed"
+        assert res["children_migrated"] == {"project_facets": 2, "apps": 1}
+
+        con = _conn(db)
+        try:
+            # No orphans left under the OLD key in either table.
+            old_facets = con.execute(
+                "SELECT COUNT(*) c FROM project_facets "
+                "WHERE workspace = 'old-ws' AND project = 'moved-proj'"
+            ).fetchone()["c"]
+            old_apps = con.execute(
+                "SELECT COUNT(*) c FROM apps "
+                "WHERE workspace = 'old-ws' AND project = 'moved-proj'"
+            ).fetchone()["c"]
+            assert old_facets == 0
+            assert old_apps == 0
+
+            # Nothing lost: both facet rows + the app row now point at the
+            # new key.
+            new_facets = con.execute(
+                "SELECT scope, key FROM project_facets "
+                "WHERE workspace = 'new-ws' AND project = 'moved-proj' "
+                "ORDER BY scope"
+            ).fetchall()
+            new_apps = con.execute(
+                "SELECT name FROM apps "
+                "WHERE workspace = 'new-ws' AND project = 'moved-proj'"
+            ).fetchall()
+        finally:
+            con.close()
+        assert {(r["scope"], r["key"]) for r in new_facets} == {
+            ("framework", "nestjs"), ("language", "python"),
+        }
+        assert {r["name"] for r in new_apps} == {"api"}
+
+    def test_zero_children_is_a_noop(self, db):
+        # The existing rekey coverage (TestResolveMoveMovidoRekey) seeds a
+        # childless project; migrating zero children must not raise and must
+        # not report any migrated table.
+        _seed_workspace(db, "old-ws")
+        _seed_project(db, "old-ws", "moved-proj",
+                      status="missing", path="/old/moved-proj",
+                      pid="stable/identity/.git")
+        _seed_workspace(db, "new-ws")
+
+        res = resolve_move_candidate(
+            "old-ws", "moved-proj", "new-ws", "moved-proj", db_path=db
+        )
+        assert res["action"] == "rekeyed"
+        assert res["children_migrated"] == {}
 
 
 class TestResolveMoveSafety:
