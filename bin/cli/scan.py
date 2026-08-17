@@ -177,6 +177,21 @@ def _render_human(report, *, dry_run: bool) -> None:
                     f"  ! promotion-rejected project={rej.get('name')} "
                     f"reasons={rej.get('reasons')}"
                 )
+            # AC-2: two promotable repos resolved by remote to the same
+            # contract entry in this run -- detected and DIVERTED (each kept
+            # its own entry), not a completed merge. Mirrors the repo-collision
+            # block above, one layer up (contract entries, not projects rows).
+            if promo.get("collisions"):
+                print(
+                    f"{prefix}WARNING -- promotion collisions "
+                    f"(same contract entry claimed twice, diverted not merged):"
+                )
+                for col in promo["collisions"]:
+                    print(
+                        f"  ! project={col.get('project')} path={col.get('path')} "
+                        f"matched_slug={col.get('matched_slug')} "
+                        f"-> assigned_slug={col.get('assigned_slug')}"
+                    )
 
     if not dry_run:
         print(f"{prefix}marked_missing     : {report.marked_missing}")

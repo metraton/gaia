@@ -364,13 +364,25 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
     repo -- the exact defect this guards against, while still letting a repo
     that only MOVED (a single promotable row this run) follow its remote match
     to its new path, since nothing else in this run has claimed that slug.
+
+    AC-2: a diversion (the claimed-slug skip actually changing the outcome) is
+    not just avoided, it is REPORTED. ``raw_slug`` recomputes the SAME match
+    with no claim filter -- what this project would have resolved to before
+    the per-run scoping existed. When that differs from the claim-scoped
+    ``slug`` actually used, two promotable rows this run resolved by remote to
+    the same contract entry; each got its own slug instead of one clobbering
+    the other. This is a diversion, not a completed merge: no data was lost,
+    so the trace records what was resolved, not what was "lost".
     """
     result = copy.deepcopy(existing_map)
     used = set(result.keys())
     claimed: set = set()
     added = refreshed = 0
+    collisions: list = []
     for proj in promotable:
+        raw_slug = _match_slug(result, proj)
         slug = _match_slug(result, proj, claimed)
+        diverted = raw_slug is not None and raw_slug != slug
         if slug is None:
             slug = _new_slug(proj.get("name") or "", used)
             used.add(slug)
@@ -381,12 +393,29 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
         else:
             if _apply_scan_owned(result[slug], proj):
                 refreshed += 1
+        if diverted:
+            collisions.append({
+                "kind": "promotion_collision",
+                "project": proj.get("name"),
+                "path": proj.get("path"),
+                "remote_url": proj.get("remote_url"),
+                "matched_slug": raw_slug,
+                "assigned_slug": slug,
+                "message": (
+                    f"project {proj.get('name')!r} at {proj.get('path')} "
+                    f"resolves by remote to contract entry {raw_slug!r}, "
+                    f"already claimed by another repo promoted in this same "
+                    f"run; assigned its own entry {slug!r} instead of "
+                    f"merging into it."
+                ),
+            })
         claimed.add(slug)
     marked = _mark_missing(result, list(missing))
     return result, {
         "added_entries": added,
         "refreshed_entries": refreshed,
         "marked_missing_entries": marked,
+        "collisions": collisions,
     }
 
 
@@ -403,6 +432,7 @@ def _merge_flat(existing: dict, proj: dict) -> tuple[dict, dict]:
         "added_entries": 0,
         "refreshed_entries": refreshed,
         "marked_missing_entries": 0,
+        "collisions": [],
     }
 
 
@@ -624,6 +654,7 @@ def promote_workspace(
         "added_entries": 0,
         "refreshed_entries": 0,
         "marked_missing_entries": 0,
+        "collisions": [],
         "rejected": [],
         "warnings": [],
         "preview": None,
@@ -657,6 +688,7 @@ def promote_workspace(
     report["added_entries"] = stats["added_entries"]
     report["refreshed_entries"] = stats["refreshed_entries"]
     report["marked_missing_entries"] = stats["marked_missing_entries"]
+    report["collisions"] = stats.get("collisions", [])
     report["preview"] = new_payload
 
     if not _stats_changed(stats):

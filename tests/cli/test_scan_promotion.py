@@ -298,6 +298,9 @@ def test_moved_repo_still_matches_by_remote_and_updates_local_path(tmp_db):
     rep = promote_workspace(ws, db_path=tmp_db, apply=True)
     assert rep["added_entries"] == 0
     assert rep["refreshed_entries"] == 1
+    # No spurious collision: a single promotable row this run has nothing to
+    # collide with, so the moved-repo case must never populate this trace.
+    assert rep["collisions"] == []
 
     after = _read_contract(tmp_db, ws)
     # Still exactly ONE entry -- matched by remote, not duplicated.
@@ -340,6 +343,38 @@ def test_two_live_clones_of_same_remote_do_not_merge_into_one_entry(tmp_db):
     assert by_path[path_two]["name"] == "clone-two"
     for entry in payload.values():
         assert entry["remote_url"] == remote
+
+
+def test_two_live_clones_collision_is_reported_in_structured_report(tmp_db):
+    """AC-2 -- now that the two clones are DETECTED and DIVERTED (task 439's
+    fix, above), this task requires the diversion to be REPORTED: the
+    structured report must carry an explicit trace, not just added/refreshed
+    counters (the real incident's only trace was `added=33 refreshed=1`).
+
+    The trace describes what actually happened -- a collision resolved by
+    giving each repo its own entry -- not a completed merge or data loss."""
+    from tools.scan.promote import promote_workspace
+    ws = "ws-two-clones-reported"
+    remote = "git@github.com:o/shared-remote.git"
+    path_one = "/home/u/ws/harness/clone-one"
+    path_two = "/home/u/ws/_duplicados/clone-two"
+    _seed_project(tmp_db, ws, "clone-one", path=path_one,
+                  identity=f"{path_one}/.git", remote=remote)
+    _seed_project(tmp_db, ws, "clone-two", path=path_two,
+                  identity=f"{path_two}/.git", remote=remote)
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["added_entries"] == 2
+
+    collisions = rep["collisions"]
+    assert len(collisions) == 1
+    col = collisions[0]
+    assert col["kind"] == "promotion_collision"
+    assert col["project"] == "clone-two"
+    assert col["path"] == path_two
+    assert col["matched_slug"] == "clone_one"
+    assert col["assigned_slug"] == "clone_two"
+    assert "shared-remote" in col["remote_url"]
 
 
 # ---------------------------------------------------------------------------
@@ -820,6 +855,35 @@ def test_cli_scan_apply_promotes_into_contract(tmp_path, monkeypatch, capsys):
     assert payload, "promotion did not write the project_identity contract"
     entry = next(iter(payload.values()))
     assert entry.get("local_path", "").endswith("aos-iac")
+
+
+def test_cli_scan_prints_promotion_collision_warning(tmp_path, monkeypatch, capsys):
+    """AC-2 -- end-to-end: `gaia scan` (human, non-JSON output) over a fixture
+    of two real clones of the same remote prints the visible WARNING block,
+    analogous to the repo-collision block classify.py already emits for the
+    rows layer (bin/cli/scan.py ~L93-99)."""
+    import subprocess
+    import cli.scan as scan_mod
+
+    gaia_dir = tmp_path / "gaia-data"
+    gaia_dir.mkdir()
+    monkeypatch.setenv("GAIA_DATA_DIR", str(gaia_dir))
+
+    ws_root = tmp_path / "ws-dup-clones"
+    remote = "git@github.com:o/shared-remote.git"
+    for repo_name in ("clone-one", "clone-two"):
+        repo = ws_root / repo_name
+        repo.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "remote", "add", "origin", remote], cwd=repo, check=True)
+
+    args = _MockArgs(workspace="ws-dup-clones", root=str(ws_root))
+    rc = scan_mod.cmd_scan(args)
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "WARNING -- promotion collisions" in out
+    assert "matched_slug=clone_one -> assigned_slug=clone_two" in out
 
 
 def test_cli_scan_dry_run_previews_promotion_without_db(tmp_path, monkeypatch, capsys):
