@@ -137,7 +137,10 @@ fingerprint as specified by `agent-approval-protocol`.
 
 ## Other optional fields
 
-- `user_facing_summary`: human prose.
+- `user_facing_summary`: human prose, for the end user.
+- `report_prose`: narrow narrative field -- why/discovery-order/purpose-frame/synthesis, never
+  evidence, addressed to the orchestrator and the next agent, not the end user; full definition and
+  the line against `user_facing_summary` in `agent-protocol`.
 - `memory_delta`, `memorialize_suggestions`, `memory_suggestions`: proposals,
   never write authority.
 - `update_contracts`: `{contract, payload}` entries, deep-merged only into the

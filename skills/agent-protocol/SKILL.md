@@ -50,6 +50,15 @@ the moment you SEARCH, not at the close, and above all when the search returns N
 opened comes back in `files_checked` and the command you ran comes back in `commands_run`, but a `grep`
 that matched zero lines is held by no other field -- unwritten as it happens, the negative it proves is gone.
 
+`report_prose` sits beside these seven lists, never inside them: it carries the why (a hypothesis
+dropped, a path chosen over another), the discovery order when it explains the result, the purpose
+frame this turn served inside something larger, and the synthesis judgment answering the assignment's
+question -- for the orchestrator and the next agent reading this row by coordinate, never the end
+user. No evidence belongs here: a figure, a command, a path, or a literal output that lives ONLY in
+`report_prose` is in the wrong field, and re-narrating what a list already states is not written at
+all. (`user_facing_summary`, in `agent-contract-handoff`, is the separate end-user-facing line; the
+two coexist and only this one is defined here.)
+
 ## 6. The phase is declared before doing that phase's work
 
 Write `framing`, `investigating`, `planning`, `executing` or `verifying` before that phase's work, not
