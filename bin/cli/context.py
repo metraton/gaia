@@ -654,9 +654,13 @@ def _cmd_move_project(args) -> int:
 
       --decision movido    -> re-key / supersede the OLD projects row to link it
                               to the successor (writes `superseded_by`, never
-                              hard-deletes). Curated memory / contracts are only
-                              PROPOSED for relocation, not auto-moved -- use
-                              `move-memory` / `move-contracts` for those.
+                              hard-deletes). On re-key, every scanner-owned
+                              child row (project_facets, apps, services, ...)
+                              is migrated to the new (workspace, name) in the
+                              same transaction -- see `children_migrated` in
+                              the JSON result. Curated memory / contracts are
+                              only PROPOSED for relocation, not auto-moved --
+                              use `move-memory` / `move-contracts` for those.
       --decision duplicado -> structural no-op: both rows are legitimately
       --decision worktree     independent and are left exactly as they are.
 
@@ -734,6 +738,10 @@ def _cmd_move_project(args) -> int:
                   f"memory={rel['memory']} contracts={rel['contracts']}")
             print("  -> relocate collateral with `gaia context move-memory` / "
                   "`move-contracts` if desired.")
+            if preview["action"] == "rekeyed":
+                print("  -> child rows (project_facets, apps, services, ...) "
+                      "will be migrated to the new key on apply; counts are "
+                      "not computed in this preview.")
         return 0
 
     if not getattr(args, "yes", False):
@@ -762,6 +770,13 @@ def _cmd_move_project(args) -> int:
               f"(action={result['action']}, superseded_by={result['superseded_by']}).")
         print(f"Proposed (NOT moved): memory={rel['memory']} contracts={rel['contracts']} "
               f"still keyed to {from_ws!r} -- relocate with move-memory/move-contracts.")
+        if result["action"] == "rekeyed":
+            children = result["children_migrated"]
+            if children:
+                detail = ", ".join(f"{table}={n}" for table, n in sorted(children.items()))
+                print(f"Children migrated: {detail}")
+            else:
+                print("Children migrated: none (row had no child rows).")
     return 0
 
 
@@ -1162,7 +1177,8 @@ def register(subparsers) -> None:
     # the write path that EXECUTES a scan-v2 move_candidate a human adjudicated.)
     mp_parser = ctx_subparsers.add_parser(
         "move-project",
-        help="Resolve an adjudicated scan-v2 move_candidate (re-key/supersede a projects row)",
+        help="Resolve an adjudicated scan-v2 move_candidate (re-key a projects "
+             "row, migrating its child rows, or supersede it)",
     )
     mp_parser.add_argument("--decision", required=True,
                            choices=("movido", "duplicado", "worktree"),
