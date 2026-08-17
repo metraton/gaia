@@ -401,6 +401,53 @@ def _apply_global_json(args, argv):
     )
 
 
+# Env vars the host CLI (Claude Code) may export into a `gaia` CLI subprocess
+# to advertise the current session id. Same precedence and rationale as
+# bin/cli/doctor.py's _SESSION_ID_ENV_VARS (empirically verified there against
+# the same host): a plain subprocess sees CLAUDE_CODE_SESSION_ID, and its
+# value is the exact session id the harness stamps on a dispatched turn's own
+# agent_contract_handoffs row. CLAUDE_SESSION_ID is kept as a secondary for
+# forward-compat.
+_CONTRACT_SESSION_ID_ENV_VARS = ("CLAUDE_CODE_SESSION_ID", "CLAUDE_SESSION_ID")
+
+
+def _fill_contract_finalize_session_id(args, mod) -> None:
+    """Best-effort default for an unattributed ``gaia contract finalize``.
+
+    ``bin/cli/contract.py`` and ``gaia/contract/drafts.py`` are structurally
+    forbidden from reading a Claude-Code env var (the AST guard in
+    ``tests/contract/test_cli_draft_key.py``) -- the contract CLI mints its
+    own id and never touches ``CLAUDE_SESSION_ID``. That purity is correct for
+    the CORE, but it left every turn that finalizes without a prior
+    dispatch-birth (no PreToolUse ``Task`` interception -- a bare
+    ``gaia contract init`` + ``finalize`` cycle) with NO ``--session-id``
+    unless the caller supplied one explicitly, and a caller has no legitimate
+    way to know its own session id except by reading this exact env var -- so
+    the real, live value simply went unwritten (measured: 1,625
+    ``agent_contract_handoffs`` rows, 14.8% of the table, born via this exact
+    lane with ``session_id`` NULL, growing daily since 2026-07-09).
+
+    ``bin/gaia`` is the outer, harness-facing launcher (unlike the two files
+    above) and is the correct seam to supply it. Fill ``args.session_id``
+    ONLY when the caller left it unset -- an explicit ``--session-id`` always
+    wins unchanged -- and degrade silently to the untouched ``None`` when
+    neither var is exported (e.g. a non-Claude-Code invocation, a cron job):
+    this never invents a value, it only reads the one the host already
+    published. Scoped to ``cmd_finalize`` by function identity so the
+    unrelated ``--session`` FILTER flag on ``gaia contract list`` (same
+    ``session_id`` dest, opposite purpose) is never touched.
+    """
+    if getattr(args, "func", None) is not getattr(mod, "cmd_finalize", None):
+        return
+    if getattr(args, "session_id", None):
+        return
+    for var in _CONTRACT_SESSION_ID_ENV_VARS:
+        val = os.environ.get(var)
+        if val:
+            args.session_id = val
+            return
+
+
 def _run_with_plugins(argv, plugins):
     """Parse argv against ``plugins`` and dispatch. Shared by both paths."""
     parser = _build_parser(plugins)
@@ -435,6 +482,8 @@ def _run_with_plugins(argv, plugins):
     for name, mod in plugins:
         if name == args.subcommand and hasattr(mod, f"cmd_{name}"):
             handler = getattr(mod, f"cmd_{name}")
+            if name == "contract":
+                _fill_contract_finalize_session_id(args, mod)
             return handler(args) or 0
 
     # Subcommand registered but handler not found -- should not happen
