@@ -262,12 +262,25 @@ def _normalize(url: Optional[str]) -> Optional[str]:
         return None
 
 
-def _match_slug(existing_map: dict, proj: dict) -> Optional[str]:
+def _match_slug(
+    existing_map: dict, proj: dict, claimed: "frozenset[str] | set[str]" = frozenset()
+) -> Optional[str]:
     """Find the existing slug whose entry is the SAME physical repo as ``proj``.
 
     Match by absolute ``local_path`` first (strongest on-disk signal), then by
     normalized git remote. Returns None when no entry corresponds -- the caller
     then creates a new slug rather than risk merging two distinct repos.
+
+    ``claimed`` holds the slugs already resolved (matched or newly created) by
+    an EARLIER project in the SAME merge run (see :func:`_merge_map`) and is
+    skipped entirely -- this is what discriminates a repo MOVED to a new folder
+    (one promotable row this run, so remote-matching an entry no other row has
+    claimed correctly follows it to the new path) from two LIVE clones of the
+    same remote (two promotable rows this run; the second's remote match would
+    otherwise steal the first's already-claimed slug, splicing its local_path
+    into that entry and losing the first clone -- the hybrid-entry defect this
+    guards against). The remote match stays live for the single-row case
+    precisely because it is not blanket-disabled, only scoped per run.
 
     Reserved slugs are skipped: the ``_``-prefixed slot holds workspace-level
     metadata (see :func:`_auto_convert_to_map`), which can legitimately carry a
@@ -278,7 +291,7 @@ def _match_slug(existing_map: dict, proj: dict) -> Optional[str]:
     proj_path = proj.get("path")
     proj_remote = _normalize(proj.get("remote_url"))
     for slug, entry in existing_map.items():
-        if is_reserved_slug(slug) or not isinstance(entry, dict):
+        if slug in claimed or is_reserved_slug(slug) or not isinstance(entry, dict):
             continue
         e_path = entry.get("local_path")
         if e_path and proj_path and os.path.normpath(e_path) == os.path.normpath(proj_path):
@@ -340,12 +353,24 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
     the scan-owned keys of one already there, and mark the entries whose repo
     vanished. Marking runs LAST so a project that both reappeared and is stale
     in ``missing`` resolves to present.
+
+    ``claimed`` accumulates every slug resolved (matched or newly created) by a
+    project already processed in THIS run, and is threaded into every
+    :func:`_match_slug` call after it -- one physical repo per slug per run.
+    Without it, two live clones of the same remote (both present in
+    ``promotable`` in the same run) would have their SECOND row's remote match
+    steal the slug the FIRST row just claimed, producing a hybrid entry that
+    carries one clone's name and the other's local_path and silently losing a
+    repo -- the exact defect this guards against, while still letting a repo
+    that only MOVED (a single promotable row this run) follow its remote match
+    to its new path, since nothing else in this run has claimed that slug.
     """
     result = copy.deepcopy(existing_map)
     used = set(result.keys())
+    claimed: set = set()
     added = refreshed = 0
     for proj in promotable:
-        slug = _match_slug(result, proj)
+        slug = _match_slug(result, proj, claimed)
         if slug is None:
             slug = _new_slug(proj.get("name") or "", used)
             used.add(slug)
@@ -356,6 +381,7 @@ def _merge_map(existing_map: dict, promotable: list, missing: list = ()) -> tupl
         else:
             if _apply_scan_owned(result[slug], proj):
                 refreshed += 1
+        claimed.add(slug)
     marked = _mark_missing(result, list(missing))
     return result, {
         "added_entries": added,

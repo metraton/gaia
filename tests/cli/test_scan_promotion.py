@@ -263,6 +263,86 @@ def test_rescan_preserves_description_added_between_scans(tmp_db):
 
 
 # ---------------------------------------------------------------------------
+# Match-by-remote discrimination: repo MOVED (AC-5, no regression) vs two
+# LIVE clones of the same remote (AC-1, must not fuse). Real incident: the
+# github-repos workspace scan produced 34 project rows but only 33 contract
+# entries -- two clones of the same remote in different folders collapsed
+# into one hybrid entry (one clone's name, the other's local_path), and the
+# first clone silently disappeared from the contract.
+# ---------------------------------------------------------------------------
+
+def test_moved_repo_still_matches_by_remote_and_updates_local_path(tmp_db):
+    """AC-5 -- no regression: a repo that moved to a new folder (the OLD path
+    is no longer an active project row -- it is not in this scan run at all)
+    still updates its existing contract entry via the remote match, instead
+    of duplicating. One entry before, the same one entry after, with
+    local_path following the repo to its new home."""
+    from tools.scan.promote import promote_workspace
+    ws = "ws-moved"
+    _write_contract(tmp_db, ws, {
+        "svc": {
+            "name": "svc",
+            "local_path": "/home/u/ws/old-folder/svc",
+            "remote_url": "git@github.com:o/svc.git",
+        },
+    })
+    before = _read_contract(tmp_db, ws)
+    assert list(before.keys()) == ["svc"]
+
+    # The scan now only sees the repo at its NEW folder -- the old path is
+    # gone from disk and is not a row in this run.
+    _seed_project(tmp_db, ws, "svc", path="/home/u/ws/new-folder/svc",
+                  identity="/home/u/ws/new-folder/svc/.git",
+                  remote="git@github.com:o/svc.git")
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["added_entries"] == 0
+    assert rep["refreshed_entries"] == 1
+
+    after = _read_contract(tmp_db, ws)
+    # Still exactly ONE entry -- matched by remote, not duplicated.
+    assert list(after.keys()) == ["svc"]
+    assert after["svc"]["local_path"] == "/home/u/ws/new-folder/svc"
+    assert after["svc"]["remote_url"] == "git@github.com:o/svc.git"
+
+
+def test_two_live_clones_of_same_remote_do_not_merge_into_one_entry(tmp_db):
+    """AC-1 -- the defect: two DISTINCT folders, both present on disk in the
+    SAME scan run, cloning the same remote. They must land as two SEPARATE
+    contract entries, each keeping its own name and its own local_path. The
+    pre-fix behavior matched the second clone to the first's slug via the
+    remote fallback and overwrote its local_path, producing one hybrid entry
+    and losing a repo -- exactly the incident measured in github-repos
+    (34 project rows, 33 contract entries)."""
+    from tools.scan.promote import promote_workspace
+    ws = "ws-two-clones"
+    remote = "git@github.com:o/shared-remote.git"
+    path_one = "/home/u/ws/harness/clone-one"
+    path_two = "/home/u/ws/_duplicados/clone-two"
+    _seed_project(tmp_db, ws, "clone-one", path=path_one,
+                  identity=f"{path_one}/.git", remote=remote)
+    _seed_project(tmp_db, ws, "clone-two", path=path_two,
+                  identity=f"{path_two}/.git", remote=remote)
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["added_entries"] == 2
+
+    payload = _read_contract(tmp_db, ws)
+    assert len(payload) == 2
+
+    local_paths = {entry["local_path"] for entry in payload.values()}
+    assert local_paths == {path_one, path_two}
+
+    # No hybrid: every entry's own name corresponds to its own local_path --
+    # neither carries one clone's name with the other's path.
+    by_path = {entry["local_path"]: entry for entry in payload.values()}
+    assert by_path[path_one]["name"] == "clone-one"
+    assert by_path[path_two]["name"] == "clone-two"
+    for entry in payload.values():
+        assert entry["remote_url"] == remote
+
+
+# ---------------------------------------------------------------------------
 # Dry-run: no write, no DB materialization
 # ---------------------------------------------------------------------------
 
