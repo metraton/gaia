@@ -2700,11 +2700,31 @@ class ClaudeCodeAdapter(HookAdapter):
         # hooks.json matcher still says "Task" and the harness still honors it,
         # so the hook DOES fire -- but the payload carries the new name, which
         # is why gating this branch on "Task" alone silently observed nothing.
+        #
+        # Beyond cut detection, this is also where the orchestrator gets its
+        # only look at the just-closed row: Claude Code's own hooks reference
+        # names this exact pattern ("To inject context into the parent session
+        # after a subagent returns, use a PostToolUse hook on the Agent tool")
+        # and documents additionalContext as landing "next to the tool
+        # result" for PostToolUse. The summary is strictly best-effort --
+        # _build_contract_summary_context never raises and returns "" on any
+        # unresolved row, which falls through to the bare response below.
         # ------------------------------------------------------------- #
         from modules.agents.task_result_observer import TASK_TOOL_NAMES
 
         if tool_name in TASK_TOOL_NAMES:
             self._observe_task_result(hook_data)
+            summary_line = self._build_contract_summary_context(hook_data)
+            if summary_line:
+                return HookResponse(
+                    output={
+                        "hookSpecificOutput": {
+                            "hookEventName": "PostToolUse",
+                            "additionalContext": summary_line,
+                        }
+                    },
+                    exit_code=0,
+                )
             return HookResponse(output={}, exit_code=0)
 
         try:
@@ -2829,6 +2849,28 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
         except Exception as exc:
             logger.debug("Task result observation failed (non-fatal): %s", exc)
+
+    @staticmethod
+    def _build_contract_summary_context(hook_data) -> str:
+        """Best-effort contract-row summary line for the Agent/Task result.
+
+        Never raises: any failure -- including "the row is not resolvable" --
+        degrades to "" so the caller falls back to the bare HookResponse this
+        branch always returned before the summary existed. "" is also the
+        honest answer when the row cannot be read; see
+        ``build_contract_summary_line`` for the full set of degrade cases.
+        """
+        try:
+            from modules.agents.task_result_observer import build_contract_summary_line
+
+            line = build_contract_summary_line(
+                hook_data.get("tool_response", {}),
+                session_id=str(hook_data.get("session_id", "") or ""),
+            )
+            return line or ""
+        except Exception as exc:
+            logger.debug("Contract summary line build failed (non-fatal): %s", exc)
+            return ""
 
     def _record_t3_outcome_event(
         self,

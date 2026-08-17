@@ -48,10 +48,11 @@ Gotchas:
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -268,6 +269,157 @@ def _extract_agent_run_id(tool_response: Any) -> str:
     if not isinstance(tool_response, Mapping):
         return ""
     return str(tool_response.get("agentId") or "")
+
+
+# Evidence-report list fields, same canonical order as
+# gaia.contract.drafts.initial_envelope, so the display order matches the
+# order the schema itself declares the fields in.
+_EVIDENCE_LIST_FIELDS: Tuple[str, ...] = (
+    "patterns_checked", "files_checked", "commands_run", "key_outputs",
+    "verbatim_outputs", "cross_layer_impacts", "open_gaps",
+)
+
+# Field-read priority for the ONE armed --field command the summary line
+# hands back. open_gaps and cross_layer_impacts lead because agent-protocol
+# names them as the highest-signal reads (a gap declared gets routed; a
+# cross-layer impact is what no other field records); the rest follow in
+# reverse canonical order.
+_FIELD_READ_PRIORITY: Tuple[str, ...] = (
+    "open_gaps", "cross_layer_impacts", "verbatim_outputs", "key_outputs",
+    "files_checked", "commands_run", "patterns_checked",
+)
+
+# How many populated evidence fields the line names by count before folding
+# the rest into a bare "+Nmore" tag. Bounds the line regardless of how many
+# of the seven categories a real turn populates.
+_MAX_FIELDS_NAMED = 3
+
+# Above this length the field-count segment is dropped and the line falls
+# back to state/verification + the bare command. The command is the part
+# that must never be truncated -- a cut-off command is not copy-pasteable --
+# so length pressure is absorbed by the descriptive segment, never by it.
+_LINE_HARD_CEILING = 200
+
+
+def _populated_evidence_fields(evidence: Mapping[str, Any]) -> List[Tuple[str, int]]:
+    """[(field_name, count), ...] for every NON-EMPTY evidence_report list field.
+
+    Canonical order (``_EVIDENCE_LIST_FIELDS``); a field absent, null, or an
+    empty list is not named at all -- naming only what there IS to read is
+    the whole value of the line (agent-protocol principle 5).
+    """
+    out: List[Tuple[str, int]] = []
+    for name in _EVIDENCE_LIST_FIELDS:
+        value = evidence.get(name)
+        if isinstance(value, list) and value:
+            out.append((name, len(value)))
+    return out
+
+
+def _choose_read_field(evidence: Mapping[str, Any], report_prose: str) -> Optional[str]:
+    """The single dotted-path field the armed command reads.
+
+    Walks ``_FIELD_READ_PRIORITY`` for the first populated evidence_report
+    list field; falls back to the top-level ``report_prose`` (never nested
+    under evidence_report -- see TOP_LEVEL_FIELD_TYPES in
+    gaia.contract.validator) when no evidence list is populated; returns
+    None when the row genuinely has neither, so the caller omits --field
+    rather than name a field with nothing in it.
+    """
+    for name in _FIELD_READ_PRIORITY:
+        value = evidence.get(name)
+        if isinstance(value, list) and value:
+            return f"evidence_report.{name}"
+    if report_prose:
+        return "report_prose"
+    return None
+
+
+def build_contract_summary_line(
+    tool_response: Any,
+    *,
+    session_id: str = "",
+    row_lookup: Optional[Callable[[dict, Optional[str]], Optional[Mapping[str, Any]]]] = None,
+) -> Optional[str]:
+    """One dense line naming a closed row's populated evidence + a ready read command.
+
+    Returns None -- never a misleading line -- for every case where the row
+    is not resolvable as a CLOSED contract: no agentId on the result, no row
+    found, a row still DISPATCHED (never finalized -- the harness-cut
+    signature this module already records separately), an unparseable
+    envelope, or a lookup failure. Silence is the honest degrade: a line
+    that guesses "nothing to read" when the row simply could not be read is
+    worse than no line at all.
+
+    Args:
+        tool_response: The Task/Agent ``tool_response`` (source of ``agentId``).
+        session_id:    Session the dispatch ran under, passed to the row bridge
+            as a consistency check (see ``dispatch_row_by_harness_id``).
+        row_lookup:    Row resolver, ``(task_info, session_id) -> row | None``.
+            Defaults to ``handoff_persister.dispatch_row_by_harness_id`` --
+            the SAME bridge ``contract_row_state`` uses, so this reads the
+            identical row the cut-detection path already resolves. Tests
+            substitute it to exercise both directions without a database.
+    """
+    agent_run_id = _extract_agent_run_id(tool_response)
+    if not agent_run_id:
+        return None
+
+    lookup = row_lookup
+    if lookup is None:
+        from .handoff_persister import dispatch_row_by_harness_id
+
+        lookup = dispatch_row_by_harness_id
+
+    try:
+        row = lookup({"agent_id": agent_run_id}, session_id or None)
+    except Exception:
+        return None
+    if not row:
+        return None
+
+    state = str(row.get("agent_state") or "")
+    if not state or state == _DISPATCHED_STATE:
+        return None
+
+    try:
+        envelope = json.loads(row.get("raw_handoff_json") or "null")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(envelope, dict):
+        return None
+
+    evidence = envelope.get("evidence_report")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    report_prose = envelope.get("report_prose")
+    report_prose = report_prose if isinstance(report_prose, str) else ""
+
+    populated = _populated_evidence_fields(evidence)
+    verification = evidence.get("verification")
+    verification_result = (
+        verification.get("result") if isinstance(verification, dict) else None
+    )
+
+    field_terms = [f"{name}({count})" for name, count in populated[:_MAX_FIELDS_NAMED]]
+    if len(populated) > _MAX_FIELDS_NAMED:
+        field_terms.append(f"+{len(populated) - _MAX_FIELDS_NAMED}more")
+    fields_segment = ", ".join(field_terms)
+
+    core = f"{agent_run_id}: state={state}"
+    if isinstance(verification_result, str) and verification_result:
+        core += f", verification={verification_result}"
+
+    read_field = _choose_read_field(evidence, report_prose)
+    cmd = (
+        f"gaia contract view --harness-id {agent_run_id} --field {read_field}"
+        if read_field
+        else f"gaia contract view --harness-id {agent_run_id}"
+    )
+
+    line = f"{core}, {fields_segment} -- {cmd}" if fields_segment else f"{core} -- {cmd}"
+    if fields_segment and len(line) > _LINE_HARD_CEILING:
+        line = f"{core} -- {cmd}"
+    return line
 
 
 def contract_row_state(agent_run_id: str, session_id: str = "") -> str:
@@ -530,6 +682,7 @@ __all__ = [
     "UNPROCESSABLE_SKIPS",
     "TaskCut",
     "TaskResultVerdict",
+    "build_contract_summary_line",
     "contract_row_state",
     "detect_task_cut",
     "inspect_task_result",

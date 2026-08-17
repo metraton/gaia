@@ -38,6 +38,7 @@ from modules.agents.task_result_observer import (  # noqa: E402
     SKIP_NO_AGENT_RUN_ID,
     SKIP_TURN_NOT_ENDED,
     SKIP_VISIBLE_FAILURE,
+    build_contract_summary_line,
     detect_task_cut,
     inspect_task_result,
     observe_task_result,
@@ -659,3 +660,313 @@ class TestPostToolUseWiring:
         assert len(rows) == 1, f"expected one {AGENT_CUT_EVENT} row from the real payload"
         assert rows[0]["agent"] == "gaia-system"
         assert json.loads(rows[0]["payload"])["agent_run_id"] == "a21d060aefc6855cc"
+
+
+# ---------------------------------------------------------------------------
+# P1: the one-line contract-row summary handed back on the Agent/Task result.
+#
+# BOTH DIRECTIONS ARE THE PROPERTY UNDER TEST, same as the cut signature
+# above: a resolvable, finalized row must produce a real line naming its
+# populated evidence and an armed read command; a row that is missing, still
+# DISPATCHED, or unreadable must produce silence -- never a line that claims
+# "nothing to read" when the truth is "could not be read".
+# ---------------------------------------------------------------------------
+
+
+def _row(agent_state: str, envelope: dict) -> dict:
+    """A minimal ``agent_contract_handoffs`` row shape, as the bridge returns it."""
+    return {"agent_state": agent_state, "raw_handoff_json": json.dumps(envelope)}
+
+
+def _lookup_returning(row):
+    def lookup(task_info, session_id):
+        return row
+
+    return lookup
+
+
+def _lookup_raising(task_info, session_id):
+    raise RuntimeError("store unavailable")
+
+
+TWO_FIELD_ENVELOPE = {
+    "agent_status": {"agent_state": "COMPLETE"},
+    "evidence_report": {
+        "patterns_checked": [],
+        "files_checked": [],
+        "commands_run": [],
+        "key_outputs": [],
+        "verbatim_outputs": [],
+        "cross_layer_impacts": ["skill X drifted"],
+        "open_gaps": ["g1", "g2"],
+        "verification": {"result": "pass"},
+    },
+}
+
+FOUR_FIELD_ENVELOPE = {
+    "agent_status": {"agent_state": "BLOCKED"},
+    "evidence_report": {
+        "patterns_checked": ["p1"],
+        "files_checked": ["f1"],
+        "commands_run": [],
+        "key_outputs": [],
+        "verbatim_outputs": [],
+        "cross_layer_impacts": ["c1"],
+        "open_gaps": ["g1"],
+    },
+}
+
+# Same four populated fields, but with a longer state name and a verification
+# block -- long enough that naming all of it alongside the armed command
+# would cross the hard ceiling. This is the case the ceiling exists for.
+FOUR_FIELD_ENVELOPE_OVER_CEILING = {
+    "agent_status": {"agent_state": "NEEDS_VERIFICATION"},
+    "evidence_report": {
+        "patterns_checked": ["p1"],
+        "files_checked": ["f1", "f2"],
+        "commands_run": [],
+        "key_outputs": [],
+        "verbatim_outputs": [],
+        "cross_layer_impacts": ["c1"],
+        "open_gaps": ["g1", "g2"],
+        "verification": {"result": "pass"},
+    },
+    "report_prose": "why this turn did what it did",
+}
+
+EMPTY_EVIDENCE_ENVELOPE = {
+    "agent_status": {"agent_state": "BLOCKED"},
+    "evidence_report": {
+        "patterns_checked": [], "files_checked": [], "commands_run": [],
+        "key_outputs": [], "verbatim_outputs": [], "cross_layer_impacts": [],
+        "open_gaps": [],
+    },
+}
+
+
+class TestContractSummaryLineResolvable:
+    """A resolvable, finalized row produces a real line with real coordinates."""
+
+    def test_typical_row_produces_the_armed_command_with_the_real_id(self):
+        line = build_contract_summary_line(
+            _task_response("closed clean"),
+            row_lookup=_lookup_returning(_row("COMPLETE", TWO_FIELD_ENVELOPE)),
+        )
+
+        assert line is not None
+        assert line.startswith("a21d060aefc6855cc: state=COMPLETE, verification=pass")
+        assert "cross_layer_impacts(1)" in line
+        assert "open_gaps(2)" in line
+        assert line.endswith(
+            "gaia contract view --harness-id a21d060aefc6855cc "
+            "--field evidence_report.open_gaps"
+        )
+        # MEASURED length of a typical two-populated-field case (the shape
+        # the design reference itself illustrates) -- the budget is a
+        # ceiling paid on every subagent return, not a suggestion.
+        assert len(line) <= 180, f"typical line is {len(line)} chars: {line!r}"
+
+    def test_open_gaps_is_prioritized_over_other_populated_fields(self):
+        line = build_contract_summary_line(
+            _task_response("closed clean"),
+            row_lookup=_lookup_returning(_row("BLOCKED", FOUR_FIELD_ENVELOPE)),
+        )
+
+        assert line.endswith("--field evidence_report.open_gaps")
+
+    def test_more_than_max_named_fields_folds_into_a_more_tag(self):
+        line = build_contract_summary_line(
+            _task_response("closed clean"),
+            row_lookup=_lookup_returning(_row("BLOCKED", FOUR_FIELD_ENVELOPE)),
+        )
+
+        # 4 populated fields, cap is 3 named + a "+1more" tag for the rest.
+        assert "+1more" in line
+        assert line.count("(") == 3, "only the first 3 populated fields are counted individually"
+
+    def test_ceiling_drops_the_field_list_but_never_the_command(self):
+        """When naming every populated field would blow the hard ceiling, the
+        descriptive segment is dropped and the armed command survives intact
+        -- a truncated command is not copy-pasteable, so length pressure must
+        never be absorbed by it.
+        """
+        line = build_contract_summary_line(
+            _task_response("closed clean"),
+            row_lookup=_lookup_returning(
+                _row("NEEDS_VERIFICATION", FOUR_FIELD_ENVELOPE_OVER_CEILING)
+            ),
+        )
+
+        assert "patterns_checked" not in line, "field list must be dropped, not truncated mid-word"
+        assert line == (
+            "a21d060aefc6855cc: state=NEEDS_VERIFICATION, verification=pass -- "
+            "gaia contract view --harness-id a21d060aefc6855cc "
+            "--field evidence_report.open_gaps"
+        )
+
+    def test_no_evidence_and_no_report_prose_omits_the_field_flag(self):
+        line = build_contract_summary_line(
+            _task_response("closed clean"),
+            row_lookup=_lookup_returning(_row("BLOCKED", EMPTY_EVIDENCE_ENVELOPE)),
+        )
+
+        assert line is not None
+        assert line == (
+            "a21d060aefc6855cc: state=BLOCKED -- "
+            "gaia contract view --harness-id a21d060aefc6855cc"
+        )
+
+    def test_no_verification_block_omits_the_verification_term(self):
+        envelope = {
+            "agent_status": {"agent_state": "NEEDS_INPUT"},
+            "evidence_report": {
+                "patterns_checked": [], "files_checked": [], "commands_run": [],
+                "key_outputs": [], "verbatim_outputs": [], "cross_layer_impacts": [],
+                "open_gaps": ["what to decide"],
+            },
+        }
+        line = build_contract_summary_line(
+            _task_response("closed clean"),
+            row_lookup=_lookup_returning(_row("NEEDS_INPUT", envelope)),
+        )
+
+        assert "verification=" not in line
+        assert line.startswith("a21d060aefc6855cc: state=NEEDS_INPUT, open_gaps(1)")
+
+
+class TestContractSummaryLineDegradesToSilence:
+    """The other direction: an irresolvable row is SILENCE, never a lie.
+
+    A conditional that fires on every input is not a conditional -- each case
+    here is a distinct reason the line must NOT be produced, and none of them
+    may raise past this function.
+    """
+
+    def test_no_agent_run_id_is_silence(self):
+        assert build_contract_summary_line(
+            {"status": "completed"}, row_lookup=_forbidden,
+        ) is None
+
+    def test_row_not_found_is_silence(self):
+        assert build_contract_summary_line(
+            _task_response("x"), row_lookup=_lookup_returning(None),
+        ) is None
+
+    def test_row_still_dispatched_never_finalized_is_silence(self):
+        """The row exists but the harness cut it -- the cut path already
+        records this; the summary line must not ALSO claim a close happened.
+        """
+        assert build_contract_summary_line(
+            _task_response("x"),
+            row_lookup=_lookup_returning(_row("DISPATCHED", TWO_FIELD_ENVELOPE)),
+        ) is None
+
+    def test_unparseable_envelope_is_silence(self):
+        row = {"agent_state": "COMPLETE", "raw_handoff_json": "{not json"}
+        assert build_contract_summary_line(
+            _task_response("x"), row_lookup=_lookup_returning(row),
+        ) is None
+
+    def test_envelope_that_is_not_a_json_object_is_silence(self):
+        row = {"agent_state": "COMPLETE", "raw_handoff_json": json.dumps([1, 2])}
+        assert build_contract_summary_line(
+            _task_response("x"), row_lookup=_lookup_returning(row),
+        ) is None
+
+    def test_lookup_failure_is_silence_not_a_raise(self):
+        assert build_contract_summary_line(
+            _task_response("x"), row_lookup=_lookup_raising,
+        ) is None
+
+
+class TestContractSummaryLineWiring:
+    """End to end: the PostToolUse response the orchestrator actually reads."""
+
+    @pytest.fixture
+    def db_path(self, tmp_path, monkeypatch):
+        data_dir = tmp_path / "gaia_data"
+        data_dir.mkdir()
+        monkeypatch.setenv("GAIA_DATA_DIR", str(data_dir))
+        return data_dir / "gaia.db"
+
+    def test_a_finalized_row_yields_additional_context(self, db_path):
+        from adapters.claude_code import ClaudeCodeAdapter
+        from adapters.types import HookEvent, HookEventType
+
+        _seed_finalized_row(db_path, "a21d060aefc6855cc")
+
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "s-43",
+            "tool_input": TASK_INPUT,
+            "tool_response": _task_response("closed clean"),
+        }
+        response = ClaudeCodeAdapter().adapt_post_tool_use(
+            HookEvent(
+                event_type=HookEventType.POST_TOOL_USE,
+                session_id="s-43",
+                payload=payload,
+            )
+        )
+
+        assert response.exit_code == 0
+        hook_specific = response.output["hookSpecificOutput"]
+        assert hook_specific["hookEventName"] == "PostToolUse"
+        assert "a21d060aefc6855cc" in hook_specific["additionalContext"]
+        assert "--harness-id a21d060aefc6855cc" in hook_specific["additionalContext"]
+
+    def test_a_cut_row_never_finalized_yields_no_additional_context(self, db_path):
+        """The row exists (born DISPATCHED) but never closed -- silence, not a lie."""
+        from adapters.claude_code import ClaudeCodeAdapter
+        from adapters.types import HookEvent, HookEventType
+        from gaia.store.writer import insert_dispatched_handoff, stamp_harness_agent_id
+
+        contract_id = "a0000000000000002.never-closed"
+        agent_id = "a" + "0" * 15 + "2"
+        insert_dispatched_handoff(
+            contract_id, agent_id, "me", session_id="s-50", db_path=db_path,
+        )
+        stamp_harness_agent_id(contract_id, "a328e0d9b8f2aa70c", db_path=db_path)
+
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "s-50",
+            "tool_input": TASK_INPUT,
+            "tool_response": _task_response(
+                "stale narration", agentId="a328e0d9b8f2aa70c",
+            ),
+        }
+        response = ClaudeCodeAdapter().adapt_post_tool_use(
+            HookEvent(
+                event_type=HookEventType.POST_TOOL_USE,
+                session_id="s-50",
+                payload=payload,
+            )
+        )
+
+        assert response.exit_code == 0
+        assert "hookSpecificOutput" not in response.output
+
+    def test_no_matching_row_at_all_yields_no_additional_context(self, db_path):
+        from adapters.claude_code import ClaudeCodeAdapter
+        from adapters.types import HookEvent, HookEventType
+
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "s-51",
+            "tool_input": TASK_INPUT,
+            "tool_response": _task_response("closed clean", agentId="a" + "f" * 17),
+        }
+        response = ClaudeCodeAdapter().adapt_post_tool_use(
+            HookEvent(
+                event_type=HookEventType.POST_TOOL_USE,
+                session_id="s-51",
+                payload=payload,
+            )
+        )
+
+        assert response.exit_code == 0
+        assert response.output == {}
