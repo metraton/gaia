@@ -2253,6 +2253,44 @@ def _history_view(h: dict) -> dict:
     }
 
 
+# P2 show-verb pointer (decision_gaia_el_cli_ensena_en_el_instante_del_verbo):
+# show is the deep-read verb where the technique gap actually bit (8x show
+# with no Skill('memory') load, measured 2026-08-17) yet it was the one verb
+# _MEMORY_POINTER never reached -- a residue of the discovery-only frame that
+# chose list/search/get-relevant. Kept to a short constant line plus one
+# computed conditional line, deliberately NOT the five-line _MEMORY_POINTER:
+# that one's cost is reserved against a char budget because list/search/
+# get-relevant are the most-called verbs, and paying that per show call would
+# scale with the wrong volume. Suppressed for --json: its readers are
+# programs, matching every other pointer suppression in this file.
+_SHOW_POINTER_LINE1 = (
+    "> Reading technique lives in Skill('memory') -- a row is not the "
+    "corpus; this read counted toward deliberate_count."
+)
+
+
+def _show_pointer_line2(workspace: str, initiative) -> str | None:
+    """Second pointer line: computed, and only present when it fires.
+
+    Fires only when the shown row names an ``initiative`` that itself has
+    other live-pending rows -- the technique the 2026-08-17 case measured
+    missing (sweep the initiative's whole live-pending set before writing
+    about it). A row with no initiative, or an initiative with zero
+    live-pending rows, returns ``None``: a condition that always fires is
+    not a condition.
+    """
+    if not initiative:
+        return None
+    pending = _fetch_pending_vivo(workspace, "  AND initiative = ? ", [initiative])
+    n = len(pending)
+    if n == 0:
+        return None
+    return (
+        f"> initiative '{initiative}': {n} more live-pending -- sweep with "
+        f"`gaia memory get-relevant --initiative {initiative}` before writing."
+    )
+
+
 def _cmd_curated_show(args) -> int:
     """Print a single curated memory row.
 
@@ -2366,6 +2404,12 @@ def _cmd_curated_show(args) -> int:
     if links_payload is None and history_payload is None:
         print()
         print(row["body"])
+
+    print()
+    print(_SHOW_POINTER_LINE1)
+    line2 = _show_pointer_line2(workspace, row.get("initiative"))
+    if line2:
+        print(line2)
     return 0
 
 
@@ -3044,7 +3088,22 @@ def register(subparsers):
     show_p = actions.add_parser(
         "show",
         help="Print a curated memory row",
-        description="Look up a curated memory row by (project, name).",
+        description=(
+            "Print a single curated memory row by (project, name). NEVER "
+            "writes the row's content -- safe to point at any slug -- but "
+            "every mode (bare, --links, --history, any combination, text or "
+            "--json) bumps the row's deliberate_count by one: naming the "
+            "slug is itself counted as a deliberate read, independent of "
+            "which projection comes back. A row not found exits 1 with a "
+            "stderr message; a row found but with no --links edges or no "
+            "--history versions exits 0 and prints '(no links)' / '(no "
+            "recorded history)' -- not-found and found-but-empty are never "
+            "the same response. In TEXT mode --links/--history REPLACE the "
+            "body (cheap projections instead of the full row); in --json "
+            "they are ADDITIVE, enriching the payload alongside body. "
+            "Compose with 'gaia memory get-relevant --initiative <key>' to "
+            "sweep the row's whole initiative once its own pointer names one."
+        ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n  gaia memory show project_gaia_v5\n",
     )
@@ -3555,10 +3614,22 @@ def register(subparsers):
         "get-relevant",
         help="Compact Workspace Memory block for SessionStart injection",
         description=(
-            "Emit the top curated atoms/decisions/negatives for a workspace "
-            "as a Markdown block, bounded by --max-chars. Designed to be "
-            "consumed by the SessionStart hook; prints empty when there is "
-            "nothing curated."
+            "Emit a curated-memory block for SessionStart injection or "
+            "direct reading. NEVER writes. Dispatch is flag-driven and each "
+            "mode has a DIFFERENT failure/budget contract, not a shared one: "
+            "with no flag, the cross-project DIGEST is emitted -- capped by "
+            "--max-chars, top-K initiatives, one freshest item each, excess "
+            "rolled into an overflow line. With --initiative=<key>, PROJECT "
+            "MODE returns EVERY live-pending row of that ONE initiative "
+            "instead -- --max-chars is accepted but IGNORED, since capping "
+            "an explicitly named corpus would silently withhold part of the "
+            "answer; an initiative with zero live-pending rows and a "
+            "made-up initiative key produce the SAME empty, exit-0 result "
+            "-- there is no initiative registry to tell them apart. With "
+            "--sections=..., the class/status SECTION renderer runs instead "
+            "(the subagent-dispatch path). Composes with 'gaia memory show "
+            "<slug>' for one row's full body -- get-relevant is the sweep, "
+            "show is the deep read."
         ),
         formatter_class=_argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
@@ -3594,10 +3665,12 @@ def register(subparsers):
     )
     rel_p.add_argument(
         "--initiative", default=None, metavar="KEY",
-        help="Project mode (v32): show the top live-pending threads of the ONE "
-             "named initiative (normalised like the write side). The value "
-             "'otros' targets the NULL-initiative bucket. When omitted, the "
-             "cross-project transversal digest is emitted.",
+        help="Project mode (v32): return EVERY live-pending row of the ONE "
+             "named initiative (normalised like the write side), uncapped -- "
+             "not just the top ones, and --max-chars is ignored here. The "
+             "value 'otros' targets the NULL-initiative bucket. When "
+             "omitted, the cross-project transversal digest is emitted "
+             "instead.",
     )
     rel_p.add_argument(
         "--json", action="store_true", default=False,
