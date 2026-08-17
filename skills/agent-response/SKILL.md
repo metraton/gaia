@@ -41,11 +41,15 @@ promote the work to `COMPLETE`; a fail returns it to `IN_PROGRESS` with evidence
 Never accept a plan-task-bound producer's self-asserted COMPLETE as independent
 verification.
 
-On a valid single-agent COMPLETE, `user_facing_summary` is not a preference to
-weigh: SubagentStop already parsed it off the same envelope the gate treated as
-authoritative (`parse_user_facing_summary`) and handed it back as the turn's
-`systemMessage`, so the value is in front of you with no second read to make.
-Relay it near-verbatim. Synthesizing from `key_outputs`, verification, failures
-and open gaps is the fallback for when the field is absent, and at N>1 the
-per-agent summaries are inputs to one synthesis rather than N relays. Preserve
-ownership boundaries and do not hide evidence the row and the verdict disagree on.
+On a valid single-agent COMPLETE, SubagentStop parses `user_facing_summary` off
+the same envelope the gate treated as authoritative (`parse_user_facing_summary`)
+and emits it as the turn's `systemMessage` -- a channel that reaches the USER's
+display and does NOT continue your conversation (measured by suppression; see
+the comment over the relay in `hooks/adapters/claude_code.py`). Nothing arrived
+in front of you: the field lives on the row, and the one read that fetches it is
+`contract view --field user_facing_summary --harness-id <agentId>`. Read it when
+the user-facing report needs it and relay it near-verbatim. Synthesizing from
+`key_outputs`, verification, failures and open gaps is the fallback for when the
+field is absent, and at N>1 the per-agent summaries are inputs to one synthesis
+rather than N relays. Preserve ownership boundaries and do not hide evidence the
+row and the verdict disagree on.

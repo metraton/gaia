@@ -326,9 +326,11 @@ final-message text is read:
 3. No row reachable at all -> reject (`GATE_SOURCE_ROW_MISSING`), softened the
    same way on a harness truncation.
 
-The fenced block in the final message is therefore still required output, but
-it no longer decides the close in any case -- the row is the only source the
-gate reads.
+No fenced block is required in the final message: the fence was retired as an
+input to the close, and the row is the only source the gate reads. The fence
+survives solely as one of four identity lanes in `resolve_minted_agent_id` -- a
+hint about WHICH row is this turn's own, which can never make an unclosed row
+read as closed.
 
 **The reaper is not a second way to close.** A turn that stops after its last
 `fill` leaves the row where the draft left it: open. The SubagentStop persister
