@@ -377,6 +377,51 @@ def test_two_live_clones_collision_is_reported_in_structured_report(tmp_db):
     assert "shared-remote" in col["remote_url"]
 
 
+def test_deleting_one_of_two_live_clones_never_marks_the_survivor_missing(tmp_db):
+    """AC-3 -- predicted-by-reading, never observed: ``_mark_missing`` matches
+    by remote via ``_match_slug`` and runs LAST in ``_merge_map``, so the
+    deleted clone's row was predicted to match the entry SHARED by remote and
+    stamp ``missing_since`` on it, even though the surviving clone is on disk
+    and was refreshed in this very run.
+
+    Sequence: two live clones of the same remote (first promoted as two
+    separate entries per AC-1/AC-2's per-run ``claimed`` scoping), delete one
+    from disk, rescan. The survivor's own entry must stay active -- no
+    ``missing_since`` -- and the deleted clone's OWN entry (not the
+    survivor's) is the one that gets marked."""
+    from tools.scan.promote import promote_workspace
+    ws = "ws-two-clones-one-deleted"
+    remote = "git@github.com:o/shared-remote.git"
+    path_one = "/home/u/ws/harness/clone-one"
+    path_two = "/home/u/ws/_duplicados/clone-two"
+    _seed_project(tmp_db, ws, "clone-one", path=path_one,
+                  identity=f"{path_one}/.git", remote=remote)
+    _seed_project(tmp_db, ws, "clone-two", path=path_two,
+                  identity=f"{path_two}/.git", remote=remote)
+
+    first = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert first["added_entries"] == 2
+    payload = _read_contract(tmp_db, ws)
+    by_path = {entry["local_path"]: slug for slug, entry in payload.items()}
+    slug_one, slug_two = by_path[path_one], by_path[path_two]
+
+    # clone-one is deleted from disk; the scan's own reconciliation
+    # soft-deletes its row, exactly as a real rescan would.
+    _mark_gone(tmp_db, ws, "clone-two")
+
+    rep = promote_workspace(ws, db_path=tmp_db, apply=True)
+    assert rep["applied"] is True
+    assert rep["marked_missing_entries"] == 1
+
+    after = _read_contract(tmp_db, ws)
+    # The survivor -- refreshed this same run -- must never carry the mark.
+    assert "missing_since" not in after[slug_two]
+    assert after[slug_two]["local_path"] == path_two
+    # The deleted clone's OWN entry is the one marked, not the survivor's.
+    assert after[slug_one]["missing_since"]
+    assert after[slug_one]["local_path"] == path_one
+
+
 # ---------------------------------------------------------------------------
 # Dry-run: no write, no DB materialization
 # ---------------------------------------------------------------------------

@@ -268,8 +268,15 @@ def _match_slug(
     """Find the existing slug whose entry is the SAME physical repo as ``proj``.
 
     Match by absolute ``local_path`` first (strongest on-disk signal), then by
-    normalized git remote. Returns None when no entry corresponds -- the caller
-    then creates a new slug rather than risk merging two distinct repos.
+    normalized git remote -- across the WHOLE map in two separate passes, not
+    interleaved per entry. A single pass that checks path-or-remote for each
+    entry in turn lets an EARLIER entry's remote match shadow a LATER entry's
+    exact path match (dict iteration is insertion order): two clones of the
+    same remote share that remote on both entries, so once each has its own
+    slug, matching the survivor's own row must still find its own exact-path
+    entry rather than stopping at the first remote hit it meets along the way.
+    Returns None when no entry corresponds -- the caller then creates a new
+    slug rather than risk merging two distinct repos.
 
     ``claimed`` holds the slugs already resolved (matched or newly created) by
     an EARLIER project in the SAME merge run (see :func:`_merge_map`) and is
@@ -290,12 +297,15 @@ def _match_slug(
 
     proj_path = proj.get("path")
     proj_remote = _normalize(proj.get("remote_url"))
-    for slug, entry in existing_map.items():
-        if slug in claimed or is_reserved_slug(slug) or not isinstance(entry, dict):
-            continue
+    eligible = [
+        (slug, entry) for slug, entry in existing_map.items()
+        if slug not in claimed and not is_reserved_slug(slug) and isinstance(entry, dict)
+    ]
+    for slug, entry in eligible:
         e_path = entry.get("local_path")
         if e_path and proj_path and os.path.normpath(e_path) == os.path.normpath(proj_path):
             return slug
+    for slug, entry in eligible:
         e_remote = _normalize(entry.get("remote_url"))
         if e_remote and proj_remote and e_remote == proj_remote:
             return slug
