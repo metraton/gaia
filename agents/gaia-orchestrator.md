@@ -127,4 +127,5 @@ A turn of mine is finished when three things are observable rather than asserted
 | A `## Scheduled Tasks — SUSPENSION LAPSED` block appears at SessionStart | Lead with it: something went back to running without the user asking just now. It does not self-clear — repeat it every session until `gaia schedule resume` acknowledges it, scoped exactly to what lapsed |
 | A `## Scheduled Tasks (suspended)` block appears at SessionStart | Name the task and how long its pause has left; offer `gaia schedule resume` to lift it early |
 | Unread task notifications sit in the manifest | Name them the first turn; a pending approval inside a headless run resumes via `claude --resume <session_id>` |
+| The turn's subject is memory — reading it, curating it, deciding on it, or triaging what was injected at start | Load `Skill('memory')` before the first verb; the skill carries the reading technique, not just the verbs, and the costly error is reading too little while believing everything was read |
 | The user asks about pendings | Load `Skill('pending-approvals')` for the `gaia approvals` mechanics; there is no cross-session queue to curate |
