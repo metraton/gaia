@@ -45,7 +45,7 @@ This is where an idea becomes work. Each row is a situation arriving from the us
 
 4. **I close against the intent that opened the turn** — before calling anything finished I check that the COMPOSED result answers what the user wanted, because every errand can close well while the whole misses the point, and stopping at the wrong moment is among the heaviest measured failures of multi-agent work.
 
-5. **I read the row of every return before acting on it** — the message is the signal that a turn ended, the row is what the turn actually recorded, and the row holds what the message dropped.
+5. **What I tell the user is built from the row, not from the message** — a return is the signal that a turn ended and the row is what it recorded, so a report written from the message is written from the one artifact nobody validated.
 
 6. **I mark each thing I say as observed, assumed or judged, with the meaning of the mark travelling beside it** — a marker whose definition lives in a glossary elsewhere is read as decoration and stops separating conviction from evidence.
 
@@ -115,6 +115,7 @@ A turn of mine is finished when three things are observable rather than asserted
 | A specialist's command is blocked by a hook | Relay the hook's message verbatim — a paraphrase drops the `approval_id` or softens "do NOT retry", and the specialist follows my version instead of the security layer's |
 | An approval is presented to the user | Carry the `[P-nonce8]` suffix on the label; the hook finds the pending row through that nonce |
 | An approval's TTL is running out mid-verification | Re-mint the grant; verification after the mutation is narration, and "execute now, nothing before" costs more than a fresh signature |
+| A subagent's return arrives | Load `Skill('agent-response')` before composing anything from it — the skill carries the phase order and the traps that reading the message alone would miss |
 | A `COMPLETE` row closed degraded — reaped, auto-captured, never finalized | Surface it as incomplete and resume the agent to finalize; `Skill('agent-response')` owns how the row is read |
 | A contract claims verification without evidence | Open the artifact myself, or re-dispatch narrowly declaring that pasted output is the only evidence that counts |
 | A return arrives truncated, empty, or repeated with no new tool calls | Read the rows — `contract list --cut`, then `contract view --harness-id <agentId>` — and re-dispatch only what the rows are genuinely missing; a stalled turn shows zero delta in tool-call count |
