@@ -521,9 +521,11 @@ def _patch_connect(monkeypatch, identity_rows, proj_rows=()):
     monkeypatch.setattr(_writer, "_connect", lambda: _FakeCon())
 
 
-class TestBuildProjectsBlockRendersTypeAndDescription:
-    """The rendered Projects block groups by workspace and includes type in
-    parens plus description after an em dash when present."""
+class TestBuildProjectsBlockIsAnIndexWithCuratedDescriptions:
+    """The rendered Projects block is a compact per-workspace name index: a
+    comma-separated list, no types, no per-project paths. Only a project with
+    a hand-curated ``description`` keeps a below-list line, keyed by the
+    displayed (resolvable) name."""
 
     def _run_with_rows(self, monkeypatch, payload):
         _patch_connect(
@@ -532,7 +534,7 @@ class TestBuildProjectsBlockRendersTypeAndDescription:
         )
         return session_manifest.build_projects_context_block()
 
-    def test_type_and_description_rendered(self, monkeypatch):
+    def test_curated_description_kept_type_dropped(self, monkeypatch):
         payload = {
             "aos_iac": {
                 "name": "aos-iac",
@@ -542,15 +544,27 @@ class TestBuildProjectsBlockRendersTypeAndDescription:
             },
         }
         block = self._run_with_rows(monkeypatch, payload)
-        # The workspace group carries the root; the entry's relative path is
-        # "aos-iac", identical to the name, so it is not repeated.
         assert "### me — /home/x" in block
-        assert "- aos-iac (terraform) — Terraform IaC for AOS GCP infra" in block
+        assert "aos-iac" in block
+        assert "- aos-iac: Terraform IaC for AOS GCP infra" in block
+        # Type is index metadata the redesign deliberately drops.
+        assert "(terraform)" not in block
 
-    def test_path_shown_when_it_differs_from_the_name(self, monkeypatch):
+    def test_basename_shown_when_it_differs_from_the_stored_name(self, monkeypatch):
         payload = {"p": {"name": "plainproj", "local_path": "/p"}}
         block = self._run_with_rows(monkeypatch, payload)
-        assert "- plainproj: p" in block
+        # The user calls the project by its real directory name; the legacy
+        # stored slot name is not what `gaia context project` should be handed.
+        names_line = block.splitlines()[3]
+        assert names_line == "p"
+        assert "plainproj" not in block
+
+    def test_pointer_footer_names_the_ficha_verb(self, monkeypatch):
+        payload = {"p": {"name": "p", "local_path": "/p"}}
+        block = self._run_with_rows(monkeypatch, payload)
+        assert block.rstrip().endswith(
+            "Ficha de un proyecto: gaia context project <nombre>"
+        )
 
     def test_vanished_entry_is_not_injected_at_all(self, monkeypatch):
         """A removed project is asked for, not announced every session.
@@ -625,16 +639,19 @@ class TestProjectsBlockDeduplicatesAtTheSource:
         )
         block = session_manifest.build_projects_context_block()
 
-        entries = [l for l in block.splitlines() if l.startswith("- ")]
-        assert len(entries) == 1, f"expected one entry, got {entries}"
+        # No description on either side, so the name index (the comma list)
+        # is the only place the project can appear -- it must appear exactly
+        # once, keyed on the resolved basename, never the legacy slug.
+        assert block.count("bildwiz-iac") == 1, block
+        assert "bildwiz-2" not in block
         # It lands under the workspace that owns the projects row, not under the
         # legacy contract's own workspace key.
         assert "### aaxis" in block
         assert "### bildwiz" not in block
 
     def test_merge_keeps_metadata_carried_by_only_one_side(self, monkeypatch):
-        """The promoted side has the type; the legacy side has the description.
-        Neither may be lost when the two collapse."""
+        """The promoted side has the type (dropped by the index redesign); the
+        legacy side has the description, which must survive the collapse."""
         promoted = {
             "bildwiz_2": {
                 "name": "bildwiz-2",
@@ -661,7 +678,7 @@ class TestProjectsBlockDeduplicatesAtTheSource:
             self._PROJ_ROWS,
         )
         block = session_manifest.build_projects_context_block()
-        assert "(application)" in block
+        assert "(application)" not in block
         assert "only the legacy row has this" in block
 
     def test_ambiguous_basename_is_not_guessed(self, monkeypatch):
@@ -702,8 +719,7 @@ class TestProjectsBlockDeduplicatesAtTheSource:
             ({"workspace": "aaxis", "name": "nfi", "path": "/ws/aaxis/nfi/nfi-oro-com"},),
         )
         block = session_manifest.build_projects_context_block()
-        entries = [l for l in block.splitlines() if l.startswith("- ")]
-        assert len(entries) == 1, f"expected one entry, got {entries}"
+        assert block.count("nfi-oro-com") == 1, block
         assert "unresolved" not in block
         assert "### nfi" not in block
 
@@ -807,7 +823,7 @@ class TestBuildContractsIndexBlock:
         )
         block = session_manifest.build_contracts_index_block(max_chars=600)
         assert len(block) <= 600
-        assert "more, inspect the DB-backed surface_routing registry" in block
+        assert "more, use 'gaia context get-contract --section <s>'" in block
 
     def test_real_config_has_all_surfaces(self, tmp_path, monkeypatch):
         """Integration: against a DB seeded from the real agent frontmatters,
@@ -863,7 +879,7 @@ class TestBuildContractsIndexBlock:
         for cap in (120, 200, 350, 500):
             block = session_manifest.build_contracts_index_block(max_chars=cap)
             assert block, f"cap={cap} produced empty block"
-            assert "more, inspect the DB-backed surface_routing registry" in block, (
+            assert "more, use 'gaia context get-contract --section <s>'" in block, (
                 f"cap={cap}: overflow dropped entries WITHOUT a footer"
             )
             assert len(block) <= cap, f"cap={cap}: block exceeded cap"

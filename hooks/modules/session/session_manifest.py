@@ -439,28 +439,17 @@ def _workspace_root(paths: list[str]) -> str:
     return root
 
 
-def _relative_to_root(path: str, root: str) -> str:
-    """Path shown for a project inside its workspace group.
-
-    Returns the portion of *path* below *root*, or *path* unchanged when it does
-    not sit under *root* (so an out-of-tree entry is never silently rewritten
-    into a misleading relative path).
-    """
-    if not path:
-        return ""
-    if not root:
-        return path
-    try:
-        rel = os.path.relpath(path, root)
-    except (ValueError, TypeError):
-        return path
-    if rel.startswith(".."):
-        return path
-    return rel
-
-
 def build_projects_context_block(max_chars: int = 8000) -> str:
-    """Render the active-context project index for the SessionStart manifest.
+    """Render the project INDEX (names only) for the SessionStart manifest.
+
+    Per ``decision_kernel_inyeccion_agnostica_por_audiencia`` reason 2 (the CLI
+    index announces existence; content is pulled on demand): this block used to
+    carry type, path and description per project -- content, not an index. It
+    is now a compact ``### <workspace> — <root>`` group per workspace holding
+    ONLY a comma-separated list of project names, plus a footer naming the verb
+    that fetches the full ficha (``gaia context project <name>``, added in
+    429eb62/9d3476d/bdd8d34, ASSUMED here). No types, no per-project paths, no
+    descriptions -- those are exactly what the verb answers on request.
 
     This is NOT an index of every git repo on disk. The source is the set of
     projects that have **active project context** -- a ``project_identity`` row
@@ -477,12 +466,19 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     those projects are included rather than held back. No path-prefix filtering
     is used.
 
-    The block is HIERARCHICAL: a ``### <workspace> — <root>`` group per scanned
-    workspace, with that workspace's projects underneath as
-    ``- <name> (<type>): <path relative to root> — <description>``. The relative
-    path is dropped entirely when it equals the project's name, which is the
-    common case; the group root plus the name reconstruct it exactly, so nothing
-    is lost and the repeated absolute prefix is not paid ~40 times.
+    The name shown per project is the ON-DISK BASENAME when it differs from the
+    contract's stored name, not the stored name itself (see ``_display_name``).
+    A legacy hand-authored slot (e.g. the ``aaxis`` workspace's map names a repo
+    ``bildwiz-2``) can diverge from the directory the repo actually lives in
+    (``bildwiz-iac``) -- the basename is what the user calls the project and
+    what ``gaia context project`` resolves against as its second-priority match,
+    so showing it is what makes the index actually useful for lookup. A project
+    with a hand-curated ``description`` (today: ``aos``, ``aos_iac``,
+    ``aos_keycloak`` -- 3, not the 4 once assumed; live state corrects the
+    assumption per ``atom_verificacion_en_vivo_dos_casos_20260801``) keeps a
+    ``- <name>: <description>`` line below the group's comma list: curation this
+    deliberate (3 rows, hand-picked) is signal worth its own line, unlike the
+    generic per-project metadata this redesign otherwise drops.
 
     A project's group is the workspace that owns its ``projects`` row (the
     scan-verified physical truth), falling back to the contract's own workspace
@@ -505,14 +501,14 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     * **Vanished repos.** An entry marked ``missing_since`` is not rendered at
       all. Nothing is deleted -- not from the ``projects`` table, not from the
       contract -- so the full record (path, type, description, exact timestamp)
-      stays one ``gaia context get`` away for the rare turn that asks about a
+      stays one ``gaia context project`` away for the rare turn that asks about a
       removed project. It is not worth a line of every session's context.
 
-    Budget: bounded to ``max_chars`` (default 8000). On overflow, live projects
-    are dropped from the tail and a recoverable footer stating the dropped count
-    ALWAYS lands (footer space is reserved before trimming). Under budget
-    pressure the explanatory note is dropped before any data. Fail-safe: any
-    error returns "".
+    Budget: bounded to ``max_chars`` (default 8000, unchanged as a safety
+    ceiling -- the compact form targets well under ~1200 chars in practice). On
+    overflow, live projects are dropped from the tail and a recoverable footer
+    stating the dropped count ALWAYS lands (footer space, plus the verb
+    pointer, is reserved before trimming). Fail-safe: any error returns "".
     """
     # Ensure the package root (which holds the `gaia/` package) is importable.
     # At real SessionStart, session_start.py already inserts it; this self-heal
@@ -653,34 +649,43 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
 
     total_available = len(live)
     header = "## Project Context — Projects"
-    note = (
-        "Paths are relative to each workspace root, and omitted when the "
-        "directory matches the project name."
-    )
+    pointer = "Ficha de un proyecto: gaia context project <nombre>"
 
-    def _render(items: list[dict], with_note: bool = True) -> str:
+    def _display_name(e: dict) -> str:
+        """The identifier shown in the index -- resolvable, not necessarily stored.
+
+        Prefers the on-disk basename over the contract's stored ``name`` when
+        the two differ (see the docstring above); falls back to the stored
+        name when there is no resolved path to derive one from.
+        """
+        if e["path"]:
+            base = os.path.basename(e["path"])
+            if base:
+                return base
+        return e["name"]
+
+    def _render_body(items: list[dict]) -> str:
         parts = [header]
-        if with_note:
-            parts.append(note)
         for ws in group_order:
             group = [e for e in items if e["ws"] == ws]
             if not group:
                 continue
             root = roots.get(ws) or ""
-            lines = [f"### {ws} — {root}" if root else f"### {ws}"]
+            names = ", ".join(_display_name(e) for e in group)
+            lines = [f"### {ws} — {root}" if root else f"### {ws}", names]
             for e in group:
-                label = f"{e['name']} ({e['type']})" if e["type"] else e["name"]
-                shown = _relative_to_root(e["path"], root)
-                # A relative path equal to the name is fully implied by the
-                # group root; printing it would only repeat the name.
-                line = (
-                    f"- {label}: {shown}"
-                    if shown and shown != e["name"]
-                    else f"- {label}"
+                if not e["desc"]:
+                    continue
+                display = _display_name(e)
+                # Curated projects are the deliberate few (hand-picked
+                # description); the below-list line is where that signal
+                # survives the compaction rather than being dropped with the
+                # rest of the metadata.
+                lines.append(
+                    f"- {display}: {e['desc']}"
+                    if display == e["name"]
+                    else f"- {display}: {e['name']} — {e['desc']}"
                 )
-                if e["desc"]:
-                    line += f" — {e['desc']}"
-                lines.append(line)
             parts.append("\n".join(lines))
         if unresolved:
             parts.append(
@@ -689,27 +694,28 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
             )
         return "\n\n".join(parts)
 
-    block = _render(live)
+    block = _render_body(live) + "\n\n" + pointer
     # Budget: drop live projects from the tail until the block PLUS its footer
     # fits. The footer must never be lost -- a silent tail-drop with no footer
     # turns the projects index (a routing surface) into a lie about how many
-    # projects exist. So we reserve the footer's worst-case width up front and
-    # trim against ``max_chars - footer_budget``. Under pressure the note goes
-    # first: it explains the data, so it is the cheapest thing to lose.
+    # projects exist. So we reserve the footer's worst-case width (the dropped-
+    # count notice plus the verb pointer, which must ship regardless) up front
+    # and trim the body against the remainder.
     if len(block) > max_chars:
-        def _footer(n: int) -> str:
+        def _drop_footer(n: int) -> str:
             return f"\n... ({n} more, use 'gaia context get')"
 
-        footer_budget = len(_footer(total_available))
+        footer_budget = len(_drop_footer(total_available)) + len(pointer) + 2
         trim_target = max(0, max_chars - footer_budget)
 
         kept = list(live)
-        while kept and len(_render(kept, with_note=False)) > trim_target:
+        while kept and len(_render_body(kept)) > trim_target:
             kept.pop()
         dropped = total_available - len(kept)
-        block = _render(kept, with_note=False)
+        body = _render_body(kept)
         if dropped > 0:
-            block = block + _footer(dropped)
+            body = body + _drop_footer(dropped)
+        block = body + "\n\n" + pointer
 
     return block
 
@@ -765,7 +771,12 @@ def build_contracts_index_block(max_chars: int = 2000) -> str:
     Budget: bounded to ``max_chars`` (default 2000). The full 7-surface index is
     ~1.25 KB today and is meant to land complete; the bound is a guard rail, not
     a target. On overflow, whole surface lines are dropped from the tail with a
-    recoverable footer. Fail-safe: any error, a missing file, or an absent
+    recoverable footer that names a verb actually reachable from the
+    orchestrator's lane (``gaia context get-contract --section <s>``) -- the
+    prior footer ("inspect the DB-backed surface_routing registry") named no
+    command the orchestrator's CLI lane can run; a dead pointer teaches it to
+    ignore pointers. Fail-safe: any error, a missing file, or an absent
+
     ``surfaces`` map returns "".
     """
     try:
@@ -811,7 +822,7 @@ def build_contracts_index_block(max_chars: int = 2000) -> str:
     # omitted always lands. See FIX (b).
     if len(block) > max_chars:
         def _footer(n: int) -> str:
-            return f"\n... ({n} more, inspect the DB-backed surface_routing registry)"
+            return f"\n... ({n} more, use 'gaia context get-contract --section <s>')"
 
         footer_budget = len(_footer(total_available))
         trim_target = max(0, max_chars - footer_budget)
