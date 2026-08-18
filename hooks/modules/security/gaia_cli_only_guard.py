@@ -490,6 +490,20 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # path for that table is `move-contracts` (re-keying)", which stays in
     # EXPLICITLY_DENIED_PHRASES below, untouched by this entry.
     ("context", "get-contract"),
+    # `project` is the one-project ficha: `projects` row + `project_facets` +
+    # the matching `project_identity` contract entry + a curated-memory INDEX
+    # (slug + description, never a body). Verified read-only by following
+    # what `bin/cli/context.py`'s `_cmd_project` calls: SELECTs against
+    # `projects`, `project_facets`, `project_context_contracts` and `memory`
+    # and nothing else -- no INSERT/UPDATE/DELETE, no commit(), no telemetry
+    # bump (unlike `memory show`'s deliberate_count, deliberately not called
+    # here so this verb's own invariant -- "never writes" -- holds without
+    # exception). This closes the gap named in the task that added it: facets
+    # are not in `get_context()`'s workspace shape, are not a
+    # project-context contract themselves, and `query` (raw SQL) is denied to
+    # the orchestrator -- so before this entry there was no read path to a
+    # project's facets in this lane at all.
+    ("context", "project"),
     ("workspace", "current"),
     ("workspace", "info"),
     ("evidence", "show"),
