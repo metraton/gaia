@@ -15,9 +15,15 @@ survives that is to fix the denominator at turns that DEMONSTRABLY searched --
 ``commands_run`` -- and ask only of those whether the field is empty. Changing
 this predicate makes a run incomparable to its own baseline.
 
-Baselines this reproduces (measured 2026-08-14, restated here so a later run
-can tell drift from a changed query): July 2026, 3 of 451 empty (0.7%);
-August 2026 through the 14th, 84 of 178 empty (47.2%).
+This script reproduces the SHAPE of an earlier census -- the same predicate
+(COMPLETE, not auto-captured, a demonstrable grep/rg in commands_run) applied
+across the same two windows -- not its digits: that earlier census was never
+written down as a runnable query, only as a remembered result, so there is
+nothing here to match it against number-for-number. Run against the current
+database (2026-08-15) this predicate gives July 2026, 3 of 451 empty (0.7%);
+August 2026 through the 14th, 66 of 178 empty (37.1%). Restated here so a
+later run can tell drift in the underlying rows from a changed query, not
+to assert that either figure is what the original census produced.
 
 The metric is the percentage EMPTY, so it improves by going DOWN.
 
