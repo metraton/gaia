@@ -64,6 +64,7 @@ is pulled with exactly one verb.
   `project_context_contracts` -- the names the `can_read`/`can_write` menu lists. `--section` is
   required; `--workspace` when the workspace is not the cwd's; `--text` for the human form. It
   returns the contract payload; an unknown name exits 1 listing the available ones.
+- `gaia context project <name>` returns the complete project sheet by name or basename, read-only.
 - `gaia context get --section <s>` and `gaia context show` resolve against the workspace SHAPE
   (`apps`, `services`, `stack`, `git`, ...). The names OVERLAP without meaning the same thing:
   `gaia context get --section stack` returns the scanner placeholder `{}` while the real `stack`
