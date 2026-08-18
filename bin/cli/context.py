@@ -459,6 +459,14 @@ def _cmd_get_contract(args) -> int:
 
 _PROJECT_PENDING_FOOTER_MAX = 200
 
+# The memory-index section ANNOUNCES the corpus; it does not dump it. A
+# project whose curated memory runs into the hundreds (measured: 419 rows for
+# `gaia` itself, in the workspace where this ficha is most needed) produced an
+# unusable, context-heavy ficha for its own primary reader -- the orchestrator,
+# reading in conversation. Capped to the N most-recently-updated rows; the rest
+# are named by count with the exact sweep command, never silently dropped.
+_PROJECT_MEMORY_INDEX_TOP_N = 10
+
 
 def _project_derive_initiative(project_identity: str | None) -> str | None:
     """The canonical `memory.initiative` key for a resolved project's identity.
@@ -611,6 +619,21 @@ def _project_close_candidates(con, name: str, workspace: str | None) -> list:
     return candidates
 
 
+def _project_memory_sweep_command(initiative: str | None, name: str) -> str:
+    """The exact command that shows the FULL memory index, for the overflow
+    line below the capped top-N. Prefers the initiative sweep (the same
+    corpus this section drew from); falls back to a name search only in the
+    edge case where the index matched by `project_ref` alone with no
+    derivable initiative -- in practice this cannot happen for a non-empty
+    index (a `project_ref` match requires a resolvable `project_identity`,
+    which always derives a non-None initiative), but the fallback keeps the
+    function total rather than assuming that invariant here too.
+    """
+    if initiative:
+        return f"gaia memory get-relevant --initiative {initiative}"
+    return f"gaia memory search {name}"
+
+
 def _resolve_project(con, name: str, workspace: str | None) -> dict:
     """Resolve NAME (and optional --workspace) to exactly one `projects` row.
 
@@ -697,7 +720,14 @@ def _cmd_project(args) -> int:
     ficha end to end: the `projects` row, its `project_facets`, its
     `project_identity` project-context contract entry (if any), and an INDEX
     (slug + description only, never a body) of the curated `memory` rows
-    anchored to it by `project_ref` or `initiative`.
+    anchored to it by `project_ref` or `initiative`. The index ANNOUNCES the
+    corpus rather than dumping it: capped to `_PROJECT_MEMORY_INDEX_TOP_N`
+    (10) most-recently-updated rows -- a NULL `updated_at` sorts last, never
+    as freshest -- with a counted overflow line naming the total and the
+    exact sweep command when there are more. `--json` applies the identical
+    cap and never claims completeness by omission: `memory_index_total` and
+    `memory_index_truncated` are always present, and
+    `memory_index_sweep_command` is added when truncated.
 
     Resolution tries an EXACT `projects.name` match first, then the basename
     of `projects.path` -- the fix for a legacy row scanned under an opaque
@@ -836,6 +866,10 @@ def _cmd_project(args) -> int:
 
         footer = _project_pending_footer(con, r_workspace, initiative)
 
+        memory_total = len(memory_rows)
+        memory_shown = memory_rows[:_PROJECT_MEMORY_INDEX_TOP_N]
+        memory_truncated = memory_total > len(memory_shown)
+
         if as_json:
             out = {
                 "project": row,
@@ -845,8 +879,19 @@ def _cmd_project(args) -> int:
                     {"slug": contract_slug, "entry": contract_entry}
                     if contract_slug is not None else None
                 ),
-                "memory_index": memory_rows,
+                # Capped identically to the human view -- the SAME context
+                # cost applies to a JSON payload read in conversation. Never
+                # silent about it: `memory_index_truncated` is always present
+                # (never inferred from array length alone), and `_total` is
+                # the real count regardless of how many are shown.
+                "memory_index": memory_shown,
+                "memory_index_total": memory_total,
+                "memory_index_truncated": memory_truncated,
             }
+            if memory_truncated:
+                out["memory_index_sweep_command"] = _project_memory_sweep_command(
+                    initiative, r_name,
+                )
             if footer:
                 out["pending_footer"] = footer
             print(json.dumps(out, indent=2, default=str))
@@ -884,11 +929,20 @@ def _cmd_project(args) -> int:
 
         print()
         if memory_rows:
-            print(f"curated memory ({len(memory_rows)}) -- index only, use "
-                  f"`gaia memory show <slug>` for the full body:")
-            for m in memory_rows:
+            label = (
+                f"curated memory ({memory_total}, showing {len(memory_shown)} "
+                f"most recent)" if memory_truncated
+                else f"curated memory ({memory_total})"
+            )
+            print(f"{label} -- index only, use `gaia memory show <slug>` "
+                  f"for the full body:")
+            for m in memory_shown:
                 desc = m.get("description") or ""
                 print(f"  - {m['name']}: {desc}" if desc else f"  - {m['name']}")
+            if memory_truncated:
+                sweep = _project_memory_sweep_command(initiative, r_name)
+                print(f"  ... and {memory_total - len(memory_shown)} more -- "
+                      f"full index: `{sweep}`")
         else:
             print("curated memory    : (none)")
 
@@ -1528,7 +1582,16 @@ def register(subparsers) -> None:
             "row, `project_facets`, the matching `project_identity` "
             "project-context contract entry (if any), and an INDEX (slug + "
             "description only, NEVER a body) of curated `memory` rows "
-            "anchored to it by project_ref or initiative. NEVER writes -- "
+            "anchored to it by project_ref or initiative -- the index "
+            "ANNOUNCES the corpus, it does not dump it: capped to the 10 "
+            "most-recently-updated rows (a NULL updated_at sorts LAST, never "
+            "read as 'freshest'); when there are more, a counted overflow "
+            "line names the total and the exact sweep command "
+            "(`gaia memory get-relevant --initiative <key>`) instead of "
+            "silently truncating. --json applies the SAME cap and never "
+            "claims completeness by omission: it always carries "
+            "`memory_index_total` and `memory_index_truncated`, plus "
+            "`memory_index_sweep_command` when truncated. NEVER writes -- "
             "not the row, not a facet, not the contract, not memory, no "
             "telemetry bump either -- so it is safe to point at any name, "
             "resolved or not. Resolution tries an EXACT `projects.name` "
@@ -1548,8 +1611,10 @@ def register(subparsers) -> None:
             "context get-contract --section project_identity` for the WHOLE "
             "workspace contract (this prints only the one matching entry), "
             "`gaia memory show <slug>` for a memory row's full body (this "
-            "section is an index, never a body), and `gaia context scan` to "
-            "refresh the projects/facets rows before reading them again."
+            "section is an index, never a body), `gaia memory get-relevant "
+            "--initiative <key>` for the FULL memory corpus once the index "
+            "is capped, and `gaia context scan` to refresh the "
+            "projects/facets rows before reading them again."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"

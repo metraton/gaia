@@ -604,6 +604,42 @@ class TestCmdProject:
         assert rc == 0
         assert "gaia memory get-relevant --initiative demo" in captured.out
 
+    def test_memory_index_caps_to_ten_with_overflow_line(self, seeded_db, capsys):
+        """>10 curated rows: show exactly 10, plus a counted overflow line
+        naming the real total and the sweep command -- the P2-style refinement
+        (never a silent dump, never a lie about completeness)."""
+        from gaia.store.writer import _connect
+
+        con = _connect(seeded_db)
+        try:
+            for i in range(12):
+                con.execute(
+                    "INSERT INTO memory (workspace, name, type, description, "
+                    "body, class, status, project_ref, initiative, updated_at) "
+                    "VALUES ('ws-a', ?, 'atom', ?, 'body', 'log', NULL, NULL, "
+                    "'demo', ?)",
+                    (f"atom_overflow_{i}", f"overflow row {i}",
+                     f"2026-0{(i % 9) + 1}-01T00:00:00Z"),
+                )
+            con.commit()
+        finally:
+            con.close()
+
+        # seeded_db already carries 2 demo-initiative rows -> 14 total.
+        rc, captured = self._run(capsys, name="demo", workspace="ws-a")
+        assert rc == 0
+        assert "curated memory (14, showing 10 most recent)" in captured.out
+        assert captured.out.count("\n  - ") == 10
+        assert "... and 4 more -- full index: `gaia memory get-relevant --initiative demo`" in captured.out
+
+        rc, captured = self._run(capsys, name="demo", workspace="ws-a", json_output=True)
+        assert rc == 0
+        data = json.loads(captured.out)
+        assert len(data["memory_index"]) == 10
+        assert data["memory_index_total"] == 14
+        assert data["memory_index_truncated"] is True
+        assert data["memory_index_sweep_command"] == "gaia memory get-relevant --initiative demo"
+
     def test_ambiguous_exact_match_exits_1_with_workspaces(self, seeded_db, capsys):
         rc, captured = self._run(capsys, name="dup")
         assert rc == 1
