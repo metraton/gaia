@@ -2702,13 +2702,25 @@ class ClaudeCodeAdapter(HookAdapter):
         # is why gating this branch on "Task" alone silently observed nothing.
         #
         # Beyond cut detection, this is also where the orchestrator gets its
-        # only look at the just-closed row: Claude Code's own hooks reference
-        # names this exact pattern ("To inject context into the parent session
-        # after a subagent returns, use a PostToolUse hook on the Agent tool")
-        # and documents additionalContext as landing "next to the tool
-        # result" for PostToolUse. The summary is strictly best-effort --
-        # _build_contract_summary_context never raises and returns "" on any
-        # unresolved row, which falls through to the bare response below.
+        # look at the row: Claude Code's own hooks reference names this exact
+        # pattern ("To inject context into the parent session after a
+        # subagent returns, use a PostToolUse hook on the Agent tool") and
+        # documents additionalContext as landing "next to the tool result"
+        # for PostToolUse -- but that recommendation covers a SYNCHRONOUS
+        # dispatch, where the tool_response IS the finalized turn. For a
+        # BACKGROUND dispatch (measured: the majority of real ones) this same
+        # branch fires at LAUNCH, not at close -- the tool_response is a stub
+        # carrying only agentId/description/outputFile, status
+        # "async_launched", with no row yet finalized to report on. The
+        # summary line built below carries whichever of its two modes the row
+        # supports (see ``build_contract_summary_line``): the rich closed-row
+        # line for the synchronous case, or a short launch pointer armed with
+        # the same agentId for the async one -- never a state the row has not
+        # reached yet. The summary is strictly best-effort --
+        # _build_contract_summary_context never raises and returns "" when
+        # neither mode applies (no agentId, or a finalized row whose stored
+        # envelope cannot be read), which falls through to the bare response
+        # below.
         # ------------------------------------------------------------- #
         from modules.agents.task_result_observer import TASK_TOOL_NAMES
 
@@ -2853,6 +2865,12 @@ class ClaudeCodeAdapter(HookAdapter):
     @staticmethod
     def _build_contract_summary_context(hook_data) -> str:
         """Best-effort contract-row summary line for the Agent/Task result.
+
+        Carries whichever of the two modes ``build_contract_summary_line``
+        produced: MODE A (a finalized row's state/verification/field counts,
+        the synchronous-dispatch case) or MODE B (a short "launched, not
+        finalized yet" pointer, the async-launch case -- PostToolUse fires at
+        launch for a background dispatch, before any row can be finalized).
 
         Never raises: any failure -- including "the row is not resolvable" --
         degrades to "" so the caller falls back to the bare HookResponse this

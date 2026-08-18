@@ -130,13 +130,13 @@ def _task_response(text: str, **overrides) -> dict:
     return response
 
 
-def _async_launch_response() -> dict:
+def _async_launch_response(**overrides) -> dict:
     """A REAL ``run_in_background`` dispatch result, transcribed verbatim.
 
     It carries no ``content`` and no fence because the turn has not ended --
     the single largest false-positive source (156 of 325 measured results).
     """
-    return {
+    response = {
         "isAsync": True,
         "status": "async_launched",
         "agentId": "a328e0d9b8f2aa70b",
@@ -145,6 +145,8 @@ def _async_launch_response() -> dict:
         "outputFile": "/home/jorge/.tmp/claude-1001/-home-jorge-ws-me/793cce12",
         "canReadOutputFile": True,
     }
+    response.update(overrides)
+    return response
 
 
 # The real tool_input keys the Agent tool ships with.
@@ -834,6 +836,77 @@ class TestContractSummaryLineResolvable:
         assert line.startswith("a21d060aefc6855cc: state=NEEDS_INPUT, open_gaps(1)")
 
 
+class TestContractSummaryLineLaunchPointer:
+    """MODE B: no finalized row yet, but the result still names an agentId.
+
+    This is the async-launch case the P1 rescue targets: ``run_in_background``
+    returns a stub (status ``async_launched``) at LAUNCH, before any row can
+    be finalized -- measured as 156 of 325 real Agent results, the majority.
+    The pointer must read differently from MODE A (no ``state=``, no field
+    counts) so whoever reads it can tell a launch pointer from a close.
+    """
+
+    def test_async_launch_stub_with_no_row_yet_produces_the_pointer(self):
+        """The row for a just-launched dispatch may not exist at all yet."""
+        line = build_contract_summary_line(
+            _async_launch_response(), row_lookup=_lookup_returning(None),
+        )
+
+        assert line == (
+            "a328e0d9b8f2aa70b: launched, not finalized yet -- "
+            "gaia contract view --harness-id a328e0d9b8f2aa70b"
+        )
+
+    def test_row_still_dispatched_produces_the_pointer(self):
+        """The row was born (PreToolUse) but the subagent has not closed it."""
+        line = build_contract_summary_line(
+            _async_launch_response(),
+            row_lookup=_lookup_returning(_row("DISPATCHED", TWO_FIELD_ENVELOPE)),
+        )
+
+        assert line == (
+            "a328e0d9b8f2aa70b: launched, not finalized yet -- "
+            "gaia contract view --harness-id a328e0d9b8f2aa70b"
+        )
+
+    def test_pointer_carries_the_real_agent_id_not_a_placeholder(self):
+        line = build_contract_summary_line(
+            _async_launch_response(agentId="a" + "9" * 17),
+            row_lookup=_lookup_returning(None),
+        )
+
+        assert line.startswith("a" + "9" * 17)
+        assert "--harness-id " + "a" + "9" * 17 in line
+
+    def test_pointer_never_claims_a_state_it_does_not_have(self):
+        """The distinguishing mark: MODE A always carries ``state=``, MODE B
+        never does -- that absence is what tells the two modes apart.
+        """
+        line = build_contract_summary_line(
+            _async_launch_response(), row_lookup=_lookup_returning(None),
+        )
+
+        assert "state=" not in line
+
+    def test_pointer_is_shorter_than_a_typical_mode_a_line(self):
+        """The budget this turn was asked to report: MODE B pays no count
+        segment, so it must come in under MODE A's own measured typical
+        length (asserted at 180 in TestContractSummaryLineResolvable).
+        """
+        pointer = build_contract_summary_line(
+            _async_launch_response(), row_lookup=_lookup_returning(None),
+        )
+        closed = build_contract_summary_line(
+            _task_response("closed clean"),
+            row_lookup=_lookup_returning(_row("COMPLETE", TWO_FIELD_ENVELOPE)),
+        )
+
+        assert len(pointer) < len(closed), (
+            f"MODE B ({len(pointer)} chars) must be shorter than "
+            f"MODE A ({len(closed)} chars)"
+        )
+
+
 class TestContractSummaryLineDegradesToSilence:
     """The other direction: an irresolvable row is SILENCE, never a lie.
 
@@ -845,20 +918,6 @@ class TestContractSummaryLineDegradesToSilence:
     def test_no_agent_run_id_is_silence(self):
         assert build_contract_summary_line(
             {"status": "completed"}, row_lookup=_forbidden,
-        ) is None
-
-    def test_row_not_found_is_silence(self):
-        assert build_contract_summary_line(
-            _task_response("x"), row_lookup=_lookup_returning(None),
-        ) is None
-
-    def test_row_still_dispatched_never_finalized_is_silence(self):
-        """The row exists but the harness cut it -- the cut path already
-        records this; the summary line must not ALSO claim a close happened.
-        """
-        assert build_contract_summary_line(
-            _task_response("x"),
-            row_lookup=_lookup_returning(_row("DISPATCHED", TWO_FIELD_ENVELOPE)),
         ) is None
 
     def test_unparseable_envelope_is_silence(self):
@@ -916,8 +975,10 @@ class TestContractSummaryLineWiring:
         assert "a21d060aefc6855cc" in hook_specific["additionalContext"]
         assert "--harness-id a21d060aefc6855cc" in hook_specific["additionalContext"]
 
-    def test_a_cut_row_never_finalized_yields_no_additional_context(self, db_path):
-        """The row exists (born DISPATCHED) but never closed -- silence, not a lie."""
+    def test_a_cut_row_never_finalized_yields_the_mode_b_pointer(self, db_path):
+        """The row exists (born DISPATCHED) but never closed -- MODE B, not
+        silence: the agentId is real, so the launch pointer is armed with it.
+        """
         from adapters.claude_code import ClaudeCodeAdapter
         from adapters.types import HookEvent, HookEventType
         from gaia.store.writer import insert_dispatched_handoff, stamp_harness_agent_id
@@ -947,9 +1008,16 @@ class TestContractSummaryLineWiring:
         )
 
         assert response.exit_code == 0
-        assert "hookSpecificOutput" not in response.output
+        context = response.output["hookSpecificOutput"]["additionalContext"]
+        assert context == (
+            "a328e0d9b8f2aa70c: launched, not finalized yet -- "
+            "gaia contract view --harness-id a328e0d9b8f2aa70c"
+        )
 
-    def test_no_matching_row_at_all_yields_no_additional_context(self, db_path):
+    def test_no_matching_row_at_all_yields_the_mode_b_pointer(self, db_path):
+        """No row was ever born under this id -- still MODE B, since the
+        stub carries a real agentId and nothing has finalized.
+        """
         from adapters.claude_code import ClaudeCodeAdapter
         from adapters.types import HookEvent, HookEventType
 
@@ -969,4 +1037,40 @@ class TestContractSummaryLineWiring:
         )
 
         assert response.exit_code == 0
-        assert response.output == {}
+        context = response.output["hookSpecificOutput"]["additionalContext"]
+        assert context == (
+            f"a{'f' * 17}: launched, not finalized yet -- "
+            f"gaia contract view --harness-id a{'f' * 17}"
+        )
+
+    def test_async_launched_stub_at_the_wiring_level_yields_the_mode_b_pointer(
+        self, db_path,
+    ):
+        """The real shape this rescue targets: a PostToolUse Agent payload
+        whose tool_response IS the launch stub (status ``async_launched``),
+        not a completed result -- end to end through the adapter.
+        """
+        from adapters.claude_code import ClaudeCodeAdapter
+        from adapters.types import HookEvent, HookEventType
+
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Agent",
+            "session_id": "s-52",
+            "tool_input": TASK_INPUT,
+            "tool_response": _async_launch_response(),
+        }
+        response = ClaudeCodeAdapter().adapt_post_tool_use(
+            HookEvent(
+                event_type=HookEventType.POST_TOOL_USE,
+                session_id="s-52",
+                payload=payload,
+            )
+        )
+
+        assert response.exit_code == 0
+        context = response.output["hookSpecificOutput"]["additionalContext"]
+        assert context == (
+            "a328e0d9b8f2aa70b: launched, not finalized yet -- "
+            "gaia contract view --harness-id a328e0d9b8f2aa70b"
+        )

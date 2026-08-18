@@ -335,21 +335,54 @@ def _choose_read_field(evidence: Mapping[str, Any], report_prose: str) -> Option
     return None
 
 
+def _launch_pointer_line(agent_run_id: str) -> str:
+    """MODE B: a short pointer for a turn that has not finalized yet.
+
+    Emitted the instant the dispatch stub carries an ``agentId`` but the row
+    it addresses has not reached a finalized state -- the common case for a
+    BACKGROUND dispatch, whose tool_response returns at launch (status
+    ``async_launched``), not at close (measured: 156 of 325 real Agent
+    results). The row for that run may not exist yet or may still read
+    DISPATCHED; either way there is nothing finalized to report.
+
+    Deliberately NOT shaped like MODE A's ``state=..., verification=...``
+    line: naming a state or a field count here would claim knowledge of an
+    outcome that has not happened, which is exactly the misleading line this
+    module refuses to emit. "launched, not finalized yet" reads as a pointer
+    to check WHEN this turn returns, never as a report of what it did.
+    """
+    return (
+        f"{agent_run_id}: launched, not finalized yet -- "
+        f"gaia contract view --harness-id {agent_run_id}"
+    )
+
+
 def build_contract_summary_line(
     tool_response: Any,
     *,
     session_id: str = "",
     row_lookup: Optional[Callable[[dict, Optional[str]], Optional[Mapping[str, Any]]]] = None,
 ) -> Optional[str]:
-    """One dense line naming a closed row's populated evidence + a ready read command.
+    """The best line this Agent/Task result supports -- MODE A, MODE B, or None.
 
-    Returns None -- never a misleading line -- for every case where the row
-    is not resolvable as a CLOSED contract: no agentId on the result, no row
-    found, a row still DISPATCHED (never finalized -- the harness-cut
-    signature this module already records separately), an unparseable
-    envelope, or a lookup failure. Silence is the honest degrade: a line
-    that guesses "nothing to read" when the row simply could not be read is
-    worse than no line at all.
+    MODE A (unchanged): the row is resolvable and FINALIZED -- the state,
+    verification result, and populated evidence-field counts, plus the read
+    command armed with the real id. This is the synchronous-dispatch case the
+    Claude Code docs describe, where PostToolUse fires once the subagent has
+    actually closed.
+
+    MODE B (new): the row is NOT yet finalized (missing, or still DISPATCHED)
+    but the result still carries an ``agentId`` -- the async-launch case,
+    where PostToolUse fires at LAUNCH, not at close. See
+    ``_launch_pointer_line``.
+
+    Returns None -- never a misleading line -- when: there is no agentId at
+    all; the row lookup itself fails; or the row IS finalized but its stored
+    envelope cannot be read (unparseable JSON, not an object). That last case
+    is silence, not MODE B, because the row already closed -- claiming
+    "launched, not finalized yet" about a row that already finalized would be
+    exactly the lie this function exists to avoid; the honest answer there is
+    "could not read it", which is silence, same as before.
 
     Args:
         tool_response: The Task/Agent ``tool_response`` (source of ``agentId``).
@@ -375,12 +408,10 @@ def build_contract_summary_line(
         row = lookup({"agent_id": agent_run_id}, session_id or None)
     except Exception:
         return None
-    if not row:
-        return None
 
-    state = str(row.get("agent_state") or "")
-    if not state or state == _DISPATCHED_STATE:
-        return None
+    state = str(row.get("agent_state") or "") if row else ""
+    if not row or not state or state == _DISPATCHED_STATE:
+        return _launch_pointer_line(agent_run_id)
 
     try:
         envelope = json.loads(row.get("raw_handoff_json") or "null")
