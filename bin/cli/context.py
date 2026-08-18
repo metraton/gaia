@@ -31,6 +31,9 @@ Subcommands:
                                                         contract_name, the SAME names as an agent's
                                                         can_read/can_write kernel menu
   gaia context dump [--workspace W]                 (deprecated) alias for `gaia context get`
+  gaia context project NAME [--workspace W]         Read-only ficha for ONE project: row, facets,
+                    [--json]                          project_identity contract entry, curated-memory
+                                                        index -- resolves by exact name or basename of path
   gaia context query "<SQL>"                        Run a read-only SELECT against the substrate
   gaia context wipe  --workspace W [--yes]          (DESTRUCTIVE) Delete all rows for a workspace (CASCADE)
   gaia context prune-workspaces [--dry-run] [--yes] Delete PHANTOM workspaces (0 projects, 0 curated
@@ -41,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -451,6 +455,450 @@ def _cmd_get_contract(args) -> int:
         result["metadata"] = metadata
     print(json.dumps(result, indent=2, default=str))
     return 0
+
+
+_PROJECT_PENDING_FOOTER_MAX = 200
+
+
+def _project_derive_initiative(project_identity: str | None) -> str | None:
+    """The canonical `memory.initiative` key for a resolved project's identity.
+
+    Delegates to `gaia.store.writer.initiative_from_project_ref` -- the SAME
+    derivation the write side (`gaia memory add --project`) uses -- so the
+    memory index below matches by the identical key rather than a second,
+    possibly-diverging guess.
+    """
+    try:
+        from gaia.store.writer import initiative_from_project_ref
+    except Exception:
+        return None
+    return initiative_from_project_ref(project_identity)
+
+
+def _project_match_identity_entry(
+    payload: dict, path: str | None, remote_url: str | None,
+) -> tuple[str | None, dict | None]:
+    """Find the `project_identity` contract entry for a resolved project row.
+
+    The contract payload is a map keyed by an opaque slug (see
+    `tools/scan/promote.py`'s module docstring) -- there is no way to look an
+    entry up by the `projects.name` this command resolved. Two passes, path
+    first then normalized remote, mirror `tools/scan/promote._match_slug`'s
+    own matching order (the strongest on-disk signal first); this command
+    does not import that private helper (it also threads a per-run `claimed`
+    set this single lookup has no use for), so the match is reimplemented
+    narrowly here instead. Returns (slug, entry) or (None, None).
+    """
+    if not isinstance(payload, dict):
+        return None, None
+
+    norm_path = os.path.normpath(path) if path else None
+    for slug, entry in payload.items():
+        if not isinstance(entry, dict):
+            continue
+        e_path = entry.get("local_path")
+        if norm_path and e_path and os.path.normpath(e_path) == norm_path:
+            return slug, entry
+
+    try:
+        from gaia.project import _normalize_remote
+    except Exception:
+        _normalize_remote = None  # type: ignore[assignment]
+    norm_remote = _normalize_remote(remote_url) if (_normalize_remote and remote_url) else None
+    if norm_remote:
+        for slug, entry in payload.items():
+            if not isinstance(entry, dict):
+                continue
+            e_remote = entry.get("remote_url")
+            if not e_remote:
+                continue
+            try:
+                if _normalize_remote(e_remote) == norm_remote:
+                    return slug, entry
+            except Exception:
+                continue
+
+    return None, None
+
+
+def _project_pending_footer(con, workspace: str, initiative: str | None) -> str | None:
+    """The P2-style computed footer line (decision_gaia_el_cli_ensena_en_el_
+
+    instante_del_verbo): fires ONLY when the resolved project's initiative
+    has other live-pending threads, naming the count and the exact sweep
+    command -- mirroring `bin/cli/memory.py`'s `_show_pointer_line2` for
+    `memory show`. Same predicate as `gaia memory get-relevant --initiative`
+    (class='thread', status IN carry_forward/open, superseded rows excluded)
+    so the count printed here is the SAME count that command would return. A
+    project with no initiative, or an initiative with zero live-pending rows,
+    returns None -- a condition that always fires is not a condition. Never
+    raises: any DB error is read as "nothing to say", matching the
+    fail-fast-empty convention `_fetch_pending_vivo` already uses.
+    """
+    if not initiative:
+        return None
+    try:
+        rows = con.execute(
+            "SELECT COUNT(*) AS n FROM memory "
+            "WHERE workspace = ? AND deleted_at IS NULL AND class = 'thread' "
+            "  AND status IN ('carry_forward', 'open') AND initiative = ? "
+            "  AND name NOT IN ("
+            "    SELECT dst_name FROM memory_links "
+            "    WHERE workspace = ? AND kind = 'supersedes'"
+            "  )",
+            (workspace, initiative, workspace),
+        ).fetchone()
+    except Exception:
+        return None
+    n = rows["n"] if rows else 0
+    if not n:
+        return None
+    line = (
+        f"> initiative '{initiative}': {n} more live-pending -- sweep with "
+        f"`gaia memory get-relevant --initiative {initiative}` before writing."
+    )
+    if len(line) <= _PROJECT_PENDING_FOOTER_MAX:
+        return line
+    # Hard cap: drop the descriptive prefix but keep the sweep command whole
+    # and runnable -- a truncated command cannot be run, and the line exists
+    # so there is one to run.
+    short = (
+        f"> {n} pendientes vivos -- "
+        f"`gaia memory get-relevant --initiative {initiative}`"
+    )
+    return short if len(short) <= _PROJECT_PENDING_FOOTER_MAX else None
+
+
+def _project_close_candidates(con, name: str, workspace: str | None) -> list:
+    """Fuzzy fallback candidates when NAME resolves to nothing at all.
+
+    Pools both `projects.name` and the basename of `projects.path`, scoped to
+    --workspace when given, else every workspace -- the same two identifiers
+    `_resolve_project` itself matches against, so a near-miss on either
+    surfaces here instead of a bare "not found".
+    """
+    import difflib
+
+    if workspace:
+        rows = con.execute(
+            "SELECT workspace, name, path FROM projects WHERE workspace = ?",
+            (workspace,),
+        ).fetchall()
+    else:
+        rows = con.execute("SELECT workspace, name, path FROM projects").fetchall()
+
+    labels: list = []
+    lookup: list = []
+    for r in rows:
+        labels.append(r["name"])
+        lookup.append((r["workspace"], r["name"]))
+        if r["path"]:
+            base = Path(r["path"]).name
+            if base != r["name"]:
+                labels.append(base)
+                lookup.append((r["workspace"], r["name"]))
+
+    close = difflib.get_close_matches(name, labels, n=5, cutoff=0.4)
+    seen: set = set()
+    candidates: list = []
+    for label in close:
+        idx = labels.index(label)
+        ws, nm = lookup[idx]
+        if (ws, nm) in seen:
+            continue
+        seen.add((ws, nm))
+        candidates.append({"workspace": ws, "name": nm})
+    return candidates
+
+
+def _resolve_project(con, name: str, workspace: str | None) -> dict:
+    """Resolve NAME (and optional --workspace) to exactly one `projects` row.
+
+    Two match passes, in order -- exact `projects.name` first, basename of
+    `projects.path` second (the fix for the legacy opaque-slot rows: a
+    project scanned as `bildwiz-5` whose real repo is `control-tower-livekit`
+    is found when the user names the repo they actually know).
+
+    Returns one of:
+      {"status": "resolved", "row": {...}, "resolved_via": str}
+      {"status": "ambiguous", "candidates": [{"workspace", "name", "path"}, ...]}
+      {"status": "not_found", "candidates": [...], "hint": str | None}
+    """
+    if workspace:
+        exact = con.execute(
+            "SELECT * FROM projects WHERE workspace = ? AND name = ?",
+            (workspace, name),
+        ).fetchall()
+    else:
+        exact = con.execute(
+            "SELECT * FROM projects WHERE name = ?", (name,),
+        ).fetchall()
+
+    if len(exact) == 1:
+        return {"status": "resolved", "row": dict(exact[0]), "resolved_via": "exact name match"}
+    if len(exact) > 1:
+        return {
+            "status": "ambiguous",
+            "candidates": [
+                {"workspace": r["workspace"], "name": r["name"], "path": r["path"]}
+                for r in exact
+            ],
+        }
+
+    if workspace:
+        rows = con.execute(
+            "SELECT * FROM projects WHERE workspace = ? AND path IS NOT NULL",
+            (workspace,),
+        ).fetchall()
+    else:
+        rows = con.execute(
+            "SELECT * FROM projects WHERE path IS NOT NULL",
+        ).fetchall()
+
+    basename_matches = [r for r in rows if Path(r["path"]).name == name]
+    if len(basename_matches) == 1:
+        r = basename_matches[0]
+        via = (
+            f"basename of path (stored name differs: {r['name']!r})"
+            if r["name"] != name
+            else "basename of path"
+        )
+        return {"status": "resolved", "row": dict(r), "resolved_via": via}
+    if len(basename_matches) > 1:
+        return {
+            "status": "ambiguous",
+            "candidates": [
+                {"workspace": r["workspace"], "name": r["name"], "path": r["path"]}
+                for r in basename_matches
+            ],
+        }
+
+    hint = None
+    if workspace:
+        other = con.execute(
+            "SELECT DISTINCT workspace FROM projects WHERE name = ?", (name,),
+        ).fetchall()
+        if other:
+            hint = ", ".join(repr(r["workspace"]) for r in other)
+
+    return {
+        "status": "not_found",
+        "candidates": _project_close_candidates(con, name, workspace),
+        "hint": hint,
+    }
+
+
+def _cmd_project(args) -> int:
+    """Handle `gaia context project NAME [--workspace W] [--json]`.
+
+    NEVER writes -- not `projects`, not `project_facets`, not
+    `project_context_contracts`, not `memory` (no telemetry bump either) --
+    so it is safe to point at any name, resolved or not. Reads the one-project
+    ficha end to end: the `projects` row, its `project_facets`, its
+    `project_identity` project-context contract entry (if any), and an INDEX
+    (slug + description only, never a body) of the curated `memory` rows
+    anchored to it by `project_ref` or `initiative`.
+
+    Resolution tries an EXACT `projects.name` match first, then the basename
+    of `projects.path` -- the fix for a legacy row scanned under an opaque
+    slot name (e.g. `bildwiz-5`) whose real repo is the basename the user
+    actually names (e.g. `control-tower-livekit`); the response says so
+    explicitly rather than resolving silently. Failure semantics: an EMPTY
+    field and an ABSENT one are never the same response --
+      * resolved (exactly one row, by either pass): exit 0, full ficha.
+      * ambiguous (the SAME name/basename matches rows in more than one
+        workspace, or more than one row in the scope given): exit 1, listing
+        every candidate with its workspace -- the error enumerates rather
+        than guessing.
+      * not found: exit 1, with the closest names/basenames found in scope
+        (and, when --workspace narrowed the search, whether the exact name
+        exists in another workspace instead).
+
+    Composes with `gaia context get-contract --section project_identity` for
+    the WHOLE workspace contract (this command surfaces only the one entry
+    that matches), `gaia memory show <slug>` for a memory row's full body
+    (this command's memory section is an index, never a body), and
+    `gaia context scan` to refresh the underlying `projects`/`project_facets`
+    rows before reading them again.
+    """
+    name = getattr(args, "name", None)
+    if not name:
+        print("gaia context project: NAME is required", file=sys.stderr)
+        return 2
+
+    workspace = getattr(args, "workspace", None)
+    as_json = getattr(args, "json", False)
+
+    try:
+        from gaia.store.writer import _connect as _store_connect
+    except Exception as exc:  # pragma: no cover -- import wiring failure
+        print(f"gaia context project: failed to import store: {exc}", file=sys.stderr)
+        return 1
+
+    con = _store_connect()
+    try:
+        resolution = _resolve_project(con, name, workspace)
+
+        if resolution["status"] == "ambiguous":
+            candidates = resolution["candidates"]
+            if as_json:
+                print(json.dumps(
+                    {"error": "ambiguous", "name": name, "candidates": candidates},
+                    indent=2, default=str,
+                ))
+            else:
+                print(
+                    f"gaia context project: '{name}' is ambiguous -- matches "
+                    f"more than one project. Candidates:",
+                    file=sys.stderr,
+                )
+                for c in candidates:
+                    print(f"  {c['workspace']}/{c['name']}  ({c['path']})", file=sys.stderr)
+                print(
+                    "Use --workspace=<workspace> to disambiguate.",
+                    file=sys.stderr,
+                )
+            return 1
+
+        if resolution["status"] == "not_found":
+            candidates = resolution["candidates"]
+            hint = resolution.get("hint")
+            if as_json:
+                out = {"error": "not_found", "name": name, "candidates": candidates}
+                if hint:
+                    out["hint"] = (
+                        f"'{name}' not found in workspace {workspace!r}, but "
+                        f"exists in: {hint}"
+                    )
+                print(json.dumps(out, indent=2, default=str))
+            else:
+                if hint:
+                    print(
+                        f"gaia context project: '{name}' not found in workspace "
+                        f"{workspace!r}, but exists in: {hint} -- use "
+                        f"--workspace=<workspace> to resolve it there.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"gaia context project: '{name}' not found"
+                        + (f" in workspace {workspace!r}" if workspace else "")
+                        + ".",
+                        file=sys.stderr,
+                    )
+                if candidates:
+                    print("Closest names:", file=sys.stderr)
+                    for c in candidates:
+                        print(f"  {c['workspace']}/{c['name']}", file=sys.stderr)
+            return 1
+
+        # resolved
+        row = resolution["row"]
+        resolved_via = resolution["resolved_via"]
+        r_workspace = row["workspace"]
+        r_name = row["name"]
+
+        facets = [
+            dict(f) for f in con.execute(
+                "SELECT scope, key, value FROM project_facets "
+                "WHERE workspace = ? AND project = ? ORDER BY scope, key",
+                (r_workspace, r_name),
+            ).fetchall()
+        ]
+
+        contract_slug = None
+        contract_entry = None
+        contract_row = con.execute(
+            "SELECT payload FROM project_context_contracts "
+            "WHERE workspace = ? AND contract_name = 'project_identity'",
+            (r_workspace,),
+        ).fetchone()
+        if contract_row is not None:
+            try:
+                payload = json.loads(contract_row["payload"]) if contract_row["payload"] else {}
+            except (json.JSONDecodeError, TypeError):
+                payload = {}
+            contract_slug, contract_entry = _project_match_identity_entry(
+                payload, row.get("path"), row.get("remote_url"),
+            )
+
+        initiative = _project_derive_initiative(row.get("project_identity"))
+        project_ref = row.get("project_identity")
+        memory_rows = [
+            dict(m) for m in con.execute(
+                "SELECT name, type, description FROM memory "
+                "WHERE workspace = ? AND deleted_at IS NULL "
+                "  AND (project_ref = ? OR (initiative IS NOT NULL AND initiative = ?)) "
+                "ORDER BY COALESCE(updated_at, '') DESC",
+                (r_workspace, project_ref, initiative),
+            ).fetchall()
+        ]
+
+        footer = _project_pending_footer(con, r_workspace, initiative)
+
+        if as_json:
+            out = {
+                "project": row,
+                "resolved_via": resolved_via,
+                "facets": facets,
+                "project_identity_contract": (
+                    {"slug": contract_slug, "entry": contract_entry}
+                    if contract_slug is not None else None
+                ),
+                "memory_index": memory_rows,
+            }
+            if footer:
+                out["pending_footer"] = footer
+            print(json.dumps(out, indent=2, default=str))
+            return 0
+
+        print(f"workspace        : {r_workspace}")
+        print(f"name             : {r_name}")
+        print(f"resolved_via     : {resolved_via}")
+        print(f"group            : {row.get('group_name') or '(none)'}")
+        print(f"path             : {row.get('path') or '(unknown)'}")
+        print(f"remote_url       : {row.get('remote_url') or '(none)'}")
+        print(f"platform         : {row.get('platform') or '(unknown)'}")
+        print(f"role             : {row.get('role') or '(unknown)'}")
+        print(f"primary_language : {row.get('primary_language') or '(unknown)'}")
+        print(f"status           : {row.get('status')}")
+        if row.get("missing_since"):
+            print(f"missing_since    : {row['missing_since']}")
+
+        print()
+        if facets:
+            print(f"project_facets ({len(facets)}):")
+            for f in facets:
+                label = f"{f['scope']}.{f['key']}"
+                print(f"  {label:<28}  {f['value'] if f['value'] is not None else '(none)'}")
+        else:
+            print("project_facets    : (none)")
+
+        print()
+        if contract_slug is not None:
+            print(f"project_identity contract (slug: {contract_slug}):")
+            for k, v in contract_entry.items():
+                print(f"  {k:<16}  {v}")
+        else:
+            print("project_identity contract : (no entry found)")
+
+        print()
+        if memory_rows:
+            print(f"curated memory ({len(memory_rows)}) -- index only, use "
+                  f"`gaia memory show <slug>` for the full body:")
+            for m in memory_rows:
+                desc = m.get("description") or ""
+                print(f"  - {m['name']}: {desc}" if desc else f"  - {m['name']}")
+        else:
+            print("curated memory    : (none)")
+
+        if footer:
+            print()
+            print(footer)
+
+        return 0
+    finally:
+        con.close()
 
 
 def _cmd_query(args) -> int:
@@ -1069,6 +1517,66 @@ def register(subparsers) -> None:
              "updated_at header, then the payload)",
     )
 
+    # gaia context project NAME  (read-only, one-project ficha)
+    proj_parser = ctx_subparsers.add_parser(
+        "project",
+        help="Read-only ficha for ONE project: row, facets, project_identity "
+             "contract entry, curated-memory index -- resolves by exact name "
+             "or basename of path",
+        description=(
+            "Print the full read-only ficha of ONE project: its `projects` "
+            "row, `project_facets`, the matching `project_identity` "
+            "project-context contract entry (if any), and an INDEX (slug + "
+            "description only, NEVER a body) of curated `memory` rows "
+            "anchored to it by project_ref or initiative. NEVER writes -- "
+            "not the row, not a facet, not the contract, not memory, no "
+            "telemetry bump either -- so it is safe to point at any name, "
+            "resolved or not. Resolution tries an EXACT `projects.name` "
+            "match first, then the BASENAME of `projects.path` second -- the "
+            "fix for a legacy row scanned under an opaque slot name (e.g. "
+            "`bildwiz-5`) whose real repo is the basename a user actually "
+            "names (e.g. `control-tower-livekit`); a basename resolution "
+            "says so explicitly rather than resolving silently. Failure "
+            "semantics: found (exactly one row, either pass) exits 0 with "
+            "the full ficha; AMBIGUOUS (the same name/basename matches rows "
+            "in more than one workspace, or more than one row in the given "
+            "scope) exits 1 listing every candidate with its workspace; NOT "
+            "FOUND exits 1 with the closest names/basenames in scope (and, "
+            "when --workspace narrowed the search, whether the exact name "
+            "exists in another workspace instead) -- an empty section and an "
+            "absent one are never the same response. Composes with `gaia "
+            "context get-contract --section project_identity` for the WHOLE "
+            "workspace contract (this prints only the one matching entry), "
+            "`gaia memory show <slug>` for a memory row's full body (this "
+            "section is an index, never a body), and `gaia context scan` to "
+            "refresh the projects/facets rows before reading them again."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n"
+               "  gaia context project gaia\n"
+               "  gaia context project control-tower-livekit --workspace aaxis\n"
+               "  gaia context project gaia --json\n",
+    )
+    proj_parser.add_argument(
+        "name",
+        metavar="NAME",
+        help="Project name to resolve -- tried as an exact `projects.name` "
+             "match first, then as the basename of `projects.path`",
+    )
+    proj_parser.add_argument(
+        "--workspace",
+        metavar="W",
+        default=None,
+        help="Scope resolution to one workspace (default: search every "
+             "workspace)",
+    )
+    proj_parser.add_argument(
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit JSON",
+    )
+
     # gaia context query "<SQL>"
     query_parser = ctx_subparsers.add_parser(
         "query",
@@ -1212,6 +1720,8 @@ def cmd_context(args) -> int:
         return _cmd_dump(args)
     if context_cmd == "get-contract":
         return _cmd_get_contract(args)
+    if context_cmd == "project":
+        return _cmd_project(args)
     if context_cmd == "query":
         return _cmd_query(args)
     if context_cmd == "wipe":
@@ -1249,6 +1759,14 @@ def cmd_context(args) -> int:
     gc_p.add_argument("--section", metavar="CONTRACT_NAME", required=True)
     gc_p.add_argument("--json", action="store_true")
     gc_p.add_argument("--text", action="store_true")
+    proj_p = tmp_sub.add_parser(
+        "project",
+        help="Read-only ficha for ONE project (row, facets, contract entry, "
+             "memory index) -- resolves by exact name or basename of path",
+    )
+    proj_p.add_argument("name", metavar="NAME")
+    proj_p.add_argument("--workspace", metavar="W")
+    proj_p.add_argument("--json", action="store_true")
     tmp_sub.add_parser("query", help="Read-only SELECT").add_argument("sql", metavar="SQL")
     wipe_p = tmp_sub.add_parser("wipe", help="(DESTRUCTIVE) Delete all rows for a workspace (CASCADE)")
     wipe_p.add_argument("--workspace", metavar="W", required=True)

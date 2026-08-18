@@ -22,6 +22,7 @@ from cli.context import (
     _cmd_show,
     _cmd_get,
     _cmd_get_contract,
+    _cmd_project,
     _cmd_dump,
     _find_project_root,
     cmd_context,
@@ -472,6 +473,198 @@ class TestCmdGetContract:
 
         with pytest.raises(SystemExit):
             parser.parse_args(["context", "get-contract"])
+
+
+# ---------------------------------------------------------------------------
+# _cmd_project -- the one-project ficha (row + facets + project_identity
+# contract entry + curated-memory index). Seeds a real (temp) SQLite
+# substrate, same convention as TestCmdGetContract above.
+# ---------------------------------------------------------------------------
+
+class TestCmdProject:
+    @pytest.fixture()
+    def seeded_db(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+        from gaia.paths import db_path
+        from gaia.store.writer import _connect
+
+        con = _connect(db_path())
+        try:
+            for ws in ("ws-a", "ws-b"):
+                con.execute(
+                    "INSERT INTO workspaces (name, identity, created_at) VALUES (?, ?, ?)",
+                    (ws, ws, "2026-01-01T00:00:00Z"),
+                )
+
+            # The resolvable-by-exact-name project, with a full row.
+            con.execute(
+                "INSERT INTO projects (workspace, name, role, remote_url, platform, "
+                "primary_language, group_name, path, status, project_identity) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+                ("ws-a", "demo", "application", "git@example.com:org/demo.git",
+                 "github", "python", None, "/repos/demo", "/repos/demo/.git"),
+            )
+            # The legacy opaque-slot row: stored name differs from the
+            # basename of its path (the control-tower-livekit / bildwiz-5 case).
+            con.execute(
+                "INSERT INTO projects (workspace, name, role, remote_url, platform, "
+                "primary_language, group_name, path, status, project_identity) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)",
+                ("ws-a", "slot-9", "application", "git@example.com:org/real-repo.git",
+                 "github", "javascript", "grp", "/repos/real-repo", None),
+            )
+            # Same name in two workspaces -- ambiguous by exact match.
+            con.execute(
+                "INSERT INTO projects (workspace, name, path, status) "
+                "VALUES ('ws-a', 'dup', '/repos/dup-a', 'active')"
+            )
+            con.execute(
+                "INSERT INTO projects (workspace, name, path, status) "
+                "VALUES ('ws-b', 'dup', '/repos/dup-b', 'active')"
+            )
+
+            con.execute(
+                "INSERT INTO project_facets (workspace, project, scope, key, value) "
+                "VALUES ('ws-a', 'demo', 'language', 'python', 'pyproject.toml')"
+            )
+            con.execute(
+                "INSERT INTO project_facets (workspace, project, scope, key, value) "
+                "VALUES ('ws-a', 'demo', 'build', 'poetry', NULL)"
+            )
+
+            con.execute(
+                "INSERT INTO project_context_contracts "
+                "(workspace, contract_name, payload, updated_at) VALUES (?, ?, ?, ?)",
+                (
+                    "ws-a", "project_identity",
+                    json.dumps({
+                        "demo": {
+                            "name": "demo",
+                            "local_path": "/repos/demo",
+                            "remote_url": "git@example.com:org/demo.git",
+                            "description": "curated summary",
+                        },
+                    }),
+                    "2026-01-02T00:00:00Z",
+                ),
+            )
+
+            con.execute(
+                "INSERT INTO memory (workspace, name, type, description, body, "
+                "class, status, project_ref, initiative) VALUES "
+                "('ws-a', 'project_demo_notes', 'project', 'notes on demo', "
+                "'full body here', 'log', NULL, '/repos/demo/.git', 'demo')"
+            )
+            con.execute(
+                "INSERT INTO memory (workspace, name, type, description, body, "
+                "class, status, project_ref, initiative) VALUES "
+                "('ws-a', 'thread_demo_open', 'atom', 'an open thread', "
+                "'body', 'thread', 'open', NULL, 'demo')"
+            )
+            con.commit()
+        finally:
+            con.close()
+        return db_path()
+
+    def _run(self, capsys, *, name, workspace=None, json_output=False):
+        args = _MockArgs(name=name, workspace=workspace, json=json_output)
+        rc = _cmd_project(args)
+        return rc, capsys.readouterr()
+
+    def test_exact_name_resolves(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, name="demo", workspace="ws-a")
+        assert rc == 0
+        assert "resolved_via     : exact name match" in captured.out
+        assert "language.python" in captured.out
+
+    def test_basename_resolves_and_says_stored_name_differs(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, name="real-repo", workspace="ws-a")
+        assert rc == 0
+        assert "basename of path" in captured.out
+        assert "'slot-9'" in captured.out
+
+    def test_project_identity_contract_entry_included(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, name="demo", workspace="ws-a", json_output=True)
+        assert rc == 0
+        data = json.loads(captured.out)
+        assert data["project_identity_contract"]["slug"] == "demo"
+        assert data["project_identity_contract"]["entry"]["description"] == "curated summary"
+
+    def test_memory_index_is_slug_and_description_only(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, name="demo", workspace="ws-a", json_output=True)
+        assert rc == 0
+        data = json.loads(captured.out)
+        names = {m["name"] for m in data["memory_index"]}
+        assert names == {"project_demo_notes", "thread_demo_open"}
+        for m in data["memory_index"]:
+            assert "body" not in m
+
+    def test_pending_footer_names_the_sweep_command(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, name="demo", workspace="ws-a")
+        assert rc == 0
+        assert "gaia memory get-relevant --initiative demo" in captured.out
+
+    def test_ambiguous_exact_match_exits_1_with_workspaces(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, name="dup")
+        assert rc == 1
+        assert "ws-a/dup" in captured.err
+        assert "ws-b/dup" in captured.err
+
+    def test_not_found_exits_1_with_closest_candidates(self, seeded_db, capsys):
+        rc, captured = self._run(capsys, name="demoo", workspace="ws-a")
+        assert rc == 1
+        assert "not found" in captured.err
+        assert "demo" in captured.err
+
+    def test_never_writes_any_row(self, seeded_db, capsys):
+        """The declared invariant: resolving, found or not, mutates nothing."""
+        from gaia.store.writer import _connect
+
+        con = _connect(seeded_db)
+        try:
+            before = {
+                table: con.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+                for table in ("projects", "project_facets", "project_context_contracts", "memory")
+            }
+        finally:
+            con.close()
+
+        self._run(capsys, name="demo", workspace="ws-a", json_output=True)
+        self._run(capsys, name="noexiste", workspace="ws-a")
+
+        con = _connect(seeded_db)
+        try:
+            after = {
+                table: con.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+                for table in ("projects", "project_facets", "project_context_contracts", "memory")
+            }
+        finally:
+            con.close()
+        assert before == after
+
+    def test_dispatch_routes_project(self, seeded_db, capsys):
+        args = _MockArgs(context_cmd="project", name="demo", workspace="ws-a", json=True)
+        rc = cmd_context(args)
+        assert rc == 0
+
+    def test_flag_is_registered_on_the_real_parser(self):
+        from cli.context import register
+
+        parser = argparse.ArgumentParser(prog="gaia")
+        register(parser.add_subparsers(dest="command"))
+
+        args = parser.parse_args(["context", "project", "demo", "--workspace", "ws-a"])
+        assert args.name == "demo"
+        assert args.workspace == "ws-a"
+
+    def test_name_is_required_on_the_real_parser(self):
+        from cli.context import register
+
+        parser = argparse.ArgumentParser(prog="gaia")
+        register(parser.add_subparsers(dest="command"))
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["context", "project"])
 
 
 # ---------------------------------------------------------------------------
