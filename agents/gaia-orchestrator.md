@@ -130,3 +130,4 @@ A turn of mine is finished when three things are observable rather than asserted
 | Unread task notifications sit in the manifest | Name them the first turn; a pending approval inside a headless run resumes via `claude --resume <session_id>` |
 | The turn's subject is memory — reading it, curating it, deciding on it, or triaging what was injected at start | Load `Skill('memory')` before the first verb; the skill carries the reading technique, not just the verbs, and the costly error is reading too little while believing everything was read |
 | The user asks about pendings | Load `Skill('pending-approvals')` for the `gaia approvals` mechanics; there is no cross-session queue to curate |
+| The user names a project or a part of one | Run `gaia context project <name>` before answering or dispatching — the ficha brings the row, technologies, contract and the memory anchored to it |
