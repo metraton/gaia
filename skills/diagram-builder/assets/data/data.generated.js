@@ -288,7 +288,7 @@ window.__DOC__ = {
       "id": "p2-cells-or-zones",
       "layout": "grid",
       "form": "comparison",
-      "columns": 2,
+      "columns": 4,
       "sections": [
         {
           "id": "p2-cells",
@@ -296,7 +296,7 @@ window.__DOC__ = {
           "subtitle": "every child is a leaf — this level is a real grid of tracks and rows",
           "variant": "neutral",
           "order": 1,
-          "span": 1,
+          "span": 2,
           "columns": 2,
           "children": [
             {
@@ -358,7 +358,7 @@ window.__DOC__ = {
             "envelope"
           ],
           "order": 2,
-          "span": 1,
+          "span": 2,
           "columns": 2,
           "children": [
             {
@@ -435,7 +435,7 @@ window.__DOC__ = {
           "subtitle": "the honest reason to mix: one row, two zones, one twice the other",
           "variant": "neutral",
           "order": 3,
-          "span": 2,
+          "span": 3,
           "columns": 3,
           "children": [
             {
@@ -499,12 +499,47 @@ window.__DOC__ = {
           ]
         },
         {
+          "id": "p2-third",
+          "title": "One track of four",
+          "subtitle": "span: 1 — the track the wide half left",
+          "variant": "neutral",
+          "order": 4,
+          "span": 1,
+          "columns": 1,
+          "children": [
+            {
+              "id": "p2-t-band",
+              "order": 1,
+              "kicker": "ROOT",
+              "title": "A band makes a grid",
+              "description": [
+                "every child of the root is a",
+                "section, and it is a grid anyway"
+              ],
+              "detail": "The page root holds nothing but sections, so by the rule on the right its <code>columns</code> should be inert and its <code>span</code> a weight. One child changes that: a full-width band. <code>.sec-plane > .sec-grid.sec-compound:has(> .msp)</code> matches, the root becomes <code>display:grid</code> over the authored tracks, and <code>flex-grow</code> is not read here at all.",
+              "variant": "neutral"
+            },
+            {
+              "id": "p2-t-tracks",
+              "order": 2,
+              "kicker": "TRACKS",
+              "title": "So span counts again",
+              "description": [
+                "3 of 4 took three tracks;",
+                "this one takes the fourth"
+              ],
+              "detail": "In a real grid the number is literal: the section beside this one declares <code>span: 3</code> and occupies exactly three of the root's four tracks, leaving this one the fourth. Only the render can confirm it — the arithmetic closes <code>3 + 1 == 4</code> from the YAML and has never seen a pixel, while invariant Q compares the REAL width against the authored span within 15% and is the one check that catches a stylesheet missing the rule, where the wide half is auto-placed into ONE track and drawn at a quarter of what it is owed.",
+              "variant": "neutral"
+            }
+          ]
+        },
+        {
           "id": "p2-mix",
           "title": "Mixing is legal",
           "subtitle": "phase zones divided by vertical separators — a real timeline row",
           "variant": "neutral",
-          "order": 4,
-          "span": 2,
+          "order": 5,
+          "span": 4,
           "columns": 3,
           "children": [
             {
