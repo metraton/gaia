@@ -10,6 +10,8 @@ No dependencies on any existing Gaia module -- this is standalone.
 from __future__ import annotations
 
 import enum
+import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -62,6 +64,150 @@ class PermissionDecision(enum.Enum):
     ALLOW = "allow"
     DENY = "deny"
     ASK = "ask"
+
+
+CONSENT_PROTOCOL_VERSION = "1"
+
+
+def _command_fingerprint(command: str) -> str:
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class RoleCapabilityContext:
+    """Attested execution context carried across an adapter boundary.
+
+    ``role`` and ``capabilities`` are runtime claims, not prompt metadata.  The
+    adapter may transport them, but only a trusted runtime/CLI verifier may
+    mark the context verified.  Keeping that distinction in the value object
+    prevents a host from turning a free-form agent message into authority.
+    """
+
+    role: str
+    capabilities: tuple[str, ...] = ()
+    issuer: str = ""
+    attestation: str = ""
+    verified: bool = False
+
+    def __post_init__(self) -> None:
+        if not self.role or not isinstance(self.role, str):
+            raise ValueError("role must be a non-empty string")
+        if len(set(self.capabilities)) != len(self.capabilities):
+            raise ValueError("capabilities must not contain duplicates")
+        if any(not isinstance(capability, str) or not capability for capability in self.capabilities):
+            raise ValueError("capabilities must contain non-empty strings")
+
+    @property
+    def is_verified_control_plane(self) -> bool:
+        return self.verified and self.role == "gaia-orchestrator" and bool(self.attestation)
+
+
+@dataclass(frozen=True)
+class ConsentBinding:
+    """Immutable correlation identity for one consent attempt."""
+
+    agent_id: str
+    session_id: str
+    call_id: str
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(value, str) and value for value in (
+            self.agent_id, self.session_id, self.call_id
+        )):
+            raise ValueError("agent_id, session_id, and call_id are required")
+
+
+@dataclass(frozen=True)
+class ConsentRequestEnvelope:
+    """Harness-neutral, versioned request sealed before native presentation."""
+
+    correlation_id: str
+    operation: str
+    commands: tuple[str, ...]
+    scope: str
+    impact: str
+    risk: str
+    rollback: str
+    verification: str
+    binding: ConsentBinding
+    role_context: RoleCapabilityContext
+    approval_id: str | None = None
+    protocol_version: str = CONSENT_PROTOCOL_VERSION
+    fingerprints: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.protocol_version != CONSENT_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported consent protocol version: {self.protocol_version}")
+        if not self.correlation_id or not self.operation:
+            raise ValueError("correlation_id and operation are required")
+        if not self.commands or any(not isinstance(command, str) or not command for command in self.commands):
+            raise ValueError("commands must contain at least one exact command")
+        expected = tuple(_command_fingerprint(command) for command in self.commands)
+        if self.fingerprints and self.fingerprints != expected:
+            raise ValueError("command fingerprints do not match exact command bytes")
+        object.__setattr__(self, "fingerprints", expected)
+        for name in ("scope", "impact", "risk", "rollback", "verification"):
+            if not getattr(self, name):
+                raise ValueError(f"{name} is required")
+
+    def canonical_payload(self) -> str:
+        return json.dumps({
+            "protocol_version": self.protocol_version,
+            "correlation_id": self.correlation_id,
+            "approval_id": self.approval_id,
+            "operation": self.operation,
+            "commands": list(self.commands),
+            "fingerprints": list(self.fingerprints),
+            "scope": self.scope,
+            "impact": self.impact,
+            "risk": self.risk,
+            "rollback": self.rollback,
+            "verification": self.verification,
+            "binding": self.binding.__dict__,
+            "role_context": {
+                "role": self.role_context.role,
+                "capabilities": list(self.role_context.capabilities),
+                "issuer": self.role_context.issuer,
+                "attestation": self.role_context.attestation,
+                "verified": self.role_context.verified,
+            },
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+class ConsentDecision(enum.Enum):
+    ONCE = "once"
+    REJECT = "reject"
+    ALWAYS = "always"
+
+
+@dataclass(frozen=True)
+class ConsentDecisionReceived:
+    """Normalized decision emitted exactly once by any host adapter."""
+
+    correlation_id: str
+    decision: ConsentDecision
+    binding: ConsentBinding
+    request_fingerprint: str
+    protocol_version: str = CONSENT_PROTOCOL_VERSION
+
+    def __post_init__(self) -> None:
+        if self.protocol_version != CONSENT_PROTOCOL_VERSION:
+            raise ValueError(f"unsupported consent protocol version: {self.protocol_version}")
+        if not self.correlation_id or not self.request_fingerprint:
+            raise ValueError("correlation_id and request_fingerprint are required")
+
+
+@dataclass(frozen=True)
+class ConsentResult:
+    """Neutral outcome of decision handling; grant activation is explicit."""
+
+    correlation_id: str
+    status: str
+    grant_activated: bool = False
+    reserved_index: int | None = None
+    frozen: bool = False
+    reason: str = ""
+    protocol_version: str = CONSENT_PROTOCOL_VERSION
 
 
 @dataclass(frozen=True)
