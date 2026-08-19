@@ -313,7 +313,7 @@ const CSS_TEXT_SHAPES = [
 function cssTextTokens(root) {
   const file = path.join(root, 'index.html');
   if (!fs.existsSync(file))
-    return { ok: false, tokens: {}, problem: `index.html does not exist under "${root}"` };
+    return { ok: false, noFile: true, tokens: {}, problem: `index.html does not exist under "${root}"` };
   const src = fs.readFileSync(file, 'utf8');
   const tokens = {}, missing = [];
   for (const [key, re] of CSS_TEXT_PROBES) {
@@ -595,11 +595,18 @@ function leavesOf(page) {
 // Findings are collected, never printed as they are found, so the report can be
 // grouped by CHECK (one line per check plus its failures) instead of interleaving
 // twelve grids × five tiers of noise.
-const findings = [];   // { check, sev: 'fail'|'info', where, detail }
+const findings = [];   // { check, sev: 'fail'|'info'|'not-asserted', where, detail }
 let asserted = 0;      // how many assertions actually ran (0 => RED, see below)
 
 const fail = (check, where, detail) => findings.push({ check, sev: 'fail', where, detail });
 const info = (check, where, detail) => findings.push({ check, sev: 'info', where, detail });
+// A check that COULD NOT RUN — its own severity because an advisory is something
+// the gate MEASURED and chose not to fail on, and this is something it never
+// measured. Measured: reported through a raw console.log instead, it recorded no
+// finding, so the summary loop found no failure for the check and printed an
+// affirmative [PASS] for a claim nothing had read.
+const notAsserted = (check, where, detail) =>
+  findings.push({ check, sev: 'not-asserted', where, detail });
 
 function checkPage(page) {
   const pageId = page.id ?? '(no id)';
@@ -962,14 +969,24 @@ function main() {
   // CSS — the breakpoints this gate computes with, against the ones index.html
   // actually declares. Every tracks-per-tier number below is derived from them, so
   // a stylesheet edit that moved a cut would otherwise leave this gate asserting a
-  // cascade the browser no longer renders — green, and wrong. A deck with no
-  // index.html (a data-only fixture) cannot be checked and says so rather than
-  // claiming a pass it did not earn.
+  // cascade the browser no longer renders — green, and wrong.
+  //
+  // The two ways a mirror can fail to read are OPPOSITE and split accordingly. No
+  // index.html at all is a data-only fixture: there is nothing to disagree with,
+  // so it is NOT ASSERTED — recorded, counted, and never a pass. An index.html
+  // that IS present and whose probe missed is a FAILURE: the declaration the
+  // mirror needs is gone or was rewritten past the probe, so every number derived
+  // from it is unverified, and "not asserted" would be exactly the silence that
+  // certifies the drift. Never the reverse.
   const bp = cssBreakpoints(ROOT);
   const mirrored = [...new Set(Object.values(BREAKPOINTS))].sort((a, b) => b - a);
   console.log('\nCSS  (mirrored breakpoints vs the `@container stage` queries in index.html)');
-  if (!bp.ok) {
-    console.log(`    [INFO] not asserted — ${bp.problem}. The cascade below uses the mirror: ${mirrored.join(' / ')}px.`);
+  if (bp.noFile) {
+    notAsserted('CSS', 'index.html', `${bp.problem}, so there is nothing to read the cascade back `
+      + `against. The tracks-per-tier numbers below use the mirror (${mirrored.join(' / ')}px) UNVERIFIED.`);
+  } else if (!bp.ok) {
+    fail('CSS', 'index.html', `${bp.problem} — the mirror could not be READ from a stylesheet that IS `
+      + `present, so every tracks-per-tier number below describes a cascade nothing confirmed.`);
   } else {
     asserted++;
     if (bp.widths.join('|') !== mirrored.join('|'))
@@ -985,8 +1002,12 @@ function main() {
   // of a deck the browser no longer draws.
   const ct = cssTextTokens(ROOT);
   console.log('\nCSS  (mirrored text metrics vs the .box / .zone / .canvas declarations in index.html)');
-  if (!ct.ok) {
-    console.log(`    [INFO] not asserted — ${ct.problem}. The TEXT budget below uses the mirror.`);
+  if (ct.noFile) {
+    notAsserted('CSS', 'index.html', `${ct.problem}, so the chrome, font sizes and clamps cannot be `
+      + 'read back. The TEXT budget below uses the mirror UNVERIFIED.');
+  } else if (!ct.ok) {
+    fail('CSS', 'index.html', `${ct.problem} — the mirror could not be READ from a stylesheet that IS `
+      + `present, so every character number in the TEXT budget below is derived from constants nothing confirmed.`);
   } else {
     const drift = Object.entries(ct.tokens).filter(([k, v]) => CSS_TEXT[k] !== v);
     asserted++;
@@ -1046,15 +1067,22 @@ function main() {
   console.log('\n  ── CHECKS ─────────────────────────────────────────────────────');
   for (const [id, name, passDetail] of CHECKS) {
     const fails = findings.filter(f => f.check === id && f.sev === 'fail');
+    const quiets = findings.filter(f => f.check === id && f.sev === 'not-asserted');
     const infos = findings.filter(f => f.check === id && f.sev === 'info');
     console.log(`\n  ${id}  ${name}`);
-    if (!fails.length) console.log(`    [PASS] ${passDetail ? passDetail() : 'holds everywhere it applies'}`);
+    // A check with ANY part it could not assert never prints [PASS]: the line
+    // above names what the check claims IN FULL, and half of it holding is not
+    // that claim. The absence of a failure is not the presence of an assertion.
+    if (!fails.length && !quiets.length)
+      console.log(`    [PASS] ${passDetail ? passDetail() : 'holds everywhere it applies'}`);
     for (const f of fails) console.log(`    [FAIL] ${f.where}: ${f.detail}`);
+    for (const f of quiets) console.log(`    [NOT ASSERTED] ${f.where}: ${f.detail}`);
     for (const f of infos) console.log(`    [INFO] ${f.where}: ${f.detail}`);
   }
 
   const failed = findings.filter(f => f.sev === 'fail').length;
   const advisories = findings.filter(f => f.sev === 'info').length;
+  const unasserted = findings.filter(f => f.sev === 'not-asserted').length;
   const censusFail = sc.ok ? 0 : 1;
   console.log('\n══════════════════════════════════════════════════════════════');
   // ZERO ASSERTIONS IS RED, NEVER GREEN — the same rule validate's verdict holds.
@@ -1067,14 +1095,27 @@ function main() {
     return;
   }
   const adv = advisories ? ` (${advisories} advisory note(s) — [INFO], non-failing)` : '';
-  if (failed + censusFail === 0) {
-    console.log(`ALL PASS — ${asserted} assertions across ${pages.length} page(s) × ${TIERS.length} container tiers, ` +
-      `no browser${adv}.\n`);
+  // The not-asserted count sits in the HEADLINE, beside the assertion count, for
+  // the same reason the assertion count is there: a reader who cites this line as
+  // a verdict must see what the gate could not measure without reading upward for
+  // it. A non-zero count is NOT GREEN — nothing failed, and the gate cannot say
+  // the deck holds either.
+  if (failed + censusFail === 0 && unasserted === 0) {
+    console.log(`ALL PASS — ${asserted} assertions, 0 not-asserted, across ${pages.length} page(s) × ` +
+      `${TIERS.length} container tiers, no browser${adv}.\n`);
     process.exitCode = 0;
     return;
   }
-  console.log(`FAIL — ${failed} failing check(s)${censusFail ? ' + a stale/divergent census' : ''} ` +
-    `out of ${asserted} assertions. See the [FAIL] lines above${adv}.\n`);
+  if (failed + censusFail === 0) {
+    console.log(`NOT ASSERTED — ${asserted} assertions ran and ${unasserted} check(s) could NOT be made, ` +
+      `across ${pages.length} page(s) × ${TIERS.length} container tiers. Nothing failed, and this is not a ` +
+      `pass: see the [NOT ASSERTED] lines above${adv}.\n`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`FAIL — ${failed} failing check(s)${censusFail ? ' + a stale/divergent census' : ''}` +
+    `${unasserted ? ` + ${unasserted} not-asserted` : ''} out of ${asserted} assertions. ` +
+    `See the [FAIL] lines above${adv}.\n`);
   process.exitCode = 1;
 }
 

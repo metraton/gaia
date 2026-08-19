@@ -66,12 +66,14 @@ const GRID_DENSE = new Set(['dashboard', 'comparison', 'planner']);
 const BREAKPOINTS = { stack: 1440, two: 1000, one: 640 };
 
 // The `max-width` of every `@container stage (…)` block in index.html, descending.
-// Returns { ok, widths, problem }: a deck with no index.html (a data-only
-// fixture) is reported as `ok:false` with a problem, never guessed at.
+// Returns { ok, noFile, widths, problem }: a deck with no index.html (a data-only
+// fixture) is reported as `ok:false` with a problem, never guessed at. `noFile`
+// separates the ABSENT file from a stylesheet that is present and unreadable,
+// which the consumer treats as opposite outcomes.
 function cssBreakpoints(root = DEFAULT_ROOT) {
   const file = path.join(root, 'index.html');
   if (!fs.existsSync(file))
-    return { ok: false, widths: [], problem: `index.html does not exist under "${root}"` };
+    return { ok: false, noFile: true, widths: [], problem: `index.html does not exist under "${root}"` };
   const src = fs.readFileSync(file, 'utf8');
   const widths = [...src.matchAll(/@container\s+stage\s*\(\s*max-width:\s*(\d+)px\s*\)/g)]
     .map(m => Number(m[1]));
