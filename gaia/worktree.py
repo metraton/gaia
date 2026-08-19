@@ -150,7 +150,11 @@ def create_canonical_worktree(
     add_cmd = ["git", "-C", str(repo), "worktree", "add", "--quiet", str(target)]
     if branch:
         add_cmd += ["-b", branch]
-    subprocess.run(add_cmd, check=True, capture_output=True, text=True)
+    try:
+        subprocess.run(add_cmd, check=True, capture_output=True, text=True)
+    except Exception:
+        _remove_created_worktree(repo, target)
+        raise
     try:
         subprocess.run(
             ["git", "-C", str(repo), "worktree", "lock", str(target), "--reason", lock_reason(contract_id, agent_id)],
@@ -174,8 +178,23 @@ def create_canonical_worktree(
         os.chmod(metadata_path, 0o600)
         return metadata
     except Exception:
-        # Do not force-remove a possibly dirty worktree; callers must resolve it explicitly.
+        _remove_created_worktree(repo, target)
         raise
+
+
+def _remove_created_worktree(repo: Path, target: Path) -> None:
+    """Best-effort rollback for a worktree that never reached dispatch."""
+    try:
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "unlock", str(target)],
+            check=False, capture_output=True, text=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(repo), "worktree", "remove", "--force", str(target)],
+            check=False, capture_output=True, text=True,
+        )
+    except OSError:
+        pass
 
 
 def read_worktree_metadata(worktree_path: Path | str) -> Optional[WorktreeMetadata]:
