@@ -398,6 +398,15 @@
     align-items:stretch; }
   .sec-plane > .sec-grid.sec-compound:has(> .msp) > .msp {
     grid-column:1 / -1; }
+  /* A root section with a PARTIAL span (1 < span < cols) must occupy exactly
+     that many tracks. Without this rule the span-weighted width of a compound
+     row (`.sec-grid.sec-compound > .zone { flex: var(--span,1) 1 0 }`) is inert
+     here — this root is display:grid, so flex-grow says nothing — and the
+     section is auto-placed into ONE track, where it merely overflows to its
+     min-content width. A declared span 5 of 6 then rendered at 35% of the
+     canvas, and every inner grid collapsed inside that false width. */
+  .sec-plane > .sec-grid.sec-compound:has(> .msp) > .mspan {
+    grid-column:span var(--span, 1); }
 
   /* ── the ONE recursive primitive: .sec-grid ──
      Every section (and the page root) renders its children into a .sec-grid.
@@ -455,6 +464,12 @@
        wrong rows — see the tier overrides at the 1000px/640px breakpoints. */
     grid-auto-rows:var(--row-tracks, var(--cell-h));
     gap:var(--s-2); align-items:stretch; }
+  /* A leaf grid whose LAST child is a declared hole GROWS to its section's full
+     height, so the trailing spacer row (emitted as minmax(--sep-row-h,1fr) by
+     the engine) takes the slack a stretched section leaves. Without it the grid
+     stays at content height and the leftover pools below it as a hole nobody
+     declared. */
+  .zone > .sec-grid:not(.sec-compound):has(> .spacer:last-child) { flex:1 1 auto; }
   /* a full-width band (span == columns) stays full-width at any collapse level */
   .sec-grid:not(.sec-compound) > .msp { grid-column:1 / -1; }
   /* PARTIAL horizontal merge (.mspan): occupy EXACTLY --span of the leaf grid's
@@ -745,8 +760,15 @@
      engine/build-data.mjs; the guardrail consequence of each is tabled in the
      skill's reference.md.) */
 
-  /* centered — centre the text block. No colour, no geometry. */
-  .box.centered { text-align:center; }
+  /* centered — centre the text block on BOTH axes. No colour.
+     `.box` is a top-aligned flex column, so a box whose ink is shorter than the
+     fixed --cell-h used to leave the remainder of the cell empty below it and
+     `centered` corrected only the horizontal axis. Centring the main axis too is
+     what lets a short, deliberately spare box (a title with one line under it)
+     sit balanced in its cell instead of being padded out with filler ink. It
+     cannot overflow: the title and description clamps guarantee the content
+     already fits --cell-h. */
+  .box.centered { text-align:center; justify-content:center; }
 
   /* outside — the dashed frame that reads "outside the perimeter". Border STYLE only,
      no colour whatsoever, which is precisely why it belongs on this axis: it used
@@ -833,8 +855,14 @@
      the BranchKinect-style phase timeline — five sections split by four vertical
      separators — drawing full-height lines, while a leaf-grid cell obeys its row.
      Scoped to the direct child so it never reaches into a nested leaf grid. */
+  /* The floor is --cell-h, not --zone-min-h: a floor ABOVE the row's own content
+     height stops being a floor and becomes the row height, stretching every
+     section beside it and opening a strip of dead space under their cards. One
+     cell is the smallest height at which a lane divider still reads as a
+     divider, and align-self:stretch already carries it past that whenever a
+     real sibling is taller. */
   .sec-grid.sec-compound > .sep-v,
-  .sec-grid.sec-compound > .rail-v { min-height:var(--zone-min-h); }
+  .sec-grid.sec-compound > .rail-v { min-height:var(--cell-h); }
 
   /* ── spacer (component type: spacer) ──
      The DECLARED HOLE: a cell occupant that draws nothing. It needs no paint at
