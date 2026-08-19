@@ -143,7 +143,7 @@ function loadAuthoredDeck(root = DEFAULT_ROOT) {
 //
 // `validate` is DECOUPLED from `build` ON PURPOSE (it is pure-read), which has one
 // sharp edge: it asserts the LAST BUILT data, and nothing ever told you the build
-// was stale. Edit a YAML, forget `npm run build`, run `npm run validate` — it goes
+// was stale. Edit a YAML, forget `npm run build`, run `npm run render` — it goes
 // green on the OLD deck and you read that as a verdict on the change you just
 // made. That is a false green with no defect anywhere in the geometry.
 //

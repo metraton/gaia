@@ -18,14 +18,15 @@ concrete values (the 130px cell height, the 40px separator row, the 120px
 readable floor, the 1280px cap, the 232px reference width); the fill-geometry
 MODEL and its derivation (equal `fr` tracks, why the cap centers, why the floor
 collapses columns before cells shrink, the collapse cascade) is told once,
-canonically, in `reference.md`, proved arithmetically by `npm run check`.
+canonically, in `reference.md`, proved arithmetically by `npm run model`.
 
-## The three gates
+## The gates
 
 | script | tool | role |
 |--------|------|------|
-| `npm run check` | `tools/check-layout.mjs` | **MANDATORY.** Arithmetic, no browser, js-yaml only. Proves the rectangle closes: `Σ(spanCols × rowspanRows) === tracks × rowCount`. |
-| `npm run validate` | `tools/validate-layout.cjs` | **OPTIONAL REINFORCEMENT.** Renders one width (2560) in Chromium and asserts only what needs pixels. `loadChromium()` resolves Playwright lazily and `main()` prints `SKIPPED (no browser)` and **exits 0** when it is absent. |
+| `npm run model` | `tools/check-layout.mjs` | **MANDATORY.** The MODELLED evidence class: arithmetic, no browser, js-yaml only. Proves the rectangle closes — `Σ(spanCols × rowspanRows) === tracks × rowCount` — and has never seen a pixel. Alias: `npm run check`. |
+| `npm run render` | `tools/validate-layout.cjs` | **MANDATORY.** The MEASURED evidence class: renders one width (2560) in Chromium and asserts only what needs pixels — the only half that can tell whether the stylesheet IMPLEMENTS what the model assumed. `loadChromium()` resolves Playwright lazily and `main()` prints `SKIPPED (no browser)` and **exits 0** when it is absent, so requiring it costs nothing; the verdict then says `MEASURED: unavailable`. Alias: `npm run validate`. |
+| `npm run gate` | both, in order | `npm run model && npm run render` — the pair, and the ONLY thing a verdict may cite. |
 | `npm test` | `tools/test-guards.mjs` | The negative-test suite: fabricates broken decks in `os.tmpdir()` and asserts each guard FAILS as claimed. |
 
 `npm run build` (`engine/build-data.mjs`) generates `data/data.generated.js` and
@@ -40,7 +41,7 @@ and WCAG QA, not layout gates.
 | `page` | `document.pages[]` | One act/slide. It IS the root section: owns `columns` (root grid width), `filters`, `sections` (the root's children), and `form` (the layout form the guardrail scopes its invariants by) — plus the manifest-owned `name`/`order`/`visible` (`PAGE_FIELDS`). `layout: grid` is the only value the engine renders (`LAYOUTS`). |
 | `section` | any node with `children` | A grid zone: `id`, `title`, `subtitle`, `variant`, `treatment`, `order`, `span`, `rowspan`, `columns`, and `children` (`SECTION_FIELDS`). Its children auto-flow across `columns` and wrap down. A child may itself be a section — this is how nesting happens (a grid of grids). |
 | `component` | any leaf (no `children`) | The unit inside a grid cell. Chooses a `type`: `box` (default) · `separator` · `rail` · `spacer` (`COMPONENT_TYPES`). Whitelist (`COMPONENT_FIELDS`): `id`, `type`, `variant`, `variant_extra`, `treatment`, `kicker`, `title`, `description`, `detail`, `note`, `order`, `span`, `rowspan`, `filters`, `style`, `text`. A `spacer` is narrower: `SPACER_FIELDS` admits only `id`, `type`, `order`, `span`, `rowspan`. |
-| `filter` | `page.filters[]` | A highlight chip that expresses a **RELATION**: `key`, `label`, `steps` (`FILTER_FIELDS`). It **groups** every component that declares its `key` — components that share either a directional **FLOW** (the substitute for an arrow, since a grid cannot draw edges) OR a cross-cutting **CONCEPT / state / theme**. Clicking the chip spotlights that relation's membership across the whole canvas. `validateFilters` guarantees the SHAPE at build time; the chip↔component join (both directions) plus ARITY is asserted by **CHIP** in `npm run check` — the render-time invariant **K** that only closed the join is retired. |
+| `filter` | `page.filters[]` | A highlight chip that expresses a **RELATION**: `key`, `label`, `steps` (`FILTER_FIELDS`). It **groups** every component that declares its `key` — components that share either a directional **FLOW** (the substitute for an arrow, since a grid cannot draw edges) OR a cross-cutting **CONCEPT / state / theme**. Clicking the chip spotlights that relation's membership across the whole canvas. `validateFilters` guarantees the SHAPE at build time; the chip↔component join (both directions) plus ARITY is asserted by **CHIP** in `npm run model` — the render-time invariant **K** that only closed the join is retired. |
 
 **The root/canvas is itself the invisible base section.** `page.columns` is the
 root section's column count and `page.sections` are its children — the engine
@@ -100,14 +101,14 @@ because it was a statement about the DATA, not about pixels:
 
 | retired | was | `superseded` by |
 |---------|-----|-----------------|
-| **L** | cells fill width (no right gap) | `RECT`/`HOLE` (`npm run check`) |
-| **F** | collapse cascade …→2→1 (two rows: min + medium) | `TIER` (`npm run check`) |
-| **E** | no empty grid column | `TRACK` (`npm run check`) |
-| **P** | no orphan cell | `ROW` (`npm run check`) |
-| **K** | filter referential integrity | `CHIP` (`npm run check`) — adds ARITY |
+| **L** | cells fill width (no right gap) | `RECT`/`HOLE` (`npm run model`) |
+| **F** | collapse cascade …→2→1 (two rows: min + medium) | `TIER` (`npm run model`) |
+| **E** | no empty grid column | `TRACK` (`npm run model`) |
+| **P** | no orphan cell | `ROW` (`npm run model`) |
+| **K** | filter referential integrity | `CHIP` (`npm run model`) — adds ARITY |
 | **W** | fixed 232px cell width | `U` (cells now stretch to equal `fr`) |
 
-**The static layer** (`npm run check`, arithmetic, browser-free): `RECT` closure
+**The static layer** (`npm run model`, arithmetic, browser-free): `RECT` closure
 identity — where a `rowspan` taper exempts rows from the per-row form, a taper
 that nonetheless closes states it with the number as an `[INFO]` ("rowspan taper
 CLOSES"), because an absence of deficit is indistinguishable from a check that

@@ -6,9 +6,12 @@
   "description": "Data-driven, self-contained diagram deck. A generic render engine (engine/) turns a small YAML dialect (data/) into an interactive, themeable page — no framework, no server. Scaffolded by the diagram-builder skill.",
   "scripts": {
     "build": "node engine/build-data.mjs",
+    "model": "node tools/check-layout.mjs",
+    "render": "node tools/validate-layout.cjs",
+    "gate": "npm run model && npm run render",
     "check": "node tools/check-layout.mjs",
-    "test": "node tools/test-guards.mjs",
     "validate": "node tools/validate-layout.cjs",
+    "test": "node tools/test-guards.mjs",
     "contrast": "node tools/contrast-audit.cjs",
     "verify": "node tools/verify.mjs"
   },

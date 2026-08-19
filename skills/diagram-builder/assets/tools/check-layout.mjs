@@ -4,7 +4,7 @@
 //                  sync with engine/engine.js buildGrid + the container-query
 //                  tiers in index.html)
 //
-// Run: npm run check   (or: node tools/check-layout.mjs [deckRoot])
+// Run: npm run model   (or: node tools/check-layout.mjs [deckRoot])
 //
 // WHY THIS EXISTS, AND WHY IT IS THE GATE
 // The layout of this deck is a SPREADSHEET: a filled rectangle of uniform cells.
@@ -24,12 +24,16 @@
 // A guardrail that needs Chromium is a guardrail that is ABSENT precisely where a
 // deck is most likely to be authored blind. So the division of labour is:
 //
-//   npm run check     MANDATORY. Static, arithmetic, js-yaml only (already a build
-//                     dependency). Proves the layout CLOSES and the data is sound.
-//   npm run validate  OPTIONAL REINFORCEMENT. Renders one width in Chromium and
-//                     asserts only what genuinely needs PIXELS (legibility, word
-//                     fit, text truncation, flex wrap points, real geometry).
-//                     Skips cleanly and exits 0 where no browser exists.
+//   npm run model     MANDATORY, this file. Static, arithmetic, js-yaml only
+//                     (already a build dependency). Proves the layout CLOSES and
+//                     the data is sound. It has never seen a pixel.
+//   npm run render    MANDATORY too. Renders one width in Chromium and asserts
+//                     only what genuinely needs PIXELS (legibility, word fit, text
+//                     truncation, flex wrap points, real geometry) — the only half
+//                     that can tell whether the stylesheet IMPLEMENTS what this
+//                     file assumed. It skips cleanly and exits 0 where no browser
+//                     exists, which is why requiring it costs nothing.
+//   npm run gate      Both, in order. The only thing a verdict may cite.
 //
 // WHAT THIS REPLACES: the browser width SWEEP. `validate` used to render 5 widths ×
 // 2 themes × 5 reloads to prove the …→2→1 collapse cascade. But the collapse is a
