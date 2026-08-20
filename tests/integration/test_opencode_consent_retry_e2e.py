@@ -395,10 +395,16 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     out of order: ``reserve_plan_command`` still matches only at
     ``next_index``, and that ordering is asserted by the reservation test
     above.
+
+    The id the block path surfaced is then carried into the decide entry
+    point, and the grant it activates is asserted to be the plan-first set --
+    scope, source, index and item count -- so the reply lane's COMMAND_SET
+    branch is shown to be the one that ran, not a singular approval.
     """
     env, db_path = db_env
     approval_id = _request_set(env)
 
+    presented_ids = []
     for label, command, call_id in (
         ("blocked-first", FIRST_COMMAND, CALL_ID),
         ("blocked-second", SECOND_COMMAND, LATER_CALL_ID),
@@ -406,9 +412,11 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
         driven = _drive(env, [_before(label, command, call_id=call_id)])
         assert _step(driven, label)["allowed"] is False, driven
         assert len(driven["permissionCreates"]) == 1, driven
-        presented_id = driven["permissionCreates"][0]["metadata"]["gaiaApprovalID"]
+        presented_ids.append(
+            driven["permissionCreates"][0]["metadata"]["gaiaApprovalID"]
+        )
 
-        assert presented_id == approval_id, (
+        assert presented_ids[-1] == approval_id, (
             f"{label}: the blocked attempt minted a fresh singular approval "
             "instead of naming the pending plan-first set, so the plugin's "
             "reply lane cannot reach activate_command_set_atomically"
@@ -426,6 +434,24 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
         "a blocked attempt left an extra pending approval behind"
     )
     assert json.loads(rows[0]["payload_json"])["request_type"] == "COMMAND_SET"
+
+    # The id fed to the decide entry point is the one the BLOCK PATH surfaced,
+    # read out of the plugin's presentation metadata -- never the one
+    # _request_set returned -- so this leg cannot pass on a value the test
+    # supplied. SUBSTITUTED LINK: the host's permission.replied event. What
+    # runs instead is the CLI pair the plugin's own reply lane invokes, with
+    # the presentation that binds the token the reply must carry; that OpenCode
+    # delivers the event at all is not established here.
+    decision = _approve_set(env, presented_ids[0])
+    assert decision["decision"] == "once"
+    assert decision["status"] == "approved"
+
+    grant = _grant(db_path, presented_ids[0])
+    assert grant is not None, "the reply lane activated no grant at all"
+    assert grant["scope"] == "COMMAND_SET", grant
+    assert grant["source"] == "plan-first", grant
+    assert int(grant["next_index"]) == 0, grant
+    assert len(json.loads(grant["command_set_json"])) == 2, grant
 
 
 def test_plugin_aborts_instead_of_awaiting_the_host_deferred():
