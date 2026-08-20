@@ -2463,9 +2463,13 @@ class ClaudeCodeAdapter(HookAdapter):
           the grant via the ElicitationResult hook.
         - On retry, if an active grant exists for this path, allows through.
 
-        Protected paths:
-        - Any path that resolves within the gaia hooks directory (Path.resolve().relative_to(hooks_dir)), EXCEPT .md files — documentation does not execute code and is exempt
-        - .claude/settings.json and .claude/settings.local.json
+        The protected set is not decided here: it comes from
+        ``modules.security.protected_paths.is_protected_hook_path``, the one
+        predicate the Bash command-string guard consumes too, so widening this
+        surface cannot leave the shell route open against the same tree. It
+        covers every Gaia hook tree -- source checkout and installed copy alike
+        -- because it derives roots from the workspace registry, the path shape
+        and a root marker, never from where this module was loaded from.
 
         Non-protected subagent writes additionally get a one-shot advisory
         nudge (see ``modules.agents.artifact_skill_reminder``): when the
@@ -2498,33 +2502,13 @@ class ClaudeCodeAdapter(HookAdapter):
             build_reminder_context,
             should_remind,
         )
+        from modules.security.protected_paths import is_protected_hook_path
 
         file_path = parameters.get("file_path", "")
         if not file_path:
             return HookResponse(output={}, exit_code=0)
 
-        hooks_dir = Path(__file__).parent.parent.resolve()
-
-        def _is_protected(path_str):
-            p = Path(path_str)
-            try:
-                rp = p.resolve()
-            except Exception:
-                rp = p
-            try:
-                rp.relative_to(hooks_dir)
-                if rp.suffix == ".md":
-                    return False  # docs don't execute code; exempt from protection
-                return True
-            except ValueError:
-                pass
-            if p.name in ("settings.json", "settings.local.json"):
-                for part in rp.parts:
-                    if part == ".claude":
-                        return True
-            return False
-
-        if not _is_protected(file_path):
+        if not is_protected_hook_path(file_path):
             if is_subagent and agent_id:
                 expected_skill = expected_skill_for_path(file_path)
                 if expected_skill and should_remind(session_id, agent_id, expected_skill):

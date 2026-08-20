@@ -16,13 +16,13 @@ for the git working-tree writers.
 
 This guard closes that hole independently of the mutative classifier: it scans
 the raw command string (per operator-split component) and CATEGORICALLY denies
-any WRITE-capable command whose target resolves into the protected ``.claude/``
-tree. The scope mirrors the deterministic Write/Edit backstop exactly:
-
-  * anything under a ``.claude/hooks/`` path (EXCEPT ``.md`` docs -- they do not
-    execute code), and
-  * ``settings.json`` / ``settings.local.json`` anywhere under a ``.claude/``
-    path.
+any WRITE-capable command whose target is a protected Gaia path. The scope is
+not restated here: it is ``protected_paths.is_protected_hook_path``, the same
+predicate the Write/Edit gate calls. Two surfaces, one predicate -- because the
+scope used to be duplicated in prose between them ("mirrors the Write/Edit
+backstop") and the drift that produced was a security control whose reach
+depended on the deployment layout. Widening one surface now widens both, so the
+shell route cannot stay open against a tree the file-write route protects.
 
 Like gaia_db_write_guard and the subagent memory-write guard, the block is
 categorical and NOT approvable -- there is no T3 grant that lifts it. This is
@@ -50,6 +50,7 @@ import re
 import shlex
 from typing import List, Optional, Tuple
 
+from .protected_paths import is_protected_hook_path
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
 
@@ -79,20 +80,14 @@ _FILESYSTEM_WRITE_COMMANDS = frozenset({
 # another (``cat .claude/settings.json && ls`` must not fire on ``ls``).
 _OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
-_SETTINGS_BASENAMES = frozenset({"settings.json", "settings.local.json"})
-
 
 def _is_protected_claude_path(token: str) -> bool:
-    """Return True iff `token` names a path inside the protected .claude/ tree.
+    """Return True iff `token` names a protected Gaia path.
 
-    Scope mirrors _is_protected() in adapters/claude_code.py:
-      * under a ``.claude/hooks/`` path and NOT a ``.md`` file, OR
-      * basename is settings.json / settings.local.json anywhere under
-        ``.claude/``.
-
-    Detection is structural (component match on the normalized path), not a
-    filesystem resolve, so it holds for any workspace Gaia governs and for a
-    destination path that does not exist yet (the overwrite target of a move).
+    This decides only what a shell TOKEN is -- the scope of the protected set
+    belongs to ``protected_paths.is_protected_hook_path`` and is deliberately
+    not restated. The name is historical: the set now covers every Gaia hook
+    tree, the source checkout included, not just the ``.claude/`` copy.
     """
     if not token or token.startswith("-"):
         return False
@@ -104,30 +99,7 @@ def _is_protected_claude_path(token: str) -> bool:
     if not cleaned:
         return False
 
-    # normpath collapses "." and ".." components (foo/../.claude/hooks/x ->
-    # .claude/hooks/x) without touching the filesystem or resolving symlinks.
-    normalized = os.path.normpath(cleaned)
-    parts = normalized.split(os.sep)
-    # Also split on "/" in case of mixed separators.
-    if os.sep != "/":
-        parts = [p for seg in parts for p in seg.split("/")]
-
-    if ".claude" not in parts:
-        return False
-
-    basename = parts[-1]
-    if basename in _SETTINGS_BASENAMES:
-        return True
-
-    claude_idx = parts.index(".claude")
-    if "hooks" in parts[claude_idx + 1:]:
-        # Docs under hooks/ do not execute code and are exempt, matching the
-        # .md carve-out in _is_protected().
-        if basename.endswith(".md"):
-            return False
-        return True
-
-    return False
+    return is_protected_hook_path(cleaned)
 
 
 def _tokenize(component: str) -> List[str]:
@@ -231,11 +203,13 @@ def targets_protected_path(command: str) -> Optional[str]:
 def rejection_message(path: str) -> str:
     """Return the canonical rejection message for a protected-path write."""
     return (
-        f"[PROTECTED_PATH] Refusing to write into the protected .claude/ tree "
-        f"via Bash: {path}. The Gaia hooks directory and .claude settings files "
-        f"are a hard security boundary -- no shell command may modify them, and "
-        f"this block is not approvable. Edit the SOURCE under gaia/ and let "
-        f"`gaia install` propagate the change."
+        f"[PROTECTED_PATH] Refusing to write Gaia hook code or settings via "
+        f"Bash: {path}. Every Gaia hook tree -- the source checkout and each "
+        f"installed copy -- plus the .claude settings files are a hard security "
+        f"boundary: no shell command may modify them, and this block is not "
+        f"approvable. Use the Write/Edit surface on the source tree under "
+        f"gaia/, which asks the user for consent, and let `gaia install` "
+        f"propagate the change."
     )
 
 
