@@ -137,9 +137,11 @@ class TestSettingsCodeConsistency:
         # owned by GIT_LOCAL_SAFE_SUBCOMMANDS and MUTATIVE_VERBS in
         # hooks/modules/security/mutative_verbs.py, not by this set: a command
         # listed here that the classifier treats as local-safe would fail a
-        # legitimate allow entry. `git commit` was removed for exactly that
-        # reason -- it is local-safe (skills/security-tiers/SKILL.md states it
-        # is not T3), so auto-allowing it violates nothing.
+        # legitimate allow entry. `git commit` and `git reset` were removed for
+        # exactly that reason -- both are listed in GIT_LOCAL_SAFE_SUBCOMMANDS
+        # ("local-only: modifies local refs/staging, never touches remote" for
+        # `reset`), so auto-allowing them violates nothing. `git rebase` and
+        # `git merge` are NOT in that set and stay.
         t3_mutations = {
             "terraform apply", "terragrunt apply",
             "terraform destroy", "terragrunt destroy",
@@ -149,8 +151,7 @@ class TestSettingsCodeConsistency:
             "helm install", "helm upgrade", "helm rollback",
             "helm uninstall", "helm delete",
             "flux suspend", "flux resume",
-            "git push", "git rebase",
-            "git reset", "git merge",
+            "git push", "git rebase", "git merge",
         }
 
         violations = allow_cmds & t3_mutations
