@@ -1610,6 +1610,10 @@ def cmd_opencode_decide(args) -> int:
     never as a host event name, and the correlation is a pure function of the
     approval and its binding so two deliveries of the same reply -- in
     different lanes or different processes -- collapse onto one identity.
+
+    A ``once`` reply activates the single-use grant for this approval and a
+    ``reject`` reply grants nothing; ``always`` is refused outright, because
+    this protocol version issues no standing grant it could stand for.
     """
     approval, error = _opencode_binding(args)
     if error:
@@ -1629,6 +1633,17 @@ def cmd_opencode_decide(args) -> int:
         decision = consent.build_decision(approval["id"], binding, args.reply)
     except Exception as exc:
         _print_error(f"OpenCode approval decision was not normalized: {exc}", args)
+        return 1
+    # Refused before any store access, so the refusal provably grants nothing.
+    # Narrowing a standing grant to a single-use one would hand the user a
+    # weaker grant than the one they answered for, without telling them.
+    if decision.decision is consent.ConsentDecision.ALWAYS:
+        _print_error(
+            "OpenCode 'always' consent is unsupported: this protocol version issues "
+            "only single-use grants, and a standing grant would have to be bounded and "
+            "auditable before it could be honored. Reply 'once' per operation.",
+            args,
+        )
         return 1
     try:
         store = _import_approval_store()
