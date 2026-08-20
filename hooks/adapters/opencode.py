@@ -14,6 +14,8 @@ import re
 from dataclasses import asdict
 from typing import Any, Dict, FrozenSet
 
+from modules.orchestrator.delegate_mode import ORCHESTRATOR_AGENT_TYPES
+
 from .base import HookAdapter
 from .types import (
     AgentCompletion,
@@ -53,9 +55,13 @@ _PATCH_PATH_MARKER = re.compile(
 # other issuer reached Gaia through something other than the host itself.
 _TRUSTED_ROLE_ISSUER = "opencode-runtime"
 
-# The control-plane role is the one role that unlocks Gaia's orchestrator lane,
-# so it is the only role name this adapter has to know by name.
-_CONTROL_PLANE_ROLE = "gaia-orchestrator"
+# Read from the classifier that acts on these names rather than restated here:
+# a local literal fenced one spelling while ``classify_session_role`` accepted
+# two, so ``{"agent": "orchestrator"}`` reached the control-plane lane as bare
+# prompt text. Any spelling added to the classifier is fenced by construction.
+_CONTROL_PLANE_ROLES = frozenset(
+    role.strip().lower() for role in ORCHESTRATOR_AGENT_TYPES
+)
 
 # Neutral policy treats an empty agent_type as the control plane, so a caller
 # with no attested claim is given a name that cannot be mistaken for one.
@@ -384,14 +390,17 @@ class OpenCodeAdapter(HookAdapter):
         context = event.role_context
         declared = str(payload.get("agent") or payload.get("agent_type") or "").strip()
         if context is None:
-            if declared.lower() == _CONTROL_PLANE_ROLE:
+            if declared.lower() in _CONTROL_PLANE_ROLES:
                 return "OpenCode control-plane role was declared without an attested runtime context"
         else:
             if declared and declared != context.role:
                 return "OpenCode role identity does not match the structured runtime context"
             if context.issuer != _TRUSTED_ROLE_ISSUER:
                 return "OpenCode role context has an untrusted issuer"
-            if context.role == _CONTROL_PLANE_ROLE and not context.is_verified_control_plane:
+            if (
+                context.role.strip().lower() in _CONTROL_PLANE_ROLES
+                and not context.is_verified_control_plane
+            ):
                 return "OpenCode control-plane role is not attested by the runtime"
         if tool_name == "task" and (context is None or not context.is_verified_control_plane):
             return "ordinary OpenCode agents cannot issue control-plane dispatches"
@@ -431,13 +440,24 @@ class OpenCodeAdapter(HookAdapter):
 
         Neutral policy reads an absent agent_type as the control plane, so an
         unattested OpenCode caller is named explicitly rather than left blank.
+        A control-plane spelling is withheld unless the runtime attested the
+        claim: the string route into that lane is closed at the one site that
+        produces ``agent_type``, so it stays closed for a caller that reaches
+        policy without passing ``_identity_rejection`` first.
         """
         context = event.role_context
         if context is not None:
+            if (
+                context.role.strip().lower() in _CONTROL_PLANE_ROLES
+                and not context.is_verified_control_plane
+            ):
+                return _UNATTESTED_AGENT_TYPE
             return context.role
         payload = event.payload
         declared = str(payload.get("agent") or payload.get("agent_type") or "").strip()
-        return declared or _UNATTESTED_AGENT_TYPE
+        if not declared or declared.lower() in _CONTROL_PLANE_ROLES:
+            return _UNATTESTED_AGENT_TYPE
+        return declared
 
     @staticmethod
     def _policy_tool_name(tool_name: object) -> str:
@@ -477,22 +497,21 @@ class OpenCodeAdapter(HookAdapter):
         return HookResponse(output={"action": "allow"}, exit_code=response.exit_code)
 
     def adapt_post_tool_use(self, event: HookEvent) -> HookResponse:
-        """Run post-tool policy with the same immutable call identity."""
+        """Run post-tool policy with the same immutable call identity.
+
+        The identity normalization is ``build_policy_payload``'s, not a second
+        copy of it, so a fix to how a name becomes ``agent_type`` cannot land on
+        one path and miss the other. ``_identity_rejection`` is deliberately not
+        run here: the tool has already executed, so a denial would gate nothing
+        while discarding the audit record of what ran. The fence that matters is
+        upstream, and the payload is safe without it only because
+        ``_policy_agent_type`` withholds a control-plane name from an unattested
+        caller on its own.
+        """
         from .claude_code import ClaudeCodeAdapter
 
-        payload = dict(event.payload)
-        payload.update(
-            {
-                "tool_name": self._policy_tool_name(payload.get("tool_name", "")),
-                "tool_input": payload.get("tool_input", {}),
-                "tool_response": payload.get("tool_response", {}),
-                "session_id": event.session_id,
-                "tool_use_id": event.call_id or "",
-                "agent_id": event.host_agent_id or "",
-                "agent_type": self._policy_agent_type(event),
-                "role_context": self._forward_role_context(event.role_context),
-            }
-        )
+        payload = self.build_policy_payload(event)
+        payload["tool_response"] = event.payload.get("tool_response", {})
         policy_event = HookEvent(
             event_type=event.event_type,
             session_id=event.session_id,
