@@ -18,10 +18,11 @@ COMMAND_SET progress is DB-only and may end partially completed. Display the
 full ordered set plus `next_index`, consumed indexes, failed index/reason, and
 status when present. `FAILED` is terminal/frozen: untouched remainder is audit
 history, not pending authorization. Approving a pending request activates it;
-it does not prove any command executed. See `SKILL.md` for the current
-COMMAND_SET activation gap (AskUserQuestion path broken; CLI `approve` is the
-only wired path today) -- do not assume that gap is closed without re-checking
-the code.
+it does not prove any command executed. `SKILL.md` carries the current
+COMMAND_SET activation shape: a plan-first `request-set` pending -- the one
+carrying a `request_fingerprint` -- now activates through the same writer from
+either entry point, so the host path and the CLI `approve` path are no longer
+split. Read it there rather than inferring either state from this line.
 
 Nonce-prefix matching is not fixed-length: `_APPROVE_NONCE_RE` captures one or
 more hex characters, and `activate_db_pending_by_prefix` activates the FIRST
