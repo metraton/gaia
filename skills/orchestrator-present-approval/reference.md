@@ -5,11 +5,18 @@ approval. The integrity check runs at activation, where the canonical REQUESTED
 payload fingerprint is verified. Exact human presentation is still mandatory
 for informed consent.
 
-For COMMAND_SET render an ordered table with index, exact command, scope/effect,
-and item-specific risk when applicable. Follow it with total count, aggregate
-risk, partial-completion warning, rollback for completed items, and the exact
-post-execution desired-state verification. Approval and rejection controls bind
-the full approval id.
+A COMMAND_SET has no layout of its own, and nothing here is composed. The
+renderer emits one shape for one command and for many -- the indexed
+`COMMANDS (N)` block of `template.md` -- so there is no table to build, no
+aggregate to derive, and no per-item field to supply: `SCOPE`, `IMPACT`, `RISK`,
+`ROLLBACK` and `VERIFICATION` are sealed once for the whole set and render once.
+Composing a richer table would put lines in front of the user that the sealed
+payload never declared, which is the one thing a consent surface may not do.
+
+The approve control binds the approval id through the 8-character nonce tag, not
+through the full identifier -- the full `approval_id` substituted for that tag
+resolves to nothing. The reject control binds nothing at all: a rejection has no
+pending row to activate.
 
 Do not present one representative command, truncate the set, reorder it, call it
 atomic, or claim verification before execution. A mismatch routes back to the

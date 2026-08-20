@@ -19,26 +19,32 @@ reorder nothing, translate no label.
 
 ## Present the surface as text, then ask a minimal decision
 
-Print the rendered surface verbatim as console text. Then ask a binary
-decision -- approve or reject -- whose approve control carries a one-line
-summary of the operation and the approval id.
+A presentation is two pieces. Print the rendered surface verbatim as console
+text -- the MESSAGE. Then ask a binary decision -- the QUESTION -- carrying one
+line of operation, the command count, and the approval id, and nothing else.
+`template.md` states both shapes literally, together with the four rules that
+make the split safe: the id on both ends, adjacency with a reprint duty, the
+minimum the question carries, and a binary control set with no `always`.
 
 That order is deliberate and the reason is narrow. When the surface travels
 *inside* a host's decision payload, whether the host's renderer displays every
 line of it is unverifiable from outside that host: nothing you can read back
 confirms the user saw the `ROLLBACK` line, or the eighth command's fingerprint,
 or anything past a truncation the renderer applied silently. Consent over a
-truncated surface is exactly the failure this whole protocol exists to prevent.
-Presented as console text, completeness stops depending on a renderer nobody
-can inspect.
+truncated surface is exactly the failure this whole protocol exists to prevent,
+and that exposure stands recorded as unmitigated -- closable only by real
+end-to-end work against each host, never by a claim made here. Printed as
+console text, completeness stops depending on a renderer nobody can inspect and
+starts depending on the user's own terminal.
 
-The choice has a real cost, stated here rather than hidden: the text and the
-decision become adjacent rather than nested, so the binding between them is no
-longer structural. Two things preserve it. The approval id appears on BOTH --
-the surface's header line carries it, and the approve control carries it -- so a
-reader can verify that the thing they are approving is the thing they just read.
-And the one-line summary on the control makes the decision identifiable without
-scrolling back for it.
+The choice has a real cost, stated here rather than buried. The binding between
+what is shown and what is answered stops being CONTAINMENT and becomes
+ADJACENCY WITH VERIFIABLE IDENTITY ON BOTH SIDES. That is weaker -- containment
+could not fail to hold, adjacency can. What is bought for it is that truncation
+stops being an uninspectable property of someone else's renderer. Rule 2 in
+`template.md` -- reprint the surface if anything intervened before the question
+-- is what keeps that trade honest; without it the design is not a weaker
+binding, it is no binding at all.
 
 ## The reply must resolve to the approval id
 
@@ -70,6 +76,22 @@ neither detects nor rejects a multi-row match, so truncating further to save
 space in the control is a real collision risk: two pendings sharing a short
 prefix would silently activate the wrong one, with none of the ambiguity error
 that `gaia approvals show` raises on the CLI side.
+
+## What a harness has to be able to do
+
+Print text, and offer two controls where the chosen one returns either its own
+text or a correlation handle back to the request. That is the entire
+requirement. No harness renders the seven fields, none parses the sealed
+payload, none needs to know the field set, and none needs a decision primitive
+richer than two controls -- the split moved all of that Gaia-side, which is the
+practical dividend of printing the surface as text.
+
+Stated that way on purpose: this skill names no host. A harness either can do
+those two things or cannot, and that is decidable without per-host prose here.
+Host-specific instructions are the shape that went stale fastest -- the retired
+adapter documentation asserted a host's semantics against code that had already
+moved -- so what a particular host calls its controls belongs in that host's
+adapter, never in this skill.
 
 ## What failure looks like
 
