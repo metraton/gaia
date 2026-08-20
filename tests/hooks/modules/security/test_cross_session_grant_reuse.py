@@ -61,17 +61,24 @@ def _iso(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _build_sealed_payload(command: str) -> dict:
-    """Minimal sealed_payload mirroring _build_sealed_payload in bash_validator."""
-    return {
-        "operation": "MUTATIVE command intercepted: apply",
-        "exact_content": command,
-        "scope": command.split()[0] if command.strip() else "unknown",
-        "risk_level": "medium",
-        "rollback_hint": None,
-        "rationale": "Test approval",
-        "commands": [command],
-    }
+def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
+    """Seal ``command`` with the REAL producer, fed the classifier's own verdict.
+
+    The verdict is asserted mutative before it is used: a payload built from a
+    verb the classifier never derives asserts over a shape the hook cannot emit,
+    and a local hand-built dict cannot detect that the producer changed at all.
+    """
+    from modules.security.mutative_verbs import detect_mutative_command
+    from modules.tools.bash_validator import _build_sealed_payload
+
+    verdict = detect_mutative_command(command)
+    assert verdict.is_mutative, f"{command!r} is not intercepted as a mutative verb"
+    return _build_sealed_payload(
+        command=command,
+        verb=verdict.verb,
+        category=verdict.category,
+        agent_type=agent_type,
+    )
 
 
 def _semantic_signature(command: str, danger_verb: str) -> dict:
@@ -328,7 +335,7 @@ def test_single_use_replay_rejected(iso_db):
 def test_insert_requested_fingerprint_idempotent(iso_db):
     import gaia.approvals.store as astore
 
-    payload = _build_sealed_payload("terraform apply")
+    payload = _sealed_payload("terraform apply")
 
     id1 = astore.insert_requested(payload, agent_id="a", session_id="S1")
     # Same payload again -> same id, no new row.
@@ -336,7 +343,7 @@ def test_insert_requested_fingerprint_idempotent(iso_db):
     assert id1 == id2, "identical payload must reuse the existing approval id"
 
     # Different payload -> new id.
-    other = _build_sealed_payload("git push origin main")
+    other = _sealed_payload("git push origin main")
     id3 = astore.insert_requested(other, agent_id="a", session_id="S1")
     assert id3 != id1, "different payload must mint a new approval id"
 
@@ -366,7 +373,7 @@ def test_find_pending_in_db_cross_session(iso_db):
     from modules.tools.bash_validator import _find_pending_in_db
 
     command = "terraform apply"
-    payload = _build_sealed_payload(command)
+    payload = _sealed_payload(command)
     approval_id = astore.insert_requested(payload, agent_id="a", session_id="S1")
 
     # Look up from a different session -- must find the S1 pending.
@@ -427,7 +434,7 @@ def test_staleness_flag_unchanged(iso_db):
 
     command = "terraform apply"
     approval_id = astore.insert_requested(
-        _build_sealed_payload(command), agent_id="a", session_id="S1"
+        _sealed_payload(command), agent_id="a", session_id="S1"
     )
 
     # Backdate created_at to 61 minutes ago (past the 60-min horizon).
