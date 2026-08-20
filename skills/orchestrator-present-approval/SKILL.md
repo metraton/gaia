@@ -34,13 +34,10 @@ live on 2026-08-03T06:52:34Z, confirmed by the ledger transitioning to
 AskUserQuestion(
   questions=[
     {
-      "question": "APPROVAL REQUIRED -- P-cf8eb08e...\n\n"
-                   "OPERACION: push rama flux-system\n"
-                   "COMANDO:   git push origin flux-system\n"
-                   "SCOPE:     remote origin, branch flux-system\n"
-                   "RIESGO:    MEDIUM -- pushes to a shared branch\n"
-                   "ROLLBACK:  git push origin --force-with-lease "
-                   "origin/flux-system@{1}:flux-system",
+      "question": "<the rendered consent surface, verbatim -- see template.md "
+                   "for its exact shape: OPERATION, the indexed COMMANDS block "
+                   "with a fingerprint per command, SCOPE, IMPACT, RISK, "
+                   "ROLLBACK, VERIFICATION, CONSENT>",
       "header": "Approve push",
       "multiSelect": false,
       "options": [
@@ -66,24 +63,18 @@ silently.
 
 ## Singular vs COMMAND_SET presentation
 
-For a single request show the exact command, affected scope, risk, rollback (or
-explicitly `none supplied`), verification, and full approval id.
+The question body is not composed here: it is the surface rendered from the
+sealed payload, and `template.md` states its exact shape, field set, render
+order and absence semantics. A singular request and a COMMAND_SET share that one
+shape -- the same indexed `COMMANDS (N)` block carries one command or many -- so
+there is no second layout to choose between and no field to decide about. Show
+it verbatim.
 
-For COMMAND_SET show:
-
-1. the full approval id and bounded goal;
-2. total command count;
-3. every command verbatim, indexed from `0` through `N-1`, in execution order;
-4. scope/effect for the set and any item-specific scope;
-5. risks, including partial completion if a later command fails;
-6. rollback for completed items, or explicitly that no rollback was supplied;
-7. the desired-state verification to run after execution; and
-8. Approve and Reject options following the label format above -- one Approve
-   option covers the whole set, never one per command.
-
-Do not call a COMMAND_SET atomic: consent is grouped, execution is separate,
-ordered, and fail-fast. Do not claim verification has happened; this is the
-pre-execution consent point.
+One Approve option covers the whole set, never one per command, following the
+label format above. Do not call a COMMAND_SET atomic: consent is grouped,
+execution is separate, ordered, and fail-fast. Do not claim verification has
+happened; this is the pre-execution consent point, and the surface's
+`VERIFICATION` field states what to check afterwards.
 
 Approval activation verifies the REQUESTED fingerprint. Presentation must still
 be exact because informed consent depends on what the human sees. If the
