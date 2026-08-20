@@ -26,9 +26,7 @@ from modules.orchestrator.delegate_mode import (
 )
 from modules.security.gaia_cli_only_guard import check as gaia_cli_check
 from modules.security.gaia_cli_only_guard import is_orchestrator_role
-from modules.security.host_attestation import issue
-
-_HOST_RUN = "identity-binding-run"
+from modules.security.host_attestation import host_run_id, issue
 
 
 @pytest.fixture(autouse=True)
@@ -39,9 +37,14 @@ def _ledger(tmp_path, monkeypatch):
 
 @pytest.fixture
 def attested_orchestrator():
-    """The control-plane claim as the host issues it: a token, not a string."""
+    """The control-plane claim as the host issues it: a token, not a string.
+
+    Issued in this process's own host run, which is also the run the adapter
+    resolves in: the namespace is not a value either side gets to choose, so a
+    test cannot align them by naming one.
+    """
     issued = issue(
-        host_run=_HOST_RUN,
+        host_run=host_run_id(),
         session_id="ses-1",
         role="gaia-orchestrator",
         issuer="opencode-runtime",
@@ -87,7 +90,6 @@ ATTESTED_DEVELOPER = {
 def _event(**overrides):
     raw = {
         "event": "tool.execute.before",
-        "hostRun": _HOST_RUN,
         "sessionID": "ses-1",
         "callID": "call-1",
         "tool": "bash",
@@ -280,7 +282,6 @@ _PLUGIN_SOURCE = (
 # undefined a dispatch-map miss returns.
 PLUGIN_CONTROL_PLANE_EVENT = {
     "event": "tool.execute.before",
-    "hostRun": _HOST_RUN,
     "sessionID": "ses-1",
     "callID": "call-1",
     "agent": "gaia-orchestrator",
