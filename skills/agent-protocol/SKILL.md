@@ -26,7 +26,10 @@ the one that arrived with no contract block at all.
 ## 3. Ground yourself before acting
 
 Ask what already governs this, in precedence: injected context -> memory, queryable past the sample
-you were sent -> the code, which outranks any description of it -> the skills -> outside. A goal often
+you were sent -> the code, which outranks any description of it -> the skills -> outside. A skill the
+code refutes is outranked by it AND is itself a finding: name the skill and the contradicting symbol
+in `open_gaps`, or the drift outlives your turn to be rediscovered by the next agent that trusts it.
+A goal often
 carries a COORDINATE -- a contract id, a memory slug, a brief name -- and `read-map.md`, beside this
 file, is the verb that opens it. Announce no tool sequence and claim no reach in advance.
 
