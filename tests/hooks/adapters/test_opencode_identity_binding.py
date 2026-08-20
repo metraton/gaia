@@ -18,7 +18,11 @@ if str(_HOOKS_DIR) not in sys.path:
     sys.path.insert(0, str(_HOOKS_DIR))
 
 from adapters.opencode import OpenCodeAdapter
-from modules.orchestrator.delegate_mode import SessionRole, classify_session_role
+from modules.orchestrator.delegate_mode import (
+    ORCHESTRATOR_AGENT_TYPES,
+    SessionRole,
+    classify_session_role,
+)
 from modules.security.gaia_cli_only_guard import check as gaia_cli_check
 from modules.security.gaia_cli_only_guard import is_orchestrator_role
 
@@ -30,6 +34,22 @@ ATTESTED_ORCHESTRATOR = {
     "attestation": "ses-1:gaia-orchestrator",
     "verified": True,
 }
+
+# Read from the classifier itself: a spelling added there must be covered here
+# without this file being edited, because the hole these tests close was exactly
+# a set with two members fenced against a literal with one.
+CONTROL_PLANE_SPELLINGS = sorted(ORCHESTRATOR_AGENT_TYPES)
+
+
+def _unattested_context(role):
+    return {
+        "role": role,
+        "capabilities": [],
+        "issuer": "opencode-runtime",
+        "attestation": "",
+        "verified": False,
+    }
+
 
 ATTESTED_DEVELOPER = {
     "role": "developer",
@@ -174,3 +194,44 @@ def test_the_attested_control_plane_is_not_denied_for_its_identity():
 
     assert "control-plane dispatches" not in str(response.output)
     assert "untrusted issuer" not in str(response.output)
+
+
+@pytest.mark.parametrize("spelling", CONTROL_PLANE_SPELLINGS)
+def test_prompt_declared_control_plane_spelling_is_denied(spelling):
+    response = OpenCodeAdapter().adapt_pre_tool_use(_event(agent=spelling))
+
+    assert response.output["action"] == "deny"
+    assert response.exit_code == 2
+
+
+@pytest.mark.parametrize("spelling", CONTROL_PLANE_SPELLINGS)
+def test_unattested_context_carrying_a_control_plane_spelling_is_denied(spelling):
+    response = OpenCodeAdapter().adapt_pre_tool_use(
+        _event(roleContext=_unattested_context(spelling))
+    )
+
+    assert response.output["action"] == "deny"
+    assert response.exit_code == 2
+
+
+@pytest.mark.parametrize("spelling", CONTROL_PLANE_SPELLINGS)
+@pytest.mark.parametrize(
+    "claim",
+    ["declared-only", "unattested-context"],
+)
+def test_no_unattested_payload_ever_classifies_as_the_control_plane(spelling, claim):
+    """Hold the invariant at the payload, not at the pre-check that guards it.
+
+    The denial above depends on ``_identity_rejection`` running first; this
+    asserts the normalized payload itself, so a refactor that moves or skips
+    that pre-check still cannot hand the orchestrator lane to a name.
+    """
+    overrides = (
+        {"agent": spelling}
+        if claim == "declared-only"
+        else {"roleContext": _unattested_context(spelling)}
+    )
+    payload = _policy_payload(**overrides)
+
+    assert payload["agent_type"].strip().lower() not in ORCHESTRATOR_AGENT_TYPES
+    assert classify_session_role(payload) is not SessionRole.ORCHESTRATOR
