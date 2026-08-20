@@ -2607,7 +2607,7 @@ class ClaudeCodeAdapter(HookAdapter):
             f"in your contract row.\n"
             f"File: {file_path}\n"
             f"Tool: {tool_name}\n"
-            f"approval_id: {approval_id}"
+            f"approval_id: P-{approval_id}"
         )
         # Out-of-band approval flow: consent is keyed to the persisted approval_id.
         return self.request_consent(
