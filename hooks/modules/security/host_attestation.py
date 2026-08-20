@@ -10,6 +10,13 @@ records; a value a caller can put in a tool argument resolves against no record.
 The ledger is scoped to one host run so the control-plane binding is unique
 within that run: the primary session takes it, and a child session whose
 host-declared name is a control-plane spelling finds it already bound.
+
+That scoping is only worth anything if the run cannot be named by whoever is
+asking, which is what ``host_run_id`` establishes: the namespace identifies the
+process that started this one. Taking it from the request instead -- as this
+module's callers first did -- verified a token against a ledger the claimant
+chose, which establishes that a (run, token) pair is internally consistent and
+says nothing about where the token came from.
 """
 
 from __future__ import annotations
@@ -55,7 +62,14 @@ class Attestation:
 
 
 def ledger_dir() -> Path:
-    """Return the directory holding per-host-run attestation ledgers."""
+    """Return the directory holding per-host-run attestation ledgers.
+
+    The override relocates where the ledgers are stored and cannot rename a
+    host run: the file name comes from ``host_run_id``, so a process pointing
+    this variable somewhere else still writes under its own namespace. Setting
+    it requires control of the environment of the process that reads it, which
+    is the same trust domain that already owns the default location.
+    """
     override = os.environ.get(_LEDGER_DIR_ENV)
     if override:
         return Path(override)
@@ -70,6 +84,39 @@ def ledger_dir() -> Path:
 def ledger_path(host_run: str) -> Path:
     """Return the ledger file for one host run."""
     return ledger_dir() / f"{_host_run(host_run)}.json"
+
+
+def host_run_id() -> str:
+    """Return the ledger namespace of the host run this process serves.
+
+    The namespace names the process that started this one. The OpenCode plugin
+    spawns each Gaia-side process directly, so every issuance and every
+    resolution within one host run derives the same value, while a process that
+    invokes the bridge itself is the child of its own launcher and lands in a
+    namespace where nothing is bound: it can mint claims there and none of them
+    resolve for the legitimate run. A caller has no way to ask for another
+    run's namespace, because it is not read from anything the caller sends.
+
+    The parent's start time is included so a recycled pid is a different host
+    run. Where it cannot be read the pid alone is used, which keeps the
+    namespace host-derived and leaves pid reuse as the residual.
+    """
+    parent = os.getppid()
+    started = _process_start_time(parent)
+    return f"host-{parent}" if started is None else f"host-{parent}-{started}"
+
+
+def _process_start_time(pid: int) -> str | None:
+    """Return a process's boot-relative start time, or ``None`` if unreadable."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # The command name is parenthesized and may itself contain spaces and
+    # parentheses, so the numeric fields are counted from the last ')': that
+    # leaves state as field 3, and starttime (field 22) at offset 19.
+    fields = stat[stat.rfind(")") + 1 :].split()
+    return fields[19] if len(fields) > 19 and fields[19].isdigit() else None
 
 
 def issue(
@@ -214,7 +261,7 @@ def _load(path: Path) -> dict[str, Attestation]:
 
 
 def _store(path: Path, records: dict[str, Attestation]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {
         "records": {
             token: {k: v for k, v in asdict(record).items() if k != "token"}
