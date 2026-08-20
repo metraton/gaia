@@ -3089,21 +3089,39 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def _handle_ask_user_question_result(self, hook_data: Dict[str, Any]) -> None:
-        """Conditionally activate pending grants based on user's answer.
+        """Activate every grant the user signed in one structured decision event.
 
-        Uses nonce-targeted activation when the approved answer contains a
-        ``[P-<hex>]`` tag (the nonce prefix).  This works identically for
-        same-session and cross-session approvals:
-          1. Extract the nonce prefix from the approved label.
-          2. Load the specific pending file by prefix (any session).
-          3. Activate the grant under the CURRENT session.
+        Nonce-targeted activation, once per distinct ``[P-<hex>]`` tag carried by
+        an answered label. This works identically for same-session and
+        cross-session approvals:
+          1. Extract the nonce prefix from every answered label.
+          2. Load each pending by prefix (any session).
+          3. Activate each grant under the CURRENT session.
+
+        A host question event answers every question in the call independently,
+        so N signed labels are N signatures. Activating only the first discards
+        the rest -- measured on 2026-08-19, when two protected-path approvals
+        were presented in one event, both approved, and only the first activated.
+
+        ``extract_nonce_from_label`` is the ONLY predicate that decides
+        activation: a label yields a grant exactly when it returns a prefix for
+        it. Nothing else reads the answer text, so a reject label -- including
+        "Do not approve ..." -- still yields no nonce and no grant, and this path
+        can lose a signature but never manufacture one.
 
         DB-only since the grant-lifecycle FS retirement: REQUESTED writes go
-        to the DB, so the approved pending is resolved by nonce prefix straight
+        to the DB, so an approved pending is resolved by nonce prefix straight
         from the DB via ``activate_db_pending_by_prefix()``.
 
         Never blocks (no exceptions raised to caller).
         """
+        from gaia.approvals.decision_audit import (
+            LANE_CLAUDE_CODE_QUESTION,
+            REASON_ACTIVATION_FAILED,
+            REASON_NO_NONCE_IN_LABELS,
+            REASON_NO_SESSION_BINDING,
+            record_decision_not_activated,
+        )
         from modules.security.approval_grants import (
             activate_db_pending_by_prefix,
             extract_nonce_from_label,
@@ -3119,52 +3137,72 @@ class ClaudeCodeAdapter(HookAdapter):
         if not answers and isinstance(hook_data.get("tool_input", {}), dict):
             answers = hook_data.get("tool_input", {}).get("answers", {})
 
+        # No answers is not a decision that granted nothing -- it is no decision
+        # at all, and recording one here would erase the distinction the audit
+        # record exists to make.
         if not answers:
             logger.info("AskUserQuestion: no answers found in payload, skipping grant activation")
             return
 
-        user_approved = any("approve" in str(v).lower() for v in answers.values())
-
-        if not user_approved:
-            logger.info(
-                "AskUserQuestion: user did not approve (answers: %s), skipping grant activation",
-                {k: v for k, v in answers.items()},
-            )
-            return
-
-        # User approved -- activate grants
-        logger.info("AskUserQuestion: user approved, activating grants for session %s", session_id[:12])
+        labels = [str(v) for v in answers.values()]
 
         try:
             if not session_id:
                 logger.info("AskUserQuestion: no session_id available, skipping grant activation")
+                record_decision_not_activated(
+                    reason=REASON_NO_SESSION_BINDING,
+                    lane=LANE_CLAUDE_CODE_QUESTION,
+                    decision_values=labels,
+                )
                 return
 
-            # Nonce-targeted activation: extract the nonce from answer labels.
-            nonce_prefix = None
-            for v in answers.values():
-                nonce_prefix = extract_nonce_from_label(str(v))
-                if nonce_prefix:
-                    break
+            # One prefix per distinct signed label, in the order answered.
+            prefixes: List[str] = []
+            for label in labels:
+                prefix = extract_nonce_from_label(label)
+                if prefix and prefix not in prefixes:
+                    prefixes.append(prefix)
 
-            if not nonce_prefix:
+            if not prefixes:
                 logger.info(
                     "AskUserQuestion: no nonce prefix in answer labels -- "
                     "nothing to activate for session %s", session_id[:12],
                 )
+                record_decision_not_activated(
+                    reason=REASON_NO_NONCE_IN_LABELS,
+                    lane=LANE_CLAUDE_CODE_QUESTION,
+                    session_id=session_id,
+                    decision_values=labels,
+                )
                 return
 
-            # Resolve the approved pending straight from the DB.
-            result = activate_db_pending_by_prefix(
-                nonce_prefix, current_session_id=session_id,
-            )
             logger.info(
-                "AskUserQuestion DB activation: prefix=%s success=%s status=%s reason=%s",
-                nonce_prefix,
-                result.success,
-                getattr(result.status, "value", str(result.status)),
-                result.reason,
+                "AskUserQuestion: %d signed label(s), activating grants for session %s",
+                len(prefixes), session_id[:12],
             )
+
+            # One failure must not withhold the grants the user also signed, so
+            # the loop records it and continues instead of returning.
+            for prefix in prefixes:
+                result = activate_db_pending_by_prefix(
+                    prefix, current_session_id=session_id,
+                )
+                logger.info(
+                    "AskUserQuestion DB activation: prefix=%s success=%s status=%s reason=%s",
+                    prefix,
+                    result.success,
+                    getattr(result.status, "value", str(result.status)),
+                    result.reason,
+                )
+                if not result.success:
+                    record_decision_not_activated(
+                        reason=REASON_ACTIVATION_FAILED,
+                        lane=LANE_CLAUDE_CODE_QUESTION,
+                        session_id=session_id,
+                        nonce_prefix=prefix,
+                        decision_values=labels,
+                        detail=result.reason or getattr(result.status, "value", ""),
+                    )
 
         except Exception as e:
             logger.error("Error in _handle_ask_user_question_result: %s", e, exc_info=True)
