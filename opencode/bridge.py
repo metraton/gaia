@@ -1,8 +1,11 @@
 """JSON bridge between the OpenCode plugin and Gaia's policy adapters.
 
-The plugin owns OpenCode's native APIs and supplies immutable host identifiers.
-This process only normalizes those facts, evaluates Gaia policy, and returns a
-small JSON response; it never exposes the database to the plugin or an agent.
+The plugin owns OpenCode's native APIs and supplies the session, call and tool
+identifiers it holds. What identifies the host run itself is not among them: it
+is derived here, from this process's own lineage, because a value the plugin
+sent would be a value the plugin's own caller could name. This process
+normalizes what it is given, evaluates Gaia policy, and returns a small JSON
+response; it never exposes the database to the plugin or an agent.
 """
 
 from __future__ import annotations
