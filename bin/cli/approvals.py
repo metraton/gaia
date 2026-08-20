@@ -1538,7 +1538,23 @@ def cmd_opencode_decide(args) -> int:
             store.reject(approval["id"], args.session_id, agent_id="opencode-plugin")
             status = "rejected"
         else:
-            store.approve(approval["id"], args.session_id, agent_id="opencode-plugin")
+            payload = json.loads(approval.get("payload_json") or "{}")
+            if payload.get("request_type") == "COMMAND_SET":
+                store.activate_command_set_atomically(
+                    approval["id"],
+                    payload.get("command_set") or [],
+                    request_fingerprint=payload.get("request_fingerprint", ""),
+                    shown_payload=payload,
+                    approver_session=args.session_id,
+                    agent_id=approval.get("agent_id") or "opencode-plugin",
+                    binding={
+                        "agent_id": approval.get("agent_id") or "opencode-plugin",
+                        "session_id": args.session_id,
+                        "call_id": args.call_id,
+                    },
+                )
+            else:
+                store.approve(approval["id"], args.session_id, agent_id="opencode-plugin")
             status = "approved"
     except Exception as exc:
         _print_error(f"OpenCode approval decision failed: {exc}", args)

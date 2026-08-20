@@ -1506,6 +1506,47 @@ def activate_db_pending_by_prefix(
         # byte-identical to what it was before this payload existed, and the
         # sealed-payload fingerprint activation verifies belongs to REQUESTED,
         # not to SHOWN.
+        # Plan-first COMMAND_SET activation is deliberately handled before the
+        # legacy singular path.  The decision and executable grant share one
+        # SQLite transaction; never expose an APPROVED row without its grant.
+        if is_command_set and is_plan_first:
+            from gaia.approvals.store import activate_command_set_atomically
+
+            try:
+                activated = activate_command_set_atomically(
+                    approval_id,
+                    command_set_items,
+                    request_fingerprint=request_fingerprint_value,
+                    shown_payload=build_shown_event_payload(
+                        payload,
+                        approval_id,
+                        presented_question=presented_question,
+                        presented_label=presented_label,
+                    ),
+                    approver_session=current_session_id,
+                    agent_id=agent_id,
+                )
+            except Exception as exc:
+                logger.error(
+                    "activate_db_pending_by_prefix: atomic COMMAND_SET activation "
+                    "failed for %s: %s", approval_id, exc,
+                )
+                return ApprovalActivationResult(
+                    success=False,
+                    status=ACTIVATION_ERROR,
+                    reason=f"Atomic COMMAND_SET activation failed: {exc}",
+                )
+            return ApprovalActivationResult(
+                success=True,
+                status=ACTIVATION_ACTIVATED,
+                reason=(
+                    "DB pending approval activated atomically as a plan-first "
+                    f"COMMAND_SET grant ({len(command_set_items)} commands under one consent)."
+                    + (" (idempotent retry)." if activated.get("idempotent") else "")
+                ),
+                grant_path=None,
+            )
+
         try:
             record_event(
                 approval_id,
