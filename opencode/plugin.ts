@@ -119,13 +119,54 @@ async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
   return JSON.parse(output) as BridgeResponse
 }
 
-async function gaia(args: string[]): Promise<boolean> {
+async function gaiaCapture(args: string[]): Promise<{ ok: boolean; stdout: string }> {
   const child = Bun.spawn(["python3", gaiaPath, ...args], {
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdout: "pipe",
     stderr: "pipe",
   })
-  return (await child.exited) === 0
+  const [code, stdout] = await Promise.all([
+    child.exited,
+    new Response(child.stdout).text(),
+  ])
+  return { ok: code === 0, stdout }
+}
+
+async function gaia(args: string[]): Promise<boolean> {
+  return (await gaiaCapture(args)).ok
+}
+
+export type NativeConsentPresentation = {
+  visibleLines: string[]
+  metadata: Record<string, unknown>
+}
+
+/**
+ * Read the sealed consent surface Gaia rendered for one presented approval.
+ *
+ * The text and the metadata are both Gaia's, never this edge's: a surface this
+ * plugin composed would be a description of a consent request written by the
+ * party asking for it. A response missing either half is refused rather than
+ * shown, because the alternative is a permission prompt whose fields the user
+ * cannot see.
+ */
+export function readConsentPresentation(stdout: string): NativeConsentPresentation {
+  let emitted: any
+  try {
+    emitted = JSON.parse(stdout.trim().split("\n").pop() ?? "")
+  } catch {
+    throw new Error("Gaia did not emit a consent presentation to render")
+  }
+  const lines = emitted?.visible_lines
+  const metadata = emitted?.metadata
+  if (!Array.isArray(lines) || lines.length === 0 || !metadata) {
+    throw new Error(
+      emitted?.presentation_error
+        ? `Gaia could not seal a complete consent surface: ${emitted.presentation_error}`
+        : "Gaia returned no user-visible consent surface for this approval",
+    )
+  }
+  return { visibleLines: lines.map(String), metadata }
 }
 
 function approvalID(response: BridgeResponse): string | undefined {
@@ -242,20 +283,25 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const id = approvalID(response)
     if (!id) return
     const approval = { approvalID: id, sessionID, callID, token: crypto.randomUUID() }
-    const presented = await gaia([
+    const presented = await gaiaCapture([
       "approvals", "opencode-present", id,
       "--session-id", sessionID,
       "--call-id", callID,
       "--token", approval.token,
       "--json",
     ])
-    if (!presented) throw new Error("Gaia could not present the approval request")
+    if (!presented.ok) throw new Error("Gaia could not present the approval request")
+    const surface = readConsentPresentation(presented.stdout)
 
     const created = await input.client.session.permission.create({
       sessionID,
       action: "gaia-approval",
-      resources: [response.reason ?? id],
-      metadata: { gaiaApprovalID: id, gaiaCallID: callID },
+      // The whole sealed surface occupies the user-visible slot: operation,
+      // every exact command in order with its fingerprint, scope, impact,
+      // risk, rollback and verification. Metadata mirrors it for a program;
+      // a field that lived only there would be a field nobody consented to.
+      resources: surface.visibleLines,
+      metadata: { gaiaApprovalID: id, gaiaCallID: callID, gaiaConsent: surface.metadata },
     })
     // A host that answers the request immediately, or answers with nothing at
     // all, must not leave a presented approval waiting for a reply event.
