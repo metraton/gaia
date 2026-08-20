@@ -397,7 +397,13 @@ def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
 CONSENT_SURFACE_CAPTURED = "captured"
 CONSENT_SURFACE_RECONSTRUCTED = "reconstructed"
 
-_CONSENT_SURFACE_HEADER = "APPROVAL REQUIRED"
+# Stands in for a surface when the payload seals no command to present. The
+# neutral renderer refuses such a payload, and this function runs on the
+# activation path inside build_shown_event_payload, which must not raise.
+_CONSENT_SURFACE_NO_COMMAND = (
+    "GAIA T3 APPROVAL REQUEST\n"
+    "No exact command was sealed with this request; there is nothing to present."
+)
 
 
 def payload_commands(payload: Dict[str, Any]) -> List[str]:
@@ -438,36 +444,34 @@ def render_consent_surface(
     payload: Dict[str, Any],
     approval_id: str = "",
 ) -> str:
-    """Render the canonical AskUserQuestion question body for a sealed payload.
+    """Render the user-visible consent surface for a sealed payload.
 
-    This is the executable counterpart of
-    ``skills/orchestrator-present-approval/template.md``: the same 5 labeled
-    fields, and for a multi-command payload the same indexed ``COMANDOS (N)``
-    block instead of a singular ``COMANDO``. Keeping one renderer means the
-    reconstructed audit record and the text the orchestrator is told to show
-    have the same shape.
+    Delegates to the one harness-neutral renderer over the one field table, so
+    this layer chooses no labels and no field set of its own: the presented
+    text, the reconstructed audit record and the completeness tripwire cannot
+    render a payload differently from one another or from another host.
 
-    ``rollback_hint`` is the sealed-payload key; ``rollback`` is the key the
-    subagent's relayed ``approval_request`` uses. Both map to ROLLBACK.
+    The binding is ``UNBOUND_PRESENTATION`` because a surface reconstructed
+    from a payload has no host call to bind to. Every field a user reads comes
+    from the payload; only the correlation line reflects that absence, and a
+    correlation identifies one consent attempt rather than the payload.
+
+    The import is function-level: ``adapters/__init__`` reaches
+    ``claude_code``, which reaches this module, so importing at module level
+    would close that cycle.
     """
-    commands = payload_commands(payload)
-    operation = payload.get("operation", "") or ""
-    scope = payload.get("scope", "") or ""
-    risk = payload.get("risk_level", "") or ""
-    rationale = payload.get("rationale", "") or ""
-    rollback = payload.get("rollback_hint") or payload.get("rollback") or "NOT REVERSIBLE"
+    from adapters.consent_presentation import (
+        UNBOUND_PRESENTATION,
+        envelope_from_sealed_payload,
+        render_native_text,
+    )
 
-    lines = [_CONSENT_SURFACE_HEADER, "", f"OPERACION:  {operation}"]
-    if len(commands) > 1:
-        lines.append(f"COMANDOS ({len(commands)}):")
-        for index, command in enumerate(commands, start=1):
-            lines.append(f"  [{index}] {command}")
-    else:
-        lines.append(f"COMANDO:    {commands[0] if commands else ''}")
-    lines.append(f"SCOPE:      {scope}")
-    lines.append(f"RIESGO:     {risk} -- {rationale}")
-    lines.append(f"ROLLBACK:   {rollback}")
-    return "\n".join(lines)
+    if not payload_commands(payload):
+        return _CONSENT_SURFACE_NO_COMMAND
+    envelope = envelope_from_sealed_payload(
+        payload, approval_id=approval_id, binding=UNBOUND_PRESENTATION
+    )
+    return render_native_text(envelope)
 
 
 def render_approve_label(payload: Dict[str, Any], approval_id: str) -> str:
