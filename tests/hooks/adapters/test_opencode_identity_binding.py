@@ -8,6 +8,7 @@ prevent was proven only against a hand-built dict no adapter ever emitted.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -235,3 +236,87 @@ def test_no_unattested_payload_ever_classifies_as_the_control_plane(spelling, cl
 
     assert payload["agent_type"].strip().lower() not in ORCHESTRATOR_AGENT_TYPES
     assert classify_session_role(payload) is not SessionRole.ORCHESTRATOR
+
+
+_PLUGIN_SOURCE = (
+    Path(__file__).resolve().parents[3] / "opencode" / "plugin.ts"
+).read_text()
+
+# The runtime state a control-plane turn holds when tool.execute.before fires:
+# the primary session is in agentBySession (a NAME) and in no dispatch map, and
+# roleContext() attests it. agentID is absent because JSON.stringify drops the
+# undefined a dispatch-map miss returns.
+PLUGIN_CONTROL_PLANE_EVENT = {
+    "event": "tool.execute.before",
+    "sessionID": "ses-1",
+    "callID": "call-1",
+    "agent": "gaia-orchestrator",
+    "roleContext": ATTESTED_ORCHESTRATOR,
+    "tool": "bash",
+    "args": {"command": "gaia plan show brief"},
+}
+
+
+def _bridge_call_fields(event_name):
+    """Map each field of one plugin.ts bridge call to its source expression."""
+    start = _PLUGIN_SOURCE.index(f'event: "{event_name}"')
+    depth = 1
+    body = ""
+    for offset in range(start, len(_PLUGIN_SOURCE)):
+        if _PLUGIN_SOURCE[offset] == "{":
+            depth += 1
+        elif _PLUGIN_SOURCE[offset] == "}":
+            depth -= 1
+            if depth == 0:
+                body = _PLUGIN_SOURCE[start:offset]
+                break
+    fields = {}
+    for line in body.splitlines():
+        match = re.match(r"\s*(\w+)(?::\s*(.+?))?,\s*$", line)
+        if match:
+            fields[match.group(1)] = match.group(2) or match.group(1)
+    return fields
+
+
+def test_the_event_plugin_ts_emits_reaches_the_attested_control_plane_lane():
+    """Clause 2 over the host's own shape, read from plugin.ts, not restated.
+
+    An affirmative capability claim proven on a synthetic shape proves nothing:
+    the field set and the provenance of agentID both come from the source.
+    """
+    fields = _bridge_call_fields("tool.execute.before")
+
+    assert set(fields) == set(PLUGIN_CONTROL_PLANE_EVENT) | {"agentID"}
+    assert fields["agent"] == "agent"
+    # Any truthy agent_id classifies SUBAGENT before classify_session_role
+    # consults the attested context, so a role name here makes this lane
+    # unreachable end to end however well-formed the attestation is.
+    assert fields["agentID"] != fields["agent"]
+    lookup = re.fullmatch(r"(\w+)\.get\(call\.sessionID\)", fields["agentID"])
+    assert lookup, f"agentID is not a per-session handle lookup: {fields['agentID']}"
+    assert re.findall(rf"{lookup.group(1)}\.set\(([^)]*)\)", _PLUGIN_SOURCE) == [
+        "sessionID, call.callID"
+    ]
+
+    payload = OpenCodeAdapter().build_policy_payload(
+        OpenCodeAdapter().parse_event(json.dumps(PLUGIN_CONTROL_PLANE_EVENT))
+    )
+
+    assert payload["agent_id"] == ""
+    assert payload["role_context"]["attestation"] == "ses-1:gaia-orchestrator"
+    assert classify_session_role(payload) is SessionRole.ORCHESTRATOR
+    assert is_orchestrator_role(payload) is True
+    allowed, reason = gaia_cli_check("rm -rf /tmp/gaia-identity-probe", payload)
+    assert allowed is False and reason
+
+
+def test_a_dispatched_child_session_still_classifies_as_a_subagent():
+    """Correcting the conflation must not hand the lane to a real subagent."""
+    payload = OpenCodeAdapter().build_policy_payload(
+        OpenCodeAdapter().parse_event(
+            json.dumps(dict(PLUGIN_CONTROL_PLANE_EVENT, agentID="call-1"))
+        )
+    )
+
+    assert payload["agent_id"] == "call-1"
+    assert classify_session_role(payload) is SessionRole.SUBAGENT
