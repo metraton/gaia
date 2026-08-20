@@ -378,29 +378,54 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     )
 
 
-def test_a_blocked_attempt_does_not_surface_the_pending_plan_first_approval(db_env):
-    """The recorded gap that keeps the reply lane off the reservation lane.
+def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
+    """The block path names the pending set, not a freshly minted singular id.
 
-    A blocked attempt of the next item of a pending plan-first COMMAND_SET names
-    a freshly minted SINGULAR approval, not the set's. Approving that id runs
-    ``store.approve``, never ``activate_command_set_atomically``, so the
-    reservation lane is unreachable from the plugin's own reply lane. The chain
-    is exercised above with the reply applied through the CLI instead; this test
-    exists so the gap is a detected fact rather than a silent substitution, and
-    it FAILS the day the two ids converge -- which is the day the wiring lands.
+    This assertion is the inverse of the one it replaces. The former detector
+    asserted the two ids DIVERGE and said in its own docstring that it would
+    fail the day they converge; this is that day, so the detector is inverted
+    rather than deleted -- the same observation, read for the outcome that is
+    now correct. The id is read out of the plugin's own
+    ``permissionCreates[0].metadata.gaiaApprovalID``, so what is asserted is
+    what the plugin presented, never a value this test supplied.
+
+    Both items are attempted, each on its own plugin run. At pending time the
+    set has consumed nothing, so every item belongs to the consent being
+    sought and each must name the set. Naming it is not permission to run it
+    out of order: ``reserve_plan_command`` still matches only at
+    ``next_index``, and that ordering is asserted by the reservation test
+    above.
     """
-    env, _db_path = db_env
+    env, db_path = db_env
     approval_id = _request_set(env)
 
-    driven = _drive(env, [_before("blocked", FIRST_COMMAND)])
-    assert _step(driven, "blocked")["allowed"] is False, driven
-    assert len(driven["permissionCreates"]) == 1, driven
-    presented_id = driven["permissionCreates"][0]["metadata"]["gaiaApprovalID"]
+    for label, command, call_id in (
+        ("blocked-first", FIRST_COMMAND, CALL_ID),
+        ("blocked-second", SECOND_COMMAND, LATER_CALL_ID),
+    ):
+        driven = _drive(env, [_before(label, command, call_id=call_id)])
+        assert _step(driven, label)["allowed"] is False, driven
+        assert len(driven["permissionCreates"]) == 1, driven
+        presented_id = driven["permissionCreates"][0]["metadata"]["gaiaApprovalID"]
 
-    assert presented_id != approval_id, (
-        "the blocked attempt now surfaces the pending plan-first approval; the "
-        "reply lane can reach the reservation lane and this test is obsolete"
+        assert presented_id == approval_id, (
+            f"{label}: the blocked attempt minted a fresh singular approval "
+            "instead of naming the pending plan-first set, so the plugin's "
+            "reply lane cannot reach activate_command_set_atomically"
+        )
+
+    # The presented id is the set's, so the reply lane's own branch condition
+    # (payload request_type == COMMAND_SET in cmd_opencode_decide) holds on it.
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    rows = con.execute(
+        "SELECT id, status, payload_json FROM approvals WHERE status='pending'"
+    ).fetchall()
+    con.close()
+    assert [row["id"] for row in rows] == [approval_id], (
+        "a blocked attempt left an extra pending approval behind"
     )
+    assert json.loads(rows[0]["payload_json"])["request_type"] == "COMMAND_SET"
 
 
 def test_plugin_aborts_instead_of_awaiting_the_host_deferred():
