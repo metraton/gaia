@@ -1716,6 +1716,64 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
     return None
 
 
+def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
+    """Return the id of a pending plan-first COMMAND_SET that carries ``command``.
+
+    A blocked command that is an item of a set the user has not answered yet
+    must be refused under THAT approval's id. Only a payload whose
+    ``request_type`` is ``COMMAND_SET`` and which carries a
+    ``request_fingerprint`` activates into the reservation lane
+    (``insert_plan_command_set``, reached from ``activate_db_pending_by_prefix``
+    and from ``cmd_opencode_decide``); a singular id approved in its place runs
+    ``store.approve``, creates no grant, and the retry re-blocks.
+
+    Membership is the exact command string -- the same identity the reservation
+    lane recomputes at retry, which is why the per-item ``fingerprint`` sealed
+    in the payload is derived from it rather than trusted in its place. Every
+    item is matched, not only the next one: nothing is consumed while the
+    approval is still pending, so the set as a whole is what consent is being
+    sought for. Naming it grants no ordering freedom -- ``reserve_plan_command``
+    still reserves only at ``next_index``.
+
+    Args:
+        command: The Bash command that was classified T3.
+
+    Returns:
+        The approval_id (P-{hex}) of the pending set, else None.
+    """
+    try:
+        from gaia.approvals.store import get_pending
+        import json as _json
+
+        # Newest-first, mirroring _find_pending_in_db: get_pending returns
+        # oldest-first, and the most recently requested set is the one the user
+        # is being asked about.
+        for row in reversed(get_pending(all_sessions=True)):
+            payload_str = row.get("payload_json")
+            if not payload_str:
+                continue
+            try:
+                payload = _json.loads(payload_str)
+            except Exception:
+                continue
+            if payload.get("request_type") != "COMMAND_SET":
+                continue
+            request_fingerprint = payload.get("request_fingerprint")
+            if not isinstance(request_fingerprint, str) or not request_fingerprint:
+                continue
+            items = payload.get("command_set")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict) and item.get("command") == command:
+                    return row.get("id")
+    except Exception as _err:
+        logger.debug(
+            "_find_pending_plan_set_in_db query failed (non-fatal): %s", _err
+        )
+    return None
+
+
 def _build_sealed_payload(
     command: str,
     verb: str,
@@ -1890,12 +1948,26 @@ def decide_t3_outcome(
         # leftover single pending of a sub-command and degrade the chain back to
         # a single grant. So the chain path skips it entirely.
         if not is_chain_command_set:
-            approval_id = _find_pending_in_db(session_id or "", command)
+            # A pending plan-first COMMAND_SET carrying this exact command is
+            # named ahead of the singular probe. The consent being sought is
+            # the set's, and only the set's id routes the user's reply into the
+            # reservation lane; a singular id named here -- freshly minted or
+            # reused -- strands the set, because approving it never creates a
+            # grant and the retry blocks again.
+            approval_id = _find_pending_plan_set_in_db(command)
             if approval_id:
                 logger.info(
-                    "Reusing pending approval_id=%s for retry: %s",
+                    "Naming pending plan-first COMMAND_SET approval_id=%s for: %s",
                     approval_id, command[:80],
                 )
+            else:
+                approval_id = _find_pending_in_db(session_id or "", command)
+                if approval_id:
+                    logger.info(
+                        "Reusing pending approval_id=%s for retry: %s",
+                        approval_id, command[:80],
+                    )
+            if approval_id:
                 reason = build_t3_blocked_denial_message(
                     approval_id=approval_id,
                     command=command,
