@@ -1774,6 +1774,136 @@ def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
     return None
 
 
+#: What the sealed payload may state for impact, rollback and verification,
+#: selected only by a named input of the classifier verdict: the mutative verb,
+#: and failing that the verb category. Each statement is written out whole and
+#: reviewed here rather than composed at build time, because the producer sees
+#: intercepted command text and a verdict and never sees what the agent meant to
+#: accomplish -- a sentence assembled from the command's arguments would assert a
+#: consequence nothing determined. Neither table carries a catch-all: a verdict
+#: absent from both contributes no statement and the presented surface states the
+#: absence (``adapters.consent_presentation.VISIBLE_FIELDS``), which is the only
+#: honest answer where reach or reversibility is not a property of the verdict.
+#: rollback in particular never claims an effect can be undone when that depends
+#: on state no interception can observe.
+_STATEMENTS_BY_VERB: dict = {
+    "push": {
+        "impact": (
+            "Writes to a remote repository: the pushed refs leave this machine "
+            "and become visible to every other consumer of that remote."
+        ),
+        "rollback": (
+            "A push is not undone by this session. Reversing it takes a further "
+            "remote write -- a revert commit, or a force-update where the remote "
+            "permits one -- and anything that already fetched keeps the pushed "
+            "refs."
+        ),
+        "verification": (
+            "Read the remote back with the same tool (git ls-remote, or git log "
+            "on the pushed ref) and confirm the ref points where you intended."
+        ),
+    },
+    "apply": {
+        "impact": (
+            "Converges a live target on the configuration the command names; the "
+            "change lands on whatever target the tool's current context selects, "
+            "not on this working tree."
+        ),
+        "rollback": (
+            "Apply has no inverse of its own: returning to the previous state "
+            "means re-applying the previous configuration or restoring a prior "
+            "state snapshot, neither of which this interception captured."
+        ),
+        "verification": (
+            "Re-read the target with the same tool's read verb (a get, show or "
+            "state read) and compare the live values against what was applied."
+        ),
+    },
+    "delete": {
+        "impact": (
+            "Removes the named object from the live target the tool's current "
+            "context selects."
+        ),
+        "rollback": (
+            "Deletion has no inverse in the command itself, and whether the "
+            "object can be restored depends on a backup or a provider retention "
+            "window this interception cannot observe -- do not assume it can be "
+            "undone."
+        ),
+        "verification": (
+            "Query the same object with the tool's read verb and confirm the "
+            "target reports it absent."
+        ),
+    },
+    "destroy": {
+        "impact": (
+            "Tears down the resources the selected state or stack tracks, on the "
+            "live target the tool's current context selects."
+        ),
+        "rollback": (
+            "Destroy has no inverse: re-creating the resources is a fresh create "
+            "with new identities, and data those resources held is not recovered "
+            "by it."
+        ),
+        "verification": (
+            "Read the tool's state back (a state list or show) and confirm it "
+            "reports no remaining tracked resources for the selection destroyed."
+        ),
+    },
+    "create": {
+        "impact": (
+            "Adds a new object to the live target the tool's current context "
+            "selects; it exists from that moment, independently of this session."
+        ),
+        "rollback": (
+            "The inverse of a create is a delete of the object it created, which "
+            "is itself a T3 operation needing its own consent; the create is not "
+            "undone by this session."
+        ),
+        "verification": (
+            "Read the new object back with the tool's read verb and confirm it "
+            "exists with the properties intended."
+        ),
+    },
+}
+
+#: Fallback selection when the verb is none of the verbs above, keyed on the
+#: category the classifier assigned. Only the destructive category is stated:
+#: it is the one category whose direction -- removing or overwriting rather than
+#: adding -- the verdict determines on its own. No classifier reaching this
+#: producer emits it today, the same pre-existing condition as the risk_level
+#: ternary below, so production coverage rests on the verb table.
+_STATEMENTS_BY_CATEGORY: dict = {
+    "DESTRUCTIVE": {
+        "impact": (
+            "The classifier scored this command destructive: it removes or "
+            "overwrites state on the live target rather than adding to it."
+        ),
+        "rollback": (
+            "A destructive verdict carries no inverse command. Recovery depends "
+            "on a backup or retention window this interception cannot observe -- "
+            "do not assume the effect can be undone."
+        ),
+        "verification": (
+            "Read the affected target back with a read-only command of the same "
+            "tool and confirm what remains matches what was meant to be kept."
+        ),
+    },
+}
+
+
+def _authored_statements(verb: str, category: str) -> dict:
+    """Return the impact/rollback/verification statements a verdict selects.
+
+    Empty when neither table covers the verdict, so the caller seals no claim
+    and the presented surface keeps its declared-absence text.
+    """
+    by_verb = _STATEMENTS_BY_VERB.get(str(verb or "").strip().lower())
+    if by_verb is not None:
+        return by_verb
+    return _STATEMENTS_BY_CATEGORY.get(str(category or "").strip().upper(), {})
+
+
 def _build_sealed_payload(
     command: str,
     verb: str,
@@ -1799,6 +1929,12 @@ def _build_sealed_payload(
         is the signal ``activate_db_pending_by_prefix`` reads to branch into
         ``create_command_set_grant`` instead of degrading to a single command.
         The set is NOT collapsed -- every item survives into the grant.
+
+    Impact, rollback and verification:
+        These three come from ``_authored_statements``, keyed on the verdict's
+        verb and category. A verdict neither table covers seals ``None`` for all
+        three and the presented surface says so, rather than a claim about a
+        reach or a reversibility the verdict did not determine.
 
     Args:
         command: The full Bash command string that was blocked (the primary /
@@ -1831,12 +1967,23 @@ def _build_sealed_payload(
                 )
     is_command_set = len(normalized_set) > 1
 
+    # Authored at mint, never merged in afterwards: the approvals row is
+    # write-once and its dedup fingerprint is derived from this payload at
+    # insert, so a statement added later would either be dropped or require
+    # mutating a sealed row. Neither fingerprint that binds a decision to an
+    # execution reads a descriptive field -- command_fingerprint hashes the
+    # command bytes, request_fingerprint the ordered command list -- so these
+    # statements cannot move what a post-grant retry must keep byte-identical.
+    authored = _authored_statements(verb, category)
+
     payload = {
         "operation": f"{category} command intercepted: {verb}",
         "exact_content": command,
         "scope": command.split()[0] if command.strip() else "unknown",
         "risk_level": "high" if category.upper() == "DESTRUCTIVE" else "medium",
-        "rollback_hint": None,
+        "impact": authored.get("impact"),
+        "rollback_hint": authored.get("rollback"),
+        "verification": authored.get("verification"),
         "rationale": (
             f"Agent '{agent_type}' attempted a {category.lower()} ({verb}) command "
             "that requires user approval per the T3 security policy."
