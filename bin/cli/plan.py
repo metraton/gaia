@@ -8,7 +8,8 @@ retained for read-only display of legacy ``plan.md`` artifacts; this
 subcommand (singular) is the canonical writer.
 
 Subcommands:
-    gaia plan save --brief=<name> --content="..." [--status=...] [--json]
+    gaia plan save --brief=<name> (--content="..." | --content-file=<path>)
+                   [--status=...] [--json]
     gaia plan show <brief-name> [--json]
     gaia plan list [--brief=<name>] [--status=...] [--format=table|json|count]
     gaia plan delete <brief-name> [--yes] [--json]
@@ -53,6 +54,20 @@ def _err(msg: str, as_json: bool = False) -> int:
     return 1
 
 
+def _read_content_file(path_str: str) -> str:
+    """Read plan markdown from a file path or stdin.
+
+    Pass ``"-"`` to read from ``sys.stdin`` until EOF (utf-8). Pass any other
+    path string to read that file (utf-8). Raises ``FileNotFoundError`` for
+    missing paths (caller converts to _err). Mirrors the helper of the same
+    name in bin/cli/brief.py and bin/cli/ac.py -- the established convention
+    for long text that must not be inlined as a shell argument.
+    """
+    if path_str == "-":
+        return sys.stdin.read()
+    return Path(path_str).read_text(encoding="utf-8")
+
+
 # ---------------------------------------------------------------------------
 # Subcommand handlers
 # ---------------------------------------------------------------------------
@@ -62,7 +77,8 @@ def _cmd_save(args) -> int:
 
     Usage
     -----
-    ``gaia plan save --brief=<slug> --content=<md> [--status=draft]``
+    ``gaia plan save --brief=<slug> (--content=<md> | --content-file=<path>)
+    [--status=draft]``
 
     This is the ONLY supported way to create or update a plan in gaia.db.
     Every call is idempotent: if no plan exists for the brief it is INSERTed;
@@ -93,9 +109,18 @@ def _cmd_save(args) -> int:
     Specifically, the pattern ``EDITOR=cp /tmp/plan.md gaia brief edit <slug>``
     is a confirmed anti-pattern (observed 2026-05-22). It side-loads content
     into the wrong table, overwrites the brief body, and produces a stale
-    brief that does not reflect the plan. Never repeat this. If the plan
-    content is too large to pass inline, use:
-    ``gaia plan save --brief=<slug> --content="$(cat ~/.gaia/scratch/plan.md)"``
+    brief that does not reflect the plan. Never repeat this. For a body too
+    large to pass inline, use ``--content-file``:
+    ``gaia plan save --brief=<slug> --content-file=~/.gaia/scratch/plan.md``
+
+    That flag replaced a recommendation to write
+    ``--content="$(cat <path>)"``, which no agent caller could follow: a
+    command substitution is a shell composition that command-execution
+    forbids, so the only documented route for a large body was one its
+    intended callers were barred from taking. Five separate turns declined to
+    re-emit a ~30 KB plan body through a shell-quoted --content rather than
+    risk corrupting the plan of record, and the plan narrative fell behind its
+    own rows as a result.
 
     Verify after saving with ``gaia plan show <slug>``.
     """
@@ -104,13 +129,28 @@ def _cmd_save(args) -> int:
     workspace = _resolve_workspace(getattr(args, "workspace", None))
     brief_name = getattr(args, "brief", None)
     content = getattr(args, "content", None)
+    content_file = getattr(args, "content_file", None)
     status = getattr(args, "status", None)
     as_json = getattr(args, "json", False)
 
     if not brief_name:
         return _err("--brief is required", as_json=as_json)
+
+    if content_file is not None:
+        try:
+            content = _read_content_file(content_file)
+        except FileNotFoundError:
+            return _err(
+                f"--content-file: file not found: {content_file}", as_json=as_json
+            )
+        except OSError as exc:
+            return _err(
+                f"--content-file: cannot read '{content_file}': {exc}",
+                as_json=as_json,
+            )
+
     if content is None or content == "":
-        return _err("--content is required", as_json=as_json)
+        return _err("--content or --content-file is required", as_json=as_json)
 
     if not status:
         # 'draft' is the default for a NEW plan only. On an update, the live
@@ -309,12 +349,31 @@ def register(subparsers) -> None:
         description="Insert or update the plan row for (workspace, brief).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="Examples:\n"
-               "  gaia plan save --brief=my-feature --content='...'\n",
+               "  gaia plan save --brief=my-feature --content='...'\n"
+               "  gaia plan save --brief=my-feature "
+               "--content-file=~/.gaia/scratch/plan.md\n"
+               "  cat plan.md | gaia plan save --brief=my-feature "
+               "--content-file=-\n",
     )
     save_p.add_argument("--brief", required=True, metavar="NAME",
                         help="Parent brief slug. Required.")
-    save_p.add_argument("--content", required=True,
-                        help="Plan markdown body. Required.")
+    save_content_source = save_p.add_mutually_exclusive_group(required=True)
+    save_content_source.add_argument(
+        "--content", metavar="MARKDOWN",
+        help="Plan markdown body, inline. Use --content-file for a large body.",
+    )
+    save_content_source.add_argument(
+        "--content-file", dest="content_file", metavar="PATH",
+        help=(
+            "Read the plan markdown from PATH instead of a shell argument "
+            "('-' reads stdin). This is the channel for a multi-kilobyte body, "
+            "and for any body carrying quotes, backticks or '$' -- write the "
+            "file first (with the Write tool) and pass the path, rather than "
+            "re-emitting the whole plan through one shell-quoted --content "
+            "value, where a single unescaped character silently corrupts the "
+            "plan of record."
+        ),
+    )
     save_p.add_argument(
         "--status", default=None,
         choices=("draft", "active", "closed"),

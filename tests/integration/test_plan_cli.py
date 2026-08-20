@@ -454,6 +454,136 @@ def test_set_status_idempotent_noop(tmp_db, tmp_path, monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
+# save --content-file (the large-body lane)
+# ---------------------------------------------------------------------------
+# A plan narrative is routinely tens of kilobytes of markdown carrying quotes,
+# backticks and '$'. Passing that through one shell-quoted --content risks
+# corrupting the plan of record on a single unescaped character, so the body
+# must be reachable from a file. These cases pin the file lane's fidelity
+# (byte-for-byte, no shell in the path) and its error surface.
+
+def _save_parser():
+    """Return the nested `save` subparser as `register` wires it."""
+    import cli.plan as plan_mod
+
+    parser = argparse.ArgumentParser()
+    subs = parser.add_subparsers(dest="subcommand")
+    plan_mod.register(subs)
+    plan_parser = subs.choices["plan"]
+    nested = next(
+        a for a in plan_parser._actions
+        if isinstance(a, argparse._SubParsersAction)
+    )
+    return nested.choices["save"]
+
+
+def test_save_reads_multikilobyte_body_from_content_file(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    from cli.plan import _cmd_save
+
+    monkeypatch.chdir(tmp_path)
+    _seed_brief(tmp_db, "feature-big")
+
+    body = "\n".join(
+        f"## Row {i}\n\nBody line {i} with detail text to give the file bulk.\n"
+        for i in range(400)
+    )
+    assert len(body) > 20_000, "fixture must exceed the inline-argument regime"
+    body_file = tmp_path / "plan_body.md"
+    body_file.write_text(body, encoding="utf-8")
+
+    args = argparse.Namespace(
+        brief="feature-big", content=None, content_file=str(body_file),
+        status="draft", workspace="me", json=False,
+    )
+    rc = _cmd_save(args)
+    assert rc == 0, capsys.readouterr()
+
+    row = _read_plan_row(tmp_db, "feature-big")
+    assert row["content"] == body
+
+
+def test_save_content_file_preserves_shell_hostile_characters(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    from cli.plan import _cmd_save
+
+    monkeypatch.chdir(tmp_path)
+    _seed_brief(tmp_db, "feature-quotes")
+
+    body = (
+        "# Plan\n\n"
+        "Single 'quoted' and \"double quoted\" text.\n"
+        "Inline `backticks` and a fenced block:\n\n"
+        "```bash\n"
+        "echo \"$HOME\" && echo '$(whoami)'\n"
+        "```\n\n"
+        "A literal $VAR and a trailing backslash \\\n"
+    )
+    body_file = tmp_path / "hostile.md"
+    body_file.write_text(body, encoding="utf-8")
+
+    rc = _cmd_save(argparse.Namespace(
+        brief="feature-quotes", content=None, content_file=str(body_file),
+        status="draft", workspace="me", json=False,
+    ))
+    assert rc == 0, capsys.readouterr()
+    assert _read_plan_row(tmp_db, "feature-quotes")["content"] == body
+
+
+def test_save_content_file_missing_path_errors(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    from cli.plan import _cmd_save
+
+    monkeypatch.chdir(tmp_path)
+    _seed_brief(tmp_db, "feature-x")
+
+    missing = tmp_path / "nope.md"
+    rc = _cmd_save(argparse.Namespace(
+        brief="feature-x", content=None, content_file=str(missing),
+        status="draft", workspace="me", json=True,
+    ))
+    assert rc == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert "--content-file" in payload["error"]
+    assert _read_plan_row(tmp_db, "feature-x") is None
+
+
+def test_save_without_either_content_flag_errors(
+    tmp_db, tmp_path, monkeypatch, capsys,
+):
+    from cli.plan import _cmd_save
+
+    monkeypatch.chdir(tmp_path)
+    _seed_brief(tmp_db, "feature-x")
+
+    rc = _cmd_save(argparse.Namespace(
+        brief="feature-x", content=None, content_file=None,
+        status="draft", workspace="me", json=True,
+    ))
+    assert rc == 1
+    assert "--content-file" in json.loads(capsys.readouterr().out)["error"]
+
+
+def test_save_content_and_content_file_are_mutually_exclusive():
+    save_p = _save_parser()
+
+    with pytest.raises(SystemExit):
+        save_p.parse_args([
+            "--brief", "b", "--content", "inline", "--content-file", "/tmp/x.md",
+        ])
+
+    with pytest.raises(SystemExit):
+        save_p.parse_args(["--brief", "b"])
+
+    assert save_p.parse_args(
+        ["--brief", "b", "--content-file", "/tmp/x.md"]
+    ).content_file == "/tmp/x.md"
+
+
+# ---------------------------------------------------------------------------
 # Subcommand registration
 # ---------------------------------------------------------------------------
 
