@@ -403,23 +403,24 @@ class TestTaskValidatorConsistency:
         )
 
     def test_approval_mechanism_in_approval_protocol_skill(self):
-        """The approval mechanism is documented in the skill that now OWNS it.
+        """The host mechanism is documented in the ADAPTER skill that owns it.
 
-        The presentation mechanism (ElicitationResult / AskUserQuestion) has
-        moved on again since this test was first pinned to
-        agent-approval-protocol: it now lives in orchestrator-present-approval
-        (the orchestrator's own presentation step), with pending-approvals as
-        the sibling that inspects/approves/rejects a named pending. Assert
-        the token where it actually lives today.
+        The mechanism moved once more: a host's consent primitive is now
+        adapter-owned (`<host>-consent-adapter`), because a mechanism named in
+        an agnostic skill is wrong on every other host. The agnostic
+        presentation skill keeps the neutral contract and points at the adapter
+        by that naming rule.
         """
-        approval_skill = SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
-        if not approval_skill.exists():
-            pytest.skip("orchestrator-present-approval/SKILL.md not found")
+        adapter_skill = SKILLS_DIR / "claude-code-consent-adapter" / "SKILL.md"
+        if not adapter_skill.exists():
+            pytest.skip("claude-code-consent-adapter/SKILL.md not found")
 
-        content = approval_skill.read_text().lower()
-        assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            "orchestrator-present-approval must reference the approval "
-            "mechanism (ElicitationResult, AskUserQuestion, or canonical token)"
+        content = adapter_skill.read_text().lower()
+        assert "askuserquestion" in content, (
+            "claude-code-consent-adapter must document the host mechanism it owns"
+        )
+        assert CANONICAL_APPROVAL_TOKEN.split(":")[0].lower() in content, (
+            "claude-code-consent-adapter must document the activation channel"
         )
 
 
@@ -448,36 +449,41 @@ class TestSkillsCrossReferences:
             )
 
     def test_approval_protocol_skill_references_approval_mechanism(self):
-        """The approval mechanism lives in orchestrator-present-approval and
-        pending-approvals, not agent-approval-protocol or execution.
+        """Host mechanism names live in adapter-owned skills only (AC-8).
 
-        execution delegates the approval handoff onward; the presentation
-        mechanism (AskUserQuestion / ElicitationResult) is owned by
-        orchestrator-present-approval, and pending-approvals (the sibling
-        that inspects/approves/rejects a named pending) references the same
-        flow. Assert against the owning skills, not the retired one.
+        The five skills the consent protocol declares agnostic must name no
+        host consent mechanism, and the agnostic presentation skill must hand
+        the reader to the adapter that owns it. pending-approvals is the
+        orchestrator-side sibling and is not in that agnostic set.
         """
+        agnostic = (
+            "agent-approval-protocol",
+            "security-tiers",
+            "subagent-request-approval",
+            "orchestrator-present-approval",
+            "execution",
+        )
+        host_names = (
+            "askuserquestion",
+            "elicitationresult",
+            "permission.replied",
+            "permission.v2.replied",
+        )
+        for skill in agnostic:
+            for doc in sorted((SKILLS_DIR / skill).glob("*.md")):
+                content = doc.read_text().lower()
+                found = [name for name in host_names if name in content]
+                assert not found, (
+                    f"{skill}/{doc.name} must stay host-agnostic; "
+                    f"host mechanism names present: {found}"
+                )
+
         present_content = (
             SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
         ).read_text().lower()
-        pending_content = (
-            SKILLS_DIR / "pending-approvals" / "SKILL.md"
-        ).read_text().lower()
-
-        def _has_mechanism(content: str) -> bool:
-            return (
-                "elicitationresult" in content
-                or "askuserquestion" in content
-                or CANONICAL_APPROVAL_TOKEN.lower() in content
-            )
-
-        assert _has_mechanism(present_content), (
-            "orchestrator-present-approval must reference the approval "
-            "mechanism (ElicitationResult, AskUserQuestion, or canonical token)"
-        )
-        assert _has_mechanism(pending_content), (
-            "pending-approvals must reference the approval mechanism "
-            "(ElicitationResult, AskUserQuestion, or canonical token)"
+        assert "consent-adapter" in present_content, (
+            "orchestrator-present-approval must point at the adapter skill "
+            "that owns the host mechanism"
         )
 
     def test_approval_skill_references_approval_id_concept(self):
