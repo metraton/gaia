@@ -156,6 +156,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   const pending = new Map<string, PendingApproval>()
   const agentBySession = new Map<string, string>()
   const agentByCall = new Map<string, string>()
+  // The dispatch that created each child session, keyed by that child's
+  // session. It holds no entry for the primary session, which is what makes
+  // agentID absent there: Gaia reads any truthy agent_id as a subagent before
+  // it consults the attested control-plane context, so a role name in that
+  // field would leave the attested lane unreachable.
+  const dispatchBySession = new Map<string, string>()
   const decisions = new PermissionDecisionRouter()
 
   function roleContext(sessionID: string): RoleCapabilityContext | undefined {
@@ -247,7 +253,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         event: "tool.execute.before",
         sessionID: call.sessionID,
         callID: call.callID,
-        agentID: agent,
+        agentID: dispatchBySession.get(call.sessionID),
         agent,
         roleContext: roleContext(call.sessionID),
         tool: call.tool,
@@ -269,13 +275,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         const dispatchedAgent = agentByCall.get(call.callID)
         if (typeof sessionID === "string" && dispatchedAgent) {
           agentBySession.set(sessionID, dispatchedAgent)
+          dispatchBySession.set(sessionID, call.callID)
         }
       }
       await bridge({
         event: "tool.execute.after",
         sessionID: call.sessionID,
         callID: call.callID,
-        agentID: agent,
+        agentID: dispatchBySession.get(call.sessionID),
         agent,
         roleContext: roleContext(call.sessionID),
         tool: call.tool,
