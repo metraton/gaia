@@ -14,6 +14,90 @@ type PendingApproval = {
   token: string
 }
 
+type RoleCapabilityContext = {
+  role: string
+  capabilities: string[]
+  issuer: "opencode-runtime"
+  attestation: string
+  verified: true
+}
+
+type PermissionReply = "once" | "always" | "reject"
+
+/** Host reply spellings mapped onto the protocol vocabulary Gaia accepts. */
+const PERMISSION_REPLIES: Record<string, PermissionReply> = {
+  once: "once",
+  allow: "once",
+  always: "always",
+  reject: "reject",
+  deny: "reject",
+}
+
+export function normalizePermissionReply(reply: unknown): PermissionReply {
+  // An unrecognized reply must not grant capability by default: a spelling this
+  // edge has not been taught is treated as a refusal, never as consent.
+  if (typeof reply !== "string") return "reject"
+  return PERMISSION_REPLIES[reply.trim().toLowerCase()] ?? "reject"
+}
+
+/** The event OpenCode is expected to deliver a permission reply on. */
+export const PREFERRED_PERMISSION_EVENT = "permission.replied"
+
+/**
+ * Compatibility only: an older OpenCode build spells the same reply with a
+ * versioned event name. The name stops at this edge -- Gaia's neutral layer is
+ * handed a lane token and never a host event name.
+ */
+export const COMPATIBILITY_PERMISSION_EVENTS = ["permission.v2.replied"]
+
+export type DecisionLane = "preferred" | "compatibility"
+
+/** Ordered strongest-first: a lane's index is its precedence rank. */
+export const DECISION_LANE_PRECEDENCE: DecisionLane[] = ["preferred", "compatibility"]
+
+export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
+  if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
+  if (typeof eventType === "string" && COMPATIBILITY_PERMISSION_EVENTS.includes(eventType)) {
+    return "compatibility"
+  }
+  return undefined
+}
+
+export type LaneAdmission = {
+  lane: DecisionLane
+  accepted: boolean
+  duplicate: boolean
+  supersededLane?: DecisionLane
+}
+
+/**
+ * Collapses every delivery of one permission reply into a single effect.
+ *
+ * Mirrors the neutral ledger in hooks/adapters/consent_events.py: the first
+ * delivery acts, a later one never acts, and a later delivery on a
+ * higher-precedence lane takes over attribution for the request.
+ */
+export class PermissionDecisionRouter {
+  private readonly lanes = new Map<string, DecisionLane>()
+
+  admit(requestID: string, lane: DecisionLane): LaneAdmission {
+    const prior = this.lanes.get(requestID)
+    if (prior === undefined) {
+      this.lanes.set(requestID, lane)
+      return { lane, accepted: true, duplicate: false }
+    }
+    if (DECISION_LANE_PRECEDENCE.indexOf(lane) < DECISION_LANE_PRECEDENCE.indexOf(prior)) {
+      this.lanes.set(requestID, lane)
+      return { lane, accepted: false, duplicate: true, supersededLane: prior }
+    }
+    return { lane: prior, accepted: false, duplicate: true }
+  }
+
+  effectiveLane(requestID: string): DecisionLane | undefined {
+    return this.lanes.get(requestID)
+  }
+}
+
 const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
 
@@ -72,14 +156,32 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   const pending = new Map<string, PendingApproval>()
   const agentBySession = new Map<string, string>()
   const agentByCall = new Map<string, string>()
+  const decisions = new PermissionDecisionRouter()
 
-  async function decide(approval: PendingApproval, reply: "once" | "always" | "reject") {
+  function roleContext(sessionID: string): RoleCapabilityContext | undefined {
+    const role = agentBySession.get(sessionID)
+    if (!role) return undefined
+    return {
+      role,
+      capabilities: [],
+      issuer: "opencode-runtime",
+      attestation: `${sessionID}:${role}`,
+      verified: true,
+    }
+  }
+
+  async function decide(
+    approval: PendingApproval,
+    reply: PermissionReply,
+    lane: DecisionLane = "preferred",
+  ) {
     await gaia([
       "approvals", "opencode-decide", approval.approvalID,
       "--session-id", approval.sessionID,
       "--call-id", approval.callID,
       "--token", approval.token,
       "--reply", reply,
+      "--decision-lane", lane,
       "--json",
     ])
   }
@@ -103,11 +205,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       resources: [response.reason ?? id],
       metadata: { gaiaApprovalID: id, gaiaCallID: callID },
     })
-    if (created.data.effect === "allow" || created.data.effect === "deny") {
-      await decide(approval, created.data.effect === "allow" ? "once" : "reject")
+    // A host that answers the request immediately, or answers with nothing at
+    // all, must not leave a presented approval waiting for a reply event.
+    const decided = created?.data
+    if (!decided?.id) throw new Error("OpenCode did not return a permission request to correlate")
+    if (decided.effect === "allow" || decided.effect === "deny") {
+      await decide(approval, normalizePermissionReply(decided.effect))
       return
     }
-    pending.set(created.data.id, approval)
+    pending.set(decided.id, approval)
   }
 
   return {
@@ -119,11 +225,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         }
         return
       }
-      if (event.type !== "permission.v2.replied") return
-      const approval = pending.get(event.properties.requestID)
+      const lane = permissionDecisionLane(event.type)
+      if (!lane) return
+      const requestID = event.properties.requestID
+      // Admitted before the approval lookup so a later delivery on the
+      // preferred lane is still recorded once a compatibility one has acted.
+      const admission = decisions.admit(requestID, lane)
+      if (!admission.accepted) return
+      const approval = pending.get(requestID)
       if (!approval) return
-      pending.delete(event.properties.requestID)
-      await decide(approval, event.properties.reply)
+      pending.delete(requestID)
+      await decide(approval, normalizePermissionReply(event.properties.reply), lane)
     },
     "tool.execute.before": async (call, output) => {
       const agent = agentBySession.get(call.sessionID)
@@ -137,6 +249,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         callID: call.callID,
         agentID: agent,
         agent,
+        roleContext: roleContext(call.sessionID),
         tool: call.tool,
         args: output.args,
       })
@@ -164,6 +277,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         callID: call.callID,
         agentID: agent,
         agent,
+        roleContext: roleContext(call.sessionID),
         tool: call.tool,
         args: call.args,
         result: toolResult(output),

@@ -1526,15 +1526,49 @@ def cmd_opencode_present(args) -> int:
     return 0
 
 
+def _import_consent_events():
+    """Import the harness-neutral consent vocabulary from the hooks package."""
+    import sys as _sys
+
+    hooks_dir = str(_PLUGIN_ROOT / "hooks")
+    if hooks_dir not in _sys.path:
+        _sys.path.insert(0, hooks_dir)
+    from adapters import consent_events
+
+    return consent_events
+
+
 def cmd_opencode_decide(args) -> int:
-    """Apply a native OpenCode permission reply to its bound Gaia approval."""
+    """Apply a native OpenCode permission reply to its bound Gaia approval.
+
+    The reply is normalized into one neutral, correlated decision before any
+    state moves: the lane a host delivered it on is carried as a neutral token,
+    never as a host event name, and the correlation is a pure function of the
+    approval and its binding so two deliveries of the same reply -- in
+    different lanes or different processes -- collapse onto one identity.
+    """
     approval, error = _opencode_binding(args)
     if error:
         _print_error(error, args)
         return 1
     try:
+        consent = _import_consent_events()
+        lane = getattr(args, "decision_lane", None) or consent.PREFERRED_DECISION_LANE
+        consent.lane_rank(lane)
+        binding = consent.binding_from_mapping(
+            {
+                "agent_id": approval.get("agent_id") or "opencode-plugin",
+                "session_id": args.session_id,
+                "call_id": args.call_id,
+            }
+        )
+        decision = consent.build_decision(approval["id"], binding, args.reply)
+    except Exception as exc:
+        _print_error(f"OpenCode approval decision was not normalized: {exc}", args)
+        return 1
+    try:
         store = _import_approval_store()
-        if args.reply == "reject":
+        if decision.decision is consent.ConsentDecision.REJECT:
             store.reject(approval["id"], args.session_id, agent_id="opencode-plugin")
             status = "rejected"
         else:
@@ -1546,11 +1580,11 @@ def cmd_opencode_decide(args) -> int:
                     request_fingerprint=payload.get("request_fingerprint", ""),
                     shown_payload=payload,
                     approver_session=args.session_id,
-                    agent_id=approval.get("agent_id") or "opencode-plugin",
+                    agent_id=binding.agent_id,
                     binding={
-                        "agent_id": approval.get("agent_id") or "opencode-plugin",
-                        "session_id": args.session_id,
-                        "call_id": args.call_id,
+                        "agent_id": binding.agent_id,
+                        "session_id": binding.session_id,
+                        "call_id": binding.call_id,
                     },
                 )
             else:
@@ -1560,7 +1594,15 @@ def cmd_opencode_decide(args) -> int:
         _print_error(f"OpenCode approval decision failed: {exc}", args)
         return 1
     if getattr(args, "json", False):
-        print(json.dumps({"status": status, "approval_id": approval["id"]}))
+        print(json.dumps({
+            "status": status,
+            "approval_id": approval["id"],
+            "decision": decision.decision.value,
+            "decision_lane": lane,
+            "correlation_id": decision.correlation_id,
+            "request_fingerprint": decision.request_fingerprint,
+            "protocol_version": decision.protocol_version,
+        }))
     return 0
 
 
@@ -1866,6 +1908,13 @@ def register(subparsers) -> None:
         p_opencode.add_argument("--json", action="store_true", help="JSON output")
         if name == "opencode-decide":
             p_opencode.add_argument("--reply", choices=("once", "always", "reject"), required=True)
+            # A neutral lane token, never a host event name: the harness edge
+            # translates its own event spelling before it reaches this CLI.
+            p_opencode.add_argument(
+                "--decision-lane",
+                choices=("preferred", "compatibility"),
+                default="preferred",
+            )
         p_opencode.set_defaults(func=handler)
 
     # history (T3.4) -- temporal view or per-approval chain

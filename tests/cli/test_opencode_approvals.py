@@ -62,10 +62,13 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
         assert cmd_opencode_decide(_args()) == 0
 
     store.approve.assert_called_once_with("P-open-1", "ses-1", agent_id="opencode-plugin")
-    assert json.loads(capsys.readouterr().out.splitlines()[-1]) == {
-        "status": "approved",
-        "approval_id": "P-open-1",
-    }
+    emitted = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert emitted["status"] == "approved"
+    assert emitted["approval_id"] == "P-open-1"
+    assert emitted["decision"] == "once"
+    assert emitted["decision_lane"] == "preferred"
+    assert emitted["correlation_id"].startswith("C-")
+    assert emitted["protocol_version"] == "1"
 
 
 def test_opencode_presentation_token_cannot_be_reused_for_a_different_call():
