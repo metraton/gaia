@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict
-from typing import Any, Dict, FrozenSet
+from typing import TYPE_CHECKING, Any, Dict, FrozenSet
 
 from modules.orchestrator.delegate_mode import ORCHESTRATOR_AGENT_TYPES
 
@@ -35,6 +35,9 @@ from .types import (
     VerificationResult,
     RoleCapabilityContext,
 )
+
+if TYPE_CHECKING:
+    from modules.security.host_attestation import Attestation
 
 
 _EVENT_TYPES = {
@@ -376,6 +379,41 @@ class OpenCodeAdapter(HookAdapter):
         response = policy_adapter.adapt_pre_tool_use(policy_event)
         return self._translate_policy_response(response)
 
+    @staticmethod
+    def _resolved_attestation(event: HookEvent) -> "Attestation | None":
+        """Resolve the presented claim against the issuing host's own record.
+
+        This is the provenance check the lane was missing: the plugin can only
+        present a token some Gaia-side process minted and wrote down, and every
+        field of the claim must equal that record. A claim the caller composed
+        resolves to nothing however well formed it is.
+        """
+        # Imported inside the call, not at module scope: modules.security's
+        # package init imports back through adapters, so a top-level import of
+        # anything inside it fails every hook entry point on a circular import.
+        from modules.security.host_attestation import resolve
+
+        context = event.role_context
+        if context is None:
+            return None
+        payload = event.payload
+        return resolve(
+            host_run=payload.get("hostRun") or payload.get("host_run") or "",
+            token=context.attestation,
+            session_id=event.session_id,
+            role=context.role,
+            issuer=context.issuer,
+        )
+
+    @classmethod
+    def _is_attested_control_plane(cls, event: HookEvent) -> bool:
+        """Whether this event carries a control-plane claim with provenance."""
+        context = event.role_context
+        if context is None or not context.is_verified_control_plane:
+            return False
+        record = cls._resolved_attestation(event)
+        return record is not None and record.depth == 0 and not record.granted_by
+
     @classmethod
     def _identity_rejection(cls, event: HookEvent, tool_name: str) -> str | None:
         """Reject a forged, unattested, or unauthorized identity claim.
@@ -399,10 +437,10 @@ class OpenCodeAdapter(HookAdapter):
                 return "OpenCode role context has an untrusted issuer"
             if (
                 context.role.strip().lower() in _CONTROL_PLANE_ROLES
-                and not context.is_verified_control_plane
+                and not cls._is_attested_control_plane(event)
             ):
                 return "OpenCode control-plane role is not attested by the runtime"
-        if tool_name == "task" and (context is None or not context.is_verified_control_plane):
+        if tool_name == "task" and not cls._is_attested_control_plane(event):
             return "ordinary OpenCode agents cannot issue control-plane dispatches"
         return None
 
@@ -422,20 +460,52 @@ class OpenCodeAdapter(HookAdapter):
                 "tool_use_id": event.call_id or "",
                 "agent_id": event.host_agent_id or "",
                 "agent_type": self._policy_agent_type(event),
-                "role_context": self._forward_role_context(event.role_context),
+                "role_context": self._forward_role_context(event),
             }
         )
         return payload
 
-    @staticmethod
-    def _forward_role_context(
-        context: RoleCapabilityContext | None,
-    ) -> Dict[str, Any] | None:
-        """Forward the attested claim as a plain mapping, not an adapter type."""
-        return None if context is None else asdict(context)
+    @classmethod
+    def _forward_role_context(cls, event: HookEvent) -> Dict[str, Any] | None:
+        """Forward the claim as a plain mapping only once provenance resolves.
 
-    @staticmethod
-    def _policy_agent_type(event: HookEvent) -> str:
+        This is the single boundary where the attested claim becomes the mapping
+        neutral policy reads, and the classifier downstream confers the
+        control-plane role on the mere presence of ``verified``, ``issuer`` and
+        ``attestation``. A claim whose token does not resolve against the
+        issuing host's ledger therefore crosses stripped of those three fields
+        and renamed, so no presence-only predicate downstream can be handed a
+        lane this side did not verify. The mapping records who granted the
+        claim and at what delegation depth: unbounded minting is refused at
+        issuance, and the record of the grant travels with the claim.
+        """
+        context = event.role_context
+        if context is None:
+            return None
+        record = cls._resolved_attestation(event)
+        if record is None:
+            return {
+                "role": _UNATTESTED_AGENT_TYPE
+                if context.role.strip().lower() in _CONTROL_PLANE_ROLES
+                else context.role,
+                "capabilities": [],
+                "issuer": "",
+                "attestation": "",
+                "verified": False,
+                "provenance": "unresolved",
+            }
+        forwarded = asdict(context)
+        forwarded.update(
+            {
+                "provenance": "host-issued",
+                "granted_by": record.granted_by,
+                "delegation_depth": record.depth,
+            }
+        )
+        return forwarded
+
+    @classmethod
+    def _policy_agent_type(cls, event: HookEvent) -> str:
         """Name the caller for policy without letting a name confer authority.
 
         Neutral policy reads an absent agent_type as the control plane, so an
@@ -449,7 +519,7 @@ class OpenCodeAdapter(HookAdapter):
         if context is not None:
             if (
                 context.role.strip().lower() in _CONTROL_PLANE_ROLES
-                and not context.is_verified_control_plane
+                and not cls._is_attested_control_plane(event)
             ):
                 return _UNATTESTED_AGENT_TYPE
             return context.role
