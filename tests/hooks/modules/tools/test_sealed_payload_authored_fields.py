@@ -86,7 +86,12 @@ def _surface(payload: dict) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Authored content: three distinct verdicts, one of them a destructive category
+# Authored content: three production-reachable verdicts, one of them a
+# destructive VERB carried under MUTATIVE -- the only category the classifier
+# emits for it. Statement selection consults the verb table first and returns
+# on a hit, so delete selects its own authored statements and the category it
+# travels under is never read; pairing it with a category production cannot
+# emit would certify a branch no interception reaches.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -94,7 +99,7 @@ def _surface(payload: dict) -> str:
     [
         ("push", "MUTATIVE"),
         ("apply", "MUTATIVE"),
-        ("delete", "DESTRUCTIVE"),
+        ("delete", "MUTATIVE"),
     ],
 )
 def test_covered_verdict_seals_all_three_fields(verb, category):
@@ -112,7 +117,30 @@ def test_covered_verdict_seals_all_three_fields(verb, category):
         )
 
 
-def test_destructive_category_verdict_is_covered_and_scored_high():
+def test_category_fallback_is_forward_compatibility_and_not_evidence():
+    """NOT EVIDENCE OF PRODUCTION BEHAVIOUR. Read the name before the asserts.
+
+    This branch is UNREACHABLE with the current classifier vocabulary. The
+    complete set of category strings a verdict can carry is the four constants
+    in ``modules.security.mutative_verbs`` -- MUTATIVE, SIMULATION, READ_ONLY,
+    UNKNOWN -- and there is no CATEGORY_DESTRUCTIVE anywhere under ``hooks``.
+    The ``DESTRUCTIVE`` key of ``_STATEMENTS_BY_CATEGORY``, and the ``high``
+    arm of the risk ternary that shares its condition, are therefore selected
+    only when a category string is supplied by hand, as this test supplies it.
+    No interception produces the payload asserted below.
+
+    So nothing here may be cited as proof that the consent surface carries
+    authored content; that proof is the verb-table tests above, which run on
+    categories production emits. The table is kept deliberately as forward
+    compatibility, and this test is what keeps the branch honest on the day a
+    classifier starts emitting the category -- it is coverage, not evidence.
+    """
+    # A destructive VERB never reaches the fallback: the verb table is consulted
+    # first, so delete selects the same statements whatever category it carries.
+    assert _authored_statements("delete", "MUTATIVE") == _authored_statements(
+        "delete", "DESTRUCTIVE"
+    )
+
     payload = _build_sealed_payload(
         command="terraform destroy",
         verb="a-verb-no-table-covers",
