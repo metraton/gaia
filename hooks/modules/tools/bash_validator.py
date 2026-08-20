@@ -1873,6 +1873,11 @@ _STATEMENTS_BY_VERB: dict = {
 #: adding -- the verdict determines on its own. No classifier reaching this
 #: producer emits it today, the same pre-existing condition as the risk_level
 #: ternary below, so production coverage rests on the verb table.
+#:
+#: Because it never fires, this table is not evidence: a statement read from
+#: here proves nothing about what a user was shown, and it must not be cited
+#: to satisfy a gate or a test that asks what production sealed. Verify that
+#: against the verb table, which is the only producer with reachable output.
 _STATEMENTS_BY_CATEGORY: dict = {
     "DESTRUCTIVE": {
         "impact": (
