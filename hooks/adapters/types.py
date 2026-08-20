@@ -89,13 +89,34 @@ class RoleCapabilityContext:
     attestation: str = ""
     verified: bool = False
 
+    @classmethod
+    def from_mapping(cls, value: object) -> "RoleCapabilityContext":
+        """Parse the structured host claim without accepting prompt text."""
+        if not isinstance(value, dict):
+            raise ValueError("role_context must be an object")
+        role = value.get("role")
+        capabilities = value.get("capabilities", ())
+        if not isinstance(capabilities, (list, tuple)):
+            raise ValueError("role_context.capabilities must be a list")
+        return cls(
+            role=role,
+            capabilities=tuple(capabilities),
+            issuer=value.get("issuer", ""),
+            attestation=value.get("attestation", ""),
+            verified=value.get("verified", False),
+        )
+
     def __post_init__(self) -> None:
         if not self.role or not isinstance(self.role, str):
             raise ValueError("role must be a non-empty string")
-        if len(set(self.capabilities)) != len(self.capabilities):
-            raise ValueError("capabilities must not contain duplicates")
+        if not isinstance(self.issuer, str) or not isinstance(self.attestation, str):
+            raise ValueError("role_context issuer and attestation must be strings")
+        if not isinstance(self.verified, bool):
+            raise ValueError("role_context.verified must be a boolean")
         if any(not isinstance(capability, str) or not capability for capability in self.capabilities):
             raise ValueError("capabilities must contain non-empty strings")
+        if len(set(self.capabilities)) != len(self.capabilities):
+            raise ValueError("capabilities must not contain duplicates")
 
     @property
     def is_verified_control_plane(self) -> bool:
@@ -297,6 +318,7 @@ class HookEvent:
     dispatch_id: Optional[str] = None
     parent_dispatch_id: Optional[str] = None
     call_id: Optional[str] = None
+    role_context: Optional[RoleCapabilityContext] = None
 
 
 @dataclass(frozen=True)
