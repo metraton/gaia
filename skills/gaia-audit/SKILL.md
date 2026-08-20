@@ -28,7 +28,8 @@ Three forces shape it:
   type standard.
 - **Claims anchor to symbols, or they are unverified.** A reference to a
   field, module, table, or function is real only if it exists by that
-  name in code (`activate_db_pending_by_prefix`, `_is_protected`), not by
+  name in code (`hooks/modules/security/approval_grants.py::activate_db_pending_by_prefix`,
+  `hooks/modules/security/protected_paths.py::is_protected_hook_path`), not by
   a line number that drifts on every edit. Hunt phantom references, dead
   instructions, and schema/contract drift by opening the implementation
   and matching symbol-for-symbol. Cover both single refs (the component
