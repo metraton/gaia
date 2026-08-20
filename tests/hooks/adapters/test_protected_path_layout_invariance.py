@@ -158,6 +158,13 @@ class TestLayoutInvariance:
     def test_verdict_sets_are_identical_across_load_locations(
         self, verdicts_in_place, verdicts_relocated
     ):
+        # Emitted so a reviewer running with -s reads the comparison itself
+        # rather than only the verdict on the comparison.
+        for label in EXPECTED:
+            print(
+                f"{label:24} in_place={verdicts_in_place[label]:11} "
+                f"relocated={verdicts_relocated[label]}"
+            )
         assert verdicts_in_place == verdicts_relocated, (
             "the gate's verdict set moved when the module tree moved -- the "
             "scope of a security control is still a function of the deployment"
