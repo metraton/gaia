@@ -27,9 +27,20 @@ shell route cannot stay open against a tree the file-write route protects.
 Like gaia_db_write_guard and the subagent memory-write guard, the block is
 categorical and NOT approvable -- there is no T3 grant that lifts it. This is
 the faithful implementation of the ``.claude/`` hard-boundary policy for shell
-mechanisms: "do not attempt it", not "run it and let the hook decide". READS
-(``git diff .claude/hooks/x.py``, ``cat .claude/settings.json``,
-``grep -r x .claude/``) are NOT write-capable and pass through untouched.
+mechanisms: "do not attempt it", not "run it and let the hook decide".
+
+Write capability is judged by the component's BASE TOKEN, with no flag
+inspection, so do NOT expect reads to pass untouched. A command whose base is
+not a listed writer does pass (``git diff .claude/hooks/x.py``,
+``cat .claude/settings.json``, ``grep -r x .claude/``), but a READ-ONLY
+SPELLING OF A LISTED WRITER is denied all the same: ``sed -n '1,40p'
+.claude/settings.json`` prints and mutates nothing and is still categorically
+denied, because the base token is ``sed``. The read itself is not withheld --
+reach it with the Read tool, ``cat``, ``grep`` or ``awk``, a token outside the
+write set. Do not make the guard flag-aware to soften this: ``sed`` writes its
+target from a ``w`` script command with no in-place flag anywhere in the
+invocation, so a flag-based guard would pass a real write through a boundary
+that is categorical and therefore not approvable.
 
 Residual limitation (accepted): a write assembled indirectly -- a protected
 path reconstructed by variable interpolation or read from a file

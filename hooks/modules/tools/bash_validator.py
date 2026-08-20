@@ -1250,25 +1250,17 @@ class BashValidator:
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
-        Chain COMMAND_SET intake (AC-8): when a chain ``a && b && c`` has TWO OR
-        MORE sub-commands that are ungranted T3, classifying them one-at-a-time
-        mints a single-signature pending for the FIRST and short-circuits -- so
-        one approval covers only the first sub-command and the next re-blocks
-        (the double-approval the user hit). To group them, a NON-MINTING
-        classification pass runs FIRST (``_is_ungranted_t3_component``); if >= 2
-        sub-commands are ungranted-T3 (and we are a subagent under the
-        orchestrator), ONE COMMAND_SET pending is minted over exactly those T3
-        sub-commands via ``decide_t3_outcome(command_set=...)``. One approval
-        then covers the chain; each sub-command is still consumed byte-for-byte
-        by its own signature at retry (no consent is widened -- the commands are
-        only grouped). Critically, the per-component minting path
-        (_validate_single_command) is NEVER entered for the batch, so no stray
-        single pendings are minted alongside the COMMAND_SET.
+        Compound T3 execution is REFUSED here, never grouped. If ANY component
+        classifies T3 the whole chain is denied (subagent) or asked (primary):
+        "Compound T3 execution is disabled. Create a plan-first request-set and
+        issue each command as a separate Bash call." There is no COMMAND_SET
+        intake on this path -- consent grouping is requested plan-first via
+        ``gaia approvals request-set``, and execution stays one command per Bash
+        call, so a chain is never the surface on which a set is discovered.
 
-        For every other shape (0 or 1 ungranted-T3, no orchestrator above, or a
-        component that is hard-blocked) the original per-component pass runs
-        unchanged: a hard block fails the chain fast, a lone T3 keeps the
-        singular grant path, and an all-granted/safe chain is allowed.
+        A chain with NO T3 component runs the per-component pass: each component
+        is validated by ``_validate_single_command``, a blocked component fails
+        the chain fast, and the chain's tier is the highest component tier.
 
         ``cwd`` is the SEED for the directory fold below (the real invocation
         directory from the hook payload, or ``None`` when the caller has
