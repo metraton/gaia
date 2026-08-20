@@ -12,8 +12,23 @@ runtime returns.
 ## Identity and placement
 
 - Contract `agent_id`: `^a[0-9a-f]{16,}$`.
-- Approval id: `P-` plus 32 lowercase hexadecimal characters. Relay it exactly;
-  agents never mint it.
+- Approval id: **three spellings circulate and only one resolves.** The
+  canonical `P-` plus 32 lowercase hexadecimal characters is the fully-qualified
+  id the runtime seals, and the only form to relay. A BARE 32 hex with no `P-`
+  is what a refusal surface emits (`NONCE_APPROVAL_PATTERN`, `APPROVE:<32 hex>`
+  in `approval_constants.py`). `P-` plus the FIRST 8 hex is what the CLI
+  *displays* for readability (`nonce[:8]`) -- a label, never an address. Relay
+  the canonical form exactly as received; agents never mint one, never pad a
+  displayed truncation back to full length, and never reconstruct one from a
+  prefix.
+- **If the validator rejects the relayed id, that is a runtime seam, not your
+  error.** Do not re-spell it, do not retry variants, and above all never invent
+  an id that merely looks resolvable -- a plausible 32-hex string is
+  indistinguishable from a real one at the point it is read, so inventing one
+  turns a visible seam into a silent false grant. Close `NEEDS_VERIFICATION`
+  with the id verbatim in `verbatim_outputs` and name the rejection in
+  `open_gaps`, so the seam is routed to whoever owns it instead of being
+  absorbed as a failure of yours.
 - All consent data belongs inside top-level `approval_request`, not beside it or
   duplicated in `evidence_report`.
 - The fenced contract remains compatibility output; the DB is the durable
