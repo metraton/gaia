@@ -133,7 +133,13 @@ class TestSettingsCodeConsistency:
         """State-modifying commands (T3 per security-tiers skill) must NOT be in allow."""
         allow_cmds = {self._extract_command(e) for e in allow_list if e.startswith("Bash(")}
 
-        # These are T3 mutations that should NEVER be auto-allowed
+        # T3 mutations that must never be auto-allowed. Tier membership here is
+        # owned by GIT_LOCAL_SAFE_SUBCOMMANDS and MUTATIVE_VERBS in
+        # hooks/modules/security/mutative_verbs.py, not by this set: a command
+        # listed here that the classifier treats as local-safe would fail a
+        # legitimate allow entry. `git commit` was removed for exactly that
+        # reason -- it is local-safe (skills/security-tiers/SKILL.md states it
+        # is not T3), so auto-allowing it violates nothing.
         t3_mutations = {
             "terraform apply", "terragrunt apply",
             "terraform destroy", "terragrunt destroy",
@@ -143,7 +149,7 @@ class TestSettingsCodeConsistency:
             "helm install", "helm upgrade", "helm rollback",
             "helm uninstall", "helm delete",
             "flux suspend", "flux resume",
-            "git push", "git commit", "git rebase",
+            "git push", "git rebase",
             "git reset", "git merge",
         }
 
@@ -388,9 +394,15 @@ class TestTaskValidatorConsistency:
 
     def test_t3_keywords_match_security_tiers_skill(self):
         """T3 keywords must match operations classified as T3 in security-tiers skill."""
-        # These are the canonical T3 operations from the skill
+        # The canonical T3 operations from the skill. `git commit` is NOT one
+        # of them and must not be re-added: security-tiers/SKILL.md states it
+        # is local-only and therefore not T3, and the verb detector agrees --
+        # tests/hooks/modules/tools/test_task_validator.py asserts positively
+        # that a prompt announcing a commit is not flagged T3. T3_KEYWORDS
+        # still carries the entry as legacy, which is why this set is a floor
+        # (missing-only) rather than an equality check.
         expected_t3_operations = {
-            "git commit", "git push", "terraform apply", "terragrunt apply",
+            "git push", "terraform apply", "terragrunt apply",
             "kubectl apply", "kubectl delete", "kubectl create",
             "helm install", "helm upgrade",
         }
