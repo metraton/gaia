@@ -40,9 +40,13 @@ as on a COMMAND_SET. The exact form the identifier must take, and the failure
 modes specific to it, are the adapter skill's -- read it there rather than
 guessing a shape here.
 
-**One decision activates one approval.** Do not present several approvals as one
-decision and assume all of them activate; how many a single host interaction can
-carry is an adapter property, stated by the adapter skill. Before dispatching
+**One decision activates one approval.** Present one approval per decision. The
+reason is presentation hygiene, not activation loss: a host event that answers
+several signed labels now activates every one of them, so grouping no longer
+drops a grant. What grouping still costs is the user's ability to read what they
+are signing -- several exact commands folded into one decision is one signature
+over a surface nobody consented to field by field. How many a single host
+interaction can carry is an adapter property, stated by the adapter skill. Before dispatching
 execution, confirm with `gaia approvals show <approval_id>` that the approval you
 intend to execute actually left `pending`.
 
