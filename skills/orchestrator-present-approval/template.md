@@ -1,8 +1,9 @@
 # Approval presentation template
 
 This is the documentation half of one renderer. The consent surface is produced
-from the sealed payload by `adapters/consent_presentation.py`
-(`render_native_text` over the `VISIBLE_FIELDS` table); every presenter renders
+from the sealed payload by
+`hooks/adapters/consent_presentation.py::render_native_text` (over that module's
+`VISIBLE_FIELDS` table); every presenter renders
 there, and both the reconstructed audit record and the completeness tripwire
 read the same table. Present the produced text; do not compose it, summarise it,
 reorder it, or translate a label.
