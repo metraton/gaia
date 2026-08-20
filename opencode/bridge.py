@@ -20,13 +20,46 @@ for _path in (str(_ROOT), str(_HOOKS)):
         sys.path.insert(0, _path)
 
 
+_ATTEST_EVENT = "identity.attest"
+
+
 def _deny(reason: str) -> dict[str, object]:
     return {"action": "deny", "reason": reason}
+
+
+def _attest(raw: dict[str, object]) -> dict[str, object]:
+    """Mint one identity claim inside this Gaia-side process.
+
+    The plugin asks for a claim and never composes one: the token is a nonce
+    this process generates and records, so what the plugin later presents is
+    resolvable against host state rather than derived from a tool argument.
+    """
+    from modules.security.host_attestation import AttestationDenied, issue
+
+    try:
+        issued = issue(
+            host_run=str(raw.get("hostRun") or raw.get("host_run") or ""),
+            session_id=str(raw.get("sessionID") or raw.get("session_id") or ""),
+            role=str(raw.get("role") or ""),
+            issuer=str(raw.get("issuer") or ""),
+            parent_attestation=raw.get("parentAttestation")
+            or raw.get("parent_attestation"),
+        )
+    except AttestationDenied as exc:
+        return _deny(f"Gaia refused to attest this OpenCode identity: {exc}")
+    return {
+        "action": "allow",
+        "attestation": issued.token,
+        "granted_by": issued.granted_by,
+        "delegation_depth": issued.depth,
+    }
 
 
 def handle(raw: dict[str, object]) -> dict[str, object]:
     """Evaluate one OpenCode event and return a plugin-safe response."""
     os.environ["GAIA_HOST"] = "opencode"
+    if raw.get("event") == _ATTEST_EVENT:
+        return _attest(raw)
     from adapters.opencode import OpenCodeAdapter
 
     adapter = OpenCodeAdapter()

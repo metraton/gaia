@@ -5,6 +5,7 @@ type BridgeResponse = {
   reason?: string
   approval_id?: string
   updated_input?: Record<string, unknown>
+  attestation?: string
 }
 
 type PendingApproval = {
@@ -152,10 +153,27 @@ export function toolResult(output: any): Record<string, unknown> {
   }
 }
 
+/** The one issuer spelling Gaia's adapter trusts for a host claim. */
+export const ROLE_ISSUER = "opencode-runtime"
+
 export const GaiaOpenCodePlugin = async (input: any) => {
   const pending = new Map<string, PendingApproval>()
   const agentBySession = new Map<string, string>()
   const agentByCall = new Map<string, string>()
+  // Both replace a real dependency with a test double only: send is the Gaia
+  // policy bridge, and hostRun scopes its ledger to this OpenCode process so
+  // one run's control-plane binding cannot be re-let by the next.
+  const send: (event: Record<string, unknown>) => Promise<BridgeResponse> =
+    typeof input?.gaiaBridge === "function" ? input.gaiaBridge : bridge
+  const hostRun = String(input?.gaiaHostRun ?? process.pid)
+  // A claim the host process was granted, never one this edge composed: the
+  // plugin receives caller-supplied names and cannot be the issuer of the
+  // authority they would otherwise assert.
+  const attestationBySession = new Map<string, string>()
+  // The session this run's parentless claim may be issued to. A child session
+  // cannot exist before the primary one has taken a turn, so the first session
+  // seen is the primary and every later one must inherit a grant instead.
+  let rootSessionID: string | undefined
   // The dispatch that created each child session, keyed by that child's
   // session. It holds no entry for the primary session, which is what makes
   // agentID absent there: Gaia reads any truthy agent_id as a subagent before
@@ -166,13 +184,40 @@ export const GaiaOpenCodePlugin = async (input: any) => {
 
   function roleContext(sessionID: string): RoleCapabilityContext | undefined {
     const role = agentBySession.get(sessionID)
-    if (!role) return undefined
+    const attestation = attestationBySession.get(sessionID)
+    // A name with no issued claim is not an identity: Gaia refused to attest
+    // it, so this edge presents nothing rather than a claim of its own making.
+    if (!role || !attestation) return undefined
     return {
       role,
       capabilities: [],
-      issuer: "opencode-runtime",
-      attestation: `${sessionID}:${role}`,
+      issuer: ROLE_ISSUER,
+      attestation,
       verified: true,
+    }
+  }
+
+  async function attest(sessionID: string, role: string, grantor?: string) {
+    if (attestationBySession.has(sessionID)) return
+    let parentAttestation: string | undefined
+    if (grantor !== undefined) {
+      parentAttestation = attestationBySession.get(grantor)
+      // An unattested dispatcher has no grant to pass on, and the chain must
+      // record a grantor that holds one.
+      if (!parentAttestation) return
+    } else if (sessionID !== rootSessionID) {
+      return
+    }
+    const response = await send({
+      event: "identity.attest",
+      hostRun,
+      sessionID,
+      role,
+      issuer: ROLE_ISSUER,
+      parentAttestation,
+    })
+    if (response.action === "allow" && typeof response.attestation === "string" && response.attestation) {
+      attestationBySession.set(sessionID, response.attestation)
     }
   }
 
@@ -228,6 +273,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         const info = event.properties?.info
         if (info?.role === "assistant" && typeof info.sessionID === "string" && typeof info.agent === "string") {
           agentBySession.set(info.sessionID, info.agent)
+          if (rootSessionID === undefined) rootSessionID = info.sessionID
+          await attest(info.sessionID, info.agent)
         }
         return
       }
@@ -249,8 +296,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         const requested = output.args?.subagent_type ?? output.args?.agent
         if (typeof requested === "string") agentByCall.set(call.callID, requested)
       }
-      const response = await bridge({
+      const response = await send({
         event: "tool.execute.before",
+        hostRun,
         sessionID: call.sessionID,
         callID: call.callID,
         agentID: dispatchBySession.get(call.sessionID),
@@ -276,10 +324,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (typeof sessionID === "string" && dispatchedAgent) {
           agentBySession.set(sessionID, dispatchedAgent)
           dispatchBySession.set(sessionID, call.callID)
+          await attest(sessionID, dispatchedAgent, call.sessionID)
         }
       }
-      await bridge({
+      await send({
         event: "tool.execute.after",
+        hostRun,
         sessionID: call.sessionID,
         callID: call.callID,
         agentID: dispatchBySession.get(call.sessionID),
