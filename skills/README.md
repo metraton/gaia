@@ -62,7 +62,6 @@ skills/
 ├── agent-response/        # Orchestrator: read and route a closed agent_contract_handoffs row
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
-├── claude-code-consent-adapter/ # Claude Code's half of the consent protocol: the AskUserQuestion label that activates a grant, and one-call-one-grant
 ├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
@@ -136,8 +135,7 @@ skill that could theoretically apply.
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
-- `orchestrator-present-approval` — T3 approval presentation, host-neutral: the sealed surface, its field set and render order, and who activates versus who executes
-- `claude-code-consent-adapter` — the Claude Code half of the same flow, loaded alongside it when the host is Claude Code: the `AskUserQuestion` label format that activates a grant, and the rule that one call yields one grant. Adapter skills are named `<host>-consent-adapter`; the agnostic skill points at that name rather than naming a host
+- `orchestrator-present-approval` — T3 approval presentation, host-neutral end to end: the sealed surface and its field set, presenting it as text before asking a minimal decision, the conditional rule that makes the reply resolve to the `approval_id`, and who activates versus who executes
 - `gaia-compact` — compact transient continuity after durable state is persisted
 
 Workflow skills (on-demand injection, not in any agent frontmatter):
