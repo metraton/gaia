@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import asdict
 from typing import Any, Dict, FrozenSet
 
 from .base import HookAdapter
@@ -30,6 +31,7 @@ from .types import (
     ValidationRequest,
     ValidationResult,
     VerificationResult,
+    RoleCapabilityContext,
 )
 
 
@@ -46,6 +48,18 @@ _EVENT_TYPES = {
 _PATCH_PATH_MARKER = re.compile(
     r"^\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)$"
 )
+
+# Only the OpenCode runtime may issue an identity claim; a claim carrying any
+# other issuer reached Gaia through something other than the host itself.
+_TRUSTED_ROLE_ISSUER = "opencode-runtime"
+
+# The control-plane role is the one role that unlocks Gaia's orchestrator lane,
+# so it is the only role name this adapter has to know by name.
+_CONTROL_PLANE_ROLE = "gaia-orchestrator"
+
+# Neutral policy treats an empty agent_type as the control plane, so a caller
+# with no attested claim is given a name that cannot be mistaken for one.
+_UNATTESTED_AGENT_TYPE = "opencode-unattested"
 
 
 def _apply_patch_paths(patch_text: object) -> list[str]:
@@ -67,6 +81,18 @@ def _apply_patch_paths(patch_text: object) -> list[str]:
     if not saw_file_operation or not paths:
         raise ValueError("apply_patch contains no recognized file operation")
     return paths
+
+
+def _fail_closed(output: Dict[str, Any], exit_code: int) -> HookResponse:
+    """Return a host response whose exit code cannot contradict a denial.
+
+    The plugin reads the bridge's exit code before it reads the envelope, so a
+    denial that exits zero would be read as a successful, permitted call.
+    """
+    return HookResponse(
+        output=output,
+        exit_code=2 if output.get("action") == "deny" else exit_code,
+    )
 
 
 class OpenCodeAdapter(HookAdapter):
@@ -118,7 +144,21 @@ class OpenCodeAdapter(HookAdapter):
             parent_dispatch_id=raw.get("parentDispatchID")
             or raw.get("parent_dispatch_id"),
             call_id=raw.get("callID") or raw.get("call_id"),
+            role_context=self._parse_role_context(raw),
         )
+
+    @staticmethod
+    def _parse_role_context(raw: dict) -> RoleCapabilityContext | None:
+        """Read only the host's structured identity envelope.
+
+        The prompt and tool arguments are deliberately not identity sources. A
+        malformed envelope is rejected at the adapter boundary, before Gaia's
+        policy receives a claim that could be mistaken for authority.
+        """
+        value = raw.get("roleContext", raw.get("role_context"))
+        if value is None:
+            return None
+        return RoleCapabilityContext.from_mapping(value)
 
     def format_validation_response(self, result: ValidationResult) -> HookResponse:
         return HookResponse(
@@ -292,16 +332,10 @@ class OpenCodeAdapter(HookAdapter):
 
         payload = dict(event.payload)
         original_tool = str(payload.get("tool_name", "")).lower()
-        payload.update(
-            {
-                "tool_name": self._policy_tool_name(payload.get("tool_name", "")),
-                "tool_input": payload.get("tool_input", {}),
-                "session_id": event.session_id,
-                "tool_use_id": event.call_id or "",
-                "agent_id": event.host_agent_id or "",
-                "agent_type": payload.get("agent") or payload.get("agent_type", ""),
-            }
-        )
+        rejection = self._identity_rejection(event, original_tool)
+        if rejection is not None:
+            return HookResponse(output={"action": "deny", "reason": rejection}, exit_code=2)
+        payload = self.build_policy_payload(event)
         policy_event = HookEvent(
             event_type=event.event_type,
             session_id=event.session_id,
@@ -311,6 +345,7 @@ class OpenCodeAdapter(HookAdapter):
             dispatch_id=event.dispatch_id,
             parent_dispatch_id=event.parent_dispatch_id,
             call_id=event.call_id,
+            role_context=event.role_context,
         )
         policy_adapter = ClaudeCodeAdapter()
         if original_tool == "apply_patch":
@@ -326,6 +361,7 @@ class OpenCodeAdapter(HookAdapter):
                     payload=path_payload, distribution=event.distribution,
                     host_agent_id=event.host_agent_id, dispatch_id=event.dispatch_id,
                     parent_dispatch_id=event.parent_dispatch_id, call_id=event.call_id,
+                    role_context=event.role_context,
                 )
                 checked = self._translate_policy_response(policy_adapter.adapt_pre_tool_use(path_event))
                 if isinstance(checked.output, dict) and checked.output.get("action") != "allow":
@@ -333,6 +369,75 @@ class OpenCodeAdapter(HookAdapter):
             return HookResponse(output={"action": "allow"})
         response = policy_adapter.adapt_pre_tool_use(policy_event)
         return self._translate_policy_response(response)
+
+    @classmethod
+    def _identity_rejection(cls, event: HookEvent, tool_name: str) -> str | None:
+        """Reject a forged, unattested, or unauthorized identity claim.
+
+        Every route by which a mere string could confer the control-plane lane is
+        closed here, before Gaia's policy sees the claim: a declared agent name
+        disagreeing with the attested context, a claim from any issuer other than
+        the runtime, an unattested control-plane role, a control-plane name
+        declared with no attested context, and a dispatch carrying no claim.
+        """
+        payload = event.payload
+        context = event.role_context
+        declared = str(payload.get("agent") or payload.get("agent_type") or "").strip()
+        if context is None:
+            if declared.lower() == _CONTROL_PLANE_ROLE:
+                return "OpenCode control-plane role was declared without an attested runtime context"
+        else:
+            if declared and declared != context.role:
+                return "OpenCode role identity does not match the structured runtime context"
+            if context.issuer != _TRUSTED_ROLE_ISSUER:
+                return "OpenCode role context has an untrusted issuer"
+            if context.role == _CONTROL_PLANE_ROLE and not context.is_verified_control_plane:
+                return "OpenCode control-plane role is not attested by the runtime"
+        if tool_name == "task" and (context is None or not context.is_verified_control_plane):
+            return "ordinary OpenCode agents cannot issue control-plane dispatches"
+        return None
+
+    def build_policy_payload(self, event: HookEvent) -> Dict[str, Any]:
+        """Normalize one OpenCode event into the payload Gaia's policy reads.
+
+        The attested context crosses as a plain mapping because neutral policy
+        gates the control-plane lane on a mapping; an adapter dataclass would
+        fail that gate silently while still looking present in the payload.
+        """
+        payload = dict(event.payload)
+        payload.update(
+            {
+                "tool_name": self._policy_tool_name(payload.get("tool_name", "")),
+                "tool_input": payload.get("tool_input", {}),
+                "session_id": event.session_id,
+                "tool_use_id": event.call_id or "",
+                "agent_id": event.host_agent_id or "",
+                "agent_type": self._policy_agent_type(event),
+                "role_context": self._forward_role_context(event.role_context),
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _forward_role_context(
+        context: RoleCapabilityContext | None,
+    ) -> Dict[str, Any] | None:
+        """Forward the attested claim as a plain mapping, not an adapter type."""
+        return None if context is None else asdict(context)
+
+    @staticmethod
+    def _policy_agent_type(event: HookEvent) -> str:
+        """Name the caller for policy without letting a name confer authority.
+
+        Neutral policy reads an absent agent_type as the control plane, so an
+        unattested OpenCode caller is named explicitly rather than left blank.
+        """
+        context = event.role_context
+        if context is not None:
+            return context.role
+        payload = event.payload
+        declared = str(payload.get("agent") or payload.get("agent_type") or "").strip()
+        return declared or _UNATTESTED_AGENT_TYPE
 
     @staticmethod
     def _policy_tool_name(tool_name: object) -> str:
@@ -354,7 +459,7 @@ class OpenCodeAdapter(HookAdapter):
             )
 
         if "action" in output:
-            return HookResponse(output=output, exit_code=response.exit_code)
+            return _fail_closed(output, response.exit_code)
 
         specific = output.get("hookSpecificOutput")
         if isinstance(specific, dict) and specific.get("permissionDecision"):
@@ -367,7 +472,7 @@ class OpenCodeAdapter(HookAdapter):
             approval = re.search(r"approval_id:\s*(P-[A-Za-z0-9-]+)", translated["reason"])
             if approval:
                 translated["approval_id"] = approval.group(1)
-            return HookResponse(output=translated, exit_code=response.exit_code)
+            return _fail_closed(translated, response.exit_code)
 
         return HookResponse(output={"action": "allow"}, exit_code=response.exit_code)
 
@@ -384,7 +489,8 @@ class OpenCodeAdapter(HookAdapter):
                 "session_id": event.session_id,
                 "tool_use_id": event.call_id or "",
                 "agent_id": event.host_agent_id or "",
-                "agent_type": payload.get("agent") or payload.get("agent_type", ""),
+                "agent_type": self._policy_agent_type(event),
+                "role_context": self._forward_role_context(event.role_context),
             }
         )
         policy_event = HookEvent(
@@ -396,6 +502,7 @@ class OpenCodeAdapter(HookAdapter):
             dispatch_id=event.dispatch_id,
             parent_dispatch_id=event.parent_dispatch_id,
             call_id=event.call_id,
+            role_context=event.role_context,
         )
         response = ClaudeCodeAdapter().adapt_post_tool_use(policy_event)
         return self._translate_policy_response(response)
