@@ -13,9 +13,14 @@ with `gaia approvals request-set` -- a single predictable T3 command uses the
 same verb proactively, not only the reactive path that begins after
 PreToolUse returns `[T3_BLOCKED]`. Never discover a set by attempting a
 compound shell command. Group only one bounded goal with exact known order
-and coherent risk, rollback, and verification. Do not group speculative or
-output-dependent steps. Consent grouping is not execution atomicity: execution
-remains one command per call, ordered and fail-fast.
+and coherent risk, rollback, and verification. Those last two are supplied on
+the request itself -- `--rollback` and `--verification`, alongside `--rationale`
+and one `--command` per item -- and are sealed at mint, then rendered verbatim
+as the `ROLLBACK` and `VERIFICATION` fields of the surface the user consents
+against; requesting without them asks for consent while the surface states they
+are absent. Do not group speculative or output-dependent steps. Consent grouping
+is not execution atomicity: execution remains one command per call, ordered and
+fail-fast.
 
 security-tiers classifies every operation into four tiers so an agent knows whether it can run freely or must request the user's consent.
 
@@ -30,7 +35,7 @@ security-tiers classifies every operation into four tiers so an agent knows whet
 
 `git commit` and `git add` are **not** T3 -- they are local-only operations (they touch the working tree and local refs, never remote state), so they classify as safe by elimination. Only `git push` mutates remote state and is T3. This matches `GIT_LOCAL_SAFE_SUBCOMMANDS` in `mutative_verbs.py`, where `commit` and `add` are listed as local-safe.
 
-**T3 gates a direction, not a category of verb.** An operation needs consent because it moves the system toward *more* capability (it grants) or *less* recoverability (it destroys). An operation that only moves the other way -- that *reduces* capability already granted -- does not need consent, because the worst it can do is take back power that was given. So within Gaia's own consent layer, `gaia approvals revoke|reject|reject-all|clean` are **not** T3: they only revoke or discard grants Gaia itself issued, never reaching outside the local approval store. The asymmetry is deliberate -- `gaia approvals approve` *grants* capability without the AskUserQuestion flow, so it stays T3. This is anchored to the `gaia approvals` group in `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS` (`mutative_verbs.py`), not generalized to every CLI's "revoke" -- a cloud IAM revoke is a real remote mutation and remains T3.
+**T3 gates a direction, not a category of verb.** An operation needs consent because it moves the system toward *more* capability (it grants) or *less* recoverability (it destroys). An operation that only moves the other way -- that *reduces* capability already granted -- does not need consent, because the worst it can do is take back power that was given. So within Gaia's own consent layer, `gaia approvals revoke|reject|reject-all|clean` are **not** T3: they only revoke or discard grants Gaia itself issued, never reaching outside the local approval store. The asymmetry is deliberate -- `gaia approvals approve` *grants* capability without passing through the user's consent surface at all, so it stays T3. This is anchored to the `gaia approvals` group in `CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS` (`mutative_verbs.py`), not generalized to every CLI's "revoke" -- a cloud IAM revoke is a real remote mutation and remains T3.
 
 **T3 gates EXECUTION of a mutation, not the authoring of a file. `Write` and `Edit` are deliberately NOT T3.** Writing or modifying a file is not itself a change to live state -- it produces bytes on disk, an inert artifact that does nothing until something *runs* it. The state-mutation that requires consent happens only when an executed command (a `Bash` invocation of a mutative verb, an interpreter pointed at a script, an exec sink inside that script) reaches out and changes something live: a cluster, a remote, a database, an account. That is why the tier ladder classifies *commands*, and why the script-file lane above reads a file's contents only when an *interpreter is invoked on it* (`node deploy.js`, `python3 migrate.py`) -- not when the file is written. So the apparent "gap" where an agent can `Write` a script full of `kubectl delete` without triggering T3 is not a defect: authoring the script is free, and the T3 gate fires the moment the script is *executed*. This is intentional and load-bearing -- it lets agents draft, edit, and iterate on code (including infra and deploy scripts) without a consent prompt on every keystroke, while still requiring consent at the single point that matters: the run. (The one hard exception is orthogonal to tiers: writes under `.claude/` are blocked unconditionally by the sensitive-path guard, regardless of tier -- see "The `.claude` rule" below.)
 
