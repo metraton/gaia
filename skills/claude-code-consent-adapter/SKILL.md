@@ -1,6 +1,6 @@
 ---
 name: claude-code-consent-adapter
-description: Use when the running host is Claude Code and a sealed T3 consent surface must be delivered to the user through AskUserQuestion -- the option label format that activates the grant, and the one-call-one-grant rule
+description: Use when the running host is Claude Code and a sealed T3 consent surface must be delivered to the user through AskUserQuestion -- the option label format that activates the grant, and the per-signed-label activation rule
 ---
 
 # Claude Code Consent Adapter
@@ -78,33 +78,36 @@ AskUserQuestion(
 
 One Approve option covers a whole COMMAND_SET, never one per command.
 
-## One call yields one grant
+## Activation is per signed label
 
-**A single `AskUserQuestion` call activates at most ONE approval, even when every
-label in it is well formed.** Two approvals presented as two questions in one
-call, both approved by the user, produce one grant: the first nonce activates,
-the second approval stays `pending`, and the edit or command it covered is
-correctly refused afterwards while the user believes both were granted.
+**One `AskUserQuestion` call activates as many approvals as it carries signed
+labels.** A host question event answers every question in the call
+independently, so N well-formed labels are N signatures, each activating its own
+approval. `_handle_ask_user_question_result` (`hooks/adapters/claude_code.py`)
+collects one nonce prefix per distinct `[P-<hex>]` tag across every answered
+label and calls `activate_db_pending_by_prefix` once per prefix; a single
+failure is recorded and the loop continues, so a grant the user also signed is
+not withheld because a sibling failed. That function's docstring is the living
+contract for this behaviour -- read it at the symbol rather than trusting a
+transcription of it here.
 
-This is not a malformed-label failure -- it is the shape of the adapter.
-`_handle_ask_user_question_result` (`hooks/adapters/claude_code.py`) iterates
-`answers.values()`, `break`s on the first label that yields a nonce, and calls
-`activate_db_pending_by_prefix` exactly once per event:
+Activation has exactly one predicate: `extract_nonce_from_label` either returns
+a prefix for a label or it does not, and nothing else reads the answer text. A
+label that yields no nonce therefore activates nothing -- a `Reject` option, a
+translated verb, any paraphrase of `Approve` -- so this path can lose a
+signature but never manufacture one. The residual risk has a fixed direction: a
+malformed label under-grants, silently; no label shape over-grants.
 
-```python
-nonce_prefix = None
-for v in answers.values():
-    nonce_prefix = extract_nonce_from_label(str(v))
-    if nonce_prefix:
-        break
-```
+The one-decision-per-call rule survives, but as **presentation hygiene rather
+than an activation limit**, and it is owned by `orchestrator-present-approval`,
+not by this skill. What grouping costs is the user's ability to read what they
+are signing -- several exact commands folded into one decision is one signature
+over a surface nobody consented to field by field -- not a dropped grant.
 
-The operational rule: **N approvals need N calls**, one signature at a time.
 Before dispatching execution, confirm with `gaia approvals show <approval_id>`
-that the approval you intend to execute actually left `pending` -- the approval
-that disappears from `pending` is the one that activated, and that read is the
-only thing that distinguishes "both approved" from "one approved and one
-silently inert".
+that each approval you intend to execute actually left `pending`. Presentation
+and activation are separate events, and that read is the only thing that
+distinguishes a grant that activated from one that is silently still pending.
 
 ## Prefix length
 
