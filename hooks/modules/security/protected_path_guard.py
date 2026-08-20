@@ -60,10 +60,14 @@ from .shell_substitution import extract_substitutions
 # Git subcommands that write/replace working-tree files (the ones that live in
 # GIT_LOCAL_SAFE_SUBCOMMANDS and therefore short-circuit the tier gate). A read
 # subcommand (diff, log, show, status, blame) is deliberately absent so a read
-# targeting a protected path is never blocked.
+# targeting a protected path is never blocked. ``add`` is absent for the same
+# reason: it reads the working tree and writes the INDEX, so it can never
+# overwrite a protected file's bytes -- and because the block is not
+# approvable, listing it would leave a turn authoring a new hook module with no
+# way to stage it except from the repo root, sweeping in unrelated work.
 _GIT_WRITE_SUBCOMMANDS = frozenset({
     "mv", "checkout", "switch", "restore", "stash", "reset", "revert",
-    "cherry-pick", "apply", "am", "rebase", "merge", "pull", "clone", "add",
+    "cherry-pick", "apply", "am", "rebase", "merge", "pull", "clone",
 })
 
 # Non-git base commands that write files. Plain mv/cp were only T3-approvable;
