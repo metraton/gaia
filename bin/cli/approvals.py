@@ -1480,6 +1480,36 @@ def _opencode_binding(args) -> tuple[dict | None, str | None]:
     return None, "No matching OpenCode permission presentation exists"
 
 
+def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dict:
+    """Build the native payload OpenCode presents for one pending approval.
+
+    Returns the visible surface and its structured mirror, both rendered from
+    one sealed envelope so the host edge carries them and composes neither. A
+    payload that cannot be sealed completely returns ``presentation_error``
+    instead: the SHOWN record still stands, and the plugin refuses to raise a
+    permission it cannot show the user in full.
+    """
+    approval_id = approval.get("id") or ""
+    try:
+        presentation = _import_consent_presentation()
+        consent = _import_consent_events()
+        binding = consent.binding_from_mapping(
+            {
+                "agent_id": approval.get("agent_id") or "opencode-plugin",
+                "session_id": session_id,
+                "call_id": call_id,
+            }
+        )
+        envelope = presentation.envelope_from_sealed_payload(
+            json.loads(approval.get("payload_json") or "{}"),
+            approval_id=approval_id,
+            binding=binding,
+        )
+        return presentation.native_presentation(envelope)
+    except Exception as exc:
+        return {"presentation_error": str(exc)}
+
+
 def cmd_opencode_present(args) -> int:
     """Record an OpenCode-native presentation before requesting user consent."""
     approval, error = _opencode_binding(args)
@@ -1487,7 +1517,13 @@ def cmd_opencode_present(args) -> int:
         # A matching event already exists. Presentation is idempotent so plugin
         # reloads do not create a second UI request for the same tool call.
         if getattr(args, "json", False):
-            print(json.dumps({"status": "presented", "approval_id": approval["id"]}))
+            print(json.dumps({
+                "status": "presented",
+                "approval_id": approval["id"],
+                **_opencode_presentation(
+                    approval, args.session_id.strip(), args.call_id.strip()
+                ),
+            }))
         return 0
     if error != "No matching OpenCode permission presentation exists":
         _print_error(error or "Invalid OpenCode approval presentation", args)
@@ -1522,8 +1558,24 @@ def cmd_opencode_present(args) -> int:
         _print_error(f"OpenCode presentation failed: {exc}", args)
         return 1
     if getattr(args, "json", False):
-        print(json.dumps({"status": "presented", "approval_id": approval_id}))
+        print(json.dumps({
+            "status": "presented",
+            "approval_id": approval_id,
+            **_opencode_presentation(approval, session_id, call_id),
+        }))
     return 0
+
+
+def _import_consent_presentation():
+    """Import the harness-neutral consent presentation renderer."""
+    import sys as _sys
+
+    hooks_dir = str(_PLUGIN_ROOT / "hooks")
+    if hooks_dir not in _sys.path:
+        _sys.path.insert(0, hooks_dir)
+    from adapters import consent_presentation
+
+    return consent_presentation
 
 
 def _import_consent_events():
