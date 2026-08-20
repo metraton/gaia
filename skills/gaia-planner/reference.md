@@ -106,14 +106,19 @@ routing are the planner's own calls.
 ### Step 4: Persist the plan
 
 ```bash
-gaia plan save --brief=<name> --content="..." --workspace=<ws>
+gaia plan save --brief=<name> --content-file=~/.gaia/scratch/<contract_id>.md --workspace=<ws>
 ```
 
-`gaia plan save` upserts the `plans` row: first call inserts (status `draft`),
-later calls update `status` and `content` only -- it does not delete or reorder
-child tasks, so it is safe to call repeatedly. Pass `--status=active` to set a
-non-default status on save. If the content exceeds inline limits, source it from
-a file: `--content="$(cat /tmp/plan.md)"`.
+Write the markdown to that scratch file with the Write tool first, then point
+`--content-file` at it. `gaia plan save` upserts the `plans` row: first call
+inserts (status `draft`), later calls update `status` and `content` only -- it
+does not delete or reorder child tasks, so it is safe to call repeatedly. Pass
+`--status=active` to set a non-default status on save.
+
+`--content="<markdown>"` inline is for a short body only. A plan body routinely
+exceeds the inline limit, and `--content="$(cat file.md)"` is NOT the escape
+hatch -- a command substitution is a form agents are forbidden to compose, so
+that spelling is a dead end rather than a fallback. Use `--content-file`.
 
 Confirm with `gaia plan show <name>` that the content is stored.
 
@@ -184,8 +189,9 @@ Confirm with `gaia task gate list <name> <order>` per task, or `gaia brief verif
 
 ## Plan Structure
 
-This is the markdown you pass to `gaia plan save --content`. It mirrors the
-shape the orchestrator's dispatch logic reads.
+This is the markdown you write to `~/.gaia/scratch/<contract_id>.md` and pass to
+`gaia plan save --content-file`. It mirrors the shape the orchestrator's
+dispatch logic reads.
 
 ```markdown
 ## Plan

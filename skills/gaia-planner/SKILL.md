@@ -141,13 +141,19 @@ Invariant 9 (`task_missing_gate`).
 **Half 1 -- save the markdown:**
 
 ```bash
-gaia plan save --brief=<name> --content="..." --workspace=<ws>
+gaia plan save --brief=<name> --content-file=~/.gaia/scratch/<contract_id>.md --workspace=<ws>
 ```
 
-This upserts the plan row in the `plans` table: first call inserts (status
-`draft`), later calls update `status` and `content` without touching child
-tasks. It is the only supported writer. If the content is too large to pass
-inline, source it from a file: `--content="$(cat /tmp/plan.md)"`.
+Write the markdown to that scratch file with the Write tool first, then point
+`--content-file` at it. This upserts the plan row in the `plans` table: first
+call inserts (status `draft`), later calls update `status` and `content` without
+touching child tasks. It is the only supported writer.
+
+`--content="<markdown>"` inline exists and works for a short body, but a real
+plan body routinely exceeds the inline limit, and `--content="$(cat file.md)"`
+is NOT the way around it -- a command substitution is a form agents are
+forbidden to compose, so that spelling is a dead end, not a fallback. The file
+lane is the one that carries a full plan.
 
 **Half 2 -- materialize one task row per plan task:**
 
