@@ -987,8 +987,12 @@ class TestCmdDoctorJson:
         #   gaia without warning) +
         # 1 source-parity (order 56 -- installed package == the source checkout
         #   it was built from; the first link of the freshness chain, which
-        #   went undiagnosed while a package built mid-edit ran for a day).
-        assert len(data["checks"]) == 29
+        #   went undiagnosed while a package built mid-edit ran for a day) +
+        # 1 symbol-anchors (order 54 -- skill/agent symbol references carry a
+        #   resolvable file::symbol anchor; a prose-paren reference names no
+        #   file, so a deleted symbol left four stale citations and only the
+        #   one anchored citation was caught).
+        assert len(data["checks"]) == 30
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:

@@ -1770,6 +1770,123 @@ def check_skill_cross_refs(project_root: Path) -> dict:
     return _result("Skill cross-refs", "pass", f"{checked_refs} skill references resolve")
 
 
+_PROSE_PAREN_SYMBOL_RE = r"`([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\(\)`"
+
+_SOURCE_MODULE_ROOTS = ("gaia", "hooks", "bin", "tools", "scripts")
+
+
+def _is_codebase_symbol(ref: str) -> bool:
+    """Decide whether a bare symbol reference names one of THIS repo's symbols.
+
+    Discriminates a claim about a codebase symbol from an ordinary mention of a
+    language builtin or a third-party API, which cannot be anchored to a Gaia
+    file and must not be demanded to. Two accepted shapes: a dotted chain whose
+    head is one of this repo's top-level packages, or a leaf carrying an
+    underscore -- a multi-word snake_case (or `_`-prefixed private) name is a
+    codebase-specific identifier, never an English word.
+
+    Deliberate recall gap: a single bare word (``register``, ``exec``, ``main``)
+    is ambiguous by construction and is NOT matched, so a genuine one-word
+    symbol reference goes unflagged. Widening to catch it would flag every
+    English word written with parentheses.
+    """
+    if "." in ref and ref.split(".", 1)[0] in _SOURCE_MODULE_ROOTS:
+        return True
+    leaf = ref.rsplit(".", 1)[-1]
+    return "_" in leaf
+
+
+def _strip_fenced_blocks(text: str) -> list[str]:
+    """Return the document's lines with fenced code-block bodies blanked.
+
+    Line-aligned so a reported line number matches the file. A fenced block is
+    code being shown, not a citation making a claim, so its contents are not
+    scanned.
+    """
+    lines: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            lines.append("")
+            continue
+        lines.append("" if fenced else line)
+    return lines
+
+
+@register_check("Symbol anchors", order=54)
+def check_symbol_anchors(project_root: Path) -> dict:
+    """Check skill/agent symbol references carry their ``file.py::symbol`` anchor.
+
+    An anchored reference is resolvable: a checker can open the file and confirm
+    the symbol is still there. The same reference written as prose parentheses --
+    ``_is_protected()`` -- names no file, so nothing can resolve it and nothing
+    invalidates it when the symbol is deleted. Measured: one deleted symbol left
+    four stale citations across skills/, and only the single anchored one was
+    caught; the other three were prose and survived the deletion untouched.
+
+    Matches only an EMPTY-paren backticked identifier. A call written with
+    arguments (``Path("/x").unlink()``, ``execSync("kubectl delete ...")``) is
+    illustrating usage rather than citing a symbol, and demanding an anchor
+    there would be wrong. ``_is_codebase_symbol`` then filters to references
+    that could be anchored at all.
+
+    Warning, not error: an un-anchored reference is authoring drift-blindness,
+    not a broken install -- nothing fails at dispatch time because of it.
+
+    Advisory (info) when neither dir is present -- an un-scanned workspace.
+    Vendored trees (``node_modules``) are skipped: third-party docs are not
+    Gaia components and their symbols anchor to nothing here.
+    """
+    import re  # noqa: PLC0415
+
+    roots = [
+        project_root / ".claude" / "skills",
+        project_root / ".claude" / "agents",
+    ]
+    if not any(root.is_dir() for root in roots):
+        return _result(
+            "Symbol anchors", "info", "no skills/ or agents/ dirs found",
+            "Run `gaia scan` or `gaia update`",
+        )
+
+    pattern = re.compile(_PROSE_PAREN_SYMBOL_RE)
+    unanchored: list[str] = []
+    scanned = 0
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for md in sorted(root.rglob("*.md")):
+            if "node_modules" in md.parts:
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            scanned += 1
+            rel = md.relative_to(project_root / ".claude")
+            for lineno, line in enumerate(_strip_fenced_blocks(text), 1):
+                for match in pattern.finditer(line):
+                    ref = match.group(1)
+                    if _is_codebase_symbol(ref):
+                        unanchored.append(f"{rel}:{lineno} `{ref}()`")
+
+    if unanchored:
+        shown = "; ".join(unanchored[:8])
+        more = f" (+{len(unanchored) - 8} more)" if len(unanchored) > 8 else ""
+        return _result(
+            "Symbol anchors", "warning",
+            f"{len(unanchored)} un-anchored symbol reference(s): {shown}{more}",
+            "Rewrite each as `path/to/file.py::symbol` so the reference "
+            "resolves and fails loudly when the symbol is deleted.",
+        )
+    return _result(
+        "Symbol anchors", "pass",
+        f"{scanned} component docs carry no un-anchored symbol references",
+    )
+
+
 @register_check("Identity", order=60)
 def check_identity(project_root: Path) -> dict:
     """Check orchestrator agent is configured."""
