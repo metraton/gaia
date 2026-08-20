@@ -59,6 +59,16 @@ SEALED_PAYLOAD = {
 
 REQUIRED_VISIBLE = ("operation", "scope", "impact", "risk", "rollback", "verification")
 
+PRODUCED_COMMANDS = COMMANDS
+PRODUCED_RATIONALE = "Publishes the branch and reconciles the cluster from it"
+PRODUCED_VERIFICATION = (
+    "git -C /home/jorge/ws/me/gaia log --oneline -1 origin/fix/consent-protocol"
+)
+PRODUCED_ROLLBACK = (
+    "git -C /home/jorge/ws/me/gaia push --force-with-lease "
+    "origin fix/consent-protocol@{1}:fix/consent-protocol"
+)
+
 
 @pytest.fixture()
 def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
@@ -104,14 +114,41 @@ def _expected_envelope(approval_id, call_id=CALL_ID):
     )
 
 
-def _drive_plugin(env, approval_id, call_id=CALL_ID):
+def _request_set(env, *, verification, rollback, commands=PRODUCED_COMMANDS):
+    """Seal a payload with the real plan-first producer: `gaia approvals request-set`."""
+    argv = [sys.executable, str(GAIA_CLI), "approvals", "request-set"]
+    for command in commands:
+        argv += ["--command", command]
+    argv += [
+        "--rationale", PRODUCED_RATIONALE,
+        "--verification", verification,
+        "--rollback", rollback,
+        "--agent-id", AGENT_ID,
+        "--session-id", SESSION_ID,
+        "--json",
+    ]
+    result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    return json.loads(result.stdout.strip().splitlines()[-1])["approval_id"]
+
+
+def _stored_payload(approval_id):
+    """Read back the payload the producer actually persisted, not one composed here."""
+    from gaia.approvals.store import get_by_id
+
+    row = get_by_id(approval_id)
+    assert row is not None, approval_id
+    return json.loads(row["payload_json"])
+
+
+def _drive_plugin(env, approval_id, call_id=CALL_ID, command=COMMANDS[0]):
     """Run the real plugin under bun and return what it delivered natively."""
     scenario = {
         "sessionID": SESSION_ID,
         "callID": call_id,
         "approvalID": approval_id,
         "tool": "bash",
-        "args": {"command": COMMANDS[0]},
+        "args": {"command": command},
     }
     result = subprocess.run(
         ["bun", str(DRIVER), json.dumps(scenario)],
@@ -127,7 +164,7 @@ def test_cli_presentation_seals_every_required_field_visibly(db_env, approval_id
     visible = "\n".join(emitted["visible_lines"])
 
     assert emitted["visible_text"] == visible
-    assert not consent_presentation.missing_visible_fields(visible, envelope)
+    assert not consent_presentation.missing_visible_fields(visible, SEALED_PAYLOAD)
     for name in REQUIRED_VISIBLE:
         assert getattr(envelope, name) in visible, name
     assert emitted["metadata"] == consent_presentation.native_metadata(envelope)
@@ -141,7 +178,7 @@ def test_delivered_permission_payload_carries_the_sealed_envelope(db_env, approv
     assert len(delivered["created"]) == 1, delivered
     payload = delivered["created"][0]
     envelope = _expected_envelope(approval_id)
-    expected = consent_presentation.native_presentation(envelope)
+    expected = consent_presentation.native_presentation(envelope, SEALED_PAYLOAD)
 
     assert payload["sessionID"] == SESSION_ID
     assert payload["action"] == "gaia-approval"
@@ -168,7 +205,7 @@ def test_delivered_visible_slot_alone_carries_every_field_in_order(db_env, appro
     visible = "\n".join(payload["resources"])
     envelope = _expected_envelope(approval_id)
 
-    assert not consent_presentation.missing_visible_fields(visible, envelope)
+    assert not consent_presentation.missing_visible_fields(visible, SEALED_PAYLOAD)
     positions = [visible.index(command) for command in COMMANDS]
     assert positions == sorted(positions)
     for name in REQUIRED_VISIBLE:
@@ -208,12 +245,12 @@ def test_a_surface_that_hides_a_sealed_field_is_named_not_shown(monkeypatch):
     complete = consent_presentation.render_native_text(envelope)
 
     assert consent_presentation.missing_visible_fields(
-        complete.replace(SEALED_PAYLOAD["verification"], ""), envelope
+        complete.replace(SEALED_PAYLOAD["verification"], ""), SEALED_PAYLOAD
     ) == ("verification",)
     reordered = "\n".join(reversed(complete.split("\n")))
     assert any(
         item.startswith("commands[") for item in
-        consent_presentation.missing_visible_fields(reordered, envelope)
+        consent_presentation.missing_visible_fields(reordered, SEALED_PAYLOAD)
     )
 
     # A renderer regression must fail closed rather than deliver a surface the
@@ -224,4 +261,73 @@ def test_a_surface_that_hides_a_sealed_field_is_named_not_shown(monkeypatch):
         lambda _envelope: complete.replace(SEALED_PAYLOAD["rollback_hint"], ""),
     )
     with pytest.raises(ValueError, match="would hide sealed fields"):
-        consent_presentation.native_presentation(envelope)
+        consent_presentation.native_presentation(envelope, SEALED_PAYLOAD)
+
+
+def test_a_surface_agreeing_with_its_envelope_but_not_the_seal_is_refused():
+    """The check reads the seal, so envelope-versus-payload divergence is visible.
+
+    A render is internally consistent with whatever envelope produced it by
+    construction; the failure mode that actually occurs is a derivation that
+    substitutes a fallback for a field a producer sealed. Comparing the render
+    against the envelope cannot see that, so the reference is the payload.
+    """
+    dropped = {key: value for key, value in SEALED_PAYLOAD.items() if key != "verification"}
+    envelope = consent_presentation.envelope_from_sealed_payload(
+        dropped,
+        approval_id="P-divergence",
+        binding=consent_events.binding_from_mapping(
+            {"agent_id": AGENT_ID, "session_id": SESSION_ID, "call_id": CALL_ID}
+        ),
+    )
+    surface = consent_presentation.render_native_text(envelope)
+
+    assert not consent_presentation.missing_visible_fields(surface, dropped)
+    assert consent_presentation.missing_visible_fields(surface, SEALED_PAYLOAD) == (
+        "verification",
+    )
+    with pytest.raises(ValueError, match="verification"):
+        consent_presentation.native_presentation(envelope, SEALED_PAYLOAD)
+
+
+def test_a_real_producer_seals_the_fields_the_delivered_surface_shows(db_env):
+    """The payload under test is the one `gaia approvals request-set` wrote.
+
+    Gate 895 asks that the delivered metadata equal the SEALED operation, command
+    bytes, scope, impact, risk, rollback and verification. A hand-authored
+    payload can satisfy that clause while no producer emits the shape, so here
+    the left-hand side is produced by the real plan-first CLI and read back out
+    of the database -- never written by this file.
+    """
+    approval_id = _request_set(
+        db_env, verification=PRODUCED_VERIFICATION, rollback=PRODUCED_ROLLBACK
+    )
+    stored = _stored_payload(approval_id)
+    assert stored["verification"] == PRODUCED_VERIFICATION
+    assert stored["rollback_hint"] == PRODUCED_ROLLBACK
+
+    emitted = _present(
+        db_env, approval_id, token="produced-token", call_id="call-produced"
+    )
+    visible = "\n".join(emitted["visible_lines"])
+    metadata = emitted["metadata"]
+
+    assert metadata["operation"] == stored["operation"]
+    assert metadata["commands"] == list(PRODUCED_COMMANDS)
+    assert metadata["scope"] == stored["scope"]
+    assert metadata["risk"] == stored["risk_level"] + " -- " + stored["rationale"]
+    assert metadata["rollback"] == stored["rollback_hint"]
+    assert metadata["verification"] == stored["verification"]
+    assert not consent_presentation.missing_visible_fields(visible, stored)
+
+    # No Gaia producer authors `impact`, so the surface states the absence
+    # instead of composing a consequence nobody assessed.
+    assert "impact" not in stored
+    assert metadata["impact"] == consent_presentation._IMPACT_ABSENT
+
+    delivered = _drive_plugin(
+        db_env, approval_id, call_id="call-produced", command=PRODUCED_COMMANDS[0]
+    )
+    payload = delivered["created"][0]
+    assert "\n".join(payload["resources"]) == emitted["visible_text"]
+    assert payload["metadata"]["gaiaConsent"] == metadata
