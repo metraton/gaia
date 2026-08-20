@@ -215,6 +215,15 @@ gaia task gate add <brief> <order> --type=<T> --evidence-shape="..." --workspace
   the rubric (`semantic`), or the review statement (`self_review`). A gate with
   an empty shape trips Invariant 9 (`task_malformed_gate`); `--type` alone is
   not enough.
+- **When a shape must name ANOTHER task, name it by `task_id` or by a stable
+  label -- never by dispatch order.** `order_num` is positional: inserting one
+  task renumbers every task after it, while the prose sealed inside the gate
+  does not move with them. A verifier reading a stale ordinal is routed to a
+  different task than the author meant, and passes or fails the wrong owner
+  without anything looking broken. This is measured, not hypothetical: gate 920's
+  shape says the condition "remains order 18's to establish", and resolved by
+  `task_id` the task that actually closes it is a different one. Write the
+  identity that survives an insertion.
 - **A task MAY carry more than one gate, of mixed types.** `task_gates` is
   one-to-many (R1-A made it a child table on purpose): when a task's outcome is
   proven on more than one axis -- say a deterministic `command` gate AND a
