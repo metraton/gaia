@@ -194,7 +194,7 @@ def test_the_forwarding_this_task_replaced_would_have_conferred_the_lane(drive):
 
     pre_change = dict(payload, role_context=asdict(event.role_context))
     assert classify_session_role(pre_change) is SessionRole.ORCHESTRATOR
-    assert event.role_context.is_verified_control_plane is True
+    assert event.role_context.claims_control_plane_shape is True
 
     assert classify_session_role(payload) is not SessionRole.ORCHESTRATOR
 

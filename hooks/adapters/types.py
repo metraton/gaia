@@ -119,7 +119,14 @@ class RoleCapabilityContext:
             raise ValueError("capabilities must not contain duplicates")
 
     @property
-    def is_verified_control_plane(self) -> bool:
+    def claims_control_plane_shape(self) -> bool:
+        """Whether the claim is shaped like a control-plane one, not whether it holds.
+
+        Every field read here was supplied by the caller, so this reports what
+        was claimed and can never be a verdict on it: provenance is resolved
+        against the issuing host's own record by the adapter that receives the
+        claim, and only that resolution confers the lane.
+        """
         return self.verified and self.role == "gaia-orchestrator" and bool(self.attestation)
 
 

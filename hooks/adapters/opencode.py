@@ -414,7 +414,7 @@ class OpenCodeAdapter(HookAdapter):
     def _is_attested_control_plane(cls, event: HookEvent) -> bool:
         """Whether this event carries a control-plane claim with provenance."""
         context = event.role_context
-        if context is None or not context.is_verified_control_plane:
+        if context is None or not context.claims_control_plane_shape:
             return False
         record = cls._resolved_attestation(event)
         return record is not None and record.depth == 0 and not record.granted_by

@@ -60,12 +60,12 @@ def test_request_rejects_changed_fingerprint() -> None:
         )
 
 
-def test_control_plane_requires_runtime_attestation_not_role_text_alone() -> None:
+def test_the_control_plane_shape_needs_more_than_the_role_text() -> None:
     context = RoleCapabilityContext(role="gaia-orchestrator")
-    assert not context.is_verified_control_plane
+    assert not context.claims_control_plane_shape
 
     verified = _request().role_context
-    assert verified.is_verified_control_plane
+    assert verified.claims_control_plane_shape
 
 
 def test_decision_is_normalized_and_correlated_to_the_same_binding() -> None:
