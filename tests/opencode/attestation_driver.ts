@@ -37,7 +37,6 @@ async function gaiaBridge(event: Record<string, unknown>) {
 const scenario = JSON.parse(process.argv[2])
 const plugin: any = await GaiaOpenCodePlugin({
   gaiaBridge,
-  gaiaHostRun: scenario.hostRun,
   client: {},
 })
 

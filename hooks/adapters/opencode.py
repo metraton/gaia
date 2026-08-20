@@ -387,18 +387,23 @@ class OpenCodeAdapter(HookAdapter):
         present a token some Gaia-side process minted and wrote down, and every
         field of the claim must equal that record. A claim the caller composed
         resolves to nothing however well formed it is.
+
+        The record is looked up in the host run this process belongs to, never
+        in one the event names. A claim carrying its own ledger namespace would
+        only ever be checked for agreement with itself -- the token would be
+        verified against a store the claimant chose -- so the namespace comes
+        from ``host_run_id`` and the event's own ``hostRun`` is not read at all.
         """
         # Imported inside the call, not at module scope: modules.security's
         # package init imports back through adapters, so a top-level import of
         # anything inside it fails every hook entry point on a circular import.
-        from modules.security.host_attestation import resolve
+        from modules.security.host_attestation import host_run_id, resolve
 
         context = event.role_context
         if context is None:
             return None
-        payload = event.payload
         return resolve(
-            host_run=payload.get("hostRun") or payload.get("host_run") or "",
+            host_run=host_run_id(),
             token=context.attestation,
             session_id=event.session_id,
             role=context.role,

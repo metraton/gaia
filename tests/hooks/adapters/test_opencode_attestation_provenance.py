@@ -28,12 +28,14 @@ from modules.security.host_attestation import (
     ATTESTATION_SCHEME,
     MAX_DELEGATION_DEPTH,
     AttestationDenied,
+    host_run_id,
     issue,
     ledger_path,
     resolve,
 )
 
 _DRIVER = _REPO / "tests" / "opencode" / "attestation_driver.ts"
+_BRIDGE = _REPO / "opencode" / "bridge.py"
 _ISSUER = "opencode-runtime"
 
 
@@ -42,6 +44,32 @@ def ledger(tmp_path, monkeypatch):
     """Point issuance and resolution at a ledger this test owns."""
     monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "ledger"))
     return tmp_path
+
+
+@pytest.fixture
+def drive(ledger, monkeypatch):
+    """Run the real plugin, then join the host run its bridge minted in.
+
+    Issuance happens in a bridge process the bun driver spawned; these
+    assertions resolve here, in the pytest process. Production runs both in
+    bridge children of one OpenCode host, so the namespace each derives from
+    its parent is the same one -- across this test's two unrelated parents it
+    would not be, for a reason production does not have. The namespace is read
+    back from the ledger the bridge chose to write, never named by this test,
+    so the negatives below still fail on what they tamper with rather than on a
+    namespace that never matched.
+    """
+
+    def run(scenario):
+        requests = _drive(scenario)
+        written = sorted((ledger / "ledger").glob("*.json"))
+        assert len(written) == 1, f"the bridge wrote no single ledger: {written}"
+        monkeypatch.setattr(
+            "modules.security.host_attestation.host_run_id", lambda: written[0].stem
+        )
+        return requests
+
+    return run
 
 
 def _drive(scenario):
@@ -69,10 +97,9 @@ def _policy_payload(emitted):
     return adapter.build_policy_payload(adapter.parse_event(json.dumps(emitted)))
 
 
-def _control_plane_turn(host_run="run-affirmative"):
-    return _drive(
+def _control_plane_turn(drive):
+    return drive(
         {
-            "hostRun": host_run,
             "steps": [
                 {"kind": "message", "sessionID": "ses-root", "agent": "gaia-orchestrator"},
                 {
@@ -87,9 +114,9 @@ def _control_plane_turn(host_run="run-affirmative"):
     )
 
 
-def test_a_host_issued_claim_confers_the_control_plane_lane():
+def test_a_host_issued_claim_confers_the_control_plane_lane(drive):
     """The affirmative claim, over the plugin's own emission end to end."""
-    requests = _control_plane_turn()
+    requests = _control_plane_turn(drive)
     emitted = _emitted(requests, "tool.execute.before", "ses-root")
 
     attestation = emitted["roleContext"]["attestation"]
@@ -110,10 +137,13 @@ def test_a_host_issued_claim_confers_the_control_plane_lane():
     ).output.get("action") != "deny"
 
 
-def test_the_issued_token_is_recorded_by_the_issuing_process():
+def test_the_issued_token_is_recorded_by_the_issuing_process(drive, ledger):
     """Provenance means host state: the claim exists in the issuer's ledger."""
-    emitted = _emitted(_control_plane_turn(), "tool.execute.before", "ses-root")
-    recorded = json.loads(ledger_path("run-affirmative").read_text())["records"]
+    emitted = _emitted(_control_plane_turn(drive), "tool.execute.before", "ses-root")
+    # Read from the file the issuing process chose to write, which is the whole
+    # point: the ledger is named by that process, so nothing here can name it.
+    written = sorted((ledger / "ledger").glob("*.json"))
+    recorded = json.loads(written[0].read_text())["records"]
 
     token = emitted["roleContext"]["attestation"]
     assert recorded[token]["session_id"] == "ses-root"
@@ -122,9 +152,9 @@ def test_the_issued_token_is_recorded_by_the_issuing_process():
     assert recorded[token]["granted_by"] is None
 
 
-def test_a_caller_minted_attestation_is_refused_the_lane():
+def test_a_caller_minted_attestation_is_refused_the_lane(drive):
     """The exact string the defect minted, on the shape the plugin emits."""
-    emitted = _emitted(_control_plane_turn(), "tool.execute.before", "ses-root")
+    emitted = _emitted(_control_plane_turn(drive), "tool.execute.before", "ses-root")
     forged = dict(
         emitted,
         roleContext=dict(emitted["roleContext"], attestation="ses-root:gaia-orchestrator"),
@@ -144,7 +174,7 @@ def test_a_caller_minted_attestation_is_refused_the_lane():
     assert "not attested" in response.output["reason"]
 
 
-def test_the_forwarding_this_task_replaced_would_have_conferred_the_lane():
+def test_the_forwarding_this_task_replaced_would_have_conferred_the_lane(drive):
     """The defect, held as a regression: the old body was ``asdict(context)``.
 
     ``git show HEAD:hooks/adapters/opencode.py`` carries that one-line
@@ -154,7 +184,7 @@ def test_the_forwarding_this_task_replaced_would_have_conferred_the_lane():
     """
     from dataclasses import asdict
 
-    emitted = _emitted(_control_plane_turn(), "tool.execute.before", "ses-root")
+    emitted = _emitted(_control_plane_turn(drive), "tool.execute.before", "ses-root")
     forged = dict(
         emitted,
         roleContext=dict(emitted["roleContext"], attestation="ses-root:gaia-orchestrator"),
@@ -177,8 +207,8 @@ def test_the_forwarding_this_task_replaced_would_have_conferred_the_lane():
     ],
     ids=["unknown-nonce", "issuer-not-the-recorded-one"],
 )
-def test_a_claim_that_does_not_resolve_against_host_state_is_refused(mutation):
-    emitted = _emitted(_control_plane_turn(), "tool.execute.before", "ses-root")
+def test_a_claim_that_does_not_resolve_against_host_state_is_refused(mutation, drive):
+    emitted = _emitted(_control_plane_turn(drive), "tool.execute.before", "ses-root")
     tampered = dict(emitted, roleContext=dict(emitted["roleContext"], **mutation))
 
     response = OpenCodeAdapter().adapt_pre_tool_use(
@@ -189,8 +219,8 @@ def test_a_claim_that_does_not_resolve_against_host_state_is_refused(mutation):
     assert classify_session_role(_policy_payload(tampered)) is not SessionRole.ORCHESTRATOR
 
 
-def test_a_claim_replayed_on_another_session_does_not_resolve():
-    emitted = _emitted(_control_plane_turn(), "tool.execute.before", "ses-root")
+def test_a_claim_replayed_on_another_session_does_not_resolve(drive):
+    emitted = _emitted(_control_plane_turn(drive), "tool.execute.before", "ses-root")
     replayed = dict(emitted, sessionID="ses-other")
 
     assert classify_session_role(_policy_payload(replayed)) is not SessionRole.ORCHESTRATOR
@@ -215,11 +245,10 @@ def test_an_attested_parent_cannot_mint_an_attested_control_plane_child():
         )
 
 
-def test_a_child_named_gaia_orchestrator_reaches_no_attested_lane():
+def test_a_child_named_gaia_orchestrator_reaches_no_attested_lane(drive):
     """The same refusal through the plugin's own dispatch route."""
-    requests = _drive(
+    requests = drive(
         {
-            "hostRun": "run-dispatch",
             "steps": [
                 {"kind": "message", "sessionID": "ses-root", "agent": "gaia-orchestrator"},
                 {
@@ -252,11 +281,10 @@ def test_a_child_named_gaia_orchestrator_reaches_no_attested_lane():
     assert classify_session_role(_policy_payload(child)) is not SessionRole.ORCHESTRATOR
 
 
-def test_a_second_session_named_by_the_host_takes_no_control_plane_claim():
+def test_a_second_session_named_by_the_host_takes_no_control_plane_claim(drive):
     """The message.updated feed route, which needs no dispatch at all."""
-    requests = _drive(
+    requests = drive(
         {
-            "hostRun": "run-message-route",
             "steps": [
                 {"kind": "message", "sessionID": "ses-root", "agent": "gaia-orchestrator"},
                 {"kind": "message", "sessionID": "ses-late", "agent": "gaia-orchestrator"},
@@ -357,11 +385,10 @@ def test_resolution_rejects_a_record_beyond_the_ceiling(monkeypatch):
     )
 
 
-def test_a_dispatched_child_carries_the_grant_that_created_it():
+def test_a_dispatched_child_carries_the_grant_that_created_it(drive):
     """Chain accountability: the forwarded claim names who granted it."""
-    requests = _drive(
+    requests = drive(
         {
-            "hostRun": "run-grant",
             "steps": [
                 {"kind": "message", "sessionID": "ses-root", "agent": "gaia-orchestrator"},
                 {
@@ -394,3 +421,87 @@ def test_a_dispatched_child_carries_the_grant_that_created_it():
     assert payload["role_context"]["granted_by"] == "ses-root"
     assert payload["role_context"]["delegation_depth"] == 1
     assert classify_session_role(payload) is not SessionRole.ORCHESTRATOR
+
+
+def test_the_bridge_mints_in_the_namespace_of_the_process_that_started_it(ledger):
+    """The issuing namespace traces to host state, not to the request.
+
+    The bridge is spawned here, so the process that started it is this test
+    process and the namespace it must derive is this process's own identity.
+    The request nominates a different one, and that name must reach nothing.
+    """
+    request = {
+        "event": "identity.attest",
+        "hostRun": "run-planted",
+        "sessionID": "ses-root",
+        "role": "gaia-orchestrator",
+        "issuer": _ISSUER,
+    }
+    result = subprocess.run(
+        [sys.executable, str(_BRIDGE)],
+        input=json.dumps(request),
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+        cwd=str(_REPO),
+    )
+    assert result.returncode == 0, result.stderr
+    response = json.loads(result.stdout)
+    assert response["action"] == "allow", response
+
+    stems = sorted(path.stem for path in (ledger / "ledger").glob("*.json"))
+
+    assert len(stems) == 1, stems
+    assert stems[0].startswith(f"host-{os.getpid()}-")
+    assert "run-planted" not in stems
+    recorded = json.loads(ledger_path(stems[0]).read_text())["records"]
+    assert recorded[response["attestation"]]["session_id"] == "ses-root"
+
+
+def test_a_claim_minted_in_another_host_run_does_not_resolve_in_this_one():
+    """A genuine claim from another run is still refused this run's lane.
+
+    The payload nominates exactly the namespace the token is bound in, which is
+    what the shipped resolution read: verifying a token against a ledger the
+    claimant names establishes that the pair agrees with itself, never where the
+    token came from. Resolution answers from this process's own host run, so the
+    nomination reaches nothing.
+    """
+    issued = issue(
+        host_run="run-elsewhere",
+        session_id="ses-root",
+        role="gaia-orchestrator",
+        issuer=_ISSUER,
+    )
+    presented = {
+        "event": "tool.execute.before",
+        "hostRun": "run-elsewhere",
+        "sessionID": "ses-root",
+        "callID": "call-1",
+        "tool": "bash",
+        "args": {"command": "gaia plan show brief"},
+        "agent": "gaia-orchestrator",
+        "roleContext": {
+            "role": "gaia-orchestrator",
+            "capabilities": [],
+            "issuer": _ISSUER,
+            "attestation": issued.token,
+            "verified": True,
+        },
+    }
+    claimed = dict(
+        token=issued.token,
+        session_id="ses-root",
+        role="gaia-orchestrator",
+        issuer=_ISSUER,
+    )
+
+    assert resolve(host_run="run-elsewhere", **claimed) is not None
+    assert resolve(host_run=host_run_id(), **claimed) is None
+
+    response = OpenCodeAdapter().adapt_pre_tool_use(
+        OpenCodeAdapter().parse_event(json.dumps(presented))
+    )
+
+    assert response.output["action"] == "deny"
+    assert classify_session_role(_policy_payload(presented)) is not SessionRole.ORCHESTRATOR

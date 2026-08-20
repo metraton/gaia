@@ -160,12 +160,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   const pending = new Map<string, PendingApproval>()
   const agentBySession = new Map<string, string>()
   const agentByCall = new Map<string, string>()
-  // Both replace a real dependency with a test double only: send is the Gaia
-  // policy bridge, and hostRun scopes its ledger to this OpenCode process so
-  // one run's control-plane binding cannot be re-let by the next.
+  // Replaces a real dependency with a test double only: send is the Gaia
+  // policy bridge. The run its attestation ledger is scoped to is derived by
+  // the Gaia-side process from the process that spawned it, so this edge does
+  // not name that scope -- a field it sent would be a scope its own caller
+  // could name, and a claim checked against a ledger the claimant chooses
+  // carries no provenance.
   const send: (event: Record<string, unknown>) => Promise<BridgeResponse> =
     typeof input?.gaiaBridge === "function" ? input.gaiaBridge : bridge
-  const hostRun = String(input?.gaiaHostRun ?? process.pid)
   // A claim the host process was granted, never one this edge composed: the
   // plugin receives caller-supplied names and cannot be the issuer of the
   // authority they would otherwise assert.
@@ -210,7 +212,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
     const response = await send({
       event: "identity.attest",
-      hostRun,
       sessionID,
       role,
       issuer: ROLE_ISSUER,
@@ -298,7 +299,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       const response = await send({
         event: "tool.execute.before",
-        hostRun,
         sessionID: call.sessionID,
         callID: call.callID,
         agentID: dispatchBySession.get(call.sessionID),
@@ -329,7 +329,6 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       await send({
         event: "tool.execute.after",
-        hostRun,
         sessionID: call.sessionID,
         callID: call.callID,
         agentID: dispatchBySession.get(call.sessionID),

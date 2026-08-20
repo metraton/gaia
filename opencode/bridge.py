@@ -33,12 +33,21 @@ def _attest(raw: dict[str, object]) -> dict[str, object]:
     The plugin asks for a claim and never composes one: the token is a nonce
     this process generates and records, so what the plugin later presents is
     resolvable against host state rather than derived from a tool argument.
+
+    The ledger the claim is written to is named by ``host_run_id``, which reads
+    the process that started this one. Nothing in the request selects it: a
+    caller that invokes this bridge itself mints under its own launcher and
+    cannot reach the namespace the legitimate host run resolves against.
     """
-    from modules.security.host_attestation import AttestationDenied, issue
+    from modules.security.host_attestation import (
+        AttestationDenied,
+        host_run_id,
+        issue,
+    )
 
     try:
         issued = issue(
-            host_run=str(raw.get("hostRun") or raw.get("host_run") or ""),
+            host_run=host_run_id(),
             session_id=str(raw.get("sessionID") or raw.get("session_id") or ""),
             role=str(raw.get("role") or ""),
             issuer=str(raw.get("issuer") or ""),
