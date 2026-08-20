@@ -21,7 +21,10 @@ satisfied by weakening the match it exists to protect.
 Every payload under assertion is built by calling the real production producer,
 ``bash_validator._build_sealed_payload``, with real classifier inputs. A dict
 literal standing in for a payload would assert over a shape production never
-emits.
+emits -- and so would a real call on an unreachable input, which is why the
+covered verdicts run the command text through ``detect_mutative_command`` and
+feed the classifier's own verb and category to the producer, exactly as every
+production call site does.
 """
 
 import sys
@@ -35,6 +38,10 @@ REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from modules.security.mutative_verbs import (  # noqa: E402
+    CATEGORY_MUTATIVE,
+    detect_mutative_command,
+)
 from modules.tools.bash_validator import (  # noqa: E402
     _authored_statements,
     _build_sealed_payload,
@@ -88,30 +95,48 @@ def _surface(payload: dict) -> str:
 # ---------------------------------------------------------------------------
 # Authored content: three production-reachable verdicts, one of them a
 # destructive VERB carried under MUTATIVE -- the only category the classifier
-# emits for it. Statement selection consults the verb table first and returns
-# on a hit, so delete selects its own authored statements and the category it
-# travels under is never read; pairing it with a category production cannot
-# emit would certify a branch no interception reaches.
+# emits for it. The verdict is not written by this file: every production call
+# site derives verb and category from the intercepted command text by calling
+# detect_mutative_command, so the test hands the classifier real command text
+# and feeds the classifier's own verb and category into the producer. A verb
+# the test chose could be paired with command text no interception would
+# classify that way, which seals an operation string over an exact_content that
+# contradicts it -- a shape production cannot emit.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize(
-    "verb,category",
-    [
-        ("push", "MUTATIVE"),
-        ("apply", "MUTATIVE"),
-        ("delete", "MUTATIVE"),
-    ],
-)
-def test_covered_verdict_seals_all_three_fields(verb, category):
+#: (command text, the verb the classifier derives from it, the resolved scope).
+#: The verb column is the assertion that the pairing is derived rather than
+#: declared; the scope column is the payload field the same text determines.
+COVERED_COMMANDS = [
+    ("git push origin main", "push", "git"),
+    ("kubectl apply -f deployment.yaml", "apply", "kubectl"),
+    ("kubectl delete pod probe-pod", "delete", "kubectl"),
+]
+
+
+@pytest.mark.parametrize("command,expected_verb,expected_scope", COVERED_COMMANDS)
+def test_covered_verdict_seals_all_three_fields(command, expected_verb, expected_scope):
+    verdict = detect_mutative_command(command)
+    assert verdict.is_mutative, f"{command!r} is not intercepted at all"
+    assert verdict.verb == expected_verb
+    assert verdict.category == CATEGORY_MUTATIVE
+
     payload = _build_sealed_payload(
-        command=SINGLE_COMMAND,
-        verb=verb,
-        category=category,
+        command=command,
+        verb=verdict.verb,
+        category=verdict.category,
         agent_type="developer",
     )
+    assert payload["exact_content"] == command
+    assert payload["scope"] == expected_scope
+    assert payload["operation"] == (
+        f"{CATEGORY_MUTATIVE} command intercepted: {expected_verb}"
+    )
+    assert payload["risk_level"] == "medium"
+
     for field in AUTHORED_FIELDS:
         value = sealed_field(payload, field)
-        assert value.strip(), f"{field} is empty for verdict {verb}/{category}"
+        assert value.strip(), f"{field} is empty for verdict {command!r}"
         assert value != _absence_text(field), (
             f"{field} resolved to the declared-absence text for a covered verdict"
         )
