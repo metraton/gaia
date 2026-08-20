@@ -50,6 +50,18 @@ _OPERATION_ABSENT = "Execute a T3 operation"
 _SCOPE_ABSENT = "unscoped"
 _RISK_ABSENT = "unknown"
 
+#: The binding for a surface RECONSTRUCTED from a sealed payload, which has no
+#: host call to bind to. :class:`ConsentBinding` rejects an empty identifier, so
+#: the choice is to name the absence or to invent a session -- and an invented
+#: session would be a claim about a consent attempt that never happened, the one
+#: thing this module exists to prevent. The correlation minted from it therefore
+#: differs from the correlation of the host-bound presentation of the same
+#: payload, which is correct: a correlation identifies one consent attempt, not
+#: the payload.
+UNBOUND_PRESENTATION = ConsentBinding(
+    agent_id="unattributed", session_id="unbound", call_id="unbound"
+)
+
 #: Every field the visible surface must carry, in render order: its envelope
 #: name, the label it is shown under, the keys a sealed payload may spell it
 #: with, and the text shown when the payload declares none of them. One table
@@ -69,16 +81,33 @@ _LABEL_WIDTH = max(len(label) for _, label, _, _ in VISIBLE_FIELDS) + 2
 
 
 def payload_commands(payload: Mapping[str, Any]) -> tuple[str, ...]:
-    """Read the exact commands a sealed payload covers, in their sealed order."""
+    """Read the exact commands a sealed payload covers, in their sealed order.
+
+    The single command reader for every host. A ``command_set`` of more than one
+    item is authoritative, because ``exact_content`` holds only the first of them
+    and a surface built from that field asks for consent to one command while the
+    grant activates for N.
+    """
+    raw_set = payload.get("command_set")
+    if isinstance(raw_set, (list, tuple)):
+        from_set = tuple(
+            item["command"]
+            for item in raw_set
+            if isinstance(item, Mapping) and item.get("command")
+        )
+        if len(from_set) > 1:
+            return from_set
     listed = payload.get("commands")
     if isinstance(listed, (list, tuple)):
         commands = tuple(item for item in listed if isinstance(item, str) and item)
-        if commands:
+        if len(commands) > 1:
             return commands
+    else:
+        commands = ()
     single = payload.get("exact_content")
     if isinstance(single, str) and single:
         return (single,)
-    return ()
+    return commands
 
 
 def sealed_field(payload: Mapping[str, Any], name: str) -> str:
@@ -116,10 +145,12 @@ def envelope_from_sealed_payload(
 ) -> ConsentRequestEnvelope:
     """Seal one pending approval into the versioned neutral request envelope.
 
-    ``verification`` and ``rollback`` are supplied by the plan-first producer
-    (``gaia approvals request-set``); ``impact`` has no key any Gaia producer
-    writes today. Each is filled from the payload when its producer declares it
-    and otherwise states that nothing was declared -- see :func:`sealed_field`.
+    ``impact``, ``rollback`` and ``verification`` are authored at seal time: by
+    the plan-first producer (``gaia approvals request-set``), and by the
+    intercept-time producer for the verbs its table covers -- which seals none of
+    the three for every other verdict. Each is filled from the payload when its
+    producer declares it and otherwise states that nothing was declared -- see
+    :func:`sealed_field`.
     """
     commands = payload_commands(payload)
     if not commands:
