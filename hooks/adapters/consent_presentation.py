@@ -11,7 +11,11 @@ The visible surface is not a summary: every field the envelope seals appears in
 it verbatim, commands in order and byte-exact with their fingerprints, because a
 field present only in structured metadata is a field the consenting user never
 saw. :func:`missing_visible_fields` is the executable form of that rule and
-:func:`native_presentation` refuses to emit a surface that fails it.
+:func:`native_presentation` refuses to emit a surface that fails it. That check
+reads the SEALED PAYLOAD, never the envelope the render came from: a check whose
+reference is the same envelope can only prove this module agrees with itself,
+and the divergence worth catching is a render carrying something other than
+what a producer sealed.
 
 No dependency on any Gaia module outside this package -- same rule as
 ``types.py``: a module-level import reaching ``modules.security`` from here
@@ -27,23 +31,13 @@ from .types import (
     ConsentBinding,
     ConsentRequestEnvelope,
     RoleCapabilityContext,
+    _command_fingerprint,
 )
 
-#: The envelope fields whose value must appear verbatim in the visible surface,
-#: paired with the label the surface shows them under. ``commands`` is absent
-#: because it is a sequence checked for order as well as presence.
-VISIBLE_SCALAR_FIELDS = (
-    ("operation", "OPERATION"),
-    ("scope", "SCOPE"),
-    ("impact", "IMPACT"),
-    ("risk", "RISK"),
-    ("rollback", "ROLLBACK"),
-    ("verification", "VERIFICATION"),
+_ROLLBACK_ABSENT = (
+    "No rollback was declared with this request; reversibility is unknown -- do "
+    "not assume the commands below can be undone."
 )
-
-_LABEL_WIDTH = max(len(label) for _, label in VISIBLE_SCALAR_FIELDS) + 2
-
-_ROLLBACK_ABSENT = "NOT REVERSIBLE"
 _IMPACT_ABSENT = (
     "No impact statement was declared with this request; treat every command "
     "below as changing state outside this session."
@@ -52,6 +46,26 @@ _VERIFICATION_ABSENT = (
     "No verification step was declared with this request; confirm the resulting "
     "state yourself before granting again."
 )
+_OPERATION_ABSENT = "Execute a T3 operation"
+_SCOPE_ABSENT = "unscoped"
+_RISK_ABSENT = "unknown"
+
+#: Every field the visible surface must carry, in render order: its envelope
+#: name, the label it is shown under, the keys a sealed payload may spell it
+#: with, and the text shown when the payload declares none of them. One table
+#: serves the derivation, the render, and the tripwire, so what a producer
+#: sealed and what the check looks for cannot drift apart. ``commands`` is
+#: absent because it is a sequence checked for order as well as presence.
+VISIBLE_FIELDS = (
+    ("operation", "OPERATION", ("operation",), _OPERATION_ABSENT),
+    ("scope", "SCOPE", ("scope",), _SCOPE_ABSENT),
+    ("impact", "IMPACT", ("impact",), _IMPACT_ABSENT),
+    ("risk", "RISK", ("risk_level", "risk"), _RISK_ABSENT),
+    ("rollback", "ROLLBACK", ("rollback_hint", "rollback"), _ROLLBACK_ABSENT),
+    ("verification", "VERIFICATION", ("verification",), _VERIFICATION_ABSENT),
+)
+
+_LABEL_WIDTH = max(len(label) for _, label, _, _ in VISIBLE_FIELDS) + 2
 
 
 def payload_commands(payload: Mapping[str, Any]) -> tuple[str, ...]:
@@ -67,6 +81,32 @@ def payload_commands(payload: Mapping[str, Any]) -> tuple[str, ...]:
     return ()
 
 
+def sealed_field(payload: Mapping[str, Any], name: str) -> str:
+    """Read what the visible surface must carry for one field of a sealed payload.
+
+    A field no producer declared resolves to the text stating that, so an absent
+    field is shown as absent: a user reading "none was declared" is informed,
+    whereas a plausible sentence composed here would be this module asserting a
+    consequence nobody assessed.
+    """
+    for field, _label, keys, absent in VISIBLE_FIELDS:
+        if field != name:
+            continue
+        value = absent
+        for key in keys:
+            declared = str(payload.get(key) or "").strip()
+            if declared:
+                value = declared
+                break
+        if field == "risk":
+            # A bare level shown alone reads as a verdict with no grounds, so
+            # the rationale that produced it travels in the same line.
+            rationale = str(payload.get("rationale") or "").strip()
+            return f"{value} -- {rationale}" if rationale else value
+        return value
+    raise KeyError(f"{name} is not a visible consent field")
+
+
 def envelope_from_sealed_payload(
     payload: Mapping[str, Any],
     *,
@@ -76,42 +116,32 @@ def envelope_from_sealed_payload(
 ) -> ConsentRequestEnvelope:
     """Seal one pending approval into the versioned neutral request envelope.
 
-    ``impact`` and ``verification`` have no key in the sealed approval payload
-    any Gaia surface writes today, and the envelope requires both. They are
-    filled from the payload when a producer starts supplying them and otherwise
-    state that nothing was declared -- a user reading "none was declared" is
-    informed, whereas a plausible sentence composed here would be this module
-    asserting a consequence nobody assessed.
+    ``verification`` and ``rollback`` are supplied by the plan-first producer
+    (``gaia approvals request-set``); ``impact`` has no key any Gaia producer
+    writes today. Each is filled from the payload when its producer declares it
+    and otherwise states that nothing was declared -- see :func:`sealed_field`.
     """
     commands = payload_commands(payload)
     if not commands:
         raise ValueError(f"approval {approval_id} seals no exact command to present")
     return ConsentRequestEnvelope(
         correlation_id=mint_correlation_id(approval_id, binding),
-        operation=str(payload.get("operation") or "").strip() or "Execute a T3 operation",
+        operation=sealed_field(payload, "operation"),
         commands=commands,
-        scope=str(payload.get("scope") or "").strip() or "unscoped",
-        impact=str(payload.get("impact") or "").strip() or _IMPACT_ABSENT,
-        risk=_render_risk(payload),
-        rollback=str(payload.get("rollback_hint") or payload.get("rollback") or "").strip()
-        or _ROLLBACK_ABSENT,
-        verification=str(payload.get("verification") or "").strip() or _VERIFICATION_ABSENT,
+        scope=sealed_field(payload, "scope"),
+        impact=sealed_field(payload, "impact"),
+        risk=sealed_field(payload, "risk"),
+        rollback=sealed_field(payload, "rollback"),
+        verification=sealed_field(payload, "verification"),
         binding=binding,
         role_context=RoleCapabilityContext(role=role or binding.agent_id or "unattributed"),
         approval_id=approval_id,
     )
 
 
-def _render_risk(payload: Mapping[str, Any]) -> str:
-    """Fold the rationale into the risk line so a bare level is never shown alone."""
-    level = str(payload.get("risk_level") or payload.get("risk") or "").strip() or "unknown"
-    rationale = str(payload.get("rationale") or "").strip()
-    return f"{level} -- {rationale}" if rationale else level
-
-
 def render_native_text(envelope: ConsentRequestEnvelope) -> str:
     """Render the user-visible consent surface for one sealed envelope."""
-    values = {name: getattr(envelope, name) for name, _ in VISIBLE_SCALAR_FIELDS}
+    values = {name: getattr(envelope, name) for name, _, _, _ in VISIBLE_FIELDS}
     lines = [
         f"GAIA T3 APPROVAL REQUEST  {envelope.approval_id or envelope.correlation_id}",
         _labelled("OPERATION", values["operation"]),
@@ -124,7 +154,7 @@ def render_native_text(envelope: ConsentRequestEnvelope) -> str:
         lines.append(f"      sha256 {fingerprint}")
     lines.extend(
         _labelled(label, values[name])
-        for name, label in VISIBLE_SCALAR_FIELDS
+        for name, label, _, _ in VISIBLE_FIELDS
         if name != "operation"
     )
     lines.append(
@@ -165,9 +195,13 @@ def native_metadata(envelope: ConsentRequestEnvelope) -> dict[str, Any]:
 
 def missing_visible_fields(
     visible_text: str,
-    envelope: ConsentRequestEnvelope,
+    sealed_payload: Mapping[str, Any],
 ) -> tuple[str, ...]:
     """Name every sealed field the visible text omits, alters, or reorders.
+
+    The reference is the sealed payload -- what a producer stored and the
+    approvals chain fingerprints -- so a surface that agrees with a derived
+    envelope while carrying something else than what was sealed is still named.
 
     A command is missing when its exact bytes are absent, and out of order when
     it appears before the command sealed ahead of it: consent to an ordered set
@@ -175,11 +209,12 @@ def missing_visible_fields(
     """
     missing = [
         name
-        for name, _ in VISIBLE_SCALAR_FIELDS
-        if getattr(envelope, name) not in visible_text
+        for name, _label, _keys, _absent in VISIBLE_FIELDS
+        if sealed_field(sealed_payload, name) not in visible_text
     ]
+    commands = payload_commands(sealed_payload)
     cursor = -1
-    for index, command in enumerate(envelope.commands, start=1):
+    for index, command in enumerate(commands, start=1):
         at = visible_text.find(command, cursor + 1)
         if at < 0:
             missing.append(f"commands[{index}]")
@@ -189,20 +224,25 @@ def missing_visible_fields(
         cursor = at
     missing.extend(
         f"fingerprints[{index}]"
-        for index, fingerprint in enumerate(envelope.fingerprints, start=1)
-        if fingerprint not in visible_text
+        for index, command in enumerate(commands, start=1)
+        if _command_fingerprint(command) not in visible_text
     )
     return tuple(missing)
 
 
-def native_presentation(envelope: ConsentRequestEnvelope) -> dict[str, Any]:
+def native_presentation(
+    envelope: ConsentRequestEnvelope,
+    sealed_payload: Mapping[str, Any],
+) -> dict[str, Any]:
     """Produce the complete native payload: visible lines plus their metadata.
 
-    Raises when the rendered surface would hide a sealed field, so an
-    incomplete consent surface cannot reach a user through any host.
+    Raises when the rendered surface would hide a field the sealed payload
+    declared, so an incomplete consent surface cannot reach a user through any
+    host -- and so a render that lost a sealed value on its way through the
+    envelope is refused rather than delivered.
     """
     visible_text = render_native_text(envelope)
-    incomplete = missing_visible_fields(visible_text, envelope)
+    incomplete = missing_visible_fields(visible_text, sealed_payload)
     if incomplete:
         raise ValueError(
             "consent surface would hide sealed fields: " + ", ".join(incomplete)

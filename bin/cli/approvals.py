@@ -1403,7 +1403,17 @@ def cmd_approve(args) -> int:
 
 
 def cmd_request_set(args) -> int:
-    """Validate and persist a plan-first COMMAND_SET approval request."""
+    """Validate and persist a plan-first COMMAND_SET approval request.
+
+    ``--verification`` and ``--rollback`` are sealed into the payload rather
+    than left for the consent surface to fill in: the requesting agent already
+    owes both on the ``approval_request`` block it will emit (verification
+    blocking, rollback advisory -- see
+    ``modules.agents.contract_validator._APPROVAL_REQUIRED_FIELDS``), so the
+    value the user is shown is the one its author wrote and not a sentence
+    composed downstream. Omitted, the surface states the field was never
+    declared; it never invents one.
+    """
     try:
         from gaia.approvals.command_set import request_fingerprint, validate_request_set
         store = _import_approval_store()
@@ -1418,7 +1428,8 @@ def cmd_request_set(args) -> int:
             "request_fingerprint": fingerprint,
             "scope": "COMMAND_SET",
             "risk_level": "high",
-            "rollback_hint": None,
+            "rollback_hint": (getattr(args, "rollback", None) or "").strip() or None,
+            "verification": (getattr(args, "verification", None) or "").strip() or None,
             "rationale": args.rationale or "Plan-first ordered execution",
         }
         approval_id = store.insert_requested(
@@ -1500,12 +1511,13 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
                 "call_id": call_id,
             }
         )
+        sealed_payload = json.loads(approval.get("payload_json") or "{}")
         envelope = presentation.envelope_from_sealed_payload(
-            json.loads(approval.get("payload_json") or "{}"),
+            sealed_payload,
             approval_id=approval_id,
             binding=binding,
         )
-        return presentation.native_presentation(envelope)
+        return presentation.native_presentation(envelope, sealed_payload)
     except Exception as exc:
         return {"presentation_error": str(exc)}
 
@@ -1943,6 +1955,14 @@ def register(subparsers) -> None:
     )
     p_request_set.add_argument("--command", action="append", required=True)
     p_request_set.add_argument("--rationale")
+    p_request_set.add_argument(
+        "--verification",
+        help="How the resulting state will be confirmed; sealed and shown verbatim",
+    )
+    p_request_set.add_argument(
+        "--rollback",
+        help="How the set is undone; sealed and shown verbatim",
+    )
     p_request_set.add_argument("--agent-id")
     p_request_set.add_argument("--session-id")
     p_request_set.add_argument("--json", action="store_true")
