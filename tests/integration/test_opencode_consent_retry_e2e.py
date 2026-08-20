@@ -328,6 +328,10 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
         approval_id, session_id=SESSION_ID, tool_use_id=LATER_CALL_ID,
         success=True, db_path=db_path,
     ) is False
+    # The refusal mutated nothing, observed rather than inferred from the
+    # settlement that succeeds below: no freeze, no advanced index, and the
+    # reservation still belongs to the call that took it.
+    assert _grant(db_path, approval_id) == reserved
     assert writer.settle_plan_command(
         approval_id, session_id=SESSION_ID, tool_use_id=CALL_ID,
         success=True, db_path=db_path,

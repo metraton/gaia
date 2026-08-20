@@ -355,3 +355,45 @@ def test_an_outstanding_reservation_refuses_a_second_attempt_on_the_same_grant(i
     assert writer.reserve_plan_command(
         first, session_id="s", tool_use_id="call-2", db_path=isolated_db,
     ) == {"approval_id": "P-plan", "index": 0}
+
+
+def test_a_settlement_by_a_different_pair_returns_false_and_mutates_nothing(isolated_db):
+    """The second half of settlement being call-scoped: the false return is inert.
+
+    A later successful settlement only IMPLIES the refused one changed nothing.
+    This observes it directly -- the whole row before and after -- so a refusal
+    that froze the grant or advanced next_index on its way to returning false
+    could not hide behind the success that follows it.
+    """
+    first, _second = _approved_set(isolated_db)
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 0}
+    reserved = _grant_row(isolated_db)
+
+    wrong_pairs = (("s", "call-2"), ("other", "call-1"), ("other", "call-2"))
+    for session_id, tool_use_id in wrong_pairs:
+        assert writer.settle_plan_command(
+            "P-plan", session_id=session_id, tool_use_id=tool_use_id,
+            success=True, db_path=isolated_db,
+        ) is False
+        assert writer.settle_plan_command(
+            "P-plan", session_id=session_id, tool_use_id=tool_use_id,
+            success=False, failure_reason="exit 7", db_path=isolated_db,
+        ) is False
+
+    assert _grant_row(isolated_db) == reserved
+    # The two properties the gate names, stated by name rather than left to the
+    # row comparison above.
+    assert reserved["status"] == "PENDING"
+    assert reserved["failed_index"] is None
+    assert reserved["next_index"] == 0
+    assert json.loads(reserved["consumed_indexes_json"]) == []
+
+    # And the reservation was still usable, so its inertness was not the grant
+    # having become unsettleable by anyone.
+    assert writer.settle_plan_command(
+        "P-plan", session_id="s", tool_use_id="call-1", success=True,
+        db_path=isolated_db,
+    ) is True
+    assert _grant_row(isolated_db)["next_index"] == 1
