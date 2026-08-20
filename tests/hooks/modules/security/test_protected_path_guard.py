@@ -240,7 +240,7 @@ class TestReadsAndUnrelatedAllowed:
 
     @pytest.mark.parametrize("cmd", [
         "git mv src/a.py src/b.py",
-        "mv payload.py gaia/hooks/pre_tool_use.py",
+        "mv payload.py src/hooks/pre_tool_use.py",
         "cp a.txt b.txt",
         "git mv x .claude-backup/hooks/y.py",
         "git commit -m 'update .claude/hooks docs'",
@@ -277,7 +277,9 @@ class TestIsProtectedClaudePath:
         (".claude/hooks/README.md", False),      # doc exempt
         (".claude/agents/gaia-system.md", False),  # not hooks, not settings
         (".claude-backup/hooks/x.py", False),    # exact component match only
-        ("gaia/hooks/pre_tool_use.py", False),   # source tree, not .claude
+        # The source checkout is protected too now: one predicate, both trees.
+        (str(Path(__file__).resolve().parents[4] / "hooks" / "pre_tool_use.py"), True),
+        ("src/hooks/pre_tool_use.py", False),     # a hooks dir in no Gaia root
         ("-f", False),                           # flag token
         ("", False),
     ])
