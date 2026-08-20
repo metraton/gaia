@@ -26,8 +26,31 @@ from modules.orchestrator.delegate_mode import (
 )
 from modules.security.gaia_cli_only_guard import check as gaia_cli_check
 from modules.security.gaia_cli_only_guard import is_orchestrator_role
+from modules.security.host_attestation import issue
+
+_HOST_RUN = "identity-binding-run"
 
 
+@pytest.fixture(autouse=True)
+def _ledger(tmp_path, monkeypatch):
+    """Keep issuance and resolution inside a ledger this module owns."""
+    monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "ledger"))
+
+
+@pytest.fixture
+def attested_orchestrator():
+    """The control-plane claim as the host issues it: a token, not a string."""
+    issued = issue(
+        host_run=_HOST_RUN,
+        session_id="ses-1",
+        role="gaia-orchestrator",
+        issuer="opencode-runtime",
+    )
+    return dict(ATTESTED_ORCHESTRATOR, attestation=issued.token)
+
+
+# Well formed and caller-minted: the interpolation the plugin used to perform.
+# It resolves against no ledger, so every use below is a forgery case.
 ATTESTED_ORCHESTRATOR = {
     "role": "gaia-orchestrator",
     "capabilities": ["plan.manage", "approvals.present"],
@@ -64,6 +87,7 @@ ATTESTED_DEVELOPER = {
 def _event(**overrides):
     raw = {
         "event": "tool.execute.before",
+        "hostRun": _HOST_RUN,
         "sessionID": "ses-1",
         "callID": "call-1",
         "tool": "bash",
@@ -78,11 +102,13 @@ def _policy_payload(**overrides):
     return adapter.build_policy_payload(_event(**overrides))
 
 
-def test_attested_context_reaches_the_runtime_classifier_as_a_mapping():
-    payload = _policy_payload(roleContext=ATTESTED_ORCHESTRATOR)
+def test_attested_context_reaches_the_runtime_classifier_as_a_mapping(
+    attested_orchestrator,
+):
+    payload = _policy_payload(roleContext=attested_orchestrator)
 
     assert isinstance(payload["role_context"], dict)
-    assert payload["role_context"]["attestation"] == "ses-1:gaia-orchestrator"
+    assert payload["role_context"]["attestation"] == attested_orchestrator["attestation"]
     assert tuple(payload["role_context"]["capabilities"]) == (
         "plan.manage",
         "approvals.present",
@@ -90,8 +116,10 @@ def test_attested_context_reaches_the_runtime_classifier_as_a_mapping():
     assert classify_session_role(payload) is SessionRole.ORCHESTRATOR
 
 
-def test_control_plane_role_depends_on_attestation_and_not_on_a_name():
-    payload = _policy_payload(roleContext=ATTESTED_ORCHESTRATOR)
+def test_control_plane_role_depends_on_attestation_and_not_on_a_name(
+    attested_orchestrator,
+):
+    payload = _policy_payload(roleContext=attested_orchestrator)
     tampered = dict(payload)
     tampered["role_context"] = dict(payload["role_context"], verified=False)
     tampered["agent_type"] = "developer"
@@ -110,8 +138,10 @@ def test_a_call_carrying_no_claim_is_never_the_control_plane():
     assert classify_session_role(payload) is not SessionRole.ORCHESTRATOR
 
 
-def test_the_orchestrator_only_guard_engages_only_for_the_attested_lane():
-    orchestrator = _policy_payload(roleContext=ATTESTED_ORCHESTRATOR)
+def test_the_orchestrator_only_guard_engages_only_for_the_attested_lane(
+    attested_orchestrator,
+):
+    orchestrator = _policy_payload(roleContext=attested_orchestrator)
     specialist = _policy_payload(roleContext=ATTESTED_DEVELOPER)
     probe = "rm -rf /tmp/gaia-identity-probe"
 
@@ -184,12 +214,14 @@ def test_ordinary_opencode_agents_cannot_enter_the_control_plane_lane(overrides)
     assert response.exit_code == 2
 
 
-def test_the_attested_control_plane_is_not_denied_for_its_identity():
+def test_the_attested_control_plane_is_not_denied_for_its_identity(
+    attested_orchestrator,
+):
     response = OpenCodeAdapter().adapt_pre_tool_use(
         _event(
             tool="task",
             args={"subagent_type": "developer", "prompt": "go"},
-            roleContext=ATTESTED_ORCHESTRATOR,
+            roleContext=attested_orchestrator,
         )
     )
 
@@ -248,6 +280,7 @@ _PLUGIN_SOURCE = (
 # undefined a dispatch-map miss returns.
 PLUGIN_CONTROL_PLANE_EVENT = {
     "event": "tool.execute.before",
+    "hostRun": _HOST_RUN,
     "sessionID": "ses-1",
     "callID": "call-1",
     "agent": "gaia-orchestrator",
@@ -278,11 +311,14 @@ def _bridge_call_fields(event_name):
     return fields
 
 
-def test_the_event_plugin_ts_emits_reaches_the_attested_control_plane_lane():
+def test_the_event_plugin_ts_emits_reaches_the_attested_control_plane_lane(
+    attested_orchestrator,
+):
     """Clause 2 over the host's own shape, read from plugin.ts, not restated.
 
-    An affirmative capability claim proven on a synthetic shape proves nothing:
-    the field set and the provenance of agentID both come from the source.
+    A tripwire on the source text, kept beside the executed-plugin coverage in
+    test_opencode_attestation_provenance.py: this one fails on a renamed or
+    reformatted field, that one fails on a plugin whose behaviour changed.
     """
     fields = _bridge_call_fields("tool.execute.before")
 
@@ -298,12 +334,13 @@ def test_the_event_plugin_ts_emits_reaches_the_attested_control_plane_lane():
         "sessionID, call.callID"
     ]
 
+    attested = dict(PLUGIN_CONTROL_PLANE_EVENT, roleContext=attested_orchestrator)
     payload = OpenCodeAdapter().build_policy_payload(
-        OpenCodeAdapter().parse_event(json.dumps(PLUGIN_CONTROL_PLANE_EVENT))
+        OpenCodeAdapter().parse_event(json.dumps(attested))
     )
 
     assert payload["agent_id"] == ""
-    assert payload["role_context"]["attestation"] == "ses-1:gaia-orchestrator"
+    assert payload["role_context"]["attestation"] == attested_orchestrator["attestation"]
     assert classify_session_role(payload) is SessionRole.ORCHESTRATOR
     assert is_orchestrator_role(payload) is True
     allowed, reason = gaia_cli_check("rm -rf /tmp/gaia-identity-probe", payload)
