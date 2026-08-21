@@ -168,16 +168,6 @@
           }
         ]
       }
-    ],
-    "ElicitationResult": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/elicitation_result.py"
-          }
-        ]
-      }
     ]
   }
 }
