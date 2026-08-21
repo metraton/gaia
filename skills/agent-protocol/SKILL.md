@@ -45,7 +45,7 @@ If the turn is cut, only what you already wrote exists; everything else survives
 narrative and dies as evidence. Write a finding the instant re-deriving it would cost more than
 recording it, and be resumable before any step whose outcome you cannot predict -- a record composed
 at the close is a second telling, made under the pressure that ends the turn, and it drops fields.
-Seven lists carry it, each written with `gaia contract set/add/fill --draft-id <contract_id>` as the
+Seven lists carry it: `fill` each ONCE (it refuses to discard), `add` extends, `set` replaces, as the
 evidence arrives, never in one pass at the close: `files_checked`, `patterns_checked`, `commands_run`,
 `key_outputs`, `verbatim_outputs`, `open_gaps`, and `cross_layer_impacts` -- what your change reached
 outside the file you were sent to, which no other field records for you. `patterns_checked` is written
