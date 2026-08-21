@@ -382,6 +382,13 @@ def _list_overwrites(base: dict, patch: dict, prefix: str = "") -> list:
     An incoming value equal to what is already stored is not an overwrite:
     re-issuing a patch after correcting one of its fields must not be refused
     by the fields that already landed unchanged.
+
+    The screen reads the EXISTING value, so it sees a list displaced by
+    something else and nothing more: a patch putting a LIST where a dict is
+    stored -- ``evidence_report`` itself -- matches neither branch and passes
+    here silently. That case belongs to validate-on-write, which rejects it as
+    ``FIELD_TYPE`` and exits 1, ``evidence_report`` being typed ``dict`` in
+    ``gaia.contract.validator.TOP_LEVEL_FIELD_TYPES``.
     """
     found = []
     for key, value in patch.items():
