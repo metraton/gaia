@@ -290,9 +290,9 @@ class TestDurableNonActivationRecord:
 class TestSignatureCountMatchesActivationCount:
     """N signatures in, exactly N activations out -- and nothing else moved.
 
-    Retiring the ElicitationResult hook removes a surface that LOOKED like a
-    second line of defence on this flow, so a green suite is not the guard that
-    matters here. What matters is that the one surviving carril activates every
+    Retiring the standalone activation hook removes a surface that LOOKED like
+    a second line of defence on this flow, so a green suite is not the guard
+    that matters here. What matters is that the one surviving carril activates every
     signature it was given, activates each exactly once, and cannot reach a
     pending that was not signed in the event.
     """
