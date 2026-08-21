@@ -281,3 +281,65 @@ class TestDurableNonActivationRecord:
         assert [r["reason"] for r in _non_activation_records()] == [
             "activation_failed"
         ]
+
+
+# ---------------------------------------------------------------------------
+# Outcome 3: the count matches on both sides
+# ---------------------------------------------------------------------------
+
+class TestSignatureCountMatchesActivationCount:
+    """N signatures in, exactly N activations out -- and nothing else moved.
+
+    Retiring the ElicitationResult hook removes a surface that LOOKED like a
+    second line of defence on this flow, so a green suite is not the guard that
+    matters here. What matters is that the one surviving carril activates every
+    signature it was given, activates each exactly once, and cannot reach a
+    pending that was not signed in the event.
+    """
+
+    def test_three_signed_labels_activate_exactly_three_grants(self):
+        commands = [
+            "terraform apply",
+            "kubectl delete pod web-1",
+            "kubectl apply -f manifest.yaml",
+        ]
+        signed = {command: _request(command) for command in commands}
+
+        # A pending in the SAME session that the event does not sign. Activation
+        # must not reach it: a prefix-keyed sweep that broke on first match would.
+        bystander_cmd = "git push origin main"
+        bystander = _request(bystander_cmd)
+
+        answers = {
+            f"Approve {command}?": _approve_label(approval_id, command)
+            for command, approval_id in signed.items()
+        }
+        assert len(answers) == len(commands) > 1
+
+        response = _deliver(answers)
+        assert response.exit_code == 0
+
+        activated = []
+        for command, approval_id in signed.items():
+            status = _status(approval_id)
+            print(f"  label={approval_id} command={command!r} status={status}")
+            if status == "approved":
+                activated.append(approval_id)
+
+        print(f"  signed labels IN = {len(answers)}")
+        print(f"  grants ACTIVATED = {len(activated)}")
+        print(f"  unsigned bystander {bystander} status = {_status(bystander)}")
+
+        assert len(activated) == len(answers), (
+            "every signature must yield its grant -- none skipped"
+        )
+        assert len(set(activated)) == len(activated), (
+            "no grant may be activated twice"
+        )
+        assert _status(bystander) == "pending", (
+            "activation crossed into a pending the user never signed"
+        )
+        for command in commands:
+            assert _grant(command) is not None, (
+                f"{command!r} was marked approved but is not executable"
+            )
