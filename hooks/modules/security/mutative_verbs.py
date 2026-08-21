@@ -749,6 +749,16 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # anchored. The `--dry-run` classify-only mode is NOT re-implemented
         # here: it is a SIMULATION_FLAG resolved by Step 3 above this check.
         MutativeAnchor(path=("scan",)),
+        # `gaia release check` runs npm's prepack lifecycle twice over -- via
+        # pack_tarball's `npm pack` and via bin/validate-sandbox.sh's `npm
+        # install` -- and prepack executes scripts/build-plugin.py, which
+        # rewrites the plugin root manifests including hooks/hooks.json, a
+        # categorically protected path. Nothing above this line gated it:
+        # `release` is a group noun carrying no verb in MUTATIVE_VERBS, and
+        # `check` is a SIMULATION verb, so Step 4 answered CATEGORY_SIMULATION.
+        # Anchored at the leaf like `context prune-workspaces` because `release
+        # publish` is already MUTATIVE by verb.
+        MutativeAnchor(path=("release", "check")),
     ),
     "gcloud": (
         # Changing an IAM policy binding was gated in ONE direction and on a
