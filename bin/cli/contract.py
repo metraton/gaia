@@ -355,13 +355,81 @@ def _get_nested(envelope: dict, dotted_path: str) -> Any:
 
 def _deep_merge(base: dict, patch: dict) -> dict:
     """Recursively merge ``patch`` into ``base``. Dict values merge key-by-key;
-    any other value (including a list) replaces the base value outright."""
+    any other value (including a list) replaces the base value outright.
+
+    A list replacement here is unconditional and unreportable -- a list shares
+    the assignment branch with a scalar, so there is no seam at which this
+    function could warn. Every caller that must not discard entries screens the
+    patch with ``_list_overwrites`` BEFORE calling this.
+    """
     for key, value in patch.items():
         if isinstance(value, dict) and isinstance(base.get(key), dict):
             _deep_merge(base[key], value)
         else:
             base[key] = value
     return base
+
+
+def _list_overwrites(base: dict, patch: dict, prefix: str = "") -> list:
+    """Every populated list in ``base`` that ``patch`` would discard, as
+    ``(dotted_path, existing_count, incoming_count_or_None)``.
+
+    Recurses exactly where ``_deep_merge`` recurses -- only when both sides are
+    dicts -- so the screen and the merge cannot disagree about which keys the
+    merge reaches. The seven ``evidence_report`` lists are all reached that way,
+    through the merged object rather than at the top level.
+
+    An incoming value equal to what is already stored is not an overwrite:
+    re-issuing a patch after correcting one of its fields must not be refused
+    by the fields that already landed unchanged.
+    """
+    found = []
+    for key, value in patch.items():
+        dotted = f"{prefix}{key}"
+        existing = base.get(key)
+        if isinstance(value, dict) and isinstance(existing, dict):
+            found.extend(_list_overwrites(existing, value, f"{dotted}."))
+        elif isinstance(existing, list) and existing and value != existing:
+            incoming = len(value) if isinstance(value, list) else None
+            found.append((dotted, len(existing), incoming))
+    return found
+
+
+def _list_overwrite_message(overwrites: list) -> str:
+    """The refusal text naming every colliding field, its counts, and the two
+    verbs that express the caller's actual intent.
+
+    WHY A REFUSAL AND NOT AN APPEND OR A WARNING. Appending silently is the
+    same defect pointed the other way: it turns a deliberate re-fill meant to
+    CORRECT a field into a duplicate, and turns the ``[]``-to-clear idiom into
+    a no-op. Warning still discards the entries, and this verb's output is JSON
+    a caller reads for ``status``, so a warning beside an ``ok`` is the loss
+    with extra text. Refusing is the only outcome that both preserves the data
+    and cannot be misread: non-zero exit, nothing written, and the intent the
+    caller has to state is already carried by two verbs that exist -- ``add``
+    and ``set``.
+    """
+    lines = [
+        "fill refuses to discard entries already present in a list field "
+        "-- NOTHING was written:"
+    ]
+    for dotted, existing_count, incoming in overwrites:
+        incoming_text = (
+            f"{incoming} incoming entr{'y' if incoming == 1 else 'ies'}"
+            if incoming is not None
+            else "a non-list value"
+        )
+        lines.append(
+            f"  {dotted}: {existing_count} existing "
+            f"entr{'y' if existing_count == 1 else 'ies'} would be replaced "
+            f"by {incoming_text}"
+        )
+    lines.append(
+        "Use `gaia contract add <field> <value>` to EXTEND a list, or "
+        "`gaia contract set <field> '<json-array>'` to REPLACE it "
+        "deliberately. `fill` writes a list only while that list is empty."
+    )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -1867,7 +1935,13 @@ def cmd_finalize(args) -> int:
 
 
 def cmd_fill(args) -> int:
-    """Batch-merge a JSON patch into the draft (validate-on-write)."""
+    """Batch-merge a JSON patch into the draft (validate-on-write).
+
+    Refuses, atomically, any patch that would discard entries already present
+    in a list field: the screen runs over the whole patch before the first key
+    is written, so a patch mixing a colliding list with clean scalars leaves
+    the draft exactly as it was rather than half-applied.
+    """
     # fill always speaks JSON on output (its own --json flag is the PATCH
     # payload, not an output-format toggle), so error/success reporting is
     # JSON-shaped regardless -- force_json=True makes THIS helper's own
@@ -1904,6 +1978,10 @@ def cmd_fill(args) -> int:
         return 1
     if not isinstance(patch, dict):
         _print_error("--json must decode to a JSON object", as_json)
+        return 1
+    overwrites = _list_overwrites(envelope, patch)
+    if overwrites:
+        _print_error(_list_overwrite_message(overwrites), as_json)
         return 1
     _deep_merge(envelope, patch)
     return _write_if_valid(
@@ -2384,7 +2462,13 @@ def _build_subcommands(sub) -> None:
         "--json",
         dest="json_patch",
         metavar="JSON",
-        help="JSON object to deep-merge into the draft envelope",
+        help="JSON object to deep-merge into the draft envelope. A LIST field "
+             "is written only while it is still empty: a patch that would "
+             "discard entries already there is REFUSED whole, nothing "
+             "written. Extend a list with 'add', replace one on purpose with "
+             "'set'. The list fields are evidence_report.{patterns_checked, "
+             "files_checked, commands_run, key_outputs, verbatim_outputs, "
+             "cross_layer_impacts, open_gaps} and agent_status.pending_steps",
     )
     p_fill_json_source.add_argument(
         "--json-file",
