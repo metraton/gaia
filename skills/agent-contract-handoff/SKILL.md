@@ -65,6 +65,34 @@ Every draft, including a mid-turn checkpoint, contains:
 `IN_PROGRESS`, `APPROVAL_REQUEST`, `BLOCKED`, `NEEDS_INPUT`,
 `NEEDS_VERIFICATION`, and `COMPLETE`. Only `COMPLETE` is terminal.
 
+## Which fields are lists, and what a second write does
+
+Exactly eight fields hold lists: the seven `evidence_report` keys above --
+`patterns_checked`, `files_checked`, `commands_run`, `key_outputs`,
+`verbatim_outputs`, `cross_layer_impacts`, `open_gaps` -- plus
+`agent_status.pending_steps`. Nothing else in the envelope is a list.
+
+The three write verbs differ on exactly those eight, and the difference is not
+cosmetic -- it decides whether your earlier evidence survives:
+
+- **`fill` writes a list only while that list is still EMPTY.** A patch that
+  would discard entries already there is refused WHOLE: non-zero exit, nothing
+  written, every colliding field named with its existing and incoming counts.
+  It neither appends nor replaces; where the intent is ambiguous it makes you
+  state which one you meant. Re-sending a patch whose list is byte-identical to
+  what is stored is not a collision, so a corrected patch may be re-issued.
+- **`add` EXTENDS a list by one entry.** This is the verb for the second,
+  third and fourth batch of evidence into the same field.
+- **`set` REPLACES a list outright, unguarded.** This is the verb for
+  correcting a field you already populated, and for clearing one to `[]`.
+
+Writing your evidence across several calls is the NORMAL path, not an edge
+case: one call carrying a full envelope routinely exceeds the shell's
+command-length limit (`fill --json-file` is the channel for long prose). So
+write each list field with `fill` at most ONCE, spread `fill` calls across
+DIFFERENT fields, and switch to `add` the moment you return to a field you
+already wrote.
+
 ## State-conditional close requirements
 
 - `APPROVAL_REQUEST`: `approval_request` is non-null and
