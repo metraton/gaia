@@ -1636,7 +1636,7 @@ class ClaudeCodeAdapter(HookAdapter):
         - ``approval_id`` set -> the orchestrator drives the Gaia approval
           cycle. Emit a ``deny`` keyed to that ``approval_id``; the subagent
           reports APPROVAL_REQUEST, the user clicks Approve in the native
-          AskUserQuestion prompt, and the ElicitationResult hook activates the
+          AskUserQuestion prompt, and _handle_ask_user_question_result activates the
           grant. The ``reason`` already carries the approval_id banner, so this
           is a thin formatting step.
         - ``approval_id`` is None -> gather consent inline via Claude Code's
@@ -2460,7 +2460,7 @@ class ClaudeCodeAdapter(HookAdapter):
         - If found, returns deny with the existing approval_id.
         - If not found, writes a pending approval and returns deny with a
           new approval_id so the orchestrator can ask the user and activate
-          the grant via the ElicitationResult hook.
+          the grant via _handle_ask_user_question_result on PostToolUse.
         - On retry, if an active grant exists for this path, allows through.
 
         The protected set is not decided here: it comes from
