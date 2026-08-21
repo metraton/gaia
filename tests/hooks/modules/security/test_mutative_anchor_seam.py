@@ -239,6 +239,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("dev",),
             ("context", "prune-workspaces"),
             ("scan",),
+            ("release", "check"),
         }
 
     def test_cloud_cli_paths_are_the_iam_binding_forms(self):
