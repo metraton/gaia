@@ -14,8 +14,7 @@
       "hooks/session_end_hook.py",
       "hooks/task_completed.py",
       "hooks/pre_compact.py",
-      "hooks/post_compact.py",
-      "hooks/elicitation_result.py"
+      "hooks/post_compact.py"
     ],
     "matchers": {
       "PreToolUse": [
@@ -38,8 +37,7 @@
       "Stop": [{}],
       "TaskCompleted": [{}],
       "SubagentStart": [{"matcher": "*"}],
-      "UserPromptSubmit": [{}],
-      "ElicitationResult": [{}]
+      "UserPromptSubmit": [{}]
     }
   },
   "modules": "all",

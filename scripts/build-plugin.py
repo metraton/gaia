@@ -220,7 +220,6 @@ def _get_entry_point(event_name: str, entries: list[str]) -> str:
         "TaskCompleted": "hooks/task_completed.py",
         "PreCompact": "hooks/pre_compact.py",
         "PostCompact": "hooks/post_compact.py",
-        "ElicitationResult": "hooks/elicitation_result.py",
     }
     entry = event_to_file.get(event_name)
     if entry and entry in entries:

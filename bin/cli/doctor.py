@@ -327,7 +327,7 @@ def _describe_gaia_version(version: str) -> str:
 CANONICAL_HOOK_EVENTS = frozenset({
     "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
     "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
-    "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+    "SubagentStart", "PostCompact", "PreCompact",
 })
 
 
@@ -2070,7 +2070,6 @@ def check_hook_files(project_root: Path) -> dict:
         ("task_completed.py", False),
         ("pre_compact.py", False),
         ("post_compact.py", False),
-        ("elicitation_result.py", False),
     ]
 
     errors = []

@@ -441,7 +441,7 @@ class PrePublishValidator {
    * diverge from what generate_hooks_json(build/gaia.manifest.json) produces.
    * The manifest is the single source of truth; these artifacts are generated
    * by `npm run generate:plugin-root`. Drift means a stale/hand-edited
-   * artifact would ship -- e.g. dropping ElicitationResult or degrading the
+   * artifact would ship -- e.g. dropping SubagentStart or degrading the
    * PreToolUse matcher set. This is the root-cause guard behind
    * tests/hooks/adapters/test_plugin_manifests.
    *

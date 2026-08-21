@@ -107,7 +107,7 @@ def healthy_project(tmp_path):
         "hooks": {ev: [{"command": "python"}] for ev in [
             "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
             "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
-            "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+            "SubagentStart", "PostCompact", "PreCompact",
         ]},
         "permissions": {
             "allow": ["Bash(*)"],
@@ -123,7 +123,7 @@ def healthy_project(tmp_path):
     for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
               "session_start.py", "session_end_hook.py", "subagent_stop.py",
               "subagent_start.py", "stop_hook.py", "task_completed.py",
-              "pre_compact.py", "post_compact.py", "elicitation_result.py"]:
+              "pre_compact.py", "post_compact.py"]:
         (hooks_dir / h).write_text("# hook stub")
 
     # project-context.json
@@ -1510,7 +1510,7 @@ class TestCmdDoctorFix:
             "hooks": {ev: [{"command": "python"}] for ev in [
                 "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
                 "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
-                "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+                "SubagentStart", "PostCompact", "PreCompact",
             ]},
             "permissions": {"allow": ["Bash(*)"], "deny": ["rm -rf /"]},
             "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "true"},
@@ -1520,7 +1520,7 @@ class TestCmdDoctorFix:
         for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
                   "session_start.py", "session_end_hook.py", "subagent_stop.py",
                   "subagent_start.py", "stop_hook.py", "task_completed.py",
-                  "pre_compact.py", "post_compact.py", "elicitation_result.py"]:
+                  "pre_compact.py", "post_compact.py"]:
             (hooks_dir / h).write_text("# hook stub")
 
         pc_dir = claude_dir / "project-context"

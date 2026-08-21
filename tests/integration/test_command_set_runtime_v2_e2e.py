@@ -75,8 +75,8 @@ def test_plan_forecast_approval_execution_failure_and_routing(tmp_path, monkeypa
         ),
     )
 
-    # Step 1: the REAL activation the ElicitationResult hook calls when the
-    # user selects the Approve label -- not a hand-minted grant.
+    # Step 1: the REAL activation _handle_ask_user_question_result calls when
+    # the user selects the Approve label -- not a hand-minted grant.
     activation = activate_db_pending_by_prefix(
         nonce_prefix, current_session_id="presenter",
         presented_question=presented_question, presented_label=approve_label,

@@ -8,7 +8,7 @@ accepts a fixed set of ``hookSpecificOutput.hookEventName`` literals
 (PreToolUse, UserPromptSubmit, UserPromptExpansion, PostToolUse,
 PostToolUseFailure, PostToolBatch, Stop, SubagentStop, SessionStart, Setup,
 SubagentStart, PermissionDenied, PermissionRequest, Elicitation,
-ElicitationResult, MessageDisplay) -- "PreCompact" and "PostCompact" are NOT
+MessageDisplay, among others) -- "PreCompact" and "PostCompact" are NOT
 in that set, so every ``/compact`` failed validation with "(root): Invalid
 input" and the post-compaction context refresh (agent roster + anomalies)
 was silently dropped, never delivered.
@@ -55,7 +55,6 @@ ALLOWED_HOOK_EVENT_NAMES = {
     "PermissionDenied",
     "PermissionRequest",
     "Elicitation",
-    "ElicitationResult",
     "MessageDisplay",
 }
 

@@ -134,9 +134,9 @@ class TestNonceApprovalRelayE2E:
 
     A subagent's blocked T3 produces 'deny' carrying an approval_id, and the
     hook itself persists the pending approval; activation
-    (activate_db_pending_by_prefix, as the ElicitationResult /
-    UserPromptSubmit flow does) turns it into a grant the byte-identical
-    retry consumes.
+    (activate_db_pending_by_prefix, as the PostToolUse
+    ask-user-question-result flow does) turns it into a grant the
+    byte-identical retry consumes.
     """
 
     SESSION = "e2e-relay-session"

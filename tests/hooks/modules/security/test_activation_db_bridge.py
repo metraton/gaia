@@ -2,7 +2,7 @@
 """Tests for the DB-bridge activation path (M2 cutover fix).
 
 Gap being closed: M2 migrated REQUESTED writes to DB only (no filesystem
-pending file), but the activation path in elicitation_result.py and
+pending file), but the activation path in
 _handle_ask_user_question_result() still looked up filesystem pending files
 first.  When the filesystem file didn't exist, the grant was never activated
 and the subagent re-blocked eternally with the same approval_id.
@@ -452,7 +452,7 @@ class TestCheckWriteAlignment:
         This replicates the exact scenario from the E2E failure:
           1. bash_validator blocks a T3 command and calls insert_requested() -> DB.
           2. User approves via AskUserQuestion with [P-{prefix}] label.
-          3. _handle_ask_user_question_result (or elicitation_result) calls
+          3. _handle_ask_user_question_result calls
              activate_db_pending_by_prefix() because no filesystem pending exists.
           4. Filesystem grant is created.
           5. bash_validator retry finds the grant and allows the command.

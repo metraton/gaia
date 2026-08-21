@@ -4,7 +4,7 @@ Hooks are the event-driven spine of Gaia. Every significant moment in a Claude C
 
 Each hook is a Python script that reads a JSON event from stdin, processes it, and writes a JSON response to stdout. Claude Code calls these scripts synchronously before or after each tool execution, which means the hook can allow, modify, or block the operation. The hook cannot do complex async work — it runs inline, in the critical path, so every module it calls must complete quickly.
 
-The hooks form a pipeline. A session opens at `session_start.py`, which emits a one-shot `additionalContext` manifest (Environment, Projects, Contract Index, task notifications, schedule drift, schedule suspensions, workspace memory) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), `session_start.py` builds a different, lighter manifest — a post-compaction context refresh (agent roster + active anomalies) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`, `elicitation_result.py`) fire at lifecycle transitions and carry lighter responsibilities.
+The hooks form a pipeline. A session opens at `session_start.py`, which emits a one-shot `additionalContext` manifest (Environment, Projects, Contract Index, task notifications, schedule drift, schedule suspensions, workspace memory) for the orchestrator; when SessionStart instead fires with `source == "compact"` (right after compaction), `session_start.py` builds a different, lighter manifest — a post-compaction context refresh (agent roster + active anomalies) — in place of the full startup manifest. Each prompt then enters at `user_prompt_submit.py`, gets routed to an agent, triggers `pre_tool_use.py` before each tool call, generates audit records in `post_tool_use.py`, and closes out in `subagent_stop.py` when the agent finishes. The session closes at `session_end_hook.py`. The remaining event handlers (`stop_hook.py`, `subagent_start.py`, `task_completed.py`, `pre_compact.py`, `post_compact.py`) fire at lifecycle transitions and carry lighter responsibilities. Approval-grant activation is not among them: it rides the `AskUserQuestion` matcher on PostToolUse, in `adapters/claude_code.py::_handle_ask_user_question_result`.
 
 ## Cuándo se activa
 
@@ -88,7 +88,6 @@ hooks/
 ├── task_completed.py      # Task completed event handler
 ├── pre_compact.py         # Pre-compaction event handler
 ├── post_compact.py        # Post-compaction event handler
-├── elicitation_result.py  # AskUserQuestion result handler (approval activation)
 ├── hooks.json             # Plugin-channel hook configuration — GENERATED, never hand-edited
 ├── adapters/              # Adapter layer — event parsing and module dispatch
 └── modules/               # Module layer — security, context, validation, audit logic

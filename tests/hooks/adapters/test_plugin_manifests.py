@@ -265,7 +265,7 @@ class TestHooksJson:
             "PreToolUse", "PostToolUse", "SubagentStop",
             "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop",
             "TaskCompleted", "SubagentStart", "PostCompact",
-            "PreCompact", "ElicitationResult",
+            "PreCompact",
         }
         assert hooks_events == required_events, (
             f"Event mismatch: hooks.json has {hooks_events}, "
