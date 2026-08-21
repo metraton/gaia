@@ -67,13 +67,21 @@ Every draft, including a mid-turn checkpoint, contains:
 
 ## Which fields are lists, and what a second write does
 
-Exactly eight fields hold lists: the seven `evidence_report` keys above --
-`patterns_checked`, `files_checked`, `commands_run`, `key_outputs`,
-`verbatim_outputs`, `cross_layer_impacts`, `open_gaps` -- plus
-`agent_status.pending_steps`. Nothing else in the envelope is a list.
+Eight fields hold the lists you write every turn: the seven `evidence_report`
+keys above -- `patterns_checked`, `files_checked`, `commands_run`,
+`key_outputs`, `verbatim_outputs`, `cross_layer_impacts`, `open_gaps` -- plus
+`agent_status.pending_steps`. They are not the only lists in the envelope:
+`update_contracts`, `memorialize_suggestions` and `memory_suggestions` are
+list-valued too (`ADVISORY_UNTYPED_FIELDS` in `gaia/contract/validator.py` --
+allowlisted, and deliberately left untyped so a malformed one never blocks a
+close). Nothing about them is unguarded, which is the next thing a reader asks
+once they know they exist: the overwrite screen is generic, firing on any
+populated list a patch would displace, and it starts at the envelope root where
+these three sit. They are seeded absent rather than as `[]`, so a first write to
+one discards nothing.
 
-The three write verbs differ on exactly those eight, and the difference is not
-cosmetic -- it decides whether your earlier evidence survives:
+The three write verbs differ on every one of those lists, and the difference is
+not cosmetic -- it decides whether your earlier evidence survives:
 
 - **`fill` writes a list only while that list is still EMPTY.** A patch that
   would discard entries already there is refused WHOLE: non-zero exit, nothing
