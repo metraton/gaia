@@ -16,6 +16,8 @@ Validates:
 
 import importlib.util
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -278,10 +280,10 @@ class TestHooksJsonManifestSync:
 
     hooks.json is a GENERATED artifact; build/gaia.manifest.json is its source of
     truth. A hand edit to the generated file that is not mirrored in the manifest
-    fails silently -- the next `npm run generate:plugin-root` restores the
-    committed bytes, so the change vanishes with no git diff and a fresh mtime,
-    and the only symptom is the runtime behaviour reverting. These tests turn
-    that into a loud failure in the suite instead of a discovery hours later.
+    is a divergence the generator now refuses to overwrite without --force
+    (TestGeneratorRefusesProtectedOverwrite), so it would surface as a failed
+    `npm pack` rather than a silent revert. These tests turn the drift itself
+    into a loud failure in the suite instead of a discovery hours later.
 
     scripts/check_hooks_drift.py enforces the same invariant at publish time
     (bin/pre-publish-validate.js); this exercises it against the working tree.
@@ -356,6 +358,102 @@ class TestHooksJsonManifestSync:
         monkeypatch.setattr(guard, "PLUGIN_JSON", fixture_plugin)
 
         assert guard.main() == 0
+
+
+class TestGeneratorRefusesProtectedOverwrite:
+    """The manifest generator must fail closed on a protected overwrite.
+
+    Measured incident: an Edit of hooks/hooks.json was DENIED by the
+    protected-path gate, and the identical mutation then landed anyway through
+    pytest -> `npm pack` (tests/cli/test_pack_helpers.py::TestPackTarballReal)
+    -> the `prepack` lifecycle -> `npm run generate:plugin-root` ->
+    write_root_manifests, a subprocess chain neither guarded surface sees.
+    The fix is at the sink: overwriting an existing hooks/hooks.json with
+    DIFFERENT content refuses without --force, while an in-sync tree
+    regenerates as a no-op so pack/publish flows are untouched.
+
+    These tests drive the ACTUAL invocation `prepack` runs -- the script
+    itself, as a subprocess, differing only in --output-dir -- against a tree
+    that carries the same Gaia root marker (build/gaia.manifest.json) the
+    protected-path predicate's marker lane keys on, so the refusal exercises
+    the same lane that protects the real checkout.
+    """
+
+    SCRIPT = PROJECT_ROOT / "scripts" / "build-plugin.py"
+
+    def _gaia_marked_tree(self, tmp_path: Path) -> Path:
+        (tmp_path / "build").mkdir()
+        (tmp_path / "build" / "gaia.manifest.json").write_text("{}")
+        (tmp_path / "hooks").mkdir()
+        return tmp_path
+
+    def _run_generator(self, output_dir: Path, *extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self.SCRIPT), "gaia", "--manifests-only",
+             "--output-dir", str(output_dir), *extra],
+            capture_output=True, text=True, timeout=60,
+        )
+
+    def _expected_hooks_text(self) -> str:
+        build_plugin = _load_build_plugin_module()
+        generated = build_plugin.generate_hooks_json(build_plugin.load_manifest("gaia"))
+        return json.dumps(generated, indent=2) + "\n"
+
+    def test_refuses_divergent_overwrite_without_force(self, tmp_path):
+        tree = self._gaia_marked_tree(tmp_path)
+        divergent = json.dumps({"hooks": {"PreToolUse": []}}, indent=2) + "\n"
+        (tree / "hooks" / "hooks.json").write_text(divergent)
+
+        result = self._run_generator(tree)
+
+        assert result.returncode == 1, result.stderr
+        assert "refusing to overwrite protected generated file" in result.stderr
+        assert (tree / "hooks" / "hooks.json").read_text() == divergent, (
+            "the refused write must leave the file byte-identical"
+        )
+
+    def test_in_sync_tree_is_a_noop(self, tmp_path):
+        tree = self._gaia_marked_tree(tmp_path)
+        target = tree / "hooks" / "hooks.json"
+        target.write_text(self._expected_hooks_text())
+        mtime_before = target.stat().st_mtime_ns
+
+        result = self._run_generator(tree)
+
+        assert result.returncode == 0, result.stderr
+        assert "hooks/hooks.json: unchanged" in result.stderr
+        assert target.stat().st_mtime_ns == mtime_before, (
+            "an identical regeneration must not rewrite the file"
+        )
+
+    def test_force_applies_the_divergent_overwrite(self, tmp_path):
+        tree = self._gaia_marked_tree(tmp_path)
+        target = tree / "hooks" / "hooks.json"
+        target.write_text(json.dumps({"hooks": {}}) + "\n")
+
+        result = self._run_generator(tree, "--force")
+
+        assert result.returncode == 0, result.stderr
+        assert target.read_text() == self._expected_hooks_text()
+
+    def test_missing_file_is_created(self, tmp_path):
+        tree = self._gaia_marked_tree(tmp_path)
+
+        result = self._run_generator(tree)
+
+        assert result.returncode == 0, result.stderr
+        assert (tree / "hooks" / "hooks.json").read_text() == self._expected_hooks_text()
+
+    def test_repo_hooks_json_is_inside_the_protected_set(self):
+        """Tie the guard to the ONE predicate on the real target path."""
+        spec = importlib.util.spec_from_file_location(
+            "_gaia_protected_paths",
+            PROJECT_ROOT / "hooks" / "modules" / "security" / "protected_paths.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.reset_caches()
+        assert module.is_protected_hook_path(str(PROJECT_ROOT / "hooks" / "hooks.json"))
 
 
 class TestMarketplaceJson:

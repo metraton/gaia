@@ -13,7 +13,14 @@ plugin convention Claude Code reads). plugin.json does NOT embed an inline
 from the inline block, once from hooks.json), so every event fired twice.
 
 Usage:
-    python3 scripts/build-plugin.py <plugin-name> --manifests-only [--output-dir <path>]
+    python3 scripts/build-plugin.py <plugin-name> --manifests-only [--output-dir <path>] [--force]
+
+A regeneration that would CHANGE an existing hooks/hooks.json refuses without
+--force: that file is inside the protected set
+(hooks/modules/security/protected_paths.py::is_protected_hook_path), and this
+script is reachable as a subprocess side effect (npm prepack under `npm pack`),
+where a silent rewrite would apply a hook-configuration change no one consented
+to. An in-sync tree regenerates as a no-op, so pack/publish flows are unaffected.
 
 Exit codes:
     0  Build successful
@@ -21,6 +28,7 @@ Exit codes:
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
@@ -318,7 +326,69 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         raise
 
 
-def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
+def _load_protected_predicate():
+    """Load is_protected_hook_path -- the ONE protected-path predicate.
+
+    The same predicate the Write/Edit gate and the Bash guard consume decides
+    here too, so this writer cannot disagree with the guarded surfaces about
+    what is protected. Fails CLOSED: if the predicate cannot be loaded, every
+    target is treated as protected -- a broken import can only add refusals,
+    never remove one.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "_gaia_protected_paths",
+            REPO_ROOT / "hooks" / "modules" / "security" / "protected_paths.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.is_protected_hook_path
+    except Exception:
+        return lambda _path: True
+
+
+def _write_generated_manifest(path: Path, data: dict, *, force: bool, is_protected) -> str:
+    """Write one generated manifest, refusing a silent change to a protected file.
+
+    Returns "unchanged", "created", or "updated"; exits 1 instead of
+    overwriting a protected file whose content would change without `force`.
+
+    The distinction that matters is OVERWRITE vs CREATE: an existing protected
+    file is a committed, consent-governed artifact, so changing its bytes from
+    inside a subprocess (npm prepack under `npm pack`, reachable from a test
+    run or `gaia release check`) is exactly the ungoverned mutation the
+    protected-path gates exist to stop -- it must be loud and explicit, never
+    a lifecycle side effect. Creating the file where none exists (materializing
+    a fresh tree) overwrites nothing and stays free, and deleting the committed
+    file first is itself denied by the guarded surfaces.
+    """
+    rendered = json.dumps(data, indent=2) + "\n"
+    try:
+        current = path.read_text()
+    except OSError:
+        current = None
+
+    if current == rendered:
+        return "unchanged"
+
+    if current is not None and not force and is_protected(str(path)):
+        print(
+            f"Error: refusing to overwrite protected generated file: {path}\n"
+            "  Its content differs from what build/gaia.manifest.json generates.\n"
+            "  If the manifest change is deliberate, regenerate explicitly:\n"
+            "    npm run generate:plugin-root -- --force\n"
+            "  A silent rewrite here would apply a hook-configuration change "
+            "without consent (see hooks/modules/security/protected_paths.py).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_json(path, data)
+    return "created" if current is None else "updated"
+
+
+def write_root_manifests(plugin_name: str, output_dir: Path, *, force: bool = False) -> None:
     """Regenerate ONLY the two plugin manifests into an existing directory.
 
     Writes:
@@ -360,20 +430,27 @@ def write_root_manifests(plugin_name: str, output_dir: Path) -> None:
     # should carry only the tool's actual data, never incidental narration).
     print(f"Regenerating root manifests for plugin '{plugin_name}' in: {output_dir}", file=sys.stderr)
 
-    # hooks/hooks.json
-    hooks_json = generate_hooks_json(manifest)
-    hooks_json_path = output_dir / "hooks" / "hooks.json"
-    hooks_json_path.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_json(hooks_json_path, hooks_json)
-    print(f"  Generated: hooks/hooks.json ({len(hooks_json['hooks'])} events)", file=sys.stderr)
+    is_protected = _load_protected_predicate()
 
-    # .claude-plugin/plugin.json (inline hooks)
+    hooks_json = generate_hooks_json(manifest)
+    outcome = _write_generated_manifest(
+        output_dir / "hooks" / "hooks.json", hooks_json,
+        force=force, is_protected=is_protected,
+    )
+    print(
+        f"  hooks/hooks.json: {outcome} ({len(hooks_json['hooks'])} events)",
+        file=sys.stderr,
+    )
+
     plugin_json = generate_plugin_json(manifest)
-    plugin_json_dir = output_dir / ".claude-plugin"
-    plugin_json_dir.mkdir(parents=True, exist_ok=True)
-    plugin_json_path = plugin_json_dir / "plugin.json"
-    _atomic_write_json(plugin_json_path, plugin_json)
-    print("  Generated: .claude-plugin/plugin.json (metadata only, no inline hooks)", file=sys.stderr)
+    outcome = _write_generated_manifest(
+        output_dir / ".claude-plugin" / "plugin.json", plugin_json,
+        force=force, is_protected=is_protected,
+    )
+    print(
+        f"  .claude-plugin/plugin.json: {outcome} (metadata only, no inline hooks)",
+        file=sys.stderr,
+    )
     print("Root manifests regenerated.", file=sys.stderr)
 
 
@@ -408,6 +485,16 @@ def main():
             "there is no dist/ clean-build path."
         ),
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Allow overwriting a protected generated file (hooks/hooks.json) whose "
+            "content would change. Without it the script refuses and exits 1 -- a "
+            "hook-configuration change must be an explicit, attributable command, "
+            "never a silent npm-lifecycle side effect."
+        ),
+    )
 
     args = parser.parse_args()
     plugin_name = getattr(args, "plugin-name")
@@ -425,7 +512,7 @@ def main():
     output_dir = args.output_dir or REPO_ROOT
     if not output_dir.is_absolute():
         output_dir = REPO_ROOT / output_dir
-    write_root_manifests(plugin_name, output_dir)
+    write_root_manifests(plugin_name, output_dir, force=args.force)
 
 
 if __name__ == "__main__":
