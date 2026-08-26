@@ -157,6 +157,22 @@ def configure_opencode_plugin(
     config_path = workspace / "opencode.json"
     if not plugin_path.is_file():
         return _result("error", config_path, f"OpenCode plugin not found: {plugin_path}")
+    try:
+        plugin_source = plugin_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _result("error", config_path, f"OpenCode plugin cannot be read: {exc}")
+    if not re.search(r"export\s+const\s+GaiaOpenCodePlugin\s*=\s*async\b", plugin_source):
+        return _result(
+            "error",
+            config_path,
+            "OpenCode plugin has no callable GaiaOpenCodePlugin named export",
+        )
+    if re.search(r"export\s+default\b", plugin_source):
+        return _result(
+            "error",
+            config_path,
+            "OpenCode plugin must not expose a default object export",
+        )
     policy = _read_json(policy_path)
     if not isinstance(policy, dict):
         return _result("error", config_path, f"OpenCode agent policy is invalid: {policy_path}")

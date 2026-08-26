@@ -18,7 +18,7 @@ def test_registers_the_packaged_plugin_without_creating_claude_config(tmp_path):
     package = tmp_path / "package"
     plugin = package / "opencode" / "plugin.ts"
     plugin.parent.mkdir(parents=True)
-    plugin.write_text("export {}\n")
+    plugin.write_text("export const GaiaOpenCodePlugin = async () => ({})\n")
     (plugin.parent / "agent-policy.json").write_text(
         '{"default": {"mode": "subagent"}, "gaia-orchestrator": {"mode": "primary"}}\n'
     )
@@ -40,11 +40,27 @@ def test_registers_the_packaged_plugin_without_creating_claude_config(tmp_path):
     assert (tmp_path / ".opencode" / "skills" / "sample").is_symlink()
 
 
+def test_rejects_a_plugin_export_shape_that_would_fail_at_host_load(tmp_path):
+    package = tmp_path / "package"
+    plugin = package / "opencode" / "plugin.ts"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text("export default { id: 'gaia' }\n")
+    (plugin.parent / "agent-policy.json").write_text(
+        '{"default": {"mode": "subagent"}}\n'
+    )
+
+    result = _install_helpers.configure_opencode_plugin(tmp_path, package)
+
+    assert result["action"] == "error"
+    assert "no callable GaiaOpenCodePlugin named export" in result["details"]
+    assert not (tmp_path / "opencode.json").exists()
+
+
 def test_preserves_existing_opencode_plugins(tmp_path):
     package = tmp_path / "package"
     plugin = package / "opencode" / "plugin.ts"
     plugin.parent.mkdir(parents=True)
-    plugin.write_text("export {}\n")
+    plugin.write_text("export const GaiaOpenCodePlugin = async () => ({})\n")
     (plugin.parent / "agent-policy.json").write_text('{"default": {"mode": "subagent"}}\n')
     agent = package / "agents" / "gaia-orchestrator.md"
     agent.parent.mkdir()
@@ -66,7 +82,7 @@ def test_second_install_is_idempotent(tmp_path):
     package = tmp_path / "package"
     plugin = package / "opencode" / "plugin.ts"
     plugin.parent.mkdir(parents=True)
-    plugin.write_text("export {}\n")
+    plugin.write_text("export const GaiaOpenCodePlugin = async () => ({})\n")
     (plugin.parent / "agent-policy.json").write_text('{"default": {"mode": "subagent"}}\n')
     agent = package / "agents" / "gaia-orchestrator.md"
     agent.parent.mkdir()
@@ -93,7 +109,7 @@ def test_uses_stable_workspace_package_link_instead_of_pnpm_store(tmp_path):
     )
     plugin = store_package / "opencode" / "plugin.ts"
     plugin.parent.mkdir(parents=True)
-    plugin.write_text("export {}\n")
+    plugin.write_text("export const GaiaOpenCodePlugin = async () => ({})\n")
     (plugin.parent / "agent-policy.json").write_text(
         '{"default": {"mode": "subagent"}}\n'
     )
@@ -191,7 +207,7 @@ def test_replaces_stale_gaia_plugin_but_preserves_foreign_plugin(tmp_path):
     package = tmp_path / "package"
     plugin = package / "opencode" / "plugin.ts"
     plugin.parent.mkdir(parents=True)
-    plugin.write_text("export {}\n")
+    plugin.write_text("export const GaiaOpenCodePlugin = async () => ({})\n")
     (plugin.parent / "agent-policy.json").write_text('{"default": {"mode": "subagent"}}\n')
     agent = package / "agents" / "gaia-orchestrator.md"
     agent.parent.mkdir()

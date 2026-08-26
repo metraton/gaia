@@ -461,7 +461,32 @@ export function toolResult(output: any): Record<string, unknown> {
 /** The one issuer spelling Gaia's adapter trusts for a host claim. */
 export const ROLE_ISSUER = "opencode-runtime"
 
+const LIVENESS_PREFIX = "[gaia-opencode:liveness]"
+
+async function announceLiveness(input: any): Promise<void> {
+  const loadedAt = new Date().toISOString()
+  const message = `${LIVENESS_PREFIX} pid=${process.pid} loaded_at=${loadedAt} export=GaiaOpenCodePlugin`
+  const log = input?.client?.app?.log
+  if (typeof log === "function") {
+    try {
+      await log({
+        body: {
+          service: "gaia-opencode-plugin",
+          level: "info",
+          message: "Gaia OpenCode plugin loaded",
+          extra: { pid: process.pid, loaded_at: loadedAt, export: "GaiaOpenCodePlugin" },
+        },
+      })
+      return
+    } catch (error) {
+      throw new Error(`${LIVENESS_PREFIX} host log failed: ${error}`)
+    }
+  }
+  console.error(message)
+}
+
 export const GaiaOpenCodePlugin = async (input: any) => {
+  await announceLiveness(input)
   const pending = new Map<string, PendingApproval>()
   const agentBySession = new Map<string, string>()
   const agentByCall = new Map<string, string>()
