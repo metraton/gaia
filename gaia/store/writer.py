@@ -34,7 +34,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 if TYPE_CHECKING:  # annotation-only; runtime imports of gaia.state stay lazy
     from gaia.state.task_closure import GateVerdict
@@ -9817,6 +9817,163 @@ def stamp_harness_agent_id(
             con.close()
 
     return _retry_on_locked(_work)
+
+
+# ---------------------------------------------------------------------------
+# Public API: reap_stale_dispatched_handoffs (plan 65 T13 -- host-death reaper)
+# ---------------------------------------------------------------------------
+#
+# The birth stamp (CUT_REASON_NEVER_FINALIZED) already marks every DISPATCHED
+# row as cut; only finalize clears it. That is enough to FIND a row nobody
+# closed, but not enough to REAP one: a row still legitimately mid-turn is
+# also 'DISPATCHED' with the same birth mark, and closing it out from under a
+# live host would be the exact defect this reaper must not become. So the
+# question this pair of functions answers is not "is this row cut" (every
+# candidate already is) but "is this row's HOST STILL ALIVE" -- and only the
+# caller can answer that: this module knows nothing about attestation
+# ledgers, host runs, or any other harness-specific liveness signal (it stays
+# in the hooks layer, which already depends on this one -- the reverse import
+# would invert that dependency). ``liveness_check`` is therefore the seam:
+# a caller passes a predicate over the row, and this module only enforces the
+# staleness window, the promotion, and the idempotency.
+#
+# NO NEW COLUMN (S2 decision, in favor of existing signals): a liveness
+# predicate needs to know WHICH host_run a row belongs to, and no column
+# stores that today. Adding one would need a value to be stamped at claim
+# time by a caller this facade cannot reach without editing the protected
+# hooks tree in the same breath. Every row already carries ``session_id``
+# (attributed at birth) and ``claimed_at``/``created_at`` (attributed at claim
+# or birth) -- both existing signals -- and a caller can resolve liveness from
+# those alone (e.g. scanning attestation ledgers for a record naming the same
+# session, the design ``dispatch_lifecycle.reap_stale_turn`` seals). If a
+# future liveness source genuinely cannot be reconstructed from an existing
+# column, that is the trigger for the migration this comment defers.
+def find_stale_dispatched_handoffs(
+    *,
+    older_than_seconds: int,
+    now: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> list[dict]:
+    """Return every 'DISPATCHED' row idle past ``older_than_seconds``.
+
+    Staleness is measured from whichever timestamp the row actually reached:
+    ``claimed_at`` when a SubagentStart claimed it, else the birth
+    ``created_at`` for a row a host never even got to claim
+    (``COALESCE(claimed_at, created_at)``) -- both existing columns, no new
+    signal. This function makes NO liveness judgement: it only bounds the
+    candidate set by age, so a row still inside the window is never returned
+    no matter how dead its host actually is -- that question belongs to
+    :func:`reap_stale_dispatched_handoffs`'s ``liveness_check``.
+    """
+    cutoff = _stale_cutoff_iso(older_than_seconds, now)
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            """
+            SELECT id, contract_id, agent_id, workspace, session_id,
+                   plan_task_id, brief_id, claimed_at, created_at,
+                   harness_agent_id
+              FROM agent_contract_handoffs
+             WHERE agent_state = 'DISPATCHED'
+               AND COALESCE(claimed_at, created_at) <= ?
+             ORDER BY id ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+def _stale_cutoff_iso(older_than_seconds: int, now: "str | None") -> str:
+    """The ISO8601 instant a row's own timestamp must fall on or before."""
+    from datetime import timedelta
+
+    reference = (
+        datetime.fromisoformat(now.replace("Z", "+00:00"))
+        if now
+        else datetime.now(timezone.utc)
+    )
+    cutoff = reference - timedelta(seconds=older_than_seconds)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def reap_stale_dispatched_handoffs(
+    *,
+    older_than_seconds: int,
+    liveness_check: "Callable[[dict], bool] | None" = None,
+    now: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Promote every stale, dead-host 'DISPATCHED' row to a REAPED cut.
+
+    Candidates come from :func:`find_stale_dispatched_handoffs` (age only).
+    Each candidate is then judged by ``liveness_check(row) -> bool``: True
+    spares the row untouched, False (or no ``liveness_check`` supplied at
+    all) reaps it. The no-callback default is deliberately "no evidence of
+    life": a caller that cannot check liveness has no basis to call a stale
+    row alive, and this mirrors the module-wide rule elsewhere in this file
+    that an unverifiable state defaults to the conservative outcome rather
+    than the permissive one.
+
+    Reaping calls :func:`finalize_agent_contract_handoff` with
+    ``agent_state='IN_PROGRESS'`` (the same value the SubagentStop backstop's
+    reaped mode uses -- see ``gaia.state`` 1b-ii: the one value ``gaia
+    contract finalize`` refuses, marking a row CUT rather than agent-closed)
+    and ``cut_reason=CUT_REASON_REAPED`` -- a value already in the closed
+    ``gaia.state.CUT_REASONS`` vocabulary, so this reaper introduces no new
+    cut spelling. The row's own ``agent_id``/``workspace``/``session_id``/
+    ``plan_task_id``/``brief_id`` are read back off the row itself, never
+    invented.
+
+    Idempotent by construction, with no dedup logic of its own: reaping a row
+    moves its ``agent_state`` off 'DISPATCHED', so
+    :func:`find_stale_dispatched_handoffs` never selects it again -- a second
+    call with identical arguments always finds it absent from the candidate
+    set, not merely absent from the ``reaped`` list.
+
+    Returns ``{"reaped": [contract_id, ...], "spared": [contract_id, ...],
+    "checked": int, "cut_reason": CUT_REASON_REAPED}``.
+    """
+    from gaia.state import CUT_REASON_REAPED
+
+    candidates = find_stale_dispatched_handoffs(
+        older_than_seconds=older_than_seconds, now=now, db_path=db_path
+    )
+    reaped: list[str] = []
+    spared: list[str] = []
+    for row in candidates:
+        alive = bool(liveness_check(row)) if liveness_check is not None else False
+        if alive:
+            spared.append(row["contract_id"])
+            continue
+        envelope = json.dumps(
+            {
+                "degraded": True,
+                "reaped": True,
+                "backstop": "dispatch_lifecycle.reap_stale_turn",
+            }
+        )
+        outcome = finalize_agent_contract_handoff(
+            contract_id=row["contract_id"],
+            agent_id=row["agent_id"],
+            workspace=row["workspace"],
+            agent_state="IN_PROGRESS",
+            raw_handoff_json=envelope,
+            session_id=row.get("session_id"),
+            plan_task_id=row.get("plan_task_id"),
+            brief_id=row.get("brief_id"),
+            cut_reason=CUT_REASON_REAPED,
+            db_path=db_path,
+        )
+        if outcome.get("created"):
+            reaped.append(row["contract_id"])
+    return {
+        "reaped": reaped,
+        "spared": spared,
+        "checked": len(candidates),
+        "cut_reason": CUT_REASON_REAPED,
+    }
 
 
 def reconcile_cut_row(
