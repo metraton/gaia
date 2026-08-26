@@ -457,6 +457,24 @@ export function toolResult(output: any): Record<string, unknown> {
   }
 }
 
+/** Apply a bridge response's updated_input onto the live args object, field
+ * by field, never by whole-object reassignment. OpenCode 1.18.23 hands this
+ * hook the args object it will actually pass to the tool; a full
+ * `output.args = updatedInput` replaces the reference the host already
+ * captured and is a measured no-op (memory:
+ * project_gaia_opencode_lifecycle_medido_2026_08_26) for both task and bash.
+ * Mutating the existing object in place is what the host observes. */
+export function applyUpdatedInput(
+  output: { args?: Record<string, unknown> },
+  updatedInput: Record<string, unknown> | undefined,
+): void {
+  if (!updatedInput) return
+  const args = output.args ?? (output.args = {})
+  for (const [key, value] of Object.entries(updatedInput)) {
+    args[key] = value
+  }
+}
+
 /** The one issuer spelling Gaia's adapter trusts for a host claim. */
 export const ROLE_ISSUER = "opencode-runtime"
 
@@ -761,7 +779,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         originalArgs: normalized.originalArgs,
       })
       if (response.action === "allow") {
-        if (response.updated_input) output.args = response.updated_input
+        applyUpdatedInput(output, response.updated_input)
         return
       }
       if (approvalID(response)) {

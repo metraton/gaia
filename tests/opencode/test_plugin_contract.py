@@ -176,6 +176,49 @@ def test_orchestrator_bash_is_restricted_to_gaia_cli():
     }
 
 
+def test_updated_input_applies_field_by_field_for_task_and_bash_never_reassigns():
+    """Regression for the measured no-op (memory:
+    project_gaia_opencode_lifecycle_medido_2026_08_26): OpenCode 1.18.23 reads
+    the args object it already handed the hook, not a replacement one, so a
+    full ``output.args = response.updated_input`` reassignment is silently
+    discarded by the host for both task and bash. This drives the real
+    ``applyUpdatedInput`` export the hook calls and fails the instant a
+    whole-object reassignment reappears there, because a sibling key present
+    only on the original args object (``subagent_type`` for task,
+    ``timeout`` for bash) would then be lost."""
+    import json
+    import subprocess
+
+    plugin = PACKAGE_ROOT / "opencode" / "plugin.ts"
+    script = f'''
+      const {{ applyUpdatedInput }} = await import({json.dumps(str(plugin))})
+      const results = {{}}
+
+      const taskOutput = {{ args: {{ subagent_type: "developer", description: "d" }} }}
+      applyUpdatedInput(taskOutput, {{ prompt: "MUTATED PROMPT" }})
+      results.task = {{
+        prompt: taskOutput.args.prompt,
+        subagent_type_preserved: taskOutput.args.subagent_type === "developer",
+      }}
+
+      const bashOutput = {{ args: {{ command: "rm -rf /", timeout: 5000 }} }}
+      applyUpdatedInput(bashOutput, {{ command: "echo cleaned" }})
+      results.bash = {{
+        command: bashOutput.args.command,
+        timeout_preserved: bashOutput.args.timeout === 5000,
+      }}
+
+      console.log(JSON.stringify(results))
+    '''
+    result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
+    payload = json.loads(result.stdout)
+
+    assert payload["task"]["prompt"] == "MUTATED PROMPT"
+    assert payload["task"]["subagent_type_preserved"] is True
+    assert payload["bash"]["command"] == "echo cleaned"
+    assert payload["bash"]["timeout_preserved"] is True
+
+
 def test_plugin_preserves_bash_failure_signals_for_post_tool_policy():
     import json
     import subprocess
