@@ -2601,10 +2601,25 @@ class ClaudeCodeAdapter(HookAdapter):
                     )
                 )
 
+        # The window the grant will carry once it is activated -- the same
+        # constant insert_file_path_grant defaults to. Imported lazily because
+        # gaia.store is not importable while the hook package loads.
+        try:
+            from gaia.store.writer import FILE_PATH_GRANT_TTL_MINUTES as window_minutes
+        except Exception:  # pragma: no cover - store unavailable at hook load
+            window_minutes = 30
+
         reason = (
             f"[T3_BLOCKED] This file modification requires user approval.\n"
             f"Do NOT retry this operation. Report APPROVAL_REQUEST with this approval_id "
             f"in your contract row.\n"
+            f"The approval expires. Once the user decides, the grant for this path stays "
+            f"usable for {window_minutes} minutes and then lapses on its own. The clock "
+            f"starts at their DECISION, not at this request, so the wait for an answer "
+            f"costs nothing -- but everything after it (your re-dispatch, grounding, the "
+            f"edits and the tests between them) is spent inside that one window, and "
+            f"nothing you do extends it. A write attempted after it lapses is blocked "
+            f"again under a NEW approval_id; this one will not work twice.\n"
             f"File: {file_path}\n"
             f"Tool: {tool_name}\n"
             f"approval_id: P-{approval_id}"
