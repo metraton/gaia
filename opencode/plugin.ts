@@ -279,6 +279,18 @@ export type DecisionLane = "preferred" | "compatibility"
 /** Ordered strongest-first: a lane's index is its precedence rank. */
 export const DECISION_LANE_PRECEDENCE: DecisionLane[] = ["preferred", "compatibility"]
 
+/**
+ * Lifecycle events that carry no host decision to gate -- OpenCode never
+ * awaits this hook's return before continuing a session's lifecycle -- so
+ * forwarding them to Gaia's bridge is transport, not a permission check.
+ */
+const LIFECYCLE_EVENT_TYPES = new Set([
+  "session.idle",
+  "session.error",
+  "session.deleted",
+  "session.compacted",
+])
+
 export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
   if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
   if (typeof eventType === "string" && COMPATIBILITY_PERMISSION_EVENTS.includes(eventType)) {
@@ -704,6 +716,38 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           agentBySession.set(info.sessionID, info.agent)
           if (rootSessionID === undefined) rootSessionID = info.sessionID
           await attestOnce(info.sessionID, info.agent)
+        }
+        return
+      }
+      if (event.type === "message.part.updated") {
+        // The callID<->child-sessionID binding for a concurrent dispatch
+        // travels here, on the DISPATCHING session's own part, the moment
+        // the child session is named -- well before session.idle or
+        // tool.execute.after report the same call complete (measured:
+        // project_gaia_opencode_lifecycle_medido_2026_08_26). Filtered to
+        // this exact shape so the frequent non-tool part-stream is never
+        // forwarded.
+        const part = event.properties?.part
+        if (
+          part?.type === "tool"
+          && part.tool === "task"
+          && typeof part.sessionID === "string"
+          && typeof part.callID === "string"
+          && typeof part.state?.metadata?.sessionId === "string"
+        ) {
+          await send({
+            event: "message.part.updated",
+            sessionID: part.sessionID,
+            callID: part.callID,
+            state: { metadata: { sessionId: part.state.metadata.sessionId } },
+          })
+        }
+        return
+      }
+      if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
+        const sessionID = event.properties?.sessionID
+        if (typeof sessionID === "string") {
+          await send({ event: event.type, sessionID })
         }
         return
       }
