@@ -5082,64 +5082,30 @@ class ClaudeCodeAdapter(HookAdapter):
 
     @staticmethod
     def _maybe_claim_dispatch_kernel(raw: dict) -> Optional[str]:
-        """Claim the born row this start correlates to, stamp it, render its kernel.
+        """Translate a start event into the host-neutral dispatch-lifecycle
+        claim and return its rendered kernel (or None).
 
-        The correlation keys are the host's own SubagentStart coordinates:
-        ``prompt_id`` (matched against the ``dispatch_prompt_id`` stamped at
-        birth) and ``task_description`` (against ``dispatch_description``),
-        scoped by ``agent_type``. ``claim_dispatch_row`` owns the ladder and
-        the divergent-signature guard.
-
-        The harness agent id is stamped onto the claimed row HERE, right after
-        the claim resolves, because the claim is where both identifier spaces
-        first meet: the row carries the CLI-minted contract_id and ``raw``
-        carries the host-assigned ``agent_id``. Stamping at the claim (instead
-        of from a contract_id carried by the context cache) covers BOTH start
-        lanes -- cache hit and cache miss -- where the cache-borne stamp
-        silently lost the cache-miss lane, exactly the cut-turn traceability
-        the stamp exists for. SubagentStop cannot be the seam: it never fires
-        on a harness cut. The stamp runs before rendering so a render failure
-        cannot lose it; both are best-effort and never block the start.
-
-        Returns the joined kernel blocks, or None when nothing was claimed or
-        rendering failed -- callers read None as "keep the legacy path",
-        never as an error. Best-effort by contract: a start is never blocked
-        by the kernel.
+        All orchestration (claim -> stamp -> render) lives in the host-neutral
+        facade ``modules.agents.dispatch_lifecycle.claim_dispatch_kernel``;
+        this method only maps this host's own start-event fields onto that
+        facade's neutral arguments (``prompt_id`` -> ``dispatch_prompt_id``,
+        ``task_description`` -> ``dispatch_description``, ``agent_type`` ->
+        ``agent_name``, ``agent_id`` -> ``host_agent_id``). See the facade's
+        own docstring for why the stamp seam sits at the claim.
         """
         try:
-            from gaia.store.writer import claim_dispatch_row, stamp_harness_agent_id
-            from modules.context.kernel_builder import build_kernel_context
-
-            agent_type = raw.get("agent_type", "")
-            row = claim_dispatch_row(
-                agent_name=agent_type or None,
-                dispatch_prompt_id=raw.get("prompt_id") or None,
-                dispatch_description=raw.get("task_description") or None,
-            )
-            if row is None:
-                return None
-            try:
-                _stamp = stamp_harness_agent_id(
-                    row.get("contract_id") or None,
-                    raw.get("agent_id", "") or None,
-                )
-                if _stamp.get("status") == "applied":
-                    logger.info(
-                        "Harness agent id stamped: contract_id=%s harness_agent_id=%s",
-                        row.get("contract_id"), raw.get("agent_id"),
-                    )
-            except Exception as exc:
-                logger.debug("Harness agent id stamp failed (non-fatal): %s", exc)
-            kernel = build_kernel_context(row, agent_name=agent_type)
-            if kernel:
-                logger.info(
-                    "Dispatch kernel injected (contract_id=%s, agent=%s)",
-                    row.get("contract_id"), agent_type or "unknown",
-                )
-            return kernel
+            from modules.agents.dispatch_lifecycle import claim_dispatch_kernel
         except Exception as exc:
             logger.debug("dispatch claim/kernel failed (non-fatal): %s", exc)
             return None
+
+        agent_type = raw.get("agent_type", "")
+        return claim_dispatch_kernel(
+            agent_name=agent_type or None,
+            dispatch_prompt_id=raw.get("prompt_id") or None,
+            dispatch_description=raw.get("task_description") or None,
+            host_agent_id=raw.get("agent_id", "") or None,
+        )
 
     # ------------------------------------------------------------------ #
     # P2: adapt_subagent_start
