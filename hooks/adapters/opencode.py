@@ -43,11 +43,11 @@ if TYPE_CHECKING:
 _EVENT_TYPES = {
     "tool.execute.before": HookEventType.PRE_TOOL_USE,
     "tool.execute.after": HookEventType.POST_TOOL_USE,
-    "session.created": HookEventType.SESSION_START,
+    "message.part.updated": HookEventType.SUBAGENT_START,
     "session.idle": HookEventType.STOP,
-    "session.compacted": HookEventType.POST_COMPACT,
     "session.error": HookEventType.POST_TOOL_USE_FAILURE,
-    "message.updated": HookEventType.USER_PROMPT_SUBMIT,
+    "session.deleted": HookEventType.SESSION_END,
+    "session.compacted": HookEventType.POST_COMPACT,
 }
 
 _PATCH_PATH_MARKER = re.compile(
