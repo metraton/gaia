@@ -50,8 +50,8 @@ binding, it is no binding at all.
 
 The user's reply must be resolvable to the `approval_id`, because that
 identifier is what the hook layer matches against the pending row before any
-grant exists (`hooks/modules/security/approval_grants.py::extract_nonce_from_label`
-feeding `hooks/modules/security/approval_grants.py::activate_db_pending_by_prefix`).
+grant exists (`hooks/modules/security/approval_grants.py::extract_approval_id_from_label`
+feeding `hooks/modules/security/approval_grants.py::activate_db_pending_by_id`).
 
 How the identifier gets there turns on one condition:
 
@@ -64,18 +64,10 @@ How the identifier gets there turns on one condition:
 
 For the second case, Gaia's resolver reads one form and only that form: the
 selected control's text must begin with the literal English word `Approve` and
-must carry the approval id's leading hex characters bracketed as `[P-<hex>]`. A
-translated verb, any paraphrase of `Approve`, the hex without the brackets, or
-the full `approval_id` substituted for the `[P-...]` tag all read as no
-identifier at all.
-
-Carry the full 8-character nonce.
-`hooks/modules/security/approval_grants.py::activate_db_pending_by_prefix`
-matches the FIRST pending row whose id starts with `P-<captured prefix>` and
-neither detects nor rejects a multi-row match, so truncating further to save
-space in the control is a real collision risk: two pendings sharing a short
-prefix would silently activate the wrong one, with none of the ambiguity error
-that `gaia approvals show` raises on the CLI side.
+must end with the complete canonical id bracketed as `[P-<32 lowercase hex>]`.
+A translated verb, any paraphrase of `Approve`, a short display label, a raw
+nonce, or suffix text after the bracket all read as no identifier. Activation
+then resolves that exact id; it never scans for a matching prefix.
 
 ## What a harness has to be able to do
 

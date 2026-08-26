@@ -41,7 +41,7 @@ paths, or function signatures inside a task.
 This is deliberate. Execution surfaces discoveries the planner cannot see:
 an approval gate fires and changes the command, byte-coding or a refactor moves
 a symbol, a downstream task lands a file somewhere the plan did not predict. A
-task that pins `hooks/modules/security/approval_grants.py:activate_db_pending_by_prefix`
+task that pins `hooks/modules/security/approval_grants.py:activate_db_pending_by_id`
 breaks the moment that symbol moves -- and worse, every downstream task that
 referenced the pinned name breaks with it. A task that says "the approval
 grant activation path" survives the move, because the executing agent resolves

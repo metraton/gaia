@@ -28,13 +28,13 @@ executes one index per call.
 Grant activation is driven entirely by the decision the user makes -- there is no
 separate confirmation step, and no reply that fails to resolve to the pending row
 activates anything. The reply must be resolvable to the `approval_id`:
-`hooks/modules/security/approval_grants.py::extract_nonce_from_label` recovers the
-identifier's leading hex characters, and
-`hooks/modules/security/approval_grants.py::activate_db_pending_by_prefix` matches
-that prefix against pending rows whose `id` starts with `P-{prefix}`.
+`hooks/modules/security/approval_grants.py::extract_approval_id_from_label`
+recovers the complete canonical id, and
+`hooks/modules/security/approval_grants.py::activate_db_pending_by_id` matches
+that exact id against one pending row.
 
 If the identifier does not survive into the reply, nothing activates:
-`activate_db_pending_by_prefix` is never called, no grant is inserted, and the
+`activate_db_pending_by_id` is never called, no grant is inserted, and the
 user's decision has no effect on the ledger -- the pending stays `PENDING` and
 every retry of the originally blocked command re-blocks on the same
 `approval_id`, indistinguishable from a decision never having been made. Carrying
@@ -48,13 +48,12 @@ reply carrying its own correlation handle back to the request already resolves;
 a reply carrying none resolves only through what it does return, which is the
 text of the control the user selected. For that second case Gaia's resolver
 reads one form: the text begins with the literal English word `Approve` and
-carries the id's leading hex characters bracketed as `[P-<hex>]`, with the full
-8-character nonce, since `activate_db_pending_by_prefix` takes the first
-prefix-matching pending row and reports no ambiguity on a multi-row match.
+ends with the complete canonical id bracketed as `[P-<32 lowercase hex>]`.
+Compact display labels and raw nonces resolve to nothing.
 
 `gaia approvals approve <approval_id>` is a separate, CLI-only admin verb: it
 writes `APPROVED` directly to the `approvals` table but does **not** call
-`activate_db_pending_by_prefix` and does **not** create a hook-side grant. It
+`activate_db_pending_by_id` and does **not** create a hook-side grant. It
 is not an alternate activation path -- running it does not make the blocked
 command executable, and it does not trigger the automatic re-dispatch that
 follows a genuine approval decision by the user. See `pending-approvals` for when
