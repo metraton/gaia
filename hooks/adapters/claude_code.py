@@ -5090,8 +5090,12 @@ class ClaudeCodeAdapter(HookAdapter):
         this method only maps this host's own start-event fields onto that
         facade's neutral arguments (``prompt_id`` -> ``dispatch_prompt_id``,
         ``task_description`` -> ``dispatch_description``, ``agent_type`` ->
-        ``agent_name``, ``agent_id`` -> ``host_agent_id``). See the facade's
-        own docstring for why the stamp seam sits at the claim.
+        ``agent_name``, ``agent_id`` -> ``host_agent_id``, ``tool_use_id`` ->
+        ``dispatch_tool_use_id``). See the facade's own docstring for why the
+        stamp seam sits at the claim. ``tool_use_id`` is mapped for
+        forward-compatibility only: this host's SubagentStart payload carries
+        no such key today, so the mapping always resolves to ``None`` here and
+        the exact-callID layer 0 never engages on this host's live path.
         """
         try:
             from modules.agents.dispatch_lifecycle import claim_dispatch_kernel
@@ -5105,6 +5109,7 @@ class ClaudeCodeAdapter(HookAdapter):
             dispatch_prompt_id=raw.get("prompt_id") or None,
             dispatch_description=raw.get("task_description") or None,
             host_agent_id=raw.get("agent_id", "") or None,
+            dispatch_tool_use_id=raw.get("tool_use_id") or None,
         )
 
     # ------------------------------------------------------------------ #

@@ -1,8 +1,9 @@
 """
 Dispatch lifecycle -- host-neutral claim -> stamp -> render sequence for a
 starting subagent turn (plan 65 T5, move-only extraction out of a specific
-host adapter's own module; the exact-callID join layer belongs to a later
-task and is deliberately not added here).
+host adapter's own module; T7 threads the exact-callID correlation key
+through as a fifth neutral argument -- the ladder itself lives in
+``claim_dispatch_row``, this facade only forwards what it is given).
 
 This is the CLAIM seam, not the birth one (see ``dispatch_binding``): the
 nascent ``agent_contract_handoffs`` row was already born earlier in the
@@ -13,7 +14,7 @@ two identifier spaces first meet, which is also where the recovery join used
 after an unfinalized cut is stamped.
 
 Kept free of any host-specific vocabulary on purpose: a caller translates its
-own event shape into the four neutral arguments below and reads back either
+own event shape into the five neutral arguments below and reads back either
 the rendered kernel text or ``None``. That translation -- and everything that
 knows what a particular host's start event looks like -- stays entirely on
 the caller's side.
@@ -33,11 +34,15 @@ def claim_dispatch_kernel(
     dispatch_prompt_id: Optional[str],
     dispatch_description: Optional[str],
     host_agent_id: Optional[str],
+    dispatch_tool_use_id: Optional[str] = None,
 ) -> Optional[str]:
     """Claim the born row a turn-start correlates to, stamp it, render its kernel.
 
     ``dispatch_prompt_id`` / ``dispatch_description`` are the correlation keys
     against the row's own columns of the same name, scoped by ``agent_name``;
+    ``dispatch_tool_use_id`` is the exact-callID layer 0 key, forwarded
+    unchanged -- a caller with no such coordinate (today's Claude Code) omits
+    it and the ladder behaves exactly as before this parameter existed.
     ``claim_dispatch_row`` owns the ladder and the divergent-signature guard.
 
     ``host_agent_id`` is stamped onto the claimed row as its
@@ -64,6 +69,7 @@ def claim_dispatch_kernel(
             agent_name=agent_name or None,
             dispatch_prompt_id=dispatch_prompt_id or None,
             dispatch_description=dispatch_description or None,
+            dispatch_tool_use_id=dispatch_tool_use_id or None,
         )
         if row is None:
             return None
