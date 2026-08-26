@@ -991,8 +991,12 @@ class TestCmdDoctorJson:
         # 1 symbol-anchors (order 54 -- skill/agent symbol references carry a
         #   resolvable file::symbol anchor; a prose-paren reference names no
         #   file, so a deleted symbol left four stale citations and only the
-        #   one anchored citation was caught).
-        assert len(data["checks"]) == 30
+        #   one anchored citation was caught) +
+        # 1 executed-copy-alignment (order 59 -- names the realpath actually
+        #   resolved from node_modules and reports aligned vs divergent when a
+        #   package-manager install re-materializes a stale pinned tarball
+        #   over a dev symlink, silently and without a version bump).
+        assert len(data["checks"]) == 31
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
