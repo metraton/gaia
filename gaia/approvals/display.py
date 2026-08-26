@@ -7,7 +7,7 @@ text only.
 Public API:
     format_age(seconds) -> str
     print_approvals_table(rows) -> None
-    print_approval_detail(approval, events) -> None
+    print_approval_detail(approval, events, grant=None) -> None
     print_events_table(events) -> None
     print_history_table(rows) -> None
 """
@@ -85,15 +85,39 @@ def print_approvals_table(rows: List[Dict[str, Any]]) -> None:
     print(f"\n{len(rows)} approval(s).")
 
 
+def _window_note(expires_at: str) -> str:
+    """Say whether a grant's window is still open, in words a reader can act on.
+
+    A bare timestamp asks the reader to subtract; the whole reason this plane was
+    invisible is that "approved" was read as "usable".
+    """
+    try:
+        expiry = datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (ValueError, TypeError):
+        return "unknown"
+    remaining = (expiry - datetime.now(timezone.utc)).total_seconds()
+    if remaining > 0:
+        return f"open, {format_age(remaining)} left"
+    return f"closed {format_age(-remaining)} ago -- a write now needs a new approval"
+
+
 def print_approval_detail(
     approval: Dict[str, Any],
     events: List[Dict[str, Any]],
+    grant: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Print full detail for a single approval including its event chain.
 
     Args:
         approval: Single approval dict from store.get_by_id().
         events: Ordered list of approval_events from store.get_history().
+        grant: The approval_grants row for the same id, when one exists. It is a
+            different fact from ``approval['status']``: the decision says the
+            user signed, the grant says whether that signature is still usable.
+            Omitting it printed ``approved`` for a capability that had already
+            expired.
     """
     approval_id = approval.get("id", "?")
     status = approval.get("status", "?")
@@ -134,6 +158,17 @@ def print_approval_detail(
         f"  Agent       : {agent_id}",
         f"  Fingerprint : {fingerprint[:16]}..." if len(fingerprint) > 16 else f"  Fingerprint : {fingerprint}",
     ]
+
+    lines.append("")
+    if grant:
+        expires_at = grant.get("expires_at") or "-"
+        lines.append("  Grant:")
+        lines.append(f"    grant_state  : {grant.get('status') or '-'}")
+        lines.append(f"    scope        : {grant.get('scope') or '-'}")
+        lines.append(f"    expires_at   : {expires_at}")
+        lines.append(f"    window       : {_window_note(expires_at)}")
+    else:
+        lines.append("  Grant       : none -- no capability is armed for this approval")
 
     if payload:
         lines.append("")

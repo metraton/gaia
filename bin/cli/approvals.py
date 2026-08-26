@@ -1193,12 +1193,34 @@ def _resolve_approval_id(raw_id: str) -> str:
     return raw_id.strip()
 
 
+def _grant_row_for(approval_id: str) -> dict | None:
+    """Read the approval_grants row an approval armed, when it armed one.
+
+    Two rows describe one approval: ``approvals`` holds the decision the user
+    made, ``approval_grants`` holds whether that decision is still usable. A
+    detail view built from the first alone answers "was this approved?" with
+    ``approved`` for a capability whose window closed minutes later.
+    """
+    try:
+        writer = _import_writer()
+        for row in writer.list_approval_grants(limit=1000):
+            if row.get("approval_id") == approval_id:
+                return row
+    except Exception:
+        return None
+    return None
+
+
 def cmd_show_v2(args) -> int:
     """Show full detail for an approval from the new approvals table.
 
     Looks up the full canonical id by exact equality. The fallback preserves
     exact legacy grant-id lookup only; it does not introduce pending-prefix
     matching.
+
+    Renders the grant plane alongside the decision -- grant_state, expires_at
+    and whether the window is still open -- because those live in
+    ``approval_grants``, which this command never read.
 
     Exits 0 on success, 1 when not found.
     """
@@ -1223,12 +1245,18 @@ def cmd_show_v2(args) -> int:
             _print_error(f"Failed to load approval: {exc}", args)
             return 1
 
+    grant = _grant_row_for(raw_id)
+
     if output_json:
-        print(json.dumps({"approval": approval, "events": events}, indent=2, default=str))
+        print(json.dumps(
+            {"approval": approval, "events": events, "grant": grant},
+            indent=2,
+            default=str,
+        ))
         return 0
 
     display = _import_approval_display()
-    display.print_approval_detail(approval, events)
+    display.print_approval_detail(approval, events, grant=grant)
     return 0
 
 
