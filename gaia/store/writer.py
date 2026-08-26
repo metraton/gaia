@@ -125,6 +125,44 @@ PLAN_COMMAND_SET_TTL_MINUTES = 60
 
 
 # ---------------------------------------------------------------------------
+# SCOPE_FILE_PATH grant lifetime
+# ---------------------------------------------------------------------------
+#
+# FILE_PATH_GRANT_TTL_MINUTES bounds a protected-path Write/Edit grant: the
+# window in which an approved path may still be written.
+#
+# It is a FOURTH window because this lane's round trip is not the one
+# APPROVAL_GRANT_TTL_MINUTES (5) was calibrated for. That window covers a Bash
+# retry: the blocked subagent is still alive and re-presents the same command on
+# its next tool call. A protected-path write cannot do that -- the orchestrator
+# closes its turn to present the approval, then RE-DISPATCHES a fresh subagent,
+# which must ground itself (skills, files, investigation) before it reaches the
+# file. The clock starts at the user's DECISION, so the whole re-dispatch plus
+# grounding is spent inside the window, and 5 minutes measured 0% consumption on
+# this lane: every SCOPE_FILE_PATH grant a user ever signed expired unused.
+# DEFAULT_PENDING_TTL_MINUTES (1440) is the opposite error, for the reason
+# recorded above it: that is how long an UNANSWERED approval waits for a human,
+# and reusing it here would leave a signed key to a protected path armed for a
+# day.
+#
+# 30 minutes is sized to one re-dispatch cycle plus the multi-edit pass that
+# follows it: a real fix to a protected file is several Edit calls to the same
+# path with reads and test runs between them, all of which this one consent must
+# cover. It is half of PLAN_COMMAND_SET_TTL_MINUTES because the authority is
+# narrower -- one exact path, and only through Write/Edit, which produce inert
+# bytes rather than executing anything -- and it stays inside the sitting in
+# which the person approved it.
+#
+# Unlike the two windows above, this one is the lane's ONLY bound. The grant is
+# NOT consumed at the match: a path grant is deliberately reusable inside its
+# window, because consuming it on the first Edit would demand a fresh user
+# approval for every subsequent Edit to the same file. So the TTL here carries
+# the replay bound alone, which is why it must be short enough to matter and is
+# measured from creation, never extended by a write.
+FILE_PATH_GRANT_TTL_MINUTES = 30
+
+
+# ---------------------------------------------------------------------------
 # Connection management
 # ---------------------------------------------------------------------------
 
@@ -7173,12 +7211,18 @@ def consume_db_semantic_grant(
 # approval_grants table so all grant lifecycle is visible in one place.
 #
 # Lifecycle:
-#   insert_file_path_grant()       -- called by activate_db_pending_by_prefix()
+#   insert_file_path_grant()       -- called by activate_db_pending_by_id()
 #                                     SCOPE_FILE_PATH branch; writes status=PENDING.
 #   check_db_file_path_grant()     -- called by check_approval_grant_for_file();
 #                                     returns the matching row dict.
-#   consume_db_file_path_grant()   -- called by _adapt_write_edit after allowing
-#                                     the protected-path write; sets CONSUMED.
+#   consume_db_file_path_grant()   -- available, and deliberately UNCALLED: a
+#                                     path grant stays reusable for its whole
+#                                     window (see FILE_PATH_GRANT_TTL_MINUTES),
+#                                     since a protected-path fix is several Edits
+#                                     to one file and consuming the grant on the
+#                                     first would re-prompt the user for each of
+#                                     the rest. Kept for an operator/close path
+#                                     that needs to retire one grant early.
 # ---------------------------------------------------------------------------
 
 
@@ -7189,12 +7233,12 @@ def insert_file_path_grant(
     *,
     agent_id: str | None = None,
     session_id: str | None = None,
-    ttl_minutes: int = APPROVAL_GRANT_TTL_MINUTES,
+    ttl_minutes: int = FILE_PATH_GRANT_TTL_MINUTES,
     db_path: Path | None = None,
 ) -> dict:
     """Insert a SCOPE_FILE_PATH row into approval_grants (status=PENDING).
 
-    Called by activate_db_pending_by_prefix() when a SCOPE_FILE_PATH pending
+    Called by activate_db_pending_by_id() when a SCOPE_FILE_PATH pending
     approval is activated (user approved the protected-path write).  The row
     is later found by check_db_file_path_grant() on the subagent retry.
 
@@ -7206,7 +7250,9 @@ def insert_file_path_grant(
         agent_id: Requesting agent identifier (audit only).
         session_id: CLAUDE_SESSION_ID at grant time (audit only -- the check
             side is cross-session, same as SCOPE_SEMANTIC_SIGNATURE).
-        ttl_minutes: Grant lifetime in minutes.
+        ttl_minutes: Grant lifetime in minutes, measured from now. Defaults to
+            FILE_PATH_GRANT_TTL_MINUTES -- this lane's window, not the Bash
+            lane's APPROVAL_GRANT_TTL_MINUTES.
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
