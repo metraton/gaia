@@ -46,6 +46,11 @@ _VERIFICATION_ABSENT = (
     "No verification step was declared with this request; confirm the resulting "
     "state yourself before granting again."
 )
+_WINDOW_ABSENT = (
+    "No window was declared with this request; approving it is still not permanent -- "
+    "the grant your decision creates expires on its own, and its clock starts at that "
+    "decision rather than when the request was raised."
+)
 _OPERATION_ABSENT = "Execute a T3 operation"
 _SCOPE_ABSENT = "unscoped"
 _RISK_ABSENT = "unknown"
@@ -75,6 +80,7 @@ VISIBLE_FIELDS = (
     ("risk", "RISK", ("risk_level", "risk"), _RISK_ABSENT),
     ("rollback", "ROLLBACK", ("rollback_hint", "rollback"), _ROLLBACK_ABSENT),
     ("verification", "VERIFICATION", ("verification",), _VERIFICATION_ABSENT),
+    ("window", "WINDOW", ("window",), _WINDOW_ABSENT),
 )
 
 _LABEL_WIDTH = max(len(label) for _, label, _, _ in VISIBLE_FIELDS) + 2
@@ -151,6 +157,14 @@ def envelope_from_sealed_payload(
     the three for every other verdict. Each is filled from the payload when its
     producer declares it and otherwise states that nothing was declared -- see
     :func:`sealed_field`.
+
+    ``window`` reaches the surface the same way, and no producer seals it yet:
+    the lifetime of the grant a decision creates is decided on the grant plane
+    (the per-lane TTL constants in ``gaia.store.writer``), not in the payload,
+    so every surface currently shows its declared-absence text. That text still
+    says the thing a signer must know -- that the grant expires and the clock
+    starts at their decision -- and the exact figure arrives the day a producer
+    declares the key.
     """
     commands = payload_commands(payload)
     if not commands:
@@ -164,6 +178,7 @@ def envelope_from_sealed_payload(
         risk=sealed_field(payload, "risk"),
         rollback=sealed_field(payload, "rollback"),
         verification=sealed_field(payload, "verification"),
+        window=sealed_field(payload, "window"),
         binding=binding,
         role_context=RoleCapabilityContext(role=role or binding.agent_id or "unattributed"),
         approval_id=approval_id,
@@ -215,6 +230,7 @@ def native_metadata(envelope: ConsentRequestEnvelope) -> dict[str, Any]:
         "risk": envelope.risk,
         "rollback": envelope.rollback,
         "verification": envelope.verification,
+        "window": envelope.window,
         "binding": {
             "agent_id": envelope.binding.agent_id,
             "session_id": envelope.binding.session_id,
