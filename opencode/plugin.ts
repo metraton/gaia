@@ -466,10 +466,13 @@ async function announceLiveness(input: any): Promise<void> {
   const loadedAt = new Date().toISOString()
   const message = `${LIVENESS_PREFIX} pid=${process.pid} loaded_at=${loadedAt} export=GaiaOpenCodePlugin`
   const app = input?.client?.app
-  const log = app?.log
-  if (typeof log === "function") {
+  // Call through the receiver the host handed us, never a rebind: an
+  // extracted-then-rebound reference (`log.call(app, ...)`) is one more hop
+  // than the host's own SDK ever takes to reach this method, and the ledger's
+  // measured this._client failures line up with exactly that extra hop.
+  if (typeof app?.log === "function") {
     try {
-      await log.call(app, {
+      await app.log({
         body: {
           service: "gaia-opencode-plugin",
           level: "info",
@@ -482,7 +485,11 @@ async function announceLiveness(input: any): Promise<void> {
       throw new Error(`${LIVENESS_PREFIX} host log failed: ${error}`)
     }
   }
-  console.error(message)
+  // A raw stream write, never console.error: Bun colorizes error-level
+  // console output with ANSI escapes whenever FORCE_COLOR is set in the
+  // environment, even off a TTY, which corrupts the literal line every
+  // consumer of this liveness signal (tests, host-log scans) matches against.
+  process.stderr.write(`${message}\n`)
 }
 
 export const GaiaOpenCodePlugin = async (input: any) => {
