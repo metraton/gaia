@@ -922,22 +922,27 @@ class TestLinkModeSharesTheOpenCodeExportGuard(unittest.TestCase):
         return rc, out.getvalue()
 
     def test_violating_export_fails_naming_the_install_guard(self):
+        """A plugin with no default {id, server} export fails the guard: the
+        installed OpenCode loader's fallback would scan and invoke every
+        exported value as its own plugin entry point (dk()/lk()/pk(),
+        decompiled) once a real second export exists -- the guard requires
+        the default export that makes the loader skip that scan entirely."""
         with tempfile.TemporaryDirectory(prefix="gaia-dev-link-guard-") as tmp:
             rc, out = self._run_link_mode_opencode(
                 Path(tmp),
-                'export const GaiaOpenCodePlugin = async () => ({})\n'
-                'export default { id: "gaia", server: GaiaOpenCodePlugin }\n',
+                'export const GaiaOpenCodePlugin = async () => ({})\n',
             )
             self.assertEqual(rc, 1, out)
             self.assertIn(
-                "OpenCode plugin must not expose a default object export", out
+                "OpenCode plugin has no default {id, server} export", out
             )
 
     def test_conforming_export_passes_through_the_same_guard(self):
         with tempfile.TemporaryDirectory(prefix="gaia-dev-link-guard-") as tmp:
             rc, out = self._run_link_mode_opencode(
                 Path(tmp),
-                'export const GaiaOpenCodePlugin = async () => ({})\n',
+                'export const GaiaOpenCodePlugin = async () => ({})\n'
+                'export default { id: "gaia", server: GaiaOpenCodePlugin }\n',
             )
             self.assertEqual(rc, 0, out)
             self.assertIn("OpenCode plugin", out)

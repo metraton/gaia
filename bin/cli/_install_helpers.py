@@ -167,11 +167,26 @@ def configure_opencode_plugin(
             config_path,
             "OpenCode plugin has no callable GaiaOpenCodePlugin named export",
         )
-    if re.search(r"export\s+default\b", plugin_source):
+    # The installed OpenCode loader (decompiled: dk()/lk()/pk() in the
+    # opencode-ai binary) takes a fast path ONLY when the module's default
+    # export matches {id, server: <function>} -- that path calls default.server
+    # directly and never scans the module's other exports. Without a matching
+    # default, the loader's fallback invokes EVERY function/{server:fn}-shaped
+    # export in the file as its own plugin entry point, which is what broke
+    # live loading when the default export was removed. The official docs
+    # (opencode.ai/docs/plugins/) name only the named-export form; the
+    # decompiled loader is ground truth over the docs.
+    if not re.search(
+        r"export\s+default\s*\{[^}]*\bserver\s*:\s*GaiaOpenCodePlugin\b[^}]*\}",
+        plugin_source,
+        re.DOTALL,
+    ):
         return _result(
             "error",
             config_path,
-            "OpenCode plugin must not expose a default object export",
+            "OpenCode plugin has no default {id, server} export -- the "
+            "installed OpenCode loader's fast path requires it to skip "
+            "scanning every other module export",
         )
     policy = _read_json(policy_path)
     if not isinstance(policy, dict):

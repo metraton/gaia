@@ -797,3 +797,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     },
   }
 }
+
+// The installed OpenCode loader (decompiled: dk()/lk()/pk()) takes a fast
+// path when the module's default export matches {id, server: <function>},
+// calling ONLY default.server(app, options) and never scanning the rest of
+// the module's exports. Without this, the loader's fallback invokes EVERY
+// exported function/{server:fn} value in this file as if it were its own
+// plugin entry point -- including the helpers, the class, and the constants
+// below -- which is what broke live loading after 4daa9bd removed this
+// export. The official docs name only the named-export form; the decompiled
+// loader is ground truth over the docs.
+export default {
+  id: "gaia",
+  server: GaiaOpenCodePlugin,
+}
