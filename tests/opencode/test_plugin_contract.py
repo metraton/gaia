@@ -15,48 +15,31 @@ def test_plugin_learns_identity_from_real_message_events():
 
 
 def test_plugin_uses_opencode_named_function_export_contract():
+    """Mirrors the install guard's own predicate (_install_helpers.py::
+    configure_opencode_plugin): a callable named GaiaOpenCodePlugin export is
+    required, and a default object export is rejected -- per e9468d8 and the
+    official OpenCode docs (opencode.ai/docs/plugins/), which document only
+    the named-async-function export, never `export default`."""
     source = (PACKAGE_ROOT / "opencode" / "plugin.ts").read_text()
 
     assert "export const GaiaOpenCodePlugin = async" in source
-    assert 'export default {\n  id: "gaia",\n  server: GaiaOpenCodePlugin,\n}' in source
+    assert "export default" not in source
 
 
-def test_opencode_loader_prefers_usable_default_and_has_a_narrow_named_fallback():
+def test_opencode_loader_resolves_the_named_export_with_no_default_present():
     import json
     import subprocess
 
     plugin = PACKAGE_ROOT / "opencode" / "plugin.ts"
     script = f'''
       const module = await import({json.dumps(str(plugin))})
-      function selectLoaderExport(candidate) {{
-        if (candidate.default && typeof candidate.default.server === "function") {{
-          return {{ path: "default", server: candidate.default.server }}
-        }}
-        if (typeof candidate.GaiaOpenCodePlugin === "function") {{
-          return {{ path: "named", server: candidate.GaiaOpenCodePlugin }}
-        }}
-        throw new Error("no usable Gaia OpenCode plugin export")
-      }}
-      const preferred = selectLoaderExport(module)
-      const fallback = selectLoaderExport({{ GaiaOpenCodePlugin: async () => ({{}}) }})
-      let rejected = false
-      try {{
-        selectLoaderExport({{ default: {{ id: "gaia", server: "not-callable" }}, GaiaOpenCodePlugin: {{}} }})
-      }} catch {{
-        rejected = true
-      }}
       console.log(JSON.stringify({{
-        preferred: {{ path: preferred.path, sameServer: preferred.server === module.GaiaOpenCodePlugin }},
-        fallback: fallback.path,
-        rejected,
+        hasDefault: "default" in module,
+        namedIsFunction: typeof module.GaiaOpenCodePlugin === "function",
       }}))
     '''
     result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
-    assert json.loads(result.stdout) == {
-        "preferred": {"path": "default", "sameServer": True},
-        "fallback": "named",
-        "rejected": True,
-    }
+    assert json.loads(result.stdout) == {"hasDefault": False, "namedIsFunction": True}
 
 
 def test_plugin_has_a_positive_process_liveness_signal():
