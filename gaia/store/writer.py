@@ -7388,10 +7388,15 @@ def consume_db_file_path_grant(
     *,
     db_path: Path | None = None,
 ) -> bool:
-    """Mark a SCOPE_FILE_PATH grant as CONSUMED (replay protection).
+    """Mark a SCOPE_FILE_PATH grant as CONSUMED, when something calls it.
 
-    Called by _adapt_write_edit immediately after a protected-path write is
-    allowed via a DB file-path grant.  Setting status=CONSUMED prevents reuse.
+    Nothing does: this function has no caller anywhere in the tree, so CONSUMED
+    is a state a path grant never reaches by this route. That is by design --
+    the grant stays reusable for its whole window, because a protected-path fix
+    is several Edits to one file and consuming it on the first would re-prompt
+    the user for each of the rest. In this lane the only thing that retires a
+    grant is FILE_PATH_GRANT_TTL_MINUTES running out. The function is kept
+    unwired for an operator or close path that needs to retire one grant early.
 
     Args:
         approval_id: The grant to consume.
