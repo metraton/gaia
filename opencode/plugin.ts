@@ -1,4 +1,6 @@
 import { fileURLToPath } from "node:url"
+import { lstatSync, realpathSync, statSync } from "node:fs"
+import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
 
 type BridgeResponse = {
   action: "allow" | "ask" | "deny"
@@ -24,6 +26,228 @@ type RoleCapabilityContext = {
 }
 
 type PermissionReply = "once" | "always" | "reject"
+
+type WorkspaceContext = {
+  cwd: string
+  worktree?: string
+}
+
+export type NormalizedBridgeToolRequest = {
+  tool: string
+  args: Record<string, unknown>
+  cwd?: string
+  worktree?: string
+  originalTool: unknown
+  originalArgs: unknown
+}
+
+const FILE_TOOL_NAMES: Record<string, "Write" | "Edit" | "apply_patch"> = {
+  write: "Write",
+  edit: "Edit",
+  applypatch: "apply_patch",
+  "functions.apply_patch": "apply_patch",
+  functionsapplypatch: "apply_patch",
+}
+
+function normalizedToken(value: unknown): string {
+  return typeof value === "string"
+    ? value.trim().toLowerCase().replace(/[\s._-]+/g, "")
+    : ""
+}
+
+function canonicalFileTool(value: unknown): "Write" | "Edit" | "apply_patch" | undefined {
+  if (typeof value !== "string") return undefined
+  return FILE_TOOL_NAMES[value.trim().toLowerCase()] ?? FILE_TOOL_NAMES[normalizedToken(value)]
+}
+
+function canonicalDirectory(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined
+  if (typeof value !== "string" || !isAbsolute(value)) {
+    throw new Error(`Gaia denied file tool: OpenCode ${label} is not an absolute path`)
+  }
+  let canonical: string
+  try {
+    canonical = realpathSync.native(value)
+    if (!statSync(canonical).isDirectory()) throw new Error("not a directory")
+  } catch {
+    throw new Error(`Gaia denied file tool: OpenCode ${label} is not a readable directory`)
+  }
+  return canonical
+}
+
+function workspaceContext(input: any): WorkspaceContext {
+  const directory = canonicalDirectory(input?.directory, "directory")
+  const worktree = canonicalDirectory(input?.worktree, "worktree")
+  if (!directory && !worktree) {
+    throw new Error("Gaia denied file tool: OpenCode supplied no trustworthy directory or worktree")
+  }
+  if (directory && worktree) {
+    const fromWorktree = relative(worktree, directory)
+    if (fromWorktree === ".." || fromWorktree.startsWith(`..${sep}`) || isAbsolute(fromWorktree)) {
+      throw new Error("Gaia denied file tool: OpenCode directory and worktree are ambiguous")
+    }
+  }
+  return { cwd: directory ?? worktree!, worktree }
+}
+
+function canonicalTarget(raw: unknown, cwd: string): string {
+  if (typeof raw !== "string" || !raw.trim() || raw.includes("\0")) {
+    throw new Error("Gaia denied file tool: target path is missing or malformed")
+  }
+  const root = isAbsolute(raw) ? parse(raw).root : cwd
+  const suffix = isAbsolute(raw) ? raw.slice(root.length) : raw
+  let canonical = root
+  let unresolved = false
+  for (const segment of suffix.split(sep)) {
+    if (!segment || segment === ".") continue
+    if (segment === "..") {
+      if (unresolved) {
+        throw new Error("Gaia denied file tool: unresolved traversal is ambiguous")
+      }
+      canonical = dirname(canonical)
+      continue
+    }
+    const candidate = resolve(canonical, segment)
+    try {
+      lstatSync(candidate)
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") {
+        throw new Error("Gaia denied file tool: target path cannot be resolved")
+      }
+      canonical = candidate
+      unresolved = true
+      continue
+    }
+    try {
+      canonical = realpathSync.native(candidate)
+    } catch {
+      throw new Error("Gaia denied file tool: target path cannot be resolved")
+    }
+  }
+  if (canonical === dirname(canonical)) {
+    throw new Error("Gaia denied file tool: filesystem root is not a valid edit target")
+  }
+  return canonical
+}
+
+function valuesForKeys(args: Record<string, unknown>, accepted: Set<string>): unknown[] {
+  return Object.entries(args)
+    .filter(([key]) => accepted.has(normalizedToken(key)))
+    .map(([, value]) => value)
+}
+
+function normalizeSinglePath(args: Record<string, unknown>, cwd: string): Record<string, unknown> {
+  const supplied = valuesForKeys(args, new Set(["path", "filepath"]))
+  if (supplied.length === 0) {
+    throw new Error("Gaia denied file tool: path or file_path is required")
+  }
+  const canonical = supplied.map((value) => canonicalTarget(value, cwd))
+  if (canonical.some((value) => value !== canonical[0])) {
+    throw new Error("Gaia denied file tool: path and file_path identify different targets")
+  }
+  return { ...args, file_path: canonical[0] }
+}
+
+const PATCH_PATH_MARKER = /^\*\*\* (Add File|Update File|Delete File|Move to): (.+)$/
+
+function normalizePatch(args: Record<string, unknown>, cwd: string): Record<string, unknown> {
+  const supplied = valuesForKeys(args, new Set(["patch", "patchtext"]))
+  if (supplied.length === 0 || supplied.some((value) => typeof value !== "string")) {
+    throw new Error("Gaia denied file tool: apply_patch requires a patchText payload")
+  }
+  if (supplied.some((value) => value !== supplied[0])) {
+    throw new Error("Gaia denied file tool: patch payload aliases disagree")
+  }
+  const patchText = supplied[0] as string
+  const lines = patchText.split("\n")
+  if (lines[0] !== "*** Begin Patch" || lines.at(-1) !== "*** End Patch") {
+    throw new Error("Gaia denied file tool: apply_patch envelope is malformed")
+  }
+  const filePaths: string[] = []
+  const normalizedLines = [lines[0]]
+  let operation: "Add File" | "Update File" | "Delete File" | undefined
+  let operationHasBody = false
+  const requireCompleteOperation = () => {
+    if (operation !== "Delete File" && operation && !operationHasBody) {
+      throw new Error(`Gaia denied file tool: ${operation} contains no patch body`)
+    }
+  }
+  for (const line of lines.slice(1, -1)) {
+    if (!line.startsWith("*** ")) {
+      if (!operation || operation === "Delete File") {
+        throw new Error("Gaia denied file tool: apply_patch content is outside a file operation")
+      }
+      if (operation === "Add File" && !line.startsWith("+")) {
+        throw new Error("Gaia denied file tool: Add File content must use added lines")
+      }
+      if (
+        operation === "Update File"
+        && !["@@", "+", "-", " "].some((prefix) => line.startsWith(prefix))
+      ) {
+        throw new Error("Gaia denied file tool: Update File contains malformed patch content")
+      }
+      operationHasBody = true
+      normalizedLines.push(line)
+      continue
+    }
+    const marker = PATCH_PATH_MARKER.exec(line)
+    if (!marker) throw new Error(`Gaia denied file tool: unsupported apply_patch marker: ${line}`)
+    const markerKind = marker[1] as "Add File" | "Update File" | "Delete File" | "Move to"
+    if (markerKind === "Move to") {
+      if (operation !== "Update File" || operationHasBody) {
+        throw new Error("Gaia denied file tool: Move to must immediately follow Update File")
+      }
+    } else {
+      requireCompleteOperation()
+      operation = markerKind
+      operationHasBody = markerKind === "Delete File"
+    }
+    const target = canonicalTarget(marker[2].trim(), cwd)
+    filePaths.push(target)
+    normalizedLines.push(`*** ${markerKind}: ${target}`)
+  }
+  requireCompleteOperation()
+  if (filePaths.length === 0) {
+    throw new Error("Gaia denied file tool: apply_patch contains no file target")
+  }
+  normalizedLines.push(lines.at(-1)!)
+  return { ...args, patchText: normalizedLines.join("\n"), file_paths: filePaths }
+}
+
+/** Canonicalize governed file tools before any request reaches Gaia's bridge. */
+export function normalizeBridgeToolRequest(
+  tool: unknown,
+  args: unknown,
+  input: any,
+): NormalizedBridgeToolRequest {
+  const canonicalTool = canonicalFileTool(tool)
+  if (!canonicalTool) {
+    return {
+      tool: typeof tool === "string" ? tool : "",
+      args: args && typeof args === "object" && !Array.isArray(args)
+        ? args as Record<string, unknown>
+        : {},
+      originalTool: tool,
+      originalArgs: args,
+    }
+  }
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    throw new Error("Gaia denied file tool: tool arguments must be an object")
+  }
+  const context = workspaceContext(input)
+  const originalArgs = args as Record<string, unknown>
+  const normalizedArgs = canonicalTool === "apply_patch"
+    ? normalizePatch(originalArgs, context.cwd)
+    : normalizeSinglePath(originalArgs, context.cwd)
+  return {
+    tool: canonicalTool,
+    args: normalizedArgs,
+    cwd: context.cwd,
+    worktree: context.worktree,
+    originalTool: tool,
+    originalArgs,
+  }
+}
 
 /** Host reply spellings mapped onto the protocol vocabulary Gaia accepts. */
 const PERMISSION_REPLIES: Record<string, PermissionReply> = {
@@ -102,7 +326,39 @@ export class PermissionDecisionRouter {
 const bridgePath = fileURLToPath(new URL("./bridge.py", import.meta.url))
 const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))
 
+function traceableBridgeRequest(event: Record<string, unknown>): Record<string, unknown> {
+  const traceableArgs = (value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+    const args = value as Record<string, unknown>
+    const traced: Record<string, unknown> = { keys: Object.keys(args) }
+    for (const [key, item] of Object.entries(args)) {
+      const token = normalizedToken(key)
+      if (token === "path" || token === "filepath" || token === "filepaths") {
+        traced[key] = item
+      } else if ((token === "patch" || token === "patchtext") && typeof item === "string") {
+        traced[key] = item.split("\n").filter((line) => line.startsWith("*** "))
+      }
+    }
+    return traced
+  }
+  const role = event.roleContext as Record<string, unknown> | undefined
+  return {
+    ...event,
+    args: traceableArgs(event.args),
+    originalArgs: traceableArgs(event.originalArgs),
+    roleContext: role ? {
+      role: role.role,
+      issuer: role.issuer,
+      verified: role.verified,
+      attestation_present: typeof role.attestation === "string" && Boolean(role.attestation),
+    } : undefined,
+  }
+}
+
 async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
+  if (process.env.GAIA_DEBUG) {
+    console.error(`[gaia-opencode-bridge:request] ${JSON.stringify(traceableBridgeRequest(event))}`)
+  }
   const child = Bun.spawn(["python3", bridgePath], {
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
@@ -116,7 +372,15 @@ async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
     new Response(child.stdout).text(),
   ])
   if (code !== 0) throw new Error("Gaia policy bridge exited without a response")
-  return JSON.parse(output) as BridgeResponse
+  const response = JSON.parse(output) as BridgeResponse
+  if (process.env.GAIA_DEBUG) {
+    console.error(`[gaia-opencode-bridge:response] ${JSON.stringify({
+      action: response.action,
+      approval_id: response.approval_id,
+      has_updated_input: Boolean(response.updated_input),
+    })}`)
+  }
+  return response
 }
 
 async function gaiaCapture(args: string[]): Promise<{ ok: boolean; stdout: string }> {
@@ -217,13 +481,42 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // cannot exist before the primary one has taken a turn, so the first session
   // seen is the primary and every later one must inherit a grant instead.
   let rootSessionID: string | undefined
-  // The dispatch that created each child session, keyed by that child's
-  // session. It holds no entry for the primary session, which is what makes
-  // agentID absent there: Gaia reads any truthy agent_id as a subagent before
-  // it consults the attested control-plane context, so a role name in that
-  // field would leave the attested lane unreachable.
+  // The dispatch call that created each child session, keyed by that child's
+  // session. Written only when the parent's tool.execute.after reports the
+  // child it produced, so it is empty for the whole run of the child it
+  // describes: read it directly and every tool call a subagent makes carries no
+  // agent_id. Read it through dispatchHandle instead.
   const dispatchBySession = new Map<string, string>()
+  // One issuance per session even when two edges reach it at once. Without it a
+  // tool call landing while the event handler's attest is still in flight sees
+  // a named session with no claim yet and composes no context at all.
+  const attestInFlight = new Map<string, Promise<void>>()
   const decisions = new PermissionDecisionRouter()
+
+  /** The dispatch handle Gaia reads as agent_id, or undefined for the primary.
+   *
+   * One predicate answers "is this session a dispatch?" for every site that
+   * asks. A session other than the root one exists only because a dispatch
+   * created it, so it is a subagent from its first tool call -- which is long
+   * before the parent's tool.execute.after can report which call created it.
+   * Keying the answer on that record alone left agent_id absent for the whole
+   * child run, and Gaia's delegate mode reads an absent agent_id as an --agent
+   * main thread and denies the specialist its tools.
+   *
+   * The primary must stay undefined here: Gaia reads any truthy agent_id as a
+   * subagent before it consults the attested control-plane context, so a handle
+   * on that session would leave the attested lane unreachable.
+   */
+  function isPrimarySession(sessionID: string): boolean {
+    return rootSessionID !== undefined && sessionID === rootSessionID
+  }
+
+  function dispatchHandle(sessionID: string): string | undefined {
+    // Both arms fail closed on an unknown primary: no handle is issued, so an
+    // unidentifiable session is never handed the unrestricted subagent lane.
+    if (rootSessionID === undefined || isPrimarySession(sessionID)) return undefined
+    return dispatchBySession.get(sessionID) ?? sessionID
+  }
 
   function roleContext(sessionID: string): RoleCapabilityContext | undefined {
     const role = agentBySession.get(sessionID)
@@ -248,7 +541,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       // An unattested dispatcher has no grant to pass on, and the chain must
       // record a grantor that holds one.
       if (!parentAttestation) return
-    } else if (sessionID !== rootSessionID) {
+    } else if (!isPrimarySession(sessionID)) {
+      // A parentless claim belongs to the primary session alone, and which
+      // session that is is isPrimarySession's answer, not a second reading of
+      // rootSessionID that can drift from the one dispatchHandle applies.
       return
     }
     const response = await send({
@@ -261,6 +557,60 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     if (response.action === "allow" && typeof response.attestation === "string" && response.attestation) {
       attestationBySession.set(sessionID, response.attestation)
     }
+  }
+
+  function attestOnce(sessionID: string, role: string, grantor?: string): Promise<void> {
+    const running = attestInFlight.get(sessionID)
+    if (running) return running
+    const started = attest(sessionID, role, grantor).finally(() => {
+      attestInFlight.delete(sessionID)
+    })
+    attestInFlight.set(sessionID, started)
+    return started
+  }
+
+  /** Read the session's agent back from the host's own message record. */
+  async function hostAgent(sessionID: string, dispatching?: string): Promise<string | undefined> {
+    // OpenCode 1.18.23 passes tool.execute.before exactly {tool, sessionID,
+    // callID} at every trigger site, so this edge has no agent to read from the
+    // call. The name that identifies the session travels the event bus instead,
+    // which can still be undelivered when a dispatch arrives -- and a dispatch
+    // presenting no identity is refused. This asks the host for the same
+    // message object the bus event would have carried, so the name is still the
+    // host's and this edge composes none of its own.
+    try {
+      const messages = await input.client?.session?.messages?.({ sessionID })
+      const list = messages?.data
+      if (!Array.isArray(list)) return undefined
+      for (let index = list.length - 1; index >= 0; index--) {
+        const info = list[index]?.info
+        if (info?.role === "assistant" && typeof info.agent === "string" && info.agent) {
+          // handleSubtask persists the callee's own placeholder into the
+          // CALLER's transcript before triggering this edge, so the newest
+          // assistant name here can be the agent being dispatched rather than
+          // the one dispatching. Skipping the whole run of them costs a denial
+          // on a self-dispatch, which the next message.updated repairs; reading
+          // one would mint a claim only a host restart clears.
+          if (dispatching && info.agent === dispatching) continue
+          return info.agent
+        }
+      }
+    } catch {
+      return undefined
+    }
+    return undefined
+  }
+
+  async function identify(sessionID: string, dispatching?: string): Promise<string | undefined> {
+    let agent = agentBySession.get(sessionID)
+    if (!agent) {
+      agent = await hostAgent(sessionID, dispatching)
+      if (!agent) return undefined
+      agentBySession.set(sessionID, agent)
+      if (rootSessionID === undefined) rootSessionID = sessionID
+    }
+    await attestOnce(sessionID, agent)
+    return agent
   }
 
   async function decide(
@@ -321,7 +671,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (info?.role === "assistant" && typeof info.sessionID === "string" && typeof info.agent === "string") {
           agentBySession.set(info.sessionID, info.agent)
           if (rootSessionID === undefined) rootSessionID = info.sessionID
-          await attest(info.sessionID, info.agent)
+          await attestOnce(info.sessionID, info.agent)
         }
         return
       }
@@ -338,20 +688,26 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       await decide(approval, normalizePermissionReply(event.properties.reply), lane)
     },
     "tool.execute.before": async (call, output) => {
-      const agent = agentBySession.get(call.sessionID)
-      if (call.tool === "task") {
-        const requested = output.args?.subagent_type ?? output.args?.agent
-        if (typeof requested === "string") agentByCall.set(call.callID, requested)
-      }
+      const requested = call.tool === "task"
+        ? (output.args?.subagent_type ?? output.args?.agent)
+        : undefined
+      const dispatching = typeof requested === "string" ? requested : undefined
+      const agent = await identify(call.sessionID, dispatching)
+      if (dispatching) agentByCall.set(call.callID, dispatching)
+      const normalized = normalizeBridgeToolRequest(call.tool, output.args, input)
       const response = await send({
         event: "tool.execute.before",
         sessionID: call.sessionID,
         callID: call.callID,
-        agentID: dispatchBySession.get(call.sessionID),
+        agentID: dispatchHandle(call.sessionID),
         agent,
         roleContext: roleContext(call.sessionID),
-        tool: call.tool,
-        args: output.args,
+        tool: normalized.tool,
+        args: normalized.args,
+        cwd: normalized.cwd,
+        worktree: normalized.worktree,
+        originalTool: normalized.originalTool,
+        originalArgs: normalized.originalArgs,
       })
       if (response.action === "allow") {
         if (response.updated_input) output.args = response.updated_input
@@ -370,14 +726,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (typeof sessionID === "string" && dispatchedAgent) {
           agentBySession.set(sessionID, dispatchedAgent)
           dispatchBySession.set(sessionID, call.callID)
-          await attest(sessionID, dispatchedAgent, call.sessionID)
+          await attestOnce(sessionID, dispatchedAgent, call.sessionID)
         }
       }
       await send({
         event: "tool.execute.after",
         sessionID: call.sessionID,
         callID: call.callID,
-        agentID: dispatchBySession.get(call.sessionID),
+        agentID: dispatchHandle(call.sessionID),
         agent,
         roleContext: roleContext(call.sessionID),
         tool: call.tool,
@@ -386,4 +742,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       })
     },
   }
+}
+
+export default {
+  id: "gaia",
+  server: GaiaOpenCodePlugin,
 }

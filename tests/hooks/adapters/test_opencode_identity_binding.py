@@ -323,17 +323,22 @@ def test_the_event_plugin_ts_emits_reaches_the_attested_control_plane_lane(
     """
     fields = _bridge_call_fields("tool.execute.before")
 
-    assert set(fields) == set(PLUGIN_CONTROL_PLANE_EVENT) | {"agentID"}
+    assert set(fields) == set(PLUGIN_CONTROL_PLANE_EVENT) | {
+        "agentID", "cwd", "worktree", "originalTool", "originalArgs",
+    }
     assert fields["agent"] == "agent"
     # Any truthy agent_id classifies SUBAGENT before classify_session_role
     # consults the attested context, so a role name here makes this lane
     # unreachable end to end however well-formed the attestation is.
     assert fields["agentID"] != fields["agent"]
-    lookup = re.fullmatch(r"(\w+)\.get\(call\.sessionID\)", fields["agentID"])
-    assert lookup, f"agentID is not a per-session handle lookup: {fields['agentID']}"
-    assert re.findall(rf"{lookup.group(1)}\.set\(([^)]*)\)", _PLUGIN_SOURCE) == [
-        "sessionID, call.callID"
-    ]
+    assert fields["agentID"] == "dispatchHandle(call.sessionID)", (
+        f"agentID is not the single dispatch predicate: {fields['agentID']}"
+    )
+    # Both bridge calls must ask the same predicate. Reading the dispatch map
+    # directly is the spelling that left agent_id absent for a child's whole
+    # run, because that map is written only once the child has finished.
+    assert _PLUGIN_SOURCE.count("agentID: dispatchHandle(call.sessionID)") == 2
+    assert "agentID: dispatchBySession" not in _PLUGIN_SOURCE
 
     attested = dict(PLUGIN_CONTROL_PLANE_EVENT, roleContext=attested_orchestrator)
     payload = OpenCodeAdapter().build_policy_payload(
