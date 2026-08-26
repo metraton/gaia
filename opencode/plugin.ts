@@ -790,8 +790,3 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     },
   }
 }
-
-export default {
-  id: "gaia",
-  server: GaiaOpenCodePlugin,
-}
