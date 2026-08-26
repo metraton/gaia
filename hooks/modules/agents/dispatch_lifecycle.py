@@ -95,3 +95,69 @@ def claim_dispatch_kernel(
     except Exception as exc:
         logger.debug("dispatch claim/kernel failed (non-fatal): %s", exc)
         return None
+
+
+def reap_stale_turn(
+    *,
+    older_than_seconds: int,
+    db_path=None,
+) -> dict:
+    """Promote every DISPATCHED row whose host shows no liveness evidence.
+
+    Host-neutral facade (plan 65 T13): the promotion itself is
+    ``gaia.store.writer.reap_stale_dispatched_handoffs``, which knows only a
+    row's age and an injected liveness predicate -- nothing about attestation
+    ledgers or host runs. This function supplies that predicate from the ONE
+    host-specific liveness source Gaia has today
+    (``modules.security.host_attestation``), scoped by the row's OWN
+    ``session_id`` column (an existing signal, S2 -- no host_run_id column
+    was added: a row cannot name its own host_run, so the check widens to
+    "does ANY ledger still vouch for this session" instead).
+
+    A row is spared only when some ledger file both (a) contains a record
+    naming this row's ``session_id`` and (b) was itself modified inside the
+    same ``older_than_seconds`` window used to call the row stale -- i.e. the
+    attestation is ausente (no record at all) or vencida (the ledger has not
+    moved since before the row went stale). Absence of any match is read as
+    death, exactly as a SIGTERM'd host leaves no other trace.
+    """
+    from gaia.store.writer import reap_stale_dispatched_handoffs
+    from ..security.host_attestation import ledger_dir, ATTESTATION_SCHEME
+
+    def _session_has_live_attestation(row: dict) -> bool:
+        session_id = row.get("session_id")
+        if not session_id:
+            return False
+        try:
+            entries = list(ledger_dir().glob("*.json"))
+        except OSError:
+            return False
+        import json as _json
+        import os as _os
+        import time as _time
+
+        cutoff = _time.time() - older_than_seconds
+        for path in entries:
+            try:
+                if path.stat().st_mtime < cutoff:
+                    continue
+                raw = _json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            records = raw.get("records") if isinstance(raw, dict) else None
+            if not isinstance(records, dict):
+                continue
+            for token, value in records.items():
+                if (
+                    isinstance(value, dict)
+                    and value.get("session_id") == session_id
+                    and token.startswith(ATTESTATION_SCHEME)
+                ):
+                    return True
+        return False
+
+    return reap_stale_dispatched_handoffs(
+        older_than_seconds=older_than_seconds,
+        liveness_check=_session_has_live_attestation,
+        db_path=db_path,
+    )
