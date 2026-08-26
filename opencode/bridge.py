@@ -67,6 +67,19 @@ def _attest(raw: dict[str, object]) -> dict[str, object]:
     }
 
 
+# PostToolUseFailure, PostCompact and SessionEnd have no per-host adapter
+# method on ANY host yet -- Claude Code's own compact/session-end hooks
+# (hooks/pre_compact.py, hooks/post_compact.py, hooks/session_end_hook.py)
+# return the same schema-valid empty acknowledgment without adapter dispatch.
+# Routed here rather than denied, so a genuinely open lifecycle point is not
+# misreported as this bridge's "Unsupported" placeholder.
+_ACKNOWLEDGED_EVENT_KINDS = {"PostToolUseFailure", "PostCompact", "SessionEnd"}
+
+
+def _ack() -> dict[str, object]:
+    return {"action": "allow"}
+
+
 def handle(raw: dict[str, object]) -> dict[str, object]:
     """Evaluate one OpenCode event and return a plugin-safe response."""
     os.environ["GAIA_HOST"] = "opencode"
@@ -76,10 +89,18 @@ def handle(raw: dict[str, object]) -> dict[str, object]:
 
     adapter = OpenCodeAdapter()
     event = adapter.parse_event(json.dumps(raw))
-    if event.event_type.value == "PreToolUse":
+    kind = event.event_type.value
+
+    if kind == "PreToolUse":
         response = adapter.adapt_pre_tool_use(event)
-    elif event.event_type.value == "PostToolUse":
+    elif kind == "PostToolUse":
         response = adapter.adapt_post_tool_use(event)
+    elif kind == "Stop":
+        response = adapter.format_quality_response(adapter.adapt_stop(event.payload))
+    elif kind == "SubagentStart":
+        response = adapter.format_context_response(adapter.adapt_subagent_start(event.payload))
+    elif kind in _ACKNOWLEDGED_EVENT_KINDS:
+        return _ack()
     else:
         return _deny(f"Unsupported OpenCode bridge event: {raw.get('event', '')}")
 
