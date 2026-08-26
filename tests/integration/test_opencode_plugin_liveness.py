@@ -65,6 +65,21 @@ def test_plugin_initialization_failure_is_loud_and_distinguishable():
 
 
 @pytest.mark.skipif(shutil.which("bun") is None, reason="bun is required")
+def test_host_logger_method_receives_its_app_as_this():
+    result = subprocess.run(
+        ["bun", str(DRIVER), "context-log"],
+        cwd=ROOT,
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"context": "preserved"}
+
+
+@pytest.mark.skipif(shutil.which("bun") is None, reason="bun is required")
 def test_plugin_import_does_not_claim_liveness_before_factory_invocation():
     result = subprocess.run(
         ["bun", str(DRIVER), "import-only"],

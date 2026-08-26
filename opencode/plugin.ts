@@ -15,6 +15,7 @@ type PendingApproval = {
   sessionID: string
   callID: string
   token: string
+  surface: NativeConsentPresentation
 }
 
 type RoleCapabilityContext = {
@@ -45,8 +46,6 @@ const FILE_TOOL_NAMES: Record<string, "Write" | "Edit" | "apply_patch"> = {
   write: "Write",
   edit: "Edit",
   applypatch: "apply_patch",
-  "functions.apply_patch": "apply_patch",
-  functionsapplypatch: "apply_patch",
 }
 
 function normalizedToken(value: unknown): string {
@@ -466,10 +465,11 @@ const LIVENESS_PREFIX = "[gaia-opencode:liveness]"
 async function announceLiveness(input: any): Promise<void> {
   const loadedAt = new Date().toISOString()
   const message = `${LIVENESS_PREFIX} pid=${process.pid} loaded_at=${loadedAt} export=GaiaOpenCodePlugin`
-  const log = input?.client?.app?.log
+  const app = input?.client?.app
+  const log = app?.log
   if (typeof log === "function") {
     try {
-      await log({
+      await log.call(app, {
         body: {
           service: "gaia-opencode-plugin",
           level: "info",
@@ -488,6 +488,7 @@ async function announceLiveness(input: any): Promise<void> {
 export const GaiaOpenCodePlugin = async (input: any) => {
   await announceLiveness(input)
   const pending = new Map<string, PendingApproval>()
+  const pendingByCall = new Map<string, PendingApproval>()
   const agentBySession = new Map<string, string>()
   const agentByCall = new Map<string, string>()
   // Replaces a real dependency with a test double only: send is the Gaia
@@ -667,26 +668,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     ])
     if (!presented.ok) throw new Error("Gaia could not present the approval request")
     const surface = readConsentPresentation(presented.stdout)
-
-    const created = await input.client.session.permission.create({
-      sessionID,
-      action: "gaia-approval",
-      // The whole sealed surface occupies the user-visible slot: operation,
-      // every exact command in order with its fingerprint, scope, impact,
-      // risk, rollback and verification. Metadata mirrors it for a program;
-      // a field that lived only there would be a field nobody consented to.
-      resources: surface.visibleLines,
-      metadata: { gaiaApprovalID: id, gaiaCallID: callID, gaiaConsent: surface.metadata },
-    })
-    // A host that answers the request immediately, or answers with nothing at
-    // all, must not leave a presented approval waiting for a reply event.
-    const decided = created?.data
-    if (!decided?.id) throw new Error("OpenCode did not return a permission request to correlate")
-    if (decided.effect === "allow" || decided.effect === "deny") {
-      await decide(approval, normalizePermissionReply(decided.effect))
-      return
-    }
-    pending.set(decided.id, approval)
+    pendingByCall.set(`${sessionID}:${callID}`, { ...approval, surface })
   }
 
   return {
@@ -702,15 +684,52 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       const lane = permissionDecisionLane(event.type)
       if (!lane) return
-      const requestID = event.properties.requestID
+      const requestID = event.properties.permissionID
+      const sessionID = event.properties.sessionID
+      if (typeof requestID !== "string" || typeof sessionID !== "string") return
       // Admitted before the approval lookup so a later delivery on the
       // preferred lane is still recorded once a compatibility one has acted.
       const admission = decisions.admit(requestID, lane)
       if (!admission.accepted) return
       const approval = pending.get(requestID)
       if (!approval) return
+      if (approval.sessionID !== sessionID) return
       pending.delete(requestID)
-      await decide(approval, normalizePermissionReply(event.properties.reply), lane)
+      await decide(approval, normalizePermissionReply(event.properties.response ?? event.properties.reply), lane)
+    },
+    "permission.ask": async (permission: any, output: { status: "ask" | "deny" | "allow" }) => {
+      const sessionID = permission?.sessionID
+      const callID = permission?.callID
+      const key = typeof sessionID === "string" && typeof callID === "string"
+        ? `${sessionID}:${callID}`
+        : undefined
+      const approval = key ? pendingByCall.get(key) : undefined
+      if (!approval) {
+        // This hook must never turn an uncorrelated or unsupported host request
+        // into consent. Keep the host's request denied and make the capability
+        // failure observable to the host log/stderr.
+        output.status = "deny"
+        console.error("[gaia-opencode:permission] denied uncorrelated permission request")
+        return
+      }
+      if (permission.id === undefined || permission.sessionID !== approval.sessionID) {
+        output.status = "deny"
+        console.error("[gaia-opencode:permission] denied permission request with invalid correlation")
+        return
+      }
+      pendingByCall.delete(key!)
+      pending.set(permission.id, approval)
+      permission.title = "Gaia approval required"
+      permission.pattern = approval.surface.visibleLines
+      permission.metadata = {
+        ...(permission.metadata ?? {}),
+        gaiaApprovalID: approval.approvalID,
+        gaiaCallID: approval.callID,
+        gaiaConsent: approval.surface.metadata,
+      }
+      // The host owns the prompt and its reply. Do not auto-allow when a host
+      // lacks the old creation API; OpenCode will deliver permission.replied.
+      output.status = "ask"
     },
     "tool.execute.before": async (call, output) => {
       const requested = call.tool === "task"
@@ -740,6 +759,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       if (approvalID(response)) {
         await requestApproval(response, call.sessionID, call.callID)
+        // Let OpenCode continue into its real permission.ask hook. Throwing here
+        // aborts the call before the host can create/correlate the request.
+        return
       }
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },

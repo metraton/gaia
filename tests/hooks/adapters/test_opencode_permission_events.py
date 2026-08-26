@@ -94,7 +94,7 @@ def test_an_unrecognized_reply_is_never_read_as_consent():
 
 def _args(**overrides):
     values = {
-        "approval_id": "P-open-1",
+        "approval_id": "P-00000000000000000000000000000001",
         "session_id": "ses-1",
         "call_id": "call-1",
         "token": "secret-token",
@@ -109,7 +109,7 @@ def _args(**overrides):
 def _presented_store():
     store = MagicMock()
     store.get_by_id.return_value = {
-        "id": "P-open-1",
+        "id": "P-00000000000000000000000000000001",
         "status": "pending",
         "session_id": "ses-1",
         "agent_id": "agent-1",

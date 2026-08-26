@@ -164,7 +164,11 @@ def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
 
 def _drive(env, steps, *, permission_id=PERMISSION_ID):
     """Run the real plugin under bun over the dispatch chain plus these steps."""
-    scenario = {"permissionID": permission_id, "steps": DISPATCH_STEPS + list(steps)}
+    scenario = {
+        "permissionID": permission_id,
+        "sessionID": SESSION_ID,
+        "steps": DISPATCH_STEPS + list(steps),
+    }
     result = subprocess.run(
         ["bun", str(DRIVER), json.dumps(scenario)],
         env=env, capture_output=True, text=True, timeout=300,
@@ -361,14 +365,14 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     assert _step(driven, "blocked")["allowed"] is False, driven
     assert _step(driven, "reply")["allowed"] is True, driven
 
-    # The plugin presented exactly one native permission, carrying the approval
+    # The plugin enriched exactly one host-created permission, carrying the approval
     # the bridge named and a visible surface Gaia sealed.
-    assert len(driven["permissionCreates"]) == 1, driven
-    presented = driven["permissionCreates"][0]
+    assert len(driven["permissionAsks"]) == 1, driven
+    presented = driven["permissionAsks"][0]["permission"]
     presented_id = presented["metadata"]["gaiaApprovalID"]
     assert presented["sessionID"] == SESSION_ID
     assert presented["metadata"]["gaiaCallID"] == CALL_ID
-    assert presented["resources"], presented
+    assert presented["pattern"], presented
 
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
@@ -382,6 +386,28 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     )
 
 
+def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+    driven = _drive(
+        env,
+        [
+            _before("blocked", FIRST_COMMAND),
+            {
+                "kind": "replied", "label": "rejected", "requestID": PERMISSION_ID,
+                "reply": "reject",
+            },
+        ],
+    )
+
+    assert _step(driven, "blocked")["allowed"] is False, driven
+    assert driven["permissionAsks"][0]["status"] == "ask", driven
+    assert _step(driven, "rejected")["allowed"] is True, driven
+    with sqlite3.connect(db_path) as con:
+        status = con.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()[0]
+    assert status in {"rejected", "REJECTED"}, status
+
+
 def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     """The block path names the pending set, not a freshly minted singular id.
 
@@ -390,7 +416,7 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     fail the day they converge; this is that day, so the detector is inverted
     rather than deleted -- the same observation, read for the outcome that is
     now correct. The id is read out of the plugin's own
-    ``permissionCreates[0].metadata.gaiaApprovalID``, so what is asserted is
+        ``permissionAsks[0].permission.metadata.gaiaApprovalID``, so what is asserted is
     what the plugin presented, never a value this test supplied.
 
     Both items are attempted, each on its own plugin run. At pending time the
@@ -415,9 +441,9 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     ):
         driven = _drive(env, [_before(label, command, call_id=call_id)])
         assert _step(driven, label)["allowed"] is False, driven
-        assert len(driven["permissionCreates"]) == 1, driven
+        assert len(driven["permissionAsks"]) == 1, driven
         presented_ids.append(
-            driven["permissionCreates"][0]["metadata"]["gaiaApprovalID"]
+            driven["permissionAsks"][0]["permission"]["metadata"]["gaiaApprovalID"]
         )
 
         assert presented_ids[-1] == approval_id, (
@@ -458,18 +484,13 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     assert len(json.loads(grant["command_set_json"])) == 2, grant
 
 
-def test_plugin_aborts_instead_of_awaiting_the_host_deferred():
-    """Why the host's own same-call resume is not the mechanism in play.
+def test_plugin_delegates_the_permission_request_to_the_host_hook():
+    """The adapter does not fabricate a native permission creator.
 
-    OpenCode pauses an ``ask`` decision on a deferred and resumes the ORIGINAL
-    tool execution when a reply resolves it. The plugin does not consume that:
-    ``tool.execute.before`` registers the pending approval and then throws,
-    which aborts the call. Any second invocation is therefore a fresh one from
-    the host's point of view, and a same-``call_id`` retry cannot be asserted
-    from this repository. Recorded as a source-level fact so the claim is
-    falsifiable rather than an opinion in a report.
+    OpenCode creates the request after ``tool.execute.before`` returns. Gaia
+    enriches it in ``permission.ask`` and waits for the host reply event.
     """
     source = PLUGIN.read_text()
-    assert "pending.set(decided.id, approval)" in source
-    assert "throw new Error(response.reason" in source
-    assert "await" not in source.split("pending.set(decided.id, approval)")[1].split("\n")[0]
+    assert '"permission.ask"' in source
+    assert "session.permission.create" not in source
+    assert "return\n      }\n      throw new Error" in source

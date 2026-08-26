@@ -10,8 +10,8 @@
  * CLIs against the database in GAIA_DB.
  *
  * Two seams are doubled, and only two, because OpenCode owns both and no
- * OpenCode host runs here: `session.permission.create` (the native permission
- * mechanism) and the host's decision to invoke a tool at all. The second is
+ * OpenCode host runs here: the host-created permission request and the host's
+ * decision to invoke a tool at all. The second is
  * why a `before` step in this scenario proves what the PLUGIN does with an
  * invocation carrying a given session/call identity, and never that OpenCode
  * would deliver that invocation -- an invocation this driver issues is this
@@ -33,8 +33,9 @@ type Exchange = {
 }
 
 const exchanges: Exchange[] = []
-const permissionCreates: Record<string, unknown>[] = []
+const permissionAsks: Record<string, unknown>[] = []
 const stepResults: Record<string, unknown>[] = []
+let lastBridgeAction: string | undefined
 
 async function gaiaBridge(event: Record<string, unknown>) {
   const child = Bun.spawn(["python3", bridgePath], {
@@ -59,20 +60,14 @@ async function gaiaBridge(event: Record<string, unknown>) {
     received,
     sentArgsJSON: JSON.stringify(event.args ?? null),
   })
+  lastBridgeAction = (received as any)?.action
   return received
 }
 
 const scenario = JSON.parse(process.argv[2])
 
 const client = {
-  session: {
-    permission: {
-      create: async (payload: Record<string, unknown>) => {
-        permissionCreates.push(payload)
-        return { data: { id: scenario.permissionID ?? "perm-1" } }
-      },
-    },
-  },
+  session: {},
 }
 
 const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
@@ -87,7 +82,22 @@ for (const step of scenario.steps) {
         { sessionID: step.sessionID, callID: step.callID, tool: step.tool ?? "bash" },
         { args: step.args ?? { command: step.command } },
       )
-      record.allowed = true
+      if (lastBridgeAction === "allow") {
+        record.allowed = true
+        stepResults.push(record)
+        continue
+      }
+      const permission = {
+        id: scenario.permissionID ?? "perm-1",
+        sessionID: step.sessionID,
+        callID: step.callID,
+        title: "host permission",
+        metadata: {},
+      }
+      const permissionOutput = { status: "ask" as const }
+      await plugin["permission.ask"](permission, permissionOutput)
+      permissionAsks.push({ permission, status: permissionOutput.status })
+      record.allowed = permissionOutput.status === "allow"
     } else if (step.kind === "after") {
       await plugin["tool.execute.after"](
         {
@@ -119,7 +129,11 @@ for (const step of scenario.steps) {
       await plugin.event({
         event: {
           type: step.eventType ?? "permission.replied",
-          properties: { requestID: step.requestID, reply: step.reply },
+          properties: {
+            sessionID: step.sessionID ?? scenario.sessionID,
+            permissionID: step.requestID,
+            response: step.reply,
+          },
         },
       })
       record.allowed = true
@@ -136,4 +150,4 @@ for (const step of scenario.steps) {
   stepResults.push(record)
 }
 
-console.log(JSON.stringify({ steps: stepResults, exchanges, permissionCreates }))
+console.log(JSON.stringify({ steps: stepResults, exchanges, permissionAsks }))

@@ -25,7 +25,7 @@ def test_driver_cannot_replace_or_wrap_the_production_bridge():
     assert 'import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"' in driver
     assert "GaiaOpenCodePlugin({\n  client," in driver
     assert "export const GaiaOpenCodePlugin = async" in plugin
-    assert "export default" not in plugin
+    assert "export default" in plugin
     assert 'Bun.spawn(["python3", bridgePath]' in plugin
     assert not (ROOT / "tests" / "opencode" / "protected_edit_bridge.py").exists()
 
@@ -125,7 +125,7 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
     write_aliases = ["Write", "write", "WRITE", "w-r_i.t e"]
     patch_aliases = [
         "ApplyPatch", "apply_patch", "APPLY-PATCH", "apply.patch",
-        "apply patch", "applyPatch", "functions.apply_patch",
+        "apply patch", "applyPatch",
     ]
     path_keys = ["path", "file_path", "filePath", "file-path"]
     patch_keys = ["patchText", "patch_text", "patch-text", "patch"]
@@ -172,7 +172,7 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
         approval_id = exchange["received"].get("approval_id")
         assert re.fullmatch(r"P-[0-9a-f]{32}", approval_id or ""), exchange
         approval_ids.add(approval_id)
-        permission = driven["permissionCreates"][result["permissionIndexes"][0]]
+        permission = driven["permissionAsks"][result["permissionIndexes"][0]]["permission"]
         assert permission["metadata"]["gaiaApprovalID"] == approval_id
         assert exchange["sent"]["cwd"] == str(nested.resolve())
         assert exchange["sent"]["worktree"] == str(root.resolve())
@@ -210,14 +210,14 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
     print(f"OPENCODE_PROTECTED_EDIT_MATRIX cases={len(cases)} skips=0")
 
 
-def test_literal_functions_apply_patch_relative_target_reaches_guard_before_native_patch(
+def test_literal_apply_patch_relative_target_reaches_guard_before_native_patch(
     tmp_path, isolated_gaia_db,
 ):
     root, protected, _ = _workspace(tmp_path)
     patch = _patch("patchText", "hooks/guard.py")
 
     driven = _drive(root, root, [
-        _step("native-identity", "functions.apply_patch", patch),
+        _step("native-identity", "apply_patch", patch),
     ])
 
     result = driven["results"][0]

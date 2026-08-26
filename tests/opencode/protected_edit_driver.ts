@@ -3,17 +3,10 @@
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 
 const scenario = JSON.parse(process.argv[2])
-const permissionCreates: Record<string, unknown>[] = []
+const permissionAsks: Record<string, unknown>[] = []
 
 const client = {
-  session: {
-    permission: {
-      create: async (payload: Record<string, unknown>) => {
-        permissionCreates.push(payload)
-        return { data: { id: `permission-${permissionCreates.length}` } }
-      },
-    },
-  },
+  session: {},
 }
 const plugin: any = await GaiaOpenCodePlugin({
   client,
@@ -48,7 +41,7 @@ await plugin["tool.execute.after"](
 
 const results: Record<string, unknown>[] = []
 for (const [index, step] of scenario.steps.entries()) {
-  const before = permissionCreates.length
+  const before = permissionAsks.length
   const callID = step.callID ?? `call-${index}`
   const result: Record<string, unknown> = { label: step.label, callID }
   try {
@@ -60,16 +53,33 @@ for (const [index, step] of scenario.steps.entries()) {
       },
       { args: step.args },
     )
-    result.allowed = true
+    const targetText = JSON.stringify(step.args)
+    if (step.tool === "task" || (!targetText.includes("hooks/") && !targetText.includes("hook-link"))) {
+      result.allowed = true
+      result.permissionIndexes = []
+      results.push(result)
+      continue
+    }
+    const permission = {
+      id: `permission-${permissionAsks.length + 1}`,
+      sessionID: childSessionID,
+      callID,
+      title: "host permission",
+      metadata: {},
+    }
+    const permissionOutput = { status: "ask" as const }
+    await plugin["permission.ask"](permission, permissionOutput)
+    permissionAsks.push({ permission, status: permissionOutput.status })
+    result.allowed = permissionOutput.status === "allow"
   } catch (error: any) {
     result.allowed = false
     result.error = String(error?.message ?? error)
   }
   result.permissionIndexes = Array.from(
-    { length: permissionCreates.length - before },
+    { length: permissionAsks.length - before },
     (_, offset) => before + offset,
   )
   results.push(result)
 }
 
-console.log(JSON.stringify({ results, permissionCreates }))
+console.log(JSON.stringify({ results, permissionAsks }))

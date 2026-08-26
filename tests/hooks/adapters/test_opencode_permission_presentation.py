@@ -2,7 +2,7 @@
 
 Every assertion here is made against a payload some real component PRODUCED:
 the Gaia CLI's own `approvals opencode-present --json` output, and the exact
-object the real GaiaOpenCodePlugin passes to session.permission.create while
+object the real GaiaOpenCodePlugin enriches in the host's permission.ask hook while
 driven by bun. Nothing in this file hand-writes the shape under test -- three
 earlier rounds of this plan passed while asserting over a payload no adapter
 emits, and the claim being made here ("the delivered payload carries the sealed
@@ -34,6 +34,7 @@ from adapters import consent_events, consent_presentation  # noqa: E402
 
 GAIA_CLI = REPO_ROOT / "bin" / "gaia"
 DRIVER = REPO_ROOT / "tests" / "opencode" / "presentation_driver.ts"
+PLUGIN = REPO_ROOT / "opencode" / "plugin.ts"
 
 SESSION_ID = "ses-t4-presentation"
 CALL_ID = "call-t4-presentation"
@@ -158,6 +159,21 @@ def _drive_plugin(env, approval_id, call_id=CALL_ID, command=COMMANDS[0]):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+def test_adapter_uses_the_real_permission_ask_boundary_not_the_nonexistent_creator():
+    source = PLUGIN.read_text()
+
+    assert "session.permission.create" not in source
+    assert '"permission.ask"' in source
+    assert "permissionID" in source
+    assert "event.properties.response" in source
+
+
+def test_host_permission_request_is_held_for_user_reply_when_correlation_is_exact(db_env, approval_id):
+    delivered = _drive_plugin(db_env, approval_id, call_id="call-presented")
+    # The driver models a host-created request with the exact session/call pair.
+    assert delivered["asked"][0]["status"] == "ask"
+
+
 def test_cli_presentation_seals_every_required_field_visibly(db_env, approval_id):
     emitted = _present(db_env, approval_id)
     envelope = _expected_envelope(approval_id)
@@ -175,14 +191,14 @@ def test_cli_presentation_seals_every_required_field_visibly(db_env, approval_id
 
 def test_delivered_permission_payload_carries_the_sealed_envelope(db_env, approval_id):
     delivered = _drive_plugin(db_env, approval_id)
-    assert len(delivered["created"]) == 1, delivered
-    payload = delivered["created"][0]
+    assert len(delivered["asked"]) == 1, delivered
+    payload = delivered["asked"][0]["permission"]
     envelope = _expected_envelope(approval_id)
     expected = consent_presentation.native_presentation(envelope, SEALED_PAYLOAD)
 
     assert payload["sessionID"] == SESSION_ID
-    assert payload["action"] == "gaia-approval"
-    assert payload["resources"] == expected["visible_lines"]
+    assert payload["title"] == "Gaia approval required"
+    assert payload["pattern"] == expected["visible_lines"]
     assert payload["metadata"]["gaiaApprovalID"] == approval_id
     assert payload["metadata"]["gaiaCallID"] == CALL_ID
     assert payload["metadata"]["gaiaConsent"] == expected["metadata"]
@@ -201,8 +217,8 @@ def test_delivered_permission_payload_carries_the_sealed_envelope(db_env, approv
 def test_delivered_visible_slot_alone_carries_every_field_in_order(db_env, approval_id):
     """The user-visible slot is judged with the metadata discarded entirely."""
     delivered = _drive_plugin(db_env, approval_id)
-    payload = delivered["created"][0]
-    visible = "\n".join(payload["resources"])
+    payload = delivered["asked"][0]["permission"]
+    visible = "\n".join(payload["pattern"])
     envelope = _expected_envelope(approval_id)
 
     assert not consent_presentation.missing_visible_fields(visible, SEALED_PAYLOAD)
@@ -219,8 +235,8 @@ def test_delivered_visible_text_agrees_with_the_cli_sealed_surface(db_env, appro
     emitted = _present(db_env, approval_id)
     delivered = _drive_plugin(db_env, approval_id)
 
-    assert "\n".join(delivered["created"][0]["resources"]) == emitted["visible_text"]
-    assert delivered["created"][0]["metadata"]["gaiaConsent"] == emitted["metadata"]
+    assert "\n".join(delivered["asked"][0]["permission"]["pattern"]) == emitted["visible_text"]
+    assert delivered["asked"][0]["permission"]["metadata"]["gaiaConsent"] == emitted["metadata"]
 
 
 def test_an_unsealable_payload_is_never_presented_as_a_permission(db_env):
@@ -236,7 +252,7 @@ def test_an_unsealable_payload_is_never_presented_as_a_permission(db_env):
     assert "visible_lines" not in emitted
 
     delivered = _drive_plugin(db_env, empty_id, call_id="call-unsealable-2")
-    assert delivered["created"] == []
+    assert delivered["asked"] == []
     assert "could not seal a complete consent surface" in delivered["error"]
 
 
@@ -328,6 +344,6 @@ def test_a_real_producer_seals_the_fields_the_delivered_surface_shows(db_env):
     delivered = _drive_plugin(
         db_env, approval_id, call_id="call-produced", command=PRODUCED_COMMANDS[0]
     )
-    payload = delivered["created"][0]
-    assert "\n".join(payload["resources"]) == emitted["visible_text"]
+    payload = delivered["asked"][0]["permission"]
+    assert "\n".join(payload["pattern"]) == emitted["visible_text"]
     assert payload["metadata"]["gaiaConsent"] == metadata

@@ -6,9 +6,9 @@
  * may not be asserted over a shape written by hand: the plugin runs here, its
  * own requestApproval executes the real `gaia approvals opencode-present` CLI
  * against the database in GAIA_DB, and the object captured below is the exact
- * argument the plugin passes to session.permission.create. Only the two edges
- * OpenCode itself owns are doubles -- the policy bridge answer and the
- * permission mechanism -- because the point is what crosses them.
+ * permission object the plugin enriches in permission.ask. The host creates the
+ * request; this driver models that real hook boundary instead of fabricating a
+ * session.permission.create API.
  *
  * Usage: bun presentation_driver.ts '<scenario json>'
  */
@@ -16,7 +16,7 @@
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 
 const scenario = JSON.parse(process.argv[2])
-const created: Record<string, unknown>[] = []
+const asked: Record<string, unknown>[] = []
 
 async function gaiaBridge(event: Record<string, unknown>) {
   if (event.event === "identity.attest") {
@@ -33,14 +33,7 @@ async function gaiaBridge(event: Record<string, unknown>) {
 }
 
 const client = {
-  session: {
-    permission: {
-      create: async (payload: Record<string, unknown>) => {
-        created.push(payload)
-        return { data: { id: scenario.permissionID ?? "perm-1" } }
-      },
-    },
-  },
+  session: {},
 }
 
 const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
@@ -51,6 +44,16 @@ try {
     { sessionID: scenario.sessionID, callID: scenario.callID, tool: scenario.tool ?? "bash" },
     { args: scenario.args ?? {} },
   )
+  const permission = {
+    id: scenario.permissionID ?? "perm-1",
+    sessionID: scenario.sessionID,
+    callID: scenario.callID,
+    title: "host permission",
+    metadata: {},
+  }
+  const permissionOutput = { status: "ask" as const }
+  await plugin["permission.ask"](permission, permissionOutput)
+  asked.push({ permission, status: permissionOutput.status })
 } catch (thrown: any) {
   // tool.execute.before always ends a non-allow decision by throwing; the
   // presented payload is what this driver exists to report, so the throw is
@@ -58,4 +61,4 @@ try {
   error = String(thrown?.message ?? thrown)
 }
 
-console.log(JSON.stringify({ created, error }))
+console.log(JSON.stringify({ asked, error }))
