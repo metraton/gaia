@@ -16,9 +16,15 @@ if str(_BIN_DIR) not in sys.path:
 from cli.approvals import cmd_opencode_decide, cmd_opencode_present
 
 
+# 97c8197 requires the complete canonical P-<32-hex> id for every approval
+# lookup; a short display label like "P-open-1" is rejected outright by the
+# CLI's _require_canonical_approval_id identity check.
+_APPROVAL_ID = "P-" + "a1c0de00" * 4
+
+
 def _args(**overrides):
     values = {
-        "approval_id": "P-open-1",
+        "approval_id": _APPROVAL_ID,
         "session_id": "ses-1",
         "call_id": "call-1",
         "token": "secret-token",
@@ -32,7 +38,7 @@ def _args(**overrides):
 def test_opencode_decision_requires_matching_presentation(capsys):
     store = MagicMock()
     store.get_by_id.return_value = {
-        "id": "P-open-1",
+        "id": _APPROVAL_ID,
         "status": "pending",
         "session_id": "ses-1",
     }
@@ -48,7 +54,7 @@ def test_opencode_decision_requires_matching_presentation(capsys):
 
 def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(capsys):
     store = MagicMock()
-    approval = {"id": "P-open-1", "status": "pending", "session_id": "ses-1"}
+    approval = {"id": _APPROVAL_ID, "status": "pending", "session_id": "ses-1"}
     events: list[dict[str, str]] = []
     store.get_by_id.return_value = approval
     store.get_history.side_effect = lambda _id: events
@@ -61,10 +67,10 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
         assert cmd_opencode_present(_args()) == 0
         assert cmd_opencode_decide(_args()) == 0
 
-    store.approve.assert_called_once_with("P-open-1", "ses-1", agent_id="opencode-plugin")
+    store.approve.assert_called_once_with(_APPROVAL_ID, "ses-1", agent_id="opencode-plugin")
     emitted = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert emitted["status"] == "approved"
-    assert emitted["approval_id"] == "P-open-1"
+    assert emitted["approval_id"] == _APPROVAL_ID
     assert emitted["decision"] == "once"
     assert emitted["decision_lane"] == "preferred"
     assert emitted["correlation_id"].startswith("C-")
@@ -73,7 +79,7 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
 
 def test_opencode_presentation_token_cannot_be_reused_for_a_different_call():
     store = MagicMock()
-    approval = {"id": "P-open-1", "status": "pending", "session_id": "ses-1"}
+    approval = {"id": _APPROVAL_ID, "status": "pending", "session_id": "ses-1"}
     events = [{
         "event_type": "SHOWN",
         "metadata_json": json.dumps({
