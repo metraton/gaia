@@ -57,14 +57,17 @@ Flags:
                      forwarded to bootstrap.sh via the GAIA_DB env var).
    --workspace PATH   Workspace where settings/symlinks/registry are
                       written (default: cwd).
-   --host HOST        Target host: claude_code (default) or opencode.
+   --host HOST        Target host: claude_code (default), opencode, or `all`
+                      to wire every supported host in one run. The global
+                      steps (1) run once regardless; only steps 2-6 repeat
+                      per host.
   --skip-workspace   Bootstrap the DB only; skip workspace configuration.
                      Useful when running install just to refresh the DB
                      schema from a non-Gaia directory.
   --no-path          Skip creating the ~/.local/bin/gaia launcher. By default
-                     install writes a workspace-aware launcher so `gaia` is
-                     callable from any cwd: a bash launcher on POSIX, and
-                     `gaia.cmd` + `gaia.ps1` on Windows.
+                      install links POSIX PATH resolution to the selected
+                      package's bin.gaia entry and writes workspace-aware
+                      `gaia.cmd` + `gaia.ps1` launchers on Windows.
 """
 
 from __future__ import annotations
@@ -72,11 +75,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import stat
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 # bin/cli/install.py -> bin/cli -> bin -> gaia/
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -92,6 +95,43 @@ from cli import _install_helpers  # type: ignore  # noqa: E402
 _SEED_CONTRACT_PERMS = _PACKAGE_ROOT / "tools" / "scan" / "seed_contract_permissions.py"
 _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing.py"
 
+# ---------------------------------------------------------------------------
+# Host selection
+# ---------------------------------------------------------------------------
+#
+# The hosts `--host` can wire, and the set `all` expands to. One point of truth
+# for this parser AND `gaia dev`'s, which imports these names rather than
+# repeating the tuple.
+#
+# Deliberately NOT derived from `hooks/adapters/registry.py::_REGISTRY` at
+# runtime, for two reasons that hold at import time:
+#   * `hooks/` ships no `__init__.py`, so it is not an importable package from
+#     the source root; only tests reach it, via the sys.path insert in
+#     `tests/conftest.py`.
+#   * `bin/gaia` imports ONLY the single plugin module argv names, precisely so
+#     an invocation does not pay for unrelated modules. Reaching the registry
+#     would pull `hooks/adapters/claude_code.py` (>5k lines) into every
+#     `gaia install --help`.
+# The divergence that duplication invites is caught instead by the parity
+# tripwire in `tests/cli/test_host_multi_install.py`, which does import the
+# registry and fails if the two sets stop matching.
+SUPPORTED_HOSTS = ("claude_code", "opencode")
+DEFAULT_HOST = "claude_code"
+ALL_HOSTS = "all"
+HOST_CHOICES = SUPPORTED_HOSTS + (ALL_HOSTS,)
+
+
+def resolve_hosts(host: str) -> tuple[str, ...]:
+    """Expand a ``--host`` value into the ordered hosts to configure.
+
+    ``all`` expands to every supported host; any other value is itself. The
+    default is unchanged by design: only an explicit ``all`` configures more
+    than one host.
+    """
+    if host == ALL_HOSTS:
+        return SUPPORTED_HOSTS
+    return (host,)
+
 
 # ---------------------------------------------------------------------------
 # PATH launcher (~/.local/bin/gaia -- workspace-bound launcher)
@@ -103,7 +143,9 @@ _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing
 # the POSIX shim's ``{workspace}/node_modules/...`` target does not exist under
 # ``npm install -g`` on any platform. So:
 #
-#   * POSIX  -> one bash launcher at ``<link>`` (unchanged behavior).
+#   * POSIX  -> one symlink at ``<link>`` to the selected package's declared
+#       ``bin/gaia`` entry. Following that link preserves package provenance
+#       for the orchestrator's trusted-binary check.
 #   * Windows -> ``<link>.cmd`` and ``<link>.ps1``, each of which
 #       (a) bakes the resolved workspace path,
 #       (b) exports ``GAIA_WORKSPACE_PATH`` so `gaia doctor` resolves the
@@ -140,13 +182,14 @@ _SEED_SURFACE_ROUTING = _PACKAGE_ROOT / "tools" / "scan" / "seed_surface_routing
 #      prefix on PATH (see `_launcher_path_precedence`), so the shadowed-launcher
 #      condition is a visible, actionable signal instead of a silent surprise.
 #
-# Re-running `gaia install` from a different workspace rewrites the launcher(s)
-# to point at that workspace AND re-persists GAIA_WORKSPACE_PATH -- the install
-# action is what selects which workspace both the launcher and the env var
-# target (last-install-wins, single-valued).
+# On Windows, re-running `gaia install` from a different workspace rewrites the
+# launchers to point at that workspace and re-persists GAIA_WORKSPACE_PATH
+# (last-install-wins, single-valued). POSIX launchers select a package, not a
+# workspace.
 
-# POSIX bash launcher. The workspace path is resolved at install time and baked
-# in verbatim. No discovery, no env vars, no fallbacks -- a 3-line exec.
+# Legacy POSIX launcher, retained only to recognize and migrate regular wrappers
+# written by earlier versions. New POSIX installs use a package-provenance
+# symlink instead.
 _LAUNCHER_TEMPLATE = """#!/bin/bash
 # gaia -- workspace-bound launcher (workspace path hardcoded at install time)
 # Generated by `gaia install`. Re-run install from another workspace to retarget.
@@ -190,7 +233,7 @@ def _gaia_entrypoint() -> Path:
 
 
 def _render_launcher(workspace: Path) -> str:
-    """Render the POSIX bash launcher with the workspace path baked in.
+    """Render the legacy POSIX wrapper for migration detection.
 
     The workspace must be an absolute, resolved path -- the rendered script
     references it verbatim. Quoting in the template uses double quotes so
@@ -220,39 +263,33 @@ def _install_path_launcher(
     workspace: Path | str | None = None,
     gaia_bin: Path | str | None = None,
 ) -> dict:
-    """Install the workspace-bound launcher at `link_path`.
+    """Install the selected package's Gaia launcher at `link_path`.
 
     Platform-guarded (Step 6.5): on Windows this writes ``<link>.cmd`` and
     ``<link>.ps1`` (see ``_install_windows_launchers``); on POSIX it writes a
-    single bash launcher at ``<link>``. The POSIX behavior below is unchanged.
-
-    The POSIX launcher is a 3-line script that execs into a hardcoded absolute
-    path pointing at ``<workspace>/node_modules/@jaguilar87/gaia/bin/gaia``.
-    There is no discovery logic, no env-var override, no fallback chain -- the
-    path is fixed at install time and only changes when ``gaia install`` runs
-    again from a different workspace.
+    symlink to the actual ``bin/gaia`` of the package running the installer.
+    Resolving the PATH winner therefore reaches the package manifest's declared
+    executable rather than an unprovable forwarding wrapper.
 
     Behavior (POSIX):
-      - If `link_path` is a symlink (legacy install): unlink, write launcher.
-      - If `link_path` is a regular file with the expected content: noop.
+      - If `link_path` is the expected symlink: noop.
+      - If `link_path` is another symlink: retarget it (legacy migration).
+      - If `link_path` is a legacy generated wrapper: migrate it to the symlink.
       - If `link_path` is a regular file with different content and
         `overwrite=False`: skip with warning.
       - If `link_path` is a regular file with different content and
         `overwrite=True`: replace.
-      - If `link_path` does not exist: write launcher (and parent dir).
+      - If `link_path` does not exist: create the symlink (and parent dir).
 
     Args:
-        target_path: accepted for API compatibility; the launcher embeds the
-            workspace path instead. Ignored.
+        target_path: legacy name for the POSIX package entrypoint target.
         link_path: where the shim is written (default ``~/.local/bin/gaia``).
             On Windows, ``.cmd``/``.ps1`` suffixes are derived from this base.
         overwrite: replace existing different-content files when True.
-        workspace: absolute path to the consumer workspace (the directory
-            that contains ``node_modules/@jaguilar87/gaia/``). Resolved with
-            ``Path.cwd().resolve()`` when None.
-        gaia_bin: Windows only -- the ``bin/gaia`` dispatcher the launchers
-            exec. Defaults to ``_gaia_entrypoint()`` (the installed package's
-            ``bin/gaia``, valid for global and local installs). Ignored on POSIX.
+        workspace: consumer workspace, used by Windows launchers and to
+            recognize wrappers generated by older POSIX installs.
+        gaia_bin: the selected package's ``bin/gaia`` dispatcher. Defaults to
+            ``_gaia_entrypoint()`` for both platforms.
 
     Returns a dict with `action`, `path`, and `details`. `action` is one
     of: created, replaced, migrated, noop, skipped, error.
@@ -289,27 +326,44 @@ def _install_path_launcher(
             "details": f"failed to create parent {parent}: {exc}",
         }
 
-    expected = _render_launcher(workspace_resolved)
+    entry = gaia_bin if gaia_bin is not None else target_path
+    expected_target = (
+        Path(entry).expanduser() if entry is not None else _gaia_entrypoint()
+    ).resolve()
+    if not expected_target.is_file():
+        return {
+            "action": "error",
+            "path": str(link),
+            "details": f"package entrypoint is not a file: {expected_target}",
+        }
+    legacy_wrapper = _render_launcher(workspace_resolved)
 
-    def _write_launcher() -> None:
-        link.write_text(expected)
-        link.chmod(0o755)
+    def _write_symlink() -> None:
+        link.symlink_to(expected_target)
 
-    # Legacy symlink: migrate to launcher unconditionally.
     if link.is_symlink():
         try:
+            if link.resolve() == expected_target:
+                return {
+                    "action": "noop",
+                    "path": str(link),
+                    "details": "launcher already targets selected package entrypoint",
+                }
+        except OSError:
+            pass
+        try:
             link.unlink()
-            _write_launcher()
+            _write_symlink()
         except OSError as exc:
             return {
                 "action": "error",
                 "path": str(link),
-                "details": f"failed to migrate symlink to launcher: {exc}",
+                "details": f"failed to retarget launcher symlink: {exc}",
             }
         return {
             "action": "migrated",
             "path": str(link),
-            "details": "replaced legacy symlink with workspace-aware launcher",
+            "details": "retargeted launcher symlink to selected package entrypoint",
         }
 
     if link.exists():
@@ -328,20 +382,8 @@ def _install_path_launcher(
                 "path": str(link),
                 "details": f"failed to read existing file: {exc}",
             }
-        if current == expected:
-            # Ensure executable bit is set (idempotent).
-            try:
-                mode = link.stat().st_mode
-                if not (mode & stat.S_IXUSR):
-                    link.chmod(0o755)
-            except OSError:
-                pass
-            return {
-                "action": "noop",
-                "path": str(link),
-                "details": "launcher already up to date",
-            }
-        if not overwrite:
+        is_legacy_wrapper = current == legacy_wrapper
+        if not is_legacy_wrapper and not overwrite:
             return {
                 "action": "skipped",
                 "path": str(link),
@@ -351,32 +393,37 @@ def _install_path_launcher(
                 ),
             }
         try:
-            _write_launcher()
+            link.unlink()
+            _write_symlink()
         except OSError as exc:
             return {
                 "action": "error",
                 "path": str(link),
-                "details": f"failed to overwrite launcher: {exc}",
+                "details": f"failed to replace launcher: {exc}",
             }
         return {
-            "action": "replaced",
+            "action": "migrated" if is_legacy_wrapper else "replaced",
             "path": str(link),
-            "details": "replaced previous launcher with current version",
+            "details": (
+                "migrated generated wrapper to package-provenance symlink"
+                if is_legacy_wrapper
+                else "replaced previous launcher with package-provenance symlink"
+            ),
         }
 
     # Path does not exist -- create launcher.
     try:
-        _write_launcher()
+        _write_symlink()
     except OSError as exc:
         return {
             "action": "error",
             "path": str(link),
-            "details": f"failed to write launcher: {exc}",
+            "details": f"failed to create launcher symlink: {exc}",
         }
     return {
         "action": "created",
         "path": str(link),
-        "details": "workspace-aware launcher installed",
+        "details": "package-provenance launcher symlink installed",
     }
 
 
@@ -1057,20 +1104,103 @@ def _report_step(*, name: str, result: dict, quiet: bool, verbose: bool) -> None
     print(f"  [{icon}] {name}: {details}")
 
 
-def _print_next_steps(*, quiet: bool, postinstall: bool, host: str = "claude_code") -> None:
+def _configure_host(
+    host: str,
+    *,
+    workspace: Path,
+    postinstall: bool,
+    quiet: bool,
+    verbose: bool,
+) -> bool:
+    """Wire one host into *workspace*; return whether it was configured.
+
+    Host-scoped only: everything global (DB bootstrap, permission and routing
+    seeds) runs once in `cmd_install` before this is called, so wiring N hosts
+    re-runs none of it. Returns False instead of an exit code because with
+    several hosts requested one host's failure must not decide the command's
+    outcome.
+    """
+    if host == "opencode":
+        opencode_res = _install_helpers.configure_opencode_plugin(workspace)
+        _report_step(name="OpenCode plugin", result=opencode_res, quiet=quiet, verbose=verbose)
+        return opencode_res.get("action") != "error"
+
+    # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
+    # The first four helpers early-return when .claude/ is missing, so it
+    # must exist before any Claude-specific configuration runs.
+    claude_dir = workspace / ".claude"
+    if not claude_dir.exists():
+        try:
+            claude_dir.mkdir(parents=True, exist_ok=True)
+            if not quiet:
+                print(f"  [+] workspace: created {claude_dir}")
+        except OSError as exc:
+            if not quiet:
+                print(
+                    f"  [!] workspace: failed to create {claude_dir}: {exc}",
+                    file=sys.stderr,
+                )
+            return False
+
+    settings_res = _install_helpers.configure_settings_json(workspace)
+    _report_step(name="settings.json", result=settings_res, quiet=quiet, verbose=verbose)
+
+    perms_res = _install_helpers.merge_local_permissions(workspace)
+    _report_step(name="permissions", result=perms_res, quiet=quiet, verbose=verbose)
+
+    hooks_res = _install_helpers.merge_local_hooks(workspace)
+    _report_step(name="hooks", result=hooks_res, quiet=quiet, verbose=verbose)
+
+    worktree_res = _install_helpers.merge_worktree_settings(workspace)
+    _report_step(name="worktree", result=worktree_res, quiet=quiet, verbose=verbose)
+
+    sym_res = _install_helpers.manage_symlinks(workspace)
+    _report_step(name="symlinks", result=sym_res, quiet=quiet, verbose=verbose)
+
+    registry_source = "npm-postinstall" if postinstall else "cli-install"
+    reg_res = _install_helpers.register_plugin(workspace, source=registry_source)
+    _report_step(name="plugin-registry", result=reg_res, quiet=quiet, verbose=verbose)
+    return True
+
+
+def _print_next_steps(
+    *,
+    quiet: bool,
+    postinstall: bool,
+    hosts: Sequence[str] = (DEFAULT_HOST,),
+) -> None:
+    """Print the post-install steps for every host that was wired.
+
+    Accumulative, not exclusive: with `--host all` each wired host contributes
+    its own restart line, so no host's instructions are dropped. `gaia doctor`
+    verifies the whole install once, so it is emitted last and only once.
+    """
     if quiet:
         return
+    restart_steps: list[str] = []
+    open_steps: list[str] = []
+    for host in hosts:
+        if host == "opencode":
+            restart_steps.append("Restart OpenCode to load the Gaia plugin.")
+        elif postinstall:
+            restart_steps.append("Restart Claude Code to pick up new hooks/agents.")
+        else:
+            open_steps.append("Open Claude Code in this workspace.")
+
+    verify = "Run `gaia doctor` to verify the installation."
+    # A restart is what makes freshly installed hooks live, so it leads when
+    # there is one; with nothing to restart, verifying leads instead. `gaia
+    # doctor` covers the whole install, so it is listed once however many hosts
+    # were wired.
+    if restart_steps:
+        steps = [*restart_steps, *open_steps, verify]
+    else:
+        steps = [verify, *open_steps]
+
     print()
     print("  Gaia ready. Next steps:")
-    if host == "opencode":
-        print("    1. Restart OpenCode to load the Gaia plugin.")
-        print("    2. Run `gaia doctor` to verify the installation.")
-    elif postinstall:
-        print("    1. Restart Claude Code to pick up new hooks/agents.")
-        print("    2. Run `gaia doctor` to verify the installation.")
-    else:
-        print("    1. Run `gaia doctor` to verify the installation.")
-        print("    2. Open Claude Code in this workspace.")
+    for index, step in enumerate(steps, start=1):
+        print(f"    {index}. {step}")
     print()
 
 
@@ -1132,9 +1262,16 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--host",
-        choices=("claude_code", "opencode"),
-        default="claude_code",
-        help="Host to configure (default: claude_code)",
+        choices=HOST_CHOICES,
+        default=DEFAULT_HOST,
+        help=(
+            "Host to configure, or `all` to configure every supported host in "
+            "one run (default: claude_code). The global steps -- DB bootstrap, "
+            "permission and routing seeds -- run once regardless; only the "
+            "per-host wiring repeats. With `all`, a host that fails is named "
+            "and the others are still wired; the command fails only if every "
+            "host fails."
+        ),
     )
     p.add_argument(
         "--skip-workspace",
@@ -1162,7 +1299,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     skip_workspace = bool(getattr(args, "skip_workspace", False))
     no_path = bool(getattr(args, "no_path", False))
     workspace_arg = getattr(args, "workspace", None)
-    host = getattr(args, "host", "claude_code")
+    hosts = resolve_hosts(getattr(args, "host", DEFAULT_HOST))
 
     workspace = (
         Path(workspace_arg).expanduser().resolve()
@@ -1209,7 +1346,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         return rc
 
     if skip_workspace:
-        _print_next_steps(quiet=quiet, postinstall=postinstall, host=host)
+        _print_next_steps(quiet=quiet, postinstall=postinstall, hosts=hosts)
         return 0
 
     # Steps 2-6 -- workspace configuration
@@ -1218,56 +1355,39 @@ def cmd_install(args: argparse.Namespace) -> int:
             print(f"  workspace {workspace} does not exist -- skipping configuration", file=sys.stderr)
         return 0
 
-    if host == "opencode":
-        opencode_res = _install_helpers.configure_opencode_plugin(workspace)
-        _report_step(name="OpenCode plugin", result=opencode_res, quiet=quiet, verbose=verbose)
-        if opencode_res.get("action") == "error":
-            return 1
-    else:
-        # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
-        # The first four helpers early-return when .claude/ is missing, so it
-        # must exist before any Claude-specific configuration runs.
-        claude_dir = workspace / ".claude"
-        if not claude_dir.exists():
-            try:
-                claude_dir.mkdir(parents=True, exist_ok=True)
-                if not quiet:
-                    print(f"  [+] workspace: created {claude_dir}")
-            except OSError as exc:
-                if not quiet:
-                    print(
-                        f"  [!] workspace: failed to create {claude_dir}: {exc}",
-                        file=sys.stderr,
-                    )
-                if not postinstall:
-                    return 1
-                return 0
+    wired: list[str] = []
+    failed: list[str] = []
+    for host_key in hosts:
+        if _configure_host(
+            host_key,
+            workspace=workspace,
+            postinstall=postinstall,
+            quiet=quiet,
+            verbose=verbose,
+        ):
+            wired.append(host_key)
+        else:
+            failed.append(host_key)
 
-        settings_res = _install_helpers.configure_settings_json(workspace)
-        _report_step(name="settings.json", result=settings_res, quiet=quiet, verbose=verbose)
+    if failed and not quiet:
+        print(
+            f"  [!] host configuration failed: {', '.join(failed)}",
+            file=sys.stderr,
+        )
 
-        perms_res = _install_helpers.merge_local_permissions(workspace)
-        _report_step(name="permissions", result=perms_res, quiet=quiet, verbose=verbose)
-
-        hooks_res = _install_helpers.merge_local_hooks(workspace)
-        _report_step(name="hooks", result=hooks_res, quiet=quiet, verbose=verbose)
-
-        worktree_res = _install_helpers.merge_worktree_settings(workspace)
-        _report_step(name="worktree", result=worktree_res, quiet=quiet, verbose=verbose)
-
-        sym_res = _install_helpers.manage_symlinks(workspace)
-        _report_step(name="symlinks", result=sym_res, quiet=quiet, verbose=verbose)
-
-        registry_source = "npm-postinstall" if postinstall else "cli-install"
-        reg_res = _install_helpers.register_plugin(workspace, source=registry_source)
-        _report_step(name="plugin-registry", result=reg_res, quiet=quiet, verbose=verbose)
+    if not wired:
+        # Every requested host failed, so there is nothing to finish wiring --
+        # skip the remaining shared steps, exactly as the single-host path did.
+        # A partial failure is NOT fatal: one host the user does not care about
+        # must not break an install that wired the other. postinstall stays
+        # fail-soft here for the same reason it is at bootstrap: a non-zero exit
+        # aborts the consumer's package install.
+        return 0 if postinstall else 1
 
     # Step 6.5 -- PATH launcher (~/.local/bin/gaia) unless --no-path
     if not no_path:
-        # Hardcode the resolved workspace path into the shim. The launcher has
-        # no discovery logic -- the path baked in here is the path it execs to,
-        # period. Re-running `gaia install` from a different workspace is what
-        # retargets the shim.
+        # Link directly to this installed package's bin/gaia so PATH resolution
+        # preserves the provenance consumed by the orchestrator guard.
         path_res = _install_path_launcher(workspace=workspace)
         _report_step(name="PATH launcher", result=path_res, quiet=quiet, verbose=verbose)
         # Windows: the "created" line above reports the launcher was WRITTEN,
@@ -1300,5 +1420,5 @@ def cmd_install(args: argparse.Namespace) -> int:
     # stale install-error marker left by a prior failed bootstrap attempt.
     _clear_install_error_marker()
 
-    _print_next_steps(quiet=quiet, postinstall=postinstall, host=host)
+    _print_next_steps(quiet=quiet, postinstall=postinstall, hosts=wired)
     return 0

@@ -39,8 +39,9 @@ Two modes:
 
   --mode link
     Symlinks `<workspace>/node_modules/@jaguilar87/gaia` directly at this
-    source tree (no pack, no install) and wires `.claude/` in-process by
-    calling this source tree's own `cli.install.cmd_install` -- so
+    source tree (skipping the PACK, not the install) and wires `.claude/`
+    in-process by calling this source tree's own `cli.install.cmd_install`
+    -- which bootstraps and re-seeds global state in `~/.gaia/gaia.db` -- so
     `_install_helpers` naturally resolves `plugin_root` to THIS source
     tree. Edits under `gaia/`, `hooks/`, `agents/`, `skills/`, `config/`,
     `tools/` are visible on the next Claude Code restart with no pack step
@@ -76,22 +77,31 @@ from cli.install import _report_step  # type: ignore  # noqa: E402
 _NPM_PACKAGE_NAME = "@jaguilar87/gaia"
 
 
-def _restart_warning(host: str = "claude_code") -> str:
-    """The mandatory post-`gaia dev` restart notice for the selected host.
+def _restart_warning(host: str = install_mod.DEFAULT_HOST) -> str:
+    """The mandatory post-`gaia dev` restart notice for the configured hosts.
 
     The Claude Code harness pins each hook's command at SESSION START and does
     not hot-reload it, so a session that is already open keeps running the OLD
     hooks until it is restarted -- a freshly installed fix is inert until then.
     Emitted verbatim by both pack and link modes so the notice is identical and
     testable.
+
+    Accumulative over hosts: `--host all` warns about every host it configured,
+    since dropping one host's notice leaves that host silently running the old
+    code. Takes the raw `--host` value and expands it here, so a caller cannot
+    pass `all` through and get one host's notice.
     """
-    if host == "opencode":
-        return "  Restart OpenCode to activate the Gaia plugin and agent configuration."
-    return (
-        "  ⚠  Restart your Claude Code session to activate the new hooks.\n"
-        "     The harness pins hook commands at session start (no hot-reload),\n"
-        "     so until you restart, this session keeps running the OLD hooks."
-    )
+    notices = [
+        "  Restart OpenCode to activate the Gaia plugin and agent configuration."
+        if h == "opencode"
+        else (
+            "  ⚠  Restart your Claude Code session to activate the new hooks.\n"
+            "     The harness pins hook commands at session start (no hot-reload),\n"
+            "     so until you restart, this session keeps running the OLD hooks."
+        )
+        for h in install_mod.resolve_hosts(host)
+    ]
+    return "\n".join(notices)
 
 
 # ---------------------------------------------------------------------------
@@ -626,9 +636,14 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "  across repeated runs and reflects a real shippable version.\n"
             "\n"
             "  --mode link: symlink node_modules/@jaguilar87/gaia straight at\n"
-            "  this source tree (no pack, no install) for instant iteration.\n"
+            "  this source tree for instant iteration. It skips the PACK only --\n"
+            "  it still runs the full `gaia install`, which bootstraps and\n"
+            "  RE-SEEDS global state in ~/.gaia/gaia.db (schema migrations,\n"
+            "  contract permissions, surface routing) and wires the workspace.\n"
             "\n"
-            "Use --host=opencode to configure OpenCode; otherwise Claude Code is used.\n"
+            "Use --host=opencode to configure OpenCode, or --host=all to configure\n"
+            "every supported host in one run; otherwise Claude Code is used. The\n"
+            "global install steps run once regardless of how many hosts are wired.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -641,9 +656,13 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--host",
-        choices=("claude_code", "opencode"),
-        default="claude_code",
-        help="Host to configure (default: claude_code)",
+        choices=install_mod.HOST_CHOICES,
+        default=install_mod.DEFAULT_HOST,
+        help=(
+            "Host to configure, or `all` for every supported host in one run "
+            "(default: claude_code). Forwarded to `gaia install`, which runs "
+            "the global steps once and repeats only the per-host wiring."
+        ),
     )
     p.add_argument(
         "--mode",

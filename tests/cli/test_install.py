@@ -37,6 +37,7 @@ from cli.install import (  # noqa: E402
     register,
     cmd_install,
     _install_path_launcher,
+    _gaia_entrypoint,
     _create_path_symlink,  # legacy alias retained
     _LAUNCHER_TEMPLATE,
     _render_launcher,
@@ -714,17 +715,7 @@ class TestCmdInstallCreatesClaudeDir(unittest.TestCase):
 
 
 class TestInstallPathLauncher(unittest.TestCase):
-    """Unit tests for _install_path_launcher.
-
-    The launcher is workspace-bound: the workspace path is hardcoded at
-    install time and baked into the script verbatim. There is no discovery
-    logic, no env-var override, no fallback chain. Re-running ``gaia install``
-    from a different workspace is the only way to retarget the shim.
-
-    These tests cover file-level behavior (write, idempotency, migration
-    from legacy symlink, workspace embedding, and the absence of legacy
-    fallback markers in the rendered output).
-    """
+    """File-level behavior of the POSIX package-provenance symlink."""
 
     def test_creates_launcher_when_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -737,11 +728,8 @@ class TestInstallPathLauncher(unittest.TestCase):
 
             self.assertEqual(res["action"], "created")
             self.assertTrue(link.is_file())
-            self.assertFalse(link.is_symlink())
-            content = link.read_text()
-            self.assertEqual(content, _render_launcher(workspace.resolve()))
-            # 0755 -- executable bit set
-            self.assertTrue(link.stat().st_mode & 0o100)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
     def test_creates_parent_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -780,8 +768,8 @@ class TestInstallPathLauncher(unittest.TestCase):
 
             self.assertEqual(res["action"], "migrated")
             self.assertTrue(link.is_file())
-            self.assertFalse(link.is_symlink())
-            self.assertEqual(link.read_text(), _render_launcher(workspace.resolve()))
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
     def test_skips_when_regular_file_with_different_content(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -809,8 +797,8 @@ class TestInstallPathLauncher(unittest.TestCase):
             )
 
             self.assertEqual(res["action"], "replaced")
-            self.assertEqual(link.read_text(), _render_launcher(workspace.resolve()))
-            self.assertTrue(link.stat().st_mode & 0o100)
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
     def test_skips_when_directory_in_the_way(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -832,66 +820,43 @@ class TestInstallPathLauncher(unittest.TestCase):
             self.assertEqual(res["action"], "created")
             self.assertTrue(link.is_file())
 
-    def test_rendered_shim_embeds_workspace_path(self):
-        """The rendered shim contains the exact workspace path passed in."""
+    def test_launcher_targets_selected_package_entrypoint(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
             link = Path(tmp) / "bin" / "gaia"
 
             _install_path_launcher(link_path=link, workspace=workspace)
-            content = link.read_text()
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
-            expected_path = f'"{workspace.resolve()}/node_modules/@jaguilar87/gaia/bin/gaia"'
-            self.assertIn(expected_path, content)
-            self.assertIn('exec python3', content)
-            self.assertIn('"$@"', content)
-
-    def test_rendered_shim_has_no_discovery_logic(self):
-        """The shim has no fallback chain -- no walk-up, no env vars, no global."""
+    def test_launcher_is_a_symlink_not_a_forwarding_wrapper(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
             link = Path(tmp) / "bin" / "gaia"
 
             _install_path_launcher(link_path=link, workspace=workspace)
-            content = link.read_text()
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(os.readlink(link), str(_gaia_entrypoint().resolve()))
 
-            # Legacy fallback markers must not appear in the new shim.
-            self.assertNotIn("GAIA_HOME", content)
-            self.assertNotIn("GAIA_WORKSPACE", content)
-            self.assertNotIn(".gaia/global", content)
-            self.assertNotIn("while", content)  # no walk-up loop
-            self.assertNotIn("dirname", content)  # no parent traversal
-
-    def test_rendered_shim_is_three_lines(self):
-        """The shim is intentionally minimal -- shebang + comment + exec."""
+    def test_launcher_has_no_regular_wrapper_body(self):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp) / "ws"
             workspace.mkdir()
             link = Path(tmp) / "bin" / "gaia"
 
             _install_path_launcher(link_path=link, workspace=workspace)
-            content = link.read_text()
-            non_empty_lines = [ln for ln in content.splitlines() if ln.strip()]
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
-            self.assertEqual(len(non_empty_lines), 4)  # shebang + 2 comments + exec
-            self.assertTrue(non_empty_lines[0].startswith("#!"))
-            self.assertTrue(non_empty_lines[-1].startswith("exec python3 "))
-
-    def test_workspace_defaults_to_cwd(self):
-        """When workspace=None, the shim is rendered against Path.cwd()."""
+    def test_workspace_default_does_not_change_package_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             link = Path(tmp) / "bin" / "gaia"
-            cwd_before = Path.cwd()
-
             _install_path_launcher(link_path=link, workspace=None)
-            content = link.read_text()
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
-            self.assertIn(str(cwd_before.resolve()), content)
-
-    def test_different_workspaces_produce_different_shims(self):
-        """Re-running install from a new workspace retargets the shim."""
+    def test_different_workspaces_keep_same_selected_package_target(self):
         with tempfile.TemporaryDirectory() as tmp:
             ws_a = Path(tmp) / "ws_a"
             ws_b = Path(tmp) / "ws_b"
@@ -900,17 +865,13 @@ class TestInstallPathLauncher(unittest.TestCase):
             link = Path(tmp) / "bin" / "gaia"
 
             _install_path_launcher(link_path=link, workspace=ws_a)
-            content_a = link.read_text()
-            self.assertIn(str(ws_a.resolve()), content_a)
+            target_a = link.resolve()
 
-            # Re-render against ws_b with overwrite -- shim now targets ws_b
             res = _install_path_launcher(
                 link_path=link, workspace=ws_b, overwrite=True
             )
-            self.assertEqual(res["action"], "replaced")
-            content_b = link.read_text()
-            self.assertIn(str(ws_b.resolve()), content_b)
-            self.assertNotIn(str(ws_a.resolve()), content_b)
+            self.assertEqual(res["action"], "noop")
+            self.assertEqual(link.resolve(), target_a)
 
 
 class TestInstallPathLauncherWindows(unittest.TestCase):
@@ -1433,9 +1394,9 @@ class TestGlobalNpmLinkReconcile(unittest.TestCase):
 
 
 class TestLauncherShellBehavior(unittest.TestCase):
-    """Run the launcher script under bash and verify hardcoded-path semantics.
+    """Preserve the legacy wrapper renderer used for migration recognition.
 
-    The launcher is intentionally trivial -- a single ``exec`` to a hardcoded
+    The former launcher was a single ``exec`` to a hardcoded
     absolute path. There are no fallbacks to test; the only behaviors that
     matter are (1) it execs the embedded path, (2) it propagates the target's
     exit code, and (3) it does NOT walk up from cwd. The third assertion is
@@ -1607,8 +1568,8 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertTrue(captured.get("called"))
             self.assertTrue(link.is_file())
-            self.assertFalse(link.is_symlink())
-            self.assertEqual(link.read_text(), _render_launcher(workspace.resolve()))
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
     def test_no_path_flag_skips_launcher(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1666,7 +1627,7 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
             self.assertEqual(len(results), 2)
             self.assertEqual(results[0]["action"], "created")
             self.assertEqual(results[1]["action"], "noop")
-            self.assertTrue(link.is_file())
+            self.assertTrue(link.is_symlink())
 
     def test_install_migrates_legacy_symlink(self):
         """Existing legacy symlink at ~/.local/bin/gaia is migrated."""
@@ -1704,8 +1665,8 @@ class TestCmdInstallPathLauncher(unittest.TestCase):
 
             self.assertEqual(captured["result"]["action"], "migrated")
             self.assertTrue(link.is_file())
-            self.assertFalse(link.is_symlink())
-            self.assertEqual(link.read_text(), _render_launcher(workspace.resolve()))
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(link.resolve(), _gaia_entrypoint().resolve())
 
 
 class TestInstallErrorMarker(unittest.TestCase):
