@@ -59,6 +59,7 @@ from modules.security.approval_grants import (
     find_pending_for_file,
     get_pending_approvals_for_session,
     activate_db_pending_by_prefix,
+    activate_db_pending_by_id,
     ACTIVATION_NOT_FOUND,
     ACTIVATION_INVALID_PENDING,
     ACTIVATION_ACTIVATED,
@@ -70,6 +71,18 @@ from modules.security.approval_grants import (
     SCOPE_FILE_PATH,
 )
 from modules.security.approval_scopes import build_approval_signature
+
+
+def _canon(suffix: str) -> str:
+    """Build a canonical ``P-<32-hex>`` id from a short mnemonic hex suffix.
+
+    The refactor in 97c8197 requires the complete 32-lowercase-hex id for
+    every ``activate_db_pending_by_id`` lookup; a bare prefix like
+    ``"deadbeef"`` is rejected outright by the format check. This pads the
+    mnemonic out to 32 hex characters so fixtures stay readable while being
+    genuinely canonical.
+    """
+    return "P-" + suffix.ljust(32, "0")
 
 
 # ===========================================================================
@@ -734,83 +747,84 @@ class TestMatchCommandSetGrantMutants:
 
 
 # ===========================================================================
-# activate_db_pending_by_prefix -- early error branches (cluster C/D, 120 surv)
+# activate_db_pending_by_id -- early error branches (cluster C/D, 120 surv)
 #
 # These tests drive the error-return paths that fire BEFORE the fingerprint
-# integrity check (Step 2b), so they need only `gaia.approvals.store.get_pending`
+# integrity check (Step 2b), so they need only `gaia.approvals.store.get_by_id`
 # mocked. Each pins both the boolean `success` flag (kills ReplaceFalseWithTrue
 # on the `success=False` returns) and the exact `status` enum (kills the AddNot /
 # Or<->And / comparison flips on the guards that select which error branch runs).
-# `activate_db_pending_by_prefix` does `from gaia.approvals.store import get_pending`
+# `activate_db_pending_by_id` does `from gaia.approvals.store import get_by_id`
 # lazily inside the body, so patching the attribute on the source module is what
-# the call resolves at runtime.
+# the call resolves at runtime. The row must carry status='pending' -- 97c8197
+# made exact-id lookup, not prefix scanning, the sole resolution path.
 # ===========================================================================
 class TestActivateDbPendingEarlyErrors:
-    """activate_db_pending_by_prefix error returns before the fingerprint check."""
+    """activate_db_pending_by_id error returns before the fingerprint check."""
 
-    def _patch_pending(self, monkeypatch, rows):
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+    def _patch_get_by_id(self, monkeypatch, row):
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: row)
 
     def test_no_pending_match_returns_not_found(self, monkeypatch):
-        """No DB row whose id starts with 'P-<prefix>' => success=False,
-        status=NOT_FOUND (lines 1106-1119). Kills the ReplaceFalseWithTrue on
+        """No DB row exists for the exact canonical id => success=False,
+        status=NOT_FOUND (lines 1341-1351). Kills the ReplaceFalseWithTrue on
         the NOT_FOUND `success=False` and the `if matched_row is None` guard:
         with the flip a missing approval would report success."""
-        # A row that does NOT match the prefix the caller asks for.
-        self._patch_pending(monkeypatch, [
-            {"id": "P-ffffffffffff", "payload_json": "{}",
-             "session_id": "s", "agent_id": None},
-        ])
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        self._patch_get_by_id(monkeypatch, None)
+        result = activate_db_pending_by_id(_canon("deadbeef"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_NOT_FOUND
 
     def test_empty_pending_list_returns_not_found(self, monkeypatch):
-        """An empty pending list => NOT_FOUND (the for-loop runs zero times and
-        matched_row stays None). Kills ZeroIterationForLoop on the match loop
-        combined with the None guard."""
-        self._patch_pending(monkeypatch, [])
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        """A row exists for the id but its status is not 'pending' (already
+        decided) => NOT_FOUND (the `matched_row.get('status') != 'pending'`
+        guard). Kills the AddNot/Eq flip on that guard: with the flip an
+        already-decided row would be reactivated instead of rejected."""
+        self._patch_get_by_id(
+            monkeypatch,
+            {"id": _canon("deadbeef"), "status": "approved", "payload_json": "{}"},
+        )
+        result = activate_db_pending_by_id(_canon("deadbeef"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_NOT_FOUND
 
     def test_matched_row_without_payload_returns_invalid_pending(self, monkeypatch):
         """A matched row whose payload_json is falsy => success=False,
-        status=INVALID_PENDING (lines 1127-1136). Kills the ReplaceFalseWithTrue
+        status=INVALID_PENDING (lines 1353-1367). Kills the ReplaceFalseWithTrue
         on that `success=False` and the `if not payload_json_str` guard
         (AddNot/Delete_Not): an inverted guard would skip the early return."""
-        self._patch_pending(monkeypatch, [
-            {"id": "P-deadbeefcafe", "payload_json": None,
-             "session_id": "s", "agent_id": None},
-        ])
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        self._patch_get_by_id(monkeypatch, {
+            "id": _canon("deadbeefcafe"), "status": "pending", "payload_json": None,
+            "session_id": "s", "agent_id": None,
+        })
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_PENDING
 
     def test_unparseable_payload_returns_invalid_pending(self, monkeypatch):
         """A matched row whose payload_json is not valid JSON => INVALID_PENDING
-        (lines 1138-1149 except). Kills the ExceptionReplacer on that except and
+        (the parse except). Kills the ExceptionReplacer on that except and
         the ReplaceFalseWithTrue on its `success=False`."""
-        self._patch_pending(monkeypatch, [
-            {"id": "P-deadbeefcafe", "payload_json": "{not json",
-             "session_id": "s", "agent_id": None},
-        ])
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        self._patch_get_by_id(monkeypatch, {
+            "id": _canon("deadbeefcafe"), "status": "pending", "payload_json": "{not json",
+            "session_id": "s", "agent_id": None,
+        })
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_PENDING
 
     def test_payload_without_command_returns_invalid_pending(self, monkeypatch):
         """A parseable payload carrying no exact_content/commands/command_set =>
-        no command extracted => INVALID_PENDING (lines 1171-1185). Kills the
+        no command extracted => INVALID_PENDING. Kills the
         ReplaceFalseWithTrue on that `success=False`, the `if not command` guard
-        (AddNot), and exercises the command_set detection or-chain (1158-1169)
-        in its empty form so the is_command_set=False path is pinned."""
-        self._patch_pending(monkeypatch, [
-            {"id": "P-deadbeefcafe",
-             "payload_json": json.dumps({"operation": "MUTATIVE x: y"}),
-             "session_id": "s", "agent_id": None},
-        ])
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        (AddNot), and exercises the command_set detection or-chain in its empty
+        form so the is_command_set=False path is pinned."""
+        self._patch_get_by_id(monkeypatch, {
+            "id": _canon("deadbeefcafe"), "status": "pending",
+            "payload_json": json.dumps({"operation": "MUTATIVE x: y"}),
+            "session_id": "s", "agent_id": None,
+        })
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_PENDING
 
@@ -842,21 +856,35 @@ class _DummyCon:
 
 
 class TestActivateDbPendingPostFingerprint:
-    """activate_db_pending_by_prefix terminal branches after the integrity check."""
+    """activate_db_pending_by_id terminal branches after the integrity check."""
 
-    def _drive(self, monkeypatch, payload, *, approval_id="P-deadbeefcafe",
+    def _drive(self, monkeypatch, payload, *, approval_id=_canon("deadbeefcafe"),
                session_id="sub-sess", agent_id="ag1",
                fingerprint_ok=True, approve_raises=None,
                get_by_id_row=None):
         """Patch every lazy collaborator so the function runs to a terminal
-        branch. Returns a dict of MagicMock recorders for call assertions."""
-        rows = [{
+        branch. Returns a dict of MagicMock recorders for call assertions.
+
+        ``get_by_id`` is the sole resolution path (97c8197): the FIRST call
+        (Step 1's lookup) must return the matched pending row, and only a
+        SECOND call -- the "already approved" recovery re-check after
+        ``approve()`` raises -- returns ``get_by_id_row``.
+        """
+        pending_row = {
             "id": approval_id,
+            "status": "pending",
             "payload_json": json.dumps(payload),
             "session_id": session_id,
             "agent_id": agent_id,
-        }]
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        }
+        calls = {"n": 0}
+
+        def _get_by_id(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return pending_row
+            return get_by_id_row if get_by_id_row is not None else pending_row
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", _get_by_id)
 
         # Step 2b: fingerprint check. verify_fingerprint returns True (or raises).
         def _verify(approval_id_arg, payload_json_arg, con):
@@ -876,9 +904,6 @@ class TestActivateDbPendingPostFingerprint:
                 raise approve_raises
         approve = MagicMock(side_effect=_approve)
         monkeypatch.setattr("gaia.approvals.store.approve", approve)
-        monkeypatch.setattr(
-            "gaia.approvals.store.get_by_id", lambda *a, **k: get_by_id_row
-        )
         return {"record_event": record_event, "approve": approve}
 
     # ----- COMMAND_SET branch (Step 3b) -----
@@ -900,7 +925,7 @@ class TestActivateDbPendingPostFingerprint:
         monkeypatch.setattr(
             "modules.security.approval_grants.create_command_set_grant", create
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
         # The COMMAND_SET branch (not the semantic one) must have run.
@@ -926,7 +951,7 @@ class TestActivateDbPendingPostFingerprint:
             "modules.security.approval_grants.create_command_set_grant",
             lambda *a, **k: False,
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
 
@@ -949,7 +974,7 @@ class TestActivateDbPendingPostFingerprint:
         )
         insert_sem = MagicMock(return_value={"status": "applied"})
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
         assert create.call_count == 0
@@ -970,7 +995,7 @@ class TestActivateDbPendingPostFingerprint:
         insert_sem = MagicMock(return_value={"status": "applied"})
         monkeypatch.setattr("gaia.store.writer.insert_file_path_grant", insert_fp)
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
         # The file-path branch ran, not the semantic one.
@@ -993,7 +1018,7 @@ class TestActivateDbPendingPostFingerprint:
             "gaia.store.writer.insert_file_path_grant",
             lambda **k: {"status": "rejected", "reason": "dup"},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
 
@@ -1010,7 +1035,7 @@ class TestActivateDbPendingPostFingerprint:
             "commands": ["/some/path"],
             "scope": SCOPE_FILE_PATH,
         })
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_PENDING
 
@@ -1026,7 +1051,7 @@ class TestActivateDbPendingPostFingerprint:
         })
         insert_sem = MagicMock(return_value={"status": "applied"})
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
         assert insert_sem.call_count == 1
@@ -1045,7 +1070,7 @@ class TestActivateDbPendingPostFingerprint:
             "gaia.store.writer.insert_semantic_grant",
             lambda **k: {"status": "rejected", "reason": "dup"},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
 
@@ -1060,7 +1085,7 @@ class TestActivateDbPendingPostFingerprint:
         def _boom(**k):
             raise RuntimeError("db down")
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", _boom)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
 
@@ -1077,7 +1102,7 @@ class TestActivateDbPendingPostFingerprint:
         # Even if a downstream insert exists, it must NOT be reached.
         insert_sem = MagicMock(return_value={"status": "applied"})
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
         assert insert_sem.call_count == 0
@@ -1103,11 +1128,11 @@ class TestActivateDbPendingPostFingerprint:
                 "exact_content": "git push origin main",
             },
             approve_raises=ValueError("not pending"),
-            get_by_id_row={"id": "P-deadbeefcafe", "status": "rejected"},
+            get_by_id_row={"id": _canon("deadbeefcafe"), "status": "rejected"},
         )
         insert_sem = MagicMock(return_value={"status": "applied"})
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
         # The grant insert must NOT have run since we aborted.
@@ -1126,11 +1151,11 @@ class TestActivateDbPendingPostFingerprint:
                 "exact_content": "git push origin main",
             },
             approve_raises=ValueError("already approved"),
-            get_by_id_row={"id": "P-deadbeefcafe", "status": "approved"},
+            get_by_id_row={"id": _canon("deadbeefcafe"), "status": "approved"},
         )
         insert_sem = MagicMock(return_value={"status": "applied"})
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", insert_sem)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
         assert insert_sem.call_count == 1
@@ -1814,22 +1839,22 @@ class TestCheckApprovalGrantForFileMutants:
 # has no observable behavior).
 # ===========================================================================
 class TestActivateDbPendingSignatureFallback:
-    """activate_db_pending_by_prefix signature-rebuild branch (Step 4)."""
+    """activate_db_pending_by_id signature-rebuild branch (Step 4)."""
 
     def _drive(self, monkeypatch, payload):
-        rows = [{
-            "id": "P-deadbeefcafe",
+        row = {
+            "id": _canon("deadbeefcafe"),
+            "status": "pending",
             "payload_json": json.dumps(payload),
             "session_id": "sub", "agent_id": "ag",
-        }]
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        }
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: row)
         monkeypatch.setattr(
             "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
         )
         monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
         monkeypatch.setattr("gaia.approvals.store.record_event", MagicMock())
         monkeypatch.setattr("gaia.approvals.store.approve", MagicMock())
-        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: None)
 
     def test_unbuildable_signature_returns_invalid_signature(self, monkeypatch):
         """When BOTH build_approval_signature calls return None, the function
@@ -1846,7 +1871,7 @@ class TestActivateDbPendingSignatureFallback:
             "modules.security.approval_scopes.build_approval_signature",
             lambda *a, **k: None,
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_SIGNATURE
 
@@ -1874,7 +1899,7 @@ class TestActivateDbPendingSignatureFallback:
             "gaia.store.writer.insert_semantic_grant",
             lambda **k: {"status": "applied"},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         # First build call carries the parsed verb + category.
         assert calls[0]["danger_verb"] == "write"
@@ -2192,24 +2217,29 @@ class TestSmallBehavioralSurvivorsBatch3:
 # mutants no honest assertion can distinguish.
 # ===========================================================================
 class TestActivateDbPendingBatch4:
-    """activate_db_pending_by_prefix remaining observable branches."""
+    """activate_db_pending_by_id remaining observable branches."""
 
     def _drive(self, monkeypatch, payload, *, get_by_id_row=None):
-        rows = [{
-            "id": "P-deadbeefcafe",
+        pending_row = {
+            "id": _canon("deadbeefcafe"),
+            "status": "pending",
             "payload_json": json.dumps(payload),
             "session_id": "sub", "agent_id": "ag",
-        }]
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        }
+        calls = {"n": 0}
+
+        def _get_by_id(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return pending_row
+            return get_by_id_row if get_by_id_row is not None else pending_row
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", _get_by_id)
         monkeypatch.setattr(
             "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
         )
         monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
         monkeypatch.setattr("gaia.approvals.store.record_event", MagicMock())
         monkeypatch.setattr("gaia.approvals.store.approve", MagicMock())
-        monkeypatch.setattr(
-            "gaia.approvals.store.get_by_id", lambda *a, **k: get_by_id_row
-        )
 
     def test_signature_fallback_second_build_succeeds(self, monkeypatch):
         """When the FIRST build_approval_signature returns None but the fallback
@@ -2236,7 +2266,7 @@ class TestActivateDbPendingBatch4:
             "gaia.store.writer.insert_semantic_grant",
             lambda **k: {"status": "applied"},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
         assert calls["n"] == 2  # both builds were attempted
@@ -2260,16 +2290,22 @@ class TestActivateDbPendingBatch4:
         monkeypatch.setattr(
             "modules.security.approval_grants.create_command_set_grant", create
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         # Exactly the two command-bearing items survived the filter.
         items = create.call_args[0][0]
         assert [i["command"] for i in items] == ["git push origin main", "git tag v1"]
 
     def test_get_pending_queried_all_sessions(self, monkeypatch):
-        """get_pending is called with all_sessions=True (line 1101). Kills the
-        ReplaceTrueWithFalse: a session-scoped query would miss the subagent's
-        pending row. Observed via call kwargs."""
+        """The retired ``activate_db_pending_by_prefix`` compatibility helper
+        (kept for legacy direct callers, never for consent -- see its own
+        docstring) still calls get_pending with all_sessions=True internally
+        before delegating to activate_db_pending_by_id. Kills the
+        ReplaceTrueWithFalse on THAT call: a session-scoped query would miss
+        the subagent's pending row. This exercises the compat shim itself,
+        not the canonical activation path -- deliberately out of the 97c8197
+        migration scope, since the shim's own contract is what is under test
+        here."""
         captured = {}
         def _gp(**kw):
             captured.update(kw)
@@ -2282,40 +2318,55 @@ class TestActivateDbPendingBatch4:
         assert captured.get("all_sessions") is True
 
     def test_first_prefix_match_wins_via_break(self, monkeypatch):
-        """The match loop breaks on the FIRST prefix hit (line 1108). With two
-        rows sharing the prefix, the FIRST is used. Kills the
-        ReplaceBreakWithContinue: a continue would let the second row overwrite
-        matched_row. We give the rows distinguishable commands and assert the
-        first one's command drove the (semantic) activation."""
-        rows = [
-            {"id": "P-deadbeef1111",
-             "payload_json": json.dumps({
-                 "operation": "MUTATIVE command intercepted: push",
-                 "exact_content": "FIRST-command"}),
-             "session_id": "s", "agent_id": "a"},
-            {"id": "P-deadbeef2222",
-             "payload_json": json.dumps({
-                 "operation": "MUTATIVE command intercepted: push",
-                 "exact_content": "SECOND-command"}),
-             "session_id": "s", "agent_id": "a"},
-        ]
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        """Exact-id lookup (97c8197) retires the ambiguity this test used to
+        cover: activate_db_pending_by_id resolves ONLY the row whose id
+        equals the requested approval_id, via one get_by_id(approval_id)
+        call -- there is no candidate list to scan and no first-match/break to
+        test any more. What replaces it: with two DISTINCT pending rows
+        present, requesting one by its exact canonical id must read that row
+        and no other, proving canonical lookup cannot cross-activate a
+        sibling pending the way the retired prefix scan could (the exact
+        vulnerability 97c8197's commit message describes)."""
+        store = {
+            _canon("deadbeef1111"): {
+                "id": _canon("deadbeef1111"),
+                "status": "pending",
+                "payload_json": json.dumps({
+                    "operation": "MUTATIVE command intercepted: push",
+                    "exact_content": "FIRST-command"}),
+                "session_id": "s", "agent_id": "a",
+            },
+            _canon("deadbeef2222"): {
+                "id": _canon("deadbeef2222"),
+                "status": "pending",
+                "payload_json": json.dumps({
+                    "operation": "MUTATIVE command intercepted: push",
+                    "exact_content": "SECOND-command"}),
+                "session_id": "s", "agent_id": "a",
+            },
+        }
+        requested = {}
+        def _get_by_id(approval_id, *a, **k):
+            requested["id"] = approval_id
+            return store.get(approval_id)
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", _get_by_id)
         monkeypatch.setattr(
             "gaia.approvals.chain.verify_fingerprint", lambda *a, **k: True
         )
         monkeypatch.setattr("gaia.approvals.store._open_db", lambda: _DummyCon())
         monkeypatch.setattr("gaia.approvals.store.record_event", MagicMock())
         monkeypatch.setattr("gaia.approvals.store.approve", MagicMock())
-        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: None)
         captured = {}
         def _insert(**k):
             captured.update(k)
             return {"status": "applied"}
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", _insert)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeef2222"), current_session_id="orch")
         assert result.success is True
-        # The FIRST matched row's command must be the one inserted.
-        assert captured["command"] == "FIRST-command"
+        assert requested["id"] == _canon("deadbeef2222")
+        # The row keyed by the exact requested id drove activation -- not the
+        # other pending row that happens to share the mnemonic prefix.
+        assert captured["command"] == "SECOND-command"
 
 
 class TestDbRowToPendingDictBatch4:
@@ -2441,16 +2492,24 @@ class _AC1Driver:
     """Shared driver: patch every lazy collaborator and return recorders."""
 
     @staticmethod
-    def drive(monkeypatch, payload, *, approval_id="P-deadbeefcafe",
+    def drive(monkeypatch, payload, *, approval_id=_canon("deadbeefcafe"),
               session_id="sub", agent_id="ag", fingerprint_exc=None,
               approve_raises=None, get_by_id_row=None, record_event_raises=None):
-        rows = [{
+        pending_row = {
             "id": approval_id,
+            "status": "pending",
             "payload_json": json.dumps(payload) if not isinstance(payload, str) else payload,
             "session_id": session_id,
             "agent_id": agent_id,
-        }]
-        monkeypatch.setattr("gaia.approvals.store.get_pending", lambda **kw: rows)
+        }
+        calls = {"n": 0}
+
+        def _get_by_id(*a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return pending_row
+            return get_by_id_row if get_by_id_row is not None else pending_row
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", _get_by_id)
 
         def _verify(approval_id_arg, payload_json_arg, con):
             if fingerprint_exc is not None:
@@ -2469,7 +2528,6 @@ class _AC1Driver:
             if approve_raises is not None:
                 raise approve_raises
         monkeypatch.setattr("gaia.approvals.store.approve", MagicMock(side_effect=_approve))
-        monkeypatch.setattr("gaia.approvals.store.get_by_id", lambda *a, **k: get_by_id_row)
         return {"record_event": rec}
 
 
@@ -2497,7 +2555,7 @@ class TestActivateDbPendingExceptionHandlersAC1:
         def _boom(**k):
             raise RuntimeError("db down")
         monkeypatch.setattr("gaia.store.writer.insert_semantic_grant", _boom)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
         assert "DB semantic grant insert error" in result.reason
@@ -2512,7 +2570,7 @@ class TestActivateDbPendingExceptionHandlersAC1:
         def _boom(**k):
             raise RuntimeError("fp down")
         monkeypatch.setattr("gaia.store.writer.insert_file_path_grant", _boom)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
         assert "SCOPE_FILE_PATH DB grant insert error" in result.reason
@@ -2530,23 +2588,23 @@ class TestActivateDbPendingExceptionHandlersAC1:
             fingerprint_exc=ChainTamperError("tamper"),
             record_event_raises=RuntimeError("audit chain offline"),
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
         assert "integrity check failed" in result.reason
         assert "Unexpected error activating DB pending" not in result.reason
 
     def test_outer_except_handles_unexpected_early_error(self, monkeypatch):
-        """An error raised in the early body (get_pending) BEFORE any inner try is
-        caught by the function's OUTER except (line 1512): success=False,
-        ACTIVATION_ERROR, reason 'Unexpected error activating DB pending'. Kills
-        the ExceptionReplacer on the outer handler (the error would otherwise
-        propagate out of the function) and the ReplaceFalseWithTrue on its
-        `success=False` (line 1518)."""
-        def _boom(**k):
+        """An error raised in the early body (get_by_id, the sole exact-id lookup
+        under 97c8197) BEFORE any inner try is caught by the function's OUTER
+        except (line 1512): success=False, ACTIVATION_ERROR, reason 'Unexpected
+        error activating DB pending'. Kills the ExceptionReplacer on the outer
+        handler (the error would otherwise propagate out of the function) and
+        the ReplaceFalseWithTrue on its `success=False` (line 1518)."""
+        def _boom(*a, **k):
             raise RuntimeError("store unreachable")
-        monkeypatch.setattr("gaia.approvals.store.get_pending", _boom)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        monkeypatch.setattr("gaia.approvals.store.get_by_id", _boom)
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
         assert "Unexpected error activating DB pending" in result.reason
@@ -2585,7 +2643,7 @@ class TestActivateDbPendingIntegrityLabelAC1:
             monkeypatch, self._SEMANTIC,
             fingerprint_exc=ChainTamperError("payload altered"),
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
         assert "fingerprint_mismatch" in result.reason
         assert "missing_requested_event" not in result.reason
@@ -2603,7 +2661,7 @@ class TestActivateDbPendingIntegrityLabelAC1:
             monkeypatch, self._SEMANTIC,
             fingerprint_exc=ValueError("no REQUESTED event for approval"),
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
         assert "missing_requested_event" in result.reason
         assert "fingerprint_mismatch" not in result.reason
@@ -2629,7 +2687,7 @@ class TestActivateDbPendingIntegrityLabelAC1:
             monkeypatch, self._SEMANTIC,
             fingerprint_exc=AttributeError("chain DB missing REQUESTED event"),
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.status == ACTIVATION_CHAIN_TAMPER_DETECTED
         assert "missing_requested_event" in result.reason
         assert "fingerprint_mismatch" not in result.reason
@@ -3006,7 +3064,7 @@ class TestActivateBehavioralM1Final:
         None -> INVALID_PENDING. Pin ACTIVATED."""
         _AC1Driver.drive(monkeypatch, self._SEMANTIC)
         self._semantic_applied(monkeypatch)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
@@ -3019,7 +3077,7 @@ class TestActivateBehavioralM1Final:
             "gaia.store.writer.insert_semantic_grant",
             lambda **k: {"status": "aborted"},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
 
@@ -3042,7 +3100,7 @@ class TestActivateBehavioralM1Final:
         # activate_db_pending_by_prefix re-imports build_approval_signature from
         # .approval_scopes locally (line 1417), so patch it at the source module.
         monkeypatch.setattr(_scopes, "build_approval_signature", _spy)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.status == ACTIVATION_ACTIVATED
         # The 2-part split parsed the verb 'push' (not 'unknown'/empty).
         assert captured["danger_verb"] == "push"
@@ -3069,7 +3127,7 @@ class TestActivateBehavioralM1Final:
             captured.setdefault("danger_verb", k.get("danger_verb"))
             return real_build(command, **k)
         monkeypatch.setattr(_scopes, "build_approval_signature", _spy)
-        activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         # 3 parts: `== 2` False -> verb '' ; `>= 2` True -> would be 'x'.
         assert captured["danger_verb"] == ""
 
@@ -3091,7 +3149,7 @@ class TestActivateBehavioralM1Final:
             "gaia.store.writer.insert_file_path_grant",
             lambda **k: {"status": runtime_applied},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
@@ -3110,7 +3168,7 @@ class TestActivateBehavioralM1Final:
             "gaia.store.writer.insert_file_path_grant",
             lambda **k: {"status": "aborted", "reason": "nope"},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
 
@@ -3124,7 +3182,7 @@ class TestActivateBehavioralM1Final:
             "modules.security.approval_grants.build_file_path_signature",
             lambda fp: None,
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_SIGNATURE
 
@@ -3147,7 +3205,7 @@ class TestActivateBehavioralM1Final:
             get_by_id_row={"status": runtime_approved},
         )
         self._semantic_applied(monkeypatch)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
@@ -3165,7 +3223,7 @@ class TestActivateBehavioralM1Final:
             get_by_id_row={"status": "aborted"},
         )
         self._semantic_applied(monkeypatch)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_ERROR
 
@@ -3259,7 +3317,7 @@ class TestEqIsStatusAppliedAC5:
             "gaia.store.writer.insert_semantic_grant",
             lambda **k: {"status": runtime_applied},
         )
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert result.status == ACTIVATION_ACTIVATED
 
@@ -3321,7 +3379,7 @@ class TestActivateCommandSelectionAC5:
         }
         _AC1Driver.drive(monkeypatch, payload)
         captured = self._capture_inserted(monkeypatch)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert captured["command"] == "git push origin main"
 
@@ -3336,7 +3394,7 @@ class TestActivateCommandSelectionAC5:
         }
         _AC1Driver.drive(monkeypatch, payload)
         captured = self._capture_inserted(monkeypatch)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is True
         assert captured["command"] == "git push origin main"
 
@@ -3439,7 +3497,7 @@ class TestActivateFallbackVerbAC5:
             "exact_content": "   ",  # truthy, but .strip() is empty
         }
         _AC1Driver.drive(monkeypatch, payload)
-        result = activate_db_pending_by_prefix("deadbeef", current_session_id="orch")
+        result = activate_db_pending_by_id(_canon("deadbeefcafe"), current_session_id="orch")
         assert result.success is False
         assert result.status == ACTIVATION_INVALID_SIGNATURE
         assert result.status != ACTIVATION_ERROR
