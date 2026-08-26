@@ -137,7 +137,21 @@ route back to the producer.
 
 If the user approves, the orchestrator dispatches a fresh owning specialist
 with the grant context and `execution` skill; the orchestrator never runs the
-commands itself. `gaia approvals approve` is a separate, CLI-only admin verb
+commands itself.
+
+The user's decision on the presented surface IS the activation, and it creates
+the grant in the same call: `activate_db_pending_by_id` reads the pending
+payload's scope and inserts the very row the guard will read -- `create_command_set_grant`
+for a `COMMAND_SET`, `gaia.store.writer.insert_file_path_grant` for a
+`SCOPE_FILE_PATH` protected-path Write/Edit, `gaia.store.writer.insert_semantic_grant`
+for a single command. Nothing further has to be run to arm the approval, which
+also means the grant's window opens at the DECISION, not at the retry: a
+re-dispatched specialist is spending that window while it grounds itself. Read
+the remaining window with `gaia approvals show <approval_id>` (`grant_state`,
+`expires_at`) before dispatching, and re-present rather than dispatch into a
+window that has closed.
+
+`gaia approvals approve` is a separate, CLI-only admin verb
 that writes the DB directly and does **not** create a hook-side grant -- it is
 not the activation path, and it is not available to the orchestrator: the
 trusted-CLI role guard (`hooks/modules/security/gaia_cli_only_guard.py`,
