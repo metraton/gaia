@@ -544,9 +544,11 @@ class TestHandleAskUserQuestionDbBridge:
         )
         # No filesystem pending file is written (M2 state: DB only).
 
-        # Build an AskUserQuestion hook_data with a nonce-labeled approve answer.
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        approve_label = f"Approve -- terraform apply [P-{nonce_prefix}]"
+        # Build an AskUserQuestion hook_data with an id-labeled approve answer.
+        # The label must carry the COMPLETE canonical id: the resolver reads
+        # `[P-<32 lowercase hex>]` and never scans for a matching prefix, so a
+        # truncated id resolves to nothing and nothing activates.
+        approve_label = f"Approve -- terraform apply [{approval_id}]"
 
         hook_data = {
             "hook_event_name": "PostToolUse",
@@ -563,15 +565,19 @@ class TestHandleAskUserQuestionDbBridge:
         adapter = ClaudeCodeAdapter()
         adapter._handle_ask_user_question_result(hook_data)
 
-        # Verify the filesystem grant was created.
-        from modules.security.approval_grants import check_approval_grant
+        # Verify the DB grant was created. The filesystem grant plane this test
+        # used to assert was retired with the DB cutover: activation inserts a
+        # SCOPE_SEMANTIC_SIGNATURE row and writes no grant file, so the row the
+        # retry's guard reads is the only grant there is to assert.
+        from gaia.store.writer import check_db_semantic_grant
 
-        grant = check_approval_grant(command, session_id=session_id)
+        grant = check_db_semantic_grant(command)
         assert grant is not None, (
-            "Filesystem grant must exist after _handle_ask_user_question_result "
+            "DB semantic grant must exist after _handle_ask_user_question_result "
             "activates via DB bridge"
         )
-        assert grant.confirmed
+        assert grant["approval_id"] == approval_id
+        assert grant["status"] == "PENDING"
 
         # Verify DB events.
         events = store.replay_for_approval(approval_id, con=assert_con)
