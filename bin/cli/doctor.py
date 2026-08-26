@@ -18,6 +18,8 @@ Checks (in order):
   56. source-parity     - installed package == the Gaia source checkout it was built from
   57. install-provenance - local (file:) vs npm install; mode, version, symlink resolution
   58. global-cli-alignment - PATH gaia vs workspace-expected install (version/content drift)
+  59. executed-copy-alignment - node_modules/@jaguilar87/gaia resolves to the checkout, or a
+                        stale tarball the pin restored over a dev link (names the realpath)
   60. identity           - orchestrator agent configured
   65. agent-routing      - surface_routing table (DB) primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
@@ -1570,6 +1572,79 @@ def check_global_cli_alignment(project_root: Path) -> dict:
         name, "pass",
         f"PATH gaia (v{g_ver or '?'}) matches this workspace's expected install "
         f"(v{w_ver or '?'}, via {workspace_info['source']})",
+    )
+
+
+@register_check("Executed copy alignment", order=59)
+def check_executed_copy_alignment(project_root: Path) -> dict:
+    """Detect a runtime entry that no longer matches the checkout it once linked.
+
+    Every harness that loads Gaia from node_modules/@jaguilar87/gaia (OpenCode's
+    plugin loader, Claude Code's .claude/ symlinks, a bare `require`) runs
+    whatever that path resolves to at THAT moment, never the pin recorded in
+    package.json. A dev workspace commonly runs a live symlink straight at the
+    source checkout (`gaia dev --mode link`) while package.json keeps pointing
+    at a content-addressed tarball (a local `file:*.tgz` spec, dev-pack mode).
+    The two do not disagree until something re-materializes node_modules from
+    that pin -- a plain `pnpm install` or `npm install` -- which silently swaps
+    the live checkout for a stale, already-superseded tarball extraction: no
+    error, no warning, no version bump to notice.
+
+    ALIGNED (pass): the resolved entry carries gaia.source_parity.SOURCE_MARKER
+    -- whatever runs today IS the live checkout.
+    DIVERGENT (warning): the resolved entry is a materialized, non-checkout
+    copy while package.json pins a local tarball -- the pin-restored-over-a-
+    link shape. The realpath actually resolved is always named in the detail,
+    so the verdict is checked against the literal filesystem state that
+    produced it, never merely asserted.
+
+    Out of scope (info): no local node_modules entry at all (plugin-mode), or
+    a non-tarball spec (a registry install, or a `file:` dir spec already
+    covered by check_source_parity) -- neither carries the link-vs-pin
+    duality this check exists to catch.
+    """
+    name = "Executed copy alignment"
+    nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
+
+    # is_symlink() also catches a DANGLING link (exists() alone follows it and
+    # reports False), which must still reach the resolve() below to warn.
+    if not nm_gaia.exists() and not nm_gaia.is_symlink():
+        return _result(name, "info", "no node_modules/@jaguilar87/gaia entry to check (plugin-mode?)")
+
+    try:
+        resolved = nm_gaia.resolve(strict=True)
+    except OSError:
+        return _result(
+            name, "warning",
+            f"node_modules/@jaguilar87/gaia does not resolve ({nm_gaia})",
+            f"Run `gaia dev --workspace {project_root}` to reinstall",
+        )
+
+    parity = _load_source_parity()
+    if parity is not None and parity.is_source_checkout(resolved):
+        return _result(
+            name, "pass",
+            f"aligned: node_modules/@jaguilar87/gaia -> {resolved} "
+            "(the executed entry IS a Gaia source checkout)",
+        )
+
+    spec = _gaia_dep_spec(project_root)
+    is_tarball_pin = bool(spec) and spec.startswith("file:") and spec.endswith(".tgz")
+    if not is_tarball_pin:
+        return _result(
+            name, "info",
+            f"node_modules/@jaguilar87/gaia -> {resolved}; not a source checkout, and "
+            f"package.json pins {spec or 'no local spec'} (not a local tarball) -- no "
+            "link-vs-pin duality to check",
+        )
+
+    return _result(
+        name, "warning",
+        f"divergent: node_modules/@jaguilar87/gaia -> {resolved} (a materialized copy, "
+        f"NOT the source checkout) while package.json pins the tarball {spec} -- a "
+        "previous dev link was replaced by its pinned, possibly-stale package",
+        f"Run `gaia dev --mode link --workspace {project_root}` to restore the live "
+        "checkout, or confirm this materialized copy is the build you intend to run.",
     )
 
 

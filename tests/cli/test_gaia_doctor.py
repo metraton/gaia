@@ -2287,3 +2287,82 @@ class TestCheckSourceParity:
         r = doctor_mod.check_source_parity(ws)
         assert r["severity"] == "info"
         assert "NOT verified" in r["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: executed-copy alignment (order 59) -- does node_modules/@jaguilar87/
+# gaia, the entry every harness (OpenCode's plugin loader included) actually
+# runs, still point at the live checkout, or did a tarball pin get
+# re-materialized over a previous dev link? Both states are built as fixtures
+# below; neither depends on the real workspace.
+# ---------------------------------------------------------------------------
+
+class TestCheckExecutedCopyAlignment:
+    def _pin_tarball(self, ws: Path, spec: str = "file:../../.gaia/cache/x.tgz") -> None:
+        (ws / "package.json").write_text(
+            json.dumps({"name": "my-app", "dependencies": {"@jaguilar87/gaia": spec}})
+        )
+
+    def test_no_node_modules_entry_is_info(self, tmp_path):
+        r = doctor_mod.check_executed_copy_alignment(tmp_path)
+        assert r["severity"] == "info"
+        assert "plugin-mode" in r["detail"]
+
+    def test_aligned_when_entry_is_a_symlink_to_the_checkout(self, tmp_path):
+        # link-mode: the pin still names a tarball, but the entry actually
+        # executed resolves straight to the source checkout.
+        checkout = _mk_source_checkout(tmp_path / "checkout")
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87"
+        nm.mkdir(parents=True)
+        (nm / "gaia").symlink_to(checkout)
+        self._pin_tarball(ws)
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "pass"
+        assert "aligned" in r["detail"]
+        assert str(checkout.resolve()) in r["detail"]
+
+    def test_divergent_when_pinned_tarball_replaced_the_link(self, tmp_path):
+        # The measured class: a previous dev link is gone, node_modules now
+        # holds a materialized (non-checkout) copy, and the pin is still the
+        # local tarball spec that produced it.
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm.mkdir(parents=True)
+        (nm / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.4.0-rc.1"}))
+        self._pin_tarball(ws, "file:../../.gaia/cache/dev-pack/me/jaguilar87-gaia-5.4.0-rc.1+e1c4f7b5.tgz")
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "warning"
+        assert "divergent" in r["detail"]
+        assert str(nm.resolve()) in r["detail"]
+        assert "e1c4f7b5.tgz" in r["detail"]
+        assert "gaia dev --mode link" in r["fix"]
+
+    def test_non_tarball_spec_with_no_checkout_is_info_not_divergent(self, tmp_path):
+        # A registry install has no link to have lost -- this check's object
+        # (the link-vs-pin duality) does not apply, so it must not warn.
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm.mkdir(parents=True)
+        (nm / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.1.1"}))
+        (ws / "package.json").write_text(
+            json.dumps({"name": "my-app", "dependencies": {"@jaguilar87/gaia": "^5.1.1"}})
+        )
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "info"
+        assert "no link-vs-pin duality" in r["detail"]
+
+    def test_broken_entry_is_warning(self, tmp_path):
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87"
+        nm.mkdir(parents=True)
+        (nm / "gaia").symlink_to(tmp_path / "does-not-exist")
+        self._pin_tarball(ws)
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "warning"
+        assert "does not resolve" in r["detail"]
+        assert "gaia dev" in r["fix"]
