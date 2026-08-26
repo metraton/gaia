@@ -3075,11 +3075,11 @@ class ClaudeCodeAdapter(HookAdapter):
     def _handle_ask_user_question_result(self, hook_data: Dict[str, Any]) -> None:
         """Activate every grant the user signed in one structured decision event.
 
-        Nonce-targeted activation, once per distinct ``[P-<hex>]`` tag carried by
+        Exact-id activation, once per distinct ``[P-<32 hex>]`` tag carried by
         an answered label. This works identically for same-session and
         cross-session approvals:
-          1. Extract the nonce prefix from every answered label.
-          2. Load each pending by prefix (any session).
+          1. Extract the complete canonical id from every answered label.
+          2. Load each pending by exact id (any session).
           3. Activate each grant under the CURRENT session.
 
         A host question event answers every question in the call independently,
@@ -3087,15 +3087,15 @@ class ClaudeCodeAdapter(HookAdapter):
         the rest -- measured on 2026-08-19, when two protected-path approvals
         were presented in one event, both approved, and only the first activated.
 
-        ``extract_nonce_from_label`` is the ONLY predicate that decides
-        activation: a label yields a grant exactly when it returns a prefix for
+        ``extract_approval_id_from_label`` is the ONLY predicate that decides
+        activation: a label yields a grant exactly when it returns a full id for
         it. Nothing else reads the answer text, so a reject label -- including
         "Do not approve ..." -- still yields no nonce and no grant, and this path
         can lose a signature but never manufacture one.
 
         DB-only since the grant-lifecycle FS retirement: REQUESTED writes go
-        to the DB, so an approved pending is resolved by nonce prefix straight
-        from the DB via ``activate_db_pending_by_prefix()``.
+        to the DB, so an approved pending is resolved by exact canonical id
+        through ``activate_db_pending_by_id()``.
 
         Never blocks (no exceptions raised to caller).
         """
@@ -3107,8 +3107,8 @@ class ClaudeCodeAdapter(HookAdapter):
             record_decision_not_activated,
         )
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
-            extract_nonce_from_label,
+            activate_db_pending_by_id,
+            extract_approval_id_from_label,
         )
 
         session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
@@ -3140,16 +3140,16 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
                 return
 
-            # One prefix per distinct signed label, in the order answered.
-            prefixes: List[str] = []
+            # One canonical id per distinct signed label, in answer order.
+            approval_ids: List[str] = []
             for label in labels:
-                prefix = extract_nonce_from_label(label)
-                if prefix and prefix not in prefixes:
-                    prefixes.append(prefix)
+                approval_id = extract_approval_id_from_label(label)
+                if approval_id and approval_id not in approval_ids:
+                    approval_ids.append(approval_id)
 
-            if not prefixes:
+            if not approval_ids:
                 logger.info(
-                    "AskUserQuestion: no nonce prefix in answer labels -- "
+                    "AskUserQuestion: no canonical approval id in answer labels -- "
                     "nothing to activate for session %s", session_id[:12],
                 )
                 record_decision_not_activated(
@@ -3162,18 +3162,18 @@ class ClaudeCodeAdapter(HookAdapter):
 
             logger.info(
                 "AskUserQuestion: %d signed label(s), activating grants for session %s",
-                len(prefixes), session_id[:12],
+                len(approval_ids), session_id[:12],
             )
 
             # One failure must not withhold the grants the user also signed, so
             # the loop records it and continues instead of returning.
-            for prefix in prefixes:
-                result = activate_db_pending_by_prefix(
-                    prefix, current_session_id=session_id,
+            for approval_id in approval_ids:
+                result = activate_db_pending_by_id(
+                    approval_id, current_session_id=session_id,
                 )
                 logger.info(
-                    "AskUserQuestion DB activation: prefix=%s success=%s status=%s reason=%s",
-                    prefix,
+                    "AskUserQuestion DB activation: approval_id=%s success=%s status=%s reason=%s",
+                    approval_id,
                     result.success,
                     getattr(result.status, "value", str(result.status)),
                     result.reason,
@@ -3183,7 +3183,7 @@ class ClaudeCodeAdapter(HookAdapter):
                         reason=REASON_ACTIVATION_FAILED,
                         lane=LANE_CLAUDE_CODE_QUESTION,
                         session_id=session_id,
-                        nonce_prefix=prefix,
+                        approval_id=approval_id,
                         decision_values=labels,
                         detail=result.reason or getattr(result.status, "value", ""),
                     )

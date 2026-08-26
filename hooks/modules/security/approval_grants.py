@@ -293,26 +293,32 @@ def generate_nonce() -> str:
     return secrets.token_hex(16)
 
 
-# Regex for extracting a nonce from an AskUserQuestion approve label.
-# Only matches labels that start with "Approve" and contain [P-<hex>].
-_APPROVE_NONCE_RE = re.compile(r"^Approve\b.*\[P-([a-f0-9]+)\]")
+# Only an affirmative native label carrying one complete canonical id can
+# authorize activation. The closing anchor prevents suffix text from turning a
+# display fragment into an identity-bearing answer.
+_APPROVE_ID_RE = re.compile(r"^Approve\b.*\[(P-[a-f0-9]{32})\]\s*$")
 
 
-def extract_nonce_from_label(label: str) -> Optional[str]:
-    """Extract the nonce from an AskUserQuestion option label.
+def extract_approval_id_from_label(label: str) -> Optional[str]:
+    """Extract one complete canonical id from an affirmative native label.
 
     Approve labels may contain a ``[P-<hex>]`` tag that identifies the
     pending approval to activate.  Reject labels never carry a nonce,
     even if one is superficially present in the text.
 
     Args:
-        label: The option label string (e.g. ``"Approve -- git push origin main [P-e68be5b8]"``).
+        label: An Approve label ending in ``[P-<32 lowercase hex>]``.
 
     Returns:
-        The hex nonce string if found in an Approve label, otherwise ``None``.
+        The canonical approval id, otherwise ``None``.
     """
-    m = _APPROVE_NONCE_RE.search(label)
+    m = _APPROVE_ID_RE.search(label)
     return m.group(1) if m else None
+
+
+def extract_nonce_from_label(label: str) -> Optional[str]:
+    """Compatibility name returning only a complete canonical approval id."""
+    return extract_approval_id_from_label(label)
 
 
 def load_pending_by_nonce_prefix(prefix: str) -> Optional[Dict[str, Any]]:
@@ -411,7 +417,7 @@ def payload_commands(payload: Dict[str, Any]) -> List[str]:
 
     A ``command_set`` of more than one item is authoritative: those N commands
     are what one consent covers, and ``exact_content`` is merely the singular
-    stand-in for the first of them (see ``activate_db_pending_by_prefix``).
+    stand-in for the first of them (see ``activate_db_pending_by_id``).
     Falls back to ``commands``, then to the single ``exact_content`` -- which
     for a SCOPE_FILE_PATH pending is the blocked file path, not a command.
     """
@@ -475,19 +481,18 @@ def render_consent_surface(
 
 
 def render_approve_label(payload: Dict[str, Any], approval_id: str) -> str:
-    """Render the Approve option label, nonce suffix included.
+    """Render the Approve option label with its complete machine identity.
 
-    The suffix is what ``extract_nonce_from_label`` reads to activate the right
-    pending row, so the label MUST keep the leading ``Approve`` and the
-    ``[P-<nonce8>]`` tag. A batch label names the command count so the label
-    surface does not imply a single command either.
+    Claude Code provides no separate approval metadata with the structured
+    answer, so the native label is the identity channel. It keeps a concise
+    human action while carrying the complete canonical id in brackets. A batch
+    label names the command count so the label does not imply a single command.
     """
-    nonce8 = approval_id[len("P-"):len("P-") + 8] if approval_id.startswith("P-") else approval_id[:8]
     action = payload.get("operation", "") or "approve operation"
     count = len(payload_commands(payload))
     if count > 1:
         action = f"{action} ({count} commands)"
-    return f"Approve -- {action} [P-{nonce8}]"
+    return f"Approve -- {action} [{approval_id}]"
 
 
 def verify_consent_surface_completeness(
@@ -1259,21 +1264,20 @@ def find_pending_for_file(
     return None
 
 
-def activate_db_pending_by_prefix(
-    nonce_prefix: str,
+def activate_db_pending_by_id(
+    approval_id: str,
     current_session_id: Optional[str] = None,
     ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
     presented_question: Optional[str] = None,
     presented_label: Optional[str] = None,
 ) -> ApprovalActivationResult:
-    """Activate a DB-stored pending approval by its nonce prefix.
+    """Activate one DB-stored pending approval by exact canonical id.
 
     Called when ``load_pending_by_nonce_prefix()`` returns None (because M2
     migrated REQUESTED writes to DB only -- no filesystem pending file is
     written any more).  This function bridges the gap:
 
-      1. Looks up the approval row in the DB using ``id LIKE 'P-<prefix>%'``
-         with ``status='pending'``.
+      1. Looks up the approval row by exact id and requires status=pending.
       2. Parses payload_json from the DB row.
       2b. [HARD INTEGRITY CHECK] Calls ``verify_fingerprint()`` to confirm the
           payload has not changed since the REQUESTED event sealed it.  If the
@@ -1295,8 +1299,7 @@ def activate_db_pending_by_prefix(
     finds the grant file.
 
     Args:
-        nonce_prefix: First 8 hex chars extracted from the ``[P-xxx]`` label
-            in the AskUserQuestion answer.
+        approval_id: Complete canonical id extracted from the native label.
         current_session_id: Session doing the activation (orchestrator or
             resumed subagent).  Defaults to ``_get_session_id()``.
         ttl_minutes: TTL for the created filesystem grant.
@@ -1313,36 +1316,32 @@ def activate_db_pending_by_prefix(
     """
     if current_session_id is None:
         current_session_id = _get_session_id()
+    if not isinstance(approval_id, str) or re.fullmatch(
+        r"P-[a-f0-9]{32}", approval_id
+    ) is None:
+        return ApprovalActivationResult(
+            success=False,
+            status=ACTIVATION_NOT_FOUND,
+            reason="Activation requires a canonical approval_id P-<32 lowercase hex>.",
+        )
 
     try:
-        # Step 1: Find the DB pending approval by prefix.
-        from gaia.approvals.store import get_pending, record_event, approve, get_by_id
+        # Step 1: Find exactly the signed DB pending approval.
+        from gaia.approvals.store import record_event, approve, get_by_id
         import json as _json
 
-        # Query all pending approvals and match by prefix (cross-session --
-        # use all_sessions=True because the approval was created by the
-        # subagent whose session may differ from the orchestrator's).
-        all_pending = get_pending(all_sessions=True)
-        matched_row = None
-        for row in all_pending:
-            row_id = row.get("id", "")
-            # approval_id format: P-{uuid4_hex} -- prefix follows "P-"
-            if row_id.startswith(f"P-{nonce_prefix}"):
-                matched_row = row
-                break
-
-        if matched_row is None:
+        matched_row = get_by_id(approval_id)
+        if matched_row is None or matched_row.get("status") != "pending":
             logger.info(
-                "activate_db_pending_by_prefix: no DB pending found for prefix %s",
-                nonce_prefix,
+                "activate_db_pending_by_id: no pending DB approval found for id %s",
+                approval_id,
             )
             return ApprovalActivationResult(
                 success=False,
                 status=ACTIVATION_NOT_FOUND,
-                reason=f"No DB pending approval found for nonce prefix {nonce_prefix!r}.",
+                reason=f"No pending DB approval found for approval_id {approval_id!r}.",
             )
 
-        approval_id = matched_row["id"]
         payload_json_str = matched_row.get("payload_json")
         originating_session = matched_row.get("session_id", "")
         agent_id = matched_row.get("agent_id")
@@ -1350,7 +1349,7 @@ def activate_db_pending_by_prefix(
         # Step 2: Parse payload to get the exact command.
         if not payload_json_str:
             logger.warning(
-                "activate_db_pending_by_prefix: approval %s has no payload_json",
+                "activate_db_pending_by_id: approval %s has no payload_json",
                 approval_id,
             )
             return ApprovalActivationResult(
@@ -1363,7 +1362,7 @@ def activate_db_pending_by_prefix(
             payload = _json.loads(payload_json_str)
         except (ValueError, TypeError) as exc:
             logger.warning(
-                "activate_db_pending_by_prefix: could not parse payload_json for %s: %s",
+                "activate_db_pending_by_id: could not parse payload_json for %s: %s",
                 approval_id, exc,
             )
             return ApprovalActivationResult(
@@ -1425,7 +1424,7 @@ def activate_db_pending_by_prefix(
             command = command_set_items[0]["command"]
         if not command:
             logger.warning(
-                "activate_db_pending_by_prefix: no command found in payload for %s",
+                "activate_db_pending_by_id: no command found in payload for %s",
                 approval_id,
             )
             return ApprovalActivationResult(
@@ -1462,7 +1461,7 @@ def activate_db_pending_by_prefix(
             _is_tamper = _fp_exc.__class__.__name__ == "ChainTamperError"
             _tamper_label = "fingerprint_mismatch" if _is_tamper else "missing_requested_event"
             logger.error(
-                "activate_db_pending_by_prefix: INTEGRITY VIOLATION for %s "
+                "activate_db_pending_by_id: INTEGRITY VIOLATION for %s "
                 "(%s) -- refusing to activate: %s",
                 approval_id, _tamper_label, _fp_exc,
             )
@@ -1483,7 +1482,7 @@ def activate_db_pending_by_prefix(
                 )
             except Exception as _audit_err:
                 logger.error(
-                    "activate_db_pending_by_prefix: also failed to record FAILED "
+                    "activate_db_pending_by_id: also failed to record FAILED "
                     "audit event for %s: %s",
                     approval_id, _audit_err,
                 )
@@ -1532,7 +1531,7 @@ def activate_db_pending_by_prefix(
                 )
             except Exception as exc:
                 logger.error(
-                    "activate_db_pending_by_prefix: atomic COMMAND_SET activation "
+                    "activate_db_pending_by_id: atomic COMMAND_SET activation "
                     "failed for %s: %s", approval_id, exc,
                 )
                 return ApprovalActivationResult(
@@ -1570,14 +1569,14 @@ def activate_db_pending_by_prefix(
                 agent_id=agent_id,
             )
             logger.info(
-                "activate_db_pending_by_prefix: DB transition complete for %s "
+                "activate_db_pending_by_id: DB transition complete for %s "
                 "(SHOWN + APPROVED, status=approved)",
                 approval_id,
             )
         except ValueError as ve:
             # transition() raises ValueError when status != 'pending' (e.g. already approved).
             logger.warning(
-                "activate_db_pending_by_prefix: DB transition failed for %s: %s "
+                "activate_db_pending_by_id: DB transition failed for %s: %s "
                 "(approval may have been processed already)",
                 approval_id, ve,
             )
@@ -1635,7 +1634,7 @@ def activate_db_pending_by_prefix(
                 )
                 if applied.get("status") != "applied":
                     logger.error(
-                        "activate_db_pending_by_prefix: plan-first COMMAND_SET "
+                        "activate_db_pending_by_id: plan-first COMMAND_SET "
                         "grant creation failed for approval_id=%s (items=%d): %s",
                         approval_id[:16], len(command_set_items),
                         applied.get("reason", "unknown"),
@@ -1649,7 +1648,7 @@ def activate_db_pending_by_prefix(
                         ),
                     )
                 logger.info(
-                    "activate_db_pending_by_prefix: plan-first COMMAND_SET grant "
+                    "activate_db_pending_by_id: plan-first COMMAND_SET grant "
                     "created (source=plan-first): approval_id=%s, items=%d, "
                     "originating_session=%s, current_session=%s",
                     approval_id[:16], len(command_set_items),
@@ -1675,7 +1674,7 @@ def activate_db_pending_by_prefix(
             )
             if not created:
                 logger.error(
-                    "activate_db_pending_by_prefix: COMMAND_SET grant creation "
+                    "activate_db_pending_by_id: COMMAND_SET grant creation "
                     "failed for approval_id=%s (items=%d)",
                     approval_id[:16], len(command_set_items),
                 )
@@ -1685,7 +1684,7 @@ def activate_db_pending_by_prefix(
                     reason="Failed to create COMMAND_SET grant from approved payload.",
                 )
             logger.info(
-                "activate_db_pending_by_prefix: COMMAND_SET grant created: "
+                "activate_db_pending_by_id: COMMAND_SET grant created: "
                 "approval_id=%s, items=%d, ttl=%d min, originating_session=%s, "
                 "current_session=%s",
                 approval_id[:16], len(command_set_items),
@@ -1713,7 +1712,7 @@ def activate_db_pending_by_prefix(
             file_path = payload.get("exact_content", "")
             if not file_path:
                 logger.warning(
-                    "activate_db_pending_by_prefix: SCOPE_FILE_PATH pending %s "
+                    "activate_db_pending_by_id: SCOPE_FILE_PATH pending %s "
                     "has no exact_content (file path) -- cannot create grant",
                     approval_id,
                 )
@@ -1726,7 +1725,7 @@ def activate_db_pending_by_prefix(
             fp_signature = build_file_path_signature(file_path)
             if fp_signature is None:
                 logger.warning(
-                    "activate_db_pending_by_prefix: could not build file-path signature "
+                    "activate_db_pending_by_id: could not build file-path signature "
                     "for file=%r in pending %s",
                     file_path, approval_id,
                 )
@@ -1749,7 +1748,7 @@ def activate_db_pending_by_prefix(
                 )
             except Exception as _fp_err:
                 logger.error(
-                    "activate_db_pending_by_prefix: SCOPE_FILE_PATH DB grant insert error: %s",
+                    "activate_db_pending_by_id: SCOPE_FILE_PATH DB grant insert error: %s",
                     _fp_err,
                 )
                 return ApprovalActivationResult(
@@ -1760,7 +1759,7 @@ def activate_db_pending_by_prefix(
 
             if result_fp.get("status") != "applied":
                 logger.error(
-                    "activate_db_pending_by_prefix: SCOPE_FILE_PATH DB grant insert failed: %s",
+                    "activate_db_pending_by_id: SCOPE_FILE_PATH DB grant insert failed: %s",
                     result_fp,
                 )
                 return ApprovalActivationResult(
@@ -1770,7 +1769,7 @@ def activate_db_pending_by_prefix(
                 )
 
             logger.info(
-                "activate_db_pending_by_prefix: SCOPE_FILE_PATH DB grant inserted: "
+                "activate_db_pending_by_id: SCOPE_FILE_PATH DB grant inserted: "
                 "approval_id=%s, file=%r",
                 approval_id[:16], file_path,
             )
@@ -1805,7 +1804,7 @@ def activate_db_pending_by_prefix(
         )
         if signature is None:
             logger.warning(
-                "activate_db_pending_by_prefix: could not build signature for "
+                "activate_db_pending_by_id: could not build signature for "
                 "command='%s' -- using command string as fallback verb",
                 command[:80],
             )
@@ -1844,7 +1843,7 @@ def activate_db_pending_by_prefix(
             )
             if result_sg.get("status") == "applied":
                 logger.info(
-                    "activate_db_pending_by_prefix: DB semantic grant inserted: "
+                    "activate_db_pending_by_id: DB semantic grant inserted: "
                     "approval_id=%s, session=%s",
                     approval_id[:16], current_session_id[:12],
                 )
@@ -1859,7 +1858,7 @@ def activate_db_pending_by_prefix(
                 )
             else:
                 logger.error(
-                    "activate_db_pending_by_prefix: DB semantic grant insert failed: %s",
+                    "activate_db_pending_by_id: DB semantic grant insert failed: %s",
                     result_sg,
                 )
                 return ApprovalActivationResult(
@@ -1869,7 +1868,7 @@ def activate_db_pending_by_prefix(
                 )
         except Exception as _sg_err:
             logger.error(
-                "activate_db_pending_by_prefix: DB semantic grant insert error: %s",
+                "activate_db_pending_by_id: DB semantic grant insert error: %s",
                 _sg_err,
             )
             return ApprovalActivationResult(
@@ -1880,13 +1879,53 @@ def activate_db_pending_by_prefix(
 
     except Exception as exc:
         logger.error(
-            "activate_db_pending_by_prefix: unexpected error for prefix %s: %s",
-            nonce_prefix, exc, exc_info=True,
+            "activate_db_pending_by_id: unexpected error for approval_id %s: %s",
+            approval_id, exc, exc_info=True,
         )
         return ApprovalActivationResult(
             success=False,
             status=ACTIVATION_ERROR,
             reason=f"Unexpected error activating DB pending: {exc}",
+        )
+
+
+def activate_db_pending_by_prefix(
+    nonce_prefix: str,
+    current_session_id: Optional[str] = None,
+    ttl_minutes: int = DEFAULT_GRANT_TTL_MINUTES,
+    presented_question: Optional[str] = None,
+    presented_label: Optional[str] = None,
+) -> ApprovalActivationResult:
+    """Compatibility helper for legacy direct callers; never use for consent."""
+    try:
+        from gaia.approvals.store import get_pending
+
+        candidates = [
+            row.get("id", "")
+            for row in get_pending(all_sessions=True)
+            if row.get("id", "").startswith(f"P-{nonce_prefix}")
+        ]
+        if len(candidates) != 1:
+            return ApprovalActivationResult(
+                success=False,
+                status=ACTIVATION_NOT_FOUND,
+                reason=(
+                    f"Legacy nonce prefix {nonce_prefix!r} resolved to "
+                    f"{len(candidates)} pending approvals."
+                ),
+            )
+        return activate_db_pending_by_id(
+            candidates[0],
+            current_session_id=current_session_id,
+            ttl_minutes=ttl_minutes,
+            presented_question=presented_question,
+            presented_label=presented_label,
+        )
+    except Exception as exc:
+        return ApprovalActivationResult(
+            success=False,
+            status=ACTIVATION_ERROR,
+            reason=f"Legacy prefix lookup failed: {exc}",
         )
 
 

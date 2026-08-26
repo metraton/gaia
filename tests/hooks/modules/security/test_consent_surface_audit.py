@@ -337,24 +337,24 @@ class TestConsentSurfaceCompleteness:
 # Nonce activation must survive the new label form
 # ---------------------------------------------------------------------------
 
-class TestNonceSurvivesTheBatchLabel:
-    """The `[P-<nonce8>]` suffix is what activates the grant -- it must hold."""
+class TestCanonicalIdSurvivesTheBatchLabel:
+    """The complete canonical id is what activates the grant."""
 
     @pytest.mark.parametrize("payload_factory", [
         lambda: _singular_payload("git push origin main"),
         lambda: _command_set_payload(BATCH_COMMANDS),
     ])
-    def test_rendered_label_yields_the_nonce_prefix(self, payload_factory):
+    def test_rendered_label_yields_the_exact_approval_id(self, payload_factory):
         from modules.security.approval_grants import (
-            extract_nonce_from_label,
+            extract_approval_id_from_label,
             render_approve_label,
         )
 
         approval_id = "P-" + "75a44b5cfb6ae198b0ad444ed442bc7a"
         label = render_approve_label(payload_factory(), approval_id)
 
-        assert extract_nonce_from_label(label) == "75a44b5c", (
-            f"Nonce must be extractable from the rendered label: {label!r}"
+        assert extract_approval_id_from_label(label) == approval_id, (
+            f"Canonical id must be extractable from the rendered label: {label!r}"
         )
 
     def test_batch_label_names_the_count(self):
@@ -367,12 +367,12 @@ class TestNonceSurvivesTheBatchLabel:
         assert label.startswith("Approve"), label
 
     def test_activation_succeeds_through_the_rendered_batch_label(self, approvals_db):
-        """End-to-end: render label -> extract nonce -> activate the COMMAND_SET."""
+        """End-to-end: render label -> exact id -> activate the COMMAND_SET."""
         db_path, assert_con, store = approvals_db
         from modules.security.approval_grants import (
             ACTIVATION_ACTIVATED,
-            activate_db_pending_by_prefix,
-            extract_nonce_from_label,
+            activate_db_pending_by_id,
+            extract_approval_id_from_label,
             render_approve_label,
         )
 
@@ -380,11 +380,11 @@ class TestNonceSurvivesTheBatchLabel:
         approval_id = _insert_pending(store, payload)
         label = render_approve_label(payload, approval_id)
 
-        nonce_prefix = extract_nonce_from_label(label)
-        assert nonce_prefix == approval_id[len("P-"):len("P-") + 8]
+        extracted_id = extract_approval_id_from_label(label)
+        assert extracted_id == approval_id
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix,
+        result = activate_db_pending_by_id(
+            extracted_id,
             current_session_id=SESSION_ID,
             presented_label=label,
         )

@@ -761,11 +761,9 @@ class TestConditionalActivation:
         """A nonce-labeled Approve answer activates the targeted DB grant."""
         session_id = "test-cycle-session"
         approval_id = self._deny_creates_db_pending("terraform apply", session_id)
-        nonce8 = approval_id[len("P-"):len("P-") + 8]
-
         hook_data = self._make_hook_data(
             answers={"Proceed with terraform apply?":
-                     f"Approve -- terraform apply [P-{nonce8}]"},
+                     f"Approve -- terraform apply [{approval_id}]"},
             session_id=session_id,
         )
         self.adapter._handle_ask_user_question_result(hook_data)
@@ -840,10 +838,8 @@ class TestConditionalActivation:
         """A nonce-labeled answer in tool_input (fallback) also activates."""
         session_id = "test-cycle-session"
         approval_id = self._deny_creates_db_pending("terraform apply", session_id)
-        nonce8 = approval_id[len("P-"):len("P-") + 8]
-
         hook_data = self._make_hook_data(
-            answers={"q1": f"Approve -- terraform apply [P-{nonce8}]"},
+            answers={"q1": f"Approve -- terraform apply [{approval_id}]"},
             session_id=session_id,
             in_tool_input=True,
         )

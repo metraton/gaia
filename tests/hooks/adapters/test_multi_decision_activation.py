@@ -85,15 +85,18 @@ def _deliver(answers: dict, *, session_id: str = SESSION):
 
 
 def _approve_label(approval_id: str, command: str) -> str:
-    """The mandatory approve-label spelling: anchored ^Approve + [P-<prefix>]."""
-    return f"Approve -- {command} [P-{approval_id[len('P-'):len('P-') + 8]}]"
+    """The mandatory approve-label spelling with exact canonical identity."""
+    return f"Approve -- {command} [{approval_id}]"
 
 
-def _request(command: str, *, session_id: str = SESSION) -> str:
+def _request(
+    command: str, *, session_id: str = SESSION, approval_id: str | None = None
+) -> str:
     import gaia.approvals.store as store
 
     return store.insert_requested(
-        _sealed_payload(command), agent_id="test-agent", session_id=session_id
+        _sealed_payload(command), agent_id="test-agent", session_id=session_id,
+        approval_id=approval_id,
     )
 
 
@@ -189,7 +192,7 @@ class TestMultiGrantActivation:
         _deliver({
             "Approve terraform apply?": _approve_label(approved, approved_cmd),
             "Approve the push?": f"Do not approve -- {rejected_cmd} "
-                                 f"[P-{rejected[len('P-'):len('P-') + 8]}]",
+                                 f"[{rejected}]",
         })
 
         assert _status(approved) == "approved"
@@ -200,6 +203,35 @@ class TestMultiGrantActivation:
             "keeps this path unable to manufacture a signature"
         )
         assert _grant(rejected_cmd) is None
+
+    def test_same_prefix_ids_activate_only_the_exact_signed_id(self):
+        prefix = "deadbeef"
+        unsigned = _request(
+            "git push origin unsigned",
+            approval_id=f"P-{prefix}{'0' * 24}",
+        )
+        signed = _request(
+            "git push origin signed",
+            approval_id=f"P-{prefix}{'f' * 24}",
+        )
+
+        _deliver({"Approve signed?": _approve_label(signed, "git push origin signed")})
+
+        assert _status(signed) == "approved"
+        assert _status(unsigned) == "pending"
+        assert _grant("git push origin signed") is not None
+        assert _grant("git push origin unsigned") is None
+
+    def test_short_display_label_activates_nothing(self):
+        approval_id = _request(
+            "git push origin main",
+            approval_id=f"P-deadbeef{'1' * 24}",
+        )
+
+        _deliver({"Approve?": "Approve -- git push origin main [P-deadbeef]"})
+
+        assert _status(approval_id) == "pending"
+        assert _grant("git push origin main") is None
 
     def test_reject_only_event_activates_nothing(self):
         command = "git push origin main"
@@ -248,7 +280,9 @@ class TestDurableNonActivationRecord:
         from gaia.approvals.decision_audit import REASON_NO_SESSION_BINDING
 
         monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
-        _deliver({"Proceed?": "Approve -- terraform apply [P-deadbeef]"}, session_id="")
+        _deliver({
+            "Proceed?": f"Approve -- terraform apply [P-deadbeef{'0' * 24}]"
+        }, session_id="")
 
         records = _non_activation_records()
         assert [r["reason"] for r in records] == [REASON_NO_SESSION_BINDING]
@@ -257,11 +291,12 @@ class TestDurableNonActivationRecord:
     def test_failed_activation_is_recorded_with_its_correlation(self):
         from gaia.approvals.decision_audit import REASON_ACTIVATION_FAILED
 
-        _deliver({"Proceed?": "Approve -- terraform apply [P-deadbeef]"})
+        missing_id = f"P-deadbeef{'0' * 24}"
+        _deliver({"Proceed?": f"Approve -- terraform apply [{missing_id}]"})
 
         records = _non_activation_records()
         assert [r["reason"] for r in records] == [REASON_ACTIVATION_FAILED]
-        assert records[0]["nonce_prefix"] == "deadbeef", (
+        assert records[0]["approval_id"] == missing_id, (
             "a failed activation must record WHICH signature was lost"
         )
 
@@ -270,7 +305,7 @@ class TestDurableNonActivationRecord:
         approval_id = _request(command)
 
         _deliver({
-            "Approve the missing one?": "Approve -- nothing here [P-deadbeef]",
+            "Approve the missing one?": f"Approve -- nothing here [P-deadbeef{'0' * 24}]",
             "Approve terraform apply?": _approve_label(approval_id, command),
         })
 

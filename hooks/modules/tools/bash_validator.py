@@ -1715,7 +1715,7 @@ def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
     must be refused under THAT approval's id. Only a payload whose
     ``request_type`` is ``COMMAND_SET`` and which carries a
     ``request_fingerprint`` activates into the reservation lane
-    (``insert_plan_command_set``, reached from ``activate_db_pending_by_prefix``
+    (``insert_plan_command_set``, reached from ``activate_db_pending_by_id``
     and from ``cmd_opencode_decide``); a singular id approved in its place runs
     ``store.approve``, creates no grant, and the retry re-blocks.
 
@@ -1923,7 +1923,7 @@ def _build_sealed_payload(
         dicts representing more than one command the agent wants under ONE
         consent), the payload additionally carries a ``command_set`` key
         verbatim and ``commands`` lists every command string in the set. This
-        is the signal ``activate_db_pending_by_prefix`` reads to branch into
+        is the signal ``activate_db_pending_by_id`` reads to branch into
         ``create_command_set_grant`` instead of degrading to a single command.
         The set is NOT collapsed -- every item survives into the grant.
 

@@ -8,7 +8,7 @@ Subcommands:
                                              pendings from dead sessions)
   show APPROVAL_ID [--json]              -- show full detail of one approval
   revoke APPROVAL_ID                     -- revoke an active command_set grant by approval_id
-  reject NONCE [--reason REASON]         -- reject a pending approval
+  reject APPROVAL_ID [--reason REASON]   -- reject an exact pending approval
   reject --all [--reason REASON]         -- reject ALL pending approvals in one call
   reject-all [--dry-run] [--workspace W] -- reject all pending approvals (subcommand alias)
   clean [--dry-run]                      -- remove expired/stale approvals
@@ -39,18 +39,6 @@ _HOOKS_DIR = _PLUGIN_ROOT / "hooks"
 for _p in [str(_HOOKS_DIR), str(_PLUGIN_ROOT)]:
     if _p not in sys.path:
         sys.path.insert(0, _p)
-
-
-def _import_approval_grants():
-    """Import approval_grants lazily to allow mocking in tests."""
-    from modules.security.approval_grants import (
-        get_pending_approvals_for_session,
-        load_pending_by_nonce_prefix,
-    )
-    return {
-        "get_pending_approvals_for_session": get_pending_approvals_for_session,
-        "load_pending_by_nonce_prefix": load_pending_by_nonce_prefix,
-    }
 
 
 def _import_grants_dir():
@@ -105,6 +93,29 @@ def _approval_id_label(nonce: str) -> str:
     return f"P-{_nonce_short(nonce)}"
 
 
+def _is_canonical_approval_id(value: object) -> bool:
+    """Return whether value is the complete opaque approval machine id."""
+    return (
+        isinstance(value, str)
+        and len(value) == 34
+        and value.startswith("P-")
+        and all(char in "0123456789abcdef" for char in value[2:])
+    )
+
+
+def _require_canonical_approval_id(value: object, args=None) -> str | None:
+    """Return a trimmed canonical id or print the explicit identity error."""
+    approval_id = value.strip() if isinstance(value, str) else ""
+    if _is_canonical_approval_id(approval_id):
+        return approval_id
+    _print_error(
+        "Approval lookup requires the canonical approval_id P-<32 lowercase hex>; "
+        "short display labels and raw nonces are not lookup keys.",
+        args,
+    )
+    return None
+
+
 def _pending_to_display(p: dict) -> dict:
     """Convert a raw pending dict to a display-friendly dict."""
     nonce = p.get("nonce", "")
@@ -128,6 +139,61 @@ def _pending_to_display(p: dict) -> dict:
         "files_changed": ctx.get("files_changed", []),
         "scope_type": p.get("scope_type", ""),
         "timestamp": ts,
+    }
+
+
+def _pending_to_machine(p: dict) -> dict:
+    """Return the complete pending representation used by JSON consumers."""
+    payload = p.get("_sealed_payload")
+    if not isinstance(payload, dict):
+        payload = {}
+
+    from adapters.consent_presentation import payload_commands
+
+    approval_id = p.get("approval_id", "")
+    if not approval_id:
+        nonce = p.get("nonce", "")
+        approval_id = f"P-{nonce}" if nonce else ""
+
+    binding = payload.get("binding")
+    if not isinstance(binding, dict):
+        binding = {
+            key: value
+            for key, value in (
+                ("agent_id", p.get("agent_id")),
+                ("session_id", p.get("session_id")),
+                ("call_id", payload.get("call_id")),
+            )
+            if value
+        }
+
+    return {
+        "approval_id": approval_id,
+        "display_label": _approval_id_label(
+            approval_id[2:] if approval_id.startswith("P-") else approval_id
+        ),
+        "status": p.get("status"),
+        "operation": payload.get("operation"),
+        "exact_content": payload.get("exact_content"),
+        "commands": list(payload_commands(payload)),
+        "command_set": payload.get("command_set"),
+        "scope": payload.get("scope"),
+        "impact": payload.get("impact"),
+        "risk_level": payload.get("risk_level"),
+        "rollback": payload.get("rollback_hint", payload.get("rollback")),
+        "verification": payload.get("verification"),
+        "rationale": payload.get("rationale"),
+        "request_fingerprint": payload.get("request_fingerprint"),
+        "payload_fingerprint": p.get("fingerprint"),
+        "correlation_id": payload.get("correlation_id"),
+        "binding": binding,
+        "agent_id": p.get("agent_id"),
+        "session_id": p.get("session_id"),
+        "created_at": p.get("created_at"),
+        "decided_at": p.get("decided_at"),
+        "age_seconds": p.get("age_seconds"),
+        "stale": p.get("stale"),
+        "sealed_payload": payload,
     }
 
 
@@ -215,8 +281,17 @@ def _scan_pending_shared(exclude_live_sessions: bool = False) -> list:
         nonce = approval_id[2:] if approval_id.startswith("P-") else approval_id
 
         results.append({
+            "approval_id": approval_id,
             "nonce": nonce,
+            "status": row.get("status"),
+            "fingerprint": row.get("fingerprint"),
+            "agent_id": row.get("agent_id"),
             "session_id": row.get("session_id", ""),
+            "created_at": row.get("created_at"),
+            "decided_at": row.get("decided_at"),
+            "age_seconds": row.get("age_seconds"),
+            "stale": row.get("stale"),
+            "_sealed_payload": payload,
             "command": command,
             "danger_verb": danger_verb,
             "danger_category": danger_category,
@@ -398,9 +473,10 @@ def cmd_list(args) -> int:
         )
         for g in db_grants
     ]
-    pending_items = [_pending_to_display(p) for p in pending_rows]
+    pending_display_items = [_pending_to_display(p) for p in pending_rows]
 
     if getattr(args, "json", False):
+        pending_items = [_pending_to_machine(p) for p in pending_rows]
         print(json.dumps({
             "grants": db_items,
             "pending": pending_items,
@@ -411,7 +487,7 @@ def cmd_list(args) -> int:
         }, indent=2))
         return 0
 
-    if not db_items and not pending_items:
+    if not db_items and not pending_display_items:
         print("No active grants or pending approvals.")
         return 0
 
@@ -439,10 +515,10 @@ def cmd_list(args) -> int:
             )
         print(f"\n{len(db_items)} DB grant(s).")
 
-    if pending_items:
+    if pending_display_items:
         print(f"\n{'ID':<12}  {'AGE':<6}  {'VERB':<10}  {'SOURCE':<16}  COMMAND")
         print("-" * 70)
-        for item in pending_items:
+        for item in pending_display_items:
             cmd_preview = item["command"][:40]
             source = item["source"][:14] if item["source"] else "-"
             print(
@@ -452,7 +528,7 @@ def cmd_list(args) -> int:
                 f"{source:<16}  "
                 f"{cmd_preview}"
             )
-        print(f"\n{len(pending_items)} pending approval(s).")
+        print(f"\n{len(pending_display_items)} pending approval(s).")
 
     return 0
 
@@ -464,13 +540,14 @@ def cmd_list(args) -> int:
 def cmd_show(args) -> int:
     """Show full details of a specific approval grant or pending approval.
 
-    Checks the DB first (COMMAND_SET grants by full approval_id), then falls
-    back to the filesystem scan (pending approvals by nonce prefix).
+    Grant compatibility accepts an exact stored grant id. Pending approvals
+    require the canonical ``P-<32 lowercase hex>`` id and resolve by exact
+    equality in the approvals store. Display labels and raw nonces are never
+    lookup keys.
     """
-    raw_id: str = args.approval_id.strip()
-    # Strip leading 'P-' prefix if present
-    if raw_id.upper().startswith("P-"):
-        raw_id = raw_id[2:]
+    raw_id = _require_canonical_approval_id(args.approval_id, args)
+    if raw_id is None:
+        return 1
 
     # 1. Try DB lookup by full approval_id
     db_row = None
@@ -517,10 +594,10 @@ def cmd_show(args) -> int:
         print("\n".join(lines))
         return 0
 
-    # 2. Fall back to filesystem pending lookup by nonce prefix
+    # 2. Pending approvals are DB-only and resolve by exact canonical id.
     try:
-        ag = _import_approval_grants()
-        raw = ag["load_pending_by_nonce_prefix"](raw_id)
+        store = _import_approval_store()
+        raw = store.get_by_id(raw_id)
     except Exception as exc:
         _print_error(f"Failed to load approval: {exc}", args)
         return 1
@@ -529,46 +606,14 @@ def cmd_show(args) -> int:
         _print_error(f"No approval found for ID: {raw_id}", args)
         return 1
 
-    item = _pending_to_display(raw)
-    env = raw.get("environment") or {}
-    cwd = raw.get("cwd", "")
+    events = store.get_history(raw_id)
 
     if getattr(args, "json", False):
-        detail = dict(item)
-        detail["environment"] = env
-        detail["cwd"] = cwd
-        print(json.dumps(detail, indent=2))
+        print(json.dumps({"approval": raw, "events": events}, indent=2, default=str))
         return 0
 
-    # Human-readable detail
-    lines = [
-        f"Approval {item['approval_id']}",
-        "",
-        f"  Command   : {item['command']}",
-        f"  Verb      : {item['verb']} ({item['category']})",
-        f"  Age       : {item['age']}",
-        f"  Session   : {item['session_id']}",
-        f"  Scope type: {item['scope_type']}",
-    ]
-    if item["source"]:
-        lines.append(f"  Source    : {item['source']}")
-    if item["description"] and item["description"] != item["command"]:
-        lines.append(f"  Desc      : {item['description']}")
-    if item["risk"]:
-        lines.append(f"  Risk      : {item['risk']}")
-    if item["rollback"]:
-        lines.append(f"  Rollback  : {item['rollback']}")
-    if item["branch"]:
-        lines.append(f"  Branch    : {item['branch']}")
-    if item["files_changed"]:
-        lines.append(f"  Files     : {', '.join(item['files_changed'])}")
-    if cwd:
-        lines.append(f"  CWD       : {cwd}")
-    if env:
-        lines.append(f"  Env keys  : {', '.join(sorted(env.keys()))}")
-    lines.append("")
-    lines.append(f"  To reject : gaia approvals reject {raw_id}")
-    print("\n".join(lines))
+    display = _import_approval_display()
+    display.print_approval_detail(raw, events)
     return 0
 
 
@@ -588,7 +633,7 @@ def _revoke_grant(args, approval_id: str | None = None) -> int:
     new ``approvals`` table.
 
     ``approval_id`` overrides the one carried by ``args`` for callers that
-    already resolved the id from a prefix.
+    already hold the exact stored id.
 
     Exits 0 on success, 1 if the grant is not found or already in a terminal
     state.
@@ -626,8 +671,8 @@ def _revoke_grant(args, approval_id: str | None = None) -> int:
 # Subcommand: reject
 # ---------------------------------------------------------------------------
 
-def _reject_live_grant(args, nonce: str) -> int:
-    """Close a still-live grant when no PENDING approval matches ``nonce``.
+def _reject_live_grant(args, approval_id: str) -> int:
+    """Close the exact still-live grant when no pending decision row matches.
 
     ``list_pending`` cannot see an approval whose decision was already taken, so
     a set that was approved and never consumed matched nothing here and the
@@ -636,34 +681,33 @@ def _reject_live_grant(args, nonce: str) -> int:
     same close :func:`cmd_revoke` performs, and it leaves the recorded decision
     untouched.
 
-    Exits 0 when a grant was closed, 1 when nothing matched the prefix.
+    Exits 0 when that exact grant was closed, otherwise 1.
     """
     try:
         writer = _import_writer()
         live = [
             row for row in writer.list_approval_grants(status="PENDING", limit=500)
-            if str(row.get("approval_id", "")).startswith(f"P-{nonce}")
+            if row.get("approval_id") == approval_id
         ]
     except Exception as exc:
         _print_error(f"Failed to look up grants: {exc}", args)
         return 1
 
     if len(live) != 1:
-        detail = "no pending approval or live grant" if not live else "several live grants"
-        _print_error(f"Cannot reject P-{nonce}: {detail} matches that id", args)
+        _print_error(f"Cannot reject {approval_id}: no exact live grant exists", args)
         return 1
 
     return _revoke_grant(args, live[0]["approval_id"])
 
 
 def cmd_reject(args) -> int:
-    """Reject a pending approval by nonce prefix, or all pending approvals.
+    """Reject one exact pending approval, or all pending approvals.
 
     With ``--all``: rejects every non-expired pending approval across all
     sessions.  Exits 0 whether or not any approvals existed.
 
-    Without ``--all``: rejects the single approval identified by NONCE
-    (P-XXXX label or raw hex prefix).  Exits 1 when not found.
+    Without ``--all``: requires the complete canonical approval_id. Short
+    display labels and raw nonces are rejected. Exits 1 when not found.
     """
     reject_all = getattr(args, "all", False)
     reason = getattr(args, "reason", None)
@@ -672,40 +716,32 @@ def cmd_reject(args) -> int:
         return _cmd_reject_all(args, reason)
 
     # Single-reject path (original behavior)
-    nonce = getattr(args, "nonce", None)
-    if nonce is None:
-        _print_error("NONCE is required when --all is not specified.", args)
+    supplied_id = getattr(args, "approval_id", None)
+    if supplied_id is None:
+        _print_error("APPROVAL_ID is required when --all is not specified.", args)
         return 1
 
-    nonce = nonce.strip()
-    # Accept P-XXXX or raw hex prefix
-    if nonce.upper().startswith("P-"):
-        nonce = nonce[2:]
+    approval_id = _require_canonical_approval_id(supplied_id, args)
+    if approval_id is None:
+        return 1
 
-    # DB-primary since Task E: find the pending DB row whose approval_id matches
-    # the prefix, then revoke it (pending -> revoked, append-only event chain).
+    # DB-primary since Task E: exact identity only, never enumeration/first-match.
     session_id = os.environ.get("CLAUDE_SESSION_ID") or "cli-reject"
     try:
         store = _import_approval_store()
-        rows = store.list_pending(all_sessions=True)
-        matched_id = None
-        for row in rows:
-            row_id = row.get("id", "")
-            if row_id.startswith(f"P-{nonce}"):
-                matched_id = row_id
-                break
-        if matched_id is None:
-            return _reject_live_grant(args, nonce)
-        store.revoke(matched_id, session_id)
+        row = store.get_by_id(approval_id)
+        if row is None or row.get("status") != "pending":
+            return _reject_live_grant(args, approval_id)
+        store.revoke(approval_id, session_id)
     except Exception as exc:
         _print_error(f"Failed to reject approval: {exc}", args)
         return 1
 
-    msg = f"Rejected P-{nonce}"
+    msg = f"Rejected {approval_id}"
     if reason:
         msg += f" (reason: {reason})"
     if getattr(args, "json", False):
-        print(json.dumps({"status": "rejected", "nonce_prefix": nonce, "reason": reason}))
+        print(json.dumps({"status": "rejected", "approval_id": approval_id, "reason": reason}))
     else:
         print(msg)
     return 0
@@ -742,14 +778,12 @@ def _cmd_reject_all(args, reason: str | None) -> int:
     rejected_ids = []
     failed_ids = []
     for pending in raw:
-        nonce = pending.get("nonce", "")
-        nonce_prefix = _nonce_short(nonce)
-        approval_id = f"P-{nonce}"
+        approval_id = pending.get("approval_id") or f"P-{pending.get('nonce', '')}"
         try:
             store.revoke(approval_id, session_id)
-            rejected_ids.append(f"P-{nonce_prefix}")
+            rejected_ids.append(approval_id)
         except Exception:
-            failed_ids.append(f"P-{nonce_prefix}")
+            failed_ids.append(approval_id)
 
     n = len(rejected_ids)
     if getattr(args, "json", False):
@@ -820,7 +854,10 @@ def cmd_reject_all(args) -> int:
     try:
         raw_pending = _scan_pending_shared(exclude_live_sessions=False)
         raw: list = [
-            {"nonce": p.get("nonce", ""), "command": p.get("command", "")}
+            {
+                "approval_id": p.get("approval_id") or f"P-{p.get('nonce', '')}",
+                "command": p.get("command", ""),
+            }
             for p in raw_pending
         ]
     except Exception as exc:
@@ -834,9 +871,8 @@ def cmd_reject_all(args) -> int:
     if dry_run:
         print("[dry-run] would reject:")
         for item in raw:
-            nonce_prefix = _nonce_short(item["nonce"])
             cmd_preview = item["command"][:60]
-            print(f"  P-{nonce_prefix}  {cmd_preview}")
+            print(f"  {item['approval_id']}  {cmd_preview}")
         print(f"\n{len(raw)} pending(s) would be rejected.")
         return 0
 
@@ -851,14 +887,12 @@ def cmd_reject_all(args) -> int:
     rejected_ids = []
     failed_ids = []
     for item in raw:
-        nonce = item["nonce"]
-        nonce_prefix = _nonce_short(nonce)
-        approval_id = f"P-{nonce}"
+        approval_id = item["approval_id"]
         try:
             store.revoke(approval_id, session_id)
-            rejected_ids.append(f"P-{nonce_prefix}")
+            rejected_ids.append(approval_id)
         except Exception:
-            failed_ids.append(f"P-{nonce_prefix}")
+            failed_ids.append(approval_id)
 
     n = len(rejected_ids)
     if n > 0:
@@ -1152,10 +1186,9 @@ def cmd_pending(args) -> int:
 def _resolve_approval_id(raw_id: str) -> str:
     """Normalize a raw approval_id input by trimming surrounding whitespace.
 
-    The input is passed through unchanged otherwise -- both the full
-    ``P-{uuid4hex}`` form and the ``P-XXXX`` short form are returned as-is for
-    exact or prefix lookup downstream. (A bare hex string with no ``P-`` prefix
-    is also returned untouched; the lookup layer handles that case.)
+    The input is passed through unchanged otherwise. Pending lookup accepts
+    only the canonical full id; trimming is not a translation from a display
+    label or raw nonce into machine identity.
     """
     return raw_id.strip()
 
@@ -1163,12 +1196,15 @@ def _resolve_approval_id(raw_id: str) -> str:
 def cmd_show_v2(args) -> int:
     """Show full detail for an approval from the new approvals table.
 
-    Looks up by full P-{uuid4} id or by prefix match. Falls back to the
-    old filesystem-based show (cmd_show) when not found in the new table.
+    Looks up the full canonical id by exact equality. The fallback preserves
+    exact legacy grant-id lookup only; it does not introduce pending-prefix
+    matching.
 
     Exits 0 on success, 1 when not found.
     """
-    raw_id = _resolve_approval_id(args.approval_id)
+    raw_id = _require_canonical_approval_id(args.approval_id, args)
+    if raw_id is None:
+        return 1
     output_json = getattr(args, "json", False)
 
     try:
@@ -1201,7 +1237,9 @@ def cmd_history_single(args) -> int:
 
     Exits 0 on success, 1 when not found.
     """
-    raw_id = _resolve_approval_id(args.approval_id)
+    raw_id = _require_canonical_approval_id(args.approval_id, args)
+    if raw_id is None:
+        return 1
     output_json = getattr(args, "json", False)
 
     try:
@@ -1248,7 +1286,9 @@ def cmd_revoke(args) -> int:
     With ``--yes``, skips the interactive confirmation prompt.
     Exits 0 on success, 1 on error.
     """
-    raw_id = _resolve_approval_id(args.approval_id)
+    raw_id = _require_canonical_approval_id(args.approval_id, args)
+    if raw_id is None:
+        return 1
     skip_confirm = getattr(args, "yes", False)
 
     try:
@@ -1317,7 +1357,9 @@ def cmd_approve(args) -> int:
     With ``--yes``, skips the interactive confirmation prompt.
     Exits 0 on success, 1 on error.
     """
-    raw_id = _resolve_approval_id(args.approval_id)
+    raw_id = _require_canonical_approval_id(args.approval_id, args)
+    if raw_id is None:
+        return 1
     skip_confirm = getattr(args, "yes", False)
     output_json = getattr(args, "json", False)
 
@@ -1451,6 +1493,11 @@ def cmd_request_set(args) -> int:
 def _opencode_binding(args) -> tuple[dict | None, str | None]:
     """Verify that a native OpenCode permission owns this approval decision."""
     approval_id = _resolve_approval_id(args.approval_id)
+    if not _is_canonical_approval_id(approval_id):
+        return None, (
+            "Approval lookup requires the canonical approval_id P-<32 lowercase hex>; "
+            "short display labels and raw nonces are not lookup keys."
+        )
     session_id = args.session_id.strip()
     call_id = args.call_id.strip()
     token = args.token.strip()
@@ -1741,7 +1788,9 @@ def cmd_replay(args) -> int:
     Exits 0 on success.
     Exits 1 when the approval is not found or has no EXECUTED payload.
     """
-    raw_id = _resolve_approval_id(args.approval_id)
+    raw_id = _require_canonical_approval_id(args.approval_id, args)
+    if raw_id is None:
+        return 1
     dry_run = getattr(args, "dry_run", False)
     skip_confirm = getattr(args, "yes", False)
     output_json = getattr(args, "json", False)
@@ -1919,11 +1968,14 @@ def register(subparsers) -> None:
         help="Show detail for a specific approval",
         description=(
             "Show full detail for an approval including its event chain.\n\n"
-            "Checks the new approvals table first, then falls back to the\n"
-            "legacy filesystem-based pending lookup."
+            "Requires the complete canonical approval_id and resolves it by\n"
+            "exact equality. Short display labels and raw nonces are invalid."
         ),
     )
-    p_show.add_argument("approval_id", metavar="APPROVAL_ID", help="P-XXXX identifier or full DB approval_id")
+    p_show.add_argument(
+        "approval_id", metavar="APPROVAL_ID",
+        help="Full canonical approval_id P-<32 lowercase hex>",
+    )
     p_show.add_argument("--json", action="store_true", help="JSON output")
     p_show.set_defaults(func=cmd_show_v2)
 
@@ -2062,15 +2114,15 @@ def register(subparsers) -> None:
         help="Reject a pending approval (or all with --all)",
         description=(
             "Reject a pending T3 approval.\n\n"
-            "Single reject: provide NONCE (P-XXXX or raw hex prefix).\n"
+            "Single reject: provide the complete canonical APPROVAL_ID.\n"
             "Bulk reject:   use --all to reject every pending approval in one call."
         ),
     )
     p_reject.add_argument(
-        "nonce",
-        metavar="NONCE",
+        "approval_id",
+        metavar="APPROVAL_ID",
         nargs="?",
-        help="P-XXXX identifier or nonce prefix (omit when using --all)",
+        help="Full canonical approval_id P-<32 lowercase hex> (omit with --all)",
     )
     p_reject.add_argument(
         "--all",
@@ -2147,7 +2199,7 @@ def _approvals_default(args) -> int:
     print("  history [APPROVAL_ID] [--limit N] -- temporal history or per-approval chain")
     print("  replay APPROVAL_ID [--dry-run]    -- replay an executed approval")
     print("  list [--session S] [--orphans-only]  -- list (legacy + DB grants)")
-    print("  reject NONCE [--all]              -- reject pending (legacy)")
+    print("  reject APPROVAL_ID [--all]        -- reject exact canonical id")
     print("  reject-all [--dry-run]            -- bulk reject (legacy)")
     print("  clean [--dry-run]                 -- remove expired approvals")
     print("  stats                             -- approval system statistics")
@@ -2214,7 +2266,7 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
     p_replay.set_defaults(func=cmd_replay)
 
     p_reject = subparsers.add_parser("reject", help="Reject a pending approval (or all with --all)")
-    p_reject.add_argument("nonce", metavar="NONCE", nargs="?")
+    p_reject.add_argument("approval_id", metavar="APPROVAL_ID", nargs="?")
     p_reject.add_argument("--all", action="store_true", dest="all", help="Reject all pending approvals")
     p_reject.add_argument("--reason", metavar="REASON")
     p_reject.add_argument("--json", action="store_true")
