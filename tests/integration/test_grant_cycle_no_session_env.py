@@ -235,3 +235,60 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             f"Retry phase: expected allow/None, got {decision!r}.\n"
             f"output: {retry_result.output}"
         )
+
+    def test_activation_gives_the_grant_the_file_path_lane_window(
+        self, tmp_path, monkeypatch
+    ):
+        """A grant born through activation carries the 30-minute file-path window.
+
+        The activation call site used to forward its own ``ttl_minutes``
+        parameter -- the Bash lane's 5 minutes -- into insert_file_path_grant,
+        overriding that function's FILE_PATH_GRANT_TTL_MINUTES default. The
+        window is therefore only correct end-to-end if the BORN row is
+        measured; asserting the writer's default alone passes either way.
+        """
+        import sqlite3
+        from datetime import datetime, timedelta
+
+        from gaia.paths import db_path
+        from gaia.store.writer import (
+            APPROVAL_GRANT_TTL_MINUTES,
+            FILE_PATH_GRANT_TTL_MINUTES,
+        )
+
+        cwd = _make_cwd(tmp_path)
+        protected_file = str(HOOKS_DIR / "pre_tool_use.py")
+
+        block_result = run_pre_tool_use_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": self.BLOCK_SESSION,
+                "tool_name": "Write",
+                "tool_input": {"file_path": protected_file, "content": ""},
+                "agent_id": "a76543210f1e2d3c4",
+            },
+            cwd=cwd,
+        )
+        assert block_result.permission_decision == "deny", block_result.output
+
+        activation = _activate_first_pending(current_session_id=self.RETRY_SESSION)
+        assert activation.success, activation.reason
+
+        con = sqlite3.connect(str(db_path()))
+        try:
+            row = con.execute(
+                "SELECT created_at, expires_at FROM approval_grants "
+                "WHERE scope = 'SCOPE_FILE_PATH' ORDER BY created_at DESC",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None, "Activation should have written a SCOPE_FILE_PATH grant"
+
+        span = datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(
+            row[0], "%Y-%m-%dT%H:%M:%SZ"
+        )
+        assert span == timedelta(minutes=FILE_PATH_GRANT_TTL_MINUTES), (
+            f"Expected the {FILE_PATH_GRANT_TTL_MINUTES}-minute file-path window, "
+            f"got {span}."
+        )
+        assert span != timedelta(minutes=APPROVAL_GRANT_TTL_MINUTES)

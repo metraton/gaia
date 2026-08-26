@@ -16,7 +16,12 @@ Two-phase nonce-based approval flow:
     grant and allows it.
 
 Grants are:
-- Time-limited (default 10 minutes; DB grants use APPROVAL_GRANT_TTL_MINUTES)
+- Time-limited, and the window is per LANE, not global: a Bash/semantic grant
+  lives APPROVAL_GRANT_TTL_MINUTES (5), mirrored here as
+  DEFAULT_GRANT_TTL_MINUTES, because it is consumed at the first matching
+  retry; a protected-path Write/Edit grant lives FILE_PATH_GRANT_TTL_MINUTES
+  (30), because it stays reusable across the several Edits one file-level fix
+  takes
 - Cleaned up after use or expiry
 - Stored AUTHORITATIVELY in the DB (``approval_grants`` in gaia.db) since the
   Brief 71 cutover. The filesystem plane (.claude/cache/approvals/) is the
@@ -1171,10 +1176,13 @@ def check_approval_grant_for_file(
 ) -> Optional[dict]:
     """Check if there is an active approval grant for a Write/Edit file path.
 
-    DB-only since Task E full migration: queries approval_grants with
-    scope='SCOPE_FILE_PATH' via check_db_file_path_grant().  Callers only
-    check truthiness of the return value (None = no grant, any dict = grant
-    found).
+    DB-only since Task E full migration: queries approval_grants via
+    check_db_file_path_grant(), whose predicate is three-part and all three
+    parts are load-bearing -- scope='SCOPE_FILE_PATH', status='PENDING' (this
+    lane never advances a row to ACTIVE; PENDING IS the usable state), and
+    expires_at not yet past, which is what actually retires the grant since
+    nothing consumes it. Callers only check truthiness of the return value
+    (None = no grant, any dict = grant found).
 
     Called by _adapt_write_edit before blocking a protected-path write. If
     a valid SCOPE_FILE_PATH grant exists for this path, the write should be
@@ -1736,6 +1744,16 @@ def activate_db_pending_by_id(
                 )
 
             # Write DB grant (replaces the former filesystem grant write).
+            #
+            # ``ttl_minutes`` is deliberately NOT forwarded. That parameter
+            # carries the Bash/semantic lane's window
+            # (DEFAULT_GRANT_TTL_MINUTES, 5 minutes), calibrated for a grant
+            # consumed at the first match; forwarding it silently overrode
+            # insert_file_path_grant's own FILE_PATH_GRANT_TTL_MINUTES (30) and
+            # gave a protected-path Write/Edit grant a 5-minute window -- less
+            # time than the multi-Edit fix it exists to authorise. The writer
+            # owns this lane's window; letting its default apply keeps one
+            # point of truth per lane.
             try:
                 from gaia.store.writer import insert_file_path_grant
                 result_fp = insert_file_path_grant(
@@ -1744,7 +1762,6 @@ def activate_db_pending_by_id(
                     scope_signature=fp_signature.to_dict(),
                     agent_id=None,
                     session_id=current_session_id,
-                    ttl_minutes=ttl_minutes,
                 )
             except Exception as _fp_err:
                 logger.error(
