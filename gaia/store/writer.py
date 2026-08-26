@@ -8656,13 +8656,33 @@ def find_dispatched_row_by_agent_name(
 # concurrent starts can never both take the same row.
 #
 # Correlation is layered, and the layers only ever NARROW -- never invent:
+#   (0) EXACT BY CALLID -- when the claiming host reports the dispatch_tool_use_id
+#       of the Task/Agent call that started this turn, an unclaimed row born
+#       under that exact id (scoped by agent name when given) is claimed
+#       directly, ahead of every other layer: a host's own call id is a
+#       stronger correlation key than the prompt_id/description pair a host
+#       without one falls back to. A row already claimed under that id (a
+#       duplicate start notification for the same call) is refused (None)
+#       without falling through -- resolving it via (a)/(b) instead would
+#       misclaim an unrelated identical sibling that happens to still be
+#       unclaimed. A call id that never birthed any row (a host that reports
+#       one the birth pipeline did not capture) falls through to (a) exactly
+#       as when no call id is given.
 #   (a) EXACT -- dispatch_prompt_id and/or dispatch_description equality
 #       (always additionally scoped by the birth-envelope agent name when the
 #       caller provides one);
 #   (b) FIFO -- several candidates that are INDISTINGUISHABLE by (a) are claimed
 #       oldest-first (ORDER BY created_at ASC, id ASC), but ONLY when their
 #       material signatures all agree (identical dispatches: any assignment is
-#       equivalent);
+#       equivalent). EXCEPTION, scoped to the callID discipline: when the claim
+#       supplied a dispatch_tool_use_id that (0) could not resolve (a stale or
+#       unmatched id, never "no id given at all"), and the surviving identical
+#       candidates were themselves born carrying a dispatch_tool_use_id, FIFO is
+#       refused (None) instead of guessed -- a host capable of exact
+#       correlation that missed is a stronger ambiguity signal than a host that
+#       never reports one, and guessing here risks binding the wrong sibling.
+#       A claim that supplies no call id at all (today's Claude Code) never
+#       enters this exception and keeps resolving FIFO exactly as before;
 #   (c) GUARD -- several candidates whose material signatures DIVERGE mean the
 #       correlation would be a guess between genuinely different turns. Nothing
 #       is claimed; a critical `dispatch_correlation_ambiguous` anomaly and a
@@ -8787,21 +8807,28 @@ def claim_dispatch_row(
     agent_name: "str | None" = None,
     dispatch_prompt_id: "str | None" = None,
     dispatch_description: "str | None" = None,
+    dispatch_tool_use_id: "str | None" = None,
     db_path: "Path | None" = None,
 ) -> "dict | None":
     """Atomically claim the born row this subagent start correlates to.
 
-    See the module comment above for the (a)/(b)/(c) correlation ladder.
-    Requires at least one correlation key (``dispatch_prompt_id`` or
-    ``dispatch_description``): with neither there is nothing exact to match and
-    a claim would be a guess, so the function returns None and the turn
-    starts without a kernel (the protocol's bare-init fallback).
+    See the module comment above for the (0)/(a)/(b)/(c) correlation ladder.
+    Requires at least one correlation key (``dispatch_tool_use_id``,
+    ``dispatch_prompt_id`` or ``dispatch_description``): with none of them
+    there is nothing exact to match and a claim would be a guess, so the
+    function returns None and the turn starts without a kernel (the
+    protocol's bare-init fallback).
 
     Args:
         agent_name:           The dispatched agent's NAME (birth-envelope
                               coordinate); scopes every layer when provided.
         dispatch_prompt_id:   Host prompt_id observed at SubagentStart.
         dispatch_description: Host task_description observed at SubagentStart.
+        dispatch_tool_use_id: Host call id of the Task/Agent call that started
+                              this turn, when the host reports one at start
+                              (layer 0); a host that never reports one (today's
+                              Claude Code) passes None and the ladder behaves
+                              exactly as it did before this parameter existed.
         db_path:              Optional explicit DB path (used by tests).
 
     Returns:
@@ -8810,7 +8837,7 @@ def claim_dispatch_row(
         None when nothing was claimed -- no candidate, an ambiguity refusal, or
         a lost race. None always means "fall back", never an error.
     """
-    if not dispatch_prompt_id and not dispatch_description:
+    if not dispatch_prompt_id and not dispatch_description and not dispatch_tool_use_id:
         return None
 
     def _candidates(con: sqlite3.Connection) -> "list[sqlite3.Row]":
@@ -8852,12 +8879,48 @@ def claim_dispatch_row(
                 return rows
         return []
 
+    def _tool_use_id_rows(con: sqlite3.Connection) -> "list[sqlite3.Row]":
+        if not dispatch_tool_use_id:
+            return []
+        select = (
+            f"SELECT {', '.join(_CLAIM_ROW_COLUMNS)} "
+            "FROM agent_contract_handoffs "
+            "WHERE agent_state = 'DISPATCHED' AND claimed_at IS NULL "
+            "AND dispatch_tool_use_id = ?"
+        )
+        params: tuple = (dispatch_tool_use_id,)
+        if agent_name:
+            select += f" AND {_BIRTH_AGENT_NAME_SQL} = ?"
+            params += (str(agent_name),)
+        select += " ORDER BY created_at ASC, id ASC"
+        return con.execute(select, params).fetchall()
+
+    def _tool_use_id_already_bound(con: sqlite3.Connection) -> bool:
+        """True iff some row, in any claim state, was born under
+        ``dispatch_tool_use_id`` -- tells "never birthed" (fall through to
+        (a)) apart from "already claimed" (a duplicate start notification for
+        the same call; refuse rather than fall through, which could misclaim
+        an unrelated identical sibling that is still unclaimed)."""
+        row = con.execute(
+            "SELECT 1 FROM agent_contract_handoffs "
+            "WHERE dispatch_tool_use_id = ? LIMIT 1",
+            (dispatch_tool_use_id,),
+        ).fetchone()
+        return row is not None
+
     def _work() -> "dict | None":
         con = _connect(db_path)
         try:
             con.execute("BEGIN IMMEDIATE")
             try:
-                rows = _candidates(con)
+                # Layer (0): exact by callID, ahead of (a)/(b)/(c).
+                rows = _tool_use_id_rows(con)
+                claimed_by_callid = bool(rows)
+                if not rows and dispatch_tool_use_id and _tool_use_id_already_bound(con):
+                    con.commit()
+                    return None
+                if not rows:
+                    rows = _candidates(con)
                 if not rows:
                     con.commit()
                     return None
@@ -8873,6 +8936,17 @@ def claim_dispatch_row(
                             dispatch_description=dispatch_description,
                             db_path=db_path,
                         )
+                        return None
+                    if (
+                        not claimed_by_callid
+                        and dispatch_tool_use_id
+                        and any(r["dispatch_tool_use_id"] for r in rows)
+                    ):
+                        # Layer (b) exception, scoped to the callID discipline:
+                        # the claim's own call id could not be resolved by (0)
+                        # and the identical survivors were themselves born
+                        # under a call id -- decline rather than guess FIFO.
+                        con.commit()
                         return None
                 # Layer (b): single candidate, or identical siblings -- FIFO.
                 chosen = rows[0]
