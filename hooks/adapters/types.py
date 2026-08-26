@@ -159,6 +159,13 @@ class ConsentRequestEnvelope:
     verification: str
     binding: ConsentBinding
     role_context: RoleCapabilityContext
+    # window carries how long the grant this consent creates stays usable. It
+    # sits here and not beside verification, which is where it belongs by
+    # meaning, because a defaulted field cannot precede binding and
+    # role_context. It is not in the required loop below: a producer that seals
+    # no window renders the declared-absence text, and demanding a value would
+    # make every direct construction of this envelope raise.
+    window: str = ""
     approval_id: str | None = None
     protocol_version: str = CONSENT_PROTOCOL_VERSION
     fingerprints: tuple[str, ...] = ()
@@ -191,6 +198,7 @@ class ConsentRequestEnvelope:
             "risk": self.risk,
             "rollback": self.rollback,
             "verification": self.verification,
+            "window": self.window,
             "binding": self.binding.__dict__,
             "role_context": {
                 "role": self.role_context.role,
