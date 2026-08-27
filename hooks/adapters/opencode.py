@@ -40,6 +40,23 @@ if TYPE_CHECKING:
     from modules.security.host_attestation import Attestation
 
 
+# The two contract-closing rules agent-protocol/SKILL.md's principles 2 and 10
+# already state, appended to every OpenCode dispatch kernel because this host
+# never preloads that skill (bin/cli/_install_helpers.py: `skills:` is access
+# control here, not a preload guarantee, unlike Claude Code's own SubagentStart
+# preload). kernel_builder.py's `# Your Contract` stays DATA ONLY for every
+# host; this constant lives at the adapter seat so the append is OpenCode-only
+# and importable by any other adapter that turns out to share the same gap.
+CLOSING_RULES_KERNEL = (
+    "# Closing this turn\n"
+    "\n"
+    "- Pass --draft-id <contract_id> on EVERY `gaia contract` call, from the "
+    "first one. Omitted, a concurrent draft from another agent can raise "
+    "AmbiguousDraftError instead of resolving to yours.\n"
+    "- `gaia contract finalize --draft-id <contract_id>` is a separate, "
+    "mandatory LAST step -- call it only once every other field is set."
+)
+
 _EVENT_TYPES = {
     "tool.execute.before": HookEventType.PRE_TOOL_USE,
     "tool.execute.after": HookEventType.POST_TOOL_USE,
@@ -491,8 +508,10 @@ class OpenCodeAdapter(HookAdapter):
 
         tool_input = policy_event.payload.get("tool_input") or {}
         original_prompt = str(tool_input.get("prompt") or "")
+        kernel_with_rules = f"{kernel}\n\n{CLOSING_RULES_KERNEL}"
         merged_prompt = (
-            f"{kernel}\n\n{original_prompt}" if original_prompt else kernel
+            f"{kernel_with_rules}\n\n{original_prompt}"
+            if original_prompt else kernel_with_rules
         )
         updated_input = dict(output.get("updated_input") or {})
         updated_input["prompt"] = merged_prompt
