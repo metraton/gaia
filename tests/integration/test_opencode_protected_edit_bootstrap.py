@@ -69,8 +69,13 @@ def _drive(directory: Path | None, worktree: Path | None, steps: list[dict]):
     driven = json.loads(result.stdout.strip().splitlines()[-1])
     traces = []
     pattern = re.compile(r"^\[gaia-opencode-bridge:(request|response)\] (.+)$")
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
     for line in result.stderr.splitlines():
-        matched = pattern.match(line)
+        # bun's console.error wraps stderr in ANSI color codes when
+        # FORCE_COLOR is set in the environment, even though this pipe is
+        # not a TTY -- strip it so the anchored pattern still matches the
+        # production trace line underneath.
+        matched = pattern.match(ansi_escape.sub("", line))
         if matched:
             traces.append({"stage": matched.group(1), "payload": json.loads(matched.group(2))})
     driven["bridgeTraces"] = traces
