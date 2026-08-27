@@ -113,16 +113,24 @@ def _make_schema(con: sqlite3.Connection) -> None:
     """)
 
 
-def _build_sealed_payload(command: str) -> dict:
-    return {
-        "operation": "MUTATIVE command intercepted: apply",
-        "exact_content": command,
-        "scope": command.split()[0],
-        "risk_level": "medium",
-        "rollback_hint": None,
-        "rationale": "Test approval",
-        "commands": [command],
-    }
+def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
+    """Seal ``command`` with the REAL producer, fed the classifier's own verdict.
+
+    The verdict is asserted mutative before it is used: a payload built from a
+    verb the classifier never derives asserts over a shape the hook cannot emit,
+    and a local hand-built dict cannot detect that the producer changed at all.
+    """
+    from modules.security.mutative_verbs import detect_mutative_command
+    from modules.tools.bash_validator import _build_sealed_payload
+
+    verdict = detect_mutative_command(command)
+    assert verdict.is_mutative, f"{command!r} is not intercepted as a mutative verb"
+    return _build_sealed_payload(
+        command=command,
+        verb=verdict.verb,
+        category=verdict.category,
+        agent_type=agent_type,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +223,7 @@ class TestActivationWritesToDB:
         session_id = "test-cutover-session"
 
         import gaia.approvals.store as astore
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = astore.insert_requested(
             payload, agent_id="test-agent", session_id=session_id
         )
@@ -270,7 +278,7 @@ class TestCheckFindsDBGrant:
         session_id = "test-cutover-session"
 
         import gaia.approvals.store as astore
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = astore.insert_requested(
             payload, agent_id="test-agent", session_id=session_id
         )
@@ -315,7 +323,7 @@ class TestConsumeReplayProtection:
         session_id = "test-cutover-session"
 
         import gaia.approvals.store as astore
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = astore.insert_requested(
             payload, session_id=session_id
         )
@@ -373,7 +381,7 @@ class TestCrossSessionGrant:
         session_b = "session-subagent-B"
 
         import gaia.approvals.store as astore
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         # T3 block happens in session A (orchestrator issues the approval request).
         approval_id = astore.insert_requested(
             payload, agent_id="orchestrator", session_id=session_a
@@ -737,7 +745,7 @@ class TestGrantReuse:
         )
         from modules.tools.bash_validator import validate_bash_command
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = astore.insert_requested(payload, session_id=session_id)
         nonce_prefix = approval_id[len("P-"):len("P-") + 8]
         act = activate_db_pending_by_prefix(nonce_prefix, current_session_id=session_id)

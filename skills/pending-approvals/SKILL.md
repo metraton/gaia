@@ -22,7 +22,9 @@ Use the unified CLI and treat the DB as primary:
 - `gaia approvals reject <approval_id>`
 - `gaia approvals revoke <approval_id>`
 
-Lookup by full id may cross session boundaries. Always re-present exact content,
+Every lookup and single-item decision requires the complete canonical
+`P-<32 lowercase hex>` id. A short display label or raw nonce is never a lookup
+key. Full-id lookup may cross session boundaries. Always re-present exact content,
 risk, rollback, and verification before an approve decision; for COMMAND_SET,
 show the full indexed ordered set. Never infer approval from conversational
 language alone or select a similarly prefixed id.
@@ -40,30 +42,31 @@ run bare by the orchestrator itself.
 
 **`gaia approvals approve <approval_id>` is an admin verb, not the AskUserQuestion
 activation path -- for a SINGULAR approval.** It writes `APPROVED` directly to
-the `approvals` row, but it does **not** call `activate_db_pending_by_prefix`
+the `approvals` row, but it does **not** call `activate_db_pending_by_id`
 and does **not** create a hook-side grant -- so on its own it does not make
 the originally blocked command executable, and it does not trigger the
 automatic re-dispatch that follows a real approval. The path that creates the
 grant is the AskUserQuestion flow in `orchestrator-present-approval`: the user
-selects a label matching `Approve -- <action> [P-{nonce8}]`, which the hook's
-nonce regex parses to activate the grant. Use the bare `approve` CLI verb only
+selects a label matching `Approve -- <action> [P-<32 lowercase hex>]`, which
+the hook parses as the exact canonical id before activation. Use the bare `approve` CLI verb only
 for the audit/CLI-only case -- e.g. marking a row from a different session as
 decided when the command it covers will not be re-run -- never as a substitute
 for AskUserQuestion when the blocked command still needs to execute.
 
-**COMMAND_SET is the opposite today, and this matters for any live
-`request-set` approval.** For a `request_type: "COMMAND_SET"` pending (minted
-by `gaia approvals request-set`), the AskUserQuestion path is currently
-*broken*: `activate_db_pending_by_prefix` still routes every multi-command
-payload through the legacy `create_command_set_grant()`, which the runtime's
-actual execution check (`reserve_plan_command`, keyed on `source='plan-first'`)
-never looks at -- so a correctly labeled Approve reports success and then the
-retried commands re-block anyway. The only path currently wired end-to-end for
-a COMMAND_SET is the CLI admin verb, `gaia approvals approve <approval_id>`
-(its COMMAND_SET branch calls `insert_plan_command_set`, which the execution
-check does find). See the COMMAND_SET audit for the full trace and the live
-repro; do not treat this note as resolved just because the singular path is
-fine.
+**COMMAND_SET now activates through the same writer from either entry point.**
+For a plan-first `request_type: "COMMAND_SET"` pending (minted by `gaia
+approvals request-set`, which carries a `request_fingerprint`),
+`activate_db_pending_by_id` takes a dedicated branch that calls
+`insert_plan_command_set` -- the identical call the CLI admin verb `gaia
+approvals approve` makes, and the only shape the runtime's execution check
+(`reserve_plan_command`, keyed on `source='plan-first'`) finds. The label flow
+and the admin verb therefore activate a `request-set` pending identically. The
+legacy `create_command_set_grant()` route survives only for a multi-command
+payload with NO `request_fingerprint`, a chain-intake shape production no longer
+emits; it is kept as a defensive fallback, not as the plan-first path. The
+earlier defect -- a correctly labeled Approve reporting success while the
+retried commands re-blocked, because every multi-command payload went through
+the legacy route -- is closed.
 
 Legacy filesystem records may still be read as a compatibility fallback for
 older singular approvals; new COMMAND_SET requests and grants are DB-backed.

@@ -533,6 +533,157 @@ def approve(
     )
 
 
+def activate_command_set_atomically(
+    approval_id: str,
+    command_set: list[dict],
+    *,
+    request_fingerprint: str,
+    shown_payload: dict,
+    approver_session: str,
+    agent_id: Optional[str] = None,
+    binding: Optional[dict] = None,
+    con: Optional[sqlite3.Connection] = None,
+) -> dict:
+    """Commit the user decision and its executable COMMAND_SET as one unit.
+
+    ``approvals.status='approved'`` is not executable authority by itself.  The
+    plan-first grant and the APPROVED event must therefore be in the same
+    transaction.  A retry after a committed activation is idempotent when the
+    existing grant has the same request fingerprint; all other mismatches fail
+    closed without changing either record.
+    """
+    from gaia.approvals.command_set import command_fingerprint
+    from gaia.approvals.command_set import request_fingerprint as compute_request_fingerprint
+    from gaia.store.writer import insert_plan_command_set
+
+    connection, owned = _get_con(con)
+    savepoint = f"activate_command_set_{uuid.uuid4().hex}"
+    try:
+        if owned:
+            connection.execute("BEGIN IMMEDIATE")
+        else:
+            # The caller may already own a larger transaction (OpenCode's
+            # presentation/decision path does).  A savepoint gives this unit
+            # the same all-or-nothing semantics without committing the
+            # caller's surrounding work or leaking a half-activated decision.
+            connection.execute(f"SAVEPOINT {savepoint}")
+        row = connection.execute(
+            "SELECT status, agent_id, session_id, fingerprint, payload_json "
+            "FROM approvals WHERE id = ?", (approval_id,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Approval not found: {approval_id!r}")
+        def value(key: str, index: int):
+            return row[key] if hasattr(row, "keys") else row[index]
+        status = value("status", 0)
+
+        if not isinstance(command_set, list) or not command_set:
+            raise ValueError("COMMAND_SET must contain at least one command")
+        commands: list[str] = []
+        normalized: list[dict] = []
+        for index, item in enumerate(command_set):
+            if not isinstance(item, dict) or not isinstance(item.get("command"), str):
+                raise ValueError(f"COMMAND_SET item {index} is not an exact command")
+            command = item["command"]
+            fingerprint = item.get("fingerprint")
+            expected = command_fingerprint(command)
+            if fingerprint != expected:
+                raise ValueError(f"COMMAND_SET fingerprint mismatch at index {index}")
+            commands.append(command)
+            normalized.append({
+                "command": command,
+                "fingerprint": expected,
+                "rationale": item.get("rationale", ""),
+            })
+        expected_request_fingerprint = compute_request_fingerprint(commands)
+        if request_fingerprint != expected_request_fingerprint:
+            raise ValueError("COMMAND_SET request fingerprint mismatch")
+
+        stored_payload = value("payload_json", 4)
+        if not stored_payload:
+            raise ValueError("approval has no sealed payload")
+        try:
+            payload = json.loads(stored_payload)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("approval has invalid sealed payload") from exc
+        if payload.get("request_type") != "COMMAND_SET":
+            raise ValueError("approval is not a plan-first COMMAND_SET")
+        if payload.get("request_fingerprint") != expected_request_fingerprint:
+            raise ValueError("sealed payload COMMAND_SET fingerprint mismatch")
+        payload_items = payload.get("command_set")
+        if not isinstance(payload_items, list) or [x.get("command") for x in payload_items] != commands:
+            raise ValueError("COMMAND_SET does not match the sealed approval payload")
+
+        stored_agent = value("agent_id", 1)
+        if agent_id and stored_agent and agent_id != stored_agent:
+            raise ValueError("approval binding agent_id mismatch")
+        stored_session = value("session_id", 2)
+        if binding is not None:
+            if not isinstance(binding, dict):
+                raise ValueError("approval binding must be an object")
+            if binding.get("session_id") != stored_session:
+                raise ValueError("approval binding session_id mismatch")
+            if binding.get("agent_id") and stored_agent and binding["agent_id"] != stored_agent:
+                raise ValueError("approval binding agent_id mismatch")
+            if not binding.get("call_id"):
+                raise ValueError("approval binding call_id is required")
+
+        existing = connection.execute(
+            "SELECT request_fingerprint, scope, status FROM approval_grants "
+            "WHERE approval_id = ?", (approval_id,)
+        ).fetchone()
+        if status == "approved":
+            if existing is not None and (
+                existing["scope"] if hasattr(existing, "keys") else existing[1]
+            ) == "COMMAND_SET" and (
+                existing["request_fingerprint"] if hasattr(existing, "keys") else existing[0]
+            ) == request_fingerprint:
+                if owned:
+                    connection.commit()
+                else:
+                    connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+                return {"status": "applied", "idempotent": True}
+            raise ValueError("approval is approved but has no matching executable COMMAND_SET grant")
+        if status != "pending":
+            raise ValueError(f"Cannot activate approval in status={status!r}")
+
+        # The event is inserted before the status update because the schema
+        # trigger requires an APPROVED event to exist in the same transaction.
+        record_event(
+            approval_id, "SHOWN", agent_id=agent_id, session_id=approver_session,
+            payload_json=canonical_payload(shown_payload), con=connection,
+        )
+        record_event(
+            approval_id, "APPROVED", agent_id=agent_id, session_id=approver_session,
+            con=connection,
+        )
+        connection.execute(
+            "UPDATE approvals SET status='approved', decided_at=? WHERE id=?",
+            (_now_iso(), approval_id),
+        )
+        result = insert_plan_command_set(
+            approval_id, command_set, request_fingerprint=request_fingerprint,
+            agent_id=agent_id, session_id=approver_session, con=connection,
+        )
+        if result.get("status") != "applied":
+            raise ValueError(result.get("reason", "COMMAND_SET grant creation failed"))
+        if owned:
+            connection.commit()
+        else:
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return {"status": "applied", "idempotent": False}
+    except Exception:
+        if owned:
+            connection.rollback()
+        else:
+            connection.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            connection.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    finally:
+        if owned:
+            connection.close()
+
+
 def reject(
     approval_id: str,
     approver_session: str,

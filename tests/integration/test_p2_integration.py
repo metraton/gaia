@@ -271,8 +271,22 @@ class TestP2MalformedPayloads:
         assert result.criteria_met is True
         assert response.exit_code == 0
 
-    def test_subagent_start_empty_agent_type(self):
-        """SubagentStart with empty agent_type still works."""
+    def test_subagent_start_empty_agent_type(self, tmp_path, monkeypatch):
+        """SubagentStart with empty agent_type still works.
+
+        Isolates CONTEXT_CACHE_DIR to a fresh tmp_path (the convention every
+        other CONTEXT_CACHE_DIR-touching test in this suite follows). Without
+        it, ``_run_subagent_start_flow`` builds a fresh ``ClaudeCodeAdapter``
+        that reads the real shared ``/tmp/gaia-context-cache``: under -n auto
+        a concurrent real dispatch elsewhere in the suite can leave a live
+        (pre-TTL) cache entry there, and because agent_type="" skips the
+        correlation filter in ``_select_cached_entry`` (falls straight to
+        ``live[0]``), the newest stray entry gets consumed and flips
+        context_injected to True.
+        """
+        monkeypatch.setattr(
+            ClaudeCodeAdapter, "CONTEXT_CACHE_DIR", tmp_path / "ctx-cache-empty",
+        )
         event, result, response = _run_subagent_start_flow({"agent_type": ""})
 
         assert result.context_injected is False

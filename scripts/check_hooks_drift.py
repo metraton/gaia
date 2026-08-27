@@ -16,7 +16,7 @@ carries no ``hooks`` key.
 If a committed artifact no longer matches the manifest, someone either
 hand-edited a generated file or forgot to re-run the generator after editing
 the manifest. Either way the published plugin would ship a hook configuration
-inconsistent with its own manifest -- e.g. dropping ElicitationResult or
+inconsistent with its own manifest -- e.g. dropping SubagentStart or
 degrading the PreToolUse matcher set. tests/hooks/adapters/test_plugin_manifests
 catches the symptom (event set); this guard catches the root cause (drift from
 the manifest) at publish time.

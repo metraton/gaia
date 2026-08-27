@@ -6,12 +6,11 @@ status and approval_id mechanism:
 
 1. Subagent mutative command gets denied with approval_id
 2. Orchestrator mutative command gets "ask" (no approval_id)
-3. ElicitationResult activates grant for pending approval
+3. Nonce-prefix activation turns a pending approval into a grant
 4. Full cycle: deny -> approve -> retry succeeds
 5. Negative response does NOT activate grant
 6. Expired pending is not activated
-7. Approval response pattern matching (elicitation_result._is_approval)
-8. Subagent retry reuses existing pending nonce
+7. Subagent retry reuses existing pending nonce
 """
 
 import hashlib
@@ -298,8 +297,8 @@ def _isolate_writer_db(monkeypatch, tmp_path):
     return writer_db_path
 
 
-class TestElicitationResultActivatesGrant:
-    """Test 3: ElicitationResult activates grant for pending approval."""
+class TestNoncePrefixActivationCreatesGrant:
+    """Test 3: nonce-prefix activation turns a pending approval into a grant."""
 
     def test_activate_db_pending_creates_grant(self, monkeypatch, tmp_path):
         """Seeding a DB pending then activating it by nonce prefix creates a usable grant."""
@@ -408,21 +407,26 @@ class TestFullApprovalCycle:
 
 
 class TestNegativeResponseDoesNotActivate:
-    """Test 5: Negative response does NOT activate grant."""
+    """Test 5: Negative response does NOT activate grant.
 
-    def test_is_approval_rejects_negative(self):
-        """_is_approval returns False for negative inputs."""
-        from elicitation_result import _is_approval
+    On the live carril the ONLY predicate that decides activation is
+    ``extract_nonce_from_label``: a label yields a grant exactly when it
+    returns a prefix. That is what makes a reject label unable to
+    manufacture a signature, so it is the predicate asserted here.
+    """
 
-        assert not _is_approval("no"), "'no' should not be affirmative"
-        assert not _is_approval("nope"), "'nope' should not be affirmative"
-        assert not _is_approval("cancel"), "'cancel' should not be affirmative"
-        assert not _is_approval("Reject"), "'Reject' should not be affirmative"
-        assert not _is_approval("Modify"), "'Modify' should not be affirmative"
+    def test_reject_label_yields_no_nonce(self):
+        """A label the user did not approve carries no activatable prefix."""
+        from modules.security.approval_grants import extract_nonce_from_label
+
+        for label in ("no", "nope", "cancel", "Reject", "Modify"):
+            assert extract_nonce_from_label(label) is None, (
+                f"'{label}' must not yield an activatable nonce prefix"
+            )
 
     def test_negative_response_leaves_pending_intact(self, monkeypatch, tmp_path):
         """A negative response should not activate pending approvals."""
-        from elicitation_result import _is_approval
+        from modules.security.approval_grants import extract_nonce_from_label
 
         _isolate_writer_db(monkeypatch, tmp_path)
 
@@ -436,7 +440,7 @@ class TestNegativeResponseDoesNotActivate:
         )
 
         # Simulate a negative response -- should NOT activate
-        assert not _is_approval("Reject")
+        assert extract_nonce_from_label("Reject") is None
 
         # Pending should still be there
         pending = get_pending_approvals_for_session("test-cycle-session")
@@ -445,48 +449,6 @@ class TestNegativeResponseDoesNotActivate:
         # Grant should NOT exist
         grant = check_approval_grant("terraform apply")
         assert grant is None, "No grant should exist after negative response"
-
-
-class TestApprovalResponsePatterns:
-    """Test 7: Approval response pattern matching (ElicitationResult)."""
-
-    @pytest.fixture(autouse=True)
-    def import_checker(self):
-        """Import the _is_approval function from elicitation_result."""
-        sys.path.insert(0, str(HOOKS_DIR))
-        from elicitation_result import _is_approval
-        self._is_approval = _is_approval
-
-    @pytest.mark.parametrize("text", [
-        "Approve", "approve", "Approved", "yes", "Yes",
-        "accept", "Accept", "confirm", "Confirm", "allow", "Allow",
-    ], ids=lambda t: f"approve:{t}")
-    def test_approval_responses(self, text):
-        """Approval responses (structured AskUserQuestion options) should match."""
-        assert self._is_approval(text), f"'{text}' should be detected as approval"
-
-    @pytest.mark.parametrize("text", [
-        "Reject", "reject", "Modify", "modify", "no", "nope",
-        "cancel", "", "maybe", "let me think",
-    ], ids=lambda t: f"neg:{t}" if t else "neg:empty")
-    def test_non_approval_responses(self, text):
-        """Non-approval responses should NOT match."""
-        if text == "":
-            # Empty string edge case
-            assert not self._is_approval(text), "empty should not be approval"
-        else:
-            assert not self._is_approval(text), f"'{text}' should not be approval"
-
-    def test_approve_in_longer_text(self):
-        """Approve keyword embedded in longer text should match."""
-        assert self._is_approval("Approve -- Allow the operation to proceed")
-        assert self._is_approval("I approve this change")
-
-    def test_case_insensitive(self):
-        """Matching should be case-insensitive."""
-        assert self._is_approval("APPROVE")
-        assert self._is_approval("YES")
-        assert self._is_approval("Confirm")
 
 
 class TestSubagentRetryReusesPendingNonce:
@@ -799,11 +761,9 @@ class TestConditionalActivation:
         """A nonce-labeled Approve answer activates the targeted DB grant."""
         session_id = "test-cycle-session"
         approval_id = self._deny_creates_db_pending("terraform apply", session_id)
-        nonce8 = approval_id[len("P-"):len("P-") + 8]
-
         hook_data = self._make_hook_data(
             answers={"Proceed with terraform apply?":
-                     f"Approve -- terraform apply [P-{nonce8}]"},
+                     f"Approve -- terraform apply [{approval_id}]"},
             session_id=session_id,
         )
         self.adapter._handle_ask_user_question_result(hook_data)
@@ -878,10 +838,8 @@ class TestConditionalActivation:
         """A nonce-labeled answer in tool_input (fallback) also activates."""
         session_id = "test-cycle-session"
         approval_id = self._deny_creates_db_pending("terraform apply", session_id)
-        nonce8 = approval_id[len("P-"):len("P-") + 8]
-
         hook_data = self._make_hook_data(
-            answers={"q1": f"Approve -- terraform apply [P-{nonce8}]"},
+            answers={"q1": f"Approve -- terraform apply [{approval_id}]"},
             session_id=session_id,
             in_tool_input=True,
         )

@@ -21,7 +21,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-_BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_BIN_DIR = _REPO_ROOT / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
@@ -309,6 +310,176 @@ class TestMergeLocalHooks(unittest.TestCase):
             res = helpers.merge_local_hooks(workspace, plugin_root=pkg, dry_run=True)
             self.assertEqual(res["action"], "updated")
             self.assertFalse((workspace / ".claude" / "settings.local.json").exists())
+
+
+# ---------------------------------------------------------------------------
+# merge_local_hooks -- prune of events hooks.json no longer ships
+# ---------------------------------------------------------------------------
+
+class TestMergeLocalHooksPrunesRetiredEvents(unittest.TestCase):
+    """The merge used to be additive only.
+
+    Retiring an event from hooks.json therefore left its registration alive in
+    every already-installed workspace, pointing at an entry-point file the
+    release had deleted. Each test here fails if the prune is reverted.
+
+    RETIRED_EVENT is deliberately a name no host defines and no release ever
+    shipped: _is_gaia_hook_command keys ownership on the command TARGET, never
+    on the event name, so binding the fixture to whichever event was retired
+    last would assert an identity the prune does not read.
+    """
+
+    RETIRED_EVENT = "RetiredGaiaEvent"
+
+    def _stage(self, tmp, local_hooks: dict):
+        """Build a workspace whose settings.local.json holds *local_hooks*.
+
+        Returns the workspace, the package root shipping one PreToolUse event,
+        and the absolute hooks dir the merge bakes into commands.
+        """
+        workspace = Path(tmp) / "ws"
+        (workspace / ".claude").mkdir(parents=True)
+        pkg = Path(tmp) / "pkg"
+        (pkg / "hooks").mkdir(parents=True)
+        (pkg / "hooks" / "hooks.json").write_text(json.dumps({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command",
+                               "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pre_tool_use.py"}],
+                }]
+            }
+        }))
+        hooks_abs = ((workspace / ".claude").resolve() / "hooks").as_posix()
+        (workspace / ".claude" / "settings.local.json").write_text(
+            json.dumps({"hooks": local_hooks})
+        )
+        return workspace, pkg, hooks_abs
+
+    def _local_hooks(self, workspace) -> dict:
+        path = workspace / ".claude" / "settings.local.json"
+        return json.loads(path.read_text())["hooks"]
+
+    def test_retired_gaia_event_is_pruned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace, pkg, hooks_abs = self._stage(tmp, {})
+            (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+                "hooks": {
+                    self.RETIRED_EVENT: [{
+                        "hooks": [{
+                            "type": "command",
+                            "command": f"python3 {hooks_abs}/retired_handler.py",
+                        }],
+                    }],
+                }
+            }))
+            before = sorted(self._local_hooks(workspace))
+            res = helpers.merge_local_hooks(workspace, plugin_root=pkg)
+            after = sorted(self._local_hooks(workspace))
+            print(f"BEFORE hooks keys: {before}")
+            print(f"AFTER  hooks keys: {after}")
+            self.assertEqual(res["action"], "updated")
+            self.assertIn(self.RETIRED_EVENT, before)
+            self.assertNotIn(self.RETIRED_EVENT, after)
+            self.assertIn("PreToolUse", after)
+
+    def test_third_party_entry_on_retired_event_survives(self):
+        """The prune removes Gaia-owned entries only."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace, pkg, hooks_abs = self._stage(tmp, {})
+            third_party = {
+                "hooks": [{"type": "command", "command": "/opt/vendor/bin/audit.sh"}],
+            }
+            (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+                "hooks": {
+                    self.RETIRED_EVENT: [
+                        {"hooks": [{
+                            "type": "command",
+                            "command": f"python3 {hooks_abs}/retired_handler.py",
+                        }]},
+                        third_party,
+                    ],
+                }
+            }))
+            helpers.merge_local_hooks(workspace, plugin_root=pkg)
+            after = self._local_hooks(workspace)
+            print(f"AFTER retired-event entries: {after.get(self.RETIRED_EVENT)}")
+            self.assertEqual(after[self.RETIRED_EVENT], [third_party])
+
+    def test_mixed_entry_keeps_only_the_third_party_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace, pkg, hooks_abs = self._stage(tmp, {})
+            (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+                "hooks": {
+                    self.RETIRED_EVENT: [{
+                        "hooks": [
+                            {"type": "command",
+                             "command": f"python3 {hooks_abs}/retired_handler.py"},
+                            {"type": "command", "command": "/opt/vendor/bin/audit.sh"},
+                        ],
+                    }],
+                }
+            }))
+            helpers.merge_local_hooks(workspace, plugin_root=pkg)
+            after = self._local_hooks(workspace)
+            commands = [h["command"] for h in after[self.RETIRED_EVENT][0]["hooks"]]
+            self.assertEqual(commands, ["/opt/vendor/bin/audit.sh"])
+
+    def test_event_gaia_never_owned_is_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace, pkg, _ = self._stage(tmp, {})
+            vendor = {"hooks": [{"type": "command", "command": "/opt/vendor/bin/x.sh"}]}
+            (workspace / ".claude" / "settings.local.json").write_text(
+                json.dumps({"hooks": {"VendorOnlyEvent": [vendor]}})
+            )
+            helpers.merge_local_hooks(workspace, plugin_root=pkg)
+            after = self._local_hooks(workspace)
+            self.assertEqual(after["VendorOnlyEvent"], [vendor])
+
+    def test_third_party_survives_the_prune_against_the_shipped_hooks_json(self):
+        """The same two outcomes, driven by the real hooks.json this repo ships.
+
+        The sibling tests merge against a one-event stand-in, which cannot show
+        that the prune reads the shipped event set correctly. This one points
+        plugin_root at the repository itself, so shipped_events comes from the
+        real manifest-generated file and the retired event is absent from it for
+        the same reason it is absent in a release.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace, _, hooks_abs = self._stage(tmp, {})
+            third_party = {
+                "hooks": [{"type": "command", "command": "/opt/vendor/bin/audit.sh"}],
+            }
+            (workspace / ".claude" / "settings.local.json").write_text(json.dumps({
+                "permissions": {"allow": ["Bash(ls:*)"]},
+                "hooks": {
+                    self.RETIRED_EVENT: [
+                        {"hooks": [{
+                            "type": "command",
+                            "command": f"python3 {hooks_abs}/retired_handler.py",
+                        }]},
+                        third_party,
+                    ],
+                },
+            }))
+            before = sorted(self._local_hooks(workspace))
+            helpers.merge_local_hooks(workspace, plugin_root=_REPO_ROOT)
+            after_all = json.loads(
+                (workspace / ".claude" / "settings.local.json").read_text()
+            )
+            after = sorted(after_all["hooks"])
+            print(f"SHIPPED-MERGE BEFORE hooks keys: {before}")
+            print(f"SHIPPED-MERGE AFTER  hooks keys: {after}")
+            print(
+                "SHIPPED-MERGE retired-event entries AFTER: "
+                f"{after_all['hooks'].get(self.RETIRED_EVENT)}"
+            )
+            self.assertEqual(
+                after_all["hooks"][self.RETIRED_EVENT], [third_party],
+                "the third-party entry must survive and the Gaia-owned one must go",
+            )
+            self.assertIn("PreToolUse", after)
+            self.assertEqual(after_all["permissions"], {"allow": ["Bash(ls:*)"]})
 
 
 # ---------------------------------------------------------------------------

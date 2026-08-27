@@ -1636,7 +1636,7 @@ class ClaudeCodeAdapter(HookAdapter):
         - ``approval_id`` set -> the orchestrator drives the Gaia approval
           cycle. Emit a ``deny`` keyed to that ``approval_id``; the subagent
           reports APPROVAL_REQUEST, the user clicks Approve in the native
-          AskUserQuestion prompt, and the ElicitationResult hook activates the
+          AskUserQuestion prompt, and _handle_ask_user_question_result activates the
           grant. The ``reason`` already carries the approval_id banner, so this
           is a thin formatting step.
         - ``approval_id`` is None -> gather consent inline via Claude Code's
@@ -2460,12 +2460,16 @@ class ClaudeCodeAdapter(HookAdapter):
         - If found, returns deny with the existing approval_id.
         - If not found, writes a pending approval and returns deny with a
           new approval_id so the orchestrator can ask the user and activate
-          the grant via the ElicitationResult hook.
+          the grant via _handle_ask_user_question_result on PostToolUse.
         - On retry, if an active grant exists for this path, allows through.
 
-        Protected paths:
-        - Any path that resolves within the gaia hooks directory (Path.resolve().relative_to(hooks_dir)), EXCEPT .md files — documentation does not execute code and is exempt
-        - .claude/settings.json and .claude/settings.local.json
+        The protected set is not decided here: it comes from
+        ``modules.security.protected_paths.is_protected_hook_path``, the one
+        predicate the Bash command-string guard consumes too, so widening this
+        surface cannot leave the shell route open against the same tree. It
+        covers every Gaia hook tree -- source checkout and installed copy alike
+        -- because it derives roots from the workspace registry, the path shape
+        and a root marker, never from where this module was loaded from.
 
         Non-protected subagent writes additionally get a one-shot advisory
         nudge (see ``modules.agents.artifact_skill_reminder``): when the
@@ -2498,33 +2502,13 @@ class ClaudeCodeAdapter(HookAdapter):
             build_reminder_context,
             should_remind,
         )
+        from modules.security.protected_paths import is_protected_hook_path
 
         file_path = parameters.get("file_path", "")
         if not file_path:
             return HookResponse(output={}, exit_code=0)
 
-        hooks_dir = Path(__file__).parent.parent.resolve()
-
-        def _is_protected(path_str):
-            p = Path(path_str)
-            try:
-                rp = p.resolve()
-            except Exception:
-                rp = p
-            try:
-                rp.relative_to(hooks_dir)
-                if rp.suffix == ".md":
-                    return False  # docs don't execute code; exempt from protection
-                return True
-            except ValueError:
-                pass
-            if p.name in ("settings.json", "settings.local.json"):
-                for part in rp.parts:
-                    if part == ".claude":
-                        return True
-            return False
-
-        if not _is_protected(file_path):
+        if not is_protected_hook_path(file_path):
             if is_subagent and agent_id:
                 expected_skill = expected_skill_for_path(file_path)
                 if expected_skill and should_remind(session_id, agent_id, expected_skill):
@@ -2617,13 +2601,28 @@ class ClaudeCodeAdapter(HookAdapter):
                     )
                 )
 
+        # The window the grant will carry once it is activated -- the same
+        # constant insert_file_path_grant defaults to. Imported lazily because
+        # gaia.store is not importable while the hook package loads.
+        try:
+            from gaia.store.writer import FILE_PATH_GRANT_TTL_MINUTES as window_minutes
+        except Exception:  # pragma: no cover - store unavailable at hook load
+            window_minutes = 30
+
         reason = (
             f"[T3_BLOCKED] This file modification requires user approval.\n"
             f"Do NOT retry this operation. Report APPROVAL_REQUEST with this approval_id "
             f"in your contract row.\n"
+            f"The approval expires. Once the user decides, the grant for this path stays "
+            f"usable for {window_minutes} minutes and then lapses on its own. The clock "
+            f"starts at their DECISION, not at this request, so the wait for an answer "
+            f"costs nothing -- but everything after it (your re-dispatch, grounding, the "
+            f"edits and the tests between them) is spent inside that one window, and "
+            f"nothing you do extends it. A write attempted after it lapses is blocked "
+            f"again under a NEW approval_id; this one will not work twice.\n"
             f"File: {file_path}\n"
             f"Tool: {tool_name}\n"
-            f"approval_id: {approval_id}"
+            f"approval_id: P-{approval_id}"
         )
         # Out-of-band approval flow: consent is keyed to the persisted approval_id.
         return self.request_consent(
@@ -3089,24 +3088,42 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def _handle_ask_user_question_result(self, hook_data: Dict[str, Any]) -> None:
-        """Conditionally activate pending grants based on user's answer.
+        """Activate every grant the user signed in one structured decision event.
 
-        Uses nonce-targeted activation when the approved answer contains a
-        ``[P-<hex>]`` tag (the nonce prefix).  This works identically for
-        same-session and cross-session approvals:
-          1. Extract the nonce prefix from the approved label.
-          2. Load the specific pending file by prefix (any session).
-          3. Activate the grant under the CURRENT session.
+        Exact-id activation, once per distinct ``[P-<32 hex>]`` tag carried by
+        an answered label. This works identically for same-session and
+        cross-session approvals:
+          1. Extract the complete canonical id from every answered label.
+          2. Load each pending by exact id (any session).
+          3. Activate each grant under the CURRENT session.
+
+        A host question event answers every question in the call independently,
+        so N signed labels are N signatures. Activating only the first discards
+        the rest -- measured on 2026-08-19, when two protected-path approvals
+        were presented in one event, both approved, and only the first activated.
+
+        ``extract_approval_id_from_label`` is the ONLY predicate that decides
+        activation: a label yields a grant exactly when it returns a full id for
+        it. Nothing else reads the answer text, so a reject label -- including
+        "Do not approve ..." -- still yields no nonce and no grant, and this path
+        can lose a signature but never manufacture one.
 
         DB-only since the grant-lifecycle FS retirement: REQUESTED writes go
-        to the DB, so the approved pending is resolved by nonce prefix straight
-        from the DB via ``activate_db_pending_by_prefix()``.
+        to the DB, so an approved pending is resolved by exact canonical id
+        through ``activate_db_pending_by_id()``.
 
         Never blocks (no exceptions raised to caller).
         """
+        from gaia.approvals.decision_audit import (
+            LANE_CLAUDE_CODE_QUESTION,
+            REASON_ACTIVATION_FAILED,
+            REASON_NO_NONCE_IN_LABELS,
+            REASON_NO_SESSION_BINDING,
+            record_decision_not_activated,
+        )
         from modules.security.approval_grants import (
-            activate_db_pending_by_prefix,
-            extract_nonce_from_label,
+            activate_db_pending_by_id,
+            extract_approval_id_from_label,
         )
 
         session_id = hook_data.get("session_id", "") or os.environ.get("CLAUDE_SESSION_ID", "")
@@ -3119,52 +3136,72 @@ class ClaudeCodeAdapter(HookAdapter):
         if not answers and isinstance(hook_data.get("tool_input", {}), dict):
             answers = hook_data.get("tool_input", {}).get("answers", {})
 
+        # No answers is not a decision that granted nothing -- it is no decision
+        # at all, and recording one here would erase the distinction the audit
+        # record exists to make.
         if not answers:
             logger.info("AskUserQuestion: no answers found in payload, skipping grant activation")
             return
 
-        user_approved = any("approve" in str(v).lower() for v in answers.values())
-
-        if not user_approved:
-            logger.info(
-                "AskUserQuestion: user did not approve (answers: %s), skipping grant activation",
-                {k: v for k, v in answers.items()},
-            )
-            return
-
-        # User approved -- activate grants
-        logger.info("AskUserQuestion: user approved, activating grants for session %s", session_id[:12])
+        labels = [str(v) for v in answers.values()]
 
         try:
             if not session_id:
                 logger.info("AskUserQuestion: no session_id available, skipping grant activation")
-                return
-
-            # Nonce-targeted activation: extract the nonce from answer labels.
-            nonce_prefix = None
-            for v in answers.values():
-                nonce_prefix = extract_nonce_from_label(str(v))
-                if nonce_prefix:
-                    break
-
-            if not nonce_prefix:
-                logger.info(
-                    "AskUserQuestion: no nonce prefix in answer labels -- "
-                    "nothing to activate for session %s", session_id[:12],
+                record_decision_not_activated(
+                    reason=REASON_NO_SESSION_BINDING,
+                    lane=LANE_CLAUDE_CODE_QUESTION,
+                    decision_values=labels,
                 )
                 return
 
-            # Resolve the approved pending straight from the DB.
-            result = activate_db_pending_by_prefix(
-                nonce_prefix, current_session_id=session_id,
-            )
+            # One canonical id per distinct signed label, in answer order.
+            approval_ids: List[str] = []
+            for label in labels:
+                approval_id = extract_approval_id_from_label(label)
+                if approval_id and approval_id not in approval_ids:
+                    approval_ids.append(approval_id)
+
+            if not approval_ids:
+                logger.info(
+                    "AskUserQuestion: no canonical approval id in answer labels -- "
+                    "nothing to activate for session %s", session_id[:12],
+                )
+                record_decision_not_activated(
+                    reason=REASON_NO_NONCE_IN_LABELS,
+                    lane=LANE_CLAUDE_CODE_QUESTION,
+                    session_id=session_id,
+                    decision_values=labels,
+                )
+                return
+
             logger.info(
-                "AskUserQuestion DB activation: prefix=%s success=%s status=%s reason=%s",
-                nonce_prefix,
-                result.success,
-                getattr(result.status, "value", str(result.status)),
-                result.reason,
+                "AskUserQuestion: %d signed label(s), activating grants for session %s",
+                len(approval_ids), session_id[:12],
             )
+
+            # One failure must not withhold the grants the user also signed, so
+            # the loop records it and continues instead of returning.
+            for approval_id in approval_ids:
+                result = activate_db_pending_by_id(
+                    approval_id, current_session_id=session_id,
+                )
+                logger.info(
+                    "AskUserQuestion DB activation: approval_id=%s success=%s status=%s reason=%s",
+                    approval_id,
+                    result.success,
+                    getattr(result.status, "value", str(result.status)),
+                    result.reason,
+                )
+                if not result.success:
+                    record_decision_not_activated(
+                        reason=REASON_ACTIVATION_FAILED,
+                        lane=LANE_CLAUDE_CODE_QUESTION,
+                        session_id=session_id,
+                        approval_id=approval_id,
+                        decision_values=labels,
+                        detail=result.reason or getattr(result.status, "value", ""),
+                    )
 
         except Exception as e:
             logger.error("Error in _handle_ask_user_question_result: %s", e, exc_info=True)
@@ -5045,64 +5082,35 @@ class ClaudeCodeAdapter(HookAdapter):
 
     @staticmethod
     def _maybe_claim_dispatch_kernel(raw: dict) -> Optional[str]:
-        """Claim the born row this start correlates to, stamp it, render its kernel.
+        """Translate a start event into the host-neutral dispatch-lifecycle
+        claim and return its rendered kernel (or None).
 
-        The correlation keys are the host's own SubagentStart coordinates:
-        ``prompt_id`` (matched against the ``dispatch_prompt_id`` stamped at
-        birth) and ``task_description`` (against ``dispatch_description``),
-        scoped by ``agent_type``. ``claim_dispatch_row`` owns the ladder and
-        the divergent-signature guard.
-
-        The harness agent id is stamped onto the claimed row HERE, right after
-        the claim resolves, because the claim is where both identifier spaces
-        first meet: the row carries the CLI-minted contract_id and ``raw``
-        carries the host-assigned ``agent_id``. Stamping at the claim (instead
-        of from a contract_id carried by the context cache) covers BOTH start
-        lanes -- cache hit and cache miss -- where the cache-borne stamp
-        silently lost the cache-miss lane, exactly the cut-turn traceability
-        the stamp exists for. SubagentStop cannot be the seam: it never fires
-        on a harness cut. The stamp runs before rendering so a render failure
-        cannot lose it; both are best-effort and never block the start.
-
-        Returns the joined kernel blocks, or None when nothing was claimed or
-        rendering failed -- callers read None as "keep the legacy path",
-        never as an error. Best-effort by contract: a start is never blocked
-        by the kernel.
+        All orchestration (claim -> stamp -> render) lives in the host-neutral
+        facade ``modules.agents.dispatch_lifecycle.claim_dispatch_kernel``;
+        this method only maps this host's own start-event fields onto that
+        facade's neutral arguments (``prompt_id`` -> ``dispatch_prompt_id``,
+        ``task_description`` -> ``dispatch_description``, ``agent_type`` ->
+        ``agent_name``, ``agent_id`` -> ``host_agent_id``, ``tool_use_id`` ->
+        ``dispatch_tool_use_id``). See the facade's own docstring for why the
+        stamp seam sits at the claim. ``tool_use_id`` is mapped for
+        forward-compatibility only: this host's SubagentStart payload carries
+        no such key today, so the mapping always resolves to ``None`` here and
+        the exact-callID layer 0 never engages on this host's live path.
         """
         try:
-            from gaia.store.writer import claim_dispatch_row, stamp_harness_agent_id
-            from modules.context.kernel_builder import build_kernel_context
-
-            agent_type = raw.get("agent_type", "")
-            row = claim_dispatch_row(
-                agent_name=agent_type or None,
-                dispatch_prompt_id=raw.get("prompt_id") or None,
-                dispatch_description=raw.get("task_description") or None,
-            )
-            if row is None:
-                return None
-            try:
-                _stamp = stamp_harness_agent_id(
-                    row.get("contract_id") or None,
-                    raw.get("agent_id", "") or None,
-                )
-                if _stamp.get("status") == "applied":
-                    logger.info(
-                        "Harness agent id stamped: contract_id=%s harness_agent_id=%s",
-                        row.get("contract_id"), raw.get("agent_id"),
-                    )
-            except Exception as exc:
-                logger.debug("Harness agent id stamp failed (non-fatal): %s", exc)
-            kernel = build_kernel_context(row, agent_name=agent_type)
-            if kernel:
-                logger.info(
-                    "Dispatch kernel injected (contract_id=%s, agent=%s)",
-                    row.get("contract_id"), agent_type or "unknown",
-                )
-            return kernel
+            from modules.agents.dispatch_lifecycle import claim_dispatch_kernel
         except Exception as exc:
             logger.debug("dispatch claim/kernel failed (non-fatal): %s", exc)
             return None
+
+        agent_type = raw.get("agent_type", "")
+        return claim_dispatch_kernel(
+            agent_name=agent_type or None,
+            dispatch_prompt_id=raw.get("prompt_id") or None,
+            dispatch_description=raw.get("task_description") or None,
+            host_agent_id=raw.get("agent_id", "") or None,
+            dispatch_tool_use_id=raw.get("tool_use_id") or None,
+        )
 
     # ------------------------------------------------------------------ #
     # P2: adapt_subagent_start

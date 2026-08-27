@@ -34,7 +34,7 @@ import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping, Sequence
 
 if TYPE_CHECKING:  # annotation-only; runtime imports of gaia.state stay lazy
     from gaia.state.task_closure import GateVerdict
@@ -122,6 +122,44 @@ APPROVAL_GRANT_TTL_MINUTES = 5
 # between items; a sliding window would let a long enough set carry a live key
 # indefinitely, which is the property this constant exists to deny.
 PLAN_COMMAND_SET_TTL_MINUTES = 60
+
+
+# ---------------------------------------------------------------------------
+# SCOPE_FILE_PATH grant lifetime
+# ---------------------------------------------------------------------------
+#
+# FILE_PATH_GRANT_TTL_MINUTES bounds a protected-path Write/Edit grant: the
+# window in which an approved path may still be written.
+#
+# It is a FOURTH window because this lane's round trip is not the one
+# APPROVAL_GRANT_TTL_MINUTES (5) was calibrated for. That window covers a Bash
+# retry: the blocked subagent is still alive and re-presents the same command on
+# its next tool call. A protected-path write cannot do that -- the orchestrator
+# closes its turn to present the approval, then RE-DISPATCHES a fresh subagent,
+# which must ground itself (skills, files, investigation) before it reaches the
+# file. The clock starts at the user's DECISION, so the whole re-dispatch plus
+# grounding is spent inside the window, and 5 minutes measured 0% consumption on
+# this lane: every SCOPE_FILE_PATH grant a user ever signed expired unused.
+# DEFAULT_PENDING_TTL_MINUTES (1440) is the opposite error, for the reason
+# recorded above it: that is how long an UNANSWERED approval waits for a human,
+# and reusing it here would leave a signed key to a protected path armed for a
+# day.
+#
+# 30 minutes is sized to one re-dispatch cycle plus the multi-edit pass that
+# follows it: a real fix to a protected file is several Edit calls to the same
+# path with reads and test runs between them, all of which this one consent must
+# cover. It is half of PLAN_COMMAND_SET_TTL_MINUTES because the authority is
+# narrower -- one exact path, and only through Write/Edit, which produce inert
+# bytes rather than executing anything -- and it stays inside the sitting in
+# which the person approved it.
+#
+# Unlike the two windows above, this one is the lane's ONLY bound. The grant is
+# NOT consumed at the match: a path grant is deliberately reusable inside its
+# window, because consuming it on the first Edit would demand a fresh user
+# approval for every subsequent Edit to the same file. So the TTL here carries
+# the replay bound alone, which is why it must be short enough to matter and is
+# measured from creation, never extended by a write.
+FILE_PATH_GRANT_TTL_MINUTES = 30
 
 
 # ---------------------------------------------------------------------------
@@ -7275,12 +7313,18 @@ def consume_db_semantic_grant(
 # approval_grants table so all grant lifecycle is visible in one place.
 #
 # Lifecycle:
-#   insert_file_path_grant()       -- called by activate_db_pending_by_prefix()
+#   insert_file_path_grant()       -- called by activate_db_pending_by_id()
 #                                     SCOPE_FILE_PATH branch; writes status=PENDING.
 #   check_db_file_path_grant()     -- called by check_approval_grant_for_file();
 #                                     returns the matching row dict.
-#   consume_db_file_path_grant()   -- called by _adapt_write_edit after allowing
-#                                     the protected-path write; sets CONSUMED.
+#   consume_db_file_path_grant()   -- available, and deliberately UNCALLED: a
+#                                     path grant stays reusable for its whole
+#                                     window (see FILE_PATH_GRANT_TTL_MINUTES),
+#                                     since a protected-path fix is several Edits
+#                                     to one file and consuming the grant on the
+#                                     first would re-prompt the user for each of
+#                                     the rest. Kept for an operator/close path
+#                                     that needs to retire one grant early.
 # ---------------------------------------------------------------------------
 
 
@@ -7291,12 +7335,12 @@ def insert_file_path_grant(
     *,
     agent_id: str | None = None,
     session_id: str | None = None,
-    ttl_minutes: int = APPROVAL_GRANT_TTL_MINUTES,
+    ttl_minutes: int = FILE_PATH_GRANT_TTL_MINUTES,
     db_path: Path | None = None,
 ) -> dict:
     """Insert a SCOPE_FILE_PATH row into approval_grants (status=PENDING).
 
-    Called by activate_db_pending_by_prefix() when a SCOPE_FILE_PATH pending
+    Called by activate_db_pending_by_id() when a SCOPE_FILE_PATH pending
     approval is activated (user approved the protected-path write).  The row
     is later found by check_db_file_path_grant() on the subagent retry.
 
@@ -7308,7 +7352,9 @@ def insert_file_path_grant(
         agent_id: Requesting agent identifier (audit only).
         session_id: CLAUDE_SESSION_ID at grant time (audit only -- the check
             side is cross-session, same as SCOPE_SEMANTIC_SIGNATURE).
-        ttl_minutes: Grant lifetime in minutes.
+        ttl_minutes: Grant lifetime in minutes, measured from now. Defaults to
+            FILE_PATH_GRANT_TTL_MINUTES -- this lane's window, not the Bash
+            lane's APPROVAL_GRANT_TTL_MINUTES.
         db_path: Optional explicit DB path (used by tests).
 
     Returns:
@@ -7444,10 +7490,15 @@ def consume_db_file_path_grant(
     *,
     db_path: Path | None = None,
 ) -> bool:
-    """Mark a SCOPE_FILE_PATH grant as CONSUMED (replay protection).
+    """Mark a SCOPE_FILE_PATH grant as CONSUMED, when something calls it.
 
-    Called by _adapt_write_edit immediately after a protected-path write is
-    allowed via a DB file-path grant.  Setting status=CONSUMED prevents reuse.
+    Nothing does: this function has no caller anywhere in the tree, so CONSUMED
+    is a state a path grant never reaches by this route. That is by design --
+    the grant stays reusable for its whole window, because a protected-path fix
+    is several Edits to one file and consuming it on the first would re-prompt
+    the user for each of the rest. In this lane the only thing that retires a
+    grant is FILE_PATH_GRANT_TTL_MINUTES running out. The function is kept
+    unwired for an operator or close path that needs to retire one grant early.
 
     Args:
         approval_id: The grant to consume.
@@ -8707,13 +8758,33 @@ def find_dispatched_row_by_agent_name(
 # concurrent starts can never both take the same row.
 #
 # Correlation is layered, and the layers only ever NARROW -- never invent:
+#   (0) EXACT BY CALLID -- when the claiming host reports the dispatch_tool_use_id
+#       of the Task/Agent call that started this turn, an unclaimed row born
+#       under that exact id (scoped by agent name when given) is claimed
+#       directly, ahead of every other layer: a host's own call id is a
+#       stronger correlation key than the prompt_id/description pair a host
+#       without one falls back to. A row already claimed under that id (a
+#       duplicate start notification for the same call) is refused (None)
+#       without falling through -- resolving it via (a)/(b) instead would
+#       misclaim an unrelated identical sibling that happens to still be
+#       unclaimed. A call id that never birthed any row (a host that reports
+#       one the birth pipeline did not capture) falls through to (a) exactly
+#       as when no call id is given.
 #   (a) EXACT -- dispatch_prompt_id and/or dispatch_description equality
 #       (always additionally scoped by the birth-envelope agent name when the
 #       caller provides one);
 #   (b) FIFO -- several candidates that are INDISTINGUISHABLE by (a) are claimed
 #       oldest-first (ORDER BY created_at ASC, id ASC), but ONLY when their
 #       material signatures all agree (identical dispatches: any assignment is
-#       equivalent);
+#       equivalent). EXCEPTION, scoped to the callID discipline: when the claim
+#       supplied a dispatch_tool_use_id that (0) could not resolve (a stale or
+#       unmatched id, never "no id given at all"), and the surviving identical
+#       candidates were themselves born carrying a dispatch_tool_use_id, FIFO is
+#       refused (None) instead of guessed -- a host capable of exact
+#       correlation that missed is a stronger ambiguity signal than a host that
+#       never reports one, and guessing here risks binding the wrong sibling.
+#       A claim that supplies no call id at all (today's Claude Code) never
+#       enters this exception and keeps resolving FIFO exactly as before;
 #   (c) GUARD -- several candidates whose material signatures DIVERGE mean the
 #       correlation would be a guess between genuinely different turns. Nothing
 #       is claimed; a critical `dispatch_correlation_ambiguous` anomaly and a
@@ -8838,21 +8909,28 @@ def claim_dispatch_row(
     agent_name: "str | None" = None,
     dispatch_prompt_id: "str | None" = None,
     dispatch_description: "str | None" = None,
+    dispatch_tool_use_id: "str | None" = None,
     db_path: "Path | None" = None,
 ) -> "dict | None":
     """Atomically claim the born row this subagent start correlates to.
 
-    See the module comment above for the (a)/(b)/(c) correlation ladder.
-    Requires at least one correlation key (``dispatch_prompt_id`` or
-    ``dispatch_description``): with neither there is nothing exact to match and
-    a claim would be a guess, so the function returns None and the turn
-    starts without a kernel (the protocol's bare-init fallback).
+    See the module comment above for the (0)/(a)/(b)/(c) correlation ladder.
+    Requires at least one correlation key (``dispatch_tool_use_id``,
+    ``dispatch_prompt_id`` or ``dispatch_description``): with none of them
+    there is nothing exact to match and a claim would be a guess, so the
+    function returns None and the turn starts without a kernel (the
+    protocol's bare-init fallback).
 
     Args:
         agent_name:           The dispatched agent's NAME (birth-envelope
                               coordinate); scopes every layer when provided.
         dispatch_prompt_id:   Host prompt_id observed at SubagentStart.
         dispatch_description: Host task_description observed at SubagentStart.
+        dispatch_tool_use_id: Host call id of the Task/Agent call that started
+                              this turn, when the host reports one at start
+                              (layer 0); a host that never reports one (today's
+                              Claude Code) passes None and the ladder behaves
+                              exactly as it did before this parameter existed.
         db_path:              Optional explicit DB path (used by tests).
 
     Returns:
@@ -8861,7 +8939,7 @@ def claim_dispatch_row(
         None when nothing was claimed -- no candidate, an ambiguity refusal, or
         a lost race. None always means "fall back", never an error.
     """
-    if not dispatch_prompt_id and not dispatch_description:
+    if not dispatch_prompt_id and not dispatch_description and not dispatch_tool_use_id:
         return None
 
     def _candidates(con: sqlite3.Connection) -> "list[sqlite3.Row]":
@@ -8903,12 +8981,48 @@ def claim_dispatch_row(
                 return rows
         return []
 
+    def _tool_use_id_rows(con: sqlite3.Connection) -> "list[sqlite3.Row]":
+        if not dispatch_tool_use_id:
+            return []
+        select = (
+            f"SELECT {', '.join(_CLAIM_ROW_COLUMNS)} "
+            "FROM agent_contract_handoffs "
+            "WHERE agent_state = 'DISPATCHED' AND claimed_at IS NULL "
+            "AND dispatch_tool_use_id = ?"
+        )
+        params: tuple = (dispatch_tool_use_id,)
+        if agent_name:
+            select += f" AND {_BIRTH_AGENT_NAME_SQL} = ?"
+            params += (str(agent_name),)
+        select += " ORDER BY created_at ASC, id ASC"
+        return con.execute(select, params).fetchall()
+
+    def _tool_use_id_already_bound(con: sqlite3.Connection) -> bool:
+        """True iff some row, in any claim state, was born under
+        ``dispatch_tool_use_id`` -- tells "never birthed" (fall through to
+        (a)) apart from "already claimed" (a duplicate start notification for
+        the same call; refuse rather than fall through, which could misclaim
+        an unrelated identical sibling that is still unclaimed)."""
+        row = con.execute(
+            "SELECT 1 FROM agent_contract_handoffs "
+            "WHERE dispatch_tool_use_id = ? LIMIT 1",
+            (dispatch_tool_use_id,),
+        ).fetchone()
+        return row is not None
+
     def _work() -> "dict | None":
         con = _connect(db_path)
         try:
             con.execute("BEGIN IMMEDIATE")
             try:
-                rows = _candidates(con)
+                # Layer (0): exact by callID, ahead of (a)/(b)/(c).
+                rows = _tool_use_id_rows(con)
+                claimed_by_callid = bool(rows)
+                if not rows and dispatch_tool_use_id and _tool_use_id_already_bound(con):
+                    con.commit()
+                    return None
+                if not rows:
+                    rows = _candidates(con)
                 if not rows:
                     con.commit()
                     return None
@@ -8924,6 +9038,17 @@ def claim_dispatch_row(
                             dispatch_description=dispatch_description,
                             db_path=db_path,
                         )
+                        return None
+                    if (
+                        not claimed_by_callid
+                        and dispatch_tool_use_id
+                        and any(r["dispatch_tool_use_id"] for r in rows)
+                    ):
+                        # Layer (b) exception, scoped to the callID discipline:
+                        # the claim's own call id could not be resolved by (0)
+                        # and the identical survivors were themselves born
+                        # under a call id -- decline rather than guess FIFO.
+                        con.commit()
                         return None
                 # Layer (b): single candidate, or identical siblings -- FIFO.
                 chosen = rows[0]
@@ -9577,6 +9702,51 @@ def collapse_continuation_chains(rows: "list[dict]") -> "list[dict]":
     return [row for row in rows if row.get("id") not in superseded]
 
 
+def find_dispatch_row_by_harness_agent_id(
+    harness_agent_id: "str | None",
+    *,
+    session_id: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """The host-neutral join from a harness's own per-run session id back to
+    the ONE row it was stamped onto (plan 65, T11).
+
+    Host-neutral counterpart of ``hooks.modules.agents.handoff_persister.
+    dispatch_row_by_harness_id``, which reads Claude Code's own ``task_info``
+    shape: a caller that already holds the harness_agent_id directly --
+    OpenCode's session lifecycle events carry it as their own ``sessionID``
+    -- resolves the SAME row through this instead of reconstructing a
+    Claude-Code-shaped dict just to satisfy that function's signature.
+
+    A CONTINUATION CHAIN is not an ambiguity: a resumed turn carries the SAME
+    harness_agent_id as the turn it continues, so the result is collapsed to
+    the chain's live link first (``collapse_continuation_chains``) before
+    ambiguity is judged. Two genuinely unrelated rows sharing one harness id
+    still decline rather than guess, the same refusal
+    ``dispatch_row_by_harness_id`` makes.
+
+    ``session_id`` is accepted for callers that also carry it for logging;
+    this function does not filter on it -- the harness_agent_id alone already
+    names one run, and narrowing further can only lose a correctly-attributed
+    row, not sharpen the match.
+
+    Returns the full row dict, or ``None`` when nothing or more than one
+    unrelated row matches. Never raises: an unavailable store degrades to
+    ``None``, same as ``list_agent_contract_handoffs``.
+    """
+    if not harness_agent_id:
+        return None
+    rows = list_agent_contract_handoffs(
+        harness_agent_id=str(harness_agent_id), limit=10, db_path=db_path,
+    )
+    if not rows:
+        return None
+    collapsed = collapse_continuation_chains(rows)
+    if len(collapsed) != 1:
+        return None
+    return collapsed[0]
+
+
 def open_contract_continuation(
     parent_contract_id: "str | None",
     new_contract_id: "str | None",
@@ -9794,6 +9964,306 @@ def stamp_harness_agent_id(
             con.close()
 
     return _retry_on_locked(_work)
+
+
+# ---------------------------------------------------------------------------
+# Public API: bind_harness_child_session / is_harness_session_bound
+# (plan 65 T10 -- unambiguous binding via the PARENT's own start-adjacent
+# event, plus its read side for the fail-closed backstop)
+# ---------------------------------------------------------------------------
+#
+# Claude Code's SubagentStart fires ON the child's own turn, so
+# claim_dispatch_row and stamp_harness_agent_id both run at the one event
+# that already holds the child's harness_agent_id (see
+# ``modules.agents.dispatch_lifecycle.claim_dispatch_kernel``). OpenCode has
+# no such event: its only start-adjacent signal (``message.part.updated``)
+# fires on the PARENT's own tool part and reports the callID<->child-session
+# pair separately from -- and sometimes after -- the child's first action.
+# T9 already claims the row (``claimed_at``) at Task PreToolUse time, keyed
+# by that same callID (``dispatch_tool_use_id``, layer 0 of
+# ``claim_dispatch_row``'s ladder). ``bind_harness_child_session`` is the
+# SECOND join this leaves open: stamping the child's own harness_agent_id
+# onto that already-claimed row once the parent's event names it.
+#
+# Deliberately NOT ``claim_dispatch_row`` called a second time: that ladder
+# requires ``claimed_at IS NULL`` and would find nothing on a row T9 already
+# claimed (or, worse, decline as "already bound" -- see
+# ``_tool_use_id_already_bound``). This function instead targets the row by
+# ``dispatch_tool_use_id`` directly, in ANY claim state, and carries NO
+# correlation ladder of its own: no FIFO, no divergent-signature guard --
+# an exact, resolvable callID or nothing at all. That asymmetry is the
+# E1 discipline itself: Claude Code's FIFO layer for callID-less rows lives
+# entirely inside ``claim_dispatch_row`` and this function never runs it.
+
+
+def bind_harness_child_session(
+    dispatch_tool_use_id: "str | None",
+    harness_agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Stamp the dispatched child's own session id onto the row its Task
+    call was born under, keyed by the EXACT ``dispatch_tool_use_id`` only.
+
+    No fallback ladder: a caller with no exact, resolvable callID (absent,
+    or matching zero/more-than-one non-terminal row) has nothing exact to
+    bind against and declines rather than guessing -- misbinding a sibling
+    row would corrupt its own recovery join, not merely miss one.
+
+    Also claims the row (``claimed_at``) when it is somehow still unclaimed
+    at this point, via ``COALESCE`` -- defensive only. The ordinary sequence
+    is T9's claim first (at Task PreToolUse) and this stamp second (at
+    ``message.part.updated``), but a caller must not depend on that
+    ordering to reach a fully bound row.
+
+    Returns ``{"status": "applied", "handoff_id": int, "contract_id": str}``
+    on success; ``{"status": "skipped", "reason": ...}`` otherwise
+    (``no_dispatch_tool_use_id`` / ``no_harness_agent_id`` /
+    ``no_row_for_tool_use_id`` / ``ambiguous_tool_use_id`` / ``terminal``).
+    """
+    if not dispatch_tool_use_id:
+        return {"status": "skipped", "reason": "no_dispatch_tool_use_id"}
+    if not harness_agent_id:
+        return {"status": "skipped", "reason": "no_harness_agent_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                from gaia.state import TERMINAL_PLAN_STATUSES
+
+                placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
+                rows = con.execute(
+                    f"""
+                    SELECT id, contract_id FROM agent_contract_handoffs
+                     WHERE dispatch_tool_use_id = ?
+                       AND agent_state NOT IN ({placeholders})
+                    """,
+                    (dispatch_tool_use_id, *TERMINAL_PLAN_STATUSES),
+                ).fetchall()
+                if len(rows) > 1:
+                    con.commit()
+                    return {"status": "skipped", "reason": "ambiguous_tool_use_id"}
+                if not rows:
+                    con.commit()
+                    exists = con.execute(
+                        "SELECT 1 FROM agent_contract_handoffs "
+                        "WHERE dispatch_tool_use_id = ? LIMIT 1",
+                        (dispatch_tool_use_id,),
+                    ).fetchone()
+                    reason = (
+                        "terminal" if exists is not None else "no_row_for_tool_use_id"
+                    )
+                    return {"status": "skipped", "reason": reason}
+                target = rows[0]
+                con.execute(
+                    "UPDATE agent_contract_handoffs "
+                    "SET harness_agent_id = ?, claimed_at = COALESCE(claimed_at, ?) "
+                    "WHERE id = ?",
+                    (str(harness_agent_id), _now_iso(), target["id"]),
+                )
+                con.commit()
+                return {
+                    "status": "applied",
+                    "handoff_id": target["id"],
+                    "contract_id": target["contract_id"],
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def is_harness_session_bound(
+    harness_agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> bool:
+    """Whether any row already carries ``harness_agent_id`` for this session.
+
+    The read side of the plan 65 T10 fail-closed backstop: the OpenCode
+    adapter denies a dispatched child's tool call until this returns True
+    for that child's own session id -- i.e. until
+    :func:`bind_harness_child_session` (or, on Claude Code, its own
+    SubagentStart stamp) has landed. Read-only, no correlation ladder: a
+    falsy id is simply unbound, and the presence check is not scoped to any
+    particular ``agent_state`` -- once bound, a session stays bound for the
+    rest of its own run even after its row finalizes.
+    """
+    if not harness_agent_id:
+        return False
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT 1 FROM agent_contract_handoffs WHERE harness_agent_id = ? LIMIT 1",
+            (str(harness_agent_id),),
+        ).fetchone()
+        return row is not None
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
+# Public API: reap_stale_dispatched_handoffs (plan 65 T13 -- host-death reaper)
+# ---------------------------------------------------------------------------
+#
+# The birth stamp (CUT_REASON_NEVER_FINALIZED) already marks every DISPATCHED
+# row as cut; only finalize clears it. That is enough to FIND a row nobody
+# closed, but not enough to REAP one: a row still legitimately mid-turn is
+# also 'DISPATCHED' with the same birth mark, and closing it out from under a
+# live host would be the exact defect this reaper must not become. So the
+# question this pair of functions answers is not "is this row cut" (every
+# candidate already is) but "is this row's HOST STILL ALIVE" -- and only the
+# caller can answer that: this module knows nothing about attestation
+# ledgers, host runs, or any other harness-specific liveness signal (it stays
+# in the hooks layer, which already depends on this one -- the reverse import
+# would invert that dependency). ``liveness_check`` is therefore the seam:
+# a caller passes a predicate over the row, and this module only enforces the
+# staleness window, the promotion, and the idempotency.
+#
+# NO NEW COLUMN (S2 decision, in favor of existing signals): a liveness
+# predicate needs to know WHICH host_run a row belongs to, and no column
+# stores that today. Adding one would need a value to be stamped at claim
+# time by a caller this facade cannot reach without editing the protected
+# hooks tree in the same breath. Every row already carries ``session_id``
+# (attributed at birth) and ``claimed_at``/``created_at`` (attributed at claim
+# or birth) -- both existing signals -- and a caller can resolve liveness from
+# those alone (e.g. scanning attestation ledgers for a record naming the same
+# session, the design ``dispatch_lifecycle.reap_stale_turn`` seals). If a
+# future liveness source genuinely cannot be reconstructed from an existing
+# column, that is the trigger for the migration this comment defers.
+def find_stale_dispatched_handoffs(
+    *,
+    older_than_seconds: int,
+    now: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> list[dict]:
+    """Return every 'DISPATCHED' row idle past ``older_than_seconds``.
+
+    Staleness is measured from whichever timestamp the row actually reached:
+    ``claimed_at`` when a SubagentStart claimed it, else the birth
+    ``created_at`` for a row a host never even got to claim
+    (``COALESCE(claimed_at, created_at)``) -- both existing columns, no new
+    signal. This function makes NO liveness judgement: it only bounds the
+    candidate set by age, so a row still inside the window is never returned
+    no matter how dead its host actually is -- that question belongs to
+    :func:`reap_stale_dispatched_handoffs`'s ``liveness_check``.
+    """
+    cutoff = _stale_cutoff_iso(older_than_seconds, now)
+    con = _connect(db_path)
+    try:
+        rows = con.execute(
+            """
+            SELECT id, contract_id, agent_id, workspace, session_id,
+                   plan_task_id, brief_id, claimed_at, created_at,
+                   harness_agent_id
+              FROM agent_contract_handoffs
+             WHERE agent_state = 'DISPATCHED'
+               AND COALESCE(claimed_at, created_at) <= ?
+             ORDER BY id ASC
+            """,
+            (cutoff,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        con.close()
+
+
+def _stale_cutoff_iso(older_than_seconds: int, now: "str | None") -> str:
+    """The ISO8601 instant a row's own timestamp must fall on or before."""
+    from datetime import timedelta
+
+    reference = (
+        datetime.fromisoformat(now.replace("Z", "+00:00"))
+        if now
+        else datetime.now(timezone.utc)
+    )
+    cutoff = reference - timedelta(seconds=older_than_seconds)
+    return cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def reap_stale_dispatched_handoffs(
+    *,
+    older_than_seconds: int,
+    liveness_check: "Callable[[dict], bool] | None" = None,
+    now: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Promote every stale, dead-host 'DISPATCHED' row to a REAPED cut.
+
+    Candidates come from :func:`find_stale_dispatched_handoffs` (age only).
+    Each candidate is then judged by ``liveness_check(row) -> bool``: True
+    spares the row untouched, False (or no ``liveness_check`` supplied at
+    all) reaps it. The no-callback default is deliberately "no evidence of
+    life": a caller that cannot check liveness has no basis to call a stale
+    row alive, and this mirrors the module-wide rule elsewhere in this file
+    that an unverifiable state defaults to the conservative outcome rather
+    than the permissive one.
+
+    Reaping calls :func:`finalize_agent_contract_handoff` with
+    ``agent_state='IN_PROGRESS'`` (the same value the SubagentStop backstop's
+    reaped mode uses -- see ``gaia.state`` 1b-ii: the one value ``gaia
+    contract finalize`` refuses, marking a row CUT rather than agent-closed)
+    and ``cut_reason=CUT_REASON_REAPED`` -- a value already in the closed
+    ``gaia.state.CUT_REASONS`` vocabulary, so this reaper introduces no new
+    cut spelling. The row's own ``agent_id``/``workspace``/``session_id``/
+    ``plan_task_id``/``brief_id`` are read back off the row itself, never
+    invented.
+
+    Idempotent by construction, with no dedup logic of its own: reaping a row
+    moves its ``agent_state`` off 'DISPATCHED', so
+    :func:`find_stale_dispatched_handoffs` never selects it again -- a second
+    call with identical arguments always finds it absent from the candidate
+    set, not merely absent from the ``reaped`` list.
+
+    Returns ``{"reaped": [contract_id, ...], "spared": [contract_id, ...],
+    "checked": int, "cut_reason": CUT_REASON_REAPED}``.
+    """
+    from gaia.state import CUT_REASON_REAPED
+
+    candidates = find_stale_dispatched_handoffs(
+        older_than_seconds=older_than_seconds, now=now, db_path=db_path
+    )
+    reaped: list[str] = []
+    spared: list[str] = []
+    for row in candidates:
+        alive = bool(liveness_check(row)) if liveness_check is not None else False
+        if alive:
+            spared.append(row["contract_id"])
+            continue
+        envelope = json.dumps(
+            {
+                "degraded": True,
+                "reaped": True,
+                "backstop": "dispatch_lifecycle.reap_stale_turn",
+            }
+        )
+        outcome = finalize_agent_contract_handoff(
+            contract_id=row["contract_id"],
+            agent_id=row["agent_id"],
+            workspace=row["workspace"],
+            agent_state="IN_PROGRESS",
+            raw_handoff_json=envelope,
+            session_id=row.get("session_id"),
+            plan_task_id=row.get("plan_task_id"),
+            brief_id=row.get("brief_id"),
+            cut_reason=CUT_REASON_REAPED,
+            db_path=db_path,
+        )
+        if outcome.get("created"):
+            reaped.append(row["contract_id"])
+    return {
+        "reaped": reaped,
+        "spared": spared,
+        "checked": len(candidates),
+        "cut_reason": CUT_REASON_REAPED,
+    }
 
 
 def reconcile_cut_row(

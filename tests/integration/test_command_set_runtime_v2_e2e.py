@@ -26,8 +26,8 @@ from gaia.approvals.command_set import request_fingerprint, validate_request_set
 from gaia.store import writer
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "hooks"))
 from modules.security.approval_grants import (
-    activate_db_pending_by_prefix,
-    extract_nonce_from_label,
+    activate_db_pending_by_id,
+    extract_approval_id_from_label,
 )
 from modules.tools.bash_validator import BashValidator
 
@@ -64,9 +64,9 @@ def test_plan_forecast_approval_execution_failure_and_routing(tmp_path, monkeypa
         f"APPROVAL REQUIRED -- {approval_id}\n\n"
         f"COMANDOS (2):\n  [0] {commands[0]}\n  [1] {commands[1]}"
     )
-    approve_label = f"Approve -- {json.dumps(forecast, sort_keys=True)[:0]}push + docker push [{approval_id[:10]}]"
-    nonce_prefix = extract_nonce_from_label(approve_label)
-    assert nonce_prefix, f"label must yield a nonce prefix: {approve_label!r}"
+    approve_label = f"Approve -- push + docker push [{approval_id}]"
+    extracted_id = extract_approval_id_from_label(approve_label)
+    assert extracted_id == approval_id
 
     store.record_event(
         approval_id, "SHOWN", agent_id="gaia-orchestrator", session_id="presenter",
@@ -75,10 +75,10 @@ def test_plan_forecast_approval_execution_failure_and_routing(tmp_path, monkeypa
         ),
     )
 
-    # Step 1: the REAL activation the ElicitationResult hook calls when the
-    # user selects the Approve label -- not a hand-minted grant.
-    activation = activate_db_pending_by_prefix(
-        nonce_prefix, current_session_id="presenter",
+    # Step 1: the REAL activation _handle_ask_user_question_result calls when
+    # the user selects the Approve label -- not a hand-minted grant.
+    activation = activate_db_pending_by_id(
+        extracted_id, current_session_id="presenter",
         presented_question=presented_question, presented_label=approve_label,
     )
     assert activation.success, f"activation should succeed: {activation.reason}"
@@ -141,9 +141,9 @@ def test_single_command_plan_first_set_activates_and_consumes_like_a_longer_one(
     presented_question = (
         f"APPROVAL REQUIRED -- {approval_id}\n\nCOMANDOS (1):\n  [0] {commands[0]}"
     )
-    approve_label = f"Approve -- push [{approval_id[:10]}]"
-    nonce_prefix = extract_nonce_from_label(approve_label)
-    assert nonce_prefix, f"label must yield a nonce prefix: {approve_label!r}"
+    approve_label = f"Approve -- push [{approval_id}]"
+    extracted_id = extract_approval_id_from_label(approve_label)
+    assert extracted_id == approval_id
 
     store.record_event(
         approval_id, "SHOWN", agent_id="gaia-orchestrator", session_id="presenter",
@@ -154,8 +154,8 @@ def test_single_command_plan_first_set_activates_and_consumes_like_a_longer_one(
 
     # The REAL activation path: must route the length-1 plan-first set into
     # insert_plan_command_set, not the singular SCOPE_SEMANTIC_SIGNATURE branch.
-    activation = activate_db_pending_by_prefix(
-        nonce_prefix, current_session_id="presenter",
+    activation = activate_db_pending_by_id(
+        extracted_id, current_session_id="presenter",
         presented_question=presented_question, presented_label=approve_label,
     )
     assert activation.success, f"activation should succeed: {activation.reason}"

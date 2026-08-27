@@ -1,8 +1,11 @@
 """JSON bridge between the OpenCode plugin and Gaia's policy adapters.
 
-The plugin owns OpenCode's native APIs and supplies immutable host identifiers.
-This process only normalizes those facts, evaluates Gaia policy, and returns a
-small JSON response; it never exposes the database to the plugin or an agent.
+The plugin owns OpenCode's native APIs and supplies the session, call and tool
+identifiers it holds. What identifies the host run itself is not among them: it
+is derived here, from this process's own lineage, because a value the plugin
+sent would be a value the plugin's own caller could name. This process
+normalizes what it is given, evaluates Gaia policy, and returns a small JSON
+response; it never exposes the database to the plugin or an agent.
 """
 
 from __future__ import annotations
@@ -20,21 +23,99 @@ for _path in (str(_ROOT), str(_HOOKS)):
         sys.path.insert(0, _path)
 
 
+_ATTEST_EVENT = "identity.attest"
+
+
 def _deny(reason: str) -> dict[str, object]:
     return {"action": "deny", "reason": reason}
+
+
+def _attest(raw: dict[str, object]) -> dict[str, object]:
+    """Mint one identity claim inside this Gaia-side process.
+
+    The plugin asks for a claim and never composes one: the token is a nonce
+    this process generates and records, so what the plugin later presents is
+    resolvable against host state rather than derived from a tool argument.
+
+    The ledger the claim is written to is named by ``host_run_id``, which reads
+    the process that started this one. Nothing in the request selects it: a
+    caller that invokes this bridge itself mints under its own launcher and
+    cannot reach the namespace the legitimate host run resolves against.
+    """
+    from modules.security.host_attestation import (
+        AttestationDenied,
+        host_run_id,
+        issue,
+    )
+
+    try:
+        issued = issue(
+            host_run=host_run_id(),
+            session_id=str(raw.get("sessionID") or raw.get("session_id") or ""),
+            role=str(raw.get("role") or ""),
+            issuer=str(raw.get("issuer") or ""),
+            parent_attestation=raw.get("parentAttestation")
+            or raw.get("parent_attestation"),
+        )
+    except AttestationDenied as exc:
+        return _deny(f"Gaia refused to attest this OpenCode identity: {exc}")
+    return {
+        "action": "allow",
+        "attestation": issued.token,
+        "granted_by": issued.granted_by,
+        "delegation_depth": issued.depth,
+    }
+
+
+# PostCompact has no per-host adapter method on ANY host yet -- Claude Code's
+# own compact hook (hooks/pre_compact.py, hooks/post_compact.py) returns the
+# same schema-valid empty acknowledgment without adapter dispatch. Routed
+# here rather than denied, so a genuinely open lifecycle point is not
+# misreported as this bridge's "Unsupported" placeholder.
+#
+# PostToolUseFailure (session.error) and SessionEnd (session.deleted) used
+# to be acknowledged here too, alongside PostCompact -- until plan 65 T11
+# gave them a real close to perform (see the "Stop"/"PostToolUseFailure"/
+# "SessionEnd" branch below): a dispatched child's row must be promoted or
+# cut on ANY of idle/error/deleted, not only idle.
+_ACKNOWLEDGED_EVENT_KINDS = {"PostCompact"}
+
+
+def _ack() -> dict[str, object]:
+    return {"action": "allow"}
 
 
 def handle(raw: dict[str, object]) -> dict[str, object]:
     """Evaluate one OpenCode event and return a plugin-safe response."""
     os.environ["GAIA_HOST"] = "opencode"
+    if raw.get("event") == _ATTEST_EVENT:
+        return _attest(raw)
     from adapters.opencode import OpenCodeAdapter
 
     adapter = OpenCodeAdapter()
     event = adapter.parse_event(json.dumps(raw))
-    if event.event_type.value == "PreToolUse":
+    kind = event.event_type.value
+
+    if kind == "PreToolUse":
         response = adapter.adapt_pre_tool_use(event)
-    elif event.event_type.value == "PostToolUse":
+    elif kind == "PostToolUse":
         response = adapter.adapt_post_tool_use(event)
+    elif kind in ("Stop", "PostToolUseFailure", "SessionEnd"):
+        # session.idle/error/deleted (plan 65, T11): the ONE real close for a
+        # dispatched child's row, regardless of which of the three signals
+        # arrives first -- resolve_close (dispatch_lifecycle) is idempotent,
+        # so a later signal for the same session is a harmless no-op.
+        response = adapter.adapt_subagent_stop(event)
+    elif kind == "SubagentStart":
+        response = adapter.format_context_response(adapter.adapt_subagent_start(event.payload))
+    elif kind == "PreCompact":
+        # session.compacting (plan 65, T12): the one compaction signal that
+        # can still inject, dispatched here rather than folded into
+        # _ACKNOWLEDGED_EVENT_KINDS because -- unlike PostCompact -- it now
+        # has a real per-host adapter method.
+        response = adapter.adapt_pre_compact(event)
+    elif kind in _ACKNOWLEDGED_EVENT_KINDS:
+        return _ack()
     else:
         return _deny(f"Unsupported OpenCode bridge event: {raw.get('event', '')}")
 

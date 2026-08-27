@@ -41,7 +41,7 @@ paths, or function signatures inside a task.
 This is deliberate. Execution surfaces discoveries the planner cannot see:
 an approval gate fires and changes the command, byte-coding or a refactor moves
 a symbol, a downstream task lands a file somewhere the plan did not predict. A
-task that pins `hooks/modules/security/approval_grants.py:activate_db_pending_by_prefix`
+task that pins `hooks/modules/security/approval_grants.py:activate_db_pending_by_id`
 breaks the moment that symbol moves -- and worse, every downstream task that
 referenced the pinned name breaks with it. A task that says "the approval
 grant activation path" survives the move, because the executing agent resolves
@@ -141,13 +141,19 @@ Invariant 9 (`task_missing_gate`).
 **Half 1 -- save the markdown:**
 
 ```bash
-gaia plan save --brief=<name> --content="..." --workspace=<ws>
+gaia plan save --brief=<name> --content-file=~/.gaia/scratch/<contract_id>.md --workspace=<ws>
 ```
 
-This upserts the plan row in the `plans` table: first call inserts (status
-`draft`), later calls update `status` and `content` without touching child
-tasks. It is the only supported writer. If the content is too large to pass
-inline, source it from a file: `--content="$(cat /tmp/plan.md)"`.
+Write the markdown to that scratch file with the Write tool first, then point
+`--content-file` at it. This upserts the plan row in the `plans` table: first
+call inserts (status `draft`), later calls update `status` and `content` without
+touching child tasks. It is the only supported writer.
+
+`--content="<markdown>"` inline exists and works for a short body, but a real
+plan body routinely exceeds the inline limit, and `--content="$(cat file.md)"`
+is NOT the way around it -- a command substitution is a form agents are
+forbidden to compose, so that spelling is a dead end, not a fallback. The file
+lane is the one that carries a full plan.
 
 **Half 2 -- materialize one task row per plan task:**
 
@@ -215,6 +221,15 @@ gaia task gate add <brief> <order> --type=<T> --evidence-shape="..." --workspace
   the rubric (`semantic`), or the review statement (`self_review`). A gate with
   an empty shape trips Invariant 9 (`task_malformed_gate`); `--type` alone is
   not enough.
+- **When a shape must name ANOTHER task, name it by `task_id` or by a stable
+  label -- never by dispatch order.** `order_num` is positional: inserting one
+  task renumbers every task after it, while the prose sealed inside the gate
+  does not move with them. A verifier reading a stale ordinal is routed to a
+  different task than the author meant, and passes or fails the wrong owner
+  without anything looking broken. This is measured, not hypothetical: gate 920's
+  shape says the condition "remains order 18's to establish", and resolved by
+  `task_id` the task that actually closes it is a different one. Write the
+  identity that survives an insertion.
 - **A task MAY carry more than one gate, of mixed types.** `task_gates` is
   one-to-many (R1-A made it a child table on purpose): when a task's outcome is
   proven on more than one axis -- say a deterministic `command` gate AND a

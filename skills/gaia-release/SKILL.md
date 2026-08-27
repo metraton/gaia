@@ -54,6 +54,8 @@ This is the confidence gate before a version is cut. It is *entirely local* -- z
 gaia release check              # add --functional for the opt-in live plugin probe
 ```
 
+**This command is T3 -- request consent before running it.** It is *local* and it is not *free*: gates 2 and 3 pack the tarball, which runs npm's `prepack`, which executes `scripts/build-plugin.py` and rewrites the plugin root manifests including `hooks/hooks.json`, a categorically protected path. So it is anchored MUTATIVE in `COMMAND_PATH_MUTATIVE_UPGRADES` (`hooks/modules/security/mutative_verbs.py`) and asks for approval on every run -- an accepted cost, not a misclassification to work around. Plan for it: request the approval together with the other release-sequence T3 commands rather than discovering the block mid-runbook. Do not read the reported tier to decide -- the command reports `tier=T1` (`tiers.py` matches `T1_PATTERNS` on the word `check` before consulting the detector) while being enforced as T3.
+
 `gaia release check` (`bin/cli/release.py`) runs, in order, these five gates -- gates 1-4 each a subprocess call to the existing script (never reimplemented), gate 5 an in-process read-only inspection via the shared `cli/_converge` inspector:
 
 1. `pre-publish:validate` -- the version-drift gate (`validate-manifests` in `ci.yml`, via `bin/pre-publish-validate.js --validate-only`). This is what catches a `package.json` / `pyproject.toml` / `plugin.json` / `marketplace.json` desync before it ships.

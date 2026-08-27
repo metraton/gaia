@@ -4067,7 +4067,7 @@ class TestGaiaCliDispatcherReDispatch:
     bin/gaia's body calls subprocess.run() for the lazy DB bootstrap, so the
     Python AST lane in _check_script_file would flag EVERY invocation as
     mutative regardless of the subcommand -- turning read-only commands
-    (doctor, release check, dry-runs) into false T3 blocks. The re-dispatch in
+    (doctor, dry-runs) into false T3 blocks. The re-dispatch in
     _check_gaia_cli_dispatcher reconstructs `gaia <args>` and re-classifies it,
     so the real effect (owned by the subcommand) drives the tier. Critically,
     the mutative subcommands (dev, install) MUST stay T3.
@@ -4090,10 +4090,17 @@ class TestGaiaCliDispatcherReDispatch:
         assert result.is_mutative is False
         assert result.category != "MUTATIVE"
 
-    def test_release_check_is_read_only(self, tmp_path):
+    def test_release_check_is_anchored_mutative(self, tmp_path):
+        # Deliberate verdict flip: `release check` runs npm's prepack
+        # lifecycle, so it is anchored MUTATIVE in
+        # COMMAND_PATH_MUTATIVE_UPGRADES. What this case pins is that the
+        # re-dispatch CARRIES that anchor to the path form -- the point of the
+        # class is parity, and a subcommand escalated at the launcher must not
+        # stay free when spelled `python3 <checkout>/bin/gaia`.
         gaia = self._dispatcher(tmp_path)
         result = detect_mutative_command(f"python3 {gaia} release check")
-        assert result.is_mutative is False
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
 
     def test_release_publish_dry_run_is_not_mutative(self, tmp_path):
         gaia = self._dispatcher(tmp_path)
@@ -4312,12 +4319,23 @@ class TestGaiaInstallSubcommandsAreMutative:
         )
         assert result.is_mutative is True
 
-    # ---- Control: other `gaia release` verbs are NOT upgraded ----
+    # ---- `gaia release check` is upgraded; the group noun is not ----
 
-    def test_gaia_release_check_not_upgraded(self):
-        # `release check` is a local gate, not an install; the upgrade set is
-        # anchored to `dev` only, so this must not become mutative here.
+    def test_gaia_release_check_is_upgraded(self):
+        # `release check` spawns npm's prepack lifecycle (via pack_tarball's
+        # `npm pack` and bin/validate-sandbox.sh's `npm install`), and prepack
+        # rewrites hooks/hooks.json -- a categorically protected path. Nothing
+        # gated it before the anchor: `release` carries no verb in
+        # MUTATIVE_VERBS and `check` is a SIMULATION verb.
         result = detect_mutative_command("gaia release check")
+        assert result.is_mutative is True
+        assert result.category == "MUTATIVE"
+
+    def test_gaia_release_group_noun_is_not_upgraded(self):
+        # The anchor is scoped to the leaf, like `context prune-workspaces`:
+        # escalating the whole `gaia release` group would tax read-only
+        # siblings that reach no lifecycle script.
+        result = detect_mutative_command("gaia release")
         assert result.is_mutative is False
 
     def test_gaia_dev_help_stays_read_only(self):
@@ -4484,18 +4502,26 @@ class TestReadOnlyVerbEscalatedByAlwaysFlag:
 
 class TestGaiaReleaseSyncLocalNoLongerAnchored:
     """Regression guard: `gaia release sync-local` was removed as a command and
-    its `release` anchor was dropped from
+    its group-level `('release',)` anchor was dropped from
     COMMAND_PATH_MUTATIVE_UPGRADES. It must no longer be anchored T3 (the
     command does not exist; freshness intelligence lives in `gaia doctor`).
+
+    The later `('release', 'check')` leaf anchor is a different entry and does
+    not reinstate the group: it matches that one command path only.
     """
 
-    def test_release_key_absent_from_upgrades(self):
+    def test_release_group_anchor_absent_from_upgrades(self):
+        # Keyed on the whole path, not on the head token: `release check` is
+        # legitimately anchored at the LEAF, so a head-token assertion would
+        # read that leaf as a return of the removed GROUP anchor. What must
+        # stay gone is the group form, which would re-escalate every
+        # `gaia release ...` subcommand.
         from modules.security.mutative_verbs import COMMAND_PATH_MUTATIVE_UPGRADES
-        anchored_heads = {
-            anchor.path[0] for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
+        anchored_paths = {
+            anchor.path for anchor in COMMAND_PATH_MUTATIVE_UPGRADES["gaia"]
         }
-        assert "release" not in anchored_heads
-        assert "dev" in anchored_heads
+        assert ("release",) not in anchored_paths
+        assert ("dev",) in anchored_paths
 
     def test_release_sync_local_not_classified_via_anchor(self):
         # The ('gaia','release') anchor is gone, so the command-subcommand

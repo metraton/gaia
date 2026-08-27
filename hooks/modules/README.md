@@ -144,7 +144,7 @@ This enforces the principle: "Orchestrator delegates, agents execute."
 SendMessage is validated as a PreToolUse event (not a separate hook event):
 - Agent ID format check (must match `/^a[0-9a-f]{16,}$/`, imported from `gaia.contract.validator.AGENT_ID_PATTERN_TEXT` via `agents/response_contract.py` -- never re-spelled inline)
 - Non-empty message required
-- Grant activation is handled by ElicitationResult hook (user approval via AskUserQuestion)
+- Grant activation is not part of this validation. It happens on PostToolUse, when the `AskUserQuestion` matcher reaches `adapters/claude_code.py::_handle_ask_user_question_result` and every answered label carrying a `[P-<nonce>]` tag activates its own grant
 
 ### Context Enforcement
 Task invocations for project agents inject project-context via `context_provider.py`.

@@ -58,7 +58,11 @@ row's coordinate is about to be handed to another agent.
 
 **Phase 3 — evidence on demand, only for the claim about to be made.** `commands_run` and
 `verbatim_outputs` for a positive; `patterns_checked` for a NEGATIVE; `cross_layer_impacts` before
-touching anything adjacent.
+touching anything adjacent. A row's claim about an ARTIFACT'S CONTENTS is a claim, never the
+contents: a `key_outputs` line saying the file now reads X is the agent's reading of it, and
+relaying that as the file's text skips the one step that could have caught a misreading. Relay it
+only after the `verbatim_outputs` excerpt that shows it, or after opening the artifact yourself; if
+neither happened, say it as the row's claim rather than as the artifact's content.
 
 **Phase 4 — handoff.** Pass the COORDINATE, not the narrative.
 

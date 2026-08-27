@@ -223,9 +223,12 @@ class TestCmdList:
         data = json.loads(captured.out)
         assert data["count"] == 1
         assert len(data["pending"]) == 1
-        assert data["pending"][0]["approval_id"] == "P-abcd1234"
+        assert data["pending"][0]["approval_id"] == "P-abcd1234ef567890abcd1234ef567890"
+        assert data["pending"][0]["display_label"] == "P-abcd1234"
+        assert data["pending"][0]["exact_content"] == "git push origin main"
+        assert data["pending"][0]["commands"] == ["git push origin main"]
         assert len(data["pending_fs"]) == 1
-        assert data["pending_fs"][0]["approval_id"] == "P-abcd1234"
+        assert data["pending_fs"][0]["approval_id"] == "P-abcd1234ef567890abcd1234ef567890"
 
     def test_list_json_empty(self, capsys, db_store):
         rc = approvals_mod.cmd_list(_make_args(json=True))
@@ -258,7 +261,7 @@ class TestCmdList:
         assert data["count"] == 1, (
             "--orphans-only must hide pendings whose session is alive."
         )
-        assert data["pending_fs"][0]["approval_id"] == "P-cccc3333"
+        assert data["pending_fs"][0]["approval_id"] == "P-cccc3333dddd4444cccc3333dddd4444"
 
     def test_list_orphans_only_empty_when_all_alive(self, capsys, db_store):
         """If every pending's session is alive, --orphans-only returns none."""
@@ -470,63 +473,53 @@ class TestGrantDecisionStatus:
 # ---------------------------------------------------------------------------
 
 class TestCmdShow:
-    def test_show_found(self, capsys):
-        pending = _make_pending()
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(return_value=pending),
-            }
-            args = _make_args()
-            args.approval_id = "abcd1234"
-            rc = approvals_mod.cmd_show(args)
+    canonical_id = "P-abcd1234ef567890abcd1234ef567890"
+
+    def test_show_found_by_exact_canonical_id(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id=self.canonical_id)
+        args = _make_args()
+        args.approval_id = self.canonical_id
+        rc = approvals_mod.cmd_show(args)
         assert rc == 0
         captured = capsys.readouterr()
-        assert "P-abcd1234" in captured.out
+        assert self.canonical_id in captured.out
         assert "git push origin main" in captured.out
 
-    def test_show_not_found_returns_1(self, capsys):
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(return_value=None),
-            }
-            args = _make_args()
-            args.approval_id = "deadbeef"
-            rc = approvals_mod.cmd_show(args)
+    def test_show_not_found_returns_1(self, capsys, db_store):
+        args = _make_args()
+        args.approval_id = "P-deadbeefdeadbeefdeadbeefdeadbeef"
+        rc = approvals_mod.cmd_show(args)
         assert rc == 1
+        assert "No approval found" in capsys.readouterr().err
 
-    def test_show_json_output(self, capsys):
-        pending = _make_pending()
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": MagicMock(return_value=pending),
-            }
-            args = _make_args(json=True)
-            args.approval_id = "abcd1234"
-            rc = approvals_mod.cmd_show(args)
+    def test_show_json_output(self, capsys, db_store):
+        _store, insert_pending = db_store
+        insert_pending("git push origin main", approval_id=self.canonical_id)
+        args = _make_args(json=True)
+        args.approval_id = self.canonical_id
+        rc = approvals_mod.cmd_show(args)
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
-        assert data["approval_id"] == "P-abcd1234"
-        assert data["command"] == "git push origin main"
-        assert "environment" in data
+        assert data["approval"]["id"] == self.canonical_id
+        payload = json.loads(data["approval"]["payload_json"])
+        assert payload["exact_content"] == "git push origin main"
 
-    def test_show_strips_P_prefix(self, capsys):
-        pending = _make_pending()
-        with patch.object(approvals_mod, "_import_approval_grants") as mock_ag:
-            mock_fn = MagicMock(return_value=pending)
-            mock_ag.return_value = {
-                "get_pending_approvals_for_session": MagicMock(),
-                "load_pending_by_nonce_prefix": mock_fn,
-            }
-            args = _make_args()
-            args.approval_id = "P-abcd1234"
-            approvals_mod.cmd_show(args)
-        # Should have called with just the hex prefix, not "P-abcd1234"
-        call_arg = mock_fn.call_args[0][0]
-        assert not call_arg.upper().startswith("P-")
+    @pytest.mark.parametrize("noncanonical", ["P-abcd1234", "abcd1234ef567890abcd1234ef567890"])
+    def test_show_rejects_display_label_and_raw_nonce(
+        self, noncanonical, capsys, db_store
+    ):
+        _store, insert_pending = db_store
+        insert_pending("first", approval_id=self.canonical_id)
+        insert_pending(
+            "second", approval_id="P-abcd1234ffffffffffffffffffffffff"
+        )
+        args = _make_args()
+        args.approval_id = noncanonical
+
+        assert approvals_mod.cmd_show(args) == 1
+        assert "short display labels and raw nonces are not lookup keys" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -536,53 +529,55 @@ class TestCmdShow:
 class TestCmdReject:
     """cmd_reject single-reject path (DB-backed since Task E).
 
-    Single reject finds the pending DB row by nonce prefix and revokes it
-    via store.revoke() (pending -> revoked, append-only chain).
+    Single reject resolves one complete canonical id and revokes that exact row.
     """
 
     def test_reject_success(self, capsys, db_store):
         _store, insert_pending = db_store
         insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
         args = _make_args()
-        args.nonce = "abcd1234"
+        args.approval_id = "P-abcd1234ef567890abcd1234ef567890"
         rc = approvals_mod.cmd_reject(args)
         assert rc == 0
         captured = capsys.readouterr()
-        assert "Rejected P-abcd1234" in captured.out
+        assert "Rejected P-abcd1234ef567890abcd1234ef567890" in captured.out
 
     def test_reject_not_found_returns_1(self, capsys, db_store):
         args = _make_args()
-        args.nonce = "deadbeef"
+        args.approval_id = "P-deadbeefdeadbeefdeadbeefdeadbeef"
         rc = approvals_mod.cmd_reject(args)
         assert rc == 1
 
-    def test_reject_strips_P_prefix(self, db_store):
+    @pytest.mark.parametrize("invalid_id", ["P-abcd1234", "abcd1234ef567890abcd1234ef567890"])
+    def test_reject_rejects_display_label_and_raw_nonce(
+        self, invalid_id, capsys, db_store
+    ):
         _store, insert_pending = db_store
         insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
         args = _make_args()
-        args.nonce = "P-abcd1234"
-        rc = approvals_mod.cmd_reject(args)
-        # P- prefix must be stripped before matching; the row is found and revoked.
-        assert rc == 0
+        args.approval_id = invalid_id
+        assert approvals_mod.cmd_reject(args) == 1
+        assert "short display labels and raw nonces" in capsys.readouterr().err
+        assert _store.get_by_id("P-abcd1234ef567890abcd1234ef567890")["status"] == "pending"
 
     def test_reject_json_output(self, capsys, db_store):
         _store, insert_pending = db_store
         insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
         args = _make_args(json=True, reason="not needed")
-        args.nonce = "abcd1234"
+        args.approval_id = "P-abcd1234ef567890abcd1234ef567890"
         rc = approvals_mod.cmd_reject(args)
         assert rc == 0
         captured = capsys.readouterr()
         data = json.loads(captured.out)
         assert data["status"] == "rejected"
-        assert data["nonce_prefix"] == "abcd1234"
+        assert data["approval_id"] == "P-abcd1234ef567890abcd1234ef567890"
         assert data["reason"] == "not needed"
 
     def test_reject_with_reason(self, capsys, db_store):
         _store, insert_pending = db_store
         insert_pending("git push origin main", approval_id="P-abcd1234ef567890abcd1234ef567890")
         args = _make_args(reason="risky operation")
-        args.nonce = "abcd1234"
+        args.approval_id = "P-abcd1234ef567890abcd1234ef567890"
         rc = approvals_mod.cmd_reject(args)
         assert rc == 0
         captured = capsys.readouterr()
@@ -591,9 +586,39 @@ class TestCmdReject:
     def test_reject_no_nonce_no_all_returns_1(self, capsys):
         """Without --all and without a nonce, reject should return exit code 1."""
         args = _make_args()
-        args.nonce = None
+        args.approval_id = None
         rc = approvals_mod.cmd_reject(args)
         assert rc == 1
+
+    def test_same_prefix_pending_rejects_only_exact_id(self, db_store):
+        store, insert_pending = db_store
+        first = "P-deadbeef000000000000000000000000"
+        second = "P-deadbeefffffffffffffffffffffffff"
+        insert_pending("first", approval_id=first)
+        insert_pending("second", approval_id=second)
+        args = _make_args()
+        args.approval_id = second
+
+        assert approvals_mod.cmd_reject(args) == 0
+        assert store.get_by_id(first)["status"] == "pending"
+        assert store.get_by_id(second)["status"] == "revoked"
+
+    def test_same_prefix_live_grant_rejects_only_exact_id(self):
+        first = "P-deadbeef000000000000000000000000"
+        second = "P-deadbeefffffffffffffffffffffffff"
+        writer = MagicMock()
+        writer.list_approval_grants.return_value = [
+            _make_grant_row(approval_id=first),
+            _make_grant_row(approval_id=second),
+        ]
+        writer.revoke_approval_grant.return_value = {"status": "applied"}
+        args = _make_args()
+        args.approval_id = second
+
+        with patch.object(approvals_mod, "_import_writer", return_value=writer):
+            assert approvals_mod._reject_live_grant(args, second) == 0
+
+        writer.revoke_approval_grant.assert_called_once_with(second)
 
 
 # ---------------------------------------------------------------------------
@@ -602,10 +627,10 @@ class TestCmdReject:
 
 class TestCmdRejectAll:
     def _make_reject_all_args(self, **kwargs):
-        """Build args with all=True and nonce=None."""
+        """Build args with all=True and no single approval id."""
         base = _make_args(**kwargs)
         base.all = True
-        base.nonce = None
+        base.approval_id = None
         return base
 
     def test_reject_all_empty_queue(self, capsys, db_store):
@@ -645,7 +670,7 @@ class TestCmdRejectAll:
         assert data["status"] == "ok"
         assert data["rejected"] == 1
         assert len(data["ids"]) == 1
-        assert data["ids"][0] == "P-aaaa1111"
+        assert data["ids"][0] == "P-aaaa1111bbbb2222aaaa1111bbbb2222"
 
     def test_reject_all_with_reason(self, capsys, db_store):
         _store, insert_pending = db_store
@@ -699,14 +724,14 @@ class TestCmdRejectAll:
         approvals_mod.register(subparsers)
         args = root.parse_args(["approvals", "reject", "--all", "--reason", "bulk-test"])
         assert args.all is True
-        assert args.nonce is None
+        assert args.approval_id is None
         assert args.reason == "bulk-test"
 
     def test_reject_all_standalone_parser(self):
         parser = approvals_mod._build_standalone_parser()
         args = parser.parse_args(["reject", "--all", "--reason", "cleanup"])
         assert args.all is True
-        assert args.nonce is None
+        assert args.approval_id is None
         assert args.reason == "cleanup"
 
 
@@ -1033,6 +1058,13 @@ class TestFormatAge:
 # ---------------------------------------------------------------------------
 
 class TestRegister:
+    def test_default_help_teaches_canonical_reject_identity(self, capsys):
+        args = _make_args()
+        assert approvals_mod._approvals_default(args) == 0
+        output = capsys.readouterr().out
+        assert "reject APPROVAL_ID [--all]" in output
+        assert "reject NONCE" not in output
+
     def test_register_adds_approvals_subcommand(self):
         import argparse
         root = argparse.ArgumentParser()
@@ -1068,8 +1100,9 @@ class TestRegister:
         root = argparse.ArgumentParser()
         subparsers = root.add_subparsers(dest="command")
         approvals_mod.register(subparsers)
-        args = root.parse_args(["approvals", "reject", "abcd1234", "--reason", "no"])
-        assert args.nonce == "abcd1234"
+        approval_id = "P-abcd1234ef567890abcd1234ef567890"
+        args = root.parse_args(["approvals", "reject", approval_id, "--reason", "no"])
+        assert args.approval_id == approval_id
         assert args.reason == "no"
 
     def test_register_clean_dry_run_parses(self):

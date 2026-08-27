@@ -66,18 +66,6 @@ def _make_args(**kwargs):
 
 
 # ---------------------------------------------------------------------------
-# Mock helpers for filesystem-based approval_grants module
-# ---------------------------------------------------------------------------
-
-def _mock_approval_grants_empty():
-    m = MagicMock()
-    m.cleanup_expired_grants.return_value = 0
-    m.get_pending_approvals_for_session.return_value = []
-    m.load_pending_by_nonce_prefix.return_value = None
-    return m
-
-
-# ---------------------------------------------------------------------------
 # 1. list subcommand
 # ---------------------------------------------------------------------------
 
@@ -87,14 +75,7 @@ class TestCmdList:
 
         mock_writer = MagicMock()
         mock_writer.list_approval_grants.return_value = []
-        mock_ag = _mock_approval_grants_empty()
-
         with patch("bin.cli.approvals._import_writer", return_value=mock_writer), \
-             patch("bin.cli.approvals._import_approval_grants", return_value={
-                 "get_pending_approvals_for_session": lambda *a, **kw: [],
-                 "cleanup_expired_grants": lambda *a, **kw: 0,
-                 "load_pending_by_nonce_prefix": lambda *a: None,
-             }), \
              patch("bin.cli.approvals._scan_pending_shared", return_value=[]):
             rc = cmd_list(_make_args())
 
@@ -157,8 +138,9 @@ class TestCmdShow:
         from bin.cli.approvals import cmd_show
         import gaia.store.writer as real_writer
 
+        approval_id = "P-0123456789abcdef0123456789abcdef"
         insert_approval_grant(
-            "approval-show-test",
+            approval_id,
             [{"command": "kubectl delete pod foo", "rationale": "clean"}],
             session_id="sess-show",
             db_path=tmp_db,
@@ -168,11 +150,11 @@ class TestCmdShow:
         with patch("bin.cli.approvals._import_writer", return_value=real_writer), \
              patch.object(real_writer, "list_approval_grants",
                           side_effect=lambda **kw: original_list(db_path=tmp_db, **{k: v for k, v in kw.items() if k != "db_path"})):
-            rc = cmd_show(_make_args(approval_id="approval-show-test"))
+            rc = cmd_show(_make_args(approval_id=approval_id))
 
         assert rc == 0
         out, _ = capsys.readouterr()
-        assert "approval-show-test" in out
+        assert approval_id in out
 
 
 # ---------------------------------------------------------------------------

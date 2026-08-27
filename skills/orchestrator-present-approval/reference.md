@@ -5,45 +5,56 @@ approval. The integrity check runs at activation, where the canonical REQUESTED
 payload fingerprint is verified. Exact human presentation is still mandatory
 for informed consent.
 
-For COMMAND_SET render an ordered table with index, exact command, scope/effect,
-and item-specific risk when applicable. Follow it with total count, aggregate
-risk, partial-completion warning, rollback for completed items, and the exact
-post-execution desired-state verification. Approval and rejection controls bind
-the full approval id.
+A COMMAND_SET has no layout of its own, and nothing here is composed. The
+renderer emits one shape for one command and for many -- the indexed
+`COMMANDS (N)` block of `template.md` -- so there is no table to build, no
+aggregate to derive, and no per-item field to supply: `SCOPE`, `IMPACT`, `RISK`,
+`ROLLBACK` and `VERIFICATION` are sealed once for the whole set and render once.
+Composing a richer table would put lines in front of the user that the sealed
+payload never declared, which is the one thing a consent surface may not do.
+
+The approve control binds the approval id through the 8-character nonce tag, not
+through the full identifier -- the full `approval_id` substituted for that tag
+resolves to nothing. The reject control binds nothing at all: a rejection has no
+pending row to activate.
 
 Do not present one representative command, truncate the set, reorder it, call it
 atomic, or claim verification before execution. A mismatch routes back to the
 producer. An approval activates the grant; a fresh owning specialist dispatch
 executes one index per call.
 
-## Approve label format is the activation surface, not decoration
+## The decision the user makes IS the activation surface, not decoration
 
-Grant activation is driven entirely by the AskUserQuestion option label the
-user selects -- there is no separate confirmation step. `extract_nonce_from_label`
-in `hooks/modules/security/approval_grants.py` applies `_APPROVE_NONCE_RE`,
-`^Approve\b.*\[P-([a-f0-9]+)\]`, to the chosen label: it must start with the
-literal English word `Approve` and contain a bracketed `[P-{nonce8}]` tag,
-`nonce8` being the first 8 hex characters of the approval id after `P-`.
-`activate_db_pending_by_prefix` then matches that captured prefix against
-pending rows whose `id` starts with `P-{prefix}`.
+Grant activation is driven entirely by the decision the user makes -- there is no
+separate confirmation step, and no reply that fails to resolve to the pending row
+activates anything. The reply must be resolvable to the `approval_id`:
+`hooks/modules/security/approval_grants.py::extract_approval_id_from_label`
+recovers the complete canonical id, and
+`hooks/modules/security/approval_grants.py::activate_db_pending_by_id` matches
+that exact id against one pending row.
 
-A label that fails the regex -- a translated verb ("Aprobar"/"Rechazar"), a
-paraphrase, or the bare/full approval id with no brackets -- extracts no nonce.
-`activate_db_pending_by_prefix` is never called, no grant is inserted, and the
-user's decision has no effect on the ledger: the pending stays `PENDING` and
+If the identifier does not survive into the reply, nothing activates:
+`activate_db_pending_by_id` is never called, no grant is inserted, and the
+user's decision has no effect on the ledger -- the pending stays `PENDING` and
 every retry of the originally blocked command re-blocks on the same
-`approval_id`, indistinguishable from a decision never having been made.
-Getting the label right is therefore not a formatting nicety -- it is the only
-thing that turns the user's consent into a grant the hook layer will honor.
+`approval_id`, indistinguishable from a decision never having been made. Carrying
+the identifier correctly is therefore not a formatting nicety; it is the only
+thing that turns the user's consent into a grant the hook layer will honor. A
+reply that resolves to nothing is reported as a finding, not absorbed as a
+decline.
 
-Example GOOD label: `Approve -- push branch flux-system and open PR [P-4bd2b170]`.
-Example BROKEN labels: `Aprobar`, `Approve P-4bd2b170` (no brackets),
-`Approve <full approval_id>` (no `[P-...]` tag), `Si, ejecutar`.
+Whether the identifier has to be in the control's text at all is conditional. A
+reply carrying its own correlation handle back to the request already resolves;
+a reply carrying none resolves only through what it does return, which is the
+text of the control the user selected. For that second case Gaia's resolver
+reads one form: the text begins with the literal English word `Approve` and
+ends with the complete canonical id bracketed as `[P-<32 lowercase hex>]`.
+Compact display labels and raw nonces resolve to nothing.
 
 `gaia approvals approve <approval_id>` is a separate, CLI-only admin verb: it
 writes `APPROVED` directly to the `approvals` table but does **not** call
-`activate_db_pending_by_prefix` and does **not** create a hook-side grant. It
+`activate_db_pending_by_id` and does **not** create a hook-side grant. It
 is not an alternate activation path -- running it does not make the blocked
 command executable, and it does not trigger the automatic re-dispatch that
-follows a genuine AskUserQuestion approval. See `pending-approvals` for when
+follows a genuine approval decision by the user. See `pending-approvals` for when
 that admin verb is the right tool.

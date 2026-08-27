@@ -31,6 +31,7 @@ from gaia.store.writer import (
     DISPATCH_CORRELATION_AMBIGUOUS_EVENT,
     claim_dispatch_row,
     insert_dispatched_handoff,
+    stamp_harness_agent_id,
 )
 from tests.fixtures.agent_ids import valid_agent_id
 
@@ -192,6 +193,84 @@ def test_identical_siblings_claim_fifo_oldest_first(db):
     )
     assert first_claim is not None and first_claim["contract_id"] == oldest
     assert second_claim is not None and second_claim["contract_id"] == newest
+
+
+# ---------------------------------------------------------------------------
+# (2·0) exact correlation by dispatch_tool_use_id (plan 65 T7, E1 amendment)
+#
+# Case (d) of gate 1007 IS test_identical_siblings_claim_fifo_oldest_first
+# above: it claims with no dispatch_tool_use_id at all, so layer 0 never
+# engages and FIFO resolves exactly as before -- deliberately left untouched.
+# ---------------------------------------------------------------------------
+
+def test_claim_by_tool_use_id_wins_over_identical_prompt_id(db):
+    """Two identical-looking dispatches, distinct call ids: each call id
+    claims its own row even though prompt_id/description tie between them --
+    layer 0 resolves before the (a)/(b) ladder ever runs."""
+    first = _birth(db, "10a10a", dispatch_tool_use_id="toolu_first")
+    second = _birth(db, "10b10b", dispatch_tool_use_id="toolu_second")
+
+    claimed_first = claim_dispatch_row(
+        agent_name="gaia-system", dispatch_prompt_id="prompt-1",
+        dispatch_tool_use_id="toolu_second", db_path=db,
+    )
+    claimed_second = claim_dispatch_row(
+        agent_name="gaia-system", dispatch_prompt_id="prompt-1",
+        dispatch_tool_use_id="toolu_first", db_path=db,
+    )
+    assert claimed_first is not None and claimed_first["contract_id"] == second
+    assert claimed_second is not None and claimed_second["contract_id"] == first
+
+
+def test_claim_by_tool_use_id_rejects_double_claim(db):
+    """A duplicate start notification for the same call id must not fall
+    through to (a) and misclaim an unrelated, still-unclaimed sibling."""
+    mine = _birth(db, "20a20a", dispatch_tool_use_id="toolu_dup")
+    sibling = _birth(db, "20b20b", dispatch_tool_use_id="toolu_other")
+
+    first = claim_dispatch_row(
+        agent_name="gaia-system", dispatch_prompt_id="prompt-1",
+        dispatch_tool_use_id="toolu_dup", db_path=db,
+    )
+    second = claim_dispatch_row(
+        agent_name="gaia-system", dispatch_prompt_id="prompt-1",
+        dispatch_tool_use_id="toolu_dup", db_path=db,
+    )
+    assert first is not None and first["contract_id"] == mine
+    assert second is None, "the duplicate call id must decline, not misclaim the sibling"
+    assert _row(db, sibling)["claimed_at"] is None
+
+
+def test_claim_declines_when_callid_unusable_against_callid_born_siblings(db):
+    """The claim supplies a call id (0) cannot resolve (stale/unmatched), and
+    the survivors it falls back to were themselves born under a call id --
+    guessing FIFO here risks binding the wrong sibling, so decline instead."""
+    one = _birth(db, "30a30a", dispatch_tool_use_id="toolu_one")
+    two = _birth(db, "30b30b", dispatch_tool_use_id="toolu_two")
+
+    claimed = claim_dispatch_row(
+        agent_name="gaia-system", dispatch_prompt_id="prompt-1",
+        dispatch_tool_use_id="toolu_never_born", db_path=db,
+    )
+    assert claimed is None, "unusable callID against callID-born siblings must decline"
+    assert _row(db, one)["claimed_at"] is None
+    assert _row(db, two)["claimed_at"] is None
+
+
+def test_claim_by_tool_use_id_preserves_harness_agent_id_recovery_join(db):
+    """The recovery join (stamp_harness_agent_id) stays reachable through a
+    layer-0 claim exactly as it does through the legacy ladder."""
+    contract_id = _birth(db, "40a40a", dispatch_tool_use_id="toolu_recov")
+
+    claimed = claim_dispatch_row(
+        agent_name="gaia-system", dispatch_prompt_id="prompt-1",
+        dispatch_tool_use_id="toolu_recov", db_path=db,
+    )
+    assert claimed is not None and claimed["contract_id"] == contract_id
+
+    stamp = stamp_harness_agent_id(contract_id, "harness-run-1", db_path=db)
+    assert stamp["status"] == "applied"
+    assert _row(db, contract_id)["harness_agent_id"] == "harness-run-1"
 
 
 # ---------------------------------------------------------------------------

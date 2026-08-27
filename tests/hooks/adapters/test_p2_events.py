@@ -196,8 +196,21 @@ class TestAdaptSubagentStart:
         assert "# Recent Session Events" in result.additional_context
         assert result.sections_provided == []
 
-    def test_empty_payload(self, adapter):
-        """Empty payload defaults gracefully."""
+    def test_empty_payload(self, adapter, tmp_path, monkeypatch):
+        """Empty payload defaults gracefully.
+
+        Isolates CONTEXT_CACHE_DIR to a fresh tmp_path (the same convention
+        every other CONTEXT_CACHE_DIR-touching test in this suite follows).
+        Without it this test reads the real shared ``/tmp/gaia-context-cache``:
+        under -n auto, a concurrent real dispatch elsewhere in the suite can
+        leave a live (pre-TTL) cache entry there, and because agent_type=""
+        skips the correlation filter in ``_select_cached_entry`` (falls
+        straight to ``live[0]``), the newest stray entry gets consumed and
+        flips context_injected to True.
+        """
+        monkeypatch.setattr(
+            type(adapter), "CONTEXT_CACHE_DIR", tmp_path / "ctx-cache-empty",
+        )
         result = adapter.adapt_subagent_start({})
 
         assert isinstance(result, ContextResult)

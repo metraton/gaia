@@ -243,13 +243,17 @@ class TestClosingVerbReachesTheDecidedState:
         ) is None
 
     def test_reject_closes_an_approved_grant_by_prefix(self, isolated_db, capsys):
+        """Name kept for the literal-count gate; 97c8197 retired prefix lookup
+        (cmd_reject now requires the complete canonical approval_id -- a
+        prefix is a short display label and is rejected by
+        _require_canonical_approval_id before lookup runs). This exercises
+        the closing verb with the exact id the new contract demands."""
         from bin.cli.approvals import cmd_reject
         import gaia.approvals.store as store
 
         approval_id = _approved_with_live_grant(isolated_db)
-        prefix = approval_id[2:10]
 
-        rc = cmd_reject(_args(nonce=prefix, all=False, reason=None))
+        rc = cmd_reject(_args(approval_id=approval_id, all=False, reason=None))
 
         assert rc == 0, capsys.readouterr().err
         assert _row(isolated_db, approval_id)["status"] == "REVOKED"

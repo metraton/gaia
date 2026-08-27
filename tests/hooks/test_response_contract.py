@@ -5,10 +5,12 @@ T2.2 Blocking promotions:
 1. verification.result must be "pass" when task_status/plan_status is COMPLETE
 2. approval_request.verification must be present when approval_request is present
 
-Non-blocking (advisory, AC-5): approval_request.rollback is relayed as null
-by design (the hook hardcodes rollback_hint=None -- bash_validator.py
-_build_sealed_payload), so its absence is logged/warned but never fails
-validation in either validator.
+Non-blocking (advisory, AC-5): approval_request.rollback is relayed as null for
+every verb the hook authors no statement for. bash_validator
+_STATEMENTS_BY_VERB seals impact, rollback and verification for push, apply,
+delete, destroy and create; neither statement table carries a catch-all, so
+every other verb still seals None. Both shapes are well-formed, so a missing
+rollback is logged/warned but never fails validation in either validator.
 
 T2.3 Clause parsers (positive + negative cases):
 - parse_update_contracts

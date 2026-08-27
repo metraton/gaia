@@ -2,7 +2,7 @@
 """Tests for the DB-bridge activation path (M2 cutover fix).
 
 Gap being closed: M2 migrated REQUESTED writes to DB only (no filesystem
-pending file), but the activation path in elicitation_result.py and
+pending file), but the activation path in
 _handle_ask_user_question_result() still looked up filesystem pending files
 first.  When the filesystem file didn't exist, the grant was never activated
 and the subagent re-blocked eternally with the same approval_id.
@@ -98,38 +98,57 @@ def _make_v12_schema(con: sqlite3.Connection) -> None:
     """)
 
 
-def _build_sealed_payload(command: str) -> dict:
-    return {
-        "operation": "MUTATIVE command intercepted: apply",
-        "exact_content": command,
-        "scope": command.split()[0],
-        "risk_level": "medium",
-        "rollback_hint": None,
-        "rationale": "Test approval",
-        "commands": [command],
-    }
+def _sealed_payload(command: str, *, agent_type: str = "test-agent") -> dict:
+    """Seal ``command`` with the REAL producer, fed the classifier's own verdict.
 
-
-def _build_command_set_payload(command_set: list[dict]) -> dict:
-    """Build a multi-command (COMMAND_SET) sealed_payload.
-
-    Mirrors what bash_validator._build_sealed_payload() emits when a
-    ``command_set`` of more than one {command, rationale} item is supplied:
-    ``commands`` lists every command string and a verbatim ``command_set`` key
-    carries the full set. ``exact_content`` is the first command (the singular
-    stand-in), which the activation path must NOT degrade to.
+    The verdict is asserted mutative before it is used: a payload built from a
+    verb the classifier never derives asserts over a shape the hook cannot emit,
+    and a local hand-built dict cannot detect that the producer changed at all.
     """
-    first = command_set[0]["command"]
-    return {
-        "operation": "MUTATIVE command intercepted: push",
-        "exact_content": first,
-        "scope": first.split()[0],
-        "risk_level": "medium",
-        "rollback_hint": None,
-        "rationale": "Batch under one consent",
-        "commands": [it["command"] for it in command_set],
-        "command_set": command_set,
-    }
+    from modules.security.mutative_verbs import detect_mutative_command
+    from modules.tools.bash_validator import _build_sealed_payload
+
+    verdict = detect_mutative_command(command)
+    assert verdict.is_mutative, f"{command!r} is not intercepted as a mutative verb"
+    return _build_sealed_payload(
+        command=command,
+        verb=verdict.verb,
+        category=verdict.category,
+        agent_type=agent_type,
+    )
+
+
+def _sealed_command_set_payload(
+    command_set: list[dict], *, agent_type: str = "test-agent"
+) -> dict:
+    """Seal a multi-command (COMMAND_SET) envelope with the REAL producer.
+
+    ``exact_content`` is the first command -- the singular stand-in the
+    activation path must NOT degrade to -- and the verb/category are the
+    classifier's verdict for the item the set is sealed under, which is the last
+    mutative item, exactly as the chain intake sealed the whole chain under the
+    verb it blocked on. The set must carry at least one command the classifier
+    intercepts, or the envelope asserts a consent request production never makes.
+    """
+    from modules.security.mutative_verbs import detect_mutative_command
+    from modules.tools.bash_validator import _build_sealed_payload
+
+    verdicts = [
+        detect_mutative_command(item["command"]) for item in command_set
+    ]
+    mutative = [v for v in verdicts if v.is_mutative]
+    assert mutative, (
+        "no command in the set is intercepted, so no consent would be sought: "
+        f"{[item['command'] for item in command_set]}"
+    )
+    sealed_under = mutative[-1]
+    return _build_sealed_payload(
+        command=command_set[0]["command"],
+        verb=sealed_under.verb,
+        category=sealed_under.category,
+        agent_type=agent_type,
+        command_set=command_set,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +298,7 @@ class TestActivateDbPendingByPrefix:
         session_id = "test-bridge-session"
 
         # Insert a REQUESTED approval into the DB (simulates what bash_validator does).
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             agent_id="test-agent",
@@ -315,7 +334,7 @@ class TestActivateDbPendingByPrefix:
         command = "git push origin main"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             agent_id="test-agent",
@@ -343,7 +362,7 @@ class TestActivateDbPendingByPrefix:
         command = "kubectl delete pod mypod"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             session_id=session_id,
@@ -401,7 +420,7 @@ class TestCheckWriteAlignment:
         command = "terraform apply"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             agent_id="test-agent",
@@ -433,7 +452,7 @@ class TestCheckWriteAlignment:
         This replicates the exact scenario from the E2E failure:
           1. bash_validator blocks a T3 command and calls insert_requested() -> DB.
           2. User approves via AskUserQuestion with [P-{prefix}] label.
-          3. _handle_ask_user_question_result (or elicitation_result) calls
+          3. _handle_ask_user_question_result calls
              activate_db_pending_by_prefix() because no filesystem pending exists.
           4. Filesystem grant is created.
           5. bash_validator retry finds the grant and allows the command.
@@ -517,7 +536,7 @@ class TestHandleAskUserQuestionDbBridge:
         command = "terraform apply"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             agent_id="test-agent",
@@ -525,9 +544,11 @@ class TestHandleAskUserQuestionDbBridge:
         )
         # No filesystem pending file is written (M2 state: DB only).
 
-        # Build an AskUserQuestion hook_data with a nonce-labeled approve answer.
-        nonce_prefix = approval_id[len("P-"):len("P-") + 8]
-        approve_label = f"Approve -- terraform apply [P-{nonce_prefix}]"
+        # Build an AskUserQuestion hook_data with an id-labeled approve answer.
+        # The label must carry the COMPLETE canonical id: the resolver reads
+        # `[P-<32 lowercase hex>]` and never scans for a matching prefix, so a
+        # truncated id resolves to nothing and nothing activates.
+        approve_label = f"Approve -- terraform apply [{approval_id}]"
 
         hook_data = {
             "hook_event_name": "PostToolUse",
@@ -544,15 +565,19 @@ class TestHandleAskUserQuestionDbBridge:
         adapter = ClaudeCodeAdapter()
         adapter._handle_ask_user_question_result(hook_data)
 
-        # Verify the filesystem grant was created.
-        from modules.security.approval_grants import check_approval_grant
+        # Verify the DB grant was created. The filesystem grant plane this test
+        # used to assert was retired with the DB cutover: activation inserts a
+        # SCOPE_SEMANTIC_SIGNATURE row and writes no grant file, so the row the
+        # retry's guard reads is the only grant there is to assert.
+        from gaia.store.writer import check_db_semantic_grant
 
-        grant = check_approval_grant(command, session_id=session_id)
+        grant = check_db_semantic_grant(command)
         assert grant is not None, (
-            "Filesystem grant must exist after _handle_ask_user_question_result "
+            "DB semantic grant must exist after _handle_ask_user_question_result "
             "activates via DB bridge"
         )
-        assert grant.confirmed
+        assert grant["approval_id"] == approval_id
+        assert grant["status"] == "PENDING"
 
         # Verify DB events.
         events = store.replay_for_approval(approval_id, con=assert_con)
@@ -572,7 +597,7 @@ class TestHandleAskUserQuestionDbBridge:
         command = "git push origin main"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             session_id=session_id,
@@ -628,7 +653,7 @@ class TestActivateDbPendingCommandSet:
             {"command": "git push origin main", "rationale": "publish"},
         ]
 
-        payload = _build_command_set_payload(command_set)
+        payload = _sealed_command_set_payload(command_set)
         approval_id = store.insert_requested(
             payload, agent_id="test-agent", session_id=session_id,
         )
@@ -673,7 +698,7 @@ class TestActivateDbPendingCommandSet:
             {"command": "terraform apply", "rationale": "provision"},
             {"command": "terraform output", "rationale": "read"},
         ]
-        payload = _build_command_set_payload(command_set)
+        payload = _sealed_command_set_payload(command_set)
         approval_id = store.insert_requested(payload, session_id=session_id)
         nonce_prefix = approval_id[len("P-"):len("P-") + 8]
 
@@ -713,7 +738,7 @@ class TestActivateDbPendingCommandSet:
             {"command": "git push origin main", "rationale": "publish"},
             {"command": "git push origin tags", "rationale": "tags"},
         ]
-        payload = _build_command_set_payload(command_set)
+        payload = _sealed_command_set_payload(command_set)
         approval_id = store.insert_requested(payload, session_id=session_id)
         nonce_prefix = approval_id[len("P-"):len("P-") + 8]
 
@@ -789,7 +814,7 @@ class TestActivateDbPendingCommandSet:
             {"command": "git push origin tags", "rationale": "tags"},
             {"command": "git push origin release", "rationale": "release"},
         ]
-        payload = _build_command_set_payload(command_set)
+        payload = _sealed_command_set_payload(command_set)
         approval_id = store.insert_requested(payload, session_id=session_a)
         nonce_prefix = approval_id[len("P-"):len("P-") + 8]
 
@@ -872,7 +897,7 @@ class TestActivateDbPendingCommandSet:
         db_path, assert_con, store = db_and_store
         session_id = "test-bridge-session"
         # command_set with a single item -> must behave as singular.
-        payload = _build_command_set_payload(
+        payload = _sealed_command_set_payload(
             [{"command": "terraform apply", "rationale": "one"}]
         )
         approval_id = store.insert_requested(payload, session_id=session_id)
@@ -984,6 +1009,17 @@ class TestFingerprintEnforcementOnActivation:
         approval_events (REQUESTED event) will now disagree with the modified
         payload_json, exactly as would happen if an orchestrator altered the
         payload before calling activate_db_pending_by_prefix().
+
+        DELIBERATELY SYNTHETIC NEGATIVE FIXTURE -- do not convert this dict to
+        the real producer. What it probes is a payload that the producer never
+        sealed: the substitution arrives out of band, and some of the commands
+        substituted in (a hard-blocked ``rm -rf`` target, a forced push) are
+        shapes the producer is never reached for at all, because the block or
+        the flag path resolves them before interception mints a payload. Sealing
+        them with the producer would assert over a consent request production
+        cannot make, and would replace the property under test -- a payload of
+        unknown provenance disagreeing with the sealed fingerprint -- with a
+        well-formed one.
         """
         import json as _j
         # Build a tampered payload with a different command.
@@ -1013,7 +1049,7 @@ class TestFingerprintEnforcementOnActivation:
         session_id = "test-bridge-session"
 
         # Insert a legitimate REQUESTED row (fingerprint is correct at this point).
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             agent_id="test-agent",
@@ -1051,7 +1087,7 @@ class TestFingerprintEnforcementOnActivation:
         command = "git push origin main"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload, session_id=session_id,
         )
@@ -1082,7 +1118,7 @@ class TestFingerprintEnforcementOnActivation:
         command = "kubectl delete pod mypod"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             agent_id="test-agent",
@@ -1125,7 +1161,7 @@ class TestFingerprintEnforcementOnActivation:
         command = "terraform apply"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload,
             agent_id="test-agent",
@@ -1180,7 +1216,7 @@ class TestFingerprintEnforcementOnActivation:
         import json as _j
         import uuid as _uuid
         approval_id = f"P-{_uuid.uuid4().hex}"
-        raw_payload = _build_sealed_payload("terraform apply")
+        raw_payload = _sealed_payload("terraform apply")
         raw_payload_json = _j.dumps(raw_payload)
         assert_con.execute(
             "INSERT INTO approvals (id, session_id, status, payload_json) "
@@ -1215,7 +1251,7 @@ class TestFingerprintEnforcementOnActivation:
         command = "gcloud projects delete my-project"
         session_id = "test-bridge-session"
 
-        payload = _build_sealed_payload(command)
+        payload = _sealed_payload(command)
         approval_id = store.insert_requested(
             payload, session_id=session_id,
         )

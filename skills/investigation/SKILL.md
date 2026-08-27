@@ -70,10 +70,17 @@ services, condition-dependent follow-ups, or commands that must be derived from
 earlier results. Request those later only after new read-only investigation.
 Consent grouping reduces repeated consent; it does not make execution atomic.
 
-Use `gaia approvals request-set --command '<exact 1>' [--command '<exact 2>' ...]`
-before attempting any item -- one `--command` for a single operation, one per
-item for a group. A command already blocked (the reactive path, reached only
-after an attempted command trips PreToolUse) is relayed exactly; never
+Use `gaia approvals request-set --command '<exact 1>' [--command '<exact 2>' ...]
+--rationale '<why>' --verification '<the desired-state check to run after>'
+--rollback '<how the effect is undone>'` before attempting any item -- one
+`--command` for a single operation, one per item for a group. The three
+non-command flags are not optional decoration: `--verification` and `--rollback`
+are sealed at mint and rendered verbatim as the `VERIFICATION` and `ROLLBACK`
+fields of the consent surface the user reads, so omitting them mints an approval
+whose surface states their absence and asks the user to consent without knowing
+how the effect is checked or undone. Author them from the forecast above, where
+they are already reasoned. A command already blocked (the reactive path, reached
+only after an attempted command trips PreToolUse) is relayed exactly; never
 retrofit it into a different spelling or self-mint consent metadata.
 
 ## Evidence quality

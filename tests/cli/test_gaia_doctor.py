@@ -77,6 +77,15 @@ def _isolate_home_globals(tmp_path, monkeypatch):
         return _real_which(cmd, *a, **kw)
 
     monkeypatch.setattr(doctor_mod.shutil, "which", _which_isolated_gaia)
+
+    # check_opencode_host_liveness (order 61) reads the identity.attest ledger
+    # via GAIA_OPENCODE_ATTESTATION_DIR. Point it at an empty tmp dir so the
+    # baseline is deterministic ABSENCE (info), never accidentally matching a
+    # real ledger left on the machine running the suite; tests that need a
+    # live attestation override this env var directly.
+    monkeypatch.setenv(
+        "GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "isolated-opencode-attestations")
+    )
     yield
 
 @pytest.fixture()
@@ -107,7 +116,7 @@ def healthy_project(tmp_path):
         "hooks": {ev: [{"command": "python"}] for ev in [
             "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
             "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
-            "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+            "SubagentStart", "PostCompact", "PreCompact",
         ]},
         "permissions": {
             "allow": ["Bash(*)"],
@@ -123,7 +132,7 @@ def healthy_project(tmp_path):
     for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
               "session_start.py", "session_end_hook.py", "subagent_stop.py",
               "subagent_start.py", "stop_hook.py", "task_completed.py",
-              "pre_compact.py", "post_compact.py", "elicitation_result.py"]:
+              "pre_compact.py", "post_compact.py"]:
         (hooks_dir / h).write_text("# hook stub")
 
     # project-context.json
@@ -987,8 +996,19 @@ class TestCmdDoctorJson:
         #   gaia without warning) +
         # 1 source-parity (order 56 -- installed package == the source checkout
         #   it was built from; the first link of the freshness chain, which
-        #   went undiagnosed while a package built mid-edit ran for a day).
-        assert len(data["checks"]) == 29
+        #   went undiagnosed while a package built mid-edit ran for a day) +
+        # 1 symbol-anchors (order 54 -- skill/agent symbol references carry a
+        #   resolvable file::symbol anchor; a prose-paren reference names no
+        #   file, so a deleted symbol left four stale citations and only the
+        #   one anchored citation was caught) +
+        # 1 executed-copy-alignment (order 59 -- names the realpath actually
+        #   resolved from node_modules and reports aligned vs divergent when a
+        #   package-manager install re-materializes a stale pinned tarball
+        #   over a dev symlink, silently and without a version bump) +
+        # 1 opencode-host-liveness (order 61 -- reads the identity.attest
+        #   ledger for the CURRENT host run; pass only with a recorded
+        #   attestation, explicit absence -- never a false ok -- without one).
+        assert len(data["checks"]) == 32
 
         # Each check should have name, severity, ok, detail
         for check in data["checks"]:
@@ -1506,7 +1526,7 @@ class TestCmdDoctorFix:
             "hooks": {ev: [{"command": "python"}] for ev in [
                 "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
                 "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
-                "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+                "SubagentStart", "PostCompact", "PreCompact",
             ]},
             "permissions": {"allow": ["Bash(*)"], "deny": ["rm -rf /"]},
             "env": {"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "true"},
@@ -1516,7 +1536,7 @@ class TestCmdDoctorFix:
         for h in ["pre_tool_use.py", "post_tool_use.py", "user_prompt_submit.py",
                   "session_start.py", "session_end_hook.py", "subagent_stop.py",
                   "subagent_start.py", "stop_hook.py", "task_completed.py",
-                  "pre_compact.py", "post_compact.py", "elicitation_result.py"]:
+                  "pre_compact.py", "post_compact.py"]:
             (hooks_dir / h).write_text("# hook stub")
 
         pc_dir = claude_dir / "project-context"
@@ -2283,3 +2303,175 @@ class TestCheckSourceParity:
         r = doctor_mod.check_source_parity(ws)
         assert r["severity"] == "info"
         assert "NOT verified" in r["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: executed-copy alignment (order 59) -- does node_modules/@jaguilar87/
+# gaia, the entry every harness (OpenCode's plugin loader included) actually
+# runs, still point at the live checkout, or did a tarball pin get
+# re-materialized over a previous dev link? Both states are built as fixtures
+# below; neither depends on the real workspace.
+# ---------------------------------------------------------------------------
+
+class TestCheckExecutedCopyAlignment:
+    def _pin_tarball(self, ws: Path, spec: str = "file:../../.gaia/cache/x.tgz") -> None:
+        (ws / "package.json").write_text(
+            json.dumps({"name": "my-app", "dependencies": {"@jaguilar87/gaia": spec}})
+        )
+
+    def test_no_node_modules_entry_is_info(self, tmp_path):
+        r = doctor_mod.check_executed_copy_alignment(tmp_path)
+        assert r["severity"] == "info"
+        assert "plugin-mode" in r["detail"]
+
+    def test_aligned_when_entry_is_a_symlink_to_the_checkout(self, tmp_path):
+        # link-mode: the pin still names a tarball, but the entry actually
+        # executed resolves straight to the source checkout.
+        checkout = _mk_source_checkout(tmp_path / "checkout")
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87"
+        nm.mkdir(parents=True)
+        (nm / "gaia").symlink_to(checkout)
+        self._pin_tarball(ws)
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "pass"
+        assert "aligned" in r["detail"]
+        assert str(checkout.resolve()) in r["detail"]
+
+    def test_divergent_when_pinned_tarball_replaced_the_link(self, tmp_path):
+        # The measured class: a previous dev link is gone, node_modules now
+        # holds a materialized (non-checkout) copy, and the pin is still the
+        # local tarball spec that produced it.
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm.mkdir(parents=True)
+        (nm / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.4.0-rc.1"}))
+        self._pin_tarball(ws, "file:../../.gaia/cache/dev-pack/me/jaguilar87-gaia-5.4.0-rc.1+e1c4f7b5.tgz")
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "warning"
+        assert "divergent" in r["detail"]
+        assert str(nm.resolve()) in r["detail"]
+        assert "e1c4f7b5.tgz" in r["detail"]
+        assert "gaia dev --mode link" in r["fix"]
+
+    def test_non_tarball_spec_with_no_checkout_is_info_not_divergent(self, tmp_path):
+        # A registry install has no link to have lost -- this check's object
+        # (the link-vs-pin duality) does not apply, so it must not warn.
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87" / "gaia"
+        nm.mkdir(parents=True)
+        (nm / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia", "version": "5.1.1"}))
+        (ws / "package.json").write_text(
+            json.dumps({"name": "my-app", "dependencies": {"@jaguilar87/gaia": "^5.1.1"}})
+        )
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "info"
+        assert "no link-vs-pin duality" in r["detail"]
+
+    def test_broken_entry_is_warning(self, tmp_path):
+        ws = tmp_path / "ws"
+        nm = ws / "node_modules" / "@jaguilar87"
+        nm.mkdir(parents=True)
+        (nm / "gaia").symlink_to(tmp_path / "does-not-exist")
+        self._pin_tarball(ws)
+
+        r = doctor_mod.check_executed_copy_alignment(ws)
+        assert r["severity"] == "warning"
+        assert "does not resolve" in r["detail"]
+        assert "gaia dev" in r["fix"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: OpenCode host liveness (order 61) -- OpenCode never logs a successful
+# load, so the check must read a POSITIVE attestation for the CURRENT host
+# run and never infer liveness from the absence of a failure. Every test
+# drives the real host_attestation module (no mock of host_run_id) so a
+# ledger keyed by the wrong host run is provably rejected, not just assumed.
+# ---------------------------------------------------------------------------
+
+def _host_attestation_module():
+    """Import modules.security.host_attestation the same way doctor.py does."""
+    hooks_dir = REPO_ROOT / "hooks"
+    if str(hooks_dir) not in sys.path:
+        sys.path.insert(0, str(hooks_dir))
+    from modules.security import host_attestation
+    return host_attestation
+
+
+class TestCheckOpencodeHostLiveness:
+    def test_no_ledger_file_is_explicit_absence_not_false_ok(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "does-not-exist"))
+
+        r = doctor_mod.check_opencode_host_liveness()
+
+        assert r["severity"] == "info"
+        assert "no attestation ledger" in r["detail"]
+
+    def test_ledger_with_zero_records_is_explicit_absence(self, tmp_path, monkeypatch):
+        ledger_dir = tmp_path / "ledger"
+        ledger_dir.mkdir()
+        monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(ledger_dir))
+        host_attestation = _host_attestation_module()
+        host_run = host_attestation.host_run_id()
+        (ledger_dir / f"{host_run}.json").write_text(json.dumps({"records": {}}))
+
+        r = doctor_mod.check_opencode_host_liveness()
+
+        assert r["severity"] == "info"
+        assert "no records" in r["detail"]
+
+    def test_attestation_for_a_different_host_run_is_still_explicit_absence(
+        self, tmp_path, monkeypatch
+    ):
+        # A ledger file exists and carries a real record, but it is NOT this
+        # process's host run -- the check must not credit an unrelated ledger.
+        ledger_dir = tmp_path / "ledger"
+        ledger_dir.mkdir()
+        monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(ledger_dir))
+        (ledger_dir / "host-999999999-1.json").write_text(json.dumps({
+            "records": {
+                "gaia-att:1:deadbeef": {
+                    "session_id": "unrelated-session",
+                    "role": "gaia-orchestrator",
+                    "issuer": "someone-else",
+                    "depth": 0,
+                    "granted_by": None,
+                    "issued_at": "2026-01-01T00:00:00+00:00",
+                }
+            }
+        }))
+
+        r = doctor_mod.check_opencode_host_liveness()
+
+        assert r["severity"] == "info"
+        assert "no attestation ledger" in r["detail"]
+
+    def test_recorded_attestation_for_current_host_run_is_pass(self, tmp_path, monkeypatch):
+        ledger_dir = tmp_path / "ledger"
+        ledger_dir.mkdir()
+        monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(ledger_dir))
+        host_attestation = _host_attestation_module()
+        host_run = host_attestation.host_run_id()
+        host_attestation.issue(
+            host_run=host_run,
+            session_id="doctor-liveness-test-session",
+            role="child-agent",
+            issuer="pytest",
+        )
+
+        r = doctor_mod.check_opencode_host_liveness()
+
+        assert r["severity"] == "pass"
+        assert host_run in r["detail"]
+        assert "1 attestation" in r["detail"]
+
+    def test_host_attestation_import_failure_degrades_to_info(self, monkeypatch):
+        monkeypatch.setattr(doctor_mod, "_load_host_attestation", lambda: None)
+
+        r = doctor_mod.check_opencode_host_liveness()
+
+        assert r["severity"] == "info"
+        assert "not importable" in r["detail"]

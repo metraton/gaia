@@ -138,6 +138,12 @@ closing ritual — they are the ONLY verification that exists for four of the ni
 principles (4, 5, 7, and the half of 6 no machine can reach). A verdict that
 rests on green alone has verified the geometry and asserted the meaning.
 
+That table is also why the evidence classes under **The verdict** are three and
+not two. The **yes** rows are reached by two different gates that both compute a
+number and can disagree with each other: one derives the geometry from the
+authored YAML, the other observes the geometry the browser actually drew. The
+**no** row is reached by neither — only by looking.
+
 ## Conceptualizing the user's problem
 
 The form is the LAST decision, not the first. Before it:
@@ -245,19 +251,47 @@ of that:
   rewriting the YAML without re-running the build pairs a new engine with the old
   bundle, which does not fail — it renders the stale deck silently (the coupling
   is in `reference.md`, the serving-side cache-busting in `assets/README.md`).
-- **Every verdict declares its evidence class.** **Class A** — the guardrail
-  suffices: the topology is intact and the change's intention is fully covered by
-  existing invariants (a copy edit, a colour change, an `order` swap inside a
-  settled grid). **Class B** — guardrail AND eye: a first build, a change of form
-  or of model, or any intention no invariant covers; look at the rendered result
-  and load `visual-verify` for the looking discipline. "Green, Class A: intention
-  covered by the collapse and band invariants" is a verdict; a bare green is not.
+- **Every verdict names THREE evidence classes.** **MODELLED** — arithmetic over
+  the authored YAML (`npm run model`): it proves the rectangle closes, and it has
+  never seen a pixel. **MEASURED** — the real render in a browser
+  (`npm run render`): it proves the stylesheet actually IMPLEMENTS what the model
+  assumed. **SEEN** — a human or an agent looking: the only class that reaches
+  principles 4, 5, 7 and the half of 6 no machine can. Two classes obscured
+  three, and that is how a computation came to be reported as an observation —
+  `ALL PASS` out of the arithmetic, cited as the verdict, over a page the browser
+  was drawing wrong.
+- **MODELLED and MEASURED are both mandatory, always.** `npm run gate` runs the
+  pair and is the only thing a verdict may cite. Requiring the browser one costs
+  nothing, which is what makes this safe: `render` resolves Playwright lazily and,
+  where no browser exists, prints `SKIPPED (no browser)` and exits 0 — so the
+  verdict then says `MEASURED: unavailable` in words instead of resting silently
+  on MODELLED. The two disagree exactly where it matters: a rule the stylesheet
+  never implemented leaves the arithmetic closing a rectangle the browser draws at
+  a third of its width.
+- **SEEN is required on a first build, a change of form or of model, or any
+  intention no invariant covers — and it names a command.**
+  `DIAGRAM_SHOTS_DIR=<a readable path> npm run verify` renders every page at 1920
+  and 1440 in both themes and writes the PNGs where you can open them; then load
+  `visual-verify` for the looking discipline. Do NOT write a browser probe:
+  `verify.mjs` already resolves a Chromium that is on disk (no download) and
+  handles the capture trap — `.canvas` is `position:absolute` with
+  `overflow:auto`, so a naive full-page screenshot truncates to viewport height.
+  A verdict names all three classes: "MODELLED 4540 assertions / 0 not-asserted ·
+  MEASURED 170 checks · SEEN p2 at 1920, both themes". `ALL PASS` is not a
+  verdict.
 - **The RATCHET rule.** Every defect the eye catches becomes an invariant before
   the change closes — the guardrail only grows. A defect fixed without a new
   invariant will be reintroduced by the next change the guardrail cannot see.
   Invariants are form-scoped and retirable (one can supersede another), which is
   what lets the guardrail grow without ossifying: a rule tuned to a dashboard
-  must not fail a legitimate timeline.
+  must not fail a legitimate timeline. **And a new invariant is not landed until
+  it has been SEEN TO FAIL.** Break the rule it guards, watch it go red, restore
+  it. An invariant that has never failed is not an invariant — it is a comment
+  with a pass count: one was added inside a mirror, the rule it guarded was
+  deleted, and the gate still printed ALL PASS with the count moving 6019 → 6018.
+  A mirrored assertion is the one shape that can fail OPEN, so: a mirror asserts a
+  rule's PRESENCE as a hard failure and only its ABSENT FILE as an advisory. Never
+  the reverse.
 - **The adversarial critique closes the work.** Walk the rendered layout against
   the governing definition and demand the doctrine's "why" for every element,
   and that every intended relation has a chip. An element without a "why" fails
@@ -292,7 +326,12 @@ grew a claim nothing renders. Check the pair whenever either side changes.
   skeletons, the positioning recipes, the engine gotchas, the authoring modes,
   and the build → validate loop with the form-scoped invariant table.
 - `assets/` — the portable engine, ready to scaffold into any repo: `index.html`,
-  `engine/`, the seed `data/` above, and `tools/`, where the verification lives —
-  `check-layout.mjs` (the MANDATORY gate) over `static-census.cjs`, plus
-  `validate-layout.cjs`, `test-guards.mjs`, `contrast-audit.cjs`, `verify.mjs`.
-  Scaffold without `tools/` and the deck has no way to earn a verdict.
+  `engine/`, the seed `data/` above, and `tools/`, where the verification lives.
+  Two gates, both mandatory, because they answer different questions:
+  `check-layout.mjs` over `static-census.cjs` COMPUTES the layout from the
+  authored YAML (`npm run model`), and `validate-layout.cjs` OBSERVES the layout
+  the browser drew (`npm run render`) — a verdict needs both, and `npm run gate` is
+  the pair. Beside them: `test-guards.mjs`, the negative suite that proves the
+  gates detect what they claim; `contrast-audit.cjs`; and `verify.mjs`, the
+  screenshot sweep SEEN runs on. Scaffold without `tools/` and the deck has no way
+  to earn a verdict.

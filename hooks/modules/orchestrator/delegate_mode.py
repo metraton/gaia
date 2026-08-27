@@ -342,6 +342,21 @@ def classify_session_role(hook_payload: Dict[str, Any]) -> SessionRole:
     if hook_payload.get("agent_id"):
         return SessionRole.SUBAGENT
 
+    # OpenCode supplies the Gaia control-plane claim as structured adapter
+    # metadata.  A prompt string or an ordinary ``agent_type`` never grants
+    # this role; the value must be the verified neutral consent context.
+    context = hook_payload.get("role_context")
+    if isinstance(context, dict):
+        capabilities = context.get("capabilities", ())
+        if (
+            context.get("role") == "gaia-orchestrator"
+            and bool(context.get("verified"))
+            and bool(context.get("issuer"))
+            and bool(context.get("attestation"))
+            and isinstance(capabilities, (list, tuple))
+        ):
+            return SessionRole.ORCHESTRATOR
+
     agent_type = (hook_payload.get("agent_type") or "").strip().lower()
     if not agent_type or agent_type in ORCHESTRATOR_AGENT_TYPES:
         return SessionRole.ORCHESTRATOR

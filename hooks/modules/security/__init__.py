@@ -5,7 +5,7 @@ Provides:
 - tiers: SecurityTier enum and classification
 - blocked_commands: Permanently blocked pattern matching
 - mutative_verbs: Mutative verb detection (user approval workflow)
-- approval_constants: Approval token patterns (legacy APPROVE: and ElicitationResult)
+- approval_constants: Approval token patterns (legacy APPROVE: and signed labels)
 - approval_grants: Time-limited T3 command passthrough after user approval
 - shell_unwrapper: Detect and strip wrapper shells for inner command classification
 - flag_classifiers: Flag-dependent classifiers for 15 command families
