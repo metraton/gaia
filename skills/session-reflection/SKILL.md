@@ -1,6 +1,6 @@
 ---
 name: session-reflection
-description: Use when the user asks to reflect on a session, or when closing substantial work that contains decisions, learnings, unresolved threads, or Gaia improvements worth reviewing
+description: Use when the user asks to reflect on a session, or when closing substantial work: the orchestrator reconciles the session against memory and the coordination substrate (briefs/plans/tasks/approvals), curates and closes what it can decide on its own, and reports what changed.
 ---
 
 # Session Reflection
@@ -30,11 +30,16 @@ Compaction is a separate act, performed only when the user asks for it.
    own phrasing has a row; the closure you owe is usually phrased in terms
    that predate the session that solved it. Read briefs, plans, tasks, and
    approvals the same way — a conversation cannot close an object the
-   substrate still shows open. `reference.md` holds the reverse-sweep
+   substrate still shows open. A session that produced any Gaia improvement
+   touched `gaia_system` by definition, whatever project it was nominally
+   working on — sweep it too. `reference.md` holds the reverse-sweep
    mechanics and the objective-state checks that verify a `SKIP`.
 3. **Classify disjointly.** Separate settled decisions and learnings,
    genuinely open work, and Gaia improvements. When closure is uncertain,
-   classify as open; a lost pending costs more than an extra review.
+   classify as open; a lost pending costs more than an extra review. For
+   anything about Gaia itself, `memory/SKILL.md`'s one-line test decides the
+   initiative — `gaia_system` for an observed failure or friction,
+   project-scoped `gaia` for a decision to build or change something.
 4. **Give every item a home, and know what the home does.** The pending
    worklist that returns to the user each session selects `class=thread` with
    status `carry_forward` or `open` only — an `anchor` still reaches a
@@ -43,27 +48,31 @@ Compaction is a separate act, performed only when the user asks for it.
    turns the worklist into noise. `SKIP` is a home only when you name the
    canonical object that owns the item — already-canonical work is
    referenced, never copied.
-5. **Present the reflection and the exact proposal.** Show scope, operation,
-   values, and verification before any write. Consent mechanics belong to
-   `memory`.
-6. **Run the confirmed curation, closures included.** Materialize the step 2
-   closures alongside the new rows; `reclassify` and `append` are
-   non-mutative, so nothing but omission keeps a resolved thread open. A
-   closing arc that passes the milestone test in `reference.md` uses
-   `checkpoint`, one atomic write; an ordinary close does not.
+5. **Adjudicate against the exception boundary.** The boundary table lives in
+   `memory/SKILL.md` ("Process" step 5) — this is a pointer to it, not a
+   copy. Most operations are decided and executed directly; only the rows the
+   boundary marks "ask first" or "veto" wait on the user.
+6. **Run the curation, closures included.** Materialize the step 2 closures
+   alongside the new rows; `reclassify` and `append` are non-mutative, so
+   nothing but omission keeps a resolved thread open. A closing arc that
+   passes the milestone test in `reference.md` uses `checkpoint`, one atomic
+   write; an ordinary close does not.
 7. **State the resume point.** One line naming what the next session picks
    up — a pointer, not a container: everything it names already has a row.
 
-## Output
+## Working tables
 
-No section holds a bare sentence. Every item leaves with a home and an
-operation — a display that cannot state an item without stating its owner
-cannot lose one to prose. Omit an empty section instead of inventing content,
-and use the user's own vocabulary and language.
+These tables are internal working discipline, never the surface shown to the
+user: they are how the pass is worked, one owner per item, on the way to the
+curation that step 5 and step 6 already ran. No table entry holds a bare
+sentence — a working method that cannot state an item without stating its
+owner cannot lose one to prose. Omit an empty section instead of inventing
+content, and use the user's own vocabulary and language.
 
-`SAVE`, `APPEND`, `TRANSITION`, `LINK`, and `SKIP` are the proposal verbs
-`memory` adjudicates; a closure or graduation is a `TRANSITION`, materialized
-as `reclassify` — `memory/reference.md` holds the exact forms.
+`SAVE`, `APPEND`, `TRANSITION`, `LINK`, and `SKIP` are the working verbs
+`memory` adjudicates against the exception boundary; a closure or graduation
+is a `TRANSITION`, materialized as `reclassify` — `memory/reference.md` holds
+the exact forms.
 
 ### What we settled
 
@@ -94,25 +103,39 @@ leaving it out is how a worklist grows past the attention anyone can give it.
     Reproduction exact repeatable route, or unknown
     → feedback_<component>_<symptom> · type feedback · SAVE or APPEND
 
-Displayed in full, not summarized — consent to a defect whose evidence was
-never shown is consent to a slug. `reference.md` holds the field definitions
-and the `gaia_system` retrieval query a wrong initiative or type hides from.
+Worked in full, not summarized — a defect whose evidence was never worked
+through is a slug with nothing behind it. `reference.md` holds the field
+definitions and the `gaia_system` retrieval query a wrong initiative or type
+hides from.
+
+## Output
+
+What the user sees is the REPORT after curation runs, not the working tables
+above: one line per change, naming its effect on memory or on the project's
+history rather than the raw verb that produced it. A `type=user` row is
+flagged above the rest of the report, for veto — the write already happened;
+flagging it is what lets the user reverse it, not what authorized it.
 
 ### Resume point
 
-One line. If the user asks to compact after this, `gaia-compact` builds its
-own handoff; reflection hands it a pointer, not a container.
+One line naming what the next session picks up. If the user asks to compact
+after this, `gaia-compact` builds its own handoff; reflection hands it a
+pointer, not a container.
 
 ## Ownership and consent
 
-The orchestrator recovers, reconciles, and adjudicates; the user corrects the
-displayed proposal; the orchestrator or `gaia-operator` materializes the
-exact confirmed batch. Independent operations are best-effort, a checkpoint
-stays atomic. Reflection itself is not a new durable object.
+The orchestrator recovers, reconciles, adjudicates, and executes within the
+exception boundary in `memory/SKILL.md`; `gaia-operator` materializes what the
+orchestrator has already adjudicated. The user reads the result in the
+post-curation report, not a proposal awaiting confirmation — the boundary
+table names the few operations that still ask first or wait on a veto.
+Independent operations are best-effort, a checkpoint stays atomic. Reflection
+itself is not a new durable object.
 
 ## Handoffs
 
-- Load `memory` for curation policy, lifecycle verbs, and consent.
+- Load `memory` for the exception boundary, lifecycle verbs, and initiative
+  scoping.
 - Load `reference.md` for dense-session recovery, the reverse sweep, the
   Gaia-improvement shape, the milestone test, and the anti-patterns to avoid.
 - Load `examples.md` for the integrated reflection → curation flow.

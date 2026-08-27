@@ -44,8 +44,16 @@ Three mechanics decide whether the sweep is complete:
 - **Rows with no initiative are their own bucket.** `--initiative=otros` targets
   the NULL-initiative rows; skipping it leaves the least-owned pendings — the
   ones most likely to be stale — permanently unswept.
-- **The mode is workspace-scoped.** A pending filed under another workspace is
-  not in the answer, and its absence is not evidence it does not exist.
+- **A project's own initiative is workspace-scoped.** A pending filed under
+  another workspace is not in the answer, and its absence is not evidence it
+  does not exist.
+- **`gaia_system` is host-scoped, and complete from any vantage.** Every
+  `gaia_system` row is pinned to the sentinel workspace by the writer
+  (`gaia/store/writer.py::apply_host_scope`, `HOST_SCOPED_INITIATIVES`), and
+  every read of it unions that sentinel in regardless of the caller's own
+  workspace (`bin/cli/memory.py::_reader_workspaces`). So an empty sweep of
+  `gaia_system` from any workspace is a complete answer, not a scoping gap —
+  unlike a project initiative, there is no "wrong vantage" to worry about.
 
 Ask of each returned row: did this session close it, advance it, invalidate it,
 or leave it untouched? Only the last verdict produces no row in the reflection.
@@ -77,6 +85,14 @@ An item genuinely represented by one of these takes `SKIP` with the identifier
 named. An item whose supposed owner turns out to be closed, missing, or about
 something else is open work that has been hiding behind a reference.
 
+Closing a brief through `set-status` is a bare status write and does not run
+its own consistency check; `close` does (`bin/cli/brief.py::_cmd_close` calls
+`verify_brief` as a non-blocking advisory), but the orchestrator's `gaia` CLI
+lane admits only `set-status` (`hooks/modules/security/gaia_cli_only_guard.py::check`).
+So an objectively-verifiable brief closure runs `gaia brief verify` by hand
+first, and reads its result, before `set-status` — otherwise the closure
+carries none of the check the free verb would have supplied.
+
 ## Gaia improvement shape
 
 A persistable improvement has four recoverable fields:
@@ -86,12 +102,12 @@ A persistable improvement has four recoverable fields:
 - Evidence: observed proof.
 - Reproduction: exact repeatable route, or `unknown`.
 
-All four are shown in the reflection, not summarized into it. The review is the
-user's only chance to correct them before they become a durable thread, and a
-defect whose evidence was never displayed was consented to as a slug.
+All four are shown in the reflection, not summarized into it. A defect whose
+evidence was never displayed was consented to as a slug.
 
-After user confirmation it is materialized as a `feedback` live thread with
-`initiative=gaia_system` and carry-forward lifecycle. Those two values are what
+It is materialized as a `feedback` live thread with `initiative=gaia_system`
+and carry-forward lifecycle — `add` on a `feedback` row is autonomous under
+the exception boundary in `memory/SKILL.md`. Those two values are what
 make the corpus retrievable in one read —
 `gaia memory get-relevant --initiative=gaia_system` — so a defect carrying the
 project's own initiative, or another type, is absent from that answer. The exact
@@ -124,3 +140,16 @@ dispatches, or merely reaching session end are not evidence of a milestone.
 - **Checkpoint by ritual:** only a durable arc a future reader would
   recognize as a milestone earns one; turn count and session end are not
   evidence.
+- **Curating past the witness:** asserting a closure or a settled fact the
+  session itself does not support. Autonomous curation removed the pre-write
+  review that used to catch this; nothing else does. Every row in the report
+  still needs the same evidence a reviewer would have demanded — the sweep
+  result, the verified object state, the transcript agreement — not the
+  confidence that it is probably fine.
+- **Assumed cascade:** treating one object's status as evidence for a sibling
+  object's closure — a plan marked `active` does not tell you anything about
+  its tasks' individual status, and a closed task does not tell you its plan
+  is done. There is no mechanical cascade between brief, plan, and task
+  status; each is checked on its own. Measured: 38 of 60 plans in the
+  substrate sit open while carrying no signal from their own task state that
+  would resolve that on inspection alone.

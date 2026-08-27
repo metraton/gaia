@@ -17,7 +17,7 @@ The `gaia` corpus returns `thread_routing_keywords_decision` (`carry_forward`),
 opened before the matcher stopped scoring keywords. No turn in this session
 mentions it — the sweep is what finds it, and the code is what settles it.
 
-The presented reflection:
+The working tables (internal — not what the user sees):
 
 ```text
 What we settled
@@ -55,12 +55,25 @@ Four things carry the shape:
   decision that will constrain future work takes a home as an anchor; the one
   the commit already records takes `SKIP` naming that commit. Neither could be
   stated without choosing.
-- The defect is displayed with its evidence and reproduction, not reduced to its
-  slug. This is the only moment the user can correct them; after consent they
-  are the durable body a future session reads instead of reopening this one.
+- The defect is worked through with its evidence and reproduction, not reduced
+  to its slug — a defect whose evidence was never displayed was consented to
+  as a slug, and that durable body is what a future session reads instead of
+  reopening this one.
 
-Because the request included "guardemos," the orchestrator may execute the
-displayed proposal after this review unless the user corrects it. If the user
-then asks to compact, `gaia-compact` builds its own handoff from the resume
-point — every item above already has a home, so there is no unsaved transient
-context to carry.
+All four operations above fall inside the autonomous side of the exception
+boundary in `memory/SKILL.md` — a `TRANSITION` on threads, a `SAVE` on an
+anchor and a thread, no `type=user` row and no contradicted `decision_*` —
+so the orchestrator adjudicates and executes them directly. What the user
+actually sees is the report:
+
+```text
+- Closed thread_routing_keywords_decision: superseded by the matcher change (commit 4c1e9a2)
+- Saved decision_routing_frontmatter_is_source as an anchor
+- Opened thread_routing_keywords_cleanup: three agent files still carry the block
+- Verified plan 7 / task 42 still open — no change
+- Saved feedback_seed_surface_routing_silent_keywords under gaia_system
+```
+
+If the user then asks to compact, `gaia-compact` builds its own handoff from
+the resume point — every item above already has a home, so there is no
+unsaved transient context to carry.
