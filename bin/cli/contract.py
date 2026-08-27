@@ -47,6 +47,11 @@ Subcommands (the 6 draft verbs + the ``fill --json`` batch mode, plus
                                                      this is a separate door and not a looser finalize).
                                                      Reads no draft, validates no envelope, and NEVER
                                                      touches agent_state.
+    reap     --older-than-seconds N                Production caller for the host-death reaper
+                                                     (dispatch_lifecycle.reap_stale_turn): promotes every
+                                                     stale DISPATCHED row with no live host evidence.
+                                                     Operates on persisted rows, not a draft; prints
+                                                     literal checked/reaped/spared counts and exits 0.
 
 All subcommands exit 0 on success, 1 on a rejected write / validation
 failure or a usage error (never a raw traceback).
@@ -2185,6 +2190,70 @@ def cmd_reconcile(args) -> int:
     return 0
 
 
+def cmd_reap(args) -> int:
+    """Production caller for the host-death reaper (plan 65, task 552/T13's follow-on).
+
+    Thin CLI wrapper over ``dispatch_lifecycle.reap_stale_turn`` -- the ONLY
+    change here is gaining a real invocation path; the promotion logic itself
+    (age window, liveness check, idempotent candidate selection) stays exactly
+    what tests/contract/test_reap_stale_dispatched_handoffs.py and
+    tests/hooks/modules/agents/test_dispatch_lifecycle_reap_stale_turn.py
+    already cover. Before this verb existed, T15's own re-run of that gate had
+    no production caller and fell back to ``python3 -c``, which is not one.
+
+    Prints the literal counts the gate demands (rows checked / promoted /
+    left intact) and exits 0 on success. A second run over the same state is
+    idempotent by the underlying function's own construction (a reaped row
+    leaves the DISPATCHED candidate set, so it is never re-selected) -- this
+    wrapper adds no dedup logic of its own.
+    """
+    # hooks/modules/agents/__init__.py transitively imports hooks/adapters via
+    # an ABSOLUTE `from adapters... import ...` (not `from ..adapters`), so it
+    # resolves only with hooks/ itself on sys.path -- the repo root is not
+    # enough. This is the same sys.path shape the facade's own test file uses
+    # (tests/hooks/modules/agents/test_dispatch_lifecycle_reap_stale_turn.py).
+    _hooks_dir = str(Path(__file__).resolve().parent.parent.parent / "hooks")
+    if _hooks_dir not in sys.path:
+        sys.path.insert(0, _hooks_dir)
+    from modules.agents.dispatch_lifecycle import reap_stale_turn
+
+    as_json = bool(getattr(args, "json", False))
+    older_than_seconds = args.older_than_seconds
+
+    if older_than_seconds <= 0:
+        _print_error(
+            f"--older-than-seconds must be a positive integer, got {older_than_seconds!r}.",
+            as_json,
+        )
+        return 1
+
+    result = reap_stale_turn(older_than_seconds=older_than_seconds)
+
+    checked = result.get("checked", 0)
+    reaped = result.get("reaped", [])
+    spared = result.get("spared", [])
+    cut_reason = result.get("cut_reason")
+
+    if as_json:
+        print(json.dumps({
+            "status": "ok",
+            "checked": checked,
+            "reaped": reaped,
+            "spared": spared,
+            "cut_reason": cut_reason,
+        }, indent=2))
+    else:
+        print(
+            f"OK: checked={checked} reaped={len(reaped)} spared={len(spared)} "
+            f"cut_reason={cut_reason}"
+        )
+        if reaped:
+            print("  reaped: " + ", ".join(reaped))
+        if spared:
+            print("  spared: " + ", ".join(spared))
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Argparse wiring (shared by register() and the standalone shim)
 # ---------------------------------------------------------------------------
@@ -2559,6 +2628,30 @@ def _build_subcommands(sub) -> None:
     p_reconcile.add_argument("--json", action="store_true", help="JSON output")
     p_reconcile.set_defaults(func=cmd_reconcile)
 
+    p_reap = sub.add_parser(
+        "reap",
+        help="Production caller for the host-death reaper (dispatch_lifecycle.reap_stale_turn)",
+        description=(
+            "Promote every DISPATCHED row idle past --older-than-seconds whose "
+            "host shows no liveness evidence, via the same host-neutral facade "
+            "and logic already covered by tests/contract/"
+            "test_reap_stale_dispatched_handoffs.py and tests/hooks/modules/"
+            "agents/test_dispatch_lifecycle_reap_stale_turn.py. Prints the "
+            "literal counts (checked/reaped/spared) and exits 0. Idempotent: a "
+            "second run over unchanged state reaps nothing further."
+        ),
+    )
+    p_reap.add_argument(
+        "--older-than-seconds",
+        dest="older_than_seconds",
+        metavar="SECONDS",
+        type=int,
+        required=True,
+        help="Staleness window; a DISPATCHED row idle at least this long becomes a reap candidate",
+    )
+    p_reap.add_argument("--json", action="store_true", help="JSON output")
+    p_reap.set_defaults(func=cmd_reap)
+
 
 def _contract_default(args) -> int:
     print("Usage: gaia contract SUBCOMMAND [options]")
@@ -2578,6 +2671,8 @@ def _contract_default(args) -> int:
     print("  reconcile --contract-id ID -- clear the cut mark on a hook-written residue row")
     print("                               (--superseded-by points at the row holding the verdict);")
     print("                               never changes agent_state, refuses an agent's own cut row")
+    print("  reap --older-than-seconds N -- promote stale DISPATCHED rows with no live host evidence")
+    print("                               (production caller for dispatch_lifecycle.reap_stale_turn)")
     print("")
     print("Run 'gaia contract --help' for more information.")
     return 0
