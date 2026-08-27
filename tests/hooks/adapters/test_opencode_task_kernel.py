@@ -26,7 +26,7 @@ from pathlib import Path
 HOOKS_DIR = Path(__file__).parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-from adapters.opencode import OpenCodeAdapter
+from adapters.opencode import CLOSING_RULES_KERNEL, OpenCodeAdapter
 from adapters.types import HookResponse
 
 
@@ -111,6 +111,46 @@ def test_task_dispatch_prepends_rendered_kernel_while_preserving_original_prompt
     assert updated_prompt.index("# Your Contract") < updated_prompt.index(
         "original dispatch prompt"
     )
+
+
+def test_task_dispatch_appends_closing_rules_between_kernel_and_original_prompt(monkeypatch):
+    """gate 1041(a) (plan 65, task 553): the adapter's own render/inject path
+    (T9, this module) appends the two contract-closing rules -- mandatory
+    ``--draft-id`` from the first call, ``finalize`` as a separate last step
+    (agent-protocol principles 2 and 10) -- to the kernel it injects, with
+    the original prompt preserved after them. This is an ADAPTER-side append,
+    never a ``kernel_builder.build_dispatch_kernel`` change: the mock below
+    returns a kernel with none of this text, so its presence in the merged
+    prompt proves the OpenCode adapter added it, not the (untouched,
+    data-only) kernel builder."""
+    from adapters.claude_code import ClaudeCodeAdapter
+
+    _bypass_control_plane_attestation(monkeypatch)
+    monkeypatch.setattr(
+        ClaudeCodeAdapter, "adapt_pre_tool_use",
+        lambda _self, event: HookResponse(output={}),
+    )
+    monkeypatch.setattr(
+        "gaia.store.writer.claim_dispatch_row",
+        lambda **kwargs: {"contract_id": "a1.tok", "agent_id": "a1"},
+    )
+    monkeypatch.setattr(
+        "modules.context.kernel_builder.build_dispatch_kernel",
+        lambda row: "# Your Contract\n\ncontract_id: a1.tok\nagent_id:    a1",
+    )
+
+    response = OpenCodeAdapter().adapt_pre_tool_use(
+        _task_event(prompt="original dispatch prompt")
+    )
+
+    updated_prompt = response.output["updated_input"]["prompt"]
+    assert "--draft-id" in CLOSING_RULES_KERNEL
+    assert "finalize" in CLOSING_RULES_KERNEL
+    assert CLOSING_RULES_KERNEL in updated_prompt
+    kernel_index = updated_prompt.index("# Your Contract")
+    rules_index = updated_prompt.index(CLOSING_RULES_KERNEL)
+    prompt_index = updated_prompt.index("original dispatch prompt")
+    assert kernel_index < rules_index < prompt_index
 
 
 def test_task_dispatch_degrades_to_plain_allow_when_claim_finds_nothing(monkeypatch):
