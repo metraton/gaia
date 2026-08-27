@@ -21,6 +21,9 @@ Checks (in order):
   59. executed-copy-alignment - node_modules/@jaguilar87/gaia resolves to the checkout, or a
                         stale tarball the pin restored over a dev link (names the realpath)
   60. identity           - orchestrator agent configured
+  61. opencode-host-liveness - reads identity.attest ledger for the CURRENT
+                        host run; pass only with a recorded attestation,
+                        explicit absence (never a false ok) without one
   65. agent-routing      - surface_routing table (DB) primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
   80. hook-files         - all hook scripts present
@@ -1995,6 +1998,87 @@ def check_identity(project_root: Path) -> dict:
     if infos:
         return _result("Identity", "info", f"Orchestrator configured -- {'; '.join(infos)}")
     return _result("Identity", "pass", "Orchestrator agent configured")
+
+
+def _load_host_attestation():
+    """Import ``modules.security.host_attestation``, inserting hooks/ on sys.path.
+
+    Same lazy-import contract as ``_load_hooks_content_hash`` /
+    ``_load_source_parity``: doctor.py runs as a bin/cli script whose sys.path
+    lacks hooks/, and the module resolves as ``modules.security.host_attestation``
+    only once hooks/ itself is on sys.path (the same convention
+    ``check_hooks_importable`` and every hook entry point rely on -- hooks/ has
+    no ``__init__.py``, so it is an implicit namespace package). Returns None on
+    any import failure so the caller degrades instead of crashing doctor.
+    """
+    try:
+        import sys as _sys  # noqa: PLC0415
+        hooks_dir = _package_root() / "hooks"
+        if str(hooks_dir) not in _sys.path:
+            _sys.path.insert(0, str(hooks_dir))
+        from modules.security import host_attestation  # noqa: PLC0415
+        return host_attestation
+    except Exception:
+        return None
+
+
+@register_check("OpenCode host liveness", order=61)
+def check_opencode_host_liveness() -> dict:
+    """Report whether the CURRENT host run has a recorded identity attestation.
+
+    OpenCode never logs a successful plugin load -- the absence of a failure
+    proves nothing about whether a host is actually alive. So this check does
+    not infer liveness from anything indirect; it reads the ONE positive
+    signal Gaia has, ``modules.security.host_attestation``'s per-host-run
+    ledger (``hooks/modules/security/host_attestation.py``), scoped to
+    ``host_run_id()`` -- the namespace of the process that is the PARENT of
+    ``gaia doctor`` itself, exactly as every attestation issuer and resolver
+    scopes its own reads and writes.
+
+    Three outcomes, and only one of them claims liveness:
+      PASS  -- the current host run's ledger file exists and carries at least
+               one recorded attestation: a Gaia-side process vouched for this
+               run.
+      INFO  -- no ledger file for this host run, or a ledger with zero
+               records. This is reported as an explicit ABSENCE, never as a
+               false pass: it is the ordinary state for any session not
+               dispatched under an attested OpenCode host (including a bare
+               `gaia doctor` run from a shell), not a failure to diagnose.
+      INFO  -- the host_attestation module itself failed to import (a broken
+               or partial install) -- degrade rather than crash the run.
+    """
+    name = "OpenCode host liveness"
+
+    host_attestation = _load_host_attestation()
+    if host_attestation is None:
+        return _result(
+            name, "info",
+            "modules.security.host_attestation not importable -- liveness NOT verified",
+        )
+
+    host_run = host_attestation.host_run_id()
+    path = host_attestation.ledger_path(host_run)
+    if not path.is_file():
+        return _result(
+            name, "info",
+            f"no attestation ledger for the current host run ({host_run}) -- "
+            "ABSENCE, not a failure: OpenCode never logs a successful load, so "
+            "no record here means liveness is unconfirmed, never a false OK",
+        )
+
+    data = _read_json(path)
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, dict) or not records:
+        return _result(
+            name, "info",
+            f"attestation ledger for host run {host_run} exists at {path} but "
+            "carries no records -- ABSENCE of attestation, not a failure",
+        )
+
+    return _result(
+        name, "pass",
+        f"host run {host_run} has {len(records)} attestation(s) recorded at {path}",
+    )
 
 
 @register_check("Agent routing", order=65)
