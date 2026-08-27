@@ -62,24 +62,15 @@ Compaction is a separate act, performed only when the user asks for it.
 
 ## Working tables
 
-These tables are internal working discipline, never the surface shown to the
-user: they are how the pass is worked, one owner per item, on the way to the
-curation that step 5 and step 6 already ran. No table entry holds a bare
-sentence — a working method that cannot state an item without stating its
-owner cannot lose one to prose. Omit an empty section instead of inventing
-content, and use the user's own vocabulary and language.
-
-`SAVE`, `APPEND`, `TRANSITION`, `LINK`, and `SKIP` are the working verbs
-`memory` adjudicates against the exception boundary; a closure or graduation
-is a `TRANSITION`, materialized as `reclassify` — `memory/reference.md` holds
-the exact forms.
+These internal tables force one owner per item before curation; omit empty
+sections. `SAVE`, `APPEND`, `TRANSITION`, `LINK`, and `SKIP` are adjudicated by
+`memory`; a closure or graduation is a `TRANSITION` materialized as
+`reclassify`. `memory/reference.md` owns the exact forms.
 
 ### What we settled
 
-Accepted decisions, closures, and reusable learnings, each with evidence of
-agreement or objective completion. Most rows are `SKIP` naming the object
-that already holds them; a decision that will constrain a future choice is
-`SAVE`, filed as knowledge rather than as work.
+Accepted decisions, closures, and reusable learnings. Prefer `SKIP` naming the
+canonical object; `SAVE` only knowledge that must constrain a later choice.
 
 | Item | Home | Operation |
 |---|---|---|
@@ -87,9 +78,8 @@ that already holds them; a decision that will constrain a future choice is
 
 ### Open work
 
-One row per unresolved concern, plus one row per pending the step 2 sweep
-found this session resolved — a pending you closed is a `TRANSITION`, and
-leaving it out is how a worklist grows past the attention anyone can give it.
+One row per unresolved concern and per pending the sweep found resolved; the
+latter is a `TRANSITION`, never a silent omission.
 
 | Item | Home | Operation |
 |---|---|---|
@@ -103,40 +93,28 @@ leaving it out is how a worklist grows past the attention anyone can give it.
     Reproduction exact repeatable route, or unknown
     → feedback_<component>_<symptom> · type feedback · SAVE or APPEND
 
-Worked in full, not summarized — a defect whose evidence was never worked
-through is a slug with nothing behind it. `reference.md` holds the field
-definitions and the `gaia_system` retrieval query a wrong initiative or type
-hides from.
+Work the evidence through before saving; `reference.md` owns field definitions
+and the `gaia_system` retrieval query.
 
 ## Output
-
-What the user sees is the REPORT after curation runs, not the working tables
-above: one line per change, naming its effect on memory or on the project's
-history rather than the raw verb that produced it. A `type=user` row is
-flagged above the rest of the report, for veto — the write already happened;
-flagging it is what lets the user reverse it, not what authorized it.
+The user sees a post-curation report, one line per durable effect, not the
+working tables or raw verbs. Flag a `type=user` row first for its governed veto.
 
 ### Resume point
 
-One line naming what the next session picks up. If the user asks to compact
-after this, `gaia-compact` builds its own handoff; reflection hands it a
-pointer, not a container.
+Name what the next session picks up. If compacting, hand `gaia-compact` this
+pointer, never a copied container.
 
 ## Ownership and consent
 
-The orchestrator recovers, reconciles, adjudicates, and executes within the
-exception boundary in `memory/SKILL.md`; `gaia-operator` materializes what the
-orchestrator has already adjudicated. The user reads the result in the
-post-curation report, not a proposal awaiting confirmation — the boundary
-table names the few operations that still ask first or wait on a veto.
-Independent operations are best-effort, a checkpoint stays atomic. Reflection
-itself is not a new durable object.
+Consent mechanics belong to `memory`: the orchestrator recovers, reconciles,
+and adjudicates, while `gaia-operator` materializes exact instructions. Any
+operation requiring consent is delegated through its approval flow and never
+autoexecuted. Independent operations are best-effort; a checkpoint stays
+atomic, so partial state is never reported as closure. Reflection itself is not
+a new durable object.
 
 ## Handoffs
-
-- Load `memory` for the exception boundary, lifecycle verbs, and initiative
-  scoping.
-- Load `reference.md` for dense-session recovery, the reverse sweep, the
-  Gaia-improvement shape, the milestone test, and the anti-patterns to avoid.
-- Load `examples.md` for the integrated reflection → curation flow.
+- Load `memory` for curation and `reference.md` for detailed recovery mechanics.
+- Load `examples.md` for the integrated flow.
 - Load `gaia-compact` only when the user asks to compact.

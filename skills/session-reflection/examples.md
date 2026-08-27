@@ -74,6 +74,6 @@ actually sees is the report:
 - Saved feedback_seed_surface_routing_silent_keywords under gaia_system
 ```
 
-If the user then asks to compact, `gaia-compact` builds its own handoff from
-the resume point — every item above already has a home, so there is no
-unsaved transient context to carry.
+The same flow continues: after this review, the user then asks to compact.
+`gaia-compact` builds its own handoff from the resume point — every item above
+already has a home, so there is no unsaved transient context to carry.
