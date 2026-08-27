@@ -48,6 +48,7 @@ _EVENT_TYPES = {
     "session.error": HookEventType.POST_TOOL_USE_FAILURE,
     "session.deleted": HookEventType.SESSION_END,
     "session.compacted": HookEventType.POST_COMPACT,
+    "session.compacting": HookEventType.PRE_COMPACT,
 }
 
 _PATCH_PATH_MARKER = re.compile(
@@ -787,3 +788,47 @@ class OpenCodeAdapter(HookAdapter):
             harness_agent_id=event.session_id, session_id=event.session_id,
         )
         return HookResponse(output={"contract_valid": True, "closed": outcome})
+
+    def adapt_pre_compact(self, event: HookEvent) -> HookResponse:
+        """Reinject the claimed dispatch row's kernel before OpenCode's real
+        compaction (experimental.session.compacting) discards prior context
+        (plan 65, task 12; AC-7).
+
+        OpenCode's compaction summarizes/discards the session's prior messages
+        before the child's next turn -- the same row-bound kernel T9 prepends
+        at dispatch would otherwise fall out of the child's live context with
+        no re-delivery. This session's own id (event.session_id) is the same
+        value bind_harness_child_session stamped as harness_agent_id on the
+        child's row (T10), so find_dispatch_row_by_harness_agent_id resolves
+        the exact row this compaction event belongs to with no correlation
+        ladder.
+
+        Degrades to a plain allow -- no context injected -- whenever nothing
+        is bound to this session, claimed_at is absent, or the kernel render
+        fails: a compaction must never be blocked by kernel injection, the
+        same rule _adapt_task_with_kernel applies to a Task dispatch.
+        """
+        from gaia.store.writer import find_dispatch_row_by_harness_agent_id
+        from modules.context.kernel_builder import build_dispatch_kernel
+
+        session_id = event.session_id
+        try:
+            row = (
+                find_dispatch_row_by_harness_agent_id(str(session_id))
+                if session_id else None
+            )
+        except Exception:
+            row = None
+        if row is None or not row.get("claimed_at"):
+            return HookResponse(output={"action": "allow"})
+
+        try:
+            kernel = build_dispatch_kernel(row)
+        except Exception:
+            kernel = None
+        if not kernel:
+            return HookResponse(output={"action": "allow"})
+
+        return HookResponse(
+            output={"action": "allow", "updated_input": {"context": [kernel]}}
+        )
