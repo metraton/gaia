@@ -376,8 +376,84 @@ class OpenCodeAdapter(HookAdapter):
                 if isinstance(checked.output, dict) and checked.output.get("action") != "allow":
                     return checked
             return HookResponse(output={"action": "allow"})
+        if original_tool == "task":
+            return self._adapt_task_with_kernel(policy_adapter, policy_event)
         response = policy_adapter.adapt_pre_tool_use(policy_event)
         return self._translate_policy_response(response)
+
+    def _adapt_task_with_kernel(
+        self, policy_adapter: "ClaudeCodeAdapter", policy_event: HookEvent,
+    ) -> HookResponse:
+        """Run the Task dispatch through the shared policy path, then --
+        on allow -- prepend the just-born row's rendered kernel to the
+        child's own prompt, in place (plan 65, task 9).
+
+        Claude Code receives its kernel through a SEPARATE start event
+        (SubagentStart) that fires before the subagent's first turn.
+        OpenCode has no equivalent: its only start-adjacent signal
+        (``message.part.updated``) merely reports the callID<->child-
+        session binding, sometimes after the child has already acted. The
+        one point this host reliably controls before the child's first
+        action is THIS call -- the Task dispatch itself -- so the kernel
+        is embedded directly into the dispatched prompt via
+        ``updated_input``, applied field-by-field by the plugin's
+        ``applyUpdatedInput`` (T6): only ``prompt`` changes, every other
+        Task argument (``description``, ``subagent_type``, ...) passes
+        through untouched.
+
+        The delegated call already births the row with
+        ``dispatch_tool_use_id=callID`` (``build_policy_payload`` forwards
+        ``event.call_id`` as ``tool_use_id``, and
+        ``_maybe_birth_dispatched_row`` stamps it); this method claims
+        that SAME row by the SAME callID -- layer 0 of
+        ``claim_dispatch_row``'s correlation ladder -- and renders its
+        ``# Your Contract`` block with ``build_dispatch_kernel``. No
+        second birth: claiming is a state transition on the row the
+        delegated call already inserted, never a new insert.
+
+        Degrades to the plain delegated response -- no kernel, prompt
+        unmodified -- whenever the dispatch was denied/asked, or the
+        claim/render step finds nothing (birth skipped, row already
+        claimed, or a rendering error): a subagent dispatch must never be
+        blocked by kernel injection.
+        """
+        response = policy_adapter.adapt_pre_tool_use(policy_event)
+        translated = self._translate_policy_response(response)
+        output = translated.output
+        if not isinstance(output, dict) or output.get("action") != "allow":
+            return translated
+
+        try:
+            from gaia.store.writer import claim_dispatch_row
+            from modules.context.kernel_builder import build_dispatch_kernel
+        except Exception:
+            return translated
+
+        try:
+            row = claim_dispatch_row(
+                dispatch_tool_use_id=policy_event.call_id or None,
+            )
+        except Exception:
+            return translated
+        if row is None:
+            return translated
+
+        try:
+            kernel = build_dispatch_kernel(row)
+        except Exception:
+            kernel = None
+        if not kernel:
+            return translated
+
+        tool_input = policy_event.payload.get("tool_input") or {}
+        original_prompt = str(tool_input.get("prompt") or "")
+        merged_prompt = (
+            f"{kernel}\n\n{original_prompt}" if original_prompt else kernel
+        )
+        updated_input = dict(output.get("updated_input") or {})
+        updated_input["prompt"] = merged_prompt
+        output["updated_input"] = updated_input
+        return translated
 
     @staticmethod
     def _resolved_attestation(event: HookEvent) -> "Attestation | None":
