@@ -717,6 +717,7 @@ def _cmd_add(args) -> int:
             upsert_memory, reclassify_memory, resolve_project_ref,
             project_workspaces, VALID_MEMORY_TYPES,
             normalize_initiative, initiative_from_project_ref,
+            HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
@@ -802,6 +803,8 @@ def _cmd_add(args) -> int:
             initiative=initiative,
             audience=audience_flag,
         )
+    except MemoryHostScopeError as exc:
+        return _err_structured(str(exc), as_json, code=exc.code)
     except ValueError as exc:
         return _err(str(exc), as_json)
     except PermissionError as exc:
@@ -811,6 +814,13 @@ def _cmd_add(args) -> int:
         return _err(str(exc), as_json)
     except Exception as exc:  # noqa: BLE001
         return _err(f"failed to upsert memory: {exc}", as_json)
+
+    # Host-scope forces the row into HOST_WORKSPACE regardless of the
+    # requested --workspace/env/cwd; `res["workspace"]` is the writer's
+    # authoritative answer, so every downstream use (reclassify, output)
+    # follows it rather than re-deriving the same rule here.
+    host_scoped_notice = initiative in HOST_SCOPED_INITIATIVES
+    workspace = res.get("workspace", workspace)
 
     # T5: apply class/status if either flag was supplied. The reclassify
     # writer handles enum validation, the status-only-on-thread rule, and
@@ -857,6 +867,8 @@ def _cmd_add(args) -> int:
         if reclassify_result is not None:
             out["class"] = reclassify_result["class"]
             out["memory_status"] = reclassify_result["memory_status"]
+        if host_scoped_notice:
+            out["host_scoped"] = True
         print(json.dumps(out, indent=2))
     else:
         verb = "Updated" if res.get("action") == "updated" else "Created"
@@ -870,6 +882,11 @@ def _cmd_add(args) -> int:
         if audience_flag is not None:
             print(f"  audience: {audience_flag}")
         print(f"  body: {snippet}")
+        if host_scoped_notice:
+            print(
+                f"  initiative host-scoped: escrita en {HOST_WORKSPACE}, "
+                f"--workspace ignorado"
+            )
         if reclassify_result is not None:
             print(
                 f"  class={reclassify_result['class']}, "
@@ -991,6 +1008,7 @@ def _cmd_checkpoint(args) -> int:
     workspace_flag = getattr(args, "workspace", None)
     project_flag = getattr(args, "project", None)
     project_ref_flag = getattr(args, "project_ref", None)
+    initiative_flag = getattr(args, "initiative", None)
     workspace = _resolve_workspace(workspace_flag)
 
     project_ref, scope_err = _resolve_scope_contract(
@@ -1035,12 +1053,19 @@ def _cmd_checkpoint(args) -> int:
     try:
         from gaia.store.writer import (
             close_session_memory, MemorySessionPayloadError,
+            HOST_SCOPED_INITIATIVES, HOST_WORKSPACE, MemoryHostScopeError,
+            normalize_initiative,
         )
     except ImportError as exc:
         return _err(f"gaia.store.writer not importable: {exc}", as_json)
 
     try:
-        res = close_session_memory(workspace, payload, project_ref=project_ref)
+        res = close_session_memory(
+            workspace, payload, project_ref=project_ref,
+            initiative=initiative_flag,
+        )
+    except MemoryHostScopeError as exc:
+        return _err_structured(str(exc), as_json, code=exc.code)
     except MemorySessionPayloadError as exc:
         return _err_structured(str(exc), as_json, code=exc.code)
     except PermissionError as exc:
@@ -1053,6 +1078,13 @@ def _cmd_checkpoint(args) -> int:
         return _err(f"failed to write checkpoint: {exc}", as_json)
 
     warnings = res.get("warnings") or []
+    # Host-scope forces the whole checkpoint into HOST_WORKSPACE regardless
+    # of the requested --workspace/env/cwd; `res["workspace"]` is the
+    # writer's authoritative answer.
+    host_scoped_notice = (
+        normalize_initiative(initiative_flag) in HOST_SCOPED_INITIATIVES
+    )
+    workspace = res.get("workspace", workspace)
 
     if as_json:
         out = {
@@ -1066,6 +1098,8 @@ def _cmd_checkpoint(args) -> int:
         }
         if project_ref is not None:
             out["project_ref"] = project_ref
+        if host_scoped_notice:
+            out["host_scoped"] = True
         print(json.dumps(out, indent=2))
     else:
         anchor = res.get("anchor") or {}
@@ -1077,6 +1111,11 @@ def _cmd_checkpoint(args) -> int:
         )
         if project_ref is not None:
             print(f"  project_ref: {project_ref}")
+        if host_scoped_notice:
+            print(
+                f"  initiative host-scoped: escrita en {HOST_WORKSPACE}, "
+                f"--workspace ignorado"
+            )
         for t in threads:
             print(f"  thread: {t.get('name')} ({t.get('action')})")
         for w in warnings:
@@ -1829,19 +1868,39 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
 # ('carry_forward','open) -- anchors, logs, and resolved/snapshot threads are
 # excluded BY DESIGN (a worklist, not a knowledge dump). Soft-deleted and
 # supersedes-destination rows are excluded exactly as the section renderer does.
+# Workspace filters as ``workspace IN ({ws})`` rather than ``= ?`` so
+# ``_fetch_pending_vivo`` can union in the host sentinel (see
+# ``_reader_workspaces``) with the SAME query shape used for a single
+# workspace -- ``{ws}`` is filled in with 1 or 2 placeholders at call time.
 _PENDING_VIVO_SELECT = (
     "SELECT name, type, description, body, updated_at, initiative, "
     "       class, status "
     "FROM memory "
-    "WHERE workspace = ? "
+    "WHERE workspace IN ({ws}) "
     "  AND deleted_at IS NULL "
     "  AND class = 'thread' "
     "  AND status IN ('carry_forward', 'open') "
     "  AND name NOT IN ("
     "    SELECT dst_name FROM memory_links "
-    "    WHERE workspace = ? AND kind = 'supersedes'"
+    "    WHERE workspace IN ({ws}) AND kind = 'supersedes'"
     "  ) "
 )
+
+
+def _reader_workspaces(workspace: str) -> list[str]:
+    """Workspaces a canonical read should union: the caller's own workspace
+    plus the host sentinel (:data:`gaia.store.writer.HOST_WORKSPACE`), so a
+    host-scoped row -- forced into the sentinel at write time by
+    ``apply_host_scope`` -- is reachable from any vantage. Deduped when the
+    caller's workspace already IS the sentinel.
+    """
+    try:
+        from gaia.store.writer import HOST_WORKSPACE
+    except ImportError:
+        return [workspace]
+    if workspace == HOST_WORKSPACE:
+        return [workspace]
+    return [workspace, HOST_WORKSPACE]
 
 
 def _collapse_desc(text: str) -> str:
@@ -1871,7 +1930,8 @@ def _bucket_key(initiative) -> str:
 
 def _fetch_pending_vivo(workspace: str, extra_where: str = "",
                         extra_params=None) -> list:
-    """Return live-pending thread rows for ``workspace``, freshest first.
+    """Return live-pending thread rows for ``workspace`` UNIONED with the host
+    sentinel (see ``_reader_workspaces``), freshest first.
 
     Never raises: any DB/import error yields an empty list so the SessionStart
     contract stays fail-safe.
@@ -1883,11 +1943,14 @@ def _fetch_pending_vivo(workspace: str, extra_where: str = "",
     try:
         con = _connect()
         try:
-            params = [workspace, workspace]
+            workspaces = _reader_workspaces(workspace)
+            placeholders = ", ".join("?" for _ in workspaces)
+            select_sql = _PENDING_VIVO_SELECT.format(ws=placeholders)
+            params = list(workspaces) + list(workspaces)
             if extra_params:
                 params.extend(extra_params)
             cur = con.execute(
-                _PENDING_VIVO_SELECT + extra_where
+                select_sql + extra_where
                 + " ORDER BY COALESCE(updated_at, '') DESC",
                 params,
             )
@@ -2317,7 +2380,7 @@ def _cmd_curated_show(args) -> int:
     want_history = getattr(args, "history", False)
 
     try:
-        from gaia.store.writer import get_memory, record_memory_access
+        from gaia.store.writer import get_memory, record_memory_access, HOST_WORKSPACE
         from gaia.store.reader import (
             get_memory_class_status, memory_links_for, memory_history_for,
         )
@@ -2325,6 +2388,17 @@ def _cmd_curated_show(args) -> int:
         return _err(f"gaia.store not importable: {exc}", as_json)
 
     row = get_memory(workspace, name)
+    # (workspace, name) is the PK -- a slug is not resolved by name alone. A
+    # host-scoped row now lives under HOST_WORKSPACE regardless of the caller's
+    # own vantage, so a miss under the resolved workspace falls back to the
+    # sentinel ONCE before reporting not-found. This is the minimal change:
+    # no initiative lookup, no ambiguity resolution -- one extra PK probe,
+    # tried only on a miss, so an unrelated slug that happens to collide
+    # between two workspaces still resolves to the caller's own row first.
+    if row is None and workspace != HOST_WORKSPACE:
+        row = get_memory(HOST_WORKSPACE, name)
+        if row is not None:
+            workspace = HOST_WORKSPACE
     if row is None:
         return _err(
             f"memory '{name}' not found in workspace '{workspace}'",
@@ -3602,6 +3676,15 @@ def register(subparsers):
     _cp_project_group.add_argument(
         "--project-ref", dest="project_ref", default=None,
         help="Anchor directly to a known project_identity string.",
+    )
+    checkpoint_p.add_argument(
+        "--initiative", default=None, metavar="KEY",
+        help=(
+            "v32: canonical project/initiative grouping key (memory.initiative), "
+            "applied to the record AND every pending in this checkpoint -- the "
+            "payload carries no per-row initiative, matching the shared --type "
+            "convention. Same semantics as 'gaia memory add --initiative'."
+        ),
     )
     checkpoint_p.add_argument("--workspace", default=None, metavar="W",
                               help="Workspace identity.")
