@@ -13,7 +13,9 @@ memory body.
 
 ## Exact best-effort batch
 
-The orchestrator shows and confirms three independent operations:
+All three fall on the autonomous side of the exception boundary (`append`,
+`reclassify`, and `add` on a `feedback` row), so the orchestrator adjudicates
+and executes three independent operations directly, then reports:
 
 1. append evidence to `decision_router_source`;
 2. close `feedback_old_warning`;
@@ -27,9 +29,9 @@ failing operation succeed.
 ## Atomic milestone
 
 A release closes a meaningful project arc and leaves two independent follow-up
-concerns. The confirmed checkpoint contains one milestone record and two
-pendings. `gaia memory checkpoint` writes all rows and links or none; the
-operator does not decompose it into a best-effort batch.
+concerns. The checkpoint contains one milestone record and two pendings.
+`gaia memory checkpoint` writes all rows and links or none; the operator does
+not decompose it into a best-effort batch.
 
 ## Ambiguous input
 

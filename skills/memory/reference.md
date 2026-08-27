@@ -155,7 +155,35 @@ this section holds the query mechanics behind it.
   three-section combination today; it is reachable only by an explicit
   manual invocation.
 
-## Access telemetry: exact columns and call sites
+## Access telemetry
+
+### Reading a row leaves a trace
+
+Three counters bump as a side effect of being read, and two questions classify
+any surface, including one not built yet. **Did the caller identify these rows,
+or describe a window and take whatever fell in?** A slug identifies them; a
+named initiative identifies them; a filter, a search term, a date range or a
+dump of the table identifies nothing, however much of each row it prints.
+Identified, so reaching them was the point — **deliberate** (`show`, `story`,
+`get-relevant --initiative`). **When they were not: did the rows answer the
+question their caller asked, or were they assembled into somebody's context?**
+Answered — **neither** (`search`, `list`, `gaia query`): what fell in reflects
+the phrasing, not the row. Assembled — automatic, and split once more by what
+the block reaches: one fixed corpus every time it fires, the same rows whatever
+the occasion is about, is **kernel** (today, the dispatch block); a window
+picked for this occasion is **injection** (`get-relevant`, however launched).
+Rendering is what counts: a row trimmed out of a block was never reached.
+
+Never blend two into one number. A count is worth reading only if a higher one
+means the row was worth more, and each axis fires at a rate set by something
+other than the row: the kernel's corpus rides on every dispatch, so folded into
+injection it heads any ranking by construction and measures dispatch volume, not
+usefulness; injection folded into deliberate lets a row pushed at people read as
+demand. A surface built tomorrow earns its own axis by that test. None of this
+changes what gets injected — selection still orders by `updated_at` and reads no
+counter.
+
+### Exact columns and call sites
 
 The `memory` table carries three independent counter/timestamp pairs --
 `injection_count` / `last_injected_at`, `deliberate_count` /
@@ -169,7 +197,7 @@ which still sorts by `updated_at` alone. It is best-effort: every failure
 is swallowed and reported as `False`, so a locked or unreachable DB never
 breaks the read it instruments.
 
-`SKILL.md`'s "Reading a row leaves a trace" carries the property that decides
+"Reading a row leaves a trace" above carries the property that decides
 deliberate from automatic -- whether the CALLER identified the rows, never
 whether the answer carried the body. That property alone reaches only two
 buckets; it does not by itself split the automatic bucket further. A second,
@@ -248,12 +276,13 @@ that must outlive that window is **promoted** into curated memory under
 (`gaia memory get-relevant --initiative=gaia_system --json`) returns the
 whole corpus for triage without reopening the sessions that produced it.
 
-Promotion is a curation act: the orchestrator decides what earns it and
-`gaia-operator` executes the write, with the user's consent. A dispatched
-subagent never promotes -- `subagent_memory_write_guard` rejects
-`gaia memory add` from any dispatch other than `gaia-operator`,
-categorically and unapprovably. Its participation is to PROPOSE (a
-`failure_report` in its contract, or a `memorialize_suggestions` entry).
+Promotion is a curation act, governed by the ownership split in `SKILL.md`
+("Ownership"): the orchestrator decides what earns it, `gaia-operator`
+executes the write. A dispatched subagent never promotes -- `subagent_memory_write_guard`
+rejects `gaia memory add` from any dispatch other than `gaia-operator`,
+categorically and unapprovably (no `approval_id`, not a T3 grant). Its
+participation is to PROPOSE (a `failure_report` in its contract, or a
+`memorialize_suggestions` entry).
 
 ### The row: existing flags only, no new schema
 
@@ -263,7 +292,7 @@ categorically and unapprovably. Its participation is to PROPOSE (a
 | `--class` | `thread` | A defect is open work, not background knowledge. Only `class=thread` is visible to the initiative digest's query. |
 | `--status` | `carry_forward` | The digest selects `status IN ('carry_forward','open')`; `carry_forward` states the defect must reach the next session, overriding the `log` default that `feedback_*` would otherwise take. |
 | `--initiative` | `gaia_system` | The one grouping key that makes the corpus retrievable in a single query. Normalized to lowercase_snake by the writer. |
-| scope | `--workspace=<ws>` | The corpus is local to an installation and never travels. Do NOT pass `--project`: with a git project anchored, `initiative` is derived from the repo basename, and the corpus must not split into per-repo keys. |
+| scope | forced to the host sentinel | `gaia_system` is in `HOST_SCOPED_INITIATIVES`, so `apply_host_scope` (`gaia/store/writer.py::apply_host_scope`) overrides whatever `--workspace` was passed and writes into the sentinel workspace `_gaia_host` instead -- the CLI still accepts `--workspace`, it just is not honored (the write reports the override: `bin/cli/memory.py::_cmd_add`'s `host_scoped_notice`). `--project`/`--project-ref` is not merely discouraged, it is REJECTED: combining it with a host-scoped initiative raises `MemoryHostScopeError` (`code=host_scope_no_project`) before any row is written. |
 | `--description` | one line, the symptom in the reader's words | Listings and the digest render `description`, not the body. |
 
 Nothing here is new schema. `initiative`, `class`, and `status` are columns
