@@ -15,7 +15,9 @@ What these tests cover:
 """
 
 import json
+import os
 import re
+import shutil
 import sys
 import pytest
 from pathlib import Path
@@ -56,6 +58,30 @@ from modules.security.mutative_verbs import (
     detect_mutative_command,
     CATEGORY_MUTATIVE,
 )
+from adapters.registry import (
+    registered_adapter_skill_documents,
+    registered_host_mechanism_names,
+)
+
+
+@pytest.fixture(autouse=True)
+def _agnosticism_mutation_tree(tmp_path, monkeypatch):
+    """Redirect skill reads to an isolated mutation tree when requested."""
+    mutation = os.environ.get("GAIA_AGNOSTICISM_MUTATION")
+    if mutation is None:
+        return
+
+    skills_copy = tmp_path / "skills"
+    shutil.copytree(SKILLS_DIR, skills_copy)
+    monkeypatch.setitem(globals(), "SKILLS_DIR", skills_copy)
+    if mutation == "missing-adapter":
+        (skills_copy / "claude-code-consent-adapter" / "SKILL.md").unlink()
+    elif mutation == "nested-host-name":
+        nested = skills_copy / "execution" / "nested" / "probe.md"
+        nested.parent.mkdir()
+        nested.write_text(registered_host_mechanism_names()[0])
+    else:
+        raise AssertionError(f"unknown agnosticism mutation: {mutation}")
 
 
 def _load_permissions_from_plugin_setup() -> dict:
@@ -450,6 +476,14 @@ class TestTaskValidatorConsistency:
             "orchestrator-present-approval must name the activation channel"
         )
 
+    def test_registered_adapter_skill_documents_exist(self):
+        """Every adapter document declared by the registry must exist."""
+        for relative_path in registered_adapter_skill_documents():
+            adapter_document = SKILLS_DIR / relative_path
+            assert adapter_document.is_file(), (
+                f"registered adapter document is missing: {relative_path}"
+            )
+
 
 # ===========================================================================
 # 5. Skills cross-references
@@ -476,12 +510,11 @@ class TestSkillsCrossReferences:
             )
 
     def test_approval_protocol_skill_references_approval_mechanism(self):
-        """No consent skill names a host mechanism (AC-8).
+        """Registered host mechanism names stay out of all five agnostic skills.
 
-        The five skills the consent protocol declares agnostic must name no
-        host consent mechanism. There is no adapter to hand the reader to any
-        more: the rules are stated host-neutrally, with a conditional where a
-        rule genuinely depends on what a host's reply transports.
+        The scan is recursive because supporting documents carry the same
+        agnosticism obligation as SKILL.md. The registered names remain an
+        enumeration: a mechanism registered nowhere can still pass this test.
         pending-approvals is the orchestrator-side sibling and is not in that
         agnostic set.
         """
@@ -492,14 +525,9 @@ class TestSkillsCrossReferences:
             "orchestrator-present-approval",
             "execution",
         )
-        host_names = (
-            "askuserquestion",
-            "elicitationresult",
-            "permission.replied",
-            "permission.v2.replied",
-        )
+        host_names = registered_host_mechanism_names()
         for skill in agnostic:
-            for doc in sorted((SKILLS_DIR / skill).glob("*.md")):
+            for doc in sorted((SKILLS_DIR / skill).rglob("*.md")):
                 content = doc.read_text().lower()
                 found = [name for name in host_names if name in content]
                 assert not found, (

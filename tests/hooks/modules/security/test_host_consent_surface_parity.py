@@ -53,6 +53,10 @@ from adapters.consent_presentation import (  # noqa: E402
     render_native_text,
 )
 from adapters.types import ConsentBinding  # noqa: E402
+from adapters.registry import (  # noqa: E402
+    registered_host_mechanism_names,
+    registered_host_surface_names,
+)
 
 APPROVAL_ID = "P-" + "a1b2c3d4" + "e" * 24
 HOST_BINDING = ConsentBinding(
@@ -67,11 +71,9 @@ COVERED_COMMANDS = [
     ("kubectl delete pod probe-pod", "delete"),
 ]
 
-#: Labels of the host-specific surface this task removed, and names of host
-#: mechanisms. An agnostic surface that carries either has re-acquired the
-#: defect, so both sets are asserted absent from both surfaces.
+#: Labels of the host-specific surface this task removed. An agnostic surface
+#: that carries one has re-acquired the defect.
 RETIRED_LABELS = ("OPERACION", "COMANDOS", "COMANDO:", "RIESGO")
-HOST_MECHANISM_NAMES = ("askuserquestion", "permission.replied", "opencode", "claude")
 
 AUTHORED_FIELDS = ("impact", "rollback", "verification")
 
@@ -157,7 +159,10 @@ def test_both_hosts_render_the_values_the_producer_sealed(command, expected_verb
         for label in RETIRED_LABELS:
             assert label not in surface, f"{label} survives in:\n{surface}"
         lowered = surface.lower()
-        for name in HOST_MECHANISM_NAMES:
+        forbidden_names = (
+            registered_host_mechanism_names() + registered_host_surface_names()
+        )
+        for name in forbidden_names:
             assert name not in lowered, f"{name} is named in:\n{surface}"
 
 

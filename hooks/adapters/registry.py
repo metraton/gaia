@@ -30,7 +30,8 @@ entry point changing.
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional, Type
+from dataclasses import dataclass
+from typing import Dict, Iterable, Optional, Type
 
 from .base import HookAdapter
 from .claude_code import ClaudeCodeAdapter
@@ -41,19 +42,31 @@ from .opencode import OpenCodeAdapter
 DEFAULT_HOST = "claude_code"
 HOST_ENV_VAR = "GAIA_HOST"
 
-# host key -> adapter class. A new host appends one entry here (or via
-# register_adapter); nothing else in the codebase references the class.
-_REGISTRY: Dict[str, Type[HookAdapter]] = {
-    DEFAULT_HOST: ClaudeCodeAdapter,
-    "opencode": OpenCodeAdapter,
-}
+@dataclass(frozen=True)
+class HostAdapterMetadata:
+    """Documentation metadata declared when a host adapter is registered."""
+
+    mechanism_names: tuple[str, ...] = ()
+    surface_names: tuple[str, ...] = ()
+    skill_document: Optional[str] = None
+
+
+_REGISTRY: Dict[str, Type[HookAdapter]] = {}
+_HOST_METADATA: Dict[str, HostAdapterMetadata] = {}
 
 # Cache of constructed adapters, keyed by host. The adapter is stateless, so a
 # single instance per host is reused for the life of the process.
 _INSTANCES: Dict[str, HookAdapter] = {}
 
 
-def register_adapter(host: str, adapter_cls: Type[HookAdapter]) -> None:
+def register_adapter(
+    host: str,
+    adapter_cls: Type[HookAdapter],
+    *,
+    mechanism_names: Iterable[str] = (),
+    surface_names: Iterable[str] = (),
+    skill_document: Optional[str] = None,
+) -> None:
     """Register ``adapter_cls`` as the adapter for host key ``host``.
 
     Supporting a new host CLI is this call plus the new ``HookAdapter``
@@ -69,7 +82,54 @@ def register_adapter(host: str, adapter_cls: Type[HookAdapter]) -> None:
             f"adapter_cls must be a HookAdapter subclass, got {adapter_cls!r}"
         )
     _REGISTRY[host] = adapter_cls
+    _HOST_METADATA[host] = HostAdapterMetadata(
+        mechanism_names=tuple(mechanism_names),
+        surface_names=tuple(surface_names),
+        skill_document=skill_document,
+    )
     _INSTANCES.pop(host, None)
+
+
+def registered_host_mechanism_names() -> tuple[str, ...]:
+    """Return the mechanism names declared by registered host adapters."""
+    return tuple(
+        name
+        for metadata in _HOST_METADATA.values()
+        for name in metadata.mechanism_names
+    )
+
+
+def registered_adapter_skill_documents() -> tuple[str, ...]:
+    """Return skill documents declared by registered host adapters."""
+    return tuple(
+        metadata.skill_document
+        for metadata in _HOST_METADATA.values()
+        if metadata.skill_document is not None
+    )
+
+
+def registered_host_surface_names() -> tuple[str, ...]:
+    """Return host names declared for presentation-surface checks."""
+    return tuple(
+        name
+        for metadata in _HOST_METADATA.values()
+        for name in metadata.surface_names
+    )
+
+
+register_adapter(
+    DEFAULT_HOST,
+    ClaudeCodeAdapter,
+    mechanism_names=("askuserquestion", "elicitationresult"),
+    surface_names=("claude",),
+    skill_document="claude-code-consent-adapter/SKILL.md",
+)
+register_adapter(
+    "opencode",
+    OpenCodeAdapter,
+    mechanism_names=("permission.replied", "permission.v2.replied"),
+    surface_names=("opencode",),
+)
 
 
 def get_adapter(host: Optional[str] = None) -> HookAdapter:

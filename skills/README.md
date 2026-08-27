@@ -62,6 +62,7 @@ skills/
 ├── agent-response/        # Orchestrator: read and route a closed agent_contract_handoffs row
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
+├── claude-code-consent-adapter/ # Claude Code adapter vocabulary for its native consent mechanism
 ├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
