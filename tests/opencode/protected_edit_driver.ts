@@ -38,6 +38,26 @@ await plugin["tool.execute.after"](
   },
   { metadata: { sessionId: childSessionID }, output: "" },
 )
+// The real host's callID<->child-session binding signal (measured:
+// project_gaia_opencode_lifecycle_medido_2026_08_26), on the DISPATCHING
+// session's own part -- without it the backstop
+// (opencode-adapter:child-session-binding-backstop) denies every child
+// call fail-closed. Same pattern as consent_retry_driver.ts's "task-part"
+// step (commit 4888748).
+await plugin.event({
+  event: {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        type: "tool",
+        tool: "task",
+        sessionID: rootSessionID,
+        callID: dispatchCallID,
+        state: { metadata: { sessionId: childSessionID } },
+      },
+    },
+  },
+})
 
 const results: Record<string, unknown>[] = []
 for (const [index, step] of scenario.steps.entries()) {
