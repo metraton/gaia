@@ -52,8 +52,14 @@ AGENT_ID = "gaia-system"
 # is the only role for which Gaia's delegate mode leaves Bash reachable at all
 # (an orchestrator session is confined to `gaia *`). So every scenario opens
 # with the real dispatch chain the plugin builds: the primary session takes a
-# turn and is attested, it issues a task, and the child session that comes back
-# carries the dispatch handle the plugin derives from the task's call id.
+# turn and is attested, it issues a task, the PARENT's own message.part.updated
+# names the callID<->child-session binding (the real host emits this before
+# tool.execute.after or session.idle report the same call complete -- measured
+# in the T15 E2E run), and only then does the child session that comes back
+# carry the dispatch handle the plugin derives from the task's call id. The
+# backstop (hooks/adapters/opencode.py, gate 1013) denies a dispatched child's
+# first tool call until this binding lands, so it must precede every child-side
+# step below.
 DISPATCH_STEPS = [
     {
         "kind": "message", "label": "root-turn",
@@ -63,6 +69,10 @@ DISPATCH_STEPS = [
         "kind": "before", "label": "dispatch", "sessionID": ROOT_SESSION_ID,
         "callID": DISPATCH_CALL_ID, "tool": "task",
         "args": {"subagent_type": AGENT_ID},
+    },
+    {
+        "kind": "task-part", "label": "bound", "sessionID": ROOT_SESSION_ID,
+        "callID": DISPATCH_CALL_ID, "childSessionID": SESSION_ID,
     },
     {
         "kind": "after-task", "label": "dispatched", "sessionID": ROOT_SESSION_ID,

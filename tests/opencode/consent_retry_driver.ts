@@ -125,6 +125,26 @@ for (const step of scenario.steps) {
         { metadata: { sessionId: step.childSessionID }, output: "" },
       )
       record.allowed = true
+    } else if (step.kind === "task-part") {
+      // The real host's callID<->child-session binding signal (measured:
+      // project_gaia_opencode_lifecycle_medido_2026_08_26), on the
+      // DISPATCHING session's own part -- see lifecycle_transport_driver.ts
+      // for the identical shape exercised against a recording stub.
+      await plugin.event({
+        event: {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              type: "tool",
+              tool: "task",
+              sessionID: step.sessionID,
+              callID: step.callID,
+              state: { metadata: { sessionId: step.childSessionID } },
+            },
+          },
+        },
+      })
+      record.allowed = true
     } else if (step.kind === "replied") {
       await plugin.event({
         event: {
