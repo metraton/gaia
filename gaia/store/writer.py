@@ -1885,6 +1885,54 @@ VALID_MEMORY_TYPES = ("project", "user", "feedback", "atom", "decision", "negati
 # 'executor' rows for a subagent's kernel without leaking 'orchestrator' ones.
 VALID_MEMORY_AUDIENCES = ("orchestrator", "executor", "any")
 
+# Host-scope (2026-08-27 consensus): Gaia's own scope has no per-workspace
+# identity, so it is expressed as a VALUE of the existing workspace axis
+# rather than a new dimension -- a sentinel workspace row, not a new column.
+# HOST_WORKSPACE holds every curated-memory row for an initiative in
+# HOST_SCOPED_INITIATIVES, regardless of which --workspace/env/cwd produced
+# the write. Data migration for rows written before this change (legacy
+# gaia_system rows still sitting under 'me'/'century-inc'/other workspaces)
+# is a separate, deliberately deferred operation -- this constant only governs
+# writes and reads going forward.
+HOST_WORKSPACE = "_gaia_host"
+HOST_SCOPED_INITIATIVES = frozenset({"gaia_system"})
+
+
+class MemoryHostScopeError(ValueError):
+    """Raised when a host-scoped initiative is combined with an explicit
+    project anchor, or when a host-scoped row is relocated out of the
+    sentinel workspace. Carries a stable ``code`` so the CLI can map it to a
+    structured error, mirroring :class:`MemorySessionPayloadError`."""
+
+    def __init__(self, message: str, *, code: str = "host_scope_no_project") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def apply_host_scope(
+    workspace: str,
+    initiative: str | None,
+    project_ref: str | None,
+) -> str:
+    """Force the host sentinel workspace for a host-scoped initiative.
+
+    Call AFTER :func:`normalize_initiative` has already run on ``initiative``.
+    A non-host-scoped initiative returns ``workspace`` untouched. A
+    host-scoped initiative always resolves to :data:`HOST_WORKSPACE`,
+    overriding whatever ``--workspace``/env/cwd the caller resolved -- Gaia's
+    own scope is a single global surface, not per-workspace. ``project_ref``
+    is refused outright for a host-scoped initiative: a host-scoped row has
+    no per-project anchor by construction.
+    """
+    if initiative not in HOST_SCOPED_INITIATIVES:
+        return workspace
+    if project_ref is not None:
+        raise MemoryHostScopeError(
+            f"initiative {initiative!r} is host-scoped: project_ref/--project "
+            f"is not accepted (host-scoped memory has no per-project anchor)"
+        )
+    return HOST_WORKSPACE
+
 
 # ---------------------------------------------------------------------------
 # Structural enforcement: curated memory is owned by the orchestrator-operator
@@ -2300,6 +2348,11 @@ def upsert_memory(
     elif project_ref is not None:
         initiative = initiative_from_project_ref(project_ref)
 
+    # Host-scope: gaia_system (and any future HOST_SCOPED_INITIATIVES) always
+    # lands in the sentinel workspace, ignoring whatever --workspace/env/cwd
+    # resolved it, and refuses a project anchor outright.
+    workspace = apply_host_scope(workspace, initiative, project_ref)
+
     if type not in VALID_MEMORY_TYPES:
         raise ValueError(
             f"invalid memory type {type!r}; must be one of {list(VALID_MEMORY_TYPES)}"
@@ -2373,6 +2426,9 @@ def upsert_memory(
                 "action": action,
                 "name": name,
                 "updated_at": now,
+                # The workspace actually written -- may differ from the
+                # caller's requested workspace when host-scope forced it.
+                "workspace": workspace,
             }
         except Exception:
             con.rollback()
@@ -3087,6 +3143,7 @@ def _upsert_checkpoint_row(
     class_: str,
     status: str | None,
     project_ref: str | None,
+    initiative: str | None = None,
     origin_session_id: str | None,
     now: str,
 ) -> dict:
@@ -3096,6 +3153,15 @@ def _upsert_checkpoint_row(
     bad row aborts the whole checkpoint via the caller's rollback. Combines the
     body/type/slug rules of ``upsert_memory`` with the class/status write of
     ``reclassify_memory`` in a single INSERT ... ON CONFLICT DO UPDATE.
+
+    ``initiative`` -- same coalesce-or-omit discipline as ``upsert_memory``:
+    an explicit value (already normalized by the caller) wins; ``None``
+    derives from ``project_ref`` via :func:`initiative_from_project_ref`.
+    Host-scope (:func:`apply_host_scope`) is applied here too, on top of
+    whatever ``workspace`` the caller resolved -- this is the actual INSERT
+    site, so the force must hold even if a future caller reaches this
+    function without going through :func:`close_session_memory`'s own
+    up-front application of the same rule.
     """
     if not body or not body.strip():
         raise ValueError(f"memory body cannot be empty (slug {name!r})")
@@ -3106,14 +3172,15 @@ def _upsert_checkpoint_row(
         )
     _validate_curated_slug(name, mem_type)
 
+    if initiative is None:
+        initiative = initiative_from_project_ref(project_ref)
+    workspace = apply_host_scope(workspace, initiative, project_ref)
+
     existing = con.execute(
         "SELECT name FROM memory WHERE workspace = ? AND name = ?",
         (workspace, name),
     ).fetchone()
     action = "updated" if existing is not None else "inserted"
-    # v32: derive the initiative grouping key from the git anchor (same
-    # coalesce-or-omit discipline as project_ref). None when unanchored.
-    initiative = initiative_from_project_ref(project_ref)
     con.execute(
         """
         INSERT INTO memory (workspace, name, type, description, body,
@@ -3144,6 +3211,9 @@ def _upsert_checkpoint_row(
         "action": action,
         "class": class_,
         "memory_status": status,
+        # The workspace actually written -- may differ from the caller's
+        # requested workspace when host-scope forced it.
+        "workspace": workspace,
     }
 
 
@@ -3193,6 +3263,7 @@ def close_session_memory(
     payload: Mapping[str, Any],
     *,
     project_ref: str | None = None,
+    initiative: str | None = None,
     db_path: Path | None = None,
 ) -> dict:
     """Persist a whole session-close reflection atomically.
@@ -3212,17 +3283,26 @@ def close_session_memory(
          convention where record and threads share ``--type``).
       3. a ``derived_from`` edge from each thread back to the anchor.
 
+    ``initiative`` -- one logical initiative for the WHOLE checkpoint (the
+    payload carries no per-row initiative, matching the shared ``--type``
+    convention above). Normalized here, then host-scope (:func:`apply_host_scope`)
+    is applied ONCE up front so ``_ensure_workspace_row`` provisions the
+    workspace the rows will actually land under; ``_upsert_checkpoint_row``
+    re-applies the same rule per row as the real INSERT-site enforcement.
+
     Idempotent: re-running the same payload UPSERTs the same rows and re-uses
     the same edges (the fecha-stamped slug convention avoids collisions).
 
     Returns::
 
         {"status": "applied", "anchor": {...}, "threads": [...],
-         "links": [...], "warnings": [...], "updated_at": ...}
+         "links": [...], "warnings": [...], "updated_at": ..., "workspace": ...}
 
     Raises:
         MemorySessionPayloadError: malformed payload (``code="bad_shape"``);
             raised before any connection is opened.
+        MemoryHostScopeError: a host-scoped initiative was combined with
+            ``project_ref`` (``code="host_scope_no_project"``).
         ValueError: a row failed semantic validation (invalid type, slug<->type
             mismatch, empty body) -- the whole checkpoint is rolled back.
         MemoryWriteForbidden: GAIA_DISPATCH_AGENT names a non-curator.
@@ -3254,20 +3334,25 @@ def close_session_memory(
     origin_session_id = os.environ.get("GAIA_SESSION_ID") or None
     now = _now_iso()
 
+    if initiative is not None:
+        initiative = normalize_initiative(initiative)
+    effective_workspace = apply_host_scope(workspace, initiative, project_ref)
+
     # -- one connection, one BEGIN, one commit/rollback -----------------------
     con = _connect(db_path)
     try:
         con.execute("BEGIN")
         try:
-            _ensure_workspace_row(con, workspace)
+            _ensure_workspace_row(con, effective_workspace)
 
             # (1) record anchor
             anchor = _upsert_checkpoint_row(
-                con, workspace,
+                con, effective_workspace,
                 name=record_name, mem_type=record_type,
                 description=resumen.get("description"), body=resumen["body"],
                 class_="anchor", status=None,
-                project_ref=project_ref, origin_session_id=origin_session_id,
+                project_ref=project_ref, initiative=initiative,
+                origin_session_id=origin_session_id,
                 now=now,
             )
 
@@ -3276,15 +3361,15 @@ def close_session_memory(
             links: list[dict] = []
             for p in pendientes:
                 threads.append(_upsert_checkpoint_row(
-                    con, workspace,
+                    con, effective_workspace,
                     name=p["name"], mem_type=record_type,
                     description=p.get("description"), body=p["body"],
                     class_="thread", status="carry_forward",
-                    project_ref=project_ref,
+                    project_ref=project_ref, initiative=initiative,
                     origin_session_id=origin_session_id, now=now,
                 ))
                 link_action = _insert_checkpoint_link(
-                    con, workspace, p["name"], record_name, "derived_from", now,
+                    con, effective_workspace, p["name"], record_name, "derived_from", now,
                 )
                 links.append({
                     "src_name": p["name"],
@@ -3307,6 +3392,9 @@ def close_session_memory(
         "links": links,
         "warnings": _checkpoint_warnings(resumen["body"], pendientes),
         "updated_at": now,
+        # The workspace actually written -- may differ from the caller's
+        # requested workspace when host-scope forced it.
+        "workspace": effective_workspace,
     }
 
 
@@ -5867,6 +5955,11 @@ def relocate_memory(
     Raises:
         ValueError: invalid on_conflict, empty names, from==to, or an
             unresolved PK conflict when on_conflict='error'.
+        MemoryHostScopeError: a named row is host-scoped (its ``initiative``
+            is in :data:`HOST_SCOPED_INITIATIVES`) and ``to_workspace`` is not
+            :data:`HOST_WORKSPACE`. Moving a host-scoped row INTO the sentinel
+            is always allowed regardless of ``from_workspace`` -- that is the
+            migration path for a row written before this rule existed.
         MemoryWriteForbidden: when GAIA_DISPATCH_AGENT names a non-curator.
     """
     _assert_dispatch_can_write_memory()
@@ -5900,12 +5993,21 @@ def relocate_memory(
 
             for name in name_list:
                 src = con.execute(
-                    "SELECT 1 FROM memory WHERE workspace = ? AND name = ?",
+                    "SELECT initiative FROM memory WHERE workspace = ? AND name = ?",
                     (from_workspace, name),
                 ).fetchone()
                 if src is None:
                     missing.append(name)
                     continue
+
+                if (to_workspace != HOST_WORKSPACE
+                        and src["initiative"] in HOST_SCOPED_INITIATIVES):
+                    raise MemoryHostScopeError(
+                        f"relocate_memory: {name!r} is host-scoped "
+                        f"(initiative={src['initiative']!r}) and cannot move "
+                        f"to workspace {to_workspace!r}; host-scoped memory "
+                        f"only relocates into {HOST_WORKSPACE!r}"
+                    )
 
                 dst = con.execute(
                     "SELECT 1 FROM memory WHERE workspace = ? AND name = ?",
