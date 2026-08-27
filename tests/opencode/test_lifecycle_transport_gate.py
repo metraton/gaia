@@ -4,15 +4,35 @@
 ``_EVENT_TYPES`` mappings (``session.created``, ``message.updated``) gone
 rather than merely aparent coverage.
 
-None of the routes exercised here (Stop, SubagentStart, and the acknowledged
-PostToolUseFailure/PostCompact/SessionEnd kinds) touch the database, so this
-needs no scratch-db fixture.
+PENDING, plan 65 T11 (task 539, gate 1014): "Stop"/"PostToolUseFailure"/
+"SessionEnd" (session.idle/error/deleted) are wired here to route to
+``adapter.adapt_subagent_stop`` -- the real session-lifecycle close --
+instead of the quality no-op (Stop) / bare acknowledgment
+(PostToolUseFailure/SessionEnd) this gate originally certified. T11's own
+turn found ``hooks/adapters/opencode.py`` and
+``hooks/modules/agents/dispatch_lifecycle.py`` write-protected (T3_BLOCKED,
+approval_ids P-531c6c5f8100e19efcc474787975a538 and
+P-41c3d6a64ab0480896ac5ca079076574) and closed APPROVAL_REQUEST with the
+close design sealed in its contract row rather than applying it unreviewed;
+this file's assertions describe the CURRENT, reachable behavior only, and a
+follow-up turn that applies the approved edit adds the close-behavior
+assertions (``{"contract_valid": True, "closed": ...}`` replacing the bare
+``{"action": "allow"}`` for idle/error/deleted, PostCompact unchanged) in the
+SAME commit as that edit.
+
+Isolation is explicit (``GAIA_DATA_DIR`` -> ``tmp_path``) even though no
+route exercised here binds a dispatch row today: once T11's close lands,
+``bridge.handle`` for these kinds reads (and, for a bound session, writes)
+the store, and this fixture must already keep that off the developer's real
+``~/.gaia`` rather than being retrofitted alongside the routing change.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
 for _path in (str(_ROOT), str(_ROOT / "hooks"), str(_ROOT / "opencode")):
@@ -31,6 +51,11 @@ _LIFECYCLE_EVENTS = {
     "session.deleted": {"sessionID": "ses-x"},
     "session.compacted": {"sessionID": "ses-x"},
 }
+
+
+@pytest.fixture(autouse=True)
+def _isolated_gaia_data_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
 
 
 def _handle(event_name: str, fields: dict) -> dict:

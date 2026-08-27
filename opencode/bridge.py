@@ -67,13 +67,18 @@ def _attest(raw: dict[str, object]) -> dict[str, object]:
     }
 
 
-# PostToolUseFailure, PostCompact and SessionEnd have no per-host adapter
-# method on ANY host yet -- Claude Code's own compact/session-end hooks
-# (hooks/pre_compact.py, hooks/post_compact.py, hooks/session_end_hook.py)
-# return the same schema-valid empty acknowledgment without adapter dispatch.
-# Routed here rather than denied, so a genuinely open lifecycle point is not
+# PostCompact has no per-host adapter method on ANY host yet -- Claude Code's
+# own compact hook (hooks/pre_compact.py, hooks/post_compact.py) returns the
+# same schema-valid empty acknowledgment without adapter dispatch. Routed
+# here rather than denied, so a genuinely open lifecycle point is not
 # misreported as this bridge's "Unsupported" placeholder.
-_ACKNOWLEDGED_EVENT_KINDS = {"PostToolUseFailure", "PostCompact", "SessionEnd"}
+#
+# PostToolUseFailure (session.error) and SessionEnd (session.deleted) used
+# to be acknowledged here too, alongside PostCompact -- until plan 65 T11
+# gave them a real close to perform (see the "Stop"/"PostToolUseFailure"/
+# "SessionEnd" branch below): a dispatched child's row must be promoted or
+# cut on ANY of idle/error/deleted, not only idle.
+_ACKNOWLEDGED_EVENT_KINDS = {"PostCompact"}
 
 
 def _ack() -> dict[str, object]:
@@ -95,8 +100,12 @@ def handle(raw: dict[str, object]) -> dict[str, object]:
         response = adapter.adapt_pre_tool_use(event)
     elif kind == "PostToolUse":
         response = adapter.adapt_post_tool_use(event)
-    elif kind == "Stop":
-        response = adapter.format_quality_response(adapter.adapt_stop(event.payload))
+    elif kind in ("Stop", "PostToolUseFailure", "SessionEnd"):
+        # session.idle/error/deleted (plan 65, T11): the ONE real close for a
+        # dispatched child's row, regardless of which of the three signals
+        # arrives first -- resolve_close (dispatch_lifecycle) is idempotent,
+        # so a later signal for the same session is a harmless no-op.
+        response = adapter.adapt_subagent_stop(event)
     elif kind == "SubagentStart":
         response = adapter.format_context_response(adapter.adapt_subagent_start(event.payload))
     elif kind in _ACKNOWLEDGED_EVENT_KINDS:

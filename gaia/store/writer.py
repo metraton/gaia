@@ -9600,6 +9600,51 @@ def collapse_continuation_chains(rows: "list[dict]") -> "list[dict]":
     return [row for row in rows if row.get("id") not in superseded]
 
 
+def find_dispatch_row_by_harness_agent_id(
+    harness_agent_id: "str | None",
+    *,
+    session_id: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """The host-neutral join from a harness's own per-run session id back to
+    the ONE row it was stamped onto (plan 65, T11).
+
+    Host-neutral counterpart of ``hooks.modules.agents.handoff_persister.
+    dispatch_row_by_harness_id``, which reads Claude Code's own ``task_info``
+    shape: a caller that already holds the harness_agent_id directly --
+    OpenCode's session lifecycle events carry it as their own ``sessionID``
+    -- resolves the SAME row through this instead of reconstructing a
+    Claude-Code-shaped dict just to satisfy that function's signature.
+
+    A CONTINUATION CHAIN is not an ambiguity: a resumed turn carries the SAME
+    harness_agent_id as the turn it continues, so the result is collapsed to
+    the chain's live link first (``collapse_continuation_chains``) before
+    ambiguity is judged. Two genuinely unrelated rows sharing one harness id
+    still decline rather than guess, the same refusal
+    ``dispatch_row_by_harness_id`` makes.
+
+    ``session_id`` is accepted for callers that also carry it for logging;
+    this function does not filter on it -- the harness_agent_id alone already
+    names one run, and narrowing further can only lose a correctly-attributed
+    row, not sharpen the match.
+
+    Returns the full row dict, or ``None`` when nothing or more than one
+    unrelated row matches. Never raises: an unavailable store degrades to
+    ``None``, same as ``list_agent_contract_handoffs``.
+    """
+    if not harness_agent_id:
+        return None
+    rows = list_agent_contract_handoffs(
+        harness_agent_id=str(harness_agent_id), limit=10, db_path=db_path,
+    )
+    if not rows:
+        return None
+    collapsed = collapse_continuation_chains(rows)
+    if len(collapsed) != 1:
+        return None
+    return collapsed[0]
+
+
 def open_contract_continuation(
     parent_contract_id: "str | None",
     new_contract_id: "str | None",
