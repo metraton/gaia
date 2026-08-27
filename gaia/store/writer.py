@@ -9820,6 +9820,149 @@ def stamp_harness_agent_id(
 
 
 # ---------------------------------------------------------------------------
+# Public API: bind_harness_child_session / is_harness_session_bound
+# (plan 65 T10 -- unambiguous binding via the PARENT's own start-adjacent
+# event, plus its read side for the fail-closed backstop)
+# ---------------------------------------------------------------------------
+#
+# Claude Code's SubagentStart fires ON the child's own turn, so
+# claim_dispatch_row and stamp_harness_agent_id both run at the one event
+# that already holds the child's harness_agent_id (see
+# ``modules.agents.dispatch_lifecycle.claim_dispatch_kernel``). OpenCode has
+# no such event: its only start-adjacent signal (``message.part.updated``)
+# fires on the PARENT's own tool part and reports the callID<->child-session
+# pair separately from -- and sometimes after -- the child's first action.
+# T9 already claims the row (``claimed_at``) at Task PreToolUse time, keyed
+# by that same callID (``dispatch_tool_use_id``, layer 0 of
+# ``claim_dispatch_row``'s ladder). ``bind_harness_child_session`` is the
+# SECOND join this leaves open: stamping the child's own harness_agent_id
+# onto that already-claimed row once the parent's event names it.
+#
+# Deliberately NOT ``claim_dispatch_row`` called a second time: that ladder
+# requires ``claimed_at IS NULL`` and would find nothing on a row T9 already
+# claimed (or, worse, decline as "already bound" -- see
+# ``_tool_use_id_already_bound``). This function instead targets the row by
+# ``dispatch_tool_use_id`` directly, in ANY claim state, and carries NO
+# correlation ladder of its own: no FIFO, no divergent-signature guard --
+# an exact, resolvable callID or nothing at all. That asymmetry is the
+# E1 discipline itself: Claude Code's FIFO layer for callID-less rows lives
+# entirely inside ``claim_dispatch_row`` and this function never runs it.
+
+
+def bind_harness_child_session(
+    dispatch_tool_use_id: "str | None",
+    harness_agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> dict:
+    """Stamp the dispatched child's own session id onto the row its Task
+    call was born under, keyed by the EXACT ``dispatch_tool_use_id`` only.
+
+    No fallback ladder: a caller with no exact, resolvable callID (absent,
+    or matching zero/more-than-one non-terminal row) has nothing exact to
+    bind against and declines rather than guessing -- misbinding a sibling
+    row would corrupt its own recovery join, not merely miss one.
+
+    Also claims the row (``claimed_at``) when it is somehow still unclaimed
+    at this point, via ``COALESCE`` -- defensive only. The ordinary sequence
+    is T9's claim first (at Task PreToolUse) and this stamp second (at
+    ``message.part.updated``), but a caller must not depend on that
+    ordering to reach a fully bound row.
+
+    Returns ``{"status": "applied", "handoff_id": int, "contract_id": str}``
+    on success; ``{"status": "skipped", "reason": ...}`` otherwise
+    (``no_dispatch_tool_use_id`` / ``no_harness_agent_id`` /
+    ``no_row_for_tool_use_id`` / ``ambiguous_tool_use_id`` / ``terminal``).
+    """
+    if not dispatch_tool_use_id:
+        return {"status": "skipped", "reason": "no_dispatch_tool_use_id"}
+    if not harness_agent_id:
+        return {"status": "skipped", "reason": "no_harness_agent_id"}
+
+    _assert_dispatch_can_write_handoff()
+
+    def _work() -> dict:
+        con = _connect(db_path)
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            try:
+                from gaia.state import TERMINAL_PLAN_STATUSES
+
+                placeholders = ", ".join("?" for _ in TERMINAL_PLAN_STATUSES)
+                rows = con.execute(
+                    f"""
+                    SELECT id, contract_id FROM agent_contract_handoffs
+                     WHERE dispatch_tool_use_id = ?
+                       AND agent_state NOT IN ({placeholders})
+                    """,
+                    (dispatch_tool_use_id, *TERMINAL_PLAN_STATUSES),
+                ).fetchall()
+                if len(rows) > 1:
+                    con.commit()
+                    return {"status": "skipped", "reason": "ambiguous_tool_use_id"}
+                if not rows:
+                    con.commit()
+                    exists = con.execute(
+                        "SELECT 1 FROM agent_contract_handoffs "
+                        "WHERE dispatch_tool_use_id = ? LIMIT 1",
+                        (dispatch_tool_use_id,),
+                    ).fetchone()
+                    reason = (
+                        "terminal" if exists is not None else "no_row_for_tool_use_id"
+                    )
+                    return {"status": "skipped", "reason": reason}
+                target = rows[0]
+                con.execute(
+                    "UPDATE agent_contract_handoffs "
+                    "SET harness_agent_id = ?, claimed_at = COALESCE(claimed_at, ?) "
+                    "WHERE id = ?",
+                    (str(harness_agent_id), _now_iso(), target["id"]),
+                )
+                con.commit()
+                return {
+                    "status": "applied",
+                    "handoff_id": target["id"],
+                    "contract_id": target["contract_id"],
+                }
+            except Exception:
+                con.rollback()
+                raise
+        finally:
+            con.close()
+
+    return _retry_on_locked(_work)
+
+
+def is_harness_session_bound(
+    harness_agent_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> bool:
+    """Whether any row already carries ``harness_agent_id`` for this session.
+
+    The read side of the plan 65 T10 fail-closed backstop: the OpenCode
+    adapter denies a dispatched child's tool call until this returns True
+    for that child's own session id -- i.e. until
+    :func:`bind_harness_child_session` (or, on Claude Code, its own
+    SubagentStart stamp) has landed. Read-only, no correlation ladder: a
+    falsy id is simply unbound, and the presence check is not scoped to any
+    particular ``agent_state`` -- once bound, a session stays bound for the
+    rest of its own run even after its row finalizes.
+    """
+    if not harness_agent_id:
+        return False
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT 1 FROM agent_contract_handoffs WHERE harness_agent_id = ? LIMIT 1",
+            (str(harness_agent_id),),
+        ).fetchone()
+        return row is not None
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # Public API: reap_stale_dispatched_handoffs (plan 65 T13 -- host-death reaper)
 # ---------------------------------------------------------------------------
 #
