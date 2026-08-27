@@ -117,17 +117,20 @@ def _classify_command_tier_cached(
         CATEGORY_SIMULATION,
     )
 
-    # Check for dry-run operations (T2)
-    # Subordinated to the mutative detector, not short-circuiting past it: the
-    # flag is a claim made by the invocation line, and this check is a raw
-    # substring test that cannot tell a flag the payload READS from one it
-    # ignores -- or from one merely quoted inside another argument. Where the
+    result = detect_mutative_command(command)
+    if result.is_mutative:
+        return SecurityTier.T3_BLOCKED
+
+    # Check for dry-run operations (T2). Simulation and validation claims are
+    # subordinated to the mutative detector, not short-circuiting past it: the
+    # pattern or flag is a claim made by the invocation line, and these checks
+    # are raw substring tests that cannot tell a flag the payload READS from
+    # one it ignores -- or from one merely quoted inside another argument. Where the
     # detector finds a real mutation anyway (a script whose content writes and
     # never reads the flag), returning T2 here would hand back, at tier level,
     # exactly the absolution the detector withheld.
     if "--dry-run" in command or "--plan-only" in command:
-        if not detect_mutative_command(command).is_mutative:
-            return SecurityTier.T2_DRY_RUN
+        return SecurityTier.T2_DRY_RUN
 
     # Check for simulation operations (T2: plan, diff, template)
     for pattern in T2_PATTERNS:
@@ -139,10 +142,6 @@ def _classify_command_tier_cached(
         if re.search(pattern, command, re.IGNORECASE):
             return SecurityTier.T1_VALIDATION
 
-    # Use the mutative verb detector for T3 classification
-    result = detect_mutative_command(command)
-    if result.is_mutative:
-        return SecurityTier.T3_BLOCKED
     if result.category == CATEGORY_SIMULATION:
         return SecurityTier.T2_DRY_RUN
     if result.category == CATEGORY_READ_ONLY:
@@ -177,9 +176,9 @@ def classify_command_tier(
     Classification order (when no pre-computed tier):
     1. Ultra-common T0 fast-path (ls, git status, etc.)
     2. Blocked patterns (T3) -- checked against pre-compiled patterns
-    3. Dry-run/simulation (T2) -- --dry-run, plan, diff, template
-    4. Local validation (T1) -- validate, lint, fmt, check
-    5. Mutative verb detector (T3) -- MUTATIVE verbs
+    3. Mutative verb detector (T3) -- MUTATIVE verbs
+    4. Dry-run/simulation (T2) -- --dry-run, plan, diff, template
+    5. Local validation (T1) -- validate, lint, fmt, check
     6. Default T0 for everything else (safe by elimination)
 
     Args:

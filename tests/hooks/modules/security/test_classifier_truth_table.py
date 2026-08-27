@@ -39,6 +39,7 @@ GATED = "gated"
 FREE = "free"
 
 T0 = SecurityTier.T0_READ_ONLY
+T1 = SecurityTier.T1_VALIDATION
 T2 = SecurityTier.T2_DRY_RUN
 T3 = SecurityTier.T3_BLOCKED
 
@@ -383,6 +384,46 @@ CLASSIFIER_TRUTH_TABLE = [
     ("read-kubectl-get", FREE, "kubectl get pods -o json", False, T0),
     ("read-terraform-init", FREE, "terraform init", False, T0),
     ("read-git-remote", FREE, "git remote -v", False, T0),
+    # ---- REPORTED TIER: pattern words cannot absolve a real mutation -------
+    # Discovered during task_id 495 and deliberately left unfixed there. The
+    # detector already gates every mutative row below; this table also requires
+    # the reported tier to agree. The matrix makes the invariant broader than
+    # the live `gaia release check` instance, while the free controls pin every
+    # T1/T2 pattern family to its pre-change tier.
+    ("tier_pattern_subordination_live_release_check", GATED, "gaia release check", True, T3),
+    ("tier_pattern_subordination_mutative_check", GATED, "kubectl delete pod check", True, T3),
+    (
+        "tier_pattern_subordination_mutative_validate",
+        GATED,
+        "kubectl delete pod validate",
+        True,
+        T3,
+    ),
+    ("tier_pattern_subordination_mutative_lint", GATED, "kubectl delete pod lint", True, T3),
+    ("tier_pattern_subordination_mutative_fmt", GATED, "kubectl delete pod fmt", True, T3),
+    ("tier_pattern_subordination_mutative_plan", GATED, "kubectl delete pod plan", True, T3),
+    ("tier_pattern_subordination_mutative_diff", GATED, "kubectl delete pod diff", True, T3),
+    (
+        "tier_pattern_subordination_mutative_template",
+        GATED,
+        "kubectl delete pod template",
+        True,
+        T3,
+    ),
+    ("tier_pattern_subordination_free_read", FREE, "kubectl get services", False, T0),
+    ("tier_pattern_subordination_free_check", FREE, "ruff check .", False, T1),
+    ("tier_pattern_subordination_free_validate", FREE, "terraform validate", False, T1),
+    ("tier_pattern_subordination_free_lint", FREE, "golangci-lint run", False, T1),
+    ("tier_pattern_subordination_free_fmt", FREE, "terraform fmt -check", False, T1),
+    ("tier_pattern_subordination_free_plan", FREE, "terraform plan", False, T2),
+    ("tier_pattern_subordination_free_diff", FREE, "git diff --stat", False, T0),
+    (
+        "tier_pattern_subordination_free_template",
+        FREE,
+        "helm template app ./chart",
+        False,
+        T2,
+    ),
     # ---- M4 (task 12): two of the four remaining friction groups measured
     # by most volume, plus the one required sibling that only these two
     # naturally pair with here (the npm-run-body and script-file-content
@@ -1325,7 +1366,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 154
+_MINIMUM_MEASURED_CASES = 170
 
 
 @pytest.mark.parametrize(
