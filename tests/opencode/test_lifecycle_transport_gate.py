@@ -52,6 +52,18 @@ def _isolated_gaia_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _contain_bridge_host_mutation(monkeypatch):
+    """bridge.handle() (opencode/bridge.py:90) sets GAIA_HOST via a raw
+    os.environ write with no revert of its own -- harmless in production,
+    where the plugin spawns a fresh one-shot bridge process per event, but a
+    leak here since these tests call handle() in-process, in the same
+    long-lived pytest worker other test files share. monkeypatch.setenv
+    registers this test's pre-run value so its teardown restores it
+    regardless of the raw write inside handle()."""
+    monkeypatch.setenv("GAIA_HOST", "opencode")
+
+
 def _handle(event_name: str, fields: dict) -> dict:
     import bridge
 

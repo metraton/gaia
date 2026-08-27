@@ -35,11 +35,19 @@ CALL = "call-1"
 
 @pytest.fixture
 def scratch(tmp_path, monkeypatch, bootstrapped_db_template):
-    """Ledger and database both under this test's own scratch directory."""
+    """Ledger and database both under this test's own scratch directory.
+
+    Also contains bridge.handle()'s GAIA_HOST side effect (opencode/bridge.py:90
+    sets it via a raw os.environ write, harmless per one-shot production
+    process but a leak here since ``_handle`` calls it in-process): registering
+    the pre-run value with monkeypatch.setenv makes teardown restore it
+    regardless of the raw write inside handle().
+    """
     db_path = tmp_path / "gaia.db"
     shutil.copy(bootstrapped_db_template, db_path)
     monkeypatch.setenv("GAIA_DB", str(db_path))
     monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "ledger"))
+    monkeypatch.setenv("GAIA_HOST", "opencode")
     return tmp_path
 
 
