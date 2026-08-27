@@ -21,15 +21,18 @@ history, not pending authorization. Approving a pending request activates it;
 it does not prove any command executed. `SKILL.md` carries the current
 COMMAND_SET activation shape: a plan-first `request-set` pending -- the one
 carrying a `request_fingerprint` -- now activates through the same writer from
-either entry point, so the host path and the CLI `approve` path are no longer
-split. Read it there rather than inferring either state from this line.
+either entry point, so the structured decision path and the CLI `approve` path
+are no longer split. Read it there rather than inferring either state from this
+line.
 
-Claude Code receives no separate approval metadata with the native answer, so
-the selected control carries the complete canonical id. The adapter accepts
-only an affirmative label ending in `[P-<32 lowercase hex>]`; activation and
-audit correlation use that exact id. The compact `P-XXXXXXXX` value is display
-only and is invalid for show, reject, revoke, approve, history, replay, or host
-activation.
+When an adapter receives no separate approval metadata with the native answer,
+the selected control carries the complete canonical id. The structured decision
+path accepts only an affirmative label ending in `[P-<32 lowercase hex>]`;
+activation and audit correlation use that exact id. The compact `P-XXXXXXXX`
+value is display only and is invalid for show, reject, revoke, approve, history,
+replay, or adapter activation. Mechanism-specific instructions belong to the
+adapter skill declared by
+`hooks/adapters/registry.py::registered_adapter_skill_documents`.
 
 Read verbs (`list`/`show`/`pending`/`history`/`stats`) are the orchestrator's
 to run directly through its trusted-CLI lane. That lane is not a read-only
@@ -43,4 +46,5 @@ denied to the orchestrator role
 (`gaia_cli_only_guard.EXPLICITLY_DENIED_PHRASES`) because the consent record
 is the user's to move -- granted, refused, or withdrawn -- never something a
 coordinator issues to itself. Dispatch a specialist, or route through
-AskUserQuestion, never a bare orchestrator CLI call.
+the structured decision path owned by the active host adapter, never a bare
+orchestrator CLI call.

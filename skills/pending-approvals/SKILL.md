@@ -40,18 +40,19 @@ orchestrator's; decisions are not.** A decision is dispatched to a specialist
 (or, for the CLI-only admin case below, made explicitly by the user) -- never
 run bare by the orchestrator itself.
 
-**`gaia approvals approve <approval_id>` is an admin verb, not the AskUserQuestion
-activation path -- for a SINGULAR approval.** It writes `APPROVED` directly to
-the `approvals` row, but it does **not** call `activate_db_pending_by_id`
-and does **not** create a hook-side grant -- so on its own it does not make
-the originally blocked command executable, and it does not trigger the
-automatic re-dispatch that follows a real approval. The path that creates the
-grant is the AskUserQuestion flow in `orchestrator-present-approval`: the user
-selects a label matching `Approve -- <action> [P-<32 lowercase hex>]`, which
-the hook parses as the exact canonical id before activation. Use the bare `approve` CLI verb only
-for the audit/CLI-only case -- e.g. marking a row from a different session as
-decided when the command it covers will not be re-run -- never as a substitute
-for AskUserQuestion when the blocked command still needs to execute.
+**For a SINGULAR approval, `gaia approvals approve <approval_id>` is an admin
+decision-recording verb, not executable activation.** It writes `APPROVED`
+directly to the `approvals` row, but creates **no executable grant** and triggers
+**no automatic re-dispatch**. The originally blocked command therefore remains
+unexecutable from that admin decision alone. When the blocked command still
+needs to run, this verb **MUST NEVER** substitute for the structured decision
+path owned by the active host adapter. Load the adapter skill declared for the
+active host by
+`hooks/adapters/registry.py::registered_adapter_skill_documents` for the
+mechanism it owns; `orchestrator-present-approval` owns the neutral presentation
+and activation contract. Use the bare `approve` CLI verb only for the
+audit/CLI-only case -- for example, marking a row from a different session as
+decided when the command it covers will not be re-run.
 
 **COMMAND_SET now activates through the same writer from either entry point.**
 For a plan-first `request_type: "COMMAND_SET"` pending (minted by `gaia
@@ -59,8 +60,9 @@ approvals request-set`, which carries a `request_fingerprint`),
 `activate_db_pending_by_id` takes a dedicated branch that calls
 `insert_plan_command_set` -- the identical call the CLI admin verb `gaia
 approvals approve` makes, and the only shape the runtime's execution check
-(`reserve_plan_command`, keyed on `source='plan-first'`) finds. The label flow
-and the admin verb therefore activate a `request-set` pending identically. The
+(`reserve_plan_command`, keyed on `source='plan-first'`) finds. The structured
+decision path and the admin verb therefore activate a `request-set` pending
+identically. The
 legacy `create_command_set_grant()` route survives only for a multi-command
 payload with NO `request_fingerprint`, a chain-intake shape production no longer
 emits; it is kept as a defensive fallback, not as the plan-first path. The

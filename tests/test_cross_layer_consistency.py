@@ -510,13 +510,11 @@ class TestSkillsCrossReferences:
             )
 
     def test_approval_protocol_skill_references_approval_mechanism(self):
-        """Registered host mechanism names stay out of all five agnostic skills.
+        """Registered host mechanism names stay out of agnostic consent skills.
 
         The scan is recursive because supporting documents carry the same
         agnosticism obligation as SKILL.md. The registered names remain an
         enumeration: a mechanism registered nowhere can still pass this test.
-        pending-approvals is the orchestrator-side sibling and is not in that
-        agnostic set.
         """
         agnostic = (
             "agent-approval-protocol",
@@ -524,6 +522,7 @@ class TestSkillsCrossReferences:
             "subagent-request-approval",
             "orchestrator-present-approval",
             "execution",
+            "pending-approvals",
         )
         host_names = registered_host_mechanism_names()
         for skill in agnostic:
