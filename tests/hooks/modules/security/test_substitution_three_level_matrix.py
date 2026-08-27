@@ -41,7 +41,7 @@ CATEGORICAL = "CATEGORICAL"
 # A project path and a user path that are NOT the filesystem root: the permanent
 # floor owns the root, and the point of these rows is the tier below it -- the
 # one where somebody's actual working tree lives.
-PROJECT = "/home/jorge/ws/me/gaia/hooks"
+PROJECT = "/home/jorge/ws/me/gaia/tools"
 USERDIR = "/home/jorge/projects/app"
 
 # (case_id, expected_level, command)

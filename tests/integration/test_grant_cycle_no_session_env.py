@@ -235,3 +235,134 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
             f"Retry phase: expected allow/None, got {decision!r}.\n"
             f"output: {retry_result.output}"
         )
+
+    def test_file_write_grant_does_not_lift_the_bash_categorical_guard(
+        self, tmp_path, monkeypatch
+    ):
+        """A SCOPE_FILE_PATH grant is scoped to the Write/Edit surface only.
+
+        Companion to ``test_protected_path_write_allowed_after_cross_session_
+        activation`` above: that test proves the grant DOES lift the Write/Edit
+        block. This test proves the same active grant, for the exact same path,
+        does NOT lift ``protected_path_guard``'s Bash guard -- it stays
+        categorical (hard exit 2, no ``approval_id``), because
+        ``protected_path_guard.check(command)`` takes no grant or approval_id
+        argument at all and never consults ``approval_grants``. If that guard
+        were ever changed to check a grant (turning it into an approvable T3
+        like Write/Edit), this test's ``exit_code == 2`` assertion would fail
+        first -- it would observe a structured ``exit_code == 0`` deny (or an
+        outright allow) instead of the hard block.
+        """
+        cwd = _make_cwd(tmp_path)
+        protected_file = str(HOOKS_DIR / "pre_tool_use.py")
+
+        # ── Phase 1: block the Write, then activate its grant ────────────────
+        block_event = {
+            "hook_event_name": "PreToolUse",
+            "session_id": self.BLOCK_SESSION,
+            "tool_name": "Write",
+            "tool_input": {"file_path": protected_file, "content": ""},
+            "agent_id": "a76543210f1e2d3c4",
+        }
+        block_result = run_pre_tool_use_event(block_event, cwd=cwd)
+        assert block_result.permission_decision == "deny", (
+            f"Block phase: expected permissionDecision='deny', "
+            f"got {block_result.permission_decision!r}.\noutput: {block_result.output}"
+        )
+
+        activation = _activate_first_pending(current_session_id=self.RETRY_SESSION)
+        assert activation.success, (
+            f"Activation failed: status={activation.status!r}, reason={activation.reason!r}"
+        )
+
+        # ── Phase 2: confirm the grant DOES lift Write/Edit for this path ────
+        write_retry = run_pre_tool_use_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": self.RETRY_SESSION,
+                "tool_name": "Write",
+                "tool_input": {"file_path": protected_file, "content": ""},
+                "agent_id": "a76543210f1e2d3c4",
+            },
+            cwd=cwd,
+        )
+        assert write_retry.is_allowed, (
+            f"Write/Edit retry should be allowed by the active file-path grant.\n"
+            f"exit_code={write_retry.exit_code}, decision={write_retry.permission_decision!r}"
+        )
+
+        # ── Phase 3: the SAME grant must NOT lift the Bash surface ───────────
+        bash_event = {
+            "hook_event_name": "PreToolUse",
+            "session_id": self.RETRY_SESSION,
+            "tool_name": "Bash",
+            "tool_input": {"command": f"cp /tmp/payload.py {protected_file}"},
+            "agent_id": "a76543210f1e2d3c4",
+        }
+        bash_result = run_pre_tool_use_event(bash_event, cwd=cwd)
+
+        assert bash_result.exit_code == 2, (
+            "protected_path_guard is categorical: an active FILE_WRITE grant "
+            "for this exact path must not turn the Bash write into an "
+            f"approvable deny. Got exit_code={bash_result.exit_code}.\n"
+            f"stdout={bash_result.stdout!r}\nstderr={bash_result.stderr!r}"
+        )
+        assert "PROTECTED_PATH" in bash_result.stdout
+        assert "approval_id" not in bash_result.stdout
+
+    def test_activation_gives_the_grant_the_file_path_lane_window(
+        self, tmp_path, monkeypatch
+    ):
+        """A grant born through activation carries the 30-minute file-path window.
+
+        The activation call site used to forward its own ``ttl_minutes``
+        parameter -- the Bash lane's 5 minutes -- into insert_file_path_grant,
+        overriding that function's FILE_PATH_GRANT_TTL_MINUTES default. The
+        window is therefore only correct end-to-end if the BORN row is
+        measured; asserting the writer's default alone passes either way.
+        """
+        import sqlite3
+        from datetime import datetime, timedelta
+
+        from gaia.paths import db_path
+        from gaia.store.writer import (
+            APPROVAL_GRANT_TTL_MINUTES,
+            FILE_PATH_GRANT_TTL_MINUTES,
+        )
+
+        cwd = _make_cwd(tmp_path)
+        protected_file = str(HOOKS_DIR / "pre_tool_use.py")
+
+        block_result = run_pre_tool_use_event(
+            {
+                "hook_event_name": "PreToolUse",
+                "session_id": self.BLOCK_SESSION,
+                "tool_name": "Write",
+                "tool_input": {"file_path": protected_file, "content": ""},
+                "agent_id": "a76543210f1e2d3c4",
+            },
+            cwd=cwd,
+        )
+        assert block_result.permission_decision == "deny", block_result.output
+
+        activation = _activate_first_pending(current_session_id=self.RETRY_SESSION)
+        assert activation.success, activation.reason
+
+        con = sqlite3.connect(str(db_path()))
+        try:
+            row = con.execute(
+                "SELECT created_at, expires_at FROM approval_grants "
+                "WHERE scope = 'SCOPE_FILE_PATH' ORDER BY created_at DESC",
+            ).fetchone()
+        finally:
+            con.close()
+        assert row is not None, "Activation should have written a SCOPE_FILE_PATH grant"
+
+        span = datetime.strptime(row[1], "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(
+            row[0], "%Y-%m-%dT%H:%M:%SZ"
+        )
+        assert span == timedelta(minutes=FILE_PATH_GRANT_TTL_MINUTES), (
+            f"Expected the {FILE_PATH_GRANT_TTL_MINUTES}-minute file-path window, "
+            f"got {span}."
+        )
+        assert span != timedelta(minutes=APPROVAL_GRANT_TTL_MINUTES)

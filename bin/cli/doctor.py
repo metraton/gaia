@@ -18,7 +18,12 @@ Checks (in order):
   56. source-parity     - installed package == the Gaia source checkout it was built from
   57. install-provenance - local (file:) vs npm install; mode, version, symlink resolution
   58. global-cli-alignment - PATH gaia vs workspace-expected install (version/content drift)
+  59. executed-copy-alignment - node_modules/@jaguilar87/gaia resolves to the checkout, or a
+                        stale tarball the pin restored over a dev link (names the realpath)
   60. identity           - orchestrator agent configured
+  61. opencode-host-liveness - reads identity.attest ledger for the CURRENT
+                        host run; pass only with a recorded attestation,
+                        explicit absence (never a false ok) without one
   65. agent-routing      - surface_routing table (DB) primary agents resolve to files
   70. settings           - hooks registered (full event set), permissions, deny rules
   80. hook-files         - all hook scripts present
@@ -327,7 +332,7 @@ def _describe_gaia_version(version: str) -> str:
 CANONICAL_HOOK_EVENTS = frozenset({
     "PreToolUse", "PostToolUse", "SubagentStop", "SessionStart",
     "SessionEnd", "UserPromptSubmit", "Stop", "TaskCompleted",
-    "SubagentStart", "PostCompact", "PreCompact", "ElicitationResult",
+    "SubagentStart", "PostCompact", "PreCompact",
 })
 
 
@@ -1573,6 +1578,79 @@ def check_global_cli_alignment(project_root: Path) -> dict:
     )
 
 
+@register_check("Executed copy alignment", order=59)
+def check_executed_copy_alignment(project_root: Path) -> dict:
+    """Detect a runtime entry that no longer matches the checkout it once linked.
+
+    Every harness that loads Gaia from node_modules/@jaguilar87/gaia (OpenCode's
+    plugin loader, Claude Code's .claude/ symlinks, a bare `require`) runs
+    whatever that path resolves to at THAT moment, never the pin recorded in
+    package.json. A dev workspace commonly runs a live symlink straight at the
+    source checkout (`gaia dev --mode link`) while package.json keeps pointing
+    at a content-addressed tarball (a local `file:*.tgz` spec, dev-pack mode).
+    The two do not disagree until something re-materializes node_modules from
+    that pin -- a plain `pnpm install` or `npm install` -- which silently swaps
+    the live checkout for a stale, already-superseded tarball extraction: no
+    error, no warning, no version bump to notice.
+
+    ALIGNED (pass): the resolved entry carries gaia.source_parity.SOURCE_MARKER
+    -- whatever runs today IS the live checkout.
+    DIVERGENT (warning): the resolved entry is a materialized, non-checkout
+    copy while package.json pins a local tarball -- the pin-restored-over-a-
+    link shape. The realpath actually resolved is always named in the detail,
+    so the verdict is checked against the literal filesystem state that
+    produced it, never merely asserted.
+
+    Out of scope (info): no local node_modules entry at all (plugin-mode), or
+    a non-tarball spec (a registry install, or a `file:` dir spec already
+    covered by check_source_parity) -- neither carries the link-vs-pin
+    duality this check exists to catch.
+    """
+    name = "Executed copy alignment"
+    nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
+
+    # is_symlink() also catches a DANGLING link (exists() alone follows it and
+    # reports False), which must still reach the resolve() below to warn.
+    if not nm_gaia.exists() and not nm_gaia.is_symlink():
+        return _result(name, "info", "no node_modules/@jaguilar87/gaia entry to check (plugin-mode?)")
+
+    try:
+        resolved = nm_gaia.resolve(strict=True)
+    except OSError:
+        return _result(
+            name, "warning",
+            f"node_modules/@jaguilar87/gaia does not resolve ({nm_gaia})",
+            f"Run `gaia dev --workspace {project_root}` to reinstall",
+        )
+
+    parity = _load_source_parity()
+    if parity is not None and parity.is_source_checkout(resolved):
+        return _result(
+            name, "pass",
+            f"aligned: node_modules/@jaguilar87/gaia -> {resolved} "
+            "(the executed entry IS a Gaia source checkout)",
+        )
+
+    spec = _gaia_dep_spec(project_root)
+    is_tarball_pin = bool(spec) and spec.startswith("file:") and spec.endswith(".tgz")
+    if not is_tarball_pin:
+        return _result(
+            name, "info",
+            f"node_modules/@jaguilar87/gaia -> {resolved}; not a source checkout, and "
+            f"package.json pins {spec or 'no local spec'} (not a local tarball) -- no "
+            "link-vs-pin duality to check",
+        )
+
+    return _result(
+        name, "warning",
+        f"divergent: node_modules/@jaguilar87/gaia -> {resolved} (a materialized copy, "
+        f"NOT the source checkout) while package.json pins the tarball {spec} -- a "
+        "previous dev link was replaced by its pinned, possibly-stale package",
+        f"Run `gaia dev --mode link --workspace {project_root}` to restore the live "
+        "checkout, or confirm this materialized copy is the build you intend to run.",
+    )
+
+
 def _frontmatter_block(path: Path) -> "str | None":
     """Return the YAML frontmatter block (between the first two `---` fences).
 
@@ -1770,6 +1848,123 @@ def check_skill_cross_refs(project_root: Path) -> dict:
     return _result("Skill cross-refs", "pass", f"{checked_refs} skill references resolve")
 
 
+_PROSE_PAREN_SYMBOL_RE = r"`([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)\(\)`"
+
+_SOURCE_MODULE_ROOTS = ("gaia", "hooks", "bin", "tools", "scripts")
+
+
+def _is_codebase_symbol(ref: str) -> bool:
+    """Decide whether a bare symbol reference names one of THIS repo's symbols.
+
+    Discriminates a claim about a codebase symbol from an ordinary mention of a
+    language builtin or a third-party API, which cannot be anchored to a Gaia
+    file and must not be demanded to. Two accepted shapes: a dotted chain whose
+    head is one of this repo's top-level packages, or a leaf carrying an
+    underscore -- a multi-word snake_case (or `_`-prefixed private) name is a
+    codebase-specific identifier, never an English word.
+
+    Deliberate recall gap: a single bare word (``register``, ``exec``, ``main``)
+    is ambiguous by construction and is NOT matched, so a genuine one-word
+    symbol reference goes unflagged. Widening to catch it would flag every
+    English word written with parentheses.
+    """
+    if "." in ref and ref.split(".", 1)[0] in _SOURCE_MODULE_ROOTS:
+        return True
+    leaf = ref.rsplit(".", 1)[-1]
+    return "_" in leaf
+
+
+def _strip_fenced_blocks(text: str) -> list[str]:
+    """Return the document's lines with fenced code-block bodies blanked.
+
+    Line-aligned so a reported line number matches the file. A fenced block is
+    code being shown, not a citation making a claim, so its contents are not
+    scanned.
+    """
+    lines: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            lines.append("")
+            continue
+        lines.append("" if fenced else line)
+    return lines
+
+
+@register_check("Symbol anchors", order=54)
+def check_symbol_anchors(project_root: Path) -> dict:
+    """Check skill/agent symbol references carry their ``file.py::symbol`` anchor.
+
+    An anchored reference is resolvable: a checker can open the file and confirm
+    the symbol is still there. The same reference written as prose parentheses --
+    ``_is_protected()`` -- names no file, so nothing can resolve it and nothing
+    invalidates it when the symbol is deleted. Measured: one deleted symbol left
+    four stale citations across skills/, and only the single anchored one was
+    caught; the other three were prose and survived the deletion untouched.
+
+    Matches only an EMPTY-paren backticked identifier. A call written with
+    arguments (``Path("/x").unlink()``, ``execSync("kubectl delete ...")``) is
+    illustrating usage rather than citing a symbol, and demanding an anchor
+    there would be wrong. ``_is_codebase_symbol`` then filters to references
+    that could be anchored at all.
+
+    Warning, not error: an un-anchored reference is authoring drift-blindness,
+    not a broken install -- nothing fails at dispatch time because of it.
+
+    Advisory (info) when neither dir is present -- an un-scanned workspace.
+    Vendored trees (``node_modules``) are skipped: third-party docs are not
+    Gaia components and their symbols anchor to nothing here.
+    """
+    import re  # noqa: PLC0415
+
+    roots = [
+        project_root / ".claude" / "skills",
+        project_root / ".claude" / "agents",
+    ]
+    if not any(root.is_dir() for root in roots):
+        return _result(
+            "Symbol anchors", "info", "no skills/ or agents/ dirs found",
+            "Run `gaia scan` or `gaia update`",
+        )
+
+    pattern = re.compile(_PROSE_PAREN_SYMBOL_RE)
+    unanchored: list[str] = []
+    scanned = 0
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for md in sorted(root.rglob("*.md")):
+            if "node_modules" in md.parts:
+                continue
+            try:
+                text = md.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            scanned += 1
+            rel = md.relative_to(project_root / ".claude")
+            for lineno, line in enumerate(_strip_fenced_blocks(text), 1):
+                for match in pattern.finditer(line):
+                    ref = match.group(1)
+                    if _is_codebase_symbol(ref):
+                        unanchored.append(f"{rel}:{lineno} `{ref}()`")
+
+    if unanchored:
+        shown = "; ".join(unanchored[:8])
+        more = f" (+{len(unanchored) - 8} more)" if len(unanchored) > 8 else ""
+        return _result(
+            "Symbol anchors", "warning",
+            f"{len(unanchored)} un-anchored symbol reference(s): {shown}{more}",
+            "Rewrite each as `path/to/file.py::symbol` so the reference "
+            "resolves and fails loudly when the symbol is deleted.",
+        )
+    return _result(
+        "Symbol anchors", "pass",
+        f"{scanned} component docs carry no un-anchored symbol references",
+    )
+
+
 @register_check("Identity", order=60)
 def check_identity(project_root: Path) -> dict:
     """Check orchestrator agent is configured."""
@@ -1803,6 +1998,87 @@ def check_identity(project_root: Path) -> dict:
     if infos:
         return _result("Identity", "info", f"Orchestrator configured -- {'; '.join(infos)}")
     return _result("Identity", "pass", "Orchestrator agent configured")
+
+
+def _load_host_attestation():
+    """Import ``modules.security.host_attestation``, inserting hooks/ on sys.path.
+
+    Same lazy-import contract as ``_load_hooks_content_hash`` /
+    ``_load_source_parity``: doctor.py runs as a bin/cli script whose sys.path
+    lacks hooks/, and the module resolves as ``modules.security.host_attestation``
+    only once hooks/ itself is on sys.path (the same convention
+    ``check_hooks_importable`` and every hook entry point rely on -- hooks/ has
+    no ``__init__.py``, so it is an implicit namespace package). Returns None on
+    any import failure so the caller degrades instead of crashing doctor.
+    """
+    try:
+        import sys as _sys  # noqa: PLC0415
+        hooks_dir = _package_root() / "hooks"
+        if str(hooks_dir) not in _sys.path:
+            _sys.path.insert(0, str(hooks_dir))
+        from modules.security import host_attestation  # noqa: PLC0415
+        return host_attestation
+    except Exception:
+        return None
+
+
+@register_check("OpenCode host liveness", order=61)
+def check_opencode_host_liveness() -> dict:
+    """Report whether the CURRENT host run has a recorded identity attestation.
+
+    OpenCode never logs a successful plugin load -- the absence of a failure
+    proves nothing about whether a host is actually alive. So this check does
+    not infer liveness from anything indirect; it reads the ONE positive
+    signal Gaia has, ``modules.security.host_attestation``'s per-host-run
+    ledger (``hooks/modules/security/host_attestation.py``), scoped to
+    ``host_run_id()`` -- the namespace of the process that is the PARENT of
+    ``gaia doctor`` itself, exactly as every attestation issuer and resolver
+    scopes its own reads and writes.
+
+    Three outcomes, and only one of them claims liveness:
+      PASS  -- the current host run's ledger file exists and carries at least
+               one recorded attestation: a Gaia-side process vouched for this
+               run.
+      INFO  -- no ledger file for this host run, or a ledger with zero
+               records. This is reported as an explicit ABSENCE, never as a
+               false pass: it is the ordinary state for any session not
+               dispatched under an attested OpenCode host (including a bare
+               `gaia doctor` run from a shell), not a failure to diagnose.
+      INFO  -- the host_attestation module itself failed to import (a broken
+               or partial install) -- degrade rather than crash the run.
+    """
+    name = "OpenCode host liveness"
+
+    host_attestation = _load_host_attestation()
+    if host_attestation is None:
+        return _result(
+            name, "info",
+            "modules.security.host_attestation not importable -- liveness NOT verified",
+        )
+
+    host_run = host_attestation.host_run_id()
+    path = host_attestation.ledger_path(host_run)
+    if not path.is_file():
+        return _result(
+            name, "info",
+            f"no attestation ledger for the current host run ({host_run}) -- "
+            "ABSENCE, not a failure: OpenCode never logs a successful load, so "
+            "no record here means liveness is unconfirmed, never a false OK",
+        )
+
+    data = _read_json(path)
+    records = data.get("records") if isinstance(data, dict) else None
+    if not isinstance(records, dict) or not records:
+        return _result(
+            name, "info",
+            f"attestation ledger for host run {host_run} exists at {path} but "
+            "carries no records -- ABSENCE of attestation, not a failure",
+        )
+
+    return _result(
+        name, "pass",
+        f"host run {host_run} has {len(records)} attestation(s) recorded at {path}",
+    )
 
 
 @register_check("Agent routing", order=65)
@@ -1953,7 +2229,6 @@ def check_hook_files(project_root: Path) -> dict:
         ("task_completed.py", False),
         ("pre_compact.py", False),
         ("post_compact.py", False),
-        ("elicitation_result.py", False),
     ]
 
     errors = []

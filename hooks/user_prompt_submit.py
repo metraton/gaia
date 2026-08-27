@@ -233,8 +233,8 @@ if __name__ == "__main__":
         # Prompt extraction is retained for liveness diagnostics only.
         prompt_text = _extract_user_prompt(raw_input)
 
-        # NOTE: Approval activation moved to ElicitationResult hook.
-        # AskUserQuestion responses trigger ElicitationResult, not
+        # NOTE: Approval activation does not happen here. An answered
+        # AskUserQuestion arrives on PostToolUse, not
         # UserPromptSubmit, so approval detection lives there now.
 
         if not prompt_text:

@@ -9,6 +9,7 @@ import pytest
 
 from gaia.approvals.command_set import (
     CommandSetValidationError,
+    command_fingerprint,
     request_fingerprint,
     validate_request_set,
 )
@@ -217,3 +218,182 @@ def test_reservation_persistence_error_fails_closed(isolated_db, monkeypatch):
     )
     assert not result.allowed
     assert "persistence failed closed" in result.reason
+
+
+def _grant_row(db_path, approval_id="P-plan"):
+    con = sqlite3.connect(db_path)
+    con.row_factory = sqlite3.Row
+    try:
+        return dict(
+            con.execute(
+                "SELECT * FROM approval_grants WHERE approval_id=?", (approval_id,)
+            ).fetchone()
+        )
+    finally:
+        con.close()
+
+
+def _set_stored_fingerprint(db_path, index, fingerprint, approval_id="P-plan"):
+    """Rewrite one stored per-item fingerprint, leaving the command bytes intact."""
+    row = _grant_row(db_path, approval_id)
+    items = json.loads(row["command_set_json"])
+    items[index]["fingerprint"] = fingerprint
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            "UPDATE approval_grants SET command_set_json=? WHERE approval_id=?",
+            (json.dumps(items), approval_id),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_reservation_refuses_altered_bytes_and_an_altered_stored_fingerprint(isolated_db):
+    """Byte-identity is fail-closed at RESERVATION, not only in the fingerprint function.
+
+    test_fingerprint_is_order_sensitive_and_exact exercises request_fingerprint as a
+    pure function and never reaches a grant. The property under test here is the
+    refusal, so every assertion goes through reserve_plan_command against a real
+    stored set, and each refusal is paired with the positive control that isolates
+    what caused it.
+    """
+    first, second = _approved_set(isolated_db)
+
+    off_by_one = (
+        first + " ",              # one trailing byte
+        first.replace("main", "maim"),  # one substituted letter
+        first[:-1],               # one byte dropped
+    )
+    for altered in off_by_one:
+        assert altered != first
+        assert writer.reserve_plan_command(
+            altered, session_id="s", tool_use_id="call-off", db_path=isolated_db,
+        ) is None
+
+    # A refused reservation leaves no stamp behind, so the control below starts
+    # from the same state the refusals did.
+    refused = _grant_row(isolated_db)
+    assert refused["reservation_tool_use_id"] is None
+    assert refused["next_index"] == 0
+    assert refused["status"] == "PENDING"
+
+    # An altered STORED fingerprint is refused even though the caller's bytes are
+    # exact: the fingerprint is a second, independent gate on the same item.
+    true_fingerprint = command_fingerprint(first)
+    _set_stored_fingerprint(isolated_db, 0, command_fingerprint(second))
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-tampered", db_path=isolated_db,
+    ) is None
+
+    # Restoring only that one field makes the identical call succeed, which is
+    # what proves the refusal above came from the fingerprint and from nothing
+    # else about the grant.
+    _set_stored_fingerprint(isolated_db, 0, true_fingerprint)
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-exact", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 0}
+
+
+def test_an_outstanding_reservation_refuses_a_second_attempt_on_the_same_grant(isolated_db):
+    """Mutual exclusion, proven by the outstanding-reservation guard specifically.
+
+    A refusal that came from an index mismatch would satisfy the letter of the
+    claim and miss it entirely, so the branch is isolated twice: the grant state
+    is shown to make the item-match filter pass, and clearing ONLY the
+    reservation stamp -- next_index and command bytes untouched -- turns the same
+    refused call into a success while an index mismatch keeps refusing.
+    """
+    first, second = _approved_set(isolated_db)
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 0}
+
+    # The state that rules the item-mismatch branch out for the attempts below:
+    # next_index still addresses index 0, and the item stored at that index is
+    # byte- and fingerprint-identical to what the second attempt passes.
+    held = _grant_row(isolated_db)
+    assert held["reservation_index"] == 0
+    assert held["reservation_session_id"] == "s"
+    assert held["reservation_tool_use_id"] == "call-1"
+    assert held["next_index"] == 0
+    assert held["status"] == "PENDING"
+    item = json.loads(held["command_set_json"])[0]
+    assert item["command"] == first
+    assert item["fingerprint"] == command_fingerprint(first)
+
+    for session_id, tool_use_id in (("s", "call-2"), ("other", "call-3")):
+        assert writer.reserve_plan_command(
+            first, session_id=session_id, tool_use_id=tool_use_id, db_path=isolated_db,
+        ) is None
+
+    # The guard rolls back rather than half-writing: the first holder still owns
+    # the reservation and nothing advanced.
+    assert _grant_row(isolated_db) == held
+
+    con = sqlite3.connect(isolated_db)
+    try:
+        con.execute(
+            "UPDATE approval_grants SET reservation_index=NULL, "
+            "reservation_session_id=NULL, reservation_tool_use_id=NULL, "
+            "reservation_at=NULL WHERE approval_id='P-plan'"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    released = _grant_row(isolated_db)
+    assert released["next_index"] == held["next_index"]
+    assert released["command_set_json"] == held["command_set_json"]
+
+    # Same call, same grant, one field of difference: refused while the stamp was
+    # set, accepted once it is not. Meanwhile the index-mismatch branch is
+    # unaffected by the stamp, so the two refusals are not the same refusal.
+    assert writer.reserve_plan_command(
+        second, session_id="s", tool_use_id="call-2", db_path=isolated_db,
+    ) is None
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-2", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 0}
+
+
+def test_a_settlement_by_a_different_pair_returns_false_and_mutates_nothing(isolated_db):
+    """The second half of settlement being call-scoped: the false return is inert.
+
+    A later successful settlement only IMPLIES the refused one changed nothing.
+    This observes it directly -- the whole row before and after -- so a refusal
+    that froze the grant or advanced next_index on its way to returning false
+    could not hide behind the success that follows it.
+    """
+    first, _second = _approved_set(isolated_db)
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 0}
+    reserved = _grant_row(isolated_db)
+
+    wrong_pairs = (("s", "call-2"), ("other", "call-1"), ("other", "call-2"))
+    for session_id, tool_use_id in wrong_pairs:
+        assert writer.settle_plan_command(
+            "P-plan", session_id=session_id, tool_use_id=tool_use_id,
+            success=True, db_path=isolated_db,
+        ) is False
+        assert writer.settle_plan_command(
+            "P-plan", session_id=session_id, tool_use_id=tool_use_id,
+            success=False, failure_reason="exit 7", db_path=isolated_db,
+        ) is False
+
+    assert _grant_row(isolated_db) == reserved
+    # The two properties the gate names, stated by name rather than left to the
+    # row comparison above.
+    assert reserved["status"] == "PENDING"
+    assert reserved["failed_index"] is None
+    assert reserved["next_index"] == 0
+    assert json.loads(reserved["consumed_indexes_json"]) == []
+
+    # And the reservation was still usable, so its inertness was not the grant
+    # having become unsettleable by anyone.
+    assert writer.settle_plan_command(
+        "P-plan", session_id="s", tool_use_id="call-1", success=True,
+        db_path=isolated_db,
+    ) is True
+    assert _grant_row(isolated_db)["next_index"] == 1

@@ -22,6 +22,7 @@ const require = createRequire(import.meta.url);
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const CHECK = path.join(ROOT, 'tools', 'check-layout.mjs');
 const BUILD = path.join(ROOT, 'engine', 'build-data.mjs');
+const INDEX = path.join(ROOT, 'index.html');
 
 let failures = 0;
 function report(name, ok, detail) {
@@ -78,6 +79,11 @@ function mkDeck() {
   );
   fs.mkdirSync(path.join(dir, 'engine'));
   fs.copyFileSync(BUILD, path.join(dir, 'engine', 'build-data.mjs'));
+  // The real stylesheet, so the CSS MIRROR is actually asserted in every case.
+  // Without it every fixture here ran with the mirror unread — the guard quiet in
+  // the whole suite whose reason for existing is that a quiet guard is the silent
+  // false negative. Case 9 removes it again, deliberately, to assert that state.
+  fs.copyFileSync(INDEX, path.join(dir, 'index.html'));
   fs.symlinkSync(path.join(ROOT, 'node_modules'), path.join(dir, 'node_modules'), 'dir');
   execFileSync('node', [path.join(dir, 'engine', 'build-data.mjs')], {
     cwd: dir,
@@ -435,6 +441,49 @@ const staticFlags = word => textBudget({ id: 'x', title: word },
   }
   report('SPACER: every payload key on a spacer is refused by name',
     leaked.length === 0, `accepted: ${leaked.join(', ')}`);
+  rmDeck(dir);
+}
+
+// ── 9. CSS MIRROR — the guard that can go QUIET, in both directions ────────
+// Every OTHER case here seeds a defect and asserts the gate speaks. This one
+// seeds a defect in the gate's own READING and asserts the gate does not stay
+// silent about it — the failure mode of a MIRRORED assertion, which no other
+// check in this suite has: 17 mirrored tokens sit behind brittle regexes over
+// `.box { }` / `:root { }`, so one reordered or renamed declaration unasserts
+// them AND the whole TEXT budget derived from them, with nothing failing.
+// The two directions are asserted separately because they must NOT be the same
+// verdict: a stylesheet that is PRESENT and unreadable is a FAILURE (the
+// declaration moved past the probe and every derived number is unverified),
+// while NO stylesheet is a data-only fixture — not asserted, counted, and never
+// a pass. Reversed, the first one is exactly the silence that certifies drift.
+{
+  const dir = mkDeck();
+  const idx = path.join(dir, 'index.html');
+  const src = fs.readFileSync(idx, 'utf8');
+  // `--frame-h:40px;` is declared EXACTLY ONCE and is read by the frameH probe,
+  // so removing that one substring is a stylesheet that still parses, still
+  // renders, and no longer answers one of the questions the mirror asks.
+  const probed = '--frame-h:40px;';
+  const removed = src.includes(probed);
+  fs.writeFileSync(idx, src.replace(probed, ''), 'utf8');
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = removed && code !== 0
+    && out.includes('declares no readable [frameH]')
+    && !out.includes('ALL PASS');
+  report('CSS/mirror: a deleted probed declaration FAILS the gate', ok,
+    `probe-present=${removed} exit=${code}\n${out}`);
+  rmDeck(dir);
+}
+{
+  const dir = mkDeck();
+  fs.rmSync(path.join(dir, 'index.html'));
+  const { code, out } = runNode([CHECK, dir]);
+  const ok = code !== 0
+    && out.includes('[NOT ASSERTED]')
+    && out.includes('NOT ASSERTED —')
+    && !out.includes('ALL PASS');
+  report('CSS/mirror: an absent stylesheet is NOT ASSERTED, never a pass', ok,
+    `exit=${code}\n${out}`);
   rmDeck(dir);
 }
 

@@ -16,20 +16,31 @@ for the git working-tree writers.
 
 This guard closes that hole independently of the mutative classifier: it scans
 the raw command string (per operator-split component) and CATEGORICALLY denies
-any WRITE-capable command whose target resolves into the protected ``.claude/``
-tree. The scope mirrors the deterministic Write/Edit backstop exactly:
-
-  * anything under a ``.claude/hooks/`` path (EXCEPT ``.md`` docs -- they do not
-    execute code), and
-  * ``settings.json`` / ``settings.local.json`` anywhere under a ``.claude/``
-    path.
+any WRITE-capable command whose target is a protected Gaia path. The scope is
+not restated here: it is ``protected_paths.is_protected_hook_path``, the same
+predicate the Write/Edit gate calls. Two surfaces, one predicate -- because the
+scope used to be duplicated in prose between them ("mirrors the Write/Edit
+backstop") and the drift that produced was a security control whose reach
+depended on the deployment layout. Widening one surface now widens both, so the
+shell route cannot stay open against a tree the file-write route protects.
 
 Like gaia_db_write_guard and the subagent memory-write guard, the block is
 categorical and NOT approvable -- there is no T3 grant that lifts it. This is
 the faithful implementation of the ``.claude/`` hard-boundary policy for shell
-mechanisms: "do not attempt it", not "run it and let the hook decide". READS
-(``git diff .claude/hooks/x.py``, ``cat .claude/settings.json``,
-``grep -r x .claude/``) are NOT write-capable and pass through untouched.
+mechanisms: "do not attempt it", not "run it and let the hook decide".
+
+Write capability is judged by the component's BASE TOKEN, with no flag
+inspection, so do NOT expect reads to pass untouched. A command whose base is
+not a listed writer does pass (``git diff .claude/hooks/x.py``,
+``cat .claude/settings.json``, ``grep -r x .claude/``), but a READ-ONLY
+SPELLING OF A LISTED WRITER is denied all the same: ``sed -n '1,40p'
+.claude/settings.json`` prints and mutates nothing and is still categorically
+denied, because the base token is ``sed``. The read itself is not withheld --
+reach it with the Read tool, ``cat``, ``grep`` or ``awk``, a token outside the
+write set. Do not make the guard flag-aware to soften this: ``sed`` writes its
+target from a ``w`` script command with no in-place flag anywhere in the
+invocation, so a flag-based guard would pass a real write through a boundary
+that is categorical and therefore not approvable.
 
 Residual limitation (accepted): a write assembled indirectly -- a protected
 path reconstructed by variable interpolation or read from a file
@@ -50,6 +61,7 @@ import re
 import shlex
 from typing import List, Optional, Tuple
 
+from .protected_paths import is_protected_hook_path
 from .shell_grouping import strip_grouping_wrappers
 from .shell_substitution import extract_substitutions
 
@@ -59,10 +71,14 @@ from .shell_substitution import extract_substitutions
 # Git subcommands that write/replace working-tree files (the ones that live in
 # GIT_LOCAL_SAFE_SUBCOMMANDS and therefore short-circuit the tier gate). A read
 # subcommand (diff, log, show, status, blame) is deliberately absent so a read
-# targeting a protected path is never blocked.
+# targeting a protected path is never blocked. ``add`` is absent for the same
+# reason: it reads the working tree and writes the INDEX, so it can never
+# overwrite a protected file's bytes -- and because the block is not
+# approvable, listing it would leave a turn authoring a new hook module with no
+# way to stage it except from the repo root, sweeping in unrelated work.
 _GIT_WRITE_SUBCOMMANDS = frozenset({
     "mv", "checkout", "switch", "restore", "stash", "reset", "revert",
-    "cherry-pick", "apply", "am", "rebase", "merge", "pull", "clone", "add",
+    "cherry-pick", "apply", "am", "rebase", "merge", "pull", "clone",
 })
 
 # Non-git base commands that write files. Plain mv/cp were only T3-approvable;
@@ -79,20 +95,14 @@ _FILESYSTEM_WRITE_COMMANDS = frozenset({
 # another (``cat .claude/settings.json && ls`` must not fire on ``ls``).
 _OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
 
-_SETTINGS_BASENAMES = frozenset({"settings.json", "settings.local.json"})
-
 
 def _is_protected_claude_path(token: str) -> bool:
-    """Return True iff `token` names a path inside the protected .claude/ tree.
+    """Return True iff `token` names a protected Gaia path.
 
-    Scope mirrors _is_protected() in adapters/claude_code.py:
-      * under a ``.claude/hooks/`` path and NOT a ``.md`` file, OR
-      * basename is settings.json / settings.local.json anywhere under
-        ``.claude/``.
-
-    Detection is structural (component match on the normalized path), not a
-    filesystem resolve, so it holds for any workspace Gaia governs and for a
-    destination path that does not exist yet (the overwrite target of a move).
+    This decides only what a shell TOKEN is -- the scope of the protected set
+    belongs to ``protected_paths.is_protected_hook_path`` and is deliberately
+    not restated. The name is historical: the set now covers every Gaia hook
+    tree, the source checkout included, not just the ``.claude/`` copy.
     """
     if not token or token.startswith("-"):
         return False
@@ -104,30 +114,7 @@ def _is_protected_claude_path(token: str) -> bool:
     if not cleaned:
         return False
 
-    # normpath collapses "." and ".." components (foo/../.claude/hooks/x ->
-    # .claude/hooks/x) without touching the filesystem or resolving symlinks.
-    normalized = os.path.normpath(cleaned)
-    parts = normalized.split(os.sep)
-    # Also split on "/" in case of mixed separators.
-    if os.sep != "/":
-        parts = [p for seg in parts for p in seg.split("/")]
-
-    if ".claude" not in parts:
-        return False
-
-    basename = parts[-1]
-    if basename in _SETTINGS_BASENAMES:
-        return True
-
-    claude_idx = parts.index(".claude")
-    if "hooks" in parts[claude_idx + 1:]:
-        # Docs under hooks/ do not execute code and are exempt, matching the
-        # .md carve-out in _is_protected().
-        if basename.endswith(".md"):
-            return False
-        return True
-
-    return False
+    return is_protected_hook_path(cleaned)
 
 
 def _tokenize(component: str) -> List[str]:
@@ -231,11 +218,13 @@ def targets_protected_path(command: str) -> Optional[str]:
 def rejection_message(path: str) -> str:
     """Return the canonical rejection message for a protected-path write."""
     return (
-        f"[PROTECTED_PATH] Refusing to write into the protected .claude/ tree "
-        f"via Bash: {path}. The Gaia hooks directory and .claude settings files "
-        f"are a hard security boundary -- no shell command may modify them, and "
-        f"this block is not approvable. Edit the SOURCE under gaia/ and let "
-        f"`gaia install` propagate the change."
+        f"[PROTECTED_PATH] Refusing to write Gaia hook code or settings via "
+        f"Bash: {path}. Every Gaia hook tree -- the source checkout and each "
+        f"installed copy -- plus the .claude settings files are a hard security "
+        f"boundary: no shell command may modify them, and this block is not "
+        f"approvable. Use the Write/Edit surface on the source tree under "
+        f"gaia/, which asks the user for consent, and let `gaia install` "
+        f"propagate the change."
     )
 
 

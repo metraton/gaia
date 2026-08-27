@@ -133,7 +133,15 @@ class TestSettingsCodeConsistency:
         """State-modifying commands (T3 per security-tiers skill) must NOT be in allow."""
         allow_cmds = {self._extract_command(e) for e in allow_list if e.startswith("Bash(")}
 
-        # These are T3 mutations that should NEVER be auto-allowed
+        # T3 mutations that must never be auto-allowed. Tier membership here is
+        # owned by GIT_LOCAL_SAFE_SUBCOMMANDS and MUTATIVE_VERBS in
+        # hooks/modules/security/mutative_verbs.py, not by this set: a command
+        # listed here that the classifier treats as local-safe would fail a
+        # legitimate allow entry. `git commit` and `git reset` were removed for
+        # exactly that reason -- both are listed in GIT_LOCAL_SAFE_SUBCOMMANDS
+        # ("local-only: modifies local refs/staging, never touches remote" for
+        # `reset`), so auto-allowing them violates nothing. `git rebase` and
+        # `git merge` are NOT in that set and stay.
         t3_mutations = {
             "terraform apply", "terragrunt apply",
             "terraform destroy", "terragrunt destroy",
@@ -143,8 +151,7 @@ class TestSettingsCodeConsistency:
             "helm install", "helm upgrade", "helm rollback",
             "helm uninstall", "helm delete",
             "flux suspend", "flux resume",
-            "git push", "git commit", "git rebase",
-            "git reset", "git merge",
+            "git push", "git rebase", "git merge",
         }
 
         violations = allow_cmds & t3_mutations
@@ -388,9 +395,15 @@ class TestTaskValidatorConsistency:
 
     def test_t3_keywords_match_security_tiers_skill(self):
         """T3 keywords must match operations classified as T3 in security-tiers skill."""
-        # These are the canonical T3 operations from the skill
+        # The canonical T3 operations from the skill. `git commit` is NOT one
+        # of them and must not be re-added: security-tiers/SKILL.md states it
+        # is local-only and therefore not T3, and the verb detector agrees --
+        # tests/hooks/modules/tools/test_task_validator.py asserts positively
+        # that a prompt announcing a commit is not flagged T3. T3_KEYWORDS
+        # still carries the entry as legacy, which is why this set is a floor
+        # (missing-only) rather than an equality check.
         expected_t3_operations = {
-            "git commit", "git push", "terraform apply", "terragrunt apply",
+            "git push", "terraform apply", "terragrunt apply",
             "kubectl apply", "kubectl delete", "kubectl create",
             "helm install", "helm upgrade",
         }
@@ -402,24 +415,39 @@ class TestTaskValidatorConsistency:
             f"T3 operations from security-tiers skill missing in T3_KEYWORDS: {missing}"
         )
 
-    def test_approval_mechanism_in_approval_protocol_skill(self):
-        """The approval mechanism is documented in the skill that now OWNS it.
+    def test_identifier_rule_stated_in_neutral_skill(self):
+        """The neutral skill states the identifier rule in its own voice.
 
-        The presentation mechanism (ElicitationResult / AskUserQuestion) has
-        moved on again since this test was first pinned to
-        agent-approval-protocol: it now lives in orchestrator-present-approval
-        (the orchestrator's own presentation step), with pending-approvals as
-        the sibling that inspects/approves/rejects a named pending. Assert
-        the token where it actually lives today.
+        This replaces an existence assertion on a per-host adapter skill.
+        Delegating the rule to an adapter was the wrong fix: four of the six
+        facts that adapter carried are Gaia's, not a host's, and an existence
+        test that SKIPS when the file is gone (the shape this test had) cannot
+        notice the rule going missing. So the property is asserted directly --
+        the neutral skill must state the resolver path and the form the
+        resolver actually parses -- and it holds whatever host is running.
         """
-        approval_skill = SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
-        if not approval_skill.exists():
-            pytest.skip("orchestrator-present-approval/SKILL.md not found")
+        content = (
+            SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
+        ).read_text()
 
-        content = approval_skill.read_text().lower()
-        assert "elicitationresult" in content or "askuserquestion" in content or CANONICAL_APPROVAL_TOKEN.lower() in content, (
-            "orchestrator-present-approval must reference the approval "
-            "mechanism (ElicitationResult, AskUserQuestion, or canonical token)"
+        # 97c8197 renamed the resolver: extract_nonce_from_label ->
+        # extract_approval_id_from_label, activate_db_pending_by_prefix ->
+        # activate_db_pending_by_id. Resolution is by exact canonical id;
+        # the retired prefix-scan symbol must NOT be the one anchored here.
+        for symbol in ("extract_approval_id_from_label", "activate_db_pending_by_id"):
+            assert symbol in content, (
+                f"orchestrator-present-approval must anchor the resolver "
+                f"symbol {symbol}; without it the identifier rule is prose "
+                f"with nothing to invalidate it"
+            )
+        assert "`Approve`" in content and "[P-" in content, (
+            "orchestrator-present-approval must state the form the resolver "
+            "parses (a literal leading Approve plus a bracketed [P-<hex>] "
+            "prefix). Omit it and no grant is created while the user believes "
+            "they consented"
+        )
+        assert CANONICAL_APPROVAL_TOKEN.split(":")[0].lower() in content.lower(), (
+            "orchestrator-present-approval must name the activation channel"
         )
 
 
@@ -448,36 +476,45 @@ class TestSkillsCrossReferences:
             )
 
     def test_approval_protocol_skill_references_approval_mechanism(self):
-        """The approval mechanism lives in orchestrator-present-approval and
-        pending-approvals, not agent-approval-protocol or execution.
+        """No consent skill names a host mechanism (AC-8).
 
-        execution delegates the approval handoff onward; the presentation
-        mechanism (AskUserQuestion / ElicitationResult) is owned by
-        orchestrator-present-approval, and pending-approvals (the sibling
-        that inspects/approves/rejects a named pending) references the same
-        flow. Assert against the owning skills, not the retired one.
+        The five skills the consent protocol declares agnostic must name no
+        host consent mechanism. There is no adapter to hand the reader to any
+        more: the rules are stated host-neutrally, with a conditional where a
+        rule genuinely depends on what a host's reply transports.
+        pending-approvals is the orchestrator-side sibling and is not in that
+        agnostic set.
         """
+        agnostic = (
+            "agent-approval-protocol",
+            "security-tiers",
+            "subagent-request-approval",
+            "orchestrator-present-approval",
+            "execution",
+        )
+        host_names = (
+            "askuserquestion",
+            "elicitationresult",
+            "permission.replied",
+            "permission.v2.replied",
+        )
+        for skill in agnostic:
+            for doc in sorted((SKILLS_DIR / skill).glob("*.md")):
+                content = doc.read_text().lower()
+                found = [name for name in host_names if name in content]
+                assert not found, (
+                    f"{skill}/{doc.name} must stay host-agnostic; "
+                    f"host mechanism names present: {found}"
+                )
+
         present_content = (
             SKILLS_DIR / "orchestrator-present-approval" / "SKILL.md"
         ).read_text().lower()
-        pending_content = (
-            SKILLS_DIR / "pending-approvals" / "SKILL.md"
-        ).read_text().lower()
-
-        def _has_mechanism(content: str) -> bool:
-            return (
-                "elicitationresult" in content
-                or "askuserquestion" in content
-                or CANONICAL_APPROVAL_TOKEN.lower() in content
-            )
-
-        assert _has_mechanism(present_content), (
-            "orchestrator-present-approval must reference the approval "
-            "mechanism (ElicitationResult, AskUserQuestion, or canonical token)"
-        )
-        assert _has_mechanism(pending_content), (
-            "pending-approvals must reference the approval mechanism "
-            "(ElicitationResult, AskUserQuestion, or canonical token)"
+        assert "consent-adapter" not in present_content, (
+            "orchestrator-present-approval must state the rules itself, not "
+            "delegate them to a per-host adapter. A delegation whose target is "
+            "deleted leaves an orphaned prohibition -- the skill instructing "
+            "the reader not to state the label shape, with nothing stating it"
         )
 
     def test_approval_skill_references_approval_id_concept(self):

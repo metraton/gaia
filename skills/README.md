@@ -135,7 +135,7 @@ skill that could theoretically apply.
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
 - `agent-response` — contract status interpretation and presentation
-- `orchestrator-present-approval` — T3 approval presentation and grant activation
+- `orchestrator-present-approval` — T3 approval presentation, host-neutral end to end: the sealed surface and its field set, presenting it as text before asking a minimal decision, the conditional rule that makes the reply resolve to the `approval_id`, and who activates versus who executes
 - `gaia-compact` — compact transient continuity after durable state is persisted
 
 Workflow skills (on-demand injection, not in any agent frontmatter):

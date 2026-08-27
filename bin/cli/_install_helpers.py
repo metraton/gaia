@@ -157,6 +157,37 @@ def configure_opencode_plugin(
     config_path = workspace / "opencode.json"
     if not plugin_path.is_file():
         return _result("error", config_path, f"OpenCode plugin not found: {plugin_path}")
+    try:
+        plugin_source = plugin_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return _result("error", config_path, f"OpenCode plugin cannot be read: {exc}")
+    if not re.search(r"export\s+const\s+GaiaOpenCodePlugin\s*=\s*async\b", plugin_source):
+        return _result(
+            "error",
+            config_path,
+            "OpenCode plugin has no callable GaiaOpenCodePlugin named export",
+        )
+    # The installed OpenCode loader (decompiled: dk()/lk()/pk() in the
+    # opencode-ai binary) takes a fast path ONLY when the module's default
+    # export matches {id, server: <function>} -- that path calls default.server
+    # directly and never scans the module's other exports. Without a matching
+    # default, the loader's fallback invokes EVERY function/{server:fn}-shaped
+    # export in the file as its own plugin entry point, which is what broke
+    # live loading when the default export was removed. The official docs
+    # (opencode.ai/docs/plugins/) name only the named-export form; the
+    # decompiled loader is ground truth over the docs.
+    if not re.search(
+        r"export\s+default\s*\{[^}]*\bserver\s*:\s*GaiaOpenCodePlugin\b[^}]*\}",
+        plugin_source,
+        re.DOTALL,
+    ):
+        return _result(
+            "error",
+            config_path,
+            "OpenCode plugin has no default {id, server} export -- the "
+            "installed OpenCode loader's fast path requires it to skip "
+            "scanning every other module export",
+        )
     policy = _read_json(policy_path)
     if not isinstance(policy, dict):
         return _result("error", config_path, f"OpenCode agent policy is invalid: {policy_path}")
@@ -446,6 +477,61 @@ def merge_local_permissions(
 # 3. settings.local.json -- hooks merge (npm mode)
 # ---------------------------------------------------------------------------
 
+# The unconverted form a hook command carries in hooks.json, before the merge
+# rewrites it to an absolute path.
+_PLUGIN_ROOT_HOOKS_TOKEN = "${CLAUDE_PLUGIN_ROOT}/hooks/"
+
+
+def _is_gaia_hook_command(command: str, hooks_abs: str) -> bool:
+    """True when *command* invokes an entry point out of Gaia's hooks dir.
+
+    Ownership is decided by the command's target, not by the event name: an
+    event Gaia ships can also carry a third-party entry, and that entry is not
+    Gaia's to remove.
+    """
+    if not command:
+        return False
+    normalized = command.replace("\\", "/")
+    return _PLUGIN_ROOT_HOOKS_TOKEN in normalized or f"{hooks_abs}/" in normalized
+
+
+def _prune_stale_gaia_events(
+    existing_hooks: dict[str, list],
+    shipped_events: set[str],
+    hooks_abs: str,
+) -> bool:
+    """Drop Gaia's own entries for events hooks.json no longer ships.
+
+    The merge is otherwise additive, so retiring an event from hooks.json left
+    its registration alive in every already-installed workspace, pointing at an
+    entry-point file the release had deleted. Third-party entries on the same
+    event survive, and an event Gaia never owned is never touched.
+    """
+    changed = False
+    for event in list(existing_hooks):
+        if event in shipped_events:
+            continue
+        kept: list = []
+        for entry in existing_hooks[event]:
+            hooks_list = entry.get("hooks", [])
+            surviving = [
+                h for h in hooks_list
+                if not _is_gaia_hook_command(h.get("command", ""), hooks_abs)
+            ]
+            if len(surviving) == len(hooks_list):
+                kept.append(entry)
+            elif surviving:
+                kept.append({**entry, "hooks": surviving})
+        if kept == existing_hooks[event]:
+            continue
+        changed = True
+        if kept:
+            existing_hooks[event] = kept
+        else:
+            del existing_hooks[event]
+    return changed
+
+
 def merge_local_hooks(
     workspace: Path,
     plugin_root: Path | None = None,
@@ -453,6 +539,9 @@ def merge_local_hooks(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Merge hooks from hooks.json into settings.local.json.
+
+    Events hooks.json ships are added or completed; events it no longer ships
+    have Gaia's own entries pruned (see ``_prune_stale_gaia_events``).
 
     In npm mode Claude Code reads hooks from settings.local.json, not from
     hooks.json directly, so this is required for hooks to fire. Command
@@ -582,6 +671,9 @@ def merge_local_hooks(
             if not all_present:
                 existing_hooks[event].append(new_entry)
                 changed = True
+
+    if _prune_stale_gaia_events(existing_hooks, set(converted), hooks_abs):
+        changed = True
 
     if not changed:
         return _result("noop", local_path, "hooks already up to date")

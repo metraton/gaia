@@ -865,6 +865,90 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Link mode and install mode must run the identical OpenCode export guard --
+# see e9468d8 / plan 65 task 531. dev.py's --mode link and install.py's
+# gaia install both terminate in cmd_install -> _configure_host ->
+# _install_helpers.configure_opencode_plugin, so this proves parity by
+# actually running that chain end to end, not by inspecting the source.
+# ---------------------------------------------------------------------------
+
+class TestLinkModeSharesTheOpenCodeExportGuard(unittest.TestCase):
+    def _fixture_package_root(self, tmp_path: Path, plugin_source: str) -> Path:
+        pkg = tmp_path / "fixture-package"
+        opencode_dir = pkg / "opencode"
+        opencode_dir.mkdir(parents=True)
+        (opencode_dir / "plugin.ts").write_text(plugin_source)
+        (opencode_dir / "agent-policy.json").write_text("{}\n")
+        (pkg / "skills").mkdir()
+        return pkg
+
+    def _run_link_mode_opencode(self, tmp_path: Path, plugin_source: str):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        pkg_root = self._fixture_package_root(tmp_path, plugin_source)
+        data_dir = tmp_path / ".gaia-data"
+        data_dir.mkdir()
+        home = tmp_path / "home"
+        home.mkdir()
+
+        env_patch = {
+            "GAIA_DATA_DIR": str(data_dir),
+            "GAIA_DB": str(data_dir / "gaia.db"),
+            "HOME": str(home),
+            "INIT_CWD": str(workspace),
+        }
+        ns = argparse.Namespace(
+            workspace=str(workspace),
+            mode="link",
+            quiet=False,
+            verbose=True,
+            keep_tarball=False,
+            pack_dest=None,
+            host="opencode",
+        )
+
+        # link_source_into_workspace is mocked out (it symlinks THIS source
+        # tree, not the fixture) -- only cmd_install's real chain is under
+        # test here. _install_helpers._PACKAGE_ROOT is patched so
+        # configure_opencode_plugin resolves the fixture's plugin.ts instead
+        # of the real one, mirroring how tests/cli/test_opencode_install.py
+        # passes an explicit plugin_root to the same function directly.
+        with patch("cli.dev.link_source_into_workspace",
+                    return_value={"action": "created", "path": "x", "details": "ok"}), \
+             patch("cli._install_helpers._PACKAGE_ROOT", pkg_root), \
+             patch.dict(os.environ, env_patch):
+            with redirect_stdout(io.StringIO()) as out:
+                rc = cmd_dev(ns)
+        return rc, out.getvalue()
+
+    def test_violating_export_fails_naming_the_install_guard(self):
+        """A plugin with no default {id, server} export fails the guard: the
+        installed OpenCode loader's fallback would scan and invoke every
+        exported value as its own plugin entry point (dk()/lk()/pk(),
+        decompiled) once a real second export exists -- the guard requires
+        the default export that makes the loader skip that scan entirely."""
+        with tempfile.TemporaryDirectory(prefix="gaia-dev-link-guard-") as tmp:
+            rc, out = self._run_link_mode_opencode(
+                Path(tmp),
+                'export const GaiaOpenCodePlugin = async () => ({})\n',
+            )
+            self.assertEqual(rc, 1, out)
+            self.assertIn(
+                "OpenCode plugin has no default {id, server} export", out
+            )
+
+    def test_conforming_export_passes_through_the_same_guard(self):
+        with tempfile.TemporaryDirectory(prefix="gaia-dev-link-guard-") as tmp:
+            rc, out = self._run_link_mode_opencode(
+                Path(tmp),
+                'export const GaiaOpenCodePlugin = async () => ({})\n'
+                'export default { id: "gaia", server: GaiaOpenCodePlugin }\n',
+            )
+            self.assertEqual(rc, 0, out)
+            self.assertIn("OpenCode plugin", out)
+
+
+# ---------------------------------------------------------------------------
 # Real end-to-end: pack -> install -> wire against an isolated tmp workspace.
 #
 # GAIA_DATA_DIR / GAIA_DB are pinned to a tmp path for the entire test so the

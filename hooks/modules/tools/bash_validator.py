@@ -1250,25 +1250,17 @@ class BashValidator:
     ) -> BashValidationResult:
         """Validate a compound command (multiple components).
 
-        Chain COMMAND_SET intake (AC-8): when a chain ``a && b && c`` has TWO OR
-        MORE sub-commands that are ungranted T3, classifying them one-at-a-time
-        mints a single-signature pending for the FIRST and short-circuits -- so
-        one approval covers only the first sub-command and the next re-blocks
-        (the double-approval the user hit). To group them, a NON-MINTING
-        classification pass runs FIRST (``_is_ungranted_t3_component``); if >= 2
-        sub-commands are ungranted-T3 (and we are a subagent under the
-        orchestrator), ONE COMMAND_SET pending is minted over exactly those T3
-        sub-commands via ``decide_t3_outcome(command_set=...)``. One approval
-        then covers the chain; each sub-command is still consumed byte-for-byte
-        by its own signature at retry (no consent is widened -- the commands are
-        only grouped). Critically, the per-component minting path
-        (_validate_single_command) is NEVER entered for the batch, so no stray
-        single pendings are minted alongside the COMMAND_SET.
+        Compound T3 execution is REFUSED here, never grouped. If ANY component
+        classifies T3 the whole chain is denied (subagent) or asked (primary):
+        "Compound T3 execution is disabled. Create a plan-first request-set and
+        issue each command as a separate Bash call." There is no COMMAND_SET
+        intake on this path -- consent grouping is requested plan-first via
+        ``gaia approvals request-set``, and execution stays one command per Bash
+        call, so a chain is never the surface on which a set is discovered.
 
-        For every other shape (0 or 1 ungranted-T3, no orchestrator above, or a
-        component that is hard-blocked) the original per-component pass runs
-        unchanged: a hard block fails the chain fast, a lone T3 keeps the
-        singular grant path, and an all-granted/safe chain is allowed.
+        A chain with NO T3 component runs the per-component pass: each component
+        is validated by ``_validate_single_command``, a blocked component fails
+        the chain fast, and the chain's tier is the highest component tier.
 
         ``cwd`` is the SEED for the directory fold below (the real invocation
         directory from the hook payload, or ``None`` when the caller has
@@ -1716,6 +1708,199 @@ def _find_pending_in_db(session_id: str, command: str) -> Optional[str]:
     return None
 
 
+def _find_pending_plan_set_in_db(command: str) -> Optional[str]:
+    """Return the id of a pending plan-first COMMAND_SET that carries ``command``.
+
+    A blocked command that is an item of a set the user has not answered yet
+    must be refused under THAT approval's id. Only a payload whose
+    ``request_type`` is ``COMMAND_SET`` and which carries a
+    ``request_fingerprint`` activates into the reservation lane
+    (``insert_plan_command_set``, reached from ``activate_db_pending_by_id``
+    and from ``cmd_opencode_decide``); a singular id approved in its place runs
+    ``store.approve``, creates no grant, and the retry re-blocks.
+
+    Membership is the exact command string -- the same identity the reservation
+    lane recomputes at retry, which is why the per-item ``fingerprint`` sealed
+    in the payload is derived from it rather than trusted in its place. Every
+    item is matched, not only the next one: nothing is consumed while the
+    approval is still pending, so the set as a whole is what consent is being
+    sought for. Naming it grants no ordering freedom -- ``reserve_plan_command``
+    still reserves only at ``next_index``.
+
+    Args:
+        command: The Bash command that was classified T3.
+
+    Returns:
+        The approval_id (P-{hex}) of the pending set, else None.
+    """
+    try:
+        from gaia.approvals.store import get_pending
+        import json as _json
+
+        # Newest-first, mirroring _find_pending_in_db: get_pending returns
+        # oldest-first, and the most recently requested set is the one the user
+        # is being asked about.
+        for row in reversed(get_pending(all_sessions=True)):
+            payload_str = row.get("payload_json")
+            if not payload_str:
+                continue
+            try:
+                payload = _json.loads(payload_str)
+            except Exception:
+                continue
+            if payload.get("request_type") != "COMMAND_SET":
+                continue
+            request_fingerprint = payload.get("request_fingerprint")
+            if not isinstance(request_fingerprint, str) or not request_fingerprint:
+                continue
+            items = payload.get("command_set")
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if isinstance(item, dict) and item.get("command") == command:
+                    return row.get("id")
+    except Exception as _err:
+        logger.debug(
+            "_find_pending_plan_set_in_db query failed (non-fatal): %s", _err
+        )
+    return None
+
+
+#: What the sealed payload may state for impact, rollback and verification,
+#: selected only by a named input of the classifier verdict: the mutative verb,
+#: and failing that the verb category. Each statement is written out whole and
+#: reviewed here rather than composed at build time, because the producer sees
+#: intercepted command text and a verdict and never sees what the agent meant to
+#: accomplish -- a sentence assembled from the command's arguments would assert a
+#: consequence nothing determined. Neither table carries a catch-all: a verdict
+#: absent from both contributes no statement and the presented surface states the
+#: absence (``adapters.consent_presentation.VISIBLE_FIELDS``), which is the only
+#: honest answer where reach or reversibility is not a property of the verdict.
+#: rollback in particular never claims an effect can be undone when that depends
+#: on state no interception can observe.
+_STATEMENTS_BY_VERB: dict = {
+    "push": {
+        "impact": (
+            "Writes to a remote repository: the pushed refs leave this machine "
+            "and become visible to every other consumer of that remote."
+        ),
+        "rollback": (
+            "A push is not undone by this session. Reversing it takes a further "
+            "remote write -- a revert commit, or a force-update where the remote "
+            "permits one -- and anything that already fetched keeps the pushed "
+            "refs."
+        ),
+        "verification": (
+            "Read the remote back with the same tool (git ls-remote, or git log "
+            "on the pushed ref) and confirm the ref points where you intended."
+        ),
+    },
+    "apply": {
+        "impact": (
+            "Converges a live target on the configuration the command names; the "
+            "change lands on whatever target the tool's current context selects, "
+            "not on this working tree."
+        ),
+        "rollback": (
+            "Apply has no inverse of its own: returning to the previous state "
+            "means re-applying the previous configuration or restoring a prior "
+            "state snapshot, neither of which this interception captured."
+        ),
+        "verification": (
+            "Re-read the target with the same tool's read verb (a get, show or "
+            "state read) and compare the live values against what was applied."
+        ),
+    },
+    "delete": {
+        "impact": (
+            "Removes the named object from the live target the tool's current "
+            "context selects."
+        ),
+        "rollback": (
+            "Deletion has no inverse in the command itself, and whether the "
+            "object can be restored depends on a backup or a provider retention "
+            "window this interception cannot observe -- do not assume it can be "
+            "undone."
+        ),
+        "verification": (
+            "Query the same object with the tool's read verb and confirm the "
+            "target reports it absent."
+        ),
+    },
+    "destroy": {
+        "impact": (
+            "Tears down the resources the selected state or stack tracks, on the "
+            "live target the tool's current context selects."
+        ),
+        "rollback": (
+            "Destroy has no inverse: re-creating the resources is a fresh create "
+            "with new identities, and data those resources held is not recovered "
+            "by it."
+        ),
+        "verification": (
+            "Read the tool's state back (a state list or show) and confirm it "
+            "reports no remaining tracked resources for the selection destroyed."
+        ),
+    },
+    "create": {
+        "impact": (
+            "Adds a new object to the live target the tool's current context "
+            "selects; it exists from that moment, independently of this session."
+        ),
+        "rollback": (
+            "The inverse of a create is a delete of the object it created, which "
+            "is itself a T3 operation needing its own consent; the create is not "
+            "undone by this session."
+        ),
+        "verification": (
+            "Read the new object back with the tool's read verb and confirm it "
+            "exists with the properties intended."
+        ),
+    },
+}
+
+#: Fallback selection when the verb is none of the verbs above, keyed on the
+#: category the classifier assigned. Only the destructive category is stated:
+#: it is the one category whose direction -- removing or overwriting rather than
+#: adding -- the verdict determines on its own. No classifier reaching this
+#: producer emits it today, the same pre-existing condition as the risk_level
+#: ternary below, so production coverage rests on the verb table.
+#:
+#: Because it never fires, this table is not evidence: a statement read from
+#: here proves nothing about what a user was shown, and it must not be cited
+#: to satisfy a gate or a test that asks what production sealed. Verify that
+#: against the verb table, which is the only producer with reachable output.
+_STATEMENTS_BY_CATEGORY: dict = {
+    "DESTRUCTIVE": {
+        "impact": (
+            "The classifier scored this command destructive: it removes or "
+            "overwrites state on the live target rather than adding to it."
+        ),
+        "rollback": (
+            "A destructive verdict carries no inverse command. Recovery depends "
+            "on a backup or retention window this interception cannot observe -- "
+            "do not assume the effect can be undone."
+        ),
+        "verification": (
+            "Read the affected target back with a read-only command of the same "
+            "tool and confirm what remains matches what was meant to be kept."
+        ),
+    },
+}
+
+
+def _authored_statements(verb: str, category: str) -> dict:
+    """Return the impact/rollback/verification statements a verdict selects.
+
+    Empty when neither table covers the verdict, so the caller seals no claim
+    and the presented surface keeps its declared-absence text.
+    """
+    by_verb = _STATEMENTS_BY_VERB.get(str(verb or "").strip().lower())
+    if by_verb is not None:
+        return by_verb
+    return _STATEMENTS_BY_CATEGORY.get(str(category or "").strip().upper(), {})
+
+
 def _build_sealed_payload(
     command: str,
     verb: str,
@@ -1738,9 +1923,15 @@ def _build_sealed_payload(
         dicts representing more than one command the agent wants under ONE
         consent), the payload additionally carries a ``command_set`` key
         verbatim and ``commands`` lists every command string in the set. This
-        is the signal ``activate_db_pending_by_prefix`` reads to branch into
+        is the signal ``activate_db_pending_by_id`` reads to branch into
         ``create_command_set_grant`` instead of degrading to a single command.
         The set is NOT collapsed -- every item survives into the grant.
+
+    Impact, rollback and verification:
+        These three come from ``_authored_statements``, keyed on the verdict's
+        verb and category. A verdict neither table covers seals ``None`` for all
+        three and the presented surface says so, rather than a claim about a
+        reach or a reversibility the verdict did not determine.
 
     Args:
         command: The full Bash command string that was blocked (the primary /
@@ -1773,12 +1964,23 @@ def _build_sealed_payload(
                 )
     is_command_set = len(normalized_set) > 1
 
+    # Authored at mint, never merged in afterwards: the approvals row is
+    # write-once and its dedup fingerprint is derived from this payload at
+    # insert, so a statement added later would either be dropped or require
+    # mutating a sealed row. Neither fingerprint that binds a decision to an
+    # execution reads a descriptive field -- command_fingerprint hashes the
+    # command bytes, request_fingerprint the ordered command list -- so these
+    # statements cannot move what a post-grant retry must keep byte-identical.
+    authored = _authored_statements(verb, category)
+
     payload = {
         "operation": f"{category} command intercepted: {verb}",
         "exact_content": command,
         "scope": command.split()[0] if command.strip() else "unknown",
         "risk_level": "high" if category.upper() == "DESTRUCTIVE" else "medium",
-        "rollback_hint": None,
+        "impact": authored.get("impact"),
+        "rollback_hint": authored.get("rollback"),
+        "verification": authored.get("verification"),
         "rationale": (
             f"Agent '{agent_type}' attempted a {category.lower()} ({verb}) command "
             "that requires user approval per the T3 security policy."
@@ -1890,12 +2092,26 @@ def decide_t3_outcome(
         # leftover single pending of a sub-command and degrade the chain back to
         # a single grant. So the chain path skips it entirely.
         if not is_chain_command_set:
-            approval_id = _find_pending_in_db(session_id or "", command)
+            # A pending plan-first COMMAND_SET carrying this exact command is
+            # named ahead of the singular probe. The consent being sought is
+            # the set's, and only the set's id routes the user's reply into the
+            # reservation lane; a singular id named here -- freshly minted or
+            # reused -- strands the set, because approving it never creates a
+            # grant and the retry blocks again.
+            approval_id = _find_pending_plan_set_in_db(command)
             if approval_id:
                 logger.info(
-                    "Reusing pending approval_id=%s for retry: %s",
+                    "Naming pending plan-first COMMAND_SET approval_id=%s for: %s",
                     approval_id, command[:80],
                 )
+            else:
+                approval_id = _find_pending_in_db(session_id or "", command)
+                if approval_id:
+                    logger.info(
+                        "Reusing pending approval_id=%s for retry: %s",
+                        approval_id, command[:80],
+                    )
+            if approval_id:
                 reason = build_t3_blocked_denial_message(
                     approval_id=approval_id,
                     command=command,

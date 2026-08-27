@@ -38,7 +38,8 @@ token everywhere (`gap: var(--s-2)` = 8px). The column count cascades **…→2�
 as width tightens (2-column "two-table" intermediate; 1-column single-stack
 endpoint), and nothing scrolls sideways at the stacked tiers. Positioning is a
 **known operation** — change `columns`/`span`/`rowspan`/`order`,
-`npm run build`, `npm run check`, and the arithmetic proves the rectangle closes.
+`npm run build`, `npm run gate`, and the arithmetic proves the rectangle closes
+while the render proves the stylesheet drew it.
 
 ### Fill geometry (what replaced the width math)
 
@@ -115,14 +116,15 @@ documented readability reference, and the guardrail's retired **W** invariant
 │   ├── pages/            one YAML per page
 │   └── data.generated.js build output (committed; `window.__DOC__ = {...}`)
 └── tools/
-    ├── check-layout.mjs     the MANDATORY STATIC GATE — arithmetic, no browser,
+    ├── check-layout.mjs     the MODELLED GATE, mandatory — arithmetic, no browser,
     │                        js-yaml only. RECT/HOLE/TRACK/ROW/LANE/BAND/TIER/
-    │                        CHIP/ORDER/CSS + the CENSUS pre-flight (npm run check)
+    │                        CHIP/ORDER/CSS + the CENSUS pre-flight (npm run model)
     ├── static-census.cjs    the browser-free foundation BOTH gates import:
     │                        loadAuthoredDeck, staticCensus, cssBreakpoints,
     │                        BREAKPOINTS, DEFAULT_FORM, GRID_DENSE — one parse
     │                        path, so the two gates cannot disagree about the data
-    ├── validate-layout.cjs  the OPTIONAL RENDER GUARDRAIL — headless render at
+    ├── validate-layout.cjs  the MEASURED GATE, mandatory (skips with no browser,
+    │                        exit 0) — headless render at
     │                        ONE width + the FORM-SCOPED invariant table
     │                        (INTEGRITY A/Z/D/R/T/C/O/S/B/H/X/G · GEOMETRY
     │                        U(×2)/M/N/Y/Q · advisory V · retired L/F/E/P/K/W),
@@ -469,7 +471,7 @@ Behaviors that bite if you author against intuition instead of the engine:
   EQUAL `fr` shares of the section width — cells stretch, so width varies by
   section but is always equal within a grid, and every row reaches the right
   edge (**U** asserts the equal widths on the render; that the row CLOSES is
-  arithmetic — **RECT**/**TRACK** in `npm run check`, which superseded the
+  arithmetic — **RECT**/**TRACK** in `npm run model`, which superseded the
   retired render invariants **L**/**E**). Rows stay a fixed `--cell-h` so cells
   are uniform in height — except a separator-only row, below.
 - **A cell never grows vertically by content.** The title clamps to 2 lines and
@@ -704,31 +706,42 @@ pixels.
    This is a local file write (reads the manifest, skips `visible: false`, sorts
    by `order`, merges each page). Re-run after every YAML change. It is also the
    strict-schema gate: an unknown key or an out-of-enum value fails here.
-3. **Check — MANDATORY, arithmetic, no browser.**
+3. **Model — MANDATORY, arithmetic, no browser.**
    ```
-   npm run check      # node tools/check-layout.mjs [deckRoot]
+   npm run model      # node tools/check-layout.mjs [deckRoot]   (alias: npm run check)
    ```
-   This is the gate. It is arithmetic over the AUTHORED YAML, needs nothing but
+   This is the MODELLED half of the gate. It is arithmetic over the AUTHORED YAML, needs nothing but
    `js-yaml`, and runs in milliseconds — which matters because Gaia is installed
    in places where no browser exists, and a guardrail that needs Chromium is
    absent precisely where a deck is authored blind. **Never declare a layout
-   change done until this is green.** Two structural rules keep it honest: a run
-   that asserted NOTHING is RED (the `asserted === 0` gate), and the deck root is
-   taken from `argv`/`DIAGRAM_DECK_ROOT` so the gate can be pointed at a broken
-   fixture and be SHOWN to fail. Findings are grouped per check; `[FAIL]` exits
-   non-zero, `[INFO]` is advisory and never fails.
-4. **Validate — OPTIONAL REINFORCEMENT, needs a browser.**
+   change done until this is green.** Three structural rules keep it honest: a run
+   that asserted NOTHING is RED (the `asserted === 0` gate), a check that could not
+   be asserted is `[NOT ASSERTED]` and counted in the headline (a non-zero count is
+   NOT green — nothing failed and the gate cannot say the deck holds either), and
+   the deck root is taken from `argv`/`DIAGRAM_DECK_ROOT` so the gate can be
+   pointed at a broken fixture and be SHOWN to fail. Findings are grouped per
+   check; `[FAIL]` exits non-zero, `[INFO]` is advisory and never fails.
+4. **Render — MANDATORY, and it skips cleanly where there is no browser.**
    ```
-   npm run validate   # node tools/validate-layout.cjs — PURE-READ, build first
+   npm run render     # node tools/validate-layout.cjs — PURE-READ, build first   (alias: npm run validate)
    ```
-   Validate is **DECOUPLED from build**: it renders and asserts the EXISTING
-   `data/data.generated.js` and never regenerates it. It is genuinely read-only:
-   no child build process, no project file writes; PNGs go to a **system temp
-   dir** (`os.tmpdir()`, override with `DIAGRAM_SHOTS_DIR`). Playwright is
-   resolved LAZILY (`loadChromium`): where it is absent, `main()` prints
-   `SKIPPED (no browser)` and **exits 0** — so its absence is not a failure and
-   never blocks a deck. It renders ONE width (2560, `WIDTHS = { ultra: 2560 }`),
+   The MEASURED half, and the only half that can tell whether the stylesheet
+   IMPLEMENTS what step 3 computed: a span rule the CSS never carried leaves the
+   arithmetic closing a rectangle the browser draws at a third of its width.
+   Requiring it costs nothing, which is what makes it mandatory rather than
+   advisory: Playwright is resolved LAZILY (`loadChromium`) and where it is absent
+   `main()` prints `SKIPPED (no browser)` and **exits 0**, so its absence never
+   blocks a deck — it obliges the verdict to say `MEASURED: unavailable` out loud
+   instead of resting silently on the arithmetic. Render is **DECOUPLED from
+   build**: it renders and asserts the EXISTING `data/data.generated.js` and never
+   regenerates it. It is genuinely read-only: no child build process, no project
+   file writes; PNGs go to a **system temp dir** (`os.tmpdir()`, override with
+   `DIAGRAM_SHOTS_DIR`). It renders ONE width (2560, `WIDTHS = { ultra: 2560 }`),
    `PASSES = 3` reloads each, and asserts only what genuinely needs PIXELS.
+   ```
+   npm run gate       # npm run model && npm run render — the pair, and the ONLY
+                      # thing a verdict may cite
+   ```
 5. **Test the guards — `npm test`.**
    ```
    npm test           # node tools/test-guards.mjs
@@ -741,15 +754,19 @@ pixels.
    control on the intact seed, the three engine↔gate agreement cases, and the
    teeth case that proves the comparator can fail. Run it after touching a guard
    or the placement model.
-6. **Spot-check by looking (optional).** `npm run verify` renders the deck and
-   writes per-page screenshots across a spread of widths and BOTH themes to the
-   temp dir (or render `index.html` under `file://`). A pixel read catches
-   contrast or a wrong wrap the invariants do not name; this is the lighter
-   collision-only QA that complements the layout gates.
+6. **Look — the SEEN class, required on a first build, a change of form or of
+   model, or any intention no invariant covers.** `DIAGRAM_SHOTS_DIR=<a readable
+   path> npm run verify` renders the deck and writes per-page screenshots at 1920
+   and 1440 in BOTH themes, then load `visual-verify` for the looking discipline.
+   Do not write a browser probe: `verify.mjs` already resolves a Chromium that is
+   on disk and handles the capture trap (`.canvas` is `position:absolute` with
+   `overflow:auto`, so a naive full-page screenshot truncates to viewport height).
+   A pixel read catches contrast or a wrong wrap the invariants do not name, and it
+   is the ONLY evidence that reaches principles 4, 5, 7 and half of 6.
 7. **Loop on any FAIL** — read the failing check's detail (it names the grid, the
    tier, and the measured value), fix the YAML/CSS, rebuild, re-check.
 
-### The static checks (`npm run check`)
+### The MODELLED checks (`npm run model`)
 
 The static layer asserts what is true of the DATA. Its mechanics, not just its
 names:
@@ -765,10 +782,10 @@ names:
 | **TIER** | the derived tracks-per-tier table, plus monotonicity: tracks may only GROW as the container grows. A violation means the breakpoint rules disagree with each other |
 | **CHIP** | referential integrity BOTH ways — every declared chip has a member, every referenced key is declared — plus **ARITY**, the half the retired **K** could never see: a chip with exactly ONE member closes the join and is still broken, because a relation needs two ends and an active chip dims everything it does not name. The reset key `all` is exempt |
 | **ORDER** | a duplicate EFFECTIVE order among siblings (`order ?? index+1`). The engine resolves the tie by list position, so the render is correct today and can flip under an unrelated edit that only MOVES a node in the file |
-| **CSS** | the mirror itself: the breakpoints this gate computes with, against the `@container stage` queries `index.html` actually declares (`cssBreakpoints` vs `BREAKPOINTS`). Without it a stylesheet edit that moved a cut would leave every tracks-per-tier number describing a cascade the browser no longer renders — green, and wrong. A deck with no `index.html` says `[INFO] not asserted` rather than claiming a pass |
+| **CSS** | the mirror itself: the breakpoints and text metrics this gate computes with, against the `@container stage` queries and `.box`/`.zone`/`.canvas` declarations `index.html` actually declares (`cssBreakpoints` / `cssTextTokens` vs `BREAKPOINTS` / `CSS_TEXT`). Without it a stylesheet edit that moved a cut would leave every tracks-per-tier and character number describing a deck the browser no longer draws — green, and wrong. The two failures to read are OPPOSITE: no `index.html` at all is `[NOT ASSERTED]` (recorded, counted in the headline, never a pass), while an `index.html` that IS present and whose probe missed is a `[FAIL]` — the declaration moved past the probe, so every number derived from it is unverified, and "not asserted" there is exactly the silence that certifies the drift |
 | **CENSUS** | pre-flight, and printed FIRST: `data/*.yaml` vs `data/data.generated.js`. A stale build means everything below still describes the YAML correctly while the deck someone is LOOKING at is a different one. Shared with `validate` through `tools/static-census.cjs`, so the two gates cannot disagree about what the data says |
 
-### The render invariants (`npm run validate`)
+### The MEASURED invariants (`npm run render`)
 
 A **FORM-SCOPED flat table** (`INVARIANTS` in `tools/validate-layout.cjs`): the
 page declares its `form` (default `dashboard`); each row names the forms it
@@ -830,9 +847,10 @@ choose form → synthesize → discuss → build**, not the reverse.
 |------|-------|-------|
 | **View** the diagram | A browser | `data/data.generated.js` is committed, so it renders with zero tooling, even under `file://`. |
 | **Rebuild** after editing `data/` | Node + `npm install` + `npm run build` | Regenerates `data/data.generated.js` from the YAML; also the strict-schema gate. |
-| **Check** the layout | Node + `js-yaml` (already a build dependency) | `npm run check` is the MANDATORY gate: arithmetic over the authored YAML at five container tiers, no browser. This is the check that must be green before declaring done. |
+| **Model** the layout | Node + `js-yaml` (already a build dependency) | `npm run model` (alias `check`) is the MODELLED half of the gate: arithmetic over the authored YAML at five container tiers, no browser. |
 | **Test** the guards | Node + `js-yaml` | `npm test` proves each guard still detects its defect, and pins the engine↔gate placement mirror. No browser. |
-| **Validate** the render | Playwright (+ a Chromium) | `npm run validate` is OPTIONAL REINFORCEMENT for what only pixels answer. Absent Playwright it prints `SKIPPED (no browser)` and exits 0. |
+| **Render** and measure it | Playwright (+ a Chromium) | `npm run render` (alias `validate`) is the MEASURED half — MANDATORY, for what only pixels answer. Absent Playwright it prints `SKIPPED (no browser)` and exits 0, and the verdict says `MEASURED: unavailable`. |
+| **Gate** — the verdict's only citation | Node (+ Playwright when present) | `npm run gate` runs both halves in order. A verdict cites this, never one half. |
 | **Verify-UI** (lighter visual QA) | Playwright (+ a Chromium) | `npm run verify` is a lighter collision-only check + screenshots to review by eye. |
 
 **No tool here installs a browser. Installing one is the USER's action.**
@@ -841,18 +859,19 @@ Chromium will not launch it falls back to a Chromium ALREADY on disk
 (`PLAYWRIGHT_BROWSERS_PATH` or `~/.cache/ms-playwright`, via
 `resolveCachedChrome`) — a lookup, never a download. With neither available it
 throws. Do not promise the environment heals itself: what actually happens when
-the browser is missing is (a) `npm run check` and `npm test` run normally and the
-mandatory gate is unaffected, (b) `npm run validate` prints
-`SKIPPED (no browser)` and exits 0, and (c) getting the pixel checks requires the
-user to run `npx playwright install chromium` themselves — a state-mutating
-install, so in Gaia it needs T3 consent. Report the gap; do not assume it closes.
+the browser is missing is (a) `npm run model` and `npm test` run normally, (b)
+`npm run render` prints `SKIPPED (no browser)` and exits 0, so `npm run gate`
+still exits 0 on a sound deck, and (c) getting the pixel checks requires the user
+to run `npx playwright install chromium` themselves — a state-mutating install, so
+in Gaia it needs T3 consent. Report the gap; do not assume it closes.
 
-Degradation is graceful in one direction only. The mandatory gate needs no
-browser, so it is available everywhere: with only a browser you can view the
-already-generated diagram; rebuilding after edits adds Node; `npm run check` and
-`npm test` need Node and `js-yaml`; only the pixel checks add Playwright. A
-layout change is not done until `npm run check` is green — and where Playwright
-IS present, running `npm run validate` too is the reinforcement, not the verdict.
+Degradation is graceful in one direction only, and it is a degradation the verdict
+must NAME. `model` needs no browser, so it is available everywhere: with only a
+browser you can view the already-generated diagram; rebuilding after edits adds
+Node; `model` and `npm test` need Node and `js-yaml`; only the pixel checks add
+Playwright. A layout change is not done until `npm run gate` is green — both
+halves — and where the render half skipped for want of a Chromium the verdict says
+`MEASURED: unavailable` rather than presenting the arithmetic as an observation.
 
 ### Explain before you execute
 

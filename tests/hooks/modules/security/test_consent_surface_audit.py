@@ -97,10 +97,12 @@ def _command_set_payload(commands: list[str]) -> dict:
 
 
 def _legacy_singular_surface(payload: dict) -> str:
-    """The pre-fix rendering: template.md's singular COMANDO line, verbatim.
+    """The historical pre-fix rendering, verbatim: one singular COMANDO line.
 
     This is the text that was actually shown for the live COMMAND_SET -- the
-    case that used to be accepted and must now be reported incomplete.
+    case that used to be accepted and must now be reported incomplete. No
+    renderer and no template emits this shape any more; it is kept as the
+    record of what was presented, which is why it is written out here.
     """
     return (
         "APPROVAL REQUIRED\n\n"
@@ -286,7 +288,7 @@ class TestConsentSurfaceCompleteness:
                 assert len(missing) == len(BATCH_COMMANDS) - size
 
     def test_render_lists_every_command_indexed(self):
-        """The canonical batch rendering shows COMANDOS (N) and [i] per command."""
+        """The canonical batch rendering shows COMMANDS (N) and [i] per command."""
         from modules.security.approval_grants import (
             render_consent_surface,
             verify_consent_surface_completeness,
@@ -295,28 +297,27 @@ class TestConsentSurfaceCompleteness:
         payload = _command_set_payload(BATCH_COMMANDS)
         surface = render_consent_surface(payload, "P-" + "b" * 32)
 
-        assert "COMANDOS (3):" in surface, surface
+        assert "COMMANDS (3) -- exact bytes, in order:" in surface, surface
         for index, command in enumerate(BATCH_COMMANDS, start=1):
             assert f"  [{index}] {command}" in surface, (
                 f"Command {index} missing from rendered surface:\n{surface}"
             )
         assert verify_consent_surface_completeness(surface, payload)[0] is True
 
-        # The 4 non-command sealed fields survive the batch layout.
-        for label in ("OPERACION:", "SCOPE:", "RIESGO:", "ROLLBACK:"):
+        # Every non-command sealed field survives the batch layout.
+        for label in ("OPERATION:", "SCOPE:", "IMPACT:", "RISK:", "ROLLBACK:",
+                      "VERIFICATION:"):
             assert label in surface, f"{label} missing from batch surface"
 
-    def test_render_singular_uses_comando_line(self):
-        """A one-command payload keeps the singular COMANDO layout."""
+    def test_render_singular_uses_the_same_indexed_block(self):
+        """One renderer means a single command is COMMANDS (1) with a [1] entry."""
         from modules.security.approval_grants import render_consent_surface
 
         payload = _singular_payload("terraform apply")
         surface = render_consent_surface(payload, "P-" + "c" * 32)
 
-        assert "COMANDO:    terraform apply" in surface, surface
-        assert "COMANDOS" not in surface, (
-            "A single command must not be rendered as a batch"
-        )
+        assert "COMMANDS (1) -- exact bytes, in order:" in surface, surface
+        assert "  [1] terraform apply" in surface, surface
 
     def test_payload_commands_prefers_the_set_over_exact_content(self):
         """command_set is authoritative; exact_content is only the stand-in."""
@@ -336,24 +337,24 @@ class TestConsentSurfaceCompleteness:
 # Nonce activation must survive the new label form
 # ---------------------------------------------------------------------------
 
-class TestNonceSurvivesTheBatchLabel:
-    """The `[P-<nonce8>]` suffix is what activates the grant -- it must hold."""
+class TestCanonicalIdSurvivesTheBatchLabel:
+    """The complete canonical id is what activates the grant."""
 
     @pytest.mark.parametrize("payload_factory", [
         lambda: _singular_payload("git push origin main"),
         lambda: _command_set_payload(BATCH_COMMANDS),
     ])
-    def test_rendered_label_yields_the_nonce_prefix(self, payload_factory):
+    def test_rendered_label_yields_the_exact_approval_id(self, payload_factory):
         from modules.security.approval_grants import (
-            extract_nonce_from_label,
+            extract_approval_id_from_label,
             render_approve_label,
         )
 
         approval_id = "P-" + "75a44b5cfb6ae198b0ad444ed442bc7a"
         label = render_approve_label(payload_factory(), approval_id)
 
-        assert extract_nonce_from_label(label) == "75a44b5c", (
-            f"Nonce must be extractable from the rendered label: {label!r}"
+        assert extract_approval_id_from_label(label) == approval_id, (
+            f"Canonical id must be extractable from the rendered label: {label!r}"
         )
 
     def test_batch_label_names_the_count(self):
@@ -366,12 +367,12 @@ class TestNonceSurvivesTheBatchLabel:
         assert label.startswith("Approve"), label
 
     def test_activation_succeeds_through_the_rendered_batch_label(self, approvals_db):
-        """End-to-end: render label -> extract nonce -> activate the COMMAND_SET."""
+        """End-to-end: render label -> exact id -> activate the COMMAND_SET."""
         db_path, assert_con, store = approvals_db
         from modules.security.approval_grants import (
             ACTIVATION_ACTIVATED,
-            activate_db_pending_by_prefix,
-            extract_nonce_from_label,
+            activate_db_pending_by_id,
+            extract_approval_id_from_label,
             render_approve_label,
         )
 
@@ -379,11 +380,11 @@ class TestNonceSurvivesTheBatchLabel:
         approval_id = _insert_pending(store, payload)
         label = render_approve_label(payload, approval_id)
 
-        nonce_prefix = extract_nonce_from_label(label)
-        assert nonce_prefix == approval_id[len("P-"):len("P-") + 8]
+        extracted_id = extract_approval_id_from_label(label)
+        assert extracted_id == approval_id
 
-        result = activate_db_pending_by_prefix(
-            nonce_prefix,
+        result = activate_db_pending_by_id(
+            extracted_id,
             current_session_id=SESSION_ID,
             presented_label=label,
         )

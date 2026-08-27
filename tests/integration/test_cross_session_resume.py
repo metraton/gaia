@@ -310,11 +310,15 @@ class TestCmdApprove:
         sys.path.insert(0, str(_REPO_ROOT / "bin"))
         from cli.approvals import cmd_approve
 
-        args = self._make_args("P-abc123", yes=True)
+        # 97c8197 requires the complete canonical P-<32-hex> id -- a short
+        # display label like "P-abc123" is rejected by the CLI's
+        # _require_canonical_approval_id identity check before lookup runs.
+        approval_id = "P-" + "abc123" * 5 + "ab"
+        args = self._make_args(approval_id, yes=True)
         with patch("cli.approvals._import_approval_store") as mock_store:
             store_mock = MagicMock()
             store_mock.get_by_id.return_value = {
-                "id": "P-abc123",
+                "id": approval_id,
                 "status": "pending",
                 "payload_json": json.dumps(_SAMPLE_PAYLOAD),
             }
@@ -323,18 +327,19 @@ class TestCmdApprove:
         assert rc == 0
         store_mock.approve.assert_called_once()
         call_kwargs = store_mock.approve.call_args
-        assert call_kwargs[0][0] == "P-abc123"
+        assert call_kwargs[0][0] == approval_id
 
     def test_approve_json_output(self, capsys):
         """cmd_approve --json outputs JSON with status and approval_id."""
         sys.path.insert(0, str(_REPO_ROOT / "bin"))
         from cli.approvals import cmd_approve
 
-        args = self._make_args("P-abc123", yes=True, json=True)
+        approval_id = "P-" + "abc123" * 5 + "ab"
+        args = self._make_args(approval_id, yes=True, json=True)
         with patch("cli.approvals._import_approval_store") as mock_store:
             store_mock = MagicMock()
             store_mock.get_by_id.return_value = {
-                "id": "P-abc123",
+                "id": approval_id,
                 "status": "pending",
                 "payload_json": json.dumps(_SAMPLE_PAYLOAD),
             }
@@ -345,4 +350,4 @@ class TestCmdApprove:
         captured = capsys.readouterr()
         result = json.loads(captured.out)
         assert result["status"] == "approved"
-        assert result["approval_id"] == "P-abc123"
+        assert result["approval_id"] == approval_id

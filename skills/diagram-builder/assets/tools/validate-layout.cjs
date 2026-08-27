@@ -10,7 +10,7 @@
 // data — a CSS or data edit cannot silently break the layout without failing
 // here.
 //
-// FLOW:  edit data/pages/*.yaml  →  npm run build  →  npm run validate  →  npm run verify
+// FLOW:  edit data/pages/*.yaml  →  npm run build  →  npm run render  →  npm run verify
 //   Each step is explicit and single-purpose. `validate` is DECOUPLED from
 //   `build`: it does NOT regenerate data — it renders and asserts the EXISTING
 //   data/data.generated.js. So you must `npm run build` first (build generates,
@@ -91,7 +91,7 @@
 //                            The old fixed-232 width rule is gone: cells now STRETCH
 //                            to fill, so width varies by section but is equal within
 //                            a grid.
-//   L  cells fill width      — RETIRED, superseded by RECT/HOLE (npm run check).
+//   L  cells fill width      — RETIRED, superseded by RECT/HOLE (npm run model).
 //      (retired -> RECT/HOLE) "Every row spans the grid edge to edge" is the
 //                            rectangle-closure identity Σ(spanCols × rowspanRows)
 //                            === tracks × rowCount, proved on the DATA rather than
@@ -102,7 +102,7 @@
 //   O  no h-overflow         — canvas horizontal overflow == 0 at the stacked
 //                            tiers (min/medium/large); tolerated only at the
 //                            widest side-by-side tiers.
-//   F  collapse cascade 3→2→1 — RETIRED, superseded by TIER (npm run check).
+//   F  collapse cascade 3→2→1 — RETIRED, superseded by TIER (npm run model).
 //      (retired -> TIER)      The …→2→1 cascade is a container query, so the
 //                            track count per tier is a pure function of (authored
 //                            columns, container width) — proved arithmetically at
@@ -116,12 +116,12 @@
 //                            FAILS — a band must span the block at every width.
 //   B  centered block        — at the widest tiers leftPad ≈ rightPad.
 //   H  header within section  — no section header/subtitle overflows its section.
-//   E  no empty grid column   — RETIRED, superseded by TRACK (npm run check). A
+//   E  no empty grid column   — RETIRED, superseded by TRACK (npm run model). A
 //      (retired -> TRACK)     dead track is a track no slot's (column, span) ever
 //                            covers, a set operation on the authored data rather
 //                            than a rendered measurement — and it guards the
 //                            engine's grow-with-content clamp more directly.
-//   P  no orphan cell         — RETIRED, superseded by ROW (npm run check). "A
+//   P  no orphan cell         — RETIRED, superseded by ROW (npm run model). "A
 //      (retired -> ROW)       lone cell on its own row while a sibling row holds
 //                            2+" is a statement about PLACEMENT, and the placement
 //                            is derivable: check-layout.mjs simulates CSS sparse
@@ -165,7 +165,7 @@
 //                            misses. All tiers. A `vertical`-treatment title is
 //                            EXEMPT (its title runs down the block axis, so
 //                            horizontal token width is not the fit constraint).
-//   K  filter integrity     — RETIRED, superseded by CHIP (npm run check). A
+//   K  filter integrity     — RETIRED, superseded by CHIP (npm run model). A
 //      (retired -> CHIP)     chip/component join is a RELATION, not geometry, so
 //                            it needs no render: check-layout.mjs closes the join
 //                            in both directions AND adds ARITY (a one-member chip
@@ -178,8 +178,8 @@
 // died with MODULE_NOT_FOUND before printing anything, and a harness that only
 // wanted the pure decision logic (the invariant table, the verdict, the census)
 // dragged Chromium's whole dependency in with it. Gaia is installed in places
-// where no browser exists; there, `npm run validate` must SKIP and exit 0, and
-// the mandatory gate is `npm run check` (tools/check-layout.mjs), which needs
+// where no browser exists; there, `npm run render` must SKIP and exit 0, and
+// the mandatory gate is `npm run model` (tools/check-layout.mjs), which needs
 // nothing but js-yaml. See the degradation block in main().
 function loadChromium() {
   try { return require('playwright').chromium; }
@@ -216,7 +216,7 @@ const SEP_ROW_H = 40;
 // index.html) depend on nothing but the stage container's width, so the track
 // count is a PURE FUNCTION of (authored columns, container width). Arithmetic
 // proves it exactly, at all five of those widths, in tools/check-layout.mjs
-// (`npm run check`, the MANDATORY gate). Re-measuring a multiplication table in a
+// (`npm run model`, the MANDATORY gate). Re-measuring a multiplication table in a
 // browser five times over is not evidence, it is ceremony.
 // What is LEFT here is what only pixels can answer, and the widest tier is where it
 // is answerable: the side-by-side regime (above the STACK breakpoint) is the only
@@ -322,9 +322,9 @@ const INVARIANTS = [
   // the definition of a redundant check, and it was the entire reason this gate
   // needed a browser at more than one width.
   { id: 'F', name: '1-col endpoint at min', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.tier === 'min', superseded: 'TIER (npm run check)' },
+    when: (c) => c.tier === 'min', superseded: 'TIER (npm run model)' },
   { id: 'F', name: '2-col intermediate at medium', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
-    when: (c) => c.tier === 'medium', superseded: 'TIER (npm run check)' },
+    when: (c) => c.tier === 'medium', superseded: 'TIER (npm run model)' },
   { id: 'S', name: 'inline fit / band spans block (all tiers)', cls: 'integrity', sev: 'dura', forms: ALL_FORMS,
     when: () => true, superseded: null,
     check: (m) => {
@@ -428,20 +428,20 @@ const INVARIANTS = [
   // measurement, quantifies: a gap makes the sum short by exactly its own area, and
   // the hole is named by coordinate rather than inferred from a right-edge delta.
   { id: 'L', name: 'cells fill width (no right gap)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
-    when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run check)' },
+    when: (c) => c.w >= 1200, superseded: 'RECT/HOLE (npm run model)' },
   // E — RETIRED into arithmetic. A dead track is a track no slot's (column, span)
   // ever covers, which is a set operation on the authored data, not a rendered
   // measurement (TRACK in check-layout.mjs). It also guards the same thing more
   // directly: the engine's grow-with-content clamp, which is arithmetic itself.
   { id: 'E', name: 'no empty grid column', cls: 'geometry', sev: 'dura', forms: GRIDDED,
-    when: () => true, superseded: 'TRACK (npm run check)' },
+    when: () => true, superseded: 'TRACK (npm run model)' },
   // P — RETIRED into arithmetic. "A lone cell on its own row while a sibling row
   // holds 2+" is a statement about the PLACEMENT, and the placement is derivable:
   // check-layout.mjs simulates CSS sparse auto-placement and counts the starts per
   // row (ROW), carrying over P's exact scope — grid-dense forms, >1 track, and rows
   // a rowspan touches exempt.
   { id: 'P', name: 'no orphan cell', cls: 'geometry', sev: 'dura', forms: GRID_DENSE,
-    when: (c) => c.w > 1000, superseded: 'ROW (npm run check)' },
+    when: (c) => c.w > 1000, superseded: 'ROW (npm run model)' },
   { id: 'M', name: 'cells legible (min readable width)', cls: 'geometry', sev: 'dura', forms: GRIDDED,
     when: () => true, superseded: null,
     check: (m) => {
@@ -496,7 +496,7 @@ const INVARIANTS = [
   // everything it does not name, a one-member chip blacks the deck out to spotlight
   // a single box.
   { id: 'K', name: 'filter referential integrity', cls: 'geometry', sev: 'dura', forms: ALL_FORMS,
-    when: () => true, superseded: 'CHIP (npm run check)' },
+    when: () => true, superseded: 'CHIP (npm run model)' },
   // Z — CENSUS: AUTHORED == RENDERED.
   // Every other invariant asserts something about geometry that IS on screen, so
   // none of them can see content that is MISSING: drop a page, a section or a
@@ -613,8 +613,10 @@ function resolveCachedChrome() {
 }
 // Returns a launched browser, or NULL when no browser can be obtained. Null is a
 // legitimate outcome (see the degradation block in main), never an exception:
-// this gate is the OPTIONAL reinforcement, so "there is no Chromium here" is an
-// environment fact to report, not a defect in the deck.
+// "there is no Chromium here" is an environment fact to report, not a defect in
+// the deck. That this gate is MANDATORY and still exits 0 on that fact is the
+// whole reason requiring it costs nothing — what it obliges is a verdict that
+// SAYS the render was not measured, not one that quietly omits it.
 async function launch(chromium) {
   if (!chromium) return null;
   try { return await chromium.launch({ headless: true, args: ['--no-sandbox'] }); }
@@ -1289,15 +1291,16 @@ async function main() {
     for (const p of sc.problems) console.log(`    [FAIL] ${p}`);
     console.log('\nSTALE OR DIVERGENT DATA — `validate` asserts data/data.generated.js, which no longer');
     console.log('matches data/*.yaml. Any verdict here would describe the OLD deck, not your edit.');
-    console.log('Run `npm run build`, then re-run `npm run validate`.\n');
+    console.log('Run `npm run build`, then re-run `npm run render`.\n');
     process.exit(1);
   }
   console.log(`    [PASS] generated data matches the authored YAML — ${sc.summary}\n`);
 
   // ── DEGRADATION: NO BROWSER IS A SKIP, NOT A FAILURE. ──
-  // This gate is the OPTIONAL REINFORCEMENT. The mandatory one is `npm run check`
-  // (tools/check-layout.mjs): static, arithmetic, js-yaml only — and it has already
-  // run by the time anyone gets here, because it is the gate. So an environment with
+  // This gate is MANDATORY (`npm run render`, the MEASURED half) and it still exits
+  // 0 here: its companion `npm run model` (tools/check-layout.mjs) is static,
+  // arithmetic, js-yaml only — and has already run by the time anyone gets here,
+  // because `npm run gate` runs the pair in order. So an environment with
   // no Chromium is not an unverified deck; it is a deck verified by everything that
   // does not need pixels. Exiting non-zero here would make a correct deck fail for a
   // reason that has nothing to do with the deck, and would make `validate`
@@ -1307,9 +1310,11 @@ async function main() {
   if (!chromium) {
     console.log('══════════ SKIPPED (no browser) ══════════\n');
     console.log('Playwright is not installed here, so the RENDER invariants were not asserted.');
-    console.log('This is not a failure: `npm run validate` is the OPTIONAL reinforcement gate.');
-    console.log('The MANDATORY gate is `npm run check` (tools/check-layout.mjs) — static,');
-    console.log('arithmetic, no browser — which proves the layout closes, plus the STATIC CENSUS');
+    console.log('This is not a failure and this gate is still MANDATORY: exiting 0 on a missing');
+    console.log('browser is what makes requiring it free. What it obliges is a verdict that SAYS');
+    console.log('SO — report `MEASURED: unavailable`, never the arithmetic alone as if it had');
+    console.log('observed the render. `npm run model` (tools/check-layout.mjs) — static,');
+    console.log('arithmetic, no browser — proves the layout closes, plus the STATIC CENSUS');
     console.log('above, which ran and passed.\n');
     console.log('Skipped (render-only, needs pixels): legibility floor (M), word fit (N), text');
     console.log('clamping (C), flex wrap points (D/R), rendered span proportions (Q), compound');
@@ -1331,7 +1336,7 @@ async function main() {
     console.log('The `playwright` module resolved but no Chromium could be launched (none');
     console.log('downloaded, or the sandbox refuses it). Same verdict as an absent browser:');
     console.log('the RENDER invariants were not asserted, the MANDATORY static gate');
-    console.log('(`npm run check`) and the census above are what stand. Exiting 0.\n');
+    console.log('(`npm run model`) and the census above are what stand. Exiting 0.\n');
     console.log('To enable it: `npx playwright install chromium`.\n');
     process.exit(0);
   }
@@ -1543,7 +1548,7 @@ function reportVerdict(results, failed, advisories) {
 }
 
 // ENTRY POINT / TESTABILITY.
-// The guardrail runs only when this file IS the entry point (`npm run validate` →
+// The guardrail runs only when this file IS the entry point (`npm run render` →
 // `node tools/validate-layout.cjs`), so `require()`-ing it never launches Chromium.
 // That is what lets a harness exercise the pure decision logic — the invariant
 // table, the undeclared-form guard, the verdict, the static census — in an

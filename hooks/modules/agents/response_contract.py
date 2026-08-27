@@ -624,11 +624,18 @@ def validate_response_contract(
     #
     # approval_request.verification is blocking (missing -> invalid, not
     # just an advisory warning). approval_request.rollback is advisory
-    # (non-blocking): the hook hardcodes rollback_hint=None by design
-    # (bash_validator.py _build_sealed_payload), so a well-formed
-    # APPROVAL_REQUEST always relays rollback=null -- treating that as a
+    # (non-blocking) because the hook seals a rollback for only five verbs:
+    # bash_validator _STATEMENTS_BY_VERB carries push, apply, delete,
+    # destroy and create, and neither statement table carries a catch-all,
+    # so every other verb still relays rollback=null. Treating that as a
     # blocking violation produced ~600 of 678 recorded false-positive
     # anomalies (AC-5). Other approval_request fields remain as warnings.
+    #
+    # impact is deliberately absent from the blocking set even though the
+    # hook seals one for those same five verbs: promoting it would fail
+    # every plan-first request, because `gaia approvals request-set` has no
+    # --impact flag to forward one -- the missing sibling of --rollback and
+    # --verification. That flag is the condition for revisiting this.
     # ------------------------------------------------------------------
     warnings: List[str] = []
     approval_req = contract.get("approval_request")

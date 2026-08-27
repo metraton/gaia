@@ -314,7 +314,7 @@
   // separator or a declared hole) and --cell-h everywhere else. Returns null
   // when NO row is thin, so a grid without one is left on the plain fixed-row
   // default (no inline style). A row with NO occupant at all (an UNdeclared
-  // interior hole — RECT/HOLE in `npm run check` owns that defect) keeps
+  // interior hole — RECT/HOLE in `npm run model` owns that defect) keeps
   // --cell-h: an empty track is not a thin row, and only a hole someone
   // DECLARED with a spacer earns the reduced height.
   function rowTrackList(items, tracks) {

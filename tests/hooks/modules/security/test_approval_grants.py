@@ -571,11 +571,14 @@ class TestCrossSessionNonceTargeted:
     # 1. extract_nonce_from_label
     # ------------------------------------------------------------------ #
 
-    def test_extract_nonce_from_approve_label(self):
-        """Nonce is extracted from the [P-xxxxxxxx] tag in the approve label."""
-        # Standard approve label with 8-char hex nonce
-        label = "Approve -- git push origin main [P-e68be5b8]"
-        assert extract_nonce_from_label(label) == "e68be5b8"
+    def test_extract_exact_id_from_approve_label(self):
+        """Only a complete canonical id is extracted from an approve label."""
+        approval_id = f"P-e68be5b8{'0' * 24}"
+        label = f"Approve -- git push origin main [{approval_id}]"
+        assert extract_nonce_from_label(label) == approval_id
+        assert extract_nonce_from_label(
+            "Approve -- git push origin main [P-e68be5b8]"
+        ) is None
 
     def test_extract_nonce_from_label_without_nonce_returns_none(self):
         """Labels without a [P-...] tag return None."""

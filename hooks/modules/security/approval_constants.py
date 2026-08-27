@@ -1,7 +1,9 @@
 """Approval token patterns and deprecated approval phrases for T3 operation resumes.
 
 The APPROVE: prefix is a legacy path (SendMessage-based nonce relay). The primary
-approval flow now uses ElicitationResult (AskUserQuestion -> user clicks Approve).
+approval flow activates on PostToolUse: the user clicks Approve on a native
+AskUserQuestion prompt, and adapters/claude_code.py::_handle_ask_user_question_result
+activates the grant carried by each answered signed label.
 """
 
 import re
