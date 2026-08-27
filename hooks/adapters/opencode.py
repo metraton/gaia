@@ -70,6 +70,11 @@ _CONTROL_PLANE_ROLES = frozenset(
 # with no attested claim is given a name that cannot be mistaken for one.
 _UNATTESTED_AGENT_TYPE = "opencode-unattested"
 
+# Named literally so a fail-closed pre-bind deny is never mistaken for one
+# from any other policy lane (delegate_mode, an unattested control-plane
+# claim, the tier classifier) -- plan 65, T10, rule 3.
+_CHILD_BINDING_BACKSTOP_EMITTER = "opencode-adapter:child-session-binding-backstop"
+
 
 def _apply_patch_paths(patch_text: object) -> list[str]:
     """Return every declared patch path, rejecting ambiguous patch envelopes."""
@@ -308,6 +313,41 @@ class OpenCodeAdapter(HookAdapter):
         return VerificationResult()
 
     def adapt_subagent_start(self, raw: dict) -> ContextResult:
+        """Bind the callID<->child-session pair this event reports, then
+        pass the event through unchanged (plan 65, T10).
+
+        OpenCode's only start-adjacent signal is ``message.part.updated`` on
+        the PARENT's own tool part (part.type=tool, tool=task): it names the
+        exact callID the Task PreToolUse call was born and claimed under (T9)
+        together with the child's own session id, at
+        ``state.metadata.sessionId``. ``session.created`` -- which fires on
+        the CHILD's own session -- carries no callID at all and never reaches
+        this method (``_EVENT_TYPES`` maps no such event to SUBAGENT_START);
+        the bind's ONLY correlation key is this event's callID (enmienda E1:
+        no fallback ladder -- see
+        ``gaia.store.writer.bind_harness_child_session``).
+
+        Best-effort and silent on any failure: a start event must never turn
+        into an error over binding logic. This host injects no other
+        kernel/context contribution from this event today, so the return
+        value is unaffected by whether the bind landed.
+        """
+        call_id = raw.get("call_id") or raw.get("callID")
+        state = raw.get("state")
+        metadata = state.get("metadata") if isinstance(state, dict) else None
+        child_session_id = (
+            metadata.get("sessionId") if isinstance(metadata, dict) else None
+        )
+        if call_id and child_session_id:
+            try:
+                from gaia.store.writer import bind_harness_child_session
+
+                bind_harness_child_session(
+                    dispatch_tool_use_id=call_id,
+                    harness_agent_id=child_session_id,
+                )
+            except Exception:
+                pass
         return ContextResult(
             context_injected=bool(raw.get("additional_context")),
             additional_context=raw.get("additional_context"),
@@ -344,6 +384,9 @@ class OpenCodeAdapter(HookAdapter):
         rejection = self._identity_rejection(event, original_tool)
         if rejection is not None:
             return HookResponse(output={"action": "deny", "reason": rejection}, exit_code=2)
+        backstop = self._child_binding_backstop_denial(event)
+        if backstop is not None:
+            return backstop
         payload = self.build_policy_payload(event)
         policy_event = HookEvent(
             event_type=event.event_type,
@@ -524,6 +567,49 @@ class OpenCodeAdapter(HookAdapter):
         if tool_name == "task" and not cls._is_attested_control_plane(event):
             return "ordinary OpenCode agents cannot issue control-plane dispatches"
         return None
+
+    @classmethod
+    def _child_binding_backstop_denial(cls, event: HookEvent) -> "HookResponse | None":
+        """Fail-closed backstop for a dispatched child's tool calls before its
+        own binding has landed (plan 65, T10, rule 3).
+
+        ``event.host_agent_id`` is the plugin's own ``dispatchHandle``: truthy
+        for exactly a non-primary (dispatched) session, undefined/absent for
+        the root session (plugin.ts's own docstring on that predicate). A
+        dispatched child is therefore identifiable from its very FIRST tool
+        call -- well before ``message.part.updated`` can report the
+        callID<->child-session pair that binds it
+        (``bind_harness_child_session``, ``adapt_subagent_start``). Until that
+        bind lands ``harness_agent_id`` for this exact session, the call is
+        denied here, and the reason NAMES this backstop as the emitter so a
+        deny from any other policy lane is never mistaken for it.
+
+        A resolution failure denies too: an importable-but-erroring binding
+        check must not silently open a fail-closed gate.
+        """
+        if not event.host_agent_id:
+            return None
+        try:
+            from gaia.store.writer import is_harness_session_bound
+
+            bound = is_harness_session_bound(event.session_id)
+        except Exception:
+            bound = False
+        if bound:
+            return None
+        return HookResponse(
+            output={
+                "action": "deny",
+                "reason": (
+                    f"{_CHILD_BINDING_BACKSTOP_EMITTER}: dispatched session "
+                    f"{event.session_id!r} is not yet bound to its Task "
+                    "call -- denying its tool call fail-closed until "
+                    "message.part.updated reports the callID<->child-session "
+                    "pair"
+                ),
+            },
+            exit_code=2,
+        )
 
     def build_policy_payload(self, event: HookEvent) -> Dict[str, Any]:
         """Normalize one OpenCode event into the payload Gaia's policy reads.
