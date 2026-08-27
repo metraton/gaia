@@ -1,30 +1,24 @@
-"""Gate 1008 (task 536, T8): the lifecycle transport set routed through
-``bridge.handle`` -- the real boundary the plugin spawns -- with cero
-"Unsupported OpenCode bridge event" responses for the conjunto, and the dead
-``_EVENT_TYPES`` mappings (``session.created``, ``message.updated``) gone
-rather than merely aparent coverage.
+"""Gate 1008 (task 536, T8) + gate 1014 (task 539, T11): the lifecycle
+transport set routed through ``bridge.handle`` -- the real boundary the
+plugin spawns -- with cero "Unsupported OpenCode bridge event" responses for
+the conjunto, and the dead ``_EVENT_TYPES`` mappings (``session.created``,
+``message.updated``) gone rather than merely aparent coverage.
 
-PENDING, plan 65 T11 (task 539, gate 1014): "Stop"/"PostToolUseFailure"/
-"SessionEnd" (session.idle/error/deleted) are wired here to route to
-``adapter.adapt_subagent_stop`` -- the real session-lifecycle close --
-instead of the quality no-op (Stop) / bare acknowledgment
-(PostToolUseFailure/SessionEnd) this gate originally certified. T11's own
-turn found ``hooks/adapters/opencode.py`` and
-``hooks/modules/agents/dispatch_lifecycle.py`` write-protected (T3_BLOCKED,
-approval_ids P-531c6c5f8100e19efcc474787975a538 and
-P-41c3d6a64ab0480896ac5ca079076574) and closed APPROVAL_REQUEST with the
-close design sealed in its contract row rather than applying it unreviewed;
-this file's assertions describe the CURRENT, reachable behavior only, and a
-follow-up turn that applies the approved edit adds the close-behavior
-assertions (``{"contract_valid": True, "closed": ...}`` replacing the bare
-``{"action": "allow"}`` for idle/error/deleted, PostCompact unchanged) in the
-SAME commit as that edit.
+T11 changed WHAT "Stop"/"PostToolUseFailure"/"SessionEnd" (session.idle/
+error/deleted) actually do: they used to be a quality no-op (Stop) or a bare
+acknowledgment (PostToolUseFailure/SessionEnd) -- T8's own placeholder. They
+now all route to ``adapter.adapt_subagent_stop``, the real session-lifecycle
+close (plan 65, T11, approval_ids P-41c3d6a64ab0480896ac5ca079076574 and
+P-531c6c5f8100e19efcc474787975a538, applied on user approval) -- see
+``tests/opencode/test_opencode_subagent_stop_close.py`` for the close
+behavior's 5 named gate-1014 cases. Only ``PostCompact`` is still
+bare-acknowledged.
 
-Isolation is explicit (``GAIA_DATA_DIR`` -> ``tmp_path``) even though no
-route exercised here binds a dispatch row today: once T11's close lands,
-``bridge.handle`` for these kinds reads (and, for a bound session, writes)
-the store, and this fixture must already keep that off the developer's real
-``~/.gaia`` rather than being retrofitted alongside the routing change.
+None of ``ses-x``/``ses-child`` here are ever bound to a dispatch row, so
+every route exercised in this module resolves ``{"status": "no_row"}`` and
+performs a READ with no write -- but the isolation is still explicit (never
+the developer's real ``~/.gaia``), since a route that touches the store at
+all should never do so against live data by accident.
 """
 
 from __future__ import annotations
@@ -81,3 +75,21 @@ def test_dead_event_type_mappings_are_gone_and_the_conjunto_is_wired():
 
     for required in _LIFECYCLE_EVENTS:
         assert required in _EVENT_TYPES, f"{required} is missing from _EVENT_TYPES"
+
+
+def test_idle_error_deleted_all_reach_the_real_close_not_an_acknowledgment():
+    """T11: unlike PostCompact (still a bare {"action": "allow"}), idle/
+    error/deleted each carry adapt_subagent_stop's own output shape
+    (``contract_valid``/``closed``), never the acknowledgment's bare
+    ``{"action": "allow"}`` with nothing else."""
+    for event_name in ("session.idle", "session.error", "session.deleted"):
+        response = _handle(event_name, _LIFECYCLE_EVENTS[event_name])
+        assert response == {"contract_valid": True, "closed": {"status": "no_row"}}, (
+            event_name,
+            response,
+        )
+
+
+def test_post_compact_is_still_a_bare_acknowledgment():
+    response = _handle("session.compacted", _LIFECYCLE_EVENTS["session.compacted"])
+    assert response == {"action": "allow"}

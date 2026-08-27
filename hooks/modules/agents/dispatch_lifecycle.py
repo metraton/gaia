@@ -161,3 +161,113 @@ def reap_stale_turn(
         liveness_check=_session_has_live_attestation,
         db_path=db_path,
     )
+
+
+def resolve_close(
+    *,
+    harness_agent_id: Optional[str],
+    session_id: Optional[str] = None,
+    db_path=None,
+) -> Optional[dict]:
+    """Promote the row bound to this harness session per its own persisted
+    draft (plan 65, T11 -- replaces OpenCode's exit-2 SubagentStop stub).
+
+    Host-neutral facade over the SAME two-way split Claude Code's own
+    SubagentStop backstop makes (``hooks.modules.agents.handoff_persister.
+    persist_handoff``), reached here from a session-level signal (idle,
+    error, deleted) instead of a transcript. A draft that already declares a
+    valid CLOSED_TURN_PLAN_STATUSES verdict closes CLEANLY -- the same state
+    verbatim, cut_reason cleared -- exactly as if the agent's own
+    ``gaia contract finalize`` had run with that draft in hand ("finalizo"
+    names the DRAFT reaching a verdict, not that the CLI command executed).
+    Any other draft (absent, unreadable, still IN_PROGRESS) closes CUT, with
+    ``CUT_REASON_BACKSTOP_CAPTURE`` -- the existing vocabulary word Claude
+    Code's own T9 backstop uses for a turn it captures because no clean close
+    exists, introducing no new cut spelling.
+
+    Idempotent BY THIS FUNCTION'S OWN CHECK, not merely the writer's: a row
+    already off 'DISPATCHED' -- clean OR cut, by this facade or the agent's
+    own finalize -- is read as already closed and left untouched. This
+    matters because the writer's own convergence guard
+    (``finalize_agent_contract_handoff``) refuses a write ONLY when the row
+    is already COMPLETE; a row closed BLOCKED/NEEDS_INPUT/NEEDS_VERIFICATION/
+    APPROVAL_REQUEST, or already CUT, would otherwise still accept a second
+    write from a later lifecycle signal for the SAME session (idle firing
+    after error, in any order) -- exactly the double-close this facade must
+    not produce.
+
+    No row bound to this harness_agent_id -- the ordinary shape of the
+    PRIMARY/root session, never bound by ``bind_harness_child_session``, or
+    of a dispatched child whose Task PreToolUse never landed -- resolves to
+    ``{"status": "no_row"}``: nothing to close, not a violation.
+
+    Returns ``{"status": "no_row"|"already_closed"|"closed", "contract_id":
+    ..., "agent_state": ..., "cut_reason": ...}`` (the last two omitted for
+    "no_row"/"already_closed"). Never raises: an unavailable store or an
+    unreadable draft degrades to the CUT branch or to ``{"status": "error"}``
+    rather than interrupting the session lifecycle event that triggered it.
+    """
+    if not harness_agent_id:
+        return {"status": "no_row"}
+    try:
+        import json as _json
+
+        from gaia.contract.drafts import load_draft
+        from gaia.state import CLOSED_TURN_PLAN_STATUSES, CUT_REASON_BACKSTOP_CAPTURE
+        from gaia.store.writer import (
+            find_dispatch_row_by_harness_agent_id,
+            finalize_agent_contract_handoff,
+        )
+
+        row = find_dispatch_row_by_harness_agent_id(
+            harness_agent_id, session_id=session_id, db_path=db_path,
+        )
+        if row is None:
+            return {"status": "no_row"}
+        contract_id = row.get("contract_id")
+        if row.get("agent_state") != "DISPATCHED":
+            return {"status": "already_closed", "contract_id": contract_id}
+
+        try:
+            draft = load_draft(contract_id)
+        except Exception:
+            draft = None
+        agent_status = draft.get("agent_status") if isinstance(draft, dict) else None
+        declared_state = (
+            agent_status.get("agent_state")
+            if isinstance(agent_status, dict)
+            else None
+        )
+
+        if declared_state in CLOSED_TURN_PLAN_STATUSES:
+            agent_state, cut_reason = declared_state, None
+        else:
+            agent_state, cut_reason = "IN_PROGRESS", CUT_REASON_BACKSTOP_CAPTURE
+
+        envelope = dict(draft) if isinstance(draft, dict) else {}
+        envelope["degraded"] = cut_reason is not None
+        envelope["backstop"] = "opencode_session_lifecycle_close"
+
+        outcome = finalize_agent_contract_handoff(
+            contract_id=contract_id,
+            agent_id=row.get("agent_id"),
+            workspace=row.get("workspace"),
+            agent_state=agent_state,
+            raw_handoff_json=_json.dumps(envelope),
+            session_id=row.get("session_id") or session_id,
+            plan_task_id=row.get("plan_task_id"),
+            brief_id=row.get("brief_id"),
+            cut_reason=cut_reason,
+            db_path=db_path,
+        )
+        if not outcome.get("created"):
+            return {"status": "already_closed", "contract_id": contract_id}
+        return {
+            "status": "closed",
+            "contract_id": contract_id,
+            "agent_state": agent_state,
+            "cut_reason": cut_reason,
+        }
+    except Exception as exc:
+        logger.debug("resolve_close failed (non-fatal): %s", exc)
+        return {"status": "error"}

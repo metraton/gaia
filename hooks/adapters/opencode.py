@@ -764,11 +764,26 @@ class OpenCodeAdapter(HookAdapter):
         return self._translate_policy_response(response)
 
     def adapt_subagent_stop(self, event: HookEvent) -> HookResponse:
-        return HookResponse(
-            output={
-                "contract_valid": False,
-                "repair_needed": True,
-                "reason": "OpenCode contract lifecycle is not wired for this event.",
-            },
-            exit_code=2,
+        """Close the row bound to this session on a real lifecycle signal
+        (session.idle/error/deleted -- ``Stop``/``PostToolUseFailure``/
+        ``SessionEnd`` after mapping, plan 65, T11).
+
+        Replaces the exit-2 stub: OpenCode never awaits this hook's return
+        for these events (they carry no host decision to gate -- see
+        ``LIFECYCLE_EVENT_TYPES`` in ``opencode/plugin.ts``), so this is a
+        best-effort database write, never a permission verdict. ``resolve_close``
+        (``dispatch_lifecycle``) does the actual work: it is keyed on
+        ``event.session_id`` because that IS the harness_agent_id a dispatched
+        child was bound under (``bind_harness_child_session`` stamps the
+        CHILD's own OpenCode session id at ``message.part.updated`` time,
+        before any tool call ever runs) -- so a child with ZERO tool calls is
+        still found and closed here. The PRIMARY/root session's own
+        session.idle resolves no bound row (never stamped by
+        ``bind_harness_child_session``) and is a harmless no-op.
+        """
+        from modules.agents.dispatch_lifecycle import resolve_close
+
+        outcome = resolve_close(
+            harness_agent_id=event.session_id, session_id=event.session_id,
         )
+        return HookResponse(output={"contract_valid": True, "closed": outcome})
