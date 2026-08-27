@@ -108,6 +108,12 @@ def handle(raw: dict[str, object]) -> dict[str, object]:
         response = adapter.adapt_subagent_stop(event)
     elif kind == "SubagentStart":
         response = adapter.format_context_response(adapter.adapt_subagent_start(event.payload))
+    elif kind == "PreCompact":
+        # session.compacting (plan 65, T12): the one compaction signal that
+        # can still inject, dispatched here rather than folded into
+        # _ACKNOWLEDGED_EVENT_KINDS because -- unlike PostCompact -- it now
+        # has a real per-host adapter method.
+        response = adapter.adapt_pre_compact(event)
     elif kind in _ACKNOWLEDGED_EVENT_KINDS:
         return _ack()
     else:

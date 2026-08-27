@@ -857,6 +857,30 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         result: toolResult(output),
       })
     },
+    // The installed OpenCode host fires this hook mid-compaction, before the
+    // summary completes, with a mutable {context, prompt} output -- unlike
+    // "session.compacted" (forwarded above, LIFECYCLE_EVENT_TYPES), which
+    // fires only after and cannot inject anything. This is the one point
+    // that can put a dispatched child's contract kernel back into context
+    // before OpenCode's own compaction discards the messages it lived in.
+    "experimental.session.compacting": async (compacting: any, output: any) => {
+      const sessionID = compacting?.sessionID
+      if (typeof sessionID !== "string") return
+      const response = await send({
+        event: "session.compacting",
+        sessionID,
+        agentID: dispatchHandle(sessionID),
+        agent: agentBySession.get(sessionID),
+        roleContext: roleContext(sessionID),
+      })
+      const injected = response.action === "allow" ? response.updated_input?.context : undefined
+      // Mutated in place, never reassigned: output.context = [...] replaces
+      // the reference the host already captured, the same measured no-op
+      // applyUpdatedInput's own comment documents for output.args.
+      if (Array.isArray(injected) && output && Array.isArray(output.context)) {
+        output.context.push(...injected)
+      }
+    },
   }
 }
 
