@@ -85,6 +85,17 @@ def test_protected_path_pending_round_trips_as_one_opaque_machine_identity(
     from gaia.approvals import store
     from gaia.contract.crosscheck import validate_crosscheck
 
+    # This gate exercises the pending-approval identity round trip, not the
+    # dispatched-child binding backstop (plan 65 T10, gates 1012/1013,
+    # covered by its own tests/hooks/adapters/test_opencode_child_binding_
+    # backstop.py). The synthetic event below carries a truthy agentID (a
+    # dispatched child, per OpenCode's dispatchHandle convention) with no
+    # prior Task-dispatch/bind cycle, so without this mock the backstop
+    # denies the call before the protected-path logic ever runs and the
+    # response carries no approval_id at all -- mocked at the same module
+    # boundary that file's own tests use.
+    monkeypatch.setattr("gaia.store.writer.is_harness_session_bound", lambda *a, **k: True)
+
     protected_path = REPO_ROOT / "hooks" / "modules" / "security" / "tiers.py"
     event = OpenCodeAdapter().parse_event(json.dumps({
         "event": "tool.execute.before",
