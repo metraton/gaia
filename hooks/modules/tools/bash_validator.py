@@ -877,11 +877,26 @@ class BashValidator:
         # case is unaffected.
         # ================================================================
         payload_cwd = (hook_payload or {}).get("cwd") or None
+        consent_retry = (hook_payload or {}).get("consent_retry")
+        if not isinstance(consent_retry, dict):
+            consent_retry = None
+        elif (
+            consent_retry.get("session_id") != session_id
+            or consent_retry.get("call_id") != (hook_payload or {}).get("tool_use_id")
+            or consent_retry.get("agent_id") != agent_type
+            or consent_retry.get("command") != command
+        ):
+            consent_retry = None
+        requires_bound_retry = bool(
+            (hook_payload or {}).get("requires_bound_consent_retry")
+        )
         if not has_operators:
             result = self._validate_single_command(
                 command, is_subagent=is_subagent, session_id=session_id,
                 agent_type=agent_type,
                 tool_use_id=str((hook_payload or {}).get("tool_use_id", "")),
+                consent_retry=consent_retry,
+                requires_bound_retry=requires_bound_retry,
                 cwd=payload_cwd,
             )
         elif parsed_components is not None and len(parsed_components) > 1:
@@ -919,6 +934,8 @@ class BashValidator:
         agent_type: str = "",
         cwd: Optional[str] = None,
         tool_use_id: str = "",
+        consent_retry: Optional[Dict[str, Any]] = None,
+        requires_bound_retry: bool = False,
     ) -> BashValidationResult:
         """Validate a single command (no operators).
 
@@ -970,9 +987,18 @@ class BashValidator:
                     )
             try:
                 from gaia.store.writer import reserve_plan_command
-                cs_match = reserve_plan_command(
-                    command, session_id=session_id, tool_use_id=tool_use_id
-                )
+                retry = consent_retry or {}
+                cs_match = None
+                if not requires_bound_retry or retry:
+                    cs_match = reserve_plan_command(
+                        command,
+                        session_id=session_id,
+                        tool_use_id=tool_use_id,
+                        approval_id=retry.get("approval_id"),
+                        agent_id=retry.get("agent_id"),
+                        command_fingerprint_value=retry.get("command_fingerprint"),
+                        expected_index=retry.get("expected_index"),
+                    )
             except Exception as exc:
                 return BashValidationResult(
                     allowed=False,
@@ -1109,9 +1135,18 @@ class BashValidator:
                     # consume + return semantics replicate the verb branch exactly.
                     try:
                         from gaia.store.writer import reserve_plan_command
-                        cs_match = reserve_plan_command(
-                            command, session_id=session_id, tool_use_id=tool_use_id
-                        )
+                        retry = consent_retry or {}
+                        cs_match = None
+                        if not requires_bound_retry or retry:
+                            cs_match = reserve_plan_command(
+                                command,
+                                session_id=session_id,
+                                tool_use_id=tool_use_id,
+                                approval_id=retry.get("approval_id"),
+                                agent_id=retry.get("agent_id"),
+                                command_fingerprint_value=retry.get("command_fingerprint"),
+                                expected_index=retry.get("expected_index"),
+                            )
                     except Exception as exc:
                         return BashValidationResult(
                             allowed=False,

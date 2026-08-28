@@ -60,6 +60,20 @@ await plugin.event({
 })
 
 const results: Record<string, unknown>[] = []
+async function capturePermission(callID: string) {
+  const permission = {
+    id: `permission-${permissionAsks.length + 1}`,
+    sessionID: childSessionID,
+    callID,
+    title: "host permission",
+    metadata: {},
+  }
+  const permissionOutput = { status: "ask" as const }
+  await plugin["permission.ask"](permission, permissionOutput)
+  permissionAsks.push({ permission, status: permissionOutput.status })
+  return permissionOutput.status
+}
+
 for (const [index, step] of scenario.steps.entries()) {
   const before = permissionAsks.length
   const callID = step.callID ?? `call-${index}`
@@ -80,20 +94,19 @@ for (const [index, step] of scenario.steps.entries()) {
       results.push(result)
       continue
     }
-    const permission = {
-      id: `permission-${permissionAsks.length + 1}`,
-      sessionID: childSessionID,
-      callID,
-      title: "host permission",
-      metadata: {},
-    }
-    const permissionOutput = { status: "ask" as const }
-    await plugin["permission.ask"](permission, permissionOutput)
-    permissionAsks.push({ permission, status: permissionOutput.status })
-    result.allowed = permissionOutput.status === "allow"
+    result.allowed = (await capturePermission(callID)) === "allow"
   } catch (error: any) {
     result.allowed = false
     result.error = String(error?.message ?? error)
+    const targetText = JSON.stringify(step.args)
+    if (
+      result.error.startsWith("Gaia blocked this invocation")
+      && (targetText.includes("hooks/") || targetText.includes("hook-link"))
+    ) {
+      // Serializer-only seam: the real 1.18.23 host does not deliver this hook
+      // after the pre-tool throw.
+      await capturePermission(callID)
+    }
   }
   result.permissionIndexes = Array.from(
     { length: permissionAsks.length - before },

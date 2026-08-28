@@ -648,6 +648,8 @@ class OpenCodeAdapter(HookAdapter):
                 "agent_id": event.host_agent_id or "",
                 "agent_type": self._policy_agent_type(event),
                 "role_context": self._forward_role_context(event),
+                "consent_retry": payload.get("consentRetry"),
+                "requires_bound_consent_retry": True,
             }
         )
         return payload

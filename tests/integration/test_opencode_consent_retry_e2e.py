@@ -26,6 +26,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -44,6 +45,7 @@ ROOT_SESSION_ID = "ses-t5-root"
 DISPATCH_CALL_ID = "call-t5-dispatch"
 SESSION_ID = "ses-t5-retry"
 CALL_ID = "call-t5-retry"
+FRESH_CALL_ID = "call-t5-retry-fresh"
 LATER_CALL_ID = "call-t5-later"
 PERMISSION_ID = "perm-t5-retry"
 AGENT_ID = "gaia-system"
@@ -187,6 +189,19 @@ def _drive(env, steps, *, permission_id=PERMISSION_ID):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+def _assert_exported_caller_aborted(driven, label):
+    assert driven["exportedEntry"] == "default.server"
+    expected_artifact = os.environ.get("GAIA_OPENCODE_PLUGIN_URL", PLUGIN.as_uri())
+    assert driven["artifact"] == expected_artifact
+    step = _step(driven, label)
+    assert step["allowed"] is False, (
+        f"ORIGINAL_EXECUTION_REACHABLE through exported GaiaOpenCodePlugin "
+        f"tool.execute.before: {json.dumps(step, sort_keys=True)}"
+    )
+    assert step.get("originalExecutionReachable") is not True, step
+    assert "Gaia blocked this invocation" in step["error"], step
+
+
 def _before(label, command, *, call_id=CALL_ID):
     return {
         "kind": "before", "label": label, "sessionID": SESSION_ID,
@@ -230,21 +245,94 @@ def test_reachable_t3_in_canonical_scratch_is_still_presented_by_gaia(db_env):
     command = f"kubectl apply -f {scratch_dir() / 'manifest.yaml'}"
     driven = _drive(env, [_before("scratch-t3", command)])
     step = _step(driven, "scratch-t3")
-    asks = driven["permissionAsks"]
 
     print("SCRATCH_PLUGIN_SEAM_ALLOWED=" + str(step["allowed"]).lower())
     print("SCRATCH_PLUGIN_SEAM_OWNER=GAIA")
-    print("SCRATCH_PLUGIN_SEAM_PRESENTED=" + str(len(asks) == 1).lower())
+    print("SCRATCH_PLUGIN_SEAM_PRESENTED=" + str(len(driven["controlQuestions"]) == 1).lower())
     assert step["allowed"] is False
-    assert len(asks) == 1
-    assert asks[0]["permission"]["metadata"]["gaiaApprovalID"].startswith("P-")
+    assert len(driven["controlQuestions"]) == 1
 
 
-def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db_env):
-    """The whole chain, on one session/call binding, through the real plugin.
+def test_exported_caller_non_allow_never_returns(db_env):
+    """Drive the exported plugin branch through every non-decision outcome."""
+    env, db_path = db_env
+    approval_id = _request_set(env)
 
-    The retry is the same identity as the blocked attempt and carries the same
-    bytes; the reservation is the exact index; the failure freezes the set; and
+    pending = _drive(env, [_before("pending-no-decision", FIRST_COMMAND)])
+    _assert_exported_caller_aborted(pending, "pending-no-decision")
+    assert _grant(db_path, approval_id) is None
+
+    rejected = _drive(env, [
+        _before("pending-reject", FIRST_COMMAND),
+        {"kind": "question-reply", "label": "reject", "decision": "reject"},
+    ])
+    _assert_exported_caller_aborted(rejected, "pending-reject")
+    assert _grant(db_path, approval_id) is None
+
+    malformed = _drive(env, [
+        _before("pending-malformed", FIRST_COMMAND),
+        {"kind": "question-reply", "label": "malformed", "decision": "yes please"},
+        _before("malformed-fresh-call", FIRST_COMMAND, call_id=FRESH_CALL_ID),
+    ])
+    _assert_exported_caller_aborted(malformed, "pending-malformed")
+    _assert_exported_caller_aborted(malformed, "malformed-fresh-call")
+    assert _grant(db_path, approval_id) is None
+
+    timeout = _drive(env, [
+        _before("pending-timeout", FIRST_COMMAND),
+        _before("timeout-fresh-call", FIRST_COMMAND, call_id=FRESH_CALL_ID),
+    ])
+    _assert_exported_caller_aborted(timeout, "pending-timeout")
+    _assert_exported_caller_aborted(timeout, "timeout-fresh-call")
+    assert _grant(db_path, approval_id) is None
+
+
+def test_throw_to_return_mutant_makes_exported_caller_gate_fail(db_env):
+    """Replacing the executable abort must expose the original invocation."""
+    if os.environ.get("GAIA_OPENCODE_MUTANT_CHILD") == "1":
+        pytest.skip("mutation controller is not recursive")
+
+    source = PLUGIN.read_text()
+    abort = """        throw new Error(
+          `Gaia blocked this invocation pending approval ${pendingApprovalID}; after a structured once decision, retry the byte-identical tool input`,
+        )"""
+    assert source.count(abort) == 1, "mutation target is not the exported caller abort"
+    mutant = source.replace(abort, "        return", 1)
+    runtime_path = 'const gaiaPath = fileURLToPath(new URL("../bin/gaia", import.meta.url))'
+    assert mutant.count(runtime_path) == 1
+    mutant = mutant.replace(runtime_path, f"const gaiaPath = {json.dumps(str(GAIA_CLI))}", 1)
+
+    with tempfile.TemporaryDirectory(prefix="gaia-opencode-mutant-") as directory:
+        mutant_path = Path(directory) / "plugin.ts"
+        mutant_path.write_text(mutant)
+        env, _ = db_env
+        child_env = dict(env)
+        child_env["GAIA_OPENCODE_PLUGIN_URL"] = mutant_path.as_uri()
+        child_env["GAIA_OPENCODE_MUTANT_CHILD"] = "1"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "pytest", "-q", "-s",
+                f"{__file__}::test_exported_caller_non_allow_never_returns",
+            ],
+            cwd=REPO_ROOT,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+    output = result.stdout + result.stderr
+    print("MUTANT_EXIT=" + str(result.returncode))
+    print(output)
+    assert result.returncode != 0, "throw-to-return mutant survived"
+    assert "ORIGINAL_EXECUTION_REACHABLE: exported tool.execute.before returned" in output
+
+
+def test_fresh_retry_reserves_exact_content_executes_settles_and_freezes(db_env):
+    """A fresh call binds by exact content, then settlement freezes the set.
+
+    The retry has a fresh call id and carries the same bytes; the reservation
+    is the exact index; the failure freezes the set; and
     the freeze is asserted as the grant's terminal state, not merely as an
     index that happened not to run in this test.
     """
@@ -254,46 +342,37 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
 
     # Attempt BEFORE any reply exists: no executable grant, so the tool call is
     # refused. This is the invocation the retry must later match identically.
-    blocked = _drive(env, [_before("pre-approval", FIRST_COMMAND)])
-    first_attempt = _step(blocked, "pre-approval")
-    assert first_attempt["allowed"] is False, blocked
-    first_exchange = _tool_exchanges(blocked)[0]
-    assert _grant(db_path, approval_id) is None
-
-    # The user's reply, applied through the same CLI the plugin's
-    # permission.replied lane invokes (see the reply-lane test below).
-    decision = _approve_set(env, approval_id)
-    assert decision["decision"] == "once"
-    assert decision["status"] == "approved"
-    assert decision["protocol_version"]
-    grant = _grant(db_path, approval_id)
-    assert grant is not None and grant["status"] == "PENDING"
-    assert grant["scope"] == "COMMAND_SET" and grant["source"] == "plan-first"
-
-    # The retry: same session, same call, same command bytes.
     retried = _drive(
         env,
         [
-            _before("retry", FIRST_COMMAND),
+            _before("pre-approval", FIRST_COMMAND),
+            {"kind": "question-reply", "label": "decision", "decision": "once"},
+            _before("retry", FIRST_COMMAND, call_id=FRESH_CALL_ID),
             {
                 "kind": "after", "label": "settle", "sessionID": SESSION_ID,
-                "callID": CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
+                "callID": FRESH_CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
                 "output": "fatal: remote rejected", "metadata": {"exitCode": 7},
             },
             _before("later-index", SECOND_COMMAND, call_id=LATER_CALL_ID),
         ],
     )
+    first_attempt = _step(retried, "pre-approval")
+    assert first_attempt["allowed"] is False, retried
+    first_exchange = _tool_exchanges(retried)[0]
+    assert len(retried["controlQuestions"]) >= 1
+    question = retried["controlQuestions"][0]["questions"][0]
+    assert approval_id in question["question"]
+    assert [option["label"].split()[0] for option in question["options"]] == ["Approve", "Reject"]
     retry_step = _step(retried, "retry")
     assert retry_step["allowed"] is True, retried
-    retry_exchange = _tool_exchanges(retried)[0]
+    retry_exchange = _tool_exchanges(retried)[1]
 
-    # Same binding, byte-identical input, identical fingerprint.
+    # Fresh identifier, byte-identical input, identical fingerprint.
     assert retry_exchange["sent"]["sessionID"] == first_exchange["sent"]["sessionID"] == SESSION_ID
-    assert retry_exchange["sent"]["callID"] == first_exchange["sent"]["callID"] == CALL_ID
+    assert first_exchange["sent"]["callID"] == CALL_ID
+    assert retry_exchange["sent"]["callID"] == FRESH_CALL_ID
     assert retry_exchange["sentArgsJSON"] == first_exchange["sentArgsJSON"]
     assert json.loads(retry_exchange["sentArgsJSON"])["command"] == FIRST_COMMAND
-    # The binding, pinned literally, so a reader sees the two invocations are
-    # one identity rather than taking the equality assertions above on trust.
     def _observed(exchange):
         command = json.loads(exchange["sentArgsJSON"])["command"]
         return {
@@ -303,15 +382,17 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
             "fingerprint": command_fingerprint(command),
         }
 
-    expected_binding = {
+    expected_blocked = {
         "session_id": SESSION_ID,
         "call_id": CALL_ID,
         "args": '{"command":"' + FIRST_COMMAND + '"}',
         "fingerprint": FIRST_FINGERPRINT,
     }
-    assert _observed(first_exchange) == expected_binding
-    assert _observed(retry_exchange) == expected_binding
+    expected_retry = {**expected_blocked, "call_id": FRESH_CALL_ID}
+    assert _observed(first_exchange) == expected_blocked
+    assert _observed(retry_exchange) == expected_retry
 
+    grant = _grant(db_path, approval_id)
     items = json.loads(grant["command_set_json"])
     assert items[0]["fingerprint"] == command_fingerprint(FIRST_COMMAND)
     assert items[0]["command"] == FIRST_COMMAND
@@ -344,9 +425,11 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
     """A different call cannot settle the reservation the retry established."""
     env, db_path = db_env
     approval_id = _request_set(env)
-    _approve_set(env, approval_id)
-
-    driven = _drive(env, [_before("retry", FIRST_COMMAND)])
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND, call_id="call-original"),
+        {"kind": "question-reply", "label": "decision", "decision": "once"},
+        _before("retry", FIRST_COMMAND),
+    ])
     assert _step(driven, "retry")["allowed"] is True, driven
     reserved = _grant(db_path, approval_id)
     assert reserved["reservation_index"] == 0
@@ -369,15 +452,9 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
     ) is True
 
 
-def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
-    """permission.replied=once reaches Gaia's decide CLI from the plugin itself.
-
-    The approval this lane can reach is whichever one the policy bridge named
-    when it refused the call -- the plugin never chooses an approval id. That is
-    what the next test pins down.
-    """
+def test_uncorrelated_native_reply_grants_nothing_after_the_call_is_aborted(db_env):
     env, db_path = db_env
-    _request_set(env)
+    approval_id = _request_set(env)
 
     driven = _drive(
         env,
@@ -392,28 +469,11 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     assert _step(driven, "blocked")["allowed"] is False, driven
     assert _step(driven, "reply")["allowed"] is True, driven
 
-    # The plugin enriched exactly one host-created permission, carrying the approval
-    # the bridge named and a visible surface Gaia sealed.
-    assert len(driven["permissionAsks"]) == 1, driven
-    presented = driven["permissionAsks"][0]["permission"]
-    presented_id = presented["metadata"]["gaiaApprovalID"]
-    assert presented["sessionID"] == SESSION_ID
-    assert presented["metadata"]["gaiaCallID"] == CALL_ID
-    assert presented["pattern"], presented
-
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    row = con.execute(
-        "SELECT status FROM approvals WHERE id=?", (presented_id,)
-    ).fetchone()
-    con.close()
-    assert row is not None, presented_id
-    assert row["status"] != "REQUESTED", (
-        "permission.replied=once did not move the approval the plugin presented"
-    )
+    assert driven["permissionAsks"] == [], driven
+    assert _grant(db_path, approval_id) is None
 
 
-def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
+def test_reject_without_a_correlated_host_request_grants_nothing(db_env):
     env, db_path = db_env
     approval_id = _request_set(env)
     driven = _drive(
@@ -428,59 +488,47 @@ def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
     )
 
     assert _step(driven, "blocked")["allowed"] is False, driven
-    assert driven["permissionAsks"][0]["status"] == "ask", driven
+    assert driven["permissionAsks"] == [], driven
     assert _step(driven, "rejected")["allowed"] is True, driven
-    with sqlite3.connect(db_path) as con:
-        status = con.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()[0]
-    assert status in {"rejected", "REJECTED"}, status
+    assert _grant(db_path, approval_id) is None
 
 
-def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
-    """The block path names the pending set, not a freshly minted singular id.
+def test_structured_reject_and_free_text_create_no_grant(db_env):
+    env, db_path = db_env
+    rejected_id = _request_set(env)
+    rejected = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "question-reply", "label": "decision", "decision": "reject"},
+    ])
+    assert _step(rejected, "blocked")["allowed"] is False
+    assert _grant(db_path, rejected_id) is None
 
-    This assertion is the inverse of the one it replaces. The former detector
-    asserted the two ids DIVERGE and said in its own docstring that it would
-    fail the day they converge; this is that day, so the detector is inverted
-    rather than deleted -- the same observation, read for the outcome that is
-    now correct. The id is read out of the plugin's own
-        ``permissionAsks[0].permission.metadata.gaiaApprovalID``, so what is asserted is
-    what the plugin presented, never a value this test supplied.
+    free_text_id = _request_set(env, commands=("npm publish", "docker push registry/other:1"))
+    free_text = _drive(env, [
+        _before("blocked-free", "npm publish"),
+        {"kind": "question-reply", "label": "free", "decision": "yes please"},
+    ], permission_id="perm-free")
+    assert _step(free_text, "blocked-free")["allowed"] is False
+    assert _grant(db_path, free_text_id) is None
 
-    Both items are attempted, each on its own plugin run. At pending time the
-    set has consumed nothing, so every item belongs to the consent being
-    sought and each must name the set. Naming it is not permission to run it
-    out of order: ``reserve_plan_command`` still matches only at
-    ``next_index``, and that ordering is asserted by the reservation test
-    above.
 
-    The id the block path surfaced is then carried into the decide entry
-    point, and the grant it activates is asserted to be the plan-first set --
-    scope, source, index and item count -- so the reply lane's COMMAND_SET
-    branch is shown to be the one that ran, not a singular approval.
-    """
+def test_a_blocked_attempt_names_the_pending_plan_first_approval(db_env):
+    """The fail-closed error names the existing set rather than minting one."""
     env, db_path = db_env
     approval_id = _request_set(env)
 
-    presented_ids = []
     for label, command, call_id in (
         ("blocked-first", FIRST_COMMAND, CALL_ID),
         ("blocked-second", SECOND_COMMAND, LATER_CALL_ID),
     ):
         driven = _drive(env, [_before(label, command, call_id=call_id)])
-        assert _step(driven, label)["allowed"] is False, driven
-        assert len(driven["permissionAsks"]) == 1, driven
-        presented_ids.append(
-            driven["permissionAsks"][0]["permission"]["metadata"]["gaiaApprovalID"]
-        )
+        step = _step(driven, label)
+        assert step["allowed"] is False, driven
+        assert approval_id in step["error"]
+        assert driven["permissionAsks"] == []
 
-        assert presented_ids[-1] == approval_id, (
-            f"{label}: the blocked attempt minted a fresh singular approval "
-            "instead of naming the pending plan-first set, so the plugin's "
-            "reply lane cannot reach activate_command_set_atomically"
-        )
-
-    # The presented id is the set's, so the reply lane's own branch condition
-    # (payload request_type == COMMAND_SET in cmd_opencode_decide) holds on it.
+    # The named id remains the one plan-first set, with no singular request
+    # minted as a side effect of either blocked attempt.
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     rows = con.execute(
@@ -492,32 +540,12 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     )
     assert json.loads(rows[0]["payload_json"])["request_type"] == "COMMAND_SET"
 
-    # The id fed to the decide entry point is the one the BLOCK PATH surfaced,
-    # read out of the plugin's presentation metadata -- never the one
-    # _request_set returned -- so this leg cannot pass on a value the test
-    # supplied. SUBSTITUTED LINK: the host's permission.replied event. What
-    # runs instead is the CLI pair the plugin's own reply lane invokes, with
-    # the presentation that binds the token the reply must carry; that OpenCode
-    # delivers the event at all is not established here.
-    decision = _approve_set(env, presented_ids[0])
-    assert decision["decision"] == "once"
-    assert decision["status"] == "approved"
-
-    grant = _grant(db_path, presented_ids[0])
-    assert grant is not None, "the reply lane activated no grant at all"
-    assert grant["scope"] == "COMMAND_SET", grant
-    assert grant["source"] == "plan-first", grant
-    assert int(grant["next_index"]) == 0, grant
-    assert len(json.loads(grant["command_set_json"])) == 2, grant
-
-
-def test_plugin_delegates_the_permission_request_to_the_host_hook():
-    """The adapter does not fabricate a native permission creator.
-
-    OpenCode creates the request after ``tool.execute.before`` returns. Gaia
-    enriches it in ``permission.ask`` and waits for the host reply event.
-    """
+def test_plugin_fails_closed_after_presenting_an_approval():
+    """A pending approval aborts this invocation instead of returning into it."""
     source = PLUGIN.read_text()
     assert '"permission.ask"' in source
     assert "session.permission.create" not in source
-    assert "return\n      }\n      throw new Error" in source
+    blocked = source.index("await requestApproval(response, call.sessionID, call.callID)")
+    denied = source.index("Gaia blocked this invocation", blocked)
+    branch_end = source.index("\n      }", blocked)
+    assert blocked < denied < branch_end

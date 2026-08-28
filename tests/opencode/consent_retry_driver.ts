@@ -3,15 +3,16 @@
  * boundary it crossed.
  *
  * The claim this driver exists to support is about a SEQUENCE of tool calls
- * sharing one identity, so nothing in the sequence may be hand-written: the
+ * bound by content while each keeps its real call identity, so nothing in the sequence may be hand-written: the
  * plugin closure runs, its own `bridge()` is reached through a recorder that
  * forwards verbatim to the real `opencode/bridge.py`, and `requestApproval`
  * executes the real `gaia approvals opencode-present` / `opencode-decide`
  * CLIs against the database in GAIA_DB.
  *
  * Two seams are doubled, and only two, because OpenCode owns both and no
- * OpenCode host runs here: the host-created permission request and the host's
- * decision to invoke a tool at all. The second is
+ * OpenCode host runs here: a permission request shape and the host's decision
+ * to invoke a tool at all. OpenCode 1.18.23 does not deliver the first after a
+ * failed pre-tool hook, so it is a serializer fixture, not host evidence. The second is
  * why a `before` step in this scenario proves what the PLUGIN does with an
  * invocation carrying a given session/call identity, and never that OpenCode
  * would deliver that invocation -- an invocation this driver issues is this
@@ -21,7 +22,13 @@
  * Usage: bun consent_retry_driver.ts '<scenario json>'
  */
 
-import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
+const pluginURL = process.env.GAIA_OPENCODE_PLUGIN_URL
+  ?? new URL("../../opencode/plugin.ts", import.meta.url).href
+const pluginModule = await import(pluginURL)
+const { GaiaOpenCodePlugin } = pluginModule
+if (pluginModule.default?.server !== GaiaOpenCodePlugin) {
+  throw new Error("installed export default.server is not GaiaOpenCodePlugin")
+}
 
 const bridgePath = new URL("../../opencode/bridge.py", import.meta.url).pathname
 
@@ -34,6 +41,7 @@ type Exchange = {
 
 const exchanges: Exchange[] = []
 const permissionAsks: Record<string, unknown>[] = []
+const controlQuestions: Record<string, any>[] = []
 const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
 
@@ -66,11 +74,23 @@ async function gaiaBridge(event: Record<string, unknown>) {
 
 const scenario = JSON.parse(process.argv[2])
 
+let plugin: any
+let controlSequence = 0
 const client = {
-  session: {},
+  session: {
+    create: async () => ({ data: { id: `ses-consent-control-${++controlSequence}` } }),
+    promptAsync: async ({ path, body }: any) => {
+      const text = body.parts[0].text as string
+      const payload = JSON.parse(text.split("\n").at(-1)!)
+      const request = { id: `que-control-${controlSequence}`, sessionID: path.id, questions: payload.questions }
+      controlQuestions.push(request)
+      await plugin.event({ event: { type: "question.asked", properties: request } })
+      return { data: true }
+    },
+  },
 }
 
-const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
+plugin = await GaiaOpenCodePlugin({ gaiaBridge, client })
 
 for (const step of scenario.steps) {
   const record: Record<string, unknown> = { kind: step.kind, label: step.label }
@@ -87,17 +107,11 @@ for (const step of scenario.steps) {
         stepResults.push(record)
         continue
       }
-      const permission = {
-        id: scenario.permissionID ?? "perm-1",
-        sessionID: step.sessionID,
-        callID: step.callID,
-        title: "host permission",
-        metadata: {},
-      }
-      const permissionOutput = { status: "ask" as const }
-      await plugin["permission.ask"](permission, permissionOutput)
-      permissionAsks.push({ permission, status: permissionOutput.status })
-      record.allowed = permissionOutput.status === "allow"
+      record.allowed = true
+      record.originalExecutionReachable = true
+      record.error = "ORIGINAL_EXECUTION_REACHABLE: exported tool.execute.before returned after a non-allow decision"
+      stepResults.push(record)
+      continue
     } else if (step.kind === "after") {
       await plugin["tool.execute.after"](
         {
@@ -157,6 +171,29 @@ for (const step of scenario.steps) {
         },
       })
       record.allowed = true
+    } else if (step.kind === "question-reply") {
+      const request = controlQuestions.at(-1)
+      if (!request) throw new Error("no control-plane question was asked")
+      const option = step.decision === "once" ? request.questions[0].options[0].label
+        : step.decision === "reject" ? request.questions[0].options[1].label
+        : String(step.decision)
+      await plugin.event({
+        event: {
+          type: "question.replied",
+          properties: { sessionID: request.sessionID, requestID: request.id, answers: [[option]] },
+        },
+      })
+      record.allowed = true
+    } else if (step.kind === "question-reject") {
+      const request = controlQuestions.at(-1)
+      if (!request) throw new Error("no control-plane question was asked")
+      await plugin.event({
+        event: {
+          type: "question.rejected",
+          properties: { sessionID: request.sessionID, requestID: request.id },
+        },
+      })
+      record.allowed = true
     } else {
       throw new Error(`unknown scenario step: ${step.kind}`)
     }
@@ -170,4 +207,11 @@ for (const step of scenario.steps) {
   stepResults.push(record)
 }
 
-console.log(JSON.stringify({ steps: stepResults, exchanges, permissionAsks }))
+console.log(JSON.stringify({
+  artifact: pluginURL,
+  exportedEntry: "default.server",
+  steps: stepResults,
+  exchanges,
+  permissionAsks,
+  controlQuestions,
+}))
