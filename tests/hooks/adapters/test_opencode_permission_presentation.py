@@ -172,6 +172,11 @@ def test_host_permission_request_is_held_for_user_reply_when_correlation_is_exac
     delivered = _drive_plugin(db_env, approval_id, call_id="call-presented")
     # The driver models a host-created request with the exact session/call pair.
     assert delivered["asked"][0]["status"] == "ask"
+    question = delivered["controlQuestions"][0]["questions"][0]
+    visible = "\n".join(_present(db_env, approval_id, call_id="call-presented")["visible_lines"])
+    assert visible in question["question"]
+    assert approval_id in question["question"]
+    assert [item["label"].split()[0] for item in question["options"]] == ["Approve", "Reject"]
 
 
 def test_cli_presentation_seals_every_required_field_visibly(db_env, approval_id):

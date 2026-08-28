@@ -226,27 +226,11 @@ def test_fresh_retry_reserves_exact_content_executes_settles_and_freezes(db_env)
 
     # Attempt BEFORE any reply exists: no executable grant, so the tool call is
     # refused. This is the invocation the retry must later match identically.
-    blocked = _drive(env, [_before("pre-approval", FIRST_COMMAND)])
-    first_attempt = _step(blocked, "pre-approval")
-    assert first_attempt["allowed"] is False, blocked
-    first_exchange = _tool_exchanges(blocked)[0]
-    assert _grant(db_path, approval_id) is None
-
-    # The user's reply, applied through the same CLI the plugin's
-    # permission.replied lane invokes (see the reply-lane test below).
-    decision = _approve_set(env, approval_id)
-    assert decision["decision"] == "once"
-    assert decision["status"] == "approved"
-    assert decision["protocol_version"]
-    grant = _grant(db_path, approval_id)
-    assert grant is not None and grant["status"] == "PENDING"
-    assert grant["scope"] == "COMMAND_SET" and grant["source"] == "plan-first"
-
-    # OpenCode cannot resume this pre-hook invocation. The retry is a fresh call
-    # in the same session with the same command bytes.
     retried = _drive(
         env,
         [
+            _before("pre-approval", FIRST_COMMAND),
+            {"kind": "question-reply", "label": "decision", "decision": "once"},
             _before("retry", FIRST_COMMAND, call_id=FRESH_CALL_ID),
             {
                 "kind": "after", "label": "settle", "sessionID": SESSION_ID,
@@ -256,9 +240,16 @@ def test_fresh_retry_reserves_exact_content_executes_settles_and_freezes(db_env)
             _before("later-index", SECOND_COMMAND, call_id=LATER_CALL_ID),
         ],
     )
+    first_attempt = _step(retried, "pre-approval")
+    assert first_attempt["allowed"] is False, retried
+    first_exchange = _tool_exchanges(retried)[0]
+    assert len(retried["controlQuestions"]) >= 1
+    question = retried["controlQuestions"][0]["questions"][0]
+    assert approval_id in question["question"]
+    assert [option["label"].split()[0] for option in question["options"]] == ["Approve", "Reject"]
     retry_step = _step(retried, "retry")
     assert retry_step["allowed"] is True, retried
-    retry_exchange = _tool_exchanges(retried)[0]
+    retry_exchange = _tool_exchanges(retried)[1]
 
     # Fresh identifier, byte-identical input, identical fingerprint.
     assert retry_exchange["sent"]["sessionID"] == first_exchange["sent"]["sessionID"] == SESSION_ID
@@ -285,6 +276,7 @@ def test_fresh_retry_reserves_exact_content_executes_settles_and_freezes(db_env)
     assert _observed(first_exchange) == expected_blocked
     assert _observed(retry_exchange) == expected_retry
 
+    grant = _grant(db_path, approval_id)
     items = json.loads(grant["command_set_json"])
     assert items[0]["fingerprint"] == command_fingerprint(FIRST_COMMAND)
     assert items[0]["command"] == FIRST_COMMAND
@@ -317,9 +309,11 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
     """A different call cannot settle the reservation the retry established."""
     env, db_path = db_env
     approval_id = _request_set(env)
-    _approve_set(env, approval_id)
-
-    driven = _drive(env, [_before("retry", FIRST_COMMAND)])
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND, call_id="call-original"),
+        {"kind": "question-reply", "label": "decision", "decision": "once"},
+        _before("retry", FIRST_COMMAND),
+    ])
     assert _step(driven, "retry")["allowed"] is True, driven
     reserved = _grant(db_path, approval_id)
     assert reserved["reservation_index"] == 0
@@ -381,6 +375,25 @@ def test_reject_without_a_correlated_host_request_grants_nothing(db_env):
     assert driven["permissionAsks"] == [], driven
     assert _step(driven, "rejected")["allowed"] is True, driven
     assert _grant(db_path, approval_id) is None
+
+
+def test_structured_reject_and_free_text_create_no_grant(db_env):
+    env, db_path = db_env
+    rejected_id = _request_set(env)
+    rejected = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "question-reply", "label": "decision", "decision": "reject"},
+    ])
+    assert _step(rejected, "blocked")["allowed"] is False
+    assert _grant(db_path, rejected_id) is None
+
+    free_text_id = _request_set(env, commands=("npm publish", "docker push registry/other:1"))
+    free_text = _drive(env, [
+        _before("blocked-free", "npm publish"),
+        {"kind": "question-reply", "label": "free", "decision": "yes please"},
+    ], permission_id="perm-free")
+    assert _step(free_text, "blocked-free")["allowed"] is False
+    assert _grant(db_path, free_text_id) is None
 
 
 def test_a_blocked_attempt_names_the_pending_plan_first_approval(db_env):

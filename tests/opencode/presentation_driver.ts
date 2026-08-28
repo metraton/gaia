@@ -32,11 +32,23 @@ async function gaiaBridge(event: Record<string, unknown>) {
   return { action: "allow" as const }
 }
 
+const controlQuestions: Record<string, unknown>[] = []
+let plugin: any
 const client = {
-  session: {},
+  session: {
+    messages: async () => ({ data: [{ info: { role: "assistant", agent: "gitops-operator" } }] }),
+    create: async () => ({ data: { id: "ses-presentation-control" } }),
+    promptAsync: async ({ path, body }: any) => {
+      const payload = JSON.parse(String(body.parts[0].text).split("\n").at(-1)!)
+      const request = { id: "que-presentation", sessionID: path.id, questions: payload.questions }
+      controlQuestions.push(request)
+      await plugin.event({ event: { type: "question.asked", properties: request } })
+      return { data: true }
+    },
+  },
 }
 
-const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
+plugin = await GaiaOpenCodePlugin({ gaiaBridge, client })
 
 let error: string | undefined
 try {
@@ -67,4 +79,4 @@ try {
   error ??= String(thrown?.message ?? thrown)
 }
 
-console.log(JSON.stringify({ asked, error }))
+console.log(JSON.stringify({ asked, error, controlQuestions }))

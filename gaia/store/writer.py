@@ -6577,9 +6577,13 @@ def reserve_plan_command(
     *,
     session_id: str,
     tool_use_id: str,
+    approval_id: str | None = None,
+    agent_id: str | None = None,
+    command_fingerprint_value: str | None = None,
+    expected_index: int | None = None,
     db_path: Path | None = None,
 ) -> dict | None:
-    """Reserve the exact next command for one correlated Bash tool call."""
+    """Reserve the exact next command for one correlated invocation."""
     if not session_id or not tool_use_id:
         return None
     from gaia.approvals.command_set import command_fingerprint
@@ -6594,6 +6598,10 @@ def reserve_plan_command(
         ).fetchall()
         for row in rows:
             grant = dict(row)
+            if approval_id is not None and grant.get("approval_id") != approval_id:
+                continue
+            if agent_id is not None and grant.get("agent_id") != agent_id:
+                continue
             # The deadline is enforced HERE, at the point that authorizes, and not
             # left to cleanup_expired_db_grants alone: that sweep runs
             # opportunistically, so a lapsed grant would keep reserving commands in
@@ -6605,7 +6613,12 @@ def reserve_plan_command(
             if index >= len(items):
                 continue
             item = items[index]
-            if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
+            actual_fingerprint = command_fingerprint(command)
+            if expected_index is not None and index != expected_index:
+                continue
+            if command_fingerprint_value is not None and command_fingerprint_value != actual_fingerprint:
+                continue
+            if item.get("command") != command or item.get("fingerprint") != actual_fingerprint:
                 continue
             if grant.get("reservation_tool_use_id"):
                 con.rollback()
