@@ -60,9 +60,53 @@ _EPHEMERAL_SEGMENTS = frozenset({
 
 _FD_DUP_RE = re.compile(r"^&\d+$|^&-$")
 
-_OPERATOR_SPLIT = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")
-
 _MAX_PARENT_WALK = 40
+
+
+def _split_components(text: str) -> List[str]:
+    """Split a command into components, cutting only on UNQUOTED operators.
+
+    A quoted string is one argument and never a command boundary, so the split
+    cannot precede the quote scan: a newline inside a multi-line quoted argument
+    would end a component mid-string, and the fragment left behind carries no
+    opening quote -- making a redirect that was only ever QUOTED read as one
+    being used. Measured: this refused a `gaia contract add` whose evidence text
+    mentioned a redirect, and a memory write quoting one in prose.
+    """
+    components: List[str] = []
+    current: List[str] = []
+    quote: Optional[str] = None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote is None and char == "\\":
+            current.append(text[index:index + 2])
+            index += 2
+            continue
+        if quote is None and char in ("'", '"'):
+            quote = char
+        elif quote is not None and char == quote:
+            quote = None
+        elif quote is None:
+            if char in (";", "\n"):
+                components.append("".join(current))
+                current = []
+                index += 1
+                continue
+            if char == "&" and text[index + 1:index + 2] == "&":
+                components.append("".join(current))
+                current = []
+                index += 2
+                continue
+            if char == "|":
+                components.append("".join(current))
+                current = []
+                index += 2 if text[index + 1:index + 2] == "|" else 1
+                continue
+        current.append(char)
+        index += 1
+    components.append("".join(current))
+    return components
 
 
 def _unquoted_spans(text: str) -> List[Tuple[int, int]]:
@@ -227,9 +271,9 @@ def targets_working_tree(command: str, cwd: Optional[str] = None) -> Optional[st
     if not command:
         return None
 
-    components = list(_OPERATOR_SPLIT.split(command))
+    components = _split_components(command)
     for inner in extract_substitutions(command):
-        components.extend(_OPERATOR_SPLIT.split(inner))
+        components.extend(_split_components(inner))
 
     for component in components:
         component = component.strip()

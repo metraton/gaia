@@ -268,3 +268,79 @@ def test_empty_command_is_allowed():
     allowed, reason = check("", cwd=None)
     assert allowed is True
     assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# Regression -- a quoted string is DATA, whatever line it sits on
+#
+# All three blocked real work the day the guard shipped. The component splitter
+# cut on newlines BEFORE the quote scanner ran, so a fragment of a multi-line
+# quoted ARGUMENT was analysed as if it were its own unquoted component, and a
+# redirect that was only ever being quoted read as a redirect being used.
+# ---------------------------------------------------------------------------
+
+def test_redirect_quoted_inside_a_multiline_argument_is_data(repo):
+    """The `gaia contract add` case: evidence text that mentions a redirect."""
+    target = repo / "src" / "app.py"
+    command = (
+        'gaia contract add key_outputs "first line of evidence\n'
+        f"second line mentions echo hi > {target} as data\n"
+        'third line"'
+    )
+    allowed, _ = check(command, cwd=str(repo))
+    assert allowed is True
+
+
+def test_redirect_in_quoted_prose_is_data(repo):
+    """The memory-write case: prose that quotes a redirect as an example."""
+    target = repo / "README.md"
+    command = (
+        'gaia memory add --body "la regla es autor==shell > destino en arbol\n'
+        f"ejemplo: echo x > {target}\n"
+        'fin"'
+    )
+    allowed, _ = check(command, cwd=str(repo))
+    assert allowed is True
+
+
+def test_single_quoted_backtick_command_is_data(repo):
+    """The backtick case: a single-quoted body cannot substitute, so it is text."""
+    target = repo / "src" / "app.py"
+    command = (
+        "gaia memory add --body 'primera linea\n"
+        f"ejemplo: `tee {target}` queda bloqueado\n"
+        "tercera linea'"
+    )
+    allowed, _ = check(command, cwd=str(repo))
+    assert allowed is True
+
+
+def test_double_quoted_backtick_command_is_still_refused(repo):
+    """Not a false positive: inside double quotes a backtick really executes.
+
+    Pinned deliberately. Relaxing this to match the single-quoted case would
+    stop reading bash and start guessing intent, opening a genuine write path.
+    """
+    target = repo / "src" / "app.py"
+    command = f'gaia memory add --body "ejemplo: `tee {target}` queda bloqueado"'
+    allowed, reason = check(command, cwd=str(repo))
+    assert allowed is False
+    assert str(target) in reason
+
+
+def test_a_real_redirect_after_a_quoted_one_is_still_refused(repo):
+    """The splitter must still split -- on operators that are truly unquoted."""
+    target = repo / "src" / "app.py"
+    command = f'echo "harmless > text" ; echo hi > {target}'
+    allowed, reason = check(command, cwd=str(repo))
+    assert allowed is False
+    assert str(target) in reason
+
+
+def test_a_real_redirect_on_a_later_line_is_still_refused(repo):
+    """A newline outside quotes is still a component boundary."""
+    target = repo / "src" / "app.py"
+    command = f'echo "quoted > mention"\necho hi > {target}'
+    allowed, reason = check(command, cwd=str(repo))
+    assert allowed is False
+    assert str(target) in reason
