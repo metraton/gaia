@@ -342,19 +342,35 @@ class TestFlagClassifiersEndToEnd:
         # Should be a T3 ask (has block_response), not a silent permanent block.
         assert result.block_response is not None
 
-    def test_sed_inplace_classify_behavior(self):
+    def test_sed_inplace_outside_a_working_tree_requires_approval(self):
         """
-        sed -i 's/foo/bar/' file -- in-place file modification.
-
-        classify_by_flags() is now called in _validate_single_command() and
-        detects sed -i as MUTATIVE.  The command is routed to the T3 approval
-        flow (ask dialog), not permanently blocked.
+        sed -i on a path under no git tree -- MUTATIVE via classify_by_flags,
+        routed to the T3 approval flow (ask dialog), not permanently blocked.
         """
-        result = validate_bash_command("sed -i 's/foo/bar/' file")
+        result = validate_bash_command("sed -i 's/foo/bar/' /tmp/gaia-sed-probe.txt")
         assert not result.allowed
-        # MUTATIVE flag classification -> ask dialog (not permanent block).
         assert result.block_response is not None
         assert result.block_response["hookSpecificOutput"]["permissionDecision"] == "ask"
+
+    def test_sed_inplace_inside_a_working_tree_is_categorically_refused(self):
+        """
+        sed -i on a path inside a git working tree -- shell_write_guard refuses
+        the CHANNEL before classify_by_flags can route it to an ask dialog.
+
+        The refusal withholds no capability: the same edit through Write or Edit
+        is permitted, so there is nothing a consent prompt could buy. What is
+        refused is a write whose author is the shell, which lands with no tool
+        call naming the file -- signing a permission for a channel that exists
+        precisely to leave no trace would be signing for nothing.
+
+        The path is derived from __file__ rather than left relative, so the case
+        holds wherever pytest is invoked from.
+        """
+        in_tree_file = Path(__file__).resolve()
+        result = validate_bash_command(f"sed -i 's/foo/bar/' {in_tree_file}")
+        assert not result.allowed
+        assert result.block_response is None
+        assert "[SHELL_WRITE]" in result.reason
 
 
 # ---------------------------------------------------------------------------

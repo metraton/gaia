@@ -33,7 +33,16 @@ One command, one result, one exit code. This skill owns invocation discipline;
    the user's consent. Record it, always: a consent layer that learns of these
    probes only from voluntary narration cannot know when one succeeded, because
    an unrecorded refusal and an unrecorded compliance leave exactly the same
-   silence.
+   silence. For a destination inside a git working tree this rule now has a
+   deterministic backstop -- `hooks/modules/security/shell_write_guard.py::check`
+   refuses the write CATEGORICALLY, with no `approval_id`, because the same edit
+   through `Write`/`Edit` is already permitted and so there is nothing a consent
+   prompt could buy; only the channel is refused. Read that as a net beneath the
+   norm, never as the norm's replacement: the guard fires on a resolved
+   destination under a git tree, so a shell writer aimed anywhere else -- and
+   every mutation whose destination it cannot resolve -- still passes, and it
+   passes UNGATED, not permitted. Outside a working tree the obligation is
+   carried by this rule alone.
 7. A file that is not itself the deliverable -- a probe, a throwaway
    reproduction, an intermediate dump to inspect before deciding -- is written
    under the canonical Gaia scratch directory (`~/.gaia/scratch`, printed by

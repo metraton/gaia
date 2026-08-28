@@ -88,6 +88,7 @@ from ..security.subagent_memory_write_guard import (
 from ..security.protected_path_guard import (
     check as check_protected_path_write,
 )
+from ..security.shell_write_guard import check as check_shell_write
 # gaia_cli_only_guard is NOT imported at module scope: it itself imports
 # `..tools.stage_decomposer`, which (via this package's own __init__.py
 # eagerly importing bash_validator) closes a circular-import loop back to
@@ -667,6 +668,36 @@ class BashValidator:
                 suggestions=[
                     "Edit the SOURCE under gaia/ and run `gaia install` to "
                     "propagate; never modify .claude/ directly.",
+                ],
+            )
+
+        # ================================================================
+        # SHELL-AUTHORED WRITE GUARD
+        # Reject a file write into a git working tree when the SHELL is the
+        # author (redirect, `tee`, `sed -i`, `dd of=`). A grant is scoped to a
+        # tool and a path, so routing an edit through a command string reaches
+        # the bytes with the boundary evaluated against the wrong object and no
+        # tool call naming the file. `tee` was the measured hole: it classified
+        # T0 with the write executing. Categorical deny but NOT a withholding
+        # -- the same edit via Write/Edit is permitted, so there is nothing to
+        # approve; only the channel is refused. Runs BEFORE the smart sanitizer
+        # below, which strips a trailing redirect and would otherwise delete
+        # the destination before this guard could see it.
+        # ================================================================
+        shell_write_allowed, shell_write_reason = check_shell_write(
+            command, cwd=(hook_payload or {}).get("cwd") or None,
+        )
+        if not shell_write_allowed:
+            logger.warning(
+                "BLOCKED shell-authored working-tree write: %s", command[:120]
+            )
+            return BashValidationResult(
+                allowed=False,
+                tier=SecurityTier.T3_BLOCKED,
+                reason=shell_write_reason,
+                suggestions=[
+                    "Use the Write or Edit tool on the file instead; a "
+                    "throwaway dump belongs under ~/.gaia/scratch.",
                 ],
             )
 
