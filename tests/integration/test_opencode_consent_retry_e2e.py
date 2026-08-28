@@ -9,14 +9,10 @@ reached through Gaia's own pre/post tool policy. Nothing here hand-writes a
 payload under test.
 
 WHAT IS NOT PROVEN, stated because the gate this file answers asks for it and a
-test cannot supply it: no OpenCode host runs in this suite, so the second
-invocation carrying the first invocation's ``session_id``/``call_id`` is issued
-by the driver, not observed being issued by OpenCode. What is established is
-that the plugin plus Gaia treat such an invocation as one continuous consent --
-identical bytes, identical fingerprint, one reservation index. That OpenCode
-DELIVERS it is a fact about OpenCode's runtime; see
-``test_plugin_aborts_instead_of_awaiting_the_host_deferred``, which records the
-plugin-side reason it currently would not.
+test cannot supply it: no OpenCode host runs in this suite. The driver invokes
+the host-owned permission hooks with their measured shapes, but it cannot prove
+that a live host presents them or later invokes a command. Live presentation,
+session/call ownership, and invocation semantics remain task 484's gate.
 """
 
 from __future__ import annotations
@@ -158,15 +154,7 @@ def _present(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
 
 
 def _approve_set(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
-    """Present then reply, which is exactly what the plugin's own lanes do.
-
-    The pair is used instead of ``permission.replied`` because the plugin's
-    reply lane can only reach the approval its policy bridge named when it
-    refused the call, and that is never the pending plan-first set -- the gap
-    pinned by ``test_a_blocked_attempt_does_not_surface_the_pending_plan_first_approval``.
-    Both halves are the real CLIs the plugin invokes, in the real order: the
-    presentation is what binds the token the reply must carry.
-    """
+    """Present then decide through the two real CLI entry points."""
     presented = _present(env, approval_id, call_id=call_id, token=token)
     assert presented.get("visible_lines"), presented
     return _decide(env, approval_id, call_id=call_id, token=token)
@@ -360,7 +348,7 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     what the next test pins down.
     """
     env, db_path = db_env
-    _request_set(env)
+    approval_id = _request_set(env)
 
     driven = _drive(
         env,
@@ -380,6 +368,7 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     assert len(driven["permissionAsks"]) == 1, driven
     presented = driven["permissionAsks"][0]["permission"]
     presented_id = presented["metadata"]["gaiaApprovalID"]
+    assert presented_id == approval_id
     assert presented["sessionID"] == SESSION_ID
     assert presented["metadata"]["gaiaCallID"] == CALL_ID
     assert presented["pattern"], presented
@@ -391,9 +380,14 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     ).fetchone()
     con.close()
     assert row is not None, presented_id
-    assert row["status"] != "REQUESTED", (
+    assert row["status"] in {"approved", "APPROVED"}, (
         "permission.replied=once did not move the approval the plugin presented"
     )
+    grant = _grant(db_path, presented_id)
+    assert grant is not None and grant["status"] == "PENDING", grant
+    assert grant["scope"] == "COMMAND_SET" and grant["source"] == "plan-first"
+    assert int(grant["next_index"]) == 0
+    assert len(json.loads(grant["command_set_json"])) == 2
 
 
 def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
@@ -416,6 +410,7 @@ def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
     with sqlite3.connect(db_path) as con:
         status = con.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()[0]
     assert status in {"rejected", "REJECTED"}, status
+    assert _grant(db_path, approval_id) is None
 
 
 def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
@@ -436,10 +431,9 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     ``next_index``, and that ordering is asserted by the reservation test
     above.
 
-    The id the block path surfaced is then carried into the decide entry
-    point, and the grant it activates is asserted to be the plan-first set --
-    scope, source, index and item count -- so the reply lane's COMMAND_SET
-    branch is shown to be the one that ran, not a singular approval.
+    The preferred-reply test above carries the surfaced id through the real
+    plugin decision lane and asserts the resulting plan-first grant. This test
+    separately proves that either exact item discovers that same set id.
     """
     env, db_path = db_env
     approval_id = _request_set(env)
@@ -474,25 +468,6 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
         "a blocked attempt left an extra pending approval behind"
     )
     assert json.loads(rows[0]["payload_json"])["request_type"] == "COMMAND_SET"
-
-    # The id fed to the decide entry point is the one the BLOCK PATH surfaced,
-    # read out of the plugin's presentation metadata -- never the one
-    # _request_set returned -- so this leg cannot pass on a value the test
-    # supplied. SUBSTITUTED LINK: the host's permission.replied event. What
-    # runs instead is the CLI pair the plugin's own reply lane invokes, with
-    # the presentation that binds the token the reply must carry; that OpenCode
-    # delivers the event at all is not established here.
-    decision = _approve_set(env, presented_ids[0])
-    assert decision["decision"] == "once"
-    assert decision["status"] == "approved"
-
-    grant = _grant(db_path, presented_ids[0])
-    assert grant is not None, "the reply lane activated no grant at all"
-    assert grant["scope"] == "COMMAND_SET", grant
-    assert grant["source"] == "plan-first", grant
-    assert int(grant["next_index"]) == 0, grant
-    assert len(json.loads(grant["command_set_json"])) == 2, grant
-
 
 def test_plugin_delegates_the_permission_request_to_the_host_hook():
     """The adapter does not fabricate a native permission creator.

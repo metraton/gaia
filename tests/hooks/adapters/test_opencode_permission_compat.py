@@ -27,6 +27,7 @@ from adapters.consent_events import (
 from adapters.types import ConsentBinding
 
 _PLUGIN = _REPO_ROOT / "opencode" / "plugin.ts"
+_ADAPTER_REGISTRY = _REPO_ROOT / "hooks" / "adapters" / "registry.py"
 _COMPAT_EVENT = "permission.v2.replied"
 _PREFERRED_EVENT = "permission.replied"
 
@@ -41,6 +42,8 @@ def _neutral_sources():
         if not root.is_dir():
             continue
         for path in root.rglob("*"):
+            if path == _ADAPTER_REGISTRY:
+                continue
             if path.suffix in {".py", ".md", ".json", ".sql"} and path.is_file():
                 yield path
 
@@ -71,6 +74,14 @@ def test_the_compat_event_name_never_reaches_a_neutral_surface():
     ]
 
     assert leaks == []
+
+
+def test_the_adapter_registry_names_compatibility_only_on_the_opencode_edge():
+    source = _ADAPTER_REGISTRY.read_text()
+
+    assert source.count(_COMPAT_EVENT) == 1
+    opencode_registration = source.split('register_adapter(\n    "opencode",', 1)[1]
+    assert _COMPAT_EVENT in opencode_registration
 
 
 def test_the_neutral_consent_module_knows_no_host_event_name():

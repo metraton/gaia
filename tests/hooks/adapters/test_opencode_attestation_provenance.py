@@ -24,6 +24,7 @@ if str(_HOOKS_DIR) not in sys.path:
 
 from adapters.opencode import OpenCodeAdapter
 from modules.orchestrator.delegate_mode import SessionRole, classify_session_role
+from modules.security import gaia_cli_only_guard
 from modules.security.host_attestation import (
     ATTESTATION_SCHEME,
     MAX_DELEGATION_DEPTH,
@@ -135,6 +136,44 @@ def test_a_host_issued_claim_confers_the_control_plane_lane(drive):
     assert OpenCodeAdapter().adapt_pre_tool_use(
         OpenCodeAdapter().parse_event(json.dumps(emitted))
     ).output.get("action") != "deny"
+
+
+def test_host_issued_control_plane_identity_reaches_only_the_gaia_allowlist(
+    drive, monkeypatch
+):
+    """Resolve the plugin-issued claim before applying the real CLI guard."""
+    emitted = _emitted(_control_plane_turn(drive), "tool.execute.before", "ses-root")
+    payload = _policy_payload(emitted)
+    trusted = "/trusted/gaia"
+    monkeypatch.setattr(
+        gaia_cli_only_guard, "is_trusted_gaia_binary", lambda token: token == trusted
+    )
+
+    for command in (
+        f"{trusted} brief show demo",
+        f"{trusted} plan show demo",
+        f"{trusted} contract view --draft-id a1234567890abcdef.1",
+        f"{trusted} memory show demo",
+    ):
+        allowed, reason = gaia_cli_only_guard.check(command, payload)
+        assert allowed, f"expected allow for {command!r}: {reason}"
+
+    for command in (
+        f"{trusted} approvals approve P-test",
+        f"{trusted} push origin main",
+        f"{trusted} apply production",
+        f"{trusted} deploy production",
+        "git push origin main",
+        "kubectl apply -f deployment.yaml",
+        "terraform apply",
+    ):
+        allowed, reason = gaia_cli_only_guard.check(command, payload)
+        assert not allowed, f"expected deny for {command!r}"
+        assert reason
+
+    ordinary = dict(payload, agent_id="a1234567890abcdef")
+    assert classify_session_role(ordinary) is SessionRole.SUBAGENT
+    assert classify_session_role(ordinary) is not SessionRole.ORCHESTRATOR
 
 
 def test_the_issued_token_is_recorded_by_the_issuing_process(drive, ledger):
