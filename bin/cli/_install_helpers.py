@@ -312,10 +312,24 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
             agent["model"] = model
         permission = _opencode_frontmatter_permissions(frontmatter)
         permission.update(host_policy.get("permission", {}))
+        if "canonical_gaia_scratch" in host_policy.get("host_capabilities", []):
+            permission["external_directory"] = _canonical_scratch_permission()
         if permission:
             agent["permission"] = permission
         agents[name] = agent
     return agents
+
+
+def _canonical_scratch_permission() -> dict[str, str]:
+    """Grant host reachability to Gaia's canonical scratch root only."""
+    from gaia.paths import scratch_dir
+
+    root = scratch_dir().expanduser().resolve(strict=False)
+    return {
+        "*": "deny",
+        str(root): "allow",
+        f"{root}/*": "allow",
+    }
 
 
 def _opencode_frontmatter_permissions(frontmatter: dict[str, Any]) -> dict[str, Any]:

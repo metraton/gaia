@@ -1,6 +1,21 @@
 {
+  "authority": {
+    "host_reachability_owner": "HOST",
+    "effect_consent_owner": "GAIA",
+    "precedence": "HOST may prevent a call from reaching Gaia, but HOST never emits or substitutes a Gaia verdict. Once reachable, Gaia alone decides consent and protected-path policy.",
+    "host_short_circuit_gap": {
+      "status": "ACCEPTED_DOCUMENTED_GAP",
+      "owner": "HOST",
+      "gaia_consulted": false,
+      "gaia_verdict": null,
+      "surfaces": [
+        "external_directory"
+      ]
+    }
+  },
   "default": {
-    "mode": "subagent"
+    "mode": "subagent",
+    "host_capabilities": []
   },
   "gaia-orchestrator": {
     "mode": "primary",
@@ -24,5 +39,11 @@
       "glob": "deny",
       "grep": "deny"
     }
+  },
+  "gaia-system": {
+    "mode": "subagent",
+    "host_capabilities": [
+      "canonical_gaia_scratch"
+    ]
   }
 }

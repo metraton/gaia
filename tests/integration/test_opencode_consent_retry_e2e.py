@@ -223,6 +223,23 @@ def _step(driven, label):
     return matched[0]
 
 
+def test_reachable_t3_in_canonical_scratch_is_still_presented_by_gaia(db_env):
+    from gaia.paths import scratch_dir
+
+    env, _ = db_env
+    command = f"kubectl apply -f {scratch_dir() / 'manifest.yaml'}"
+    driven = _drive(env, [_before("scratch-t3", command)])
+    step = _step(driven, "scratch-t3")
+    asks = driven["permissionAsks"]
+
+    print("SCRATCH_PLUGIN_SEAM_ALLOWED=" + str(step["allowed"]).lower())
+    print("SCRATCH_PLUGIN_SEAM_OWNER=GAIA")
+    print("SCRATCH_PLUGIN_SEAM_PRESENTED=" + str(len(asks) == 1).lower())
+    assert step["allowed"] is False
+    assert len(asks) == 1
+    assert asks[0]["permission"]["metadata"]["gaiaApprovalID"].startswith("P-")
+
+
 def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db_env):
     """The whole chain, on one session/call binding, through the real plugin.
 

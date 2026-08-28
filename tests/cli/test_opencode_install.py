@@ -206,6 +206,103 @@ def test_host_policy_overrides_frontmatter_permissions(tmp_path):
     assert generated["permission"]["bash"] == {"*": "deny", "gaia *": "allow"}
 
 
+def test_gaia_system_alone_reaches_only_canonical_scratch(tmp_path, monkeypatch):
+    data_root = tmp_path / "gaia-data"
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data_root))
+    package = _install_helpers._PACKAGE_ROOT
+    policy = json.loads((package / "opencode" / "agent-policy.json").read_text())
+
+    generated = _install_helpers._opencode_agents(package, policy, None)
+    scratch = str((data_root / "scratch").resolve())
+
+    assert generated["gaia-system"]["permission"]["external_directory"] == {
+        "*": "deny",
+        scratch: "allow",
+        f"{scratch}/*": "allow",
+    }
+    for name, agent in generated.items():
+        if name != "gaia-system":
+            assert "external_directory" not in agent["permission"], name
+
+
+def test_canonical_scratch_rules_fail_closed_for_escape_shapes(tmp_path, monkeypatch):
+    data_root = tmp_path / "gaia-data"
+    scratch = data_root / "scratch"
+    sibling = data_root / "sibling"
+    unrelated = tmp_path / "external"
+    scratch.mkdir(parents=True)
+    sibling.mkdir()
+    unrelated.mkdir()
+    (scratch / "escape").symlink_to(unrelated, target_is_directory=True)
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data_root))
+
+    rules = _install_helpers._canonical_scratch_permission()
+    allowed_root = Path(next(path for path, action in rules.items() if action == "allow"))
+
+    def reaches_scratch(candidate: Path) -> bool:
+        resolved = candidate.resolve(strict=False)
+        return resolved == allowed_root or allowed_root in resolved.parents
+
+    matrix = {
+        "exact": reaches_scratch(scratch),
+        "child": reaches_scratch(scratch / "contract.file"),
+        "sibling": reaches_scratch(sibling),
+        "parent": reaches_scratch(data_root),
+        "traversal": reaches_scratch(scratch / ".." / "sibling"),
+        "symlink": reaches_scratch(scratch / "escape" / "payload"),
+        "unrelated": reaches_scratch(unrelated),
+    }
+    print("OPENCODE_EXTERNAL_DIRECTORY_MATRIX=" + json.dumps(matrix, sort_keys=True))
+    assert matrix == {
+        "exact": True,
+        "child": True,
+        "sibling": False,
+        "parent": False,
+        "traversal": False,
+        "symlink": False,
+        "unrelated": False,
+    }
+
+
+def test_host_short_circuit_is_recorded_without_a_false_gaia_verdict():
+    policy = json.loads(
+        (_install_helpers._PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text()
+    )
+    gap = policy["authority"]["host_short_circuit_gap"]
+
+    print("HOST_DENY_OWNER=" + gap["owner"])
+    print("HOST_DENY_GAIA_CONSULTED=" + str(gap["gaia_consulted"]).lower())
+    print("HOST_DENY_GAIA_VERDICT=" + str(gap["gaia_verdict"]).lower())
+    assert gap == {
+        "status": "ACCEPTED_DOCUMENTED_GAP",
+        "owner": "HOST",
+        "gaia_consulted": False,
+        "gaia_verdict": None,
+        "surfaces": ["external_directory"],
+    }
+
+
+def test_generated_scratch_policy_reconciles_idempotently(tmp_path, monkeypatch):
+    data_root = tmp_path / "gaia-data"
+    monkeypatch.setenv("GAIA_DATA_DIR", str(data_root))
+    package = _install_helpers._PACKAGE_ROOT
+
+    first = _install_helpers.configure_opencode_plugin(tmp_path, package)
+    first_text = (tmp_path / "opencode.json").read_text()
+    second = _install_helpers.configure_opencode_plugin(tmp_path, package)
+
+    assert first["action"] == "updated"
+    assert second["action"] == "noop"
+    assert (tmp_path / "opencode.json").read_text() == first_text
+    config = json.loads(first_text)
+    scratch = str((data_root / "scratch").resolve())
+    assert config["agent"]["gaia-system"]["permission"]["external_directory"] == {
+        "*": "deny",
+        scratch: "allow",
+        f"{scratch}/*": "allow",
+    }
+
+
 def test_orchestrator_task_policy_is_closed_and_nominal():
     policy = json.loads((_install_helpers._PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text())
     task = policy["gaia-orchestrator"]["permission"]["task"]
