@@ -1,14 +1,14 @@
 /**
- * Drives the real GaiaOpenCodePlugin and prints what it handed OpenCode's
- * native permission mechanism.
+ * Drives the real GaiaOpenCodePlugin and prints the permission payload it can
+ * serialize at the host hook boundary.
  *
  * The affirmative claim in this task's gate is about a DELIVERED payload, so it
  * may not be asserted over a shape written by hand: the plugin runs here, its
  * own requestApproval executes the real `gaia approvals opencode-present` CLI
  * against the database in GAIA_DB, and the object captured below is the exact
- * permission object the plugin enriches in permission.ask. The host creates the
- * request; this driver models that real hook boundary instead of fabricating a
- * session.permission.create API.
+ * permission object the plugin enriches in permission.ask. The driver invokes
+ * that hook explicitly after the fail-closed throw; OpenCode 1.18.23 does not,
+ * so this is serializer evidence rather than host-delivery evidence.
  *
  * Usage: bun presentation_driver.ts '<scenario json>'
  */
@@ -44,6 +44,15 @@ try {
     { sessionID: scenario.sessionID, callID: scenario.callID, tool: scenario.tool ?? "bash" },
     { args: scenario.args ?? {} },
   )
+} catch (thrown: any) {
+  error = String(thrown?.message ?? thrown)
+}
+
+// Repository-only seam: OpenCode 1.18.23 does not invoke this hook after a
+// pre-tool failure. Calling it explicitly keeps the presentation serializer
+// testable without claiming that the host delivers this sequence.
+try {
+  if (!error?.startsWith("Gaia blocked this invocation")) throw new Error(error ?? "approval was not blocked")
   const permission = {
     id: scenario.permissionID ?? "perm-1",
     sessionID: scenario.sessionID,
@@ -55,10 +64,7 @@ try {
   await plugin["permission.ask"](permission, permissionOutput)
   asked.push({ permission, status: permissionOutput.status })
 } catch (thrown: any) {
-  // tool.execute.before always ends a non-allow decision by throwing; the
-  // presented payload is what this driver exists to report, so the throw is
-  // recorded rather than propagated.
-  error = String(thrown?.message ?? thrown)
+  error ??= String(thrown?.message ?? thrown)
 }
 
 console.log(JSON.stringify({ asked, error }))

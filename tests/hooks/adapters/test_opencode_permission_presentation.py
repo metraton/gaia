@@ -1,16 +1,16 @@
-"""What OpenCode's native permission mechanism is actually handed for a T3 ask.
+"""The consent payload Gaia can serialize for an OpenCode permission request.
 
 Every assertion here is made against a payload some real component PRODUCED:
 the Gaia CLI's own `approvals opencode-present --json` output, and the exact
-object the real GaiaOpenCodePlugin enriches in the host's permission.ask hook while
-driven by bun. Nothing in this file hand-writes the shape under test -- three
+object the real GaiaOpenCodePlugin enriches when its permission.ask hook is
+invoked explicitly by the bun fixture. Nothing in this file hand-writes the shape under test -- three
 earlier rounds of this plan passed while asserting over a payload no adapter
 emits, and the claim being made here ("the delivered payload carries the sealed
 envelope, visibly") is precisely the direction where that is fatal.
 
-No OpenCode UI is observed: no OpenCode host runs in this suite. What is
-verified is the payload delivered TO the native mechanism, which is what the
-plugin controls and all it can be held to.
+No OpenCode UI or host delivery is observed. OpenCode 1.18.23 aborts after the
+pre-tool throw and does not invoke this hook; this suite verifies serialization
+only, and task 484's real-host gate cannot be closed by it.
 """
 
 from __future__ import annotations

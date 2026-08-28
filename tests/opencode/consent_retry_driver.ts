@@ -3,15 +3,16 @@
  * boundary it crossed.
  *
  * The claim this driver exists to support is about a SEQUENCE of tool calls
- * sharing one identity, so nothing in the sequence may be hand-written: the
+ * bound by content while each keeps its real call identity, so nothing in the sequence may be hand-written: the
  * plugin closure runs, its own `bridge()` is reached through a recorder that
  * forwards verbatim to the real `opencode/bridge.py`, and `requestApproval`
  * executes the real `gaia approvals opencode-present` / `opencode-decide`
  * CLIs against the database in GAIA_DB.
  *
  * Two seams are doubled, and only two, because OpenCode owns both and no
- * OpenCode host runs here: the host-created permission request and the host's
- * decision to invoke a tool at all. The second is
+ * OpenCode host runs here: a permission request shape and the host's decision
+ * to invoke a tool at all. OpenCode 1.18.23 does not deliver the first after a
+ * failed pre-tool hook, so it is a serializer fixture, not host evidence. The second is
  * why a `before` step in this scenario proves what the PLUGIN does with an
  * invocation carrying a given session/call identity, and never that OpenCode
  * would deliver that invocation -- an invocation this driver issues is this

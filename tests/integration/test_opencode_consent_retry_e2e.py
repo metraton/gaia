@@ -40,6 +40,7 @@ ROOT_SESSION_ID = "ses-t5-root"
 DISPATCH_CALL_ID = "call-t5-dispatch"
 SESSION_ID = "ses-t5-retry"
 CALL_ID = "call-t5-retry"
+FRESH_CALL_ID = "call-t5-retry-fresh"
 LATER_CALL_ID = "call-t5-later"
 PERMISSION_ID = "perm-t5-retry"
 AGENT_ID = "gaia-system"
@@ -211,11 +212,11 @@ def _step(driven, label):
     return matched[0]
 
 
-def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db_env):
-    """The whole chain, on one session/call binding, through the real plugin.
+def test_fresh_retry_reserves_exact_content_executes_settles_and_freezes(db_env):
+    """A fresh call binds by exact content, then settlement freezes the set.
 
-    The retry is the same identity as the blocked attempt and carries the same
-    bytes; the reservation is the exact index; the failure freezes the set; and
+    The retry has a fresh call id and carries the same bytes; the reservation
+    is the exact index; the failure freezes the set; and
     the freeze is asserted as the grant's terminal state, not merely as an
     index that happened not to run in this test.
     """
@@ -241,14 +242,15 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
     assert grant is not None and grant["status"] == "PENDING"
     assert grant["scope"] == "COMMAND_SET" and grant["source"] == "plan-first"
 
-    # The retry: same session, same call, same command bytes.
+    # OpenCode cannot resume this pre-hook invocation. The retry is a fresh call
+    # in the same session with the same command bytes.
     retried = _drive(
         env,
         [
-            _before("retry", FIRST_COMMAND),
+            _before("retry", FIRST_COMMAND, call_id=FRESH_CALL_ID),
             {
                 "kind": "after", "label": "settle", "sessionID": SESSION_ID,
-                "callID": CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
+                "callID": FRESH_CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
                 "output": "fatal: remote rejected", "metadata": {"exitCode": 7},
             },
             _before("later-index", SECOND_COMMAND, call_id=LATER_CALL_ID),
@@ -258,13 +260,12 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
     assert retry_step["allowed"] is True, retried
     retry_exchange = _tool_exchanges(retried)[0]
 
-    # Same binding, byte-identical input, identical fingerprint.
+    # Fresh identifier, byte-identical input, identical fingerprint.
     assert retry_exchange["sent"]["sessionID"] == first_exchange["sent"]["sessionID"] == SESSION_ID
-    assert retry_exchange["sent"]["callID"] == first_exchange["sent"]["callID"] == CALL_ID
+    assert first_exchange["sent"]["callID"] == CALL_ID
+    assert retry_exchange["sent"]["callID"] == FRESH_CALL_ID
     assert retry_exchange["sentArgsJSON"] == first_exchange["sentArgsJSON"]
     assert json.loads(retry_exchange["sentArgsJSON"])["command"] == FIRST_COMMAND
-    # The binding, pinned literally, so a reader sees the two invocations are
-    # one identity rather than taking the equality assertions above on trust.
     def _observed(exchange):
         command = json.loads(exchange["sentArgsJSON"])["command"]
         return {
@@ -274,14 +275,15 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
             "fingerprint": command_fingerprint(command),
         }
 
-    expected_binding = {
+    expected_blocked = {
         "session_id": SESSION_ID,
         "call_id": CALL_ID,
         "args": '{"command":"' + FIRST_COMMAND + '"}',
         "fingerprint": FIRST_FINGERPRINT,
     }
-    assert _observed(first_exchange) == expected_binding
-    assert _observed(retry_exchange) == expected_binding
+    expected_retry = {**expected_blocked, "call_id": FRESH_CALL_ID}
+    assert _observed(first_exchange) == expected_blocked
+    assert _observed(retry_exchange) == expected_retry
 
     items = json.loads(grant["command_set_json"])
     assert items[0]["fingerprint"] == command_fingerprint(FIRST_COMMAND)
@@ -340,13 +342,7 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
     ) is True
 
 
-def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
-    """permission.replied=once reaches Gaia's decide CLI from the plugin itself.
-
-    The approval this lane can reach is whichever one the policy bridge named
-    when it refused the call -- the plugin never chooses an approval id. That is
-    what the next test pins down.
-    """
+def test_uncorrelated_native_reply_grants_nothing_after_the_call_is_aborted(db_env):
     env, db_path = db_env
     approval_id = _request_set(env)
 
@@ -363,34 +359,11 @@ def test_plugin_reply_lane_applies_a_native_reply_through_the_real_cli(db_env):
     assert _step(driven, "blocked")["allowed"] is False, driven
     assert _step(driven, "reply")["allowed"] is True, driven
 
-    # The plugin enriched exactly one host-created permission, carrying the approval
-    # the bridge named and a visible surface Gaia sealed.
-    assert len(driven["permissionAsks"]) == 1, driven
-    presented = driven["permissionAsks"][0]["permission"]
-    presented_id = presented["metadata"]["gaiaApprovalID"]
-    assert presented_id == approval_id
-    assert presented["sessionID"] == SESSION_ID
-    assert presented["metadata"]["gaiaCallID"] == CALL_ID
-    assert presented["pattern"], presented
-
-    con = sqlite3.connect(db_path)
-    con.row_factory = sqlite3.Row
-    row = con.execute(
-        "SELECT status FROM approvals WHERE id=?", (presented_id,)
-    ).fetchone()
-    con.close()
-    assert row is not None, presented_id
-    assert row["status"] in {"approved", "APPROVED"}, (
-        "permission.replied=once did not move the approval the plugin presented"
-    )
-    grant = _grant(db_path, presented_id)
-    assert grant is not None and grant["status"] == "PENDING", grant
-    assert grant["scope"] == "COMMAND_SET" and grant["source"] == "plan-first"
-    assert int(grant["next_index"]) == 0
-    assert len(json.loads(grant["command_set_json"])) == 2
+    assert driven["permissionAsks"] == [], driven
+    assert _grant(db_path, approval_id) is None
 
 
-def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
+def test_reject_without_a_correlated_host_request_grants_nothing(db_env):
     env, db_path = db_env
     approval_id = _request_set(env)
     driven = _drive(
@@ -405,59 +378,28 @@ def test_plugin_reply_lane_rejects_the_exact_host_permission_request(db_env):
     )
 
     assert _step(driven, "blocked")["allowed"] is False, driven
-    assert driven["permissionAsks"][0]["status"] == "ask", driven
+    assert driven["permissionAsks"] == [], driven
     assert _step(driven, "rejected")["allowed"] is True, driven
-    with sqlite3.connect(db_path) as con:
-        status = con.execute("SELECT status FROM approvals WHERE id=?", (approval_id,)).fetchone()[0]
-    assert status in {"rejected", "REJECTED"}, status
     assert _grant(db_path, approval_id) is None
 
 
-def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
-    """The block path names the pending set, not a freshly minted singular id.
-
-    This assertion is the inverse of the one it replaces. The former detector
-    asserted the two ids DIVERGE and said in its own docstring that it would
-    fail the day they converge; this is that day, so the detector is inverted
-    rather than deleted -- the same observation, read for the outcome that is
-    now correct. The id is read out of the plugin's own
-        ``permissionAsks[0].permission.metadata.gaiaApprovalID``, so what is asserted is
-    what the plugin presented, never a value this test supplied.
-
-    Both items are attempted, each on its own plugin run. At pending time the
-    set has consumed nothing, so every item belongs to the consent being
-    sought and each must name the set. Naming it is not permission to run it
-    out of order: ``reserve_plan_command`` still matches only at
-    ``next_index``, and that ordering is asserted by the reservation test
-    above.
-
-    The preferred-reply test above carries the surfaced id through the real
-    plugin decision lane and asserts the resulting plan-first grant. This test
-    separately proves that either exact item discovers that same set id.
-    """
+def test_a_blocked_attempt_names_the_pending_plan_first_approval(db_env):
+    """The fail-closed error names the existing set rather than minting one."""
     env, db_path = db_env
     approval_id = _request_set(env)
 
-    presented_ids = []
     for label, command, call_id in (
         ("blocked-first", FIRST_COMMAND, CALL_ID),
         ("blocked-second", SECOND_COMMAND, LATER_CALL_ID),
     ):
         driven = _drive(env, [_before(label, command, call_id=call_id)])
-        assert _step(driven, label)["allowed"] is False, driven
-        assert len(driven["permissionAsks"]) == 1, driven
-        presented_ids.append(
-            driven["permissionAsks"][0]["permission"]["metadata"]["gaiaApprovalID"]
-        )
+        step = _step(driven, label)
+        assert step["allowed"] is False, driven
+        assert approval_id in step["error"]
+        assert driven["permissionAsks"] == []
 
-        assert presented_ids[-1] == approval_id, (
-            f"{label}: the blocked attempt minted a fresh singular approval "
-            "instead of naming the pending plan-first set, so the plugin's "
-            "reply lane cannot reach activate_command_set_atomically"
-        )
-
-    # The presented id is the set's, so the reply lane's own branch condition
-    # (payload request_type == COMMAND_SET in cmd_opencode_decide) holds on it.
+    # The named id remains the one plan-first set, with no singular request
+    # minted as a side effect of either blocked attempt.
     con = sqlite3.connect(db_path)
     con.row_factory = sqlite3.Row
     rows = con.execute(
@@ -469,13 +411,12 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
     )
     assert json.loads(rows[0]["payload_json"])["request_type"] == "COMMAND_SET"
 
-def test_plugin_delegates_the_permission_request_to_the_host_hook():
-    """The adapter does not fabricate a native permission creator.
-
-    OpenCode creates the request after ``tool.execute.before`` returns. Gaia
-    enriches it in ``permission.ask`` and waits for the host reply event.
-    """
+def test_plugin_fails_closed_after_presenting_an_approval():
+    """A pending approval aborts this invocation instead of returning into it."""
     source = PLUGIN.read_text()
     assert '"permission.ask"' in source
     assert "session.permission.create" not in source
-    assert "return\n      }\n      throw new Error" in source
+    blocked = source.index("await requestApproval(response, call.sessionID, call.callID)")
+    denied = source.index("Gaia blocked this invocation", blocked)
+    branch_end = source.index("\n      }", blocked)
+    assert blocked < denied < branch_end

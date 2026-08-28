@@ -826,11 +826,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         applyUpdatedInput(output, response.updated_input)
         return
       }
-      if (approvalID(response)) {
+      const pendingApprovalID = approvalID(response)
+      if (pendingApprovalID) {
         await requestApproval(response, call.sessionID, call.callID)
-        // Let OpenCode continue into its real permission.ask hook. Throwing here
-        // aborts the call before the host can create/correlate the request.
-        return
+        throw new Error(
+          `Gaia blocked this invocation pending approval ${pendingApprovalID}; after a structured once decision, retry the byte-identical tool input`,
+        )
       }
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },
