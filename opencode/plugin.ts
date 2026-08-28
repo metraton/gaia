@@ -415,21 +415,34 @@ async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
   return response
 }
 
-async function gaiaCapture(args: string[]): Promise<{ ok: boolean; stdout: string }> {
+type GaiaCapture = { ok: boolean; stdout: string; stderr: string }
+
+async function gaiaCapture(args: string[]): Promise<GaiaCapture> {
   const child = Bun.spawn(["python3", gaiaPath, ...args], {
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdout: "pipe",
     stderr: "pipe",
   })
-  const [code, stdout] = await Promise.all([
+  const [code, stdout, stderr] = await Promise.all([
     child.exited,
     new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
   ])
-  return { ok: code === 0, stdout }
+  return { ok: code === 0, stdout, stderr }
 }
 
 async function gaia(args: string[]): Promise<boolean> {
   return (await gaiaCapture(args)).ok
+}
+
+function gaiaFailureDetail(result: GaiaCapture): string {
+  try {
+    const emitted = JSON.parse(result.stdout.trim().split("\n").pop() ?? "")
+    if (typeof emitted?.error === "string" && emitted.error.trim()) return emitted.error.trim()
+  } catch {
+    // Non-JSON CLI output is handled by the bounded text fallbacks below.
+  }
+  return result.stderr.trim() || result.stdout.trim() || "Gaia CLI exited without an error message"
 }
 
 export type NativeConsentPresentation = {
@@ -801,7 +814,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       "--token", approval.token,
       "--json",
     ])
-    if (!presented.ok) throw new Error("Gaia could not present the approval request")
+    if (!presented.ok) {
+      throw new Error(`Gaia could not present the approval request: ${gaiaFailureDetail(presented)}`)
+    }
     const surface = readConsentPresentation(presented.stdout)
     const pendingApproval = { ...approval, surface }
     pendingByCall.set(`${sessionID}:${callID}`, pendingApproval)

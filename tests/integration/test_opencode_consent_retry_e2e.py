@@ -108,7 +108,7 @@ def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
     return env, db_path
 
 
-def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND)):
+def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND), *, session_id=SESSION_ID):
     """Seal the set with the real plan-first producer, never by hand."""
     argv = [sys.executable, str(GAIA_CLI), "approvals", "request-set"]
     for command in commands:
@@ -118,7 +118,7 @@ def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND)):
         "--verification", "git -C . log --oneline -1",
         "--rollback", "revert the published revision",
         "--agent-id", AGENT_ID,
-        "--session-id", SESSION_ID,
+        "--session-id", session_id,
         "--json",
     ]
     result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=180)
@@ -285,6 +285,33 @@ def test_exported_caller_non_allow_never_returns(db_env):
     _assert_exported_caller_aborted(timeout, "pending-timeout")
     _assert_exported_caller_aborted(timeout, "timeout-fresh-call")
     assert _grant(db_path, approval_id) is None
+
+
+def test_exported_caller_names_a_session_binding_mismatch_before_shown(db_env):
+    """The host edge preserves the CLI's exact fail-closed presentation cause."""
+    env, db_path = db_env
+    approval_id = _request_set(env, session_id="ses-wrong-opencode-session")
+
+    driven = _drive(env, [_before("mismatched-session", FIRST_COMMAND)])
+    step = _step(driven, "mismatched-session")
+
+    assert driven["exportedEntry"] == "default.server"
+    assert step["allowed"] is False
+    assert step.get("originalExecutionReachable") is not True
+    assert step["error"] == (
+        "Gaia could not present the approval request: "
+        "OpenCode session does not own this approval"
+    )
+    assert driven["controlQuestions"] == []
+    assert _grant(db_path, approval_id) is None
+    with sqlite3.connect(db_path) as con:
+        event_types = [
+            row[0] for row in con.execute(
+                "SELECT event_type FROM approval_events WHERE approval_id=? ORDER BY id",
+                (approval_id,),
+            )
+        ]
+    assert event_types == ["REQUESTED"]
 
 
 def test_throw_to_return_mutant_makes_exported_caller_gate_fail(db_env):
