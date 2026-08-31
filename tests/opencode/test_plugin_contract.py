@@ -226,3 +226,72 @@ def test_plugin_preserves_bash_failure_signals_for_post_tool_policy():
     script = f'import {{ toolResult }} from {json.dumps(str(plugin))}; console.log(JSON.stringify(toolResult({{output:"", metadata:{{exitCode:9}}}})))'
     result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
     assert json.loads(result.stdout)["exit_code"] == 9
+
+
+def test_native_question_is_canonical_only_at_both_bridge_lifecycle_edges():
+    """Drive the exported hooks OpenCode invokes, not a normalization helper."""
+    import json
+    import subprocess
+
+    plugin = PACKAGE_ROOT / "opencode" / "plugin.ts"
+    script = f'''
+      const {{ GaiaOpenCodePlugin }} = await import({json.dumps(str(plugin))})
+      const requests = []
+      const gaiaBridge = async (event) => {{
+        requests.push(event)
+        if (event.event === "identity.attest") return {{ action: "allow", attestation: "attested" }}
+        return {{ action: "allow" }}
+      }}
+      const hooks = await GaiaOpenCodePlugin({{
+        gaiaBridge,
+        client: {{ session: {{ messages: async () => ({{ data: [] }}) }} }},
+      }})
+      await hooks.event({{ event: {{
+        type: "message.updated",
+        properties: {{ info: {{ role: "assistant", sessionID: "root", agent: "gaia-orchestrator" }} }},
+      }} }})
+      const args = {{ questions: [{{ question: "Proceed?" }}] }}
+      await hooks["tool.execute.before"](
+        {{ sessionID: "root", callID: "question-call", tool: "question" }},
+        {{ args }},
+      )
+      await hooks["tool.execute.after"](
+        {{ sessionID: "root", callID: "question-call", tool: "question", args }},
+        {{ output: "answered", metadata: {{}} }},
+      )
+      console.log(JSON.stringify(requests.filter((request) => request.event.startsWith("tool.execute."))))
+    '''
+    result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
+    requests = json.loads(result.stdout)
+
+    assert [request["event"] for request in requests] == [
+        "tool.execute.before",
+        "tool.execute.after",
+    ]
+    assert [request["tool"] for request in requests] == [
+        "AskUserQuestion",
+        "AskUserQuestion",
+    ]
+    assert requests[0]["originalTool"] == "question"
+
+
+def test_unrelated_non_file_tool_normalization_is_unchanged():
+    import json
+    import subprocess
+
+    plugin = PACKAGE_ROOT / "opencode" / "plugin.ts"
+    script = f'''
+      const {{ normalizeBridgeToolRequest }} = await import({json.dumps(str(plugin))})
+      console.log(JSON.stringify([
+        normalizeBridgeToolRequest("bash", {{ command: "pwd" }}, {{}}),
+        normalizeBridgeToolRequest("custom.tool", {{ value: 1 }}, {{}}),
+        normalizeBridgeToolRequest(7, ["invalid"], {{}}),
+      ]))
+    '''
+    result = subprocess.run(["bun", "-e", script], text=True, capture_output=True, check=True)
+    normalized = json.loads(result.stdout)
+
+    assert [request["tool"] for request in normalized] == ["bash", "custom.tool", ""]
+    assert normalized[0]["args"] == {"command": "pwd"}
+    assert normalized[1]["args"] == {"value": 1}
+    assert normalized[2]["args"] == {}

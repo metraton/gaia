@@ -215,6 +215,23 @@ def test_orchestrator_task_policy_is_closed_and_nominal():
     assert "gaia-orchestrator" not in task
 
 
+def test_native_question_is_exposed_only_to_the_root_orchestrator():
+    policy = json.loads((_install_helpers._PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text())
+    generated = _install_helpers._opencode_agents(
+        _install_helpers._PACKAGE_ROOT,
+        policy,
+        None,
+    )
+
+    assert generated["gaia-orchestrator"]["permission"]["question"] == "allow"
+    specialists = {
+        name: agent for name, agent in generated.items()
+        if name != "gaia-orchestrator"
+    }
+    assert specialists
+    assert all(agent["permission"].get("question") != "allow" for agent in specialists.values())
+
+
 def test_replaces_stale_gaia_plugin_but_preserves_foreign_plugin(tmp_path):
     package = tmp_path / "package"
     plugin = package / "opencode" / "plugin.ts"

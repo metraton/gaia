@@ -59,6 +59,13 @@ function canonicalFileTool(value: unknown): "Write" | "Edit" | "apply_patch" | u
   return FILE_TOOL_NAMES[value.trim().toLowerCase()] ?? FILE_TOOL_NAMES[normalizedToken(value)]
 }
 
+function canonicalBridgeToolName(value: unknown): string {
+  const fileTool = canonicalFileTool(value)
+  if (fileTool) return fileTool
+  if (normalizedToken(value) === "question") return "AskUserQuestion"
+  return typeof value === "string" ? value : ""
+}
+
 function canonicalDirectory(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null || value === "") return undefined
   if (typeof value !== "string" || !isAbsolute(value)) {
@@ -222,7 +229,7 @@ export function normalizeBridgeToolRequest(
   const canonicalTool = canonicalFileTool(tool)
   if (!canonicalTool) {
     return {
-      tool: typeof tool === "string" ? tool : "",
+      tool: canonicalBridgeToolName(tool),
       args: args && typeof args === "object" && !Array.isArray(args)
         ? args as Record<string, unknown>
         : {},
@@ -852,7 +859,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         agentID: dispatchHandle(call.sessionID),
         agent,
         roleContext: roleContext(call.sessionID),
-        tool: call.tool,
+        tool: canonicalBridgeToolName(call.tool),
         args: call.args,
         result: toolResult(output),
       })
