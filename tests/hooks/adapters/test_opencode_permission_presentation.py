@@ -159,6 +159,23 @@ def _drive_plugin(env, approval_id, call_id=CALL_ID, command=COMMANDS[0]):
     return json.loads(result.stdout.strip().splitlines()[-1])
 
 
+def _drive_abort_outcome(env, approval_id, outcome):
+    scenario = {
+        "sessionID": SESSION_ID,
+        "callID": f"call-abort-{outcome}",
+        "approvalID": approval_id,
+        "outcome": outcome,
+        "tool": "bash",
+        "args": {"command": COMMANDS[0]},
+    }
+    result = subprocess.run(
+        ["bun", str(DRIVER), json.dumps(scenario)],
+        env=env, capture_output=True, text=True, timeout=180,
+    )
+    assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    return json.loads(result.stdout.strip().splitlines()[-1])
+
+
 def test_adapter_uses_the_real_permission_ask_boundary_not_the_nonexistent_creator():
     source = PLUGIN.read_text()
 
@@ -172,6 +189,15 @@ def test_host_permission_request_is_held_for_user_reply_when_correlation_is_exac
     delivered = _drive_plugin(db_env, approval_id, call_id="call-presented")
     # The driver models a host-created request with the exact session/call pair.
     assert delivered["asked"][0]["status"] == "ask"
+
+
+@pytest.mark.parametrize("outcome", ["pending", "no-decision", "rejected", "malformed", "timeout"])
+def test_exported_before_hook_aborts_every_non_allow_outcome(db_env, approval_id, outcome):
+    """Drive the exported hook OpenCode awaits and model execution only on return."""
+    delivered = _drive_abort_outcome(db_env, approval_id, outcome)
+
+    assert delivered["error"], delivered
+    assert delivered["originalInvocationExecuted"] is False, delivered
 
 
 def test_cli_presentation_seals_every_required_field_visibly(db_env, approval_id):

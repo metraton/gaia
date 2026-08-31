@@ -36,6 +36,7 @@ const exchanges: Exchange[] = []
 const permissionAsks: Record<string, unknown>[] = []
 const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
+let lastBridgeRequiresApproval = false
 
 async function gaiaBridge(event: Record<string, unknown>) {
   const child = Bun.spawn(["python3", bridgePath], {
@@ -61,6 +62,10 @@ async function gaiaBridge(event: Record<string, unknown>) {
     sentArgsJSON: JSON.stringify(event.args ?? null),
   })
   lastBridgeAction = (received as any)?.action
+  lastBridgeRequiresApproval = Boolean(
+    (received as any)?.approval_id
+    || String((received as any)?.reason ?? "").match(/approval_id:\s*P-[A-Za-z0-9-]+/),
+  )
   return received
 }
 
@@ -71,6 +76,20 @@ const client = {
 }
 
 const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
+
+async function presentPermission(step: any) {
+  const permission = {
+    id: scenario.permissionID ?? "perm-1",
+    sessionID: step.sessionID,
+    callID: step.callID,
+    title: "host permission",
+    metadata: {},
+  }
+  const permissionOutput = { status: "ask" as const }
+  await plugin["permission.ask"](permission, permissionOutput)
+  permissionAsks.push({ permission, status: permissionOutput.status })
+  return permissionOutput.status
+}
 
 for (const step of scenario.steps) {
   const record: Record<string, unknown> = { kind: step.kind, label: step.label }
@@ -87,17 +106,7 @@ for (const step of scenario.steps) {
         stepResults.push(record)
         continue
       }
-      const permission = {
-        id: scenario.permissionID ?? "perm-1",
-        sessionID: step.sessionID,
-        callID: step.callID,
-        title: "host permission",
-        metadata: {},
-      }
-      const permissionOutput = { status: "ask" as const }
-      await plugin["permission.ask"](permission, permissionOutput)
-      permissionAsks.push({ permission, status: permissionOutput.status })
-      record.allowed = permissionOutput.status === "allow"
+      record.allowed = await presentPermission(step) === "allow"
     } else if (step.kind === "after") {
       await plugin["tool.execute.after"](
         {
@@ -164,6 +173,9 @@ for (const step of scenario.steps) {
     // tool.execute.before ends every non-allow decision by throwing. The throw
     // IS the observation for a blocked step, so it is recorded rather than
     // propagated -- a driver that died here would report nothing.
+    if (step.kind === "before" && lastBridgeRequiresApproval) {
+      await presentPermission(step)
+    }
     record.allowed = false
     record.error = String(thrown?.message ?? thrown)
   }

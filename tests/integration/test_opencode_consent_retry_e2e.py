@@ -497,10 +497,11 @@ def test_a_blocked_attempt_surfaces_the_pending_plan_first_approval(db_env):
 def test_plugin_delegates_the_permission_request_to_the_host_hook():
     """The adapter does not fabricate a native permission creator.
 
-    OpenCode creates the request after ``tool.execute.before`` returns. Gaia
-    enriches it in ``permission.ask`` and waits for the host reply event.
+    Gaia registers the presentation before aborting the original invocation.
+    The permission hook enriches a correlated host request and waits for its
+    reply event; only a fresh invocation may execute after approval.
     """
     source = PLUGIN.read_text()
     assert '"permission.ask"' in source
     assert "session.permission.create" not in source
-    assert "return\n      }\n      throw new Error" in source
+    assert "await requestApproval(response, call.sessionID, call.callID)\n        throw new Error" in source

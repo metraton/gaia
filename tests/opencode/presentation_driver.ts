@@ -23,6 +23,15 @@ async function gaiaBridge(event: Record<string, unknown>) {
     return { action: "allow" as const, attestation: `${event.sessionID}:${event.role}` }
   }
   if (event.event === "tool.execute.before") {
+    if (scenario.outcome === "timeout") {
+      throw new Error("Gaia policy bridge timed out")
+    }
+    if (scenario.outcome === "rejected") {
+      return { action: "deny" as const, reason: "Gaia rejected this tool call" }
+    }
+    if (scenario.outcome === "malformed") {
+      return {} as any
+    }
     return {
       action: "ask" as const,
       reason: scenario.reason ?? `[T3_BLOCKED] approval_id: ${scenario.approvalID}`,
@@ -39,11 +48,19 @@ const client = {
 const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
 
 let error: string | undefined
+let originalInvocationExecuted = false
 try {
   await plugin["tool.execute.before"](
     { sessionID: scenario.sessionID, callID: scenario.callID, tool: scenario.tool ?? "bash" },
     { args: scenario.args ?? {} },
   )
+  originalInvocationExecuted = true
+} catch (thrown: any) {
+  // The throw is the host-visible abort signal for the original invocation.
+  error = String(thrown?.message ?? thrown)
+}
+
+if (scenario.outcome === undefined || scenario.outcome === "pending" || scenario.outcome === "no-decision") {
   const permission = {
     id: scenario.permissionID ?? "perm-1",
     sessionID: scenario.sessionID,
@@ -53,12 +70,9 @@ try {
   }
   const permissionOutput = { status: "ask" as const }
   await plugin["permission.ask"](permission, permissionOutput)
-  asked.push({ permission, status: permissionOutput.status })
-} catch (thrown: any) {
-  // tool.execute.before always ends a non-allow decision by throwing; the
-  // presented payload is what this driver exists to report, so the throw is
-  // recorded rather than propagated.
-  error = String(thrown?.message ?? thrown)
+  if (permissionOutput.status !== "deny") {
+    asked.push({ permission, status: permissionOutput.status })
+  }
 }
 
-console.log(JSON.stringify({ asked, error }))
+console.log(JSON.stringify({ asked, error, originalInvocationExecuted }))

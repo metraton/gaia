@@ -835,9 +835,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       }
       if (approvalID(response)) {
         await requestApproval(response, call.sessionID, call.callID)
-        // Let OpenCode continue into its real permission.ask hook. Throwing here
-        // aborts the call before the host can create/correlate the request.
-        return
+        throw new Error(response.reason ?? "Gaia requires approval before retrying this tool call")
       }
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },
