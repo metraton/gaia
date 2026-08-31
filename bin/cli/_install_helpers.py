@@ -311,6 +311,11 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
         if model and model != "inherit" and "/" in model:
             agent["model"] = model
         permission = _opencode_frontmatter_permissions(frontmatter)
+        if host_policy["mode"] == "subagent":
+            permission["external_directory"] = {
+                "*": "deny",
+                "~/.gaia/scratch/**": "allow",
+            }
         permission.update(host_policy.get("permission", {}))
         if permission:
             agent["permission"] = permission

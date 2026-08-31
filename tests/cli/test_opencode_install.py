@@ -178,6 +178,10 @@ def test_translates_agent_tools_disallowed_tools_and_skills(tmp_path):
         "edit": "allow",
         "bash": "deny",
         "skill": {"*": "allow"},
+        "external_directory": {
+            "*": "deny",
+            "~/.gaia/scratch/**": "allow",
+        },
     }
 
 
@@ -230,6 +234,46 @@ def test_native_question_is_exposed_only_to_the_root_orchestrator():
     }
     assert specialists
     assert all(agent["permission"].get("question") != "allow" for agent in specialists.values())
+
+
+def test_contract_scratch_is_the_only_external_directory_for_subagents():
+    policy = json.loads(
+        (_install_helpers._PACKAGE_ROOT / "opencode" / "agent-policy.json").read_text()
+    )
+    generated = _install_helpers._opencode_agents(
+        _install_helpers._PACKAGE_ROOT,
+        policy,
+        None,
+    )
+
+    expected = {
+        "*": "deny",
+        "~/.gaia/scratch/**": "allow",
+    }
+    specialists = {
+        name: agent for name, agent in generated.items()
+        if agent["mode"] == "subagent"
+    }
+
+    assert set(specialists) == {
+        "cloud-troubleshooter",
+        "developer",
+        "gaia-operator",
+        "gaia-planner",
+        "gaia-system",
+        "gaia-verifier",
+        "gitops-operator",
+        "platform-architect",
+    }
+    assert all(
+        agent["permission"]["external_directory"] == expected
+        for agent in specialists.values()
+    )
+    assert list(expected.items()) == [
+        ("*", "deny"),
+        ("~/.gaia/scratch/**", "allow"),
+    ]
+    assert "external_directory" not in generated["gaia-orchestrator"]["permission"]
 
 
 def test_replaces_stale_gaia_plugin_but_preserves_foreign_plugin(tmp_path):
