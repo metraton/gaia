@@ -80,6 +80,39 @@ from .chain import (
 
 _APPROVAL_ID_PREFIX = "P-"
 
+# ---------------------------------------------------------------------------
+# Pending-reuse window
+# ---------------------------------------------------------------------------
+#
+# PENDING_REUSE_WINDOW_MINUTES bounds how long a pending approval stays the
+# CANONICAL target for a NEW request carrying the same fingerprint. It is a
+# separate question from every other window in the system, and conflating it
+# with any of them is what produced the defect it closes:
+#
+#   * APPROVAL_GRANT_TTL_MINUTES (5) and FILE_PATH_GRANT_TTL_MINUTES (30) bound
+#     what an APPROVED operation may still do. They start at the user's
+#     decision; this one ends there.
+#   * DEFAULT_PENDING_TTL_MINUTES (1440) is how long an UNANSWERED approval
+#     waits for a human before the sweep retires it. Reusing that bound here
+#     was the bug: "still listed for the user" and "still the row a new request
+#     folds into" are different properties. Presentation is session-owned and
+#     no code path re-homes approvals.session_id, so once the requesting
+#     session dies its pending is undecidable -- and a session-agnostic,
+#     age-blind dedup let that undecidable row capture every later request for
+#     the same effect for a full day.
+#
+# 30 minutes is the decision episode: the span in which a second request can
+# still plausibly be the same one the user is looking at. Shorter was rejected
+# for the reason FILE_PATH_GRANT_TTL_MINUTES records -- the retry this dedup
+# protects (Brief 71) is not the live subagent's next tool call but a
+# re-dispatch after the orchestrator closes its turn to present, and 5 minutes
+# measured too short for exactly that round trip. It deliberately matches
+# FILE_PATH_GRANT_TTL_MINUTES in magnitude without importing it: the two are
+# the same sitting seen from either side of the user's click, but one is a
+# capability window (shorter is safer) and this one is a de-duplication window
+# (shorter floods the user), so tightening one must not silently move the other.
+PENDING_REUSE_WINDOW_MINUTES = 30
+
 # Length (in hex chars) of the content-derived suffix for COMMAND_SET ids.
 # 32 hex chars == 128 bits of the SHA-256 digest, matching the visual length of
 # the uuid4 suffix used by singular approvals (uuid4.hex is also 32 chars).
@@ -149,6 +182,25 @@ def derive_command_set_id(commands: List[str]) -> str:
 def _now_iso() -> str:
     """Return current UTC time as ISO-8601 (Z suffix)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _age_seconds(created_at: Optional[str], now: Optional[datetime] = None) -> float:
+    """Seconds elapsed since a stored ``created_at``, 0.0 when unparseable.
+
+    An unreadable timestamp reads as age zero, which keeps a row eligible for
+    reuse rather than superseding it -- the conservative direction, since the
+    cost of an unnecessary duplicate is noise while the cost of wrongly
+    retiring a live pending is a lost user decision.
+    """
+    if not created_at:
+        return 0.0
+    try:
+        created_dt = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (ValueError, TypeError):
+        return 0.0
+    return ((now or datetime.now(timezone.utc)) - created_dt).total_seconds()
 
 
 # ---------------------------------------------------------------------------
@@ -258,24 +310,70 @@ def insert_requested(
         # records each approval's REQUESTED exactly once, and a duplicate
         # REQUESTED would break the one-REQUESTED-per-approval invariant.
         #
+        # The match is bounded by PENDING_REUSE_WINDOW_MINUTES because the
+        # session-agnostic half is only half a rule: presentation is strictly
+        # session-owned and nothing re-homes approvals.session_id, so a pending
+        # whose session has died can never be decided. Unbounded, that
+        # undecidable row answered every later request for the same effect and
+        # deadlocked the operation until the 24h sweep -- observed on two hosts
+        # against a protected-path FILE_WRITE, whose sealed_payload derives
+        # entirely from the path and therefore collides on one fingerprint.
+        #
         # Re-checking this INSIDE the unit is also what makes _retry_on_locked
         # safe: if a prior attempt lost the lock race it rolled back (committing
         # nothing), so the retry's SELECT still finds no pending row and mints
         # cleanly; and it never runs after a successful commit (success returns
         # without retrying), so a committed row is never duplicated.
-        existing = _con.execute(
-            "SELECT id FROM approvals "
+        candidates = _con.execute(
+            "SELECT id, created_at FROM approvals "
             "WHERE status = 'pending' AND fingerprint = ? "
-            "ORDER BY created_at ASC LIMIT 1",
+            "ORDER BY created_at ASC",
             (fp,),
-        ).fetchone()
-        if existing is not None:
-            existing_id = existing[0] if not hasattr(existing, "keys") else existing["id"]
+        ).fetchall()
+
+        window_seconds = PENDING_REUSE_WINDOW_MINUTES * 60
+        now = datetime.now(timezone.utc)
+        reusable_id: Optional[str] = None
+        superseded_ids: List[str] = []
+        for cand in candidates:
+            has_keys = hasattr(cand, "keys")
+            cand_id = cand["id"] if has_keys else cand[0]
+            cand_created = cand["created_at"] if has_keys else cand[1]
+            if _age_seconds(cand_created, now) <= window_seconds:
+                # Oldest-first, so a burst of retries converges on ONE row
+                # rather than each retry adopting the previous one's mint.
+                if reusable_id is None:
+                    reusable_id = cand_id
+            else:
+                superseded_ids.append(cand_id)
+
+        if reusable_id is not None:
             # No INSERT and no REQUESTED event: the chain already holds this
             # approval's REQUESTED from when it was first minted. Fingerprint
             # dedup wins over any caller-supplied approval_id: an identical
             # payload maps to the one pending row that already exists.
-            return existing_id
+            return reusable_id
+
+        # Every stale row leaves 'pending' in THIS unit, before the new row is
+        # inserted. Leaving them would put two pending rows on one effect, and
+        # the ORDER BY above would hand the stale one back on the next request --
+        # reinstating the capture this bound exists to end.
+        for stale_id in superseded_ids:
+            transition(
+                stale_id,
+                from_status="pending",
+                to_status="expired",
+                agent_id=agent_id,
+                session_id=session_id,
+                metadata_json=json.dumps(
+                    {
+                        "reason": "expired_superseded",
+                        "source": "gaia.approvals.store.insert_requested",
+                    },
+                    sort_keys=True,
+                ),
+                con=_con,
+            )
 
         # Use the caller-supplied id (plan-first COMMAND_SET: content-derived,
         # reproducible by the orchestrator) when given, else mint a uuid4 id
@@ -482,17 +580,7 @@ def list_pending(
     result = []
     for row in rows:
         row = dict(row)
-        created_at_str = row.get("created_at")
-        age_seconds: float = 0.0
-        if created_at_str:
-            try:
-                # Parse ISO-8601 Z-suffix timestamp produced by _now_iso().
-                created_dt = datetime.strptime(created_at_str, "%Y-%m-%dT%H:%M:%SZ").replace(
-                    tzinfo=timezone.utc
-                )
-                age_seconds = (now - created_dt).total_seconds()
-            except (ValueError, TypeError):
-                age_seconds = 0.0
+        age_seconds = _age_seconds(row.get("created_at"), now)
         row["age_seconds"] = age_seconds
         row["stale"] = age_seconds > 3600.0
         result.append(row)
@@ -737,11 +825,14 @@ def transition(
         from_status: Expected current status (guard). Must match the actual
             stored status or this function raises ValueError.
         to_status: New status to write. Recognized: 'approved', 'rejected',
-            'revoked', 'expired'. The 'expired' status is the TTL-sweep
+            'revoked', 'expired'. The 'expired' status is the auto-retirement
             terminal status (schema.sql, bu_approvals_status_has_event excludes
-            it); it has no dedicated event_type in approval_events, so its audit
-            event is recorded as a REVOKED event carrying a reason in
-            metadata_json to distinguish a TTL expiry from a user/admin revoke.
+            it), reached either by the TTL sweep or by insert_requested
+            superseding a pending past PENDING_REUSE_WINDOW_MINUTES; it has no
+            dedicated event_type in approval_events, so its audit event is
+            recorded as a REVOKED event carrying a reason in metadata_json
+            ("expired_ttl" / "expired_superseded") that distinguishes an
+            auto-retirement from a user/admin revoke.
         event_payload: Optional dict for the event's payload_json and fingerprint.
         agent_id: Optional agent identifier for the event -- restores provenance
             on auto-transitions (cleanup/expiry) that previously wrote null.

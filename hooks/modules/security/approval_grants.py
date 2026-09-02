@@ -1224,6 +1224,13 @@ def find_pending_for_file(
     prevents generating a new approval_id on every retry while the user
     reviews the first one.
 
+    Reuse is bounded by PENDING_REUSE_WINDOW_MINUTES: the retry this serves is
+    the one that happens while the user is deciding, and only that. Presentation
+    is session-owned and nothing re-homes approvals.session_id, so a pending
+    outliving its session can never be decided -- and handing it back would let
+    it own the path until the 24h sweep. Past the window the caller mints
+    instead, and the store supersedes the stale row.
+
     DB-primary since Task E: queries gaia.approvals.store for SCOPE_FILE_PATH
     pending rows whose payload.exact_content matches the target path.
     No filesystem fallback is needed because write_pending_approval_for_file
@@ -1245,7 +1252,8 @@ def find_pending_for_file(
     # inside a subagent is the subagent's id, not the orchestrator's, so
     # session-scoping would silently miss the row.
     try:
-        from gaia.approvals.store import list_pending
+        from gaia.approvals.store import PENDING_REUSE_WINDOW_MINUTES, list_pending
+        window_seconds = PENDING_REUSE_WINDOW_MINUTES * 60
         rows = list_pending(all_sessions=True)
         for row in rows:
             payload_json = row.get("payload_json") or "{}"
@@ -1255,6 +1263,9 @@ def find_pending_for_file(
                 continue
             # SCOPE_FILE_PATH pendings are identified by their scope field.
             if payload.get("scope") != SCOPE_FILE_PATH:
+                continue
+            # list_pending already computes age_seconds off created_at.
+            if float(row.get("age_seconds") or 0.0) > window_seconds:
                 continue
             # exact_content holds the file path.
             if payload.get("exact_content", "").strip() == stripped:
