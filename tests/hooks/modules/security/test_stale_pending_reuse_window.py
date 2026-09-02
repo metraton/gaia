@@ -35,6 +35,7 @@ _open_db / get_pending / writer._connect) so nothing touches ~/.gaia/gaia.db.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
@@ -405,4 +406,51 @@ def test_write_pending_returns_the_id_the_db_actually_used(iso_db):
     assert second.name != f"P-{second_nonce}", (
         "the DB kept the original id; a caller reporting its own nonce reports a "
         "ghost approval_id"
+    )
+
+
+# ---------------------------------------------------------------------------
+# The banner the user actually reads -- the ghost id, closed
+# ---------------------------------------------------------------------------
+
+def test_the_block_banner_names_the_persisted_id_not_the_local_nonce(monkeypatch):
+    """A user handed the local nonce would look up an approval that does not exist.
+
+    Drives the real PreToolUse entrypoint on its SUBAGENT branch with the mint
+    forced to deduplicate: the store keeps an earlier row, so the id it returns
+    is deliberately NOT the nonce this call generated. The banner must carry the
+    persisted one. No approval row is written -- the producer is stubbed.
+    """
+    from pathlib import Path as _Path
+
+    import adapters.claude_code as cc
+    import modules.security.approval_grants as ag
+
+    local_nonce = "aaaaaaaabbbbbbbbccccccccdddddddd"
+    persisted_id = "P-99999999888888887777777766666666"
+
+    # _adapt_write_edit imports these lazily from approval_grants, so the source
+    # module is what the call actually resolves.
+    monkeypatch.setattr(ag, "check_approval_grant_for_file", lambda *a, **k: None)
+    monkeypatch.setattr(ag, "find_pending_for_file", lambda *a, **k: None)
+    monkeypatch.setattr(ag, "generate_nonce", lambda *a, **k: local_nonce)
+    monkeypatch.setattr(
+        ag,
+        "write_pending_approval_for_file",
+        lambda **kwargs: _Path(persisted_id),
+    )
+
+    response = cc.ClaudeCodeAdapter()._adapt_write_edit(
+        "Edit",
+        {"file_path": TARGET_PATH},
+        session_id=LIVE_SESSION,
+        is_subagent=True,
+    )
+
+    rendered = json.dumps(response.output or {})
+    assert f"approval_id: {persisted_id}" in rendered, (
+        "the banner must name the id the DB persisted"
+    )
+    assert local_nonce not in rendered, (
+        "the local nonce is a ghost id: no approval row carries it"
     )

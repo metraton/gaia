@@ -2601,6 +2601,14 @@ class ClaudeCodeAdapter(HookAdapter):
                     )
                 )
 
+            # insert_requested deduplicates by fingerprint, so the row it kept
+            # may carry an earlier request's id rather than the nonce just
+            # minted. The banner must name the id the DB actually holds; the
+            # local nonce would send the user to an approval that does not exist.
+            persisted_id = pending_path.name
+            if persisted_id.startswith("P-"):
+                approval_id = persisted_id[2:]
+
         # The window the grant will carry once it is activated -- the same
         # constant insert_file_path_grant defaults to. Imported lazily because
         # gaia.store is not importable while the hook package loads.
