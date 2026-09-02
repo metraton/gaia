@@ -476,6 +476,19 @@ export function toolResult(output: any): Record<string, unknown> {
   }
 }
 
+export function questionAnswers(output: any): Record<string, string> | undefined {
+  const nativeAnswers = output?.metadata?.answers
+  if (!Array.isArray(nativeAnswers)) return undefined
+  if (!nativeAnswers.every((answer) => Array.isArray(answer) && answer.every((label) => typeof label === "string"))) {
+    return undefined
+  }
+  return Object.fromEntries(
+    nativeAnswers.flatMap((answer: string[], questionIndex: number) =>
+      answer.map((label, answerIndex) => [`${questionIndex}:${answerIndex}`, label]),
+    ),
+  )
+}
+
 /** Apply a bridge response's updated_input onto the live args object, field
  * by field, never by whole-object reassignment. OpenCode 1.18.23 hands this
  * hook the args object it will actually pass to the tool; a full
@@ -850,6 +863,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           await attestOnce(sessionID, dispatchedAgent, call.sessionID)
         }
       }
+      const result = toolResult(output)
+      if (canonicalBridgeToolName(call.tool) === "AskUserQuestion") {
+        const answers = questionAnswers(output)
+        if (answers) result.answers = answers
+      }
       await send({
         event: "tool.execute.after",
         sessionID: call.sessionID,
@@ -859,7 +877,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         roleContext: roleContext(call.sessionID),
         tool: canonicalBridgeToolName(call.tool),
         args: call.args,
-        result: toolResult(output),
+        result,
       })
     },
     // The installed OpenCode host fires this hook mid-compaction, before the

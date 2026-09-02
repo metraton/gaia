@@ -753,6 +753,29 @@ class OpenCodeAdapter(HookAdapter):
 
         return HookResponse(output={"action": "allow"}, exit_code=response.exit_code)
 
+    @classmethod
+    def _without_unverified_decision(cls, event: HookEvent, container: Any) -> Any:
+        """Withhold a structured decision whose provenance Gaia did not verify.
+
+        The shared resolver activates a grant from ``answers`` in the tool
+        result OR, failing that, in the tool arguments, and in this lane BOTH
+        cross the bridge as caller-supplied JSON, so a forged
+        ``tool.execute.after`` signs for the user through either one. The
+        discriminator that decides which results carry answers lives in
+        ``plugin.ts``, on the far side of that stdin -- the untrusted side --
+        so it fences nothing.
+
+        The key is withheld rather than the event denied: the tool has already
+        run, so a denial would gate nothing while discarding the audit record,
+        and the resolver reads an absent ``answers`` as no decision at all,
+        which is fail-closed.
+        """
+        if not isinstance(container, dict) or "answers" not in container:
+            return container
+        if cls._is_attested_control_plane(event) and event.call_id:
+            return container
+        return {key: value for key, value in container.items() if key != "answers"}
+
     def adapt_post_tool_use(self, event: HookEvent) -> HookResponse:
         """Run post-tool policy with the same immutable call identity.
 
@@ -760,15 +783,20 @@ class OpenCodeAdapter(HookAdapter):
         copy of it, so a fix to how a name becomes ``agent_type`` cannot land on
         one path and miss the other. ``_identity_rejection`` is deliberately not
         run here: the tool has already executed, so a denial would gate nothing
-        while discarding the audit record of what ran. The fence that matters is
-        upstream, and the payload is safe without it only because
-        ``_policy_agent_type`` withholds a control-plane name from an unattested
-        caller on its own.
+        while discarding the audit record of what ran. What this path does
+        withhold is the one payload key that is not merely audited downstream
+        but ACTED ON -- a structured decision that activates a grant -- and it
+        withholds it from both containers the resolver reads.
         """
         from .claude_code import ClaudeCodeAdapter
 
         payload = self.build_policy_payload(event)
-        payload["tool_response"] = event.payload.get("tool_response", {})
+        payload["tool_input"] = self._without_unverified_decision(
+            event, payload.get("tool_input", {})
+        )
+        payload["tool_response"] = self._without_unverified_decision(
+            event, event.payload.get("tool_response", {})
+        )
         policy_event = HookEvent(
             event_type=event.event_type,
             session_id=event.session_id,

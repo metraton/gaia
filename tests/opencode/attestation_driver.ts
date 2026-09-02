@@ -53,6 +53,11 @@ for (const step of scenario.steps) {
       { sessionID: step.sessionID, callID: step.callID, tool: step.tool },
       { args: step.args ?? {} },
     )
+  } else if (step.kind === "after") {
+    await plugin["tool.execute.after"](
+      { sessionID: step.sessionID, callID: step.callID, tool: step.tool, args: step.args ?? {} },
+      { output: step.output ?? "", metadata: step.metadata ?? {} },
+    )
   } else if (step.kind === "after-task") {
     await plugin["tool.execute.after"](
       { sessionID: step.sessionID, callID: step.callID, tool: "task", args: step.args ?? {} },

@@ -113,7 +113,7 @@ for (const step of scenario.steps) {
           sessionID: step.sessionID,
           callID: step.callID,
           tool: step.tool ?? "bash",
-          args: { command: step.command },
+          args: step.args ?? { command: step.command },
         },
         { output: step.output ?? "", metadata: step.metadata ?? {} },
       )
