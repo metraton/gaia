@@ -117,6 +117,8 @@ class MutativeResult:
         cli_family: Lightweight CLI family hint (e.g., "k8s", "cloud", "git").
         confidence: Confidence level: "high", "medium", or "low".
         reason: Human-readable explanation of the classification.
+        guidance: The non-mutating way to reach the same outcome, when one
+            exists. Empty for every classification that has no such equivalent.
     """
     is_mutative: bool = False
     category: str = CATEGORY_UNKNOWN
@@ -125,6 +127,7 @@ class MutativeResult:
     cli_family: str = "unknown"
     confidence: str = "low"
     reason: str = ""
+    guidance: str = ""
 
 
 
@@ -607,6 +610,17 @@ CONSENT_REDUCING_SUBCOMMAND_EXCEPTIONS: Dict[Tuple[str, str], FrozenSet[str]] = 
 # here. This dict lives inside the hooks directory and is itself T3-protected.
 
 
+# Shared by the two `gh auth` anchors below: one account slot, two ways to
+# disturb it, one replacement for both.
+_GH_ACCOUNT_GUIDANCE = (
+    "The active gh account is global state shared with every other session on "
+    "this machine -- name the account on the invocation instead of switching "
+    'it: GH_TOKEN="$(gh auth token --user <account>)" gh ... , or the `ghx` '
+    "wrapper, which resolves the account from the repository's remote. "
+    "`gh auth status` lists the accounts; `gh auth login` adds a missing one."
+)
+
+
 @dataclass(frozen=True)
 class MutativeAnchor:
     """One command form declared MUTATIVE (T3) regardless of the verbs in it.
@@ -624,6 +638,11 @@ class MutativeAnchor:
     destroys and stays inert everywhere else, so gating it does not tax the CLI
     where the same spelling is routine.
 
+    ``guidance`` names the non-mutating way to reach the same outcome, when one
+    exists, and travels into the denial the agent reads. A gate that only says
+    "no" to a command with a safe equivalent teaches nothing, and leaves the
+    agent hunting for a spelling that passes.
+
     An empty ``path`` is refused. It would anchor a whole CLI on a flag alone —
     the global behaviour this model exists to replace; a CLI-wide condition is
     spelled out as one anchor per subcommand that warrants it. Tokens and flags
@@ -634,6 +653,7 @@ class MutativeAnchor:
 
     path: Tuple[str, ...]
     flags: FrozenSet[str] = frozenset()
+    guidance: str = ""
 
     def __post_init__(self) -> None:
         if not self.path:
@@ -862,6 +882,24 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("workflow", "run")),
         MutativeAnchor(path=("run", "rerun")),
         MutativeAnchor(path=("run", "cancel")),
+        # `gh` keeps ONE active account per host, so switching or logging out
+        # rewrites a slot every concurrent session and agent on the machine
+        # reads -- a mutation whose blast radius is other people's work, not
+        # this command's repository. Neither `switch` nor `logout` carries a
+        # verb in MUTATIVE_VERBS, so both fell through to Step 4 and classified
+        # READ_ONLY by elimination.
+        #
+        # `login` is deliberately NOT anchored: it ADDS an account without
+        # displacing the active one, and it is the only way out when the
+        # account a command needs is absent. `status` and `token` only read.
+        MutativeAnchor(
+            path=("auth", "switch"),
+            guidance=_GH_ACCOUNT_GUIDANCE,
+        ),
+        MutativeAnchor(
+            path=("auth", "logout"),
+            guidance=_GH_ACCOUNT_GUIDANCE,
+        ),
     ),
     "npm": (
         MutativeAnchor(path=("config", "set")),
@@ -4330,7 +4368,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
                     f"State-mutating command "
                     f"'{base_cmd} {' '.join(anchor.path)}'{flag_detail} "
                     f"anchored MUTATIVE (T3) by config"
+                    + (f". {anchor.guidance}" if anchor.guidance else "")
                 ),
+                guidance=anchor.guidance,
             )
 
     # --- Step 3e: Command+subcommand tier exception (anchored) ---
