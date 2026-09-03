@@ -704,9 +704,12 @@ def _check_gh_push_permission(repo_root: Path, *, repo: str = _PUBLISH_REPO, tim
             return None  # confirmed push/admin
         if text == "false":
             return (
-                f"the active gh account does NOT have push access to {repo}. Switch "
-                f"to an account that does with `gh auth switch -u <account>` (see "
-                f"`gh auth status` for the accounts you have), or request push access."
+                f"the active gh account does NOT have push access to {repo}. Re-run "
+                f"the release with an account that does, resolved per process: "
+                f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...` '
+                f"(or `ghx` if installed). `gh auth status` lists the accounts you "
+                f"have. Do NOT `gh auth switch` -- the active account is global "
+                f"state shared with every other session on this machine."
             )
         return None  # unexpected/empty output -> could not verify, do not block
     # rc != 0: distinguish "not authenticated" (a definite no, actionable) from a
@@ -714,9 +717,12 @@ def _check_gh_push_permission(repo_root: Path, *, repo: str = _PUBLISH_REPO, tim
     combined = ((out or "") + (err or "")).lower()
     if any(marker in combined for marker in ("not logged in", "no accounts", "gh auth login", "authentication")):
         return (
-            f"no authenticated gh account with push access to {repo}. Run "
-            f"`gh auth login` (or `gh auth switch -u <account>`) with an account "
-            f"that has push/admin on {repo}."
+            f"no authenticated gh account with push access to {repo}. If an "
+            f"account in `gh auth status` has push/admin, resolve it per process: "
+            f'`GH_TOKEN="$(gh auth token --user <account>)" gaia release ...` (or '
+            f"`ghx` if installed). If none does, `gh auth login` adds one. Do NOT "
+            f"`gh auth switch` -- the active account is global state shared with "
+            f"every other session on this machine."
         )
     return None  # network / transient -> could not verify, do not block
 

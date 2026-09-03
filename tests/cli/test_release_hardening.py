@@ -52,7 +52,10 @@ class TestCheckGhPushPermission(unittest.TestCase):
             err = _check_gh_push_permission(_REPO_ROOT)
         self.assertIsNotNone(err)
         self.assertIn("does NOT have push access", err)
-        self.assertIn("gh auth switch", err)
+        self.assertIn("gh auth token --user", err)
+        # `switch` may only appear as the thing NOT to do, never as the remedy.
+        self.assertNotIn("gh auth switch -u", err)
+        self.assertIn("Do NOT `gh auth switch`", err)
 
     def test_not_authenticated_is_actionable_error(self):
         with patch("cli.release.shutil.which", return_value="/usr/bin/gh"), \
@@ -60,6 +63,10 @@ class TestCheckGhPushPermission(unittest.TestCase):
             err = _check_gh_push_permission(_REPO_ROOT)
         self.assertIsNotNone(err)
         self.assertIn("gh auth login", err)
+        self.assertIn("gh auth token --user", err)
+        # `switch` may only appear as the thing NOT to do, never as the remedy.
+        self.assertNotIn("gh auth switch -u", err)
+        self.assertIn("Do NOT `gh auth switch`", err)
 
     def test_gh_missing_is_could_not_verify_not_a_block(self):
         # gh not on PATH -> cannot verify -> DO NOT block (transient/ambiguous).
