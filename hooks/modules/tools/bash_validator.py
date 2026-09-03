@@ -1073,6 +1073,7 @@ class BashValidator:
                     native_ask_reason=native_ask_reason,
                     session_id=session_id,
                     agent_type=agent_type,
+                    guidance=result.guidance,
                 )
 
         # Flag-dependent classification (sed -i, find -exec, tar -x, etc.)
@@ -2041,6 +2042,7 @@ def decide_t3_outcome(
     session_id: str = "",
     agent_type: str = "",
     command_set: list | None = None,
+    guidance: str = "",
 ) -> BashValidationResult:
     """Single decision point for the outcome of a T3 (state-mutating) command.
 
@@ -2083,6 +2085,9 @@ def decide_t3_outcome(
             set keeps the singular behaviour. Only honoured in the
             subagent-under-orchestrator branch (the native-ask branch has no
             COMMAND_SET concept).
+        guidance: The classifier's non-mutating alternative, when it knows one.
+            Only the deny branch needs it: ``native_ask_reason`` is composed by
+            the caller, which already interpolates the reason carrying it.
 
     Returns:
         A blocked BashValidationResult (allowed=False, tier T3) whose
@@ -2148,6 +2153,7 @@ def decide_t3_outcome(
                     command=command,
                     verb=verb,
                     category=category,
+                    guidance=guidance,
                 )
                 hook_deny = build_hook_permission_response("deny", reason)
                 return BashValidationResult(
@@ -2281,6 +2287,7 @@ def decide_t3_outcome(
             command=command,
             verb=verb,
             category=category,
+            guidance=guidance,
         )
         hook_deny = build_hook_permission_response("deny", reason)
         return BashValidationResult(
