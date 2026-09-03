@@ -21,8 +21,12 @@ class CommandSetValidationError(ValueError):
 
 
 _COMPOUND = re.compile(r"(?:&&|\|\||[;|]|\n|`|\$\()")
+# The trailing lookahead rejects a hyphen where `\b` accepted one: `ssh\b`
+# matched `ssh-keygen`, a batch tool that never prompts, and refused it as
+# interactive. Every alternative here names a program, and a hyphen starts a
+# different program's name, never the same one's arguments.
 _INTERACTIVE = re.compile(
-    r"^(?:sudo\s+)?(?:vim?|nano|emacs|less|more|top|htop|watch|ssh|mysql|psql|python|node)\b"
+    r"^(?:sudo\s+)?(?:vim?|nano|emacs|less|more|top|htop|watch|ssh|mysql|psql|python|node)(?![-\w])"
 )
 
 
