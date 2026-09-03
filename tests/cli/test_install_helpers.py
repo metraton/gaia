@@ -95,6 +95,7 @@ class TestMergeLocalPermissions(unittest.TestCase):
             data = json.loads((workspace / ".claude" / "settings.local.json").read_text())
             self.assertEqual(data["agent"], "gaia-orchestrator")
             self.assertIn("Bash(*)", data["permissions"]["allow"])
+            self.assertEqual(data["permissions"]["defaultMode"], "acceptEdits")
             self.assertNotIn("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", data.get("env", {}))
 
     def test_idempotent(self):
@@ -122,6 +123,42 @@ class TestMergeLocalPermissions(unittest.TestCase):
             data = json.loads(local.read_text())
             self.assertIn("MyCustomTool(*)", data["permissions"]["allow"])
             self.assertIn("Bash(*)", data["permissions"]["allow"])
+
+    def test_preserves_user_default_mode(self):
+        """A permission mode the user already chose is theirs -- never overwritten."""
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            local.write_text(json.dumps({
+                "permissions": {"allow": [], "deny": [], "ask": [], "defaultMode": "plan"},
+            }))
+            helpers.merge_local_permissions(workspace)
+            data = json.loads(local.read_text())
+            self.assertEqual(data["permissions"]["defaultMode"], "plan")
+
+    def test_adds_default_mode_to_already_installed_workspace(self):
+        """`gaia update` must pin the mode on installs that predate the key.
+
+        Such a workspace already carries Gaia's full allow/deny, so the merge
+        finds nothing else to change. The key only reaches disk if adding it
+        counts as a changed field -- otherwise the helper short-circuits to
+        `noop` and never writes.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            (workspace / ".claude").mkdir()
+            local = workspace / ".claude" / "settings.local.json"
+            helpers.merge_local_permissions(workspace)
+            pre_change = json.loads(local.read_text())
+            del pre_change["permissions"]["defaultMode"]
+            local.write_text(json.dumps(pre_change))
+
+            res = helpers.merge_local_permissions(workspace)
+
+            self.assertEqual(res["action"], "updated")
+            data = json.loads(local.read_text())
+            self.assertEqual(data["permissions"]["defaultMode"], "acceptEdits")
 
     def test_dry_run_does_not_write(self):
         with tempfile.TemporaryDirectory() as tmp:

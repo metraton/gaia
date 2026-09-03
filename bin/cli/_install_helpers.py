@@ -93,6 +93,14 @@ except Exception:  # noqa: BLE001
         return sorted(kept | ours)
 
 
+# The permission mode Gaia pins in every workspace it installs into. It is
+# written explicitly rather than inherited because the host has changed its own
+# default under already-installed workspaces: "auto" mode instructs agents to
+# prefer shell writers over Read/Edit/Write, the one channel where the
+# protected-path guard is handed a command string instead of the target path.
+_DEFAULT_PERMISSION_MODE = "acceptEdits"
+
+
 # ---------------------------------------------------------------------------
 # Result helper
 # ---------------------------------------------------------------------------
@@ -459,6 +467,12 @@ def merge_local_permissions(
     existing["permissions"]["allow"] = merged_allow
     existing["permissions"]["deny"] = merged_deny
     existing["permissions"].setdefault("ask", [])
+
+    # Supplied only when absent -- a mode the user chose is theirs to keep,
+    # matching how the env vars above are merged.
+    if "defaultMode" not in existing["permissions"]:
+        existing["permissions"]["defaultMode"] = _DEFAULT_PERMISSION_MODE
+        changed_fields.append("permissions.defaultMode")
 
     if not changed_fields:
         return _result("noop", local_path, "settings.local.json already up to date")
