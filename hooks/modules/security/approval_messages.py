@@ -103,6 +103,7 @@ def build_t3_blocked_denial_message(
     command: str,
     verb: str,
     category: str,
+    guidance: str = "",
 ) -> str:
     """Return the canonical T3_BLOCKED denial message for subagent context.
 
@@ -115,10 +116,16 @@ def build_t3_blocked_denial_message(
         command: The full command string that was blocked.
         verb: The detected mutative verb (e.g. 'delete', 'push').
         category: The verb category (e.g. 'MUTATIVE').
+        guidance: The non-mutating way to reach the same outcome, when the
+            classifier knows one. Rendered as its own line so a command with a
+            safe equivalent says what it is; a refusal that names none leaves
+            the agent hunting for a spelling that passes, which is the
+            behaviour the no-elusion rule exists to prevent.
 
     Returns:
         The denial message string to embed in the hook response.
     """
+    guidance_line = f"Instead: {guidance}\n" if guidance else ""
     return (
         f"[T3_BLOCKED] This command requires user approval.\n"
         f"T3 command blocked. Load Skill('{_SUBAGENT_APPROVAL_SKILL}') to emit"
@@ -127,5 +134,6 @@ def build_t3_blocked_denial_message(
         f" approval_id in your contract row.\n"
         f"Command: {command}\n"
         f"Verb: '{verb}' ({category})\n"
+        f"{guidance_line}"
         f"approval_id: {approval_id}"
     )
