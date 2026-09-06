@@ -781,6 +781,10 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         MutativeAnchor(path=("release", "check")),
     ),
     "gcloud": (
+        # `set-password` sits three tokens below the gcloud root, beyond the
+        # shallow compound-verb scan, so paths and arguments containing cheap
+        # tier words must not leave a real credential mutation ungated.
+        MutativeAnchor(path=("sql", "users", "set-password")),
         # Changing an IAM policy binding was gated in ONE direction and on a
         # subset of surfaces, for two independent reasons.
         #

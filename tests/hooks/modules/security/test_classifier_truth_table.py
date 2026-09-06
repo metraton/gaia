@@ -39,6 +39,7 @@ GATED = "gated"
 FREE = "free"
 
 T0 = SecurityTier.T0_READ_ONLY
+T1 = SecurityTier.T1_VALIDATION
 T2 = SecurityTier.T2_DRY_RUN
 T3 = SecurityTier.T3_BLOCKED
 
@@ -377,6 +378,33 @@ CLASSIFIER_TRUTH_TABLE = [
     ("control-kubectl-delete", GATED, "kubectl delete pod my-pod", True, T3),
     ("control-terraform-apply", GATED, "terraform apply -auto-approve", True, T3),
     ("control-rm-recursive", GATED, "rm -rf /home/jorge/ws/me/gaia/hooks", True, T3),
+    # ---- Mutations outrank incidental validation/simulation words ----------
+    # A T1/T2 pattern can occur in an argument or path without changing what
+    # the command executes. The focal password rotation and one row for every
+    # cheap pattern pin the mutative floor; named controls preserve each cheap
+    # classification for genuinely non-mutative commands.
+    (
+        "tier-floor-gcloud-password-check-path",
+        GATED,
+        "gcloud sql users set-password app --instance=prod "
+        "--password-file=/tmp/check.txt",
+        True,
+        T3,
+    ),
+    ("tier-floor-mutative-check", GATED, "kubectl delete pod check", True, T3),
+    ("tier-floor-mutative-validate", GATED, "kubectl delete pod validate", True, T3),
+    ("tier-floor-mutative-lint", GATED, "kubectl delete pod lint", True, T3),
+    ("tier-floor-mutative-fmt", GATED, "kubectl delete pod fmt", True, T3),
+    ("tier-floor-mutative-plan", GATED, "kubectl delete pod plan", True, T3),
+    ("tier-floor-mutative-diff", GATED, "kubectl delete pod diff", True, T3),
+    ("tier-floor-mutative-template", GATED, "kubectl delete pod template", True, T3),
+    ("tier-floor-free-check", FREE, "ruff check .", False, T1),
+    ("tier-floor-free-validate", FREE, "terraform validate", False, T1),
+    ("tier-floor-free-lint", FREE, "golangci-lint run", False, T1),
+    ("tier-floor-free-fmt", FREE, "terraform fmt -check", False, T1),
+    ("tier-floor-free-plan", FREE, "terraform plan", False, T2),
+    ("tier-floor-free-diff", FREE, "git diff --stat", False, T0),
+    ("tier-floor-free-template", FREE, "helm template app ./chart", False, T2),
     # ---- FREE controls: reads that must not start paying a toll ----
     ("read-gcloud-config", FREE, "gcloud config get-value project", False, T0),
     ("read-gh-run-list", FREE, "gh run list --limit 5", False, T0),
@@ -1325,7 +1353,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 154
+_MINIMUM_MEASURED_CASES = 164
 
 
 @pytest.mark.parametrize(
