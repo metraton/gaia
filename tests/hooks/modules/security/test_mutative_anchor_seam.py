@@ -242,8 +242,8 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("release", "check"),
         }
 
-    def test_cloud_cli_paths_are_the_iam_binding_forms(self):
-        """Both directions of an IAM binding change, on the surfaces that were open.
+    def test_cloud_cli_paths_are_the_reviewed_mutative_forms(self):
+        """Reviewed gcloud mutations whose path depth bypassed the verb scan.
 
         The two-token removals (`projects`, `secrets`) are absent because the
         verb scan already decides them; the three-token ones are here because
@@ -261,6 +261,7 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             ("storage", "buckets", "remove-iam-policy-binding"),
             ("iam", "service-accounts", "add-iam-policy-binding"),
             ("iam", "service-accounts", "remove-iam-policy-binding"),
+            ("sql", "users", "set-password"),
         }
 
     def test_configuration_write_paths_are_the_reviewed_ones(self):
