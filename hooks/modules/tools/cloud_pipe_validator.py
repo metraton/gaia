@@ -79,7 +79,7 @@ VIOLATIONS = [
         (
             "Use native output flags instead of piping to shell utilities.\n"
             "  gcloud: --filter='...' --format='value(field)'\n"
-            "  kubectl: -o jsonpath='{...}' or -o go-template='{{...}}'\n"
+            "  kubectl: use default/name output or metadata-only custom-columns\n"
             "  aws: --query '...' --output text\n"
             "  terraform: use terraform output or -json flag"
         ),

@@ -53,6 +53,7 @@ from dataclasses import dataclass
 
 from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
+from ..security.kubectl_secret_output import check_kubectl_secret_output
 from ..security.mutative_verbs import (
     detect_mutative_command,
     build_t3_block_response,
@@ -819,6 +820,17 @@ class BashValidator:
                         reason=f"Command blocked by security policy: {comp_blocked.category}",
                         suggestions=[comp_blocked.suggestion] if comp_blocked.suggestion else [],
                     )
+
+        secret_components = parsed_components if parsed_components is not None else [command]
+        for component in secret_components:
+            secret_violation = check_kubectl_secret_output(component.strip())
+            if secret_violation is not None:
+                return BashValidationResult(
+                    allowed=False,
+                    tier=SecurityTier.T3_BLOCKED,
+                    reason=secret_violation.reason,
+                    suggestions=[secret_violation.suggestion],
+                )
 
         # 3c. Validate git commit messages (on the potentially cleaned command).
         if "git commit" in command and "-m" in command:
