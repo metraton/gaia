@@ -29,8 +29,10 @@ entry point changing.
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, Iterable, Optional, Type
 
 from .base import HookAdapter
@@ -127,7 +129,10 @@ register_adapter(
 register_adapter(
     "opencode",
     OpenCodeAdapter,
-    mechanism_names=("permission.replied", "permission.v2.replied"),
+    mechanism_names=json.loads(
+        (Path(__file__).resolve().parents[2] / "opencode" / "consent-metadata.json")
+        .read_text(encoding="utf-8")
+    )["mechanism_names"],
     surface_names=("opencode",),
 )
 

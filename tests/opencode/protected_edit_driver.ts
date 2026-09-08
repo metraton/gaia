@@ -63,7 +63,7 @@ const results: Record<string, unknown>[] = []
 for (const [index, step] of scenario.steps.entries()) {
   const before = permissionAsks.length
   const callID = step.callID ?? `call-${index}`
-  const result: Record<string, unknown> = { label: step.label, callID }
+  const result: Record<string, unknown> = { label: step.label, callID, beforeReturned: false }
   try {
     await plugin["tool.execute.before"](
       {
@@ -73,13 +73,15 @@ for (const [index, step] of scenario.steps.entries()) {
       },
       { args: step.args },
     )
-    const targetText = JSON.stringify(step.args)
-    if (step.tool === "task" || (!targetText.includes("hooks/") && !targetText.includes("hook-link"))) {
-      result.allowed = true
-      result.permissionIndexes = []
-      results.push(result)
-      continue
-    }
+    result.beforeReturned = true
+    result.allowed = true
+  } catch (error: any) {
+    result.allowed = false
+    result.error = String(error?.message ?? error)
+  }
+  // Host permission delivery is a separate event, not a successful return from
+  // the pre-tool hook. Scenarios request it explicitly; the real hook correlates it.
+  if (step.requestPermission) {
     const permission = {
       id: `permission-${permissionAsks.length + 1}`,
       sessionID: childSessionID,
@@ -90,10 +92,7 @@ for (const [index, step] of scenario.steps.entries()) {
     const permissionOutput = { status: "ask" as const }
     await plugin["permission.ask"](permission, permissionOutput)
     permissionAsks.push({ permission, status: permissionOutput.status })
-    result.allowed = permissionOutput.status === "allow"
-  } catch (error: any) {
-    result.allowed = false
-    result.error = String(error?.message ?? error)
+    result.allowed = result.allowed === true && permissionOutput.status === "allow"
   }
   result.permissionIndexes = Array.from(
     { length: permissionAsks.length - before },

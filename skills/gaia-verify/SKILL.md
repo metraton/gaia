@@ -49,7 +49,7 @@ Core flow: `npm run gaia:verify-install:rc` (the `@rc` tag) or `npm run gaia:ver
 
 After wiring a workspace, these checks catch what `gaia doctor` cannot reach when the wire-up is so broken that doctor itself walks up to the user `.claude/` instead of the workspace. If any check fails, jump to `gaia-release/reference.md` -> "Diagnostic guide".
 
-1. `ls -la <workspace>/.claude/` -- **5 symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
+1. `ls -la <workspace>/.claude/` -- **6 directory symlinks** (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) + a `CHANGELOG.md` link, plus `logs/`, `approvals/`, `plugin-registry.json`, `settings.local.json`. (`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.)
 2. `cat <workspace>/.claude/plugin-registry.json` -- `installed[].name` at the expected version. **Decided:** the canonical registry identity is `gaia` (`_read_plugin_name` in `_install_helpers.py` strips the npm scope from `@jaguilar87/gaia` and falls back to `"gaia"`). A fresh install always writes `gaia`; fail the check if the name is anything other than `gaia`.
 3. `cat <workspace>/.claude/settings.local.json | jq '.hooks | keys'` -- hook events registered (npm surface only; the plugin surface reads hooks from the repo root's `hooks/hooks.json`, not from `settings.local.json` or the metadata-only `plugin.json`).
 4. `ls ~/.gaia/gaia.db` -- DB file exists. It is bootstrapped **lazily on first `gaia` CLI use** (`_ensure_db_bootstrapped` in `bin/gaia`) or by `gaia install` -- there is no postinstall.

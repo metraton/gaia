@@ -101,7 +101,7 @@ def healthy_project(tmp_path):
     }))
 
     # Symlink targets (real directories, not symlinks -- tests just need exists())
-    for name in ["agents", "tools", "hooks", "commands", "config", "skills"]:
+    for name in ["agents", "tools", "hooks", "commands", "config", "skills", "opencode"]:
         (claude_dir / name).mkdir()
     (claude_dir / "CHANGELOG.md").write_text("# Changelog")
 
@@ -1514,7 +1514,7 @@ class TestCmdDoctorFix:
             "source": "local-dev",
         }))
 
-        for name in ["agents", "tools", "hooks", "commands", "config", "skills"]:
+        for name in ["agents", "tools", "hooks", "commands", "config", "skills", "opencode"]:
             (claude_dir / name).mkdir()
         (claude_dir / "CHANGELOG.md").write_text("# Changelog")
 
@@ -1730,6 +1730,29 @@ def _write_agent(claude_dir: Path, file_stem: str, declared_name: str,
             fm.append(f"  - {s}")
     fm.append("---")
     (agents_dir / f"{file_stem}.md").write_text("\n".join(fm) + "\n\n# body\n")
+
+
+@pytest.mark.parametrize(
+    "reader, expected",
+    [("_frontmatter_name", "gaia-system"),
+     ("_frontmatter_skills", ["agent-protocol"])],
+)
+def test_frontmatter_utf8_with_ascii_default(tmp_path, monkeypatch, reader, expected):
+    """Naming and skill references decode UTF-8 even with an ASCII default."""
+    component = tmp_path / "component.md"
+    component.write_text(
+        "---\nname: gaia-system\nskills:\n  - agent-protocol\n---\n"
+        "Descripción — 日本語\n",
+        encoding="utf-8",
+    )
+    original_read_text = Path.read_text
+
+    def ascii_default(path, encoding=None, errors=None):
+        """Model a non-UTF-8 locale without depending on the test host."""
+        return original_read_text(path, encoding=encoding or "ascii", errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", ascii_default)
+    assert getattr(doctor_mod, reader)(component) == expected
 
 
 class TestCheckComponentNaming:

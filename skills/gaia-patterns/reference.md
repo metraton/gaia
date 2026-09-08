@@ -184,7 +184,7 @@ The hook invoker is `python3 <script>` rather than executing the script directly
 .claude/CHANGELOG.md (file link) -> node_modules/@jaguilar87/gaia/CHANGELOG.md
 ```
 
-(`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py` -- 5 directory symlinks plus one file link, not 7.)
+(`_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py` -- 6 directory symlinks, including `opencode`, plus one file link.)
 
 ---
 

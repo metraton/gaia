@@ -17,4 +17,4 @@ the five host-agnostic consent skills.
 Implementation details belong to the adapter, not here. The registration and
 its documentation metadata live together in
 `hooks/adapters/registry.py::register_adapter`; the concrete translation lives
-in `hooks/adapters/claude_code.py::ClaudeCodeAdapter.request_consent`.
+in `hooks/adapters/claude_code.py::ClaudeCodeAdapter::request_consent`.

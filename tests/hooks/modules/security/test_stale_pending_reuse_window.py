@@ -51,8 +51,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-# The real path from the two reproductions: a protected-path Write/Edit target.
-TARGET_PATH = "/home/jorge/ws/me/gaia/hooks/adapters/opencode.py"
+TARGET_PATH = str(HOOKS_DIR / "adapters" / "opencode.py")
 
 DEAD_SESSION = "ses_fa68f9e0fffeKKmgCWFzAhBJeO"
 LIVE_SESSION = "79d46c41-48c5-47a7-8411-b12b8788f4e1"
@@ -151,6 +150,11 @@ def iso_db(tmp_path, monkeypatch):
         return orig_get_pending(session_id=session_id, all_sessions=all_sessions, con=con)
 
     monkeypatch.setattr(astore, "get_pending", patched_get_pending)
+
+    for connect in (swriter._connect, astore._open_db):
+        with connect() as con:
+            actual_path = Path(con.execute("PRAGMA database_list").fetchone()[2])
+            assert actual_path.resolve() == db_path.resolve()
 
     yield db_path
 
@@ -413,7 +417,7 @@ def test_write_pending_returns_the_id_the_db_actually_used(iso_db):
 # The banner the user actually reads -- the ghost id, closed
 # ---------------------------------------------------------------------------
 
-def test_the_block_banner_names_the_persisted_id_not_the_local_nonce(monkeypatch):
+def test_the_block_banner_names_the_persisted_id_not_the_local_nonce(monkeypatch, tmp_path):
     """A user handed the local nonce would look up an approval that does not exist.
 
     Drives the real PreToolUse entrypoint on its SUBAGENT branch with the mint
@@ -425,6 +429,11 @@ def test_the_block_banner_names_the_persisted_id_not_the_local_nonce(monkeypatch
 
     import adapters.claude_code as cc
     import modules.security.approval_grants as ag
+    from modules.security.protected_paths import is_protected_hook_path
+
+    assert is_protected_hook_path(TARGET_PATH) is True
+    assert is_protected_hook_path(str(_REPO_ROOT / "notes.txt")) is False
+    assert is_protected_hook_path(str(tmp_path / "notes.txt")) is False
 
     local_nonce = "aaaaaaaabbbbbbbbccccccccdddddddd"
     persisted_id = "P-99999999888888887777777766666666"

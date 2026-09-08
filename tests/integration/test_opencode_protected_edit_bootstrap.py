@@ -37,6 +37,14 @@ def isolated_gaia_db(tmp_path, monkeypatch, bootstrapped_db_template):
     db_path = tmp_path / "protected-edit.db"
     copy_bootstrapped_db(bootstrapped_db_template, db_path)
     monkeypatch.setenv("GAIA_DB", str(db_path))
+    from gaia.paths import db_path as resolved_db_path
+    from gaia.store import writer
+
+    assert resolved_db_path().resolve() == db_path.resolve()
+    with writer._connect() as con:
+        actual_path = Path(con.execute("PRAGMA database_list").fetchone()[2])
+        assert actual_path.resolve() == db_path.resolve()
+        assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
     return db_path
 
 
@@ -100,8 +108,9 @@ def _has_request(driven: dict, call_id: str) -> bool:
     )
 
 
-def _step(label: str, tool: str, args: object) -> dict:
-    return {"label": label, "tool": tool, "args": args}
+def _step(label: str, tool: str, args: object, *, request_permission: bool = False) -> dict:
+    """Describe a tool attempt and optional independent host permission event."""
+    return {"label": label, "tool": tool, "args": args, "requestPermission": request_permission}
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -147,13 +156,13 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
         for key in path_keys:
             for target in targets:
                 label = f"{alias}|{key}|{target}"
-                cases.append(_step(label, alias, {key: target, "content": "CHANGED"}))
+                cases.append(_step(label, alias, {key: target, "content": "CHANGED"}, request_permission=True))
                 expected[label] = protected.resolve()
     for alias in patch_aliases:
         for key in patch_keys:
             for target in targets:
                 label = f"{alias}|{key}|{target}"
-                cases.append(_step(label, alias, _patch(key, target)))
+                cases.append(_step(label, alias, _patch(key, target), request_permission=True))
                 expected[label] = protected.resolve()
 
     cases.extend([
@@ -222,18 +231,37 @@ def test_literal_apply_patch_relative_target_reaches_guard_before_native_patch(
     patch = _patch("patchText", "hooks/guard.py")
 
     driven = _drive(root, root, [
-        _step("native-identity", "apply_patch", patch),
+        _step("native-identity", "apply_patch", patch, request_permission=True),
     ])
 
     result = driven["results"][0]
     assert result["allowed"] is False
+    assert result["beforeReturned"] is False
+    assert "[T3_BLOCKED]" in result["error"]
     assert result["permissionIndexes"] == [0]
     exchange = _exchange(driven, result["callID"])
     assert exchange["sent"]["tool"] == "apply_patch"
     assert exchange["sent"]["args"]["file_paths"] == [str(protected.resolve())]
     assert exchange["received"]["action"] == "deny"
     assert re.fullmatch(r"P-[0-9a-f]{32}", exchange["received"].get("approval_id", ""))
+    permission = driven["permissionAsks"][0]
+    assert permission["status"] == "ask"
+    assert permission["permission"]["metadata"]["gaiaApprovalID"] == exchange["received"]["approval_id"]
     assert protected.read_text() == "ORIGINAL\n"
+
+
+def test_host_permission_without_bridge_approval_stays_denied(tmp_path):
+    """The driver cannot manufacture consent by delivering an uncorrelated event."""
+    root, _, unprotected = _workspace(tmp_path)
+    driven = _drive(root, root, [
+        _step("uncorrelated", "Edit", {"path": str(unprotected)}, request_permission=True),
+    ])
+    result = driven["results"][0]
+    assert result["beforeReturned"] is True
+    assert _exchange(driven, result["callID"])["received"]["action"] == "allow"
+    assert result["allowed"] is False
+    assert driven["permissionAsks"][0]["status"] == "deny"
+    assert "gaiaApprovalID" not in driven["permissionAsks"][0]["permission"]["metadata"]
 
 
 def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed(tmp_path):
