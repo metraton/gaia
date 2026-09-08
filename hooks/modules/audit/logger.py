@@ -13,6 +13,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 
+from gaia.redaction import redact_text, redact_tree
+
 from ..core.paths import get_logs_dir
 from ..core.state import get_session_id
 
@@ -65,7 +67,7 @@ class AuditLogger:
         # Extract command for bash tools
         command = ""
         if tool_name.lower() == "bash":
-            command = parameters.get("command", "")
+            command = redact_text(str(parameters.get("command", "")))
 
         # Create audit record
         audit_record = {
@@ -115,7 +117,7 @@ class AuditLogger:
             "event": "error",
             "component": component,
             "error_type": error_type,
-            "detail": detail[:2000],
+            "detail": redact_text(detail)[:2000],
         }
         if context:
             record["context"] = self._sanitize_params(context)
@@ -169,7 +171,7 @@ class AuditLogger:
         if tier is not None:
             record["tier"] = tier
         if reason is not None:
-            record["reason"] = reason
+            record["reason"] = redact_text(reason)
         if fingerprint is not None:
             record["fingerprint"] = fingerprint
         if origin is not None:
@@ -187,10 +189,11 @@ class AuditLogger:
         for key, value in parameters.items():
             if any(s in key.lower() for s in sensitive_keys):
                 sanitized[key] = "[REDACTED]"
-            elif isinstance(value, str) and len(value) > 500:
-                sanitized[key] = value[:500] + "...[truncated]"
             else:
-                sanitized[key] = value
+                redacted = redact_tree(value)
+                if isinstance(redacted, str) and len(redacted) > 500:
+                    redacted = redacted[:500] + "...[truncated]"
+                sanitized[key] = redacted
 
         return sanitized
 
