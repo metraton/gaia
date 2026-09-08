@@ -22,6 +22,8 @@ pending rows.
 from __future__ import annotations
 
 import json
+import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -39,6 +41,17 @@ def main() -> int:
     sys.path.insert(0, hooks_dir)
     sys.path.insert(0, repo_root)
 
+    from gaia.paths import db_path
+
+    database = db_path().resolve()
+    assert database == Path(os.environ["GAIA_DB"]).resolve()
+    database_exists = database.is_file()
+    if database_exists:
+        with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as con:
+            actual = Path(con.execute("PRAGMA database_list").fetchone()[2])
+            assert actual.resolve() == database
+            assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
+
     from adapters.claude_code import ClaudeCodeAdapter
 
     adapter = ClaudeCodeAdapter()
@@ -55,8 +68,13 @@ def main() -> int:
         )
 
     module = sys.modules["adapters.claude_code"]
+    assert database.is_file() == database_exists
+    if database_exists:
+        with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as con:
+            assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
     print(json.dumps({
         "hooks_dir": str(Path(module.__file__).parent.parent.resolve()),
+        "db_path": str(database),
         "verdicts": verdicts,
     }))
     return 0

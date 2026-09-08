@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
+HOOKS_DIR = Path(__file__).resolve().parents[4] / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.security.mutative_verbs import detect_mutative_command
@@ -235,7 +235,7 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "sensitive-write",
         GATED,
-        "tee /home/jorge/ws/me/gaia/hooks/pre_tool_use.py",
+        f'tee "{HOOKS_DIR / "pre_tool_use.py"}"',
         True,
         T3,
     ),
@@ -303,21 +303,21 @@ CLASSIFIER_TRUTH_TABLE = [
     (
         "write-tee-working-tree",
         FREE,
-        "tee /home/jorge/ws/me/gaia/notes.txt",
+        f'tee "{HOOKS_DIR.parent / "notes.txt"}"',
         False,
         T0,
     ),
     (
         "write-tee-append-working-tree",
         FREE,
-        "tee -a /home/jorge/ws/me/gaia/README.md",
+        f'tee -a "{HOOKS_DIR.parent / "README.md"}"',
         False,
         T0,
     ),
     (
         "write-tee-scratch",
         FREE,
-        "tee /home/jorge/.gaia/scratch/out.txt",
+        f'tee "{Path.home() / ".gaia" / "scratch" / "out.txt"}"',
         False,
         T0,
     ),

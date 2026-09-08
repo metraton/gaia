@@ -89,7 +89,7 @@ EXPECTED = {
 }
 
 
-def _run_probe(hooks_dir: Path, env_overrides: dict | None = None) -> dict:
+def _run_probe(hooks_dir: Path, env_overrides: dict) -> dict:
     """Return {label: verdict} for TARGETS, with the tree loaded from hooks_dir."""
     assert PROBE.is_file(), f"probe missing: {PROBE}"
     assert (hooks_dir / "adapters" / "claude_code.py").is_file(), (
@@ -115,29 +115,53 @@ def _run_probe(hooks_dir: Path, env_overrides: dict | None = None) -> dict:
         f"stdout={completed.stdout}\nstderr={completed.stderr}"
     )
     payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert payload["hooks_dir"] == str(hooks_dir.resolve())
+    assert payload["db_path"] == str(Path(env_overrides["GAIA_DB"]).resolve())
     return {label: payload["verdicts"][TARGETS[label]] for label in labels}
 
 
 @pytest.fixture(scope="module")
 def copied_hooks(tmp_path_factory) -> Path:
-    """A physically different load location: the tree copied elsewhere."""
+    """Relocate hooks with the sibling metadata supplied by runtime installs."""
     destination = tmp_path_factory.mktemp("relocated") / "hooks"
     shutil.copytree(
         IN_PLACE_HOOKS,
         destination,
         ignore=shutil.ignore_patterns("__pycache__"),
     )
+    metadata = Path("opencode") / "consent-metadata.json"
+    (destination.parent / metadata.parent).mkdir()
+    shutil.copy2(REPO_ROOT / metadata, destination.parent / metadata)
     return destination
 
 
 @pytest.fixture(scope="module")
-def verdicts_in_place() -> dict:
-    return _run_probe(IN_PLACE_HOOKS)
+def probe_env(tmp_path_factory, bootstrapped_db_template) -> dict:
+    """Give module-scoped probes a real scratch DB before function fixtures run."""
+    from tests.conftest import copy_bootstrapped_db
+
+    root = tmp_path_factory.mktemp("layout-probe-data")
+    database = copy_bootstrapped_db(bootstrapped_db_template, root / "gaia.db")
+    return {"GAIA_DB": str(database), "GAIA_DATA_DIR": str(root)}
+
+
+def test_relocated_metadata_matches_runtime_dependency(copied_hooks):
+    """Relocated hooks retain the exact dependency rather than a registry mock."""
+    metadata = Path("opencode") / "consent-metadata.json"
+    relocated = copied_hooks.parent / metadata
+    assert relocated.is_file()
+    assert not relocated.is_symlink()
+    assert relocated.read_bytes() == (REPO_ROOT / metadata).read_bytes()
 
 
 @pytest.fixture(scope="module")
-def verdicts_relocated(copied_hooks) -> dict:
-    return _run_probe(copied_hooks)
+def verdicts_in_place(probe_env) -> dict:
+    return _run_probe(IN_PLACE_HOOKS, probe_env)
+
+
+@pytest.fixture(scope="module")
+def verdicts_relocated(copied_hooks, probe_env) -> dict:
+    return _run_probe(copied_hooks, probe_env)
 
 
 @pytest.fixture(scope="module")

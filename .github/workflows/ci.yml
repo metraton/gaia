@@ -45,6 +45,11 @@ jobs:
           node-version: "20"
           cache: npm
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
       # The Python suite includes tests that shell out to real Node scripts
       # (e.g. tests/cli/test_pre_publish_dry_run_representative.py runs
       # `node bin/pre-publish-validate.js --dry-run`, which imports the `chalk`
@@ -221,7 +226,7 @@ jobs:
   # Step -> AC map:
   #   AC-2  "AC-2 -- hooks import on Windows"      (fcntl / POSIX-only imports)
   #   AC-4  "AC-4 -- gaia install exits 0"         (install success on Windows)
-  #   AC-6  "AC-6 -- gaia doctor is green"         (no RED checks; symlinks 6/6
+  #   AC-6  "AC-6 -- gaia doctor is green"         (no RED checks; symlinks 7/7
   #                                                 or recognized copy fallback)
   #   AC-8  "AC-8 -- runtime smoke"                (whole job + the runtime
   #                                                 post_tool_use / T3 grant /
@@ -316,7 +321,7 @@ jobs:
       # AC-6 -- `gaia doctor` must report NO red (error) checks on Windows.
       # windows_smoke.py parses `gaia doctor --json` and fails only on
       # severity=error (warnings tolerated), so this asserts the exact AC:
-      # hooks-importable passes and Symlinks is 6/6 (real links, or the
+      # hooks-importable passes and Symlinks is 7/7 (real links, or the
       # recognized version-stamped copy fallback).
       - name: AC-6 -- gaia doctor is green on Windows
         env:

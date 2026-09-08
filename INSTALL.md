@@ -216,7 +216,7 @@ your-project/
 └── gaia.db                        ← Canonical context + memory store (SQLite)
 ```
 
-Five directory symlinks (`agents`, `tools`, `hooks`, `config`, `skills`) plus one `CHANGELOG.md` file link — the canonical list is `_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.
+Six directory symlinks (`agents`, `tools`, `hooks`, `config`, `skills`, `opencode`) plus one `CHANGELOG.md` file link — the canonical list is `_SYMLINK_NAMES` + `_SYMLINK_FILES` in `bin/cli/_install_helpers.py`.
 
 Project context (stack, GitOps layout, Terraform layout, etc.) lives in `~/.gaia/gaia.db`, not in `.claude/project-context/`. Run `gaia scan` to populate it and `gaia context show` to inspect it.
 

@@ -103,6 +103,14 @@ def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
     monkeypatch.setenv("GAIA_DB", str(db_path))
     env = os.environ.copy()
     env["GAIA_DB"] = str(db_path)
+    from gaia.paths import db_path as resolved_db_path
+    from gaia.store import writer
+
+    assert resolved_db_path().resolve() == db_path.resolve()
+    with writer._connect() as con:
+        actual_path = Path(con.execute("PRAGMA database_list").fetchone()[2])
+        assert actual_path.resolve() == db_path.resolve()
+        assert con.execute("SELECT COUNT(*) FROM approvals").fetchone()[0] == 0
     return env, db_path
 
 

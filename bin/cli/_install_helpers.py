@@ -825,7 +825,7 @@ def merge_worktree_settings(workspace: Path, *, dry_run: bool = False) -> dict[s
 # ---------------------------------------------------------------------------
 
 # Directories the package exposes via .claude/<name> symlinks
-_SYMLINK_NAMES = ["agents", "tools", "hooks", "config", "skills"]
+_SYMLINK_NAMES = ["agents", "tools", "hooks", "config", "skills", "opencode"]
 # Files (not dirs) we link or copy into .claude/
 _SYMLINK_FILES = ["CHANGELOG.md"]
 

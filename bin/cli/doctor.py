@@ -1049,7 +1049,7 @@ def _extract_check_values(
 @register_check("Symlinks", order=50)
 def check_symlinks(project_root: Path) -> dict:
     """Check .claude/ symlinks resolve to package content."""
-    names = ["agents", "tools", "hooks", "config", "skills", "CHANGELOG.md"]
+    names = ["agents", "tools", "hooks", "config", "skills", "opencode", "CHANGELOG.md"]
     critical = {"agents", "hooks", "skills"}
     valid = 0
     has_critical_missing = False
@@ -1664,7 +1664,7 @@ def _frontmatter_block(path: Path) -> "str | None":
     full YAML engine would be dead weight.
     """
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return None
     if not text.startswith("---"):

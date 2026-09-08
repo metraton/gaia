@@ -81,7 +81,7 @@ gaia scan
 
 `gaia install` will:
 1. Bootstrap the DB (`~/.gaia/gaia.db`) with the current schema (lazy on first use, or here explicitly)
-2. Create `.claude/` directory with 5 symlinks + a `CHANGELOG.md` link to this package
+2. Create `.claude/` directory with 6 directory symlinks + a `CHANGELOG.md` link to this package
 3. Merge hooks and permissions into `settings.local.json` (preserves existing user config)
 4. Write `plugin-registry.json` with `installed[].name == "gaia"`
 
