@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -42,12 +44,29 @@ _ISSUER = "opencode-runtime"
 @pytest.fixture(autouse=True)
 def ledger(tmp_path, monkeypatch):
     """Point issuance and resolution at a ledger this test owns."""
+    from gaia.paths import data_dir, db_path
+
+    assert data_dir().resolve().is_relative_to(tmp_path.resolve())
+    assert db_path().resolve() == (data_dir() / "gaia.db").resolve()
     monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "ledger"))
     return tmp_path
 
 
 @pytest.fixture
-def drive(ledger, monkeypatch):
+def path_without_host_gaia(tmp_path, monkeypatch):
+    """Expose required runtimes, but no ambient Gaia launcher, as on clean CI."""
+    runtime_bin = tmp_path / "runtime-bin"
+    runtime_bin.mkdir()
+    for name in ("bun", "python3"):
+        executable = shutil.which(name)
+        assert executable is not None, f"required test runtime missing: {name}"
+        (runtime_bin / name).symlink_to(Path(executable).resolve())
+    monkeypatch.setenv("PATH", str(runtime_bin))
+    assert shutil.which("gaia") is None
+
+
+@pytest.fixture
+def drive(ledger, monkeypatch, path_without_host_gaia):
     """Run the real plugin, then join the host run its bridge minted in.
 
     Issuance happens in a bridge process the bun driver spawned; these
@@ -98,6 +117,9 @@ def _policy_payload(emitted):
 
 
 def _control_plane_turn(drive):
+    """Emit a request for this package's declared CLI, independent of host PATH."""
+    manifest = json.loads((_REPO / "package.json").read_text(encoding="utf-8"))
+    cli = (_REPO / manifest["bin"]["gaia"]).resolve()
     return drive(
         {
             "steps": [
@@ -107,7 +129,7 @@ def _control_plane_turn(drive):
                     "sessionID": "ses-root",
                     "callID": "call-1",
                     "tool": "bash",
-                    "args": {"command": "gaia plan show brief"},
+                    "args": {"command": shlex.join([str(cli), "plan", "show", "brief"])},
                 },
             ],
         }
@@ -116,8 +138,12 @@ def _control_plane_turn(drive):
 
 def test_a_host_issued_claim_confers_the_control_plane_lane(drive):
     """The affirmative claim, over the plugin's own emission end to end."""
+    from modules.security.gaia_cli_only_guard import is_trusted_gaia_binary
+
     requests = _control_plane_turn(drive)
     emitted = _emitted(requests, "tool.execute.before", "ses-root")
+    assert shutil.which("gaia") is None
+    assert is_trusted_gaia_binary(shlex.split(emitted["args"]["command"])[0]) is True
 
     attestation = emitted["roleContext"]["attestation"]
     assert attestation.startswith(ATTESTATION_SCHEME)
@@ -135,6 +161,20 @@ def test_a_host_issued_claim_confers_the_control_plane_lane(drive):
     assert OpenCodeAdapter().adapt_pre_tool_use(
         OpenCodeAdapter().parse_event(json.dumps(emitted))
     ).output.get("action") != "deny"
+
+
+@pytest.mark.parametrize("binary", ["gaia", str(_REPO / "opencode" / "bridge.py")])
+def test_attested_claim_does_not_authorize_an_untrusted_cli(drive, binary):
+    """A genuine host claim cannot replace executable package provenance."""
+    emitted = _emitted(_control_plane_turn(drive), "tool.execute.before", "ses-root")
+    command = shlex.join([binary, "plan", "show", "brief"])
+    untrusted = dict(emitted, args={"command": command}, originalArgs={"command": command})
+    assert _policy_payload(untrusted)["role_context"]["verified"] is True
+    response = OpenCodeAdapter().adapt_pre_tool_use(
+        OpenCodeAdapter().parse_event(json.dumps(untrusted))
+    )
+    assert response.output["action"] == "deny"
+    assert "not the trusted gaia CLI" in response.output["reason"]
 
 
 def test_the_issued_token_is_recorded_by_the_issuing_process(drive, ledger):
