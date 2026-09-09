@@ -296,3 +296,52 @@ def test_diff_capture_failure_leaves_worktree_untouched(repo, monkeypatch):
     assert "diff capture failed" in result["reason"]
     assert worktree.exists()
     assert _snapshot(worktree) == before
+
+
+def test_reclaiming_captured_worktree_is_idempotent(repo):
+    """A repeated cleanup reuses the original evidence row and blob."""
+    import gaia.retention.worktree_reclaim as wr
+    from gaia.evidence.store import list_evidence_for_ac
+    from gaia.paths import evidence_dir
+
+    brief_id = _seed_brief()
+    worktree = _dirty_agentic_worktree(repo, "wt-idempotent")
+
+    first = wr.reclaim_worktree(
+        repo, worktree, workspace="me", brief_slug="wt-reclaim-test", ac_id="AC-9"
+    )
+    rows_after_first = list_evidence_for_ac(brief_id, "AC-9")
+    artifact_path = Path(rows_after_first[0]["artifact_path"])
+    original_bytes = artifact_path.read_bytes()
+
+    second = wr.reclaim_worktree(
+        repo, worktree, workspace="me", brief_slug="wt-reclaim-test", ac_id="AC-9"
+    )
+
+    assert first["status"] == second["status"] == "captured_pending_removal"
+    assert first["evidence_id"] == second["evidence_id"]
+    assert list_evidence_for_ac(brief_id, "AC-9") == rows_after_first
+    assert list(evidence_dir().rglob("*.diff")) == [artifact_path]
+    assert artifact_path.read_bytes() == original_bytes
+    assert worktree.exists()
+
+
+def test_reclaiming_absent_worktree_is_idempotent(repo, tmp_path):
+    """An already-removed worktree has converged on the recycled state."""
+    import gaia.retention.worktree_reclaim as wr
+
+    result = wr.reclaim_worktree(
+        repo,
+        tmp_path / "already-absent",
+        workspace="me",
+        brief_slug="wt-reclaim-test",
+        ac_id="AC-9",
+    )
+
+    assert result == {
+        "status": "recycled",
+        "recycled": True,
+        "captured": False,
+        "evidence_id": None,
+        "reason": "worktree is already absent",
+    }

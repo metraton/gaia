@@ -103,6 +103,7 @@ Public API::
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 from pathlib import Path
 from typing import List, Optional
@@ -302,10 +303,22 @@ def _deposit_diff_evidence(
     still reject the write, and a rejection here deletes the just-written
     blob instead of leaving it orphaned.
     """
-    from gaia.evidence.fs import delete_blob, write_blob
-    from gaia.evidence.store import insert_evidence
+    from gaia.evidence.fs import delete_blob, read_blob, write_blob
+    from gaia.evidence.store import insert_evidence, list_evidence_for_ac
 
     payload = diff_text.encode("utf-8")
+    digest = hashlib.sha256(payload).digest()
+    for existing in list_evidence_for_ac(brief_id, ac_id, db_path=db_path):
+        artifact_path = existing.get("artifact_path")
+        if not artifact_path:
+            continue
+        existing_payload = read_blob(artifact_path)
+        if (
+            existing_payload is not None
+            and hashlib.sha256(existing_payload).digest() == digest
+        ):
+            return existing
+
     blob_path, size = write_blob(workspace, brief_slug, ac_id, payload, ext=".diff")
     try:
         return insert_evidence(
@@ -396,6 +409,15 @@ def reclaim_worktree(
     set on every non-recycled status, naming what stopped it or, for
     ``captured_pending_removal``, why removal was deliberately withheld.
     """
+    if not worktree_path.exists():
+        return {
+            "status": "recycled",
+            "recycled": True,
+            "captured": False,
+            "evidence_id": None,
+            "reason": "worktree is already absent",
+        }
+
     try:
         diff_text = capture_worktree_diff(worktree_path)
     except Exception as exc:  # noqa: BLE001 -- any capture failure must halt here
