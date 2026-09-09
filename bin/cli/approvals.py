@@ -6,7 +6,8 @@ Subcommands:
                                          -- list pending approvals
                                             (--orphans-only filters to
                                              pendings from dead sessions)
-  show APPROVAL_ID [--json]              -- show full detail of one approval
+  show APPROVAL_ID [--json|--consent-surface]
+                                         -- show detail or trusted consent data
   revoke APPROVAL_ID                     -- revoke an active command_set grant by approval_id
   reject APPROVAL_ID [--reason REASON]   -- reject an exact pending approval
   reject --all [--reason REASON]         -- reject ALL pending approvals in one call
@@ -1228,16 +1229,27 @@ def cmd_show_v2(args) -> int:
     if raw_id is None:
         return 1
     output_json = getattr(args, "json", False)
+    consent_surface = getattr(args, "consent_surface", False)
+    if output_json and consent_surface:
+        _print_error("--json and --consent-surface are mutually exclusive.", args)
+        return 1
 
     try:
         store = _import_approval_store()
         approval = store.get_by_id(raw_id)
         if approval is None:
+            if consent_surface:
+                _print_error(f"No pending approval found for ID: {raw_id}", args)
+                return 1
             # Fall back to old show command.
             return cmd_show(args)
-
+        if consent_surface:
+            return _print_consent_presentation(approval, args)
         events = store.get_history(raw_id)
     except Exception as exc:
+        if consent_surface:
+            _print_error(f"Failed to load pending approval: {exc}", args)
+            return 1
         # Try old path on error.
         try:
             return cmd_show(args)
@@ -1257,6 +1269,51 @@ def cmd_show_v2(args) -> int:
 
     display = _import_approval_display()
     display.print_approval_detail(approval, events, grant=grant)
+    return 0
+
+
+def _native_consent_presentation(payload: dict, approval_id: str) -> dict:
+    """Return trusted unbound surface data and its resolver-compatible label."""
+    from adapters.consent_presentation import (
+        UNBOUND_PRESENTATION,
+        envelope_from_sealed_payload,
+        native_presentation,
+    )
+    from modules.security.approval_grants import render_approve_label
+
+    envelope = envelope_from_sealed_payload(
+        payload,
+        approval_id=approval_id,
+        binding=UNBOUND_PRESENTATION,
+    )
+    presentation = native_presentation(envelope, payload)
+    return {
+        **presentation,
+        "approve_label": render_approve_label(payload, approval_id),
+    }
+
+
+def _print_consent_presentation(approval: dict, args) -> int:
+    """Print read-only native consent data for one pending approval."""
+    approval_id = approval.get("id", "")
+    status = approval.get("status")
+    if status != "pending":
+        _print_error(
+            f"Consent surface requires a pending approval; {approval_id} is {status or 'unknown'}.",
+            args,
+        )
+        return 1
+
+    try:
+        payload = json.loads(approval.get("payload_json") or "")
+        if not isinstance(payload, dict):
+            raise ValueError("sealed payload is not a JSON object")
+        presentation = _native_consent_presentation(payload, approval_id)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        _print_error(f"Cannot render consent surface for {approval_id}: {exc}", args)
+        return 1
+
+    print(json.dumps(presentation, indent=2))
     return 0
 
 
@@ -2004,7 +2061,16 @@ def register(subparsers) -> None:
         "approval_id", metavar="APPROVAL_ID",
         help="Full canonical approval_id P-<32 lowercase hex>",
     )
-    p_show.add_argument("--json", action="store_true", help="JSON output")
+    show_output = p_show.add_mutually_exclusive_group()
+    show_output.add_argument("--json", action="store_true", help="JSON detail output")
+    show_output.add_argument(
+        "--consent-surface",
+        action="store_true",
+        help=(
+            "JSON native consent data: byte-exact visible_text plus the exact "
+            "resolver-compatible approve_label"
+        ),
+    )
     p_show.set_defaults(func=cmd_show_v2)
 
     # revoke (T3.2) -- now checks new DB first
@@ -2265,7 +2331,9 @@ def _build_standalone_parser() -> argparse.ArgumentParser:
 
     p_show = subparsers.add_parser("show", help="Show approval detail")
     p_show.add_argument("approval_id", metavar="APPROVAL_ID")
-    p_show.add_argument("--json", action="store_true")
+    show_output = p_show.add_mutually_exclusive_group()
+    show_output.add_argument("--json", action="store_true")
+    show_output.add_argument("--consent-surface", action="store_true")
     p_show.set_defaults(func=cmd_show_v2)
 
     p_approve = subparsers.add_parser("approve", help="Approve a pending approval")

@@ -163,6 +163,22 @@ def test_substrate_read_verbs_are_admitted(run_guard, argline) -> None:
     assert reason is None
 
 
+def test_approval_consent_surface_uses_the_existing_show_read_phrase(run_guard) -> None:
+    before = set(ALLOWED_READ_PHRASES)
+    allowed, reason = run_guard(
+        "approvals show P-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --consent-surface"
+    )
+    assert allowed is True, reason
+    assert reason is None
+    assert set(ALLOWED_READ_PHRASES) == before
+    assert ("approvals", "show") in ALLOWED_READ_PHRASES
+    assert not any(
+        "consent-surface" in token
+        for phrase in ALLOWED_READ_PHRASES
+        for token in phrase
+    )
+
+
 @pytest.mark.parametrize(
     "argline",
     [

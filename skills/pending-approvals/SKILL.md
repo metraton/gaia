@@ -17,7 +17,10 @@ Use the unified CLI and treat the DB as primary:
   has NO `--status` filter. Filtering by decision lives on
   `gaia approvals history --status <pending|approved|rejected|revoked>`
   (`--limit N`, default 50).
-- `gaia approvals show <approval_id>`
+- `gaia approvals show <approval_id>` -- ordinary human detail; `--json` keeps
+  the machine detail shape, while the mutually exclusive `--consent-surface`
+  returns trusted `visible_text`, `visible_lines`, `metadata`, and the exact
+  resolver-compatible `approve_label` for an undecided pending only
 - `gaia approvals approve <approval_id>`
 - `gaia approvals reject <approval_id>`
 - `gaia approvals revoke <approval_id>`

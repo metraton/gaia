@@ -38,6 +38,8 @@ import pytest
 HOOKS_DIR = Path(__file__).parent.parent.parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent
+BIN_DIR = REPO_ROOT / "bin"
+sys.path.insert(0, str(BIN_DIR))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -57,6 +59,7 @@ from adapters.registry import (  # noqa: E402
     registered_host_mechanism_names,
     registered_host_surface_names,
 )
+from cli.approvals import _native_consent_presentation  # noqa: E402
 
 APPROVAL_ID = "P-" + "a1b2c3d4" + "e" * 24
 HOST_BINDING = ConsentBinding(
@@ -191,6 +194,25 @@ def test_the_two_surfaces_differ_only_where_the_consent_attempt_differs():
     for surface in (host_surface, reconstructed):
         assert _line_for(surface, "CONSENT").startswith("CONSENT:"), surface
         assert "protocol 1  correlation C-" in _line_for(surface, "CONSENT"), surface
+
+
+def test_cli_consent_surface_is_the_reconstructed_surface_with_canonical_label():
+    command, _verb = COVERED_COMMANDS[0]
+    verdict = detect_mutative_command(command)
+    payload = _build_sealed_payload(
+        command=command,
+        verb=verdict.verb,
+        category=verdict.category,
+        agent_type="gitops-operator",
+    )
+
+    presentation = _native_consent_presentation(payload, APPROVAL_ID)
+
+    assert presentation["visible_text"] == render_consent_surface(payload, APPROVAL_ID)
+    assert presentation["visible_lines"] == presentation["visible_text"].splitlines()
+    assert presentation["approve_label"] == (
+        f"Approve -- {payload['operation']} [{APPROVAL_ID}]"
+    )
 
 
 def _undeclared_payload() -> dict:
