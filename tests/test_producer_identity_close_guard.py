@@ -383,6 +383,8 @@ def _seed(tmp_db: Path, gate_statuses: tuple[str, ...] = (),
         add_gate_to_task,
         add_task_to_plan,
         insert_dispatched_handoff,
+        set_gate_status,
+        set_task_status,
         upsert_plan,
     )
 
@@ -392,10 +394,23 @@ def _seed(tmp_db: Path, gate_statuses: tuple[str, ...] = (),
                 db_path=tmp_db)
     add_task_to_plan(_WORKSPACE, _BRIEF, _ORDER, "close this task",
                      db_path=tmp_db)
+    gates = []
     for status in gate_statuses:
-        add_gate_to_task(_WORKSPACE, _BRIEF, _ORDER, "command",
-                         evidence_shape="pytest -q", status=status,
-                         db_path=tmp_db)
+        gate = add_gate_to_task(
+            _WORKSPACE, _BRIEF, _ORDER, "command",
+            evidence_shape="pytest -q", db_path=tmp_db,
+        )
+        gates.append((gate["gate_id"], status))
+    for gate_id, status in gates:
+        if status != "pending":
+            set_gate_status(
+                _WORKSPACE, _BRIEF, _ORDER, gate_id, status,
+                db_path=tmp_db,
+            )
+    if gate_statuses and all(
+        status == APPROVING_GATE_STATUS for status in gate_statuses
+    ):
+        set_task_status(_WORKSPACE, _BRIEF, _ORDER, "pending", db_path=tmp_db)
     if bound_agent is not None:
         insert_dispatched_handoff(
             contract_id=f"dispatch.session-x.{bound_agent}.{_task_row_id(tmp_db)}",
