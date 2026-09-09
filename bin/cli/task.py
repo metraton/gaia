@@ -29,7 +29,7 @@ Subcommands:
                       [--workspace W] [--json]
     gaia task gate add <brief> <order_num> --type=T   Add a verification gate
                        [--evidence-type] [--evidence-shape] [--artifact-path]
-                       [--status] [--workspace W] [--json]
+                       [--workspace W] [--json]
     gaia task gate list <brief> <order_num>           List a task's gates
                         [--workspace W] [--json]
     gaia task gate remove <brief> <order_num> <gate_id>  Remove a gate
@@ -420,7 +420,6 @@ def _cmd_gate_add(args) -> int:
             evidence_type=args.evidence_type,
             evidence_shape=args.evidence_shape,
             artifact_path=args.artifact_path,
-            status=args.status,
             db_path=None,
         )
     except StateTransitionForbidden as exc:
@@ -840,6 +839,7 @@ def register(subparsers) -> None:
 
     gate_add_p = gate_actions.add_parser(
         "add", help="Add a verification gate to a task",
+        description="Add a verification gate in pending status.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     gate_add_p.add_argument("brief", metavar="BRIEF", help="Parent brief slug.")
@@ -856,9 +856,6 @@ def register(subparsers) -> None:
                             default=None, help="Evidence shape / check spec.")
     gate_add_p.add_argument("--artifact-path", dest="artifact_path",
                             default=None, help="Artifact path for evidence.")
-    gate_add_p.add_argument("--status", default="pending",
-                            choices=("pending", "pass", "fail"),
-                            help="Gate status (VALID_GATE_STATUSES; default 'pending').")
     gate_add_p.add_argument("--workspace", default=None, metavar="W")
     gate_add_p.add_argument("--json", action="store_true", default=False,
                             help="Emit JSON.")

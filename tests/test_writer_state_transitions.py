@@ -10,6 +10,7 @@ Coverage:
 
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -104,12 +105,20 @@ def _approve_the_task_gate(db_path: Path, brief_name: str = "test-brief") -> Non
     """
     from gaia.store.writer import add_gate_to_task
 
-    add_gate_to_task(
+    added = add_gate_to_task(
         "me", brief_name, 1, "command",
         evidence_shape="run: true | expect: exit 0",
-        status="pass",
         db_path=db_path,
     )
+    con = sqlite3.connect(str(db_path))
+    try:
+        con.execute(
+            "UPDATE task_gates SET status = 'pass' WHERE id = ?",
+            (added["gate_id"],),
+        )
+        con.commit()
+    finally:
+        con.close()
 
 
 # ---------------------------------------------------------------------------

@@ -370,6 +370,28 @@ def _derived(result: dict) -> dict:
     return result[DERIVED_CLOSURE_RESULT_KEY]
 
 
+def test_gate_creation_starts_pending_without_running_derived_closure(
+    tmp_db, monkeypatch,
+):
+    import gaia.store.writer as writer
+
+    _seed(tmp_db, gate_count=0)
+
+    def _unexpected_derived_closure(**_kwargs):
+        raise AssertionError("gate creation must not run derived task closure")
+
+    monkeypatch.setattr(
+        writer, "_apply_derived_task_closure", _unexpected_derived_closure,
+    )
+    result = writer.add_gate_to_task(
+        _WORKSPACE, _BRIEF, _ORDER, "command", db_path=tmp_db,
+    )
+
+    assert _gate_statuses(tmp_db) == ["pending"]
+    assert _task_status(tmp_db) == OPEN_STATUS
+    assert writer.DERIVED_CLOSURE_RESULT_KEY not in result
+
+
 # ---------------------------------------------------------------------------
 # Branch 1: an approving verdict closes the task, with no manual step
 # ---------------------------------------------------------------------------

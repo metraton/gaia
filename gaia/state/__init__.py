@@ -323,9 +323,9 @@ VALID_VERIFICATION_TYPES: tuple[str, ...] = (
 # create-copy-drop-rename, mirroring v34_to_v35.sql). This closes what was
 # until then a deliberate, documented asymmetry: every other
 # STATE_MACHINE_REGISTRY entry paired a Python tuple with a real SQL CHECK,
-# while this one was enforced code-level only (gaia.store.writer
-# add_gate_to_task / set_gate_status guards). Both enforcement layers remain
-# in place -- the writers' guard is not redundant with the DB CHECK, it gives
+# while this one was enforced code-level only by
+# gaia.store.writer.set_gate_status. Both enforcement layers remain in place --
+# the writer's guard is not redundant with the DB CHECK, it gives
 # a clean ValueError instead of a raw sqlite3.IntegrityError at the call site.
 #
 # Consequence for tools/state/diff_source_of_truth.py: with the CHECK now
