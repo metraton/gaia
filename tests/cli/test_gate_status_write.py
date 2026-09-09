@@ -183,5 +183,29 @@ def test_gate_status_write_cli_set_status_rejects_invalid_status(tmp_db, tmp_pat
     assert _gate_status(tmp_db, gate_id) == "pending"
 
 
+def test_gate_status_write_cli_reports_preserved_override_divergence(capsys):
+    from cli.task import _print_derived_closure
+
+    args = argparse.Namespace(brief="gate-status-brief", order_num=1)
+    _print_derived_closure(
+        {
+            "derived_closure": {
+                "action": "override_preserved",
+                "override_event_id": 41,
+                "divergence_event_id": 42,
+                "why": "a failing gate conflicts with the audited close override",
+            }
+        },
+        args,
+    )
+
+    output = capsys.readouterr().out
+    assert "Override preserved" in output
+    assert "remains done" in output
+    assert "override event 41" in output
+    assert "divergence event 42" in output
+    assert "a failing gate conflicts" in output
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

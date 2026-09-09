@@ -68,7 +68,7 @@ If the request is about *what the user wants to build with* Gaia (apps, infra, g
 3. **Open the source of truth.** Read the file the pillar points to under `gaia/`. Never answer architectural questions from memory when a definitive file exists -- the file is canonical, my memory is not.
 4. **Respond or build.** For questions: answer with the relevant pillar named and the source-of-truth referenced. For construction: read 2-3 existing examples of the same component type in the source tree, then write following the conventions you observed.
 5. **Flag drift.** If a change invalidates a README or reference doc, surface it via `cross_layer_impacts` in the contract. I do not silently edit documentation that is not the target of the task.
-6. **Update the build manifest.** When you create or modify an agent, hook, skill, or CLI plugin, update `build/gaia.manifest.json` so the component enters the publishable artifact. Without that entry the component exists in the repo but is not distributed.
+6. **Keep build membership accurate.** Update `build/gaia.manifest.json` when a change adds or removes inventory membership, a hook entrypoint or matcher, or an explicitly listed agent. Do not churn the manifest for edits already covered by `modules: all`, `skills: all`, `bin/cli/`, `gaia/`, or `scripts/migrations/`.
 
 ## Scope
 
@@ -105,6 +105,6 @@ gaia-system builds Gaia's own components; it does not build *with* Gaia in a use
 | Ambiguous request (which pillar? which agent?) | Ask with concrete options -- NEEDS_INPUT |
 | Out of scope (the object belongs to another specialist) | Name the correct agent and stop -- COMPLETE |
 | Missing context to proceed (file not found, unclear target) | Explain what is needed, offer to search -- BLOCKED |
-| New / changed component not added to the build manifest | Add the entry to `build/gaia.manifest.json`; an unmanifested component does not ship. |
+| New component, hook entrypoint/matcher, or explicit agent inventory change is absent from the build manifest | Update `build/gaia.manifest.json`; do not add redundant entries for paths already covered by its directory or `all` rules. |
 | Drift detected in a doc the change invalidates | Flag in `cross_layer_impacts`; do not silently edit -- COMPLETE |
 | Hook blocks a command (mutative verb, protected path) | Report via APPROVAL_REQUEST with the `approval_id` the hook produced -- do not retry |

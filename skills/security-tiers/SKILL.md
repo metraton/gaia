@@ -30,7 +30,7 @@ security-tiers classifies every operation into four tiers so an agent knows whet
 |------|------------|:---:|---------------|
 | **T0** | Read-only; observes state, changes nothing | No | get, list, describe, show, logs, status |
 | **T1** | Local validation; no remote calls, no state | No | validate, lint, fmt, check |
-| **T2** | Simulation / dry-run; may read remote, never writes | No | plan, diff, dry-run, template |
+| **T2** | Simulation / dry-run; may read remote, never writes | No | plan, diff, --dry-run, template |
 | **T3** | State-mutating; creates, updates, or destroys | **Yes** | apply, create, delete, push, deploy |
 
 **A fifth verdict exists OUTSIDE this ladder: the categorical denial** -- blocked commands, the `.claude`/hooks tree targeted through *Bash* (`hooks/modules/security/protected_path_guard.py::check`), the DB-write guards, and a file write into a git working tree whose author is the SHELL (`hooks/modules/security/shell_write_guard.py::check`). It is not a tier, it is not approvable, and no grant lifts it.

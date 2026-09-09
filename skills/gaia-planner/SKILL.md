@@ -211,6 +211,9 @@ per gate:
 gaia task gate add <brief> <order> --type=<T> --evidence-shape="..." --workspace=<ws>
 ```
 
+- **Adding a gate always authors it in `pending` status.** The planner defines
+  what must be checked; only a verifier records an observed `pass` or `fail`
+  afterward with `gaia task gate set-status`.
 - **Choose `--type` by the task's nature.** `command` or `code` when the
   outcome is executable or testable (a command exits 0, a test passes);
   `semantic` when the task is prose, design, or judgment; `self_review` for a
