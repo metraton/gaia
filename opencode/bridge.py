@@ -85,7 +85,7 @@ def _ack() -> dict[str, object]:
     return {"action": "allow"}
 
 
-def handle(raw: dict[str, object]) -> dict[str, object]:
+def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict[str, object]:
     """Evaluate one OpenCode event and return a plugin-safe response."""
     os.environ["GAIA_HOST"] = "opencode"
     if raw.get("event") == _ATTEST_EVENT:
@@ -97,7 +97,13 @@ def handle(raw: dict[str, object]) -> dict[str, object]:
     kind = event.event_type.value
 
     if kind == "PreToolUse":
-        response = adapter.adapt_pre_tool_use(event)
+        if shell_env_transport:
+            handler = getattr(adapter, "_adapt_pre_tool_use_with_shell_env", None)
+            if handler is None:
+                return _deny("Gaia shell-env transport requires the matching policy adapter")
+            response = handler(event)
+        else:
+            response = adapter.adapt_pre_tool_use(event)
     elif kind == "PostToolUse":
         response = adapter.adapt_post_tool_use(event)
     elif kind in ("Stop", "PostToolUseFailure", "SessionEnd"):
@@ -130,7 +136,9 @@ def main() -> int:
         raw = json.load(sys.stdin)
         if not isinstance(raw, dict):
             raise ValueError("OpenCode bridge input must be a JSON object")
-        output = handle(raw)
+        if sys.argv[1:] not in ([], ["--shell-env-v1"]):
+            raise ValueError("Unsupported Gaia bridge transport arguments")
+        output = handle(raw, shell_env_transport=sys.argv[1:] == ["--shell-env-v1"])
     except Exception as exc:  # The plugin must fail closed on bridge failures.
         output = _deny(f"Gaia OpenCode policy bridge failed: {exc}")
     print(json.dumps(output, separators=(",", ":")))

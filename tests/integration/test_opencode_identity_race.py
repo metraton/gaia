@@ -15,7 +15,6 @@ sends -- so the token minted here reaches no other run.
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -44,16 +43,17 @@ CALL = "call-race"
 def env(tmp_path, bootstrapped_db_template):
     db_path = tmp_path / "gaia.db"
     shutil.copy(bootstrapped_db_template, db_path)
-    environment = os.environ.copy()
-    environment["GAIA_DB"] = str(db_path)
-    environment["GAIA_OPENCODE_ATTESTATION_DIR"] = str(tmp_path / "ledger")
+    from tests.conftest import IsolatedRuntimeEnv
+
+    environment = IsolatedRuntimeEnv(tmp_path)
+    environment.prepare_hook_workspace()
     return environment
 
 
 def _drive(env, scenario):
     result = subprocess.run(
         ["bun", str(DRIVER), json.dumps(scenario)],
-        env=env, capture_output=True, text=True, timeout=300,
+        cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=300,
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
@@ -194,14 +194,14 @@ def test_a_host_that_names_nobody_leaves_the_dispatch_unidentified(env):
     assert not [r for r in driven["requests"] if r["event"] == "identity.attest"]
 
 
-def test_a_client_without_the_session_api_does_not_break_the_edge(env):
-    """An absent host read degrades to the previous behaviour, never to a throw."""
+def test_a_client_without_the_session_api_cannot_authorize_a_dispatch(env):
+    """Even an allow-only policy stub cannot supply a missing parent identity."""
     driven = _drive(env, {
         "clientHasSessionApi": False,
         "steps": [_task_step()],
     })
 
-    assert "denial" not in driven
+    assert driven["denial"] == "Gaia dispatch lacks an authenticated unchanged parent request"
     assert "agent" not in _before_requests(driven)[0]
 
 

@@ -37,7 +37,7 @@ from modules.security.host_attestation import (
 )
 
 _DRIVER = _REPO / "tests" / "opencode" / "attestation_driver.ts"
-_BRIDGE = _REPO / "opencode" / "bridge.py"
+_BRIDGE = _REPO / "tests" / "opencode" / "isolated_bridge.py"
 _ISSUER = "opencode-runtime"
 
 
@@ -49,6 +49,10 @@ def ledger(tmp_path, monkeypatch):
     assert data_dir().resolve().is_relative_to(tmp_path.resolve())
     assert db_path().resolve() == (data_dir() / "gaia.db").resolve()
     monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "ledger"))
+    from tests.conftest import IsolatedRuntimeEnv
+    env = IsolatedRuntimeEnv(tmp_path)
+    env.prepare_hook_workspace()
+    monkeypatch.setenv("WORKSPACE", str(tmp_path))
     return tmp_path
 
 
@@ -93,12 +97,13 @@ def drive(ledger, monkeypatch, path_without_host_gaia):
 
 def _drive(scenario):
     """Return every event the real plugin sent Gaia for this scenario."""
+    from tests.conftest import bridge_runtime_env
     result = subprocess.run(
         ["bun", str(_DRIVER), json.dumps(scenario)],
         text=True,
         capture_output=True,
-        env=os.environ.copy(),
-        cwd=str(_REPO),
+        env=bridge_runtime_env(),
+        cwd=os.environ["WORKSPACE"],
     )
     assert result.returncode == 0, f"driver failed: {result.stderr}"
     return json.loads(result.stdout)
@@ -477,13 +482,14 @@ def test_the_bridge_mints_in_the_namespace_of_the_process_that_started_it(ledger
         "role": "gaia-orchestrator",
         "issuer": _ISSUER,
     }
+    from tests.conftest import bridge_runtime_env
     result = subprocess.run(
         [sys.executable, str(_BRIDGE)],
         input=json.dumps(request),
         text=True,
         capture_output=True,
-        env=os.environ.copy(),
-        cwd=str(_REPO),
+        env=bridge_runtime_env(),
+        cwd=os.environ["WORKSPACE"],
     )
     assert result.returncode == 0, result.stderr
     response = json.loads(result.stdout)

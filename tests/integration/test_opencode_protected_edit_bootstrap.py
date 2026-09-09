@@ -26,7 +26,7 @@ def test_driver_cannot_replace_or_wrap_the_production_bridge():
     assert "GaiaOpenCodePlugin({\n  client," in driver
     assert "export const GaiaOpenCodePlugin = async" in plugin
     assert "export default" in plugin
-    assert 'Bun.spawn(["python3", bridgePath]' in plugin
+    assert 'Bun.spawn(["python3", bridgePath, "--shell-env-v1"]' in plugin
     assert not (ROOT / "tests" / "opencode" / "protected_edit_bridge.py").exists()
 
 

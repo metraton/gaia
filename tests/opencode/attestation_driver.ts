@@ -13,13 +13,14 @@
 
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 
-const bridgePath = new URL("../../opencode/bridge.py", import.meta.url).pathname
+const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
 const requests: Record<string, unknown>[] = []
 
 async function gaiaBridge(event: Record<string, unknown>) {
   requests.push(event)
   if (event.event !== "identity.attest") return { action: "allow" as const }
   const child = Bun.spawn(["python3", bridgePath], {
+    cwd: process.env.WORKSPACE,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -49,20 +50,34 @@ for (const step of scenario.steps) {
       },
     })
   } else if (step.kind === "before") {
-    await plugin["tool.execute.before"](
-      { sessionID: step.sessionID, callID: step.callID, tool: step.tool },
-      { args: step.args ?? {} },
-    )
+    try {
+      await plugin["tool.execute.before"](
+        { sessionID: step.sessionID, callID: step.callID, tool: step.tool },
+        { args: step.args ?? {} },
+      )
+    } catch (error) {
+      // This payload recorder does not run tool policy or attest env delivery. Keep its
+      // expected refusal observable without claiming the recorded command was allowed.
+      if (!(error instanceof Error)
+        || error.message !== "Gaia bridge did not confirm authenticated shell environment delivery") throw error
+      requests.push({ event: "driver.stub-policy-denied", sessionID: step.sessionID, reason: error.message })
+    }
   } else if (step.kind === "after") {
     await plugin["tool.execute.after"](
       { sessionID: step.sessionID, callID: step.callID, tool: step.tool, args: step.args ?? {} },
       { output: step.output ?? "", metadata: step.metadata ?? {} },
     )
   } else if (step.kind === "after-task") {
-    await plugin["tool.execute.after"](
-      { sessionID: step.sessionID, callID: step.callID, tool: "task", args: step.args ?? {} },
-      { metadata: { sessionId: step.childSessionID }, output: "" },
-    )
+    try {
+      await plugin["tool.execute.after"](
+        { sessionID: step.sessionID, callID: step.callID, tool: "task", args: step.args ?? {} },
+        { metadata: { sessionId: step.childSessionID }, output: "" },
+      )
+    } catch (error) {
+      if (!(error instanceof Error)
+        || error.message !== "Gaia could not attest the authorized child binding") throw error
+      requests.push({ event: "driver.attestation-denied", sessionID: step.childSessionID })
+    }
   } else {
     throw new Error(`unknown scenario step: ${step.kind}`)
   }

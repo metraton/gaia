@@ -78,6 +78,22 @@ tests/
 
 ## Convenciones
 
+### OpenCode transport delivery boundary
+
+[Early-child and resume coverage](integration/test_opencode_early_child_attestation.py)
+keeps three successful calls, current dispatch handles, authentic identity, stale-binding
+denial, and exact new-row binding unconditional. Its unmarked fixture runs before the
+narrow compaction regression: only `EmptyCompactionContext` for an exactly empty list
+is expected to fail, with `strict=True`. Setup errors and nonempty incorrect context
+remain failures; restored current-contract context is an unexpected pass requiring graduation.
+
+The deferred debt is `feedback_opencode_compaction_contexto_ambiguo_tras_resume`.
+The retained comparison runs baseline `c407aadd643051d320a3fc90ffbcbe3fdf75cb5a`
+in legacy mode and the candidate against the same backend. Empty compaction context
+was observed in both (comparison handoff `a9a53c512721e9aad.078a62d3492c`);
+transport delivery does not claim that context recovery is healthy. Deferring this
+specific debt does not waive transport or grant failures.
+
 **Running the pyramid:**
 
 ```bash

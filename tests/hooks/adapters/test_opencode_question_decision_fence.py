@@ -65,6 +65,10 @@ _CONTAINERS = ("tool_response", "tool_input")
 def ledger(tmp_path, monkeypatch):
     """Point issuance and resolution at a ledger this test owns."""
     monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(tmp_path / "ledger"))
+    from tests.conftest import IsolatedRuntimeEnv
+    env = IsolatedRuntimeEnv(tmp_path)
+    env.prepare_hook_workspace()
+    monkeypatch.setenv("WORKSPACE", str(tmp_path))
     return tmp_path
 
 
@@ -95,12 +99,13 @@ def drive(ledger, monkeypatch):
     """
 
     def run(scenario):
+        from tests.conftest import bridge_runtime_env
         result = subprocess.run(
             ["bun", str(_DRIVER), json.dumps(scenario)],
             text=True,
             capture_output=True,
-            env=os.environ.copy(),
-            cwd=str(_REPO),
+            env=bridge_runtime_env(),
+            cwd=os.environ["WORKSPACE"],
         )
         assert result.returncode == 0, f"driver failed: {result.stderr}"
         requests = json.loads(result.stdout)

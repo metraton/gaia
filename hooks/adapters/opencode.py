@@ -388,7 +388,13 @@ class OpenCodeAdapter(HookAdapter):
             }
         )
 
-    def adapt_pre_tool_use(self, event: HookEvent) -> HookResponse:
+    def _adapt_pre_tool_use_with_shell_env(self, event: HookEvent) -> HookResponse:
+        """Select the host process transport, with attestation checked before policy."""
+        return self.adapt_pre_tool_use(event, _shell_env_transport=True)
+
+    def adapt_pre_tool_use(
+        self, event: HookEvent, *, _shell_env_transport: bool = False,
+    ) -> HookResponse:
         """Run the existing host-neutral policy through an OpenCode boundary.
 
         Gaia's policy flow still owns validation, grants, and audit state. This
@@ -405,6 +411,14 @@ class OpenCodeAdapter(HookAdapter):
         backstop = self._child_binding_backstop_denial(event)
         if backstop is not None:
             return backstop
+        env_identity = None
+        if _shell_env_transport and self._policy_tool_name(original_tool) == "Bash":
+            env_identity = self._resolved_attestation(event)
+            if env_identity is None or not event.session_id or not event.call_id:
+                return HookResponse(
+                    output={"action": "deny", "reason": "Shell environment transport requires attested call correlation"},
+                    exit_code=2,
+                )
         payload = self.build_policy_payload(event)
         policy_event = HookEvent(
             event_type=event.event_type,
@@ -439,8 +453,20 @@ class OpenCodeAdapter(HookAdapter):
             return HookResponse(output={"action": "allow"})
         if original_tool == "task":
             return self._adapt_task_with_kernel(policy_adapter, policy_event)
-        response = policy_adapter.adapt_pre_tool_use(policy_event)
-        return self._translate_policy_response(response)
+        if env_identity is not None:
+            response = policy_adapter.adapt_pre_tool_use(
+                policy_event, _dispatch_identity_in_env=True,
+            )
+        else:
+            response = policy_adapter.adapt_pre_tool_use(policy_event)
+        translated = self._translate_policy_response(response)
+        if env_identity is not None and isinstance(translated.output, dict) and translated.output.get("action") == "allow":
+            translated.output["shell_env"] = {
+                "session_id": event.session_id,
+                "call_id": event.call_id,
+                "agent_type": env_identity.role,
+            }
+        return translated
 
     def _adapt_task_with_kernel(
         self, policy_adapter: "ClaudeCodeAdapter", policy_event: HookEvent,
