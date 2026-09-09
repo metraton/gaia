@@ -6,8 +6,8 @@ Two surfaces under test, one channel:
 
   * ``gaia.state.task_closure_event`` -- the pure shape of the record (no DB,
     no env, no I/O).
-  * ``gaia.store.writer.write_task_close_override_event`` -- the append that
-    puts it in the substrate, exercised against a real, disposable sqlite DB
+  * ``gaia.store.writer`` -- the override and divergence appends that put typed
+    records in the substrate, exercised against a real, disposable sqlite DB
     (``GAIA_DATA_DIR`` -> ``tmp_path``, the convention in
     tests/cli/test_gate_status_write.py and tests/test_derived_closure_predicate.py).
 
@@ -26,11 +26,10 @@ the properties it has to hold are stronger:
     'info', and the negative case is built too: the same record graded 'info'
     must vanish from the defects report while the real one stays. Without that
     falsifier a visibility assertion cannot fail for the reason it exists.
-  * NO MIGRATION is asserted structurally, not just by reading a version number:
-    every field the channel writes must already have a column in the live
-    ``harness_events`` (checked against whatever schema is on disk, not a
-    pinned version), the table set must be identical before and after an
-    emission, and the sources this channel adds must contain no DDL.
+   * EVENT EMISSION NEEDS NO EVENT-TABLE MIGRATION: every field the channel
+     writes already has a column in live ``harness_events``, the table set is
+     identical before and after an emission, and event writers contain no DDL.
+     The task provenance columns are separately introduced by v52.
   * THE RECORD CANNOT BE SUPPRESSED. A reason that states nothing appends
     nothing (and the substrate is checked, not just the exception); a failing
     append raises instead of passing silently; an unresolvable task still
@@ -63,10 +62,12 @@ from gaia.state.task_closure_event import (  # noqa: E402
     DETAILS_PAYLOAD_KEY,
     HUMAN_ACTOR,
     MISSING_REASON_MESSAGE,
+    TASK_CLOSE_OVERRIDE_DIVERGENCE_EVENT,
     TASK_CLOSE_OVERRIDE_EVENT,
     TASK_CLOSE_OVERRIDE_SEVERITY,
     TASK_CLOSE_OVERRIDE_SOURCE,
     build_override_event,
+    build_override_divergence_event,
     normalize_reason,
     resolve_actor,
 )
@@ -94,6 +95,23 @@ def test_event_type_is_the_exact_string_consumers_filter_on():
     assert build_override_event(
         brief_name=_BRIEF, task_order_num=_ORDER, reason=_REASON
     ).event_type == TASK_CLOSE_OVERRIDE_EVENT
+
+
+def test_divergence_event_has_its_own_queryable_type_and_override_coordinate():
+    event = build_override_divergence_event(
+        brief_name=_BRIEF,
+        task_order_num=_ORDER,
+        override_event_id=41,
+        actor="gaia-verifier",
+        task_id=7,
+        details={"gate_status_counts": {"fail": 1}},
+    )
+
+    assert event.event_type == TASK_CLOSE_OVERRIDE_DIVERGENCE_EVENT
+    assert event.severity not in NON_DEFECT_EVENT_SEVERITIES
+    assert event.meta["override_event_id"] == 41
+    assert event.meta["task_id"] == 7
+    assert event.meta[DETAILS_PAYLOAD_KEY]["gate_status_counts"] == {"fail": 1}
 
 
 def test_severity_is_above_info_by_the_readers_own_inclusion_criterion():
@@ -646,7 +664,7 @@ def test_the_record_appears_in_the_gaia_defects_command_output(tmp_db):
     assert _REASON in rows[0]["message"]
 
 
-# --- no new table, no migration ----------------------------------------------
+# --- existing event table; task provenance migration is separate -------------
 
 def test_every_field_the_channel_writes_already_has_a_live_schema_column(tmp_db):
     # The structural content of "no migration needed": the record needs no
@@ -680,11 +698,15 @@ def test_an_emission_creates_no_table(tmp_db):
 
 def test_the_channels_own_sources_declare_no_ddl():
     from gaia.state import task_closure_event
-    from gaia.store.writer import write_task_close_override_event
+    from gaia.store.writer import (
+        write_task_close_override_divergence_event,
+        write_task_close_override_event,
+    )
 
     sources = [
         Path(task_closure_event.__file__).read_text(encoding="utf-8"),
         inspect.getsource(write_task_close_override_event),
+        inspect.getsource(write_task_close_override_divergence_event),
     ]
 
     for source in sources:
@@ -705,9 +727,8 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
     # v50 (created_at/kernel_count/last_kernel_at on `memory`, plus the new
     # memory_deliberate_capture_v50 table, scripts/migrations/v49_to_v50.sql)
     # and v51 (drops memory_deliberate_capture_v50 again, scripts/migrations/
-    # v50_to_v51.sql) are the latest reviewed additions -- all touch only the
-    # `memory` table, its FTS mirror, or a table of their own, not
-    # `harness_events`, so this channel again needed no migration of its own.
+    # v50_to_v51.sql) touch only memory. v52 adds current override provenance to
+    # tasks and deliberately leaves harness_events unchanged.
     # Reviewed 2026-08-14: `grep -i harness_events` against both
     # v49_to_v50.sql and v50_to_v51.sql returned zero matches in either file.
     # v41-v51 are the actual current floor -- tracked dynamically by
@@ -722,7 +743,7 @@ def test_the_expected_schema_version_matches_the_channels_authored_baseline():
                       re.MULTILINE)
 
     assert match is not None
-    assert int(match.group(1)) == 51
+    assert int(match.group(1)) == 52
 
 
 def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
@@ -741,4 +762,4 @@ def test_no_migration_file_beyond_the_channels_authored_baseline_exists():
     )
 
     assert migrations, "no migration files found -- the glob or layout changed"
-    assert max(migrations) == 51
+    assert max(migrations) == 52

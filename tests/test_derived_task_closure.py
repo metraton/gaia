@@ -80,7 +80,10 @@ from gaia.state.task_closure_derivation import (  # noqa: E402
     DerivedClosureAction,
     decide_derived_closure,
 )
-from gaia.state.task_closure_event import TASK_CLOSE_OVERRIDE_EVENT  # noqa: E402
+from gaia.state.task_closure_event import (  # noqa: E402
+    TASK_CLOSE_OVERRIDE_DIVERGENCE_EVENT,
+    TASK_CLOSE_OVERRIDE_EVENT,
+)
 from gaia.state.task_closure_identity import ProducerStanding  # noqa: E402
 
 _WORKSPACE = "me"
@@ -355,6 +358,18 @@ def _override_event_count(tmp_db: Path) -> int:
         con.close()
 
 
+def _divergence_event_count(tmp_db: Path) -> int:
+    """Return the number of typed close-override divergence records."""
+    con = sqlite3.connect(str(tmp_db))
+    try:
+        return con.execute(
+            "SELECT COUNT(*) FROM harness_events WHERE type = ?",
+            (TASK_CLOSE_OVERRIDE_DIVERGENCE_EVENT,),
+        ).fetchone()[0]
+    finally:
+        con.close()
+
+
 def _pass(tmp_db: Path, gate_id: int, status: str = "pass") -> dict:
     from gaia.store.writer import set_gate_status
     return set_gate_status(_WORKSPACE, _BRIEF, _ORDER, gate_id, status,
@@ -497,6 +512,61 @@ def test_derived_task_closure_reopens_when_a_verdict_is_withdrawn_to_pending(tmp
 
     assert _task_status(tmp_db) == OPEN_STATUS
     assert _derived(result)["action"] == "reopen"
+
+
+def test_derived_task_closure_preserves_a_current_human_override_once(tmp_db):
+    from gaia.store.writer import set_task_status
+
+    gate, = _seed(tmp_db, gate_count=1)
+    _pass(tmp_db, gate, "fail")
+    set_task_status(
+        _WORKSPACE,
+        _BRIEF,
+        _ORDER,
+        CLOSING_STATUS,
+        override_reason="human accepts the unavailable verifier",
+        db_path=tmp_db,
+    )
+
+    first = _pass(tmp_db, gate, "fail")
+    assert _task_status(tmp_db) == CLOSING_STATUS
+    assert _derived(first)["action"] == "override_preserved"
+    assert _derived(first)["divergence_preexisting"] is False
+    assert _override_event_count(tmp_db) == 1
+    assert _divergence_event_count(tmp_db) == 1
+
+    for _ in range(3):
+        repeated = _pass(tmp_db, gate, "fail")
+        assert _task_status(tmp_db) == CLOSING_STATUS
+        assert _derived(repeated)["action"] == "override_preserved"
+        assert _derived(repeated)["divergence_preexisting"] is True
+    assert _divergence_event_count(tmp_db) == 1
+
+
+def test_historical_override_does_not_protect_a_later_verified_close_epoch(tmp_db):
+    from gaia.store.writer import set_task_status
+
+    gate, = _seed(tmp_db, gate_count=1)
+    _pass(tmp_db, gate, "fail")
+    set_task_status(
+        _WORKSPACE,
+        _BRIEF,
+        _ORDER,
+        CLOSING_STATUS,
+        override_reason="first closure epoch is accepted manually",
+        db_path=tmp_db,
+    )
+    _pass(tmp_db, gate, "fail")
+    assert _divergence_event_count(tmp_db) == 1
+
+    set_task_status(_WORKSPACE, _BRIEF, _ORDER, OPEN_STATUS, db_path=tmp_db)
+    _pass(tmp_db, gate, "pass")
+    assert _task_status(tmp_db) == CLOSING_STATUS
+
+    later = _pass(tmp_db, gate, "fail")
+    assert _task_status(tmp_db) == OPEN_STATUS
+    assert _derived(later)["action"] == "reopen"
+    assert _divergence_event_count(tmp_db) == 1
 
 
 # ---------------------------------------------------------------------------

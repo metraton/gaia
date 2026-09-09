@@ -1,21 +1,20 @@
 """
-gaia.state.task_closure_event -- Shape of the auditable record a manual
-task-close override leaves behind.
+gaia.state.task_closure_event -- Shapes of auditable task-close override events.
 
 ``gaia.state.task_closure`` answers whether a task's gates amount to an
 approving verdict. It does not decide what happens when they do not, and closing
 a task anyway -- by hand, with a stated reason -- is a sanctioned escape hatch.
-What this module owns is the other half of that escape hatch: the escape must
-not be silent. An override that leaves no trace is indistinguishable, a week
-later, from a task that was genuinely verified, so it carries a record of WHO
-closed the task, WHEN, and WHY.
+What this module owns is the other half of that escape hatch: neither the
+override nor a later gate verdict that disagrees with it may be silent. The
+first record says WHO closed the task, WHEN, and WHY. The divergence record says
+that derived closure would reopen it while the current override remains in
+force.
 
 This module holds the SHAPE of that record and nothing else. It is pure in the
 same sense as ``gaia.state.task_closure``: no DB, no subprocess, no filesystem,
 no environment read, no LLM. It builds a value. The single impure step -- the
-append -- lives in ``gaia.store.writer.write_task_close_override_event``, which
-is also where the channel's one environment read (the dispatch identity)
-happens.
+append -- lives in ``gaia.store.writer``, which is also where the channel's one
+environment read (the dispatch identity) happens.
 
 Four decisions are encoded here, each load-bearing:
 
@@ -28,7 +27,9 @@ Four decisions are encoded here, each load-bearing:
     entirely. ``agent.cut`` and ``agent.contract_rejected`` are the living
     precedent for a harness-observed abnormality riding this channel. Accepted
     consequence: the record inherits that table's 90-day retention window
-    (``gaia.store.writer._maybe_prune_harness_events``).
+    (``gaia.store.writer._maybe_prune_harness_events``). Current closure
+    provenance and divergence idempotence therefore live durably on ``tasks``;
+    event retention is never consulted to infer either fact.
 
   * SEVERITY IS ABOVE ``info``, SO THE RECORD SURFACES AS A DEFECT.
     ``read_defects`` admits an orchestrator-origin row by SEVERITY, not by an
@@ -77,6 +78,7 @@ from typing import Any
 # one. Dotted noun.verb, matching agent.cut / agent.contract_rejected /
 # command.executed.
 TASK_CLOSE_OVERRIDE_EVENT = "task.close_override"
+TASK_CLOSE_OVERRIDE_DIVERGENCE_EVENT = "task.close_override_divergence"
 
 # Above `info` on purpose, which is what puts the record in `gaia defects` (see
 # the module docstring). `warning` rather than `error` because the override is a
@@ -256,15 +258,52 @@ def build_override_event(
     )
 
 
+def build_override_divergence_event(
+    *,
+    brief_name: str,
+    task_order_num: int,
+    override_event_id: int,
+    actor: object = None,
+    task_id: int | None = None,
+    details: Mapping[str, Any] | None = None,
+) -> OverrideEvent:
+    """Build the record for a gate verdict diverging from a current override."""
+    actor_name = resolve_actor(actor)
+    meta: dict[str, Any] = {
+        "actor": actor_name,
+        "brief_name": brief_name,
+        "task_order_num": task_order_num,
+        "override_event_id": override_event_id,
+    }
+    if task_id is not None:
+        meta["task_id"] = task_id
+    if details:
+        meta[DETAILS_PAYLOAD_KEY] = dict(details)
+
+    return OverrideEvent(
+        event_type=TASK_CLOSE_OVERRIDE_DIVERGENCE_EVENT,
+        source=TASK_CLOSE_OVERRIDE_SOURCE,
+        agent=actor_name,
+        result=(
+            f"derived reopen withheld for task {task_order_num} of brief "
+            f"'{brief_name}': current manual close override remains in force"
+        ),
+        severity=TASK_CLOSE_OVERRIDE_SEVERITY,
+        meta=meta,
+    )
+
+
 __all__ = [
     "DETAILS_PAYLOAD_KEY",
     "HUMAN_ACTOR",
     "MISSING_REASON_MESSAGE",
     "OverrideEvent",
     "TASK_CLOSE_OVERRIDE_EVENT",
+    "TASK_CLOSE_OVERRIDE_DIVERGENCE_EVENT",
     "TASK_CLOSE_OVERRIDE_SEVERITY",
     "TASK_CLOSE_OVERRIDE_SOURCE",
     "build_override_event",
+    "build_override_divergence_event",
     "normalize_reason",
     "resolve_actor",
 ]
