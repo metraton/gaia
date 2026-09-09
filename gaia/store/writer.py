@@ -4927,14 +4927,12 @@ def _resolve_task_id_by_order(
 def _assert_valid_gate_status(status: str) -> None:
     """Raise ValueError when ``status`` is outside VALID_GATE_STATUSES.
 
-    Code-level guard for task_gates.status (harness B3/T3). As of v36 the
-    column also carries a DB CHECK (scripts/migrations/v35_to_v36.sql; see
-    gaia.state.VALID_GATE_STATUSES), but this guard remains the first
-    enforcement point: it raises a clean ValueError at the call site instead
-    of letting an out-of-vocabulary value reach sqlite3 and surface as a raw
-    IntegrityError. Shared by every write path that touches the column --
-    add_gate_to_task (initial status) and set_gate_status (transition) -- so
-    neither can slip an out-of-vocabulary value past the other.
+    Code-level guard for task_gates.status transitions (harness B3/T3). As of
+    v36 the column also carries a DB CHECK
+    (scripts/migrations/v35_to_v36.sql; see gaia.state.VALID_GATE_STATUSES),
+    but this guard remains the first transition enforcement point: it raises a
+    clean ValueError at the call site instead of letting an out-of-vocabulary
+    value reach sqlite3 and surface as a raw IntegrityError.
     """
     from gaia.state import VALID_GATE_STATUSES
     if status not in VALID_GATE_STATUSES:
@@ -4952,25 +4950,22 @@ def add_gate_to_task(
     evidence_type: str | None = None,
     evidence_shape: str | None = None,
     artifact_path: str | None = None,
-    status: str = "pending",
     db_path: Path | None = None,
 ) -> dict:
     """Insert a task_gates row for the task at ``task_order_num``.
 
-    Persists the gate AS GIVEN, except for ``status``: it is validated
-    up front against ``gaia.state.VALID_GATE_STATUSES`` (code-level guard --
-    see ``_assert_valid_gate_status``) so an out-of-vocabulary value raises a
-    clean ValueError here rather than surfacing as a raw sqlite3
-    IntegrityError from the DB CHECK the column also carries as of v36.
+    Every new gate starts ``pending``: the INSERT deliberately omits ``status``
+    and uses the schema's NOT NULL DEFAULT. Only :func:`set_gate_status` can
+    record a verifier-owned transition to ``pass`` or ``fail`` and apply the
+    resulting derived task closure.
     Structural completeness of the rest of the gate is validated separately by
     gaia.state.gate_validation.validate_gate.
 
-    Raises ValueError on missing brief/plan/task, an out-of-enum
-    verification_type, or an out-of-vocabulary status.
+    Raises ValueError on missing brief/plan/task or an out-of-enum
+    verification_type.
     """
     from gaia.state.permissions import _assert_dispatch_can_advance_state
     _assert_dispatch_can_advance_state("tasks")
-    _assert_valid_gate_status(status)
 
     con = _connect(db_path)
     try:
@@ -4981,9 +4976,9 @@ def add_gate_to_task(
             cur = con.execute(
                 "INSERT INTO task_gates "
                 "(task_id, verification_type, evidence_type, evidence_shape, "
-                " artifact_path, status) VALUES (?, ?, ?, ?, ?, ?)",
+                " artifact_path) VALUES (?, ?, ?, ?, ?)",
                 (task_id, verification_type, evidence_type, evidence_shape,
-                 artifact_path, status),
+                 artifact_path),
             )
         except sqlite3.IntegrityError as exc:
             raise ValueError(
@@ -5470,9 +5465,9 @@ def set_gate_status(
     """Set the ``status`` of the task_gates row ``gate_id`` on the task at
     ``task_order_num``, then apply whatever that verdict implies for the task.
 
-    Write surface for `gaia task gate set-status` (harness B3/T3): the ONLY
-    way, prior to this, to move task_gates.status off its INSERT-time value
-    was to re-run add_gate_to_task. ``status`` is enforced against
+    Write surface for `gaia task gate set-status` (harness B3/T3): the only
+    way to move task_gates.status off its pending INSERT-time value. ``status``
+    is enforced against
     ``gaia.state.VALID_GATE_STATUSES`` ('pending' / 'pass' / 'fail') by
     ``_assert_valid_gate_status`` -- a code-level guard that raises a clean
     ValueError ahead of the DB CHECK the column also carries as of v36 (see

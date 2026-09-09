@@ -67,7 +67,7 @@ def test_task_gates_cli_add_list_remove_round_trip(tmp_db, tmp_path, monkeypatch
     add_args = argparse.Namespace(
         brief="gate-brief", order_num=1, type="command",
         evidence_type="pytest", evidence_shape="pytest -q", artifact_path=None,
-        status="pending", workspace="me", json=True,
+        workspace="me", json=True,
     )
     rc = _cmd_gate_add(add_args)
     assert rc == 0, capsys.readouterr()
@@ -118,7 +118,7 @@ def test_task_gates_cli_persists_multiple_gates_per_task(tmp_db, tmp_path, monke
         rc = _cmd_gate_add(argparse.Namespace(
             brief="gate-brief", order_num=1, type=vtype,
             evidence_type=None, evidence_shape="shape", artifact_path=None,
-            status="pending", workspace="me", json=True,
+            workspace="me", json=True,
         ))
         assert rc == 0
         capsys.readouterr()
@@ -141,9 +141,28 @@ def test_task_gates_cli_add_task_not_found(tmp_db, tmp_path, monkeypatch, capsys
     rc = _cmd_gate_add(argparse.Namespace(
         brief="gate-brief", order_num=99, type="command",
         evidence_type=None, evidence_shape="shape", artifact_path=None,
-        status="pending", workspace="me", json=False,
+        workspace="me", json=False,
     ))
     assert rc == 1  # missing task -> ValueError -> error exit
+
+
+def test_task_gate_add_parser_has_no_status_input():
+    from cli.task import register
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="subcommand")
+    register(subparsers)
+
+    args = parser.parse_args([
+        "task", "gate", "add", "gate-brief", "1", "--type=command",
+    ])
+    assert not hasattr(args, "status")
+
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "task", "gate", "add", "gate-brief", "1", "--type=command",
+            "--status=pass",
+        ])
 
 
 if __name__ == "__main__":

@@ -3,19 +3,16 @@ task_gates.status.
 
 Matchable by ``pytest tests/ -k gate_status_write -q``.
 
-Prior to this task, task_gates.status could only be set at INSERT time
-(add_gate_to_task's ``status`` kwarg); there was no way to transition an
-existing gate's status. This covers:
+New gates always use the schema's pending default. Existing gates transition
+only through set_gate_status. This covers:
 
   * add / set-status / list round-trip through the CLI handlers
     (cli.task._cmd_gate_*), against an isolated substrate DB
     (GAIA_DATA_DIR -> tmp_path), mirroring tests/cli/test_task_gates_cli.py.
   * the pending -> pass -> fail vocabulary transitions.
   * the code-level guard (gaia.store.writer._assert_valid_gate_status /
-    gaia.state.VALID_GATE_STATUSES) rejects an out-of-vocabulary status at
-    BOTH write paths: add_gate_to_task (initial status) and set_gate_status
-    (transition) -- exercised both through the writer directly and through
-    the CLI handler.
+    gaia.state.VALID_GATE_STATUSES) rejects an out-of-vocabulary transition
+    through both the writer and CLI handler.
 """
 
 from __future__ import annotations
@@ -76,7 +73,7 @@ def test_gate_status_write_writer_add_set_status_list_round_trip(tmp_db, monkeyp
 
     added = add_gate_to_task(
         "me", "gate-status-brief", 1, "command",
-        evidence_shape="pytest -q", status="pending", db_path=tmp_db,
+        evidence_shape="pytest -q", db_path=tmp_db,
     )
     gate_id = added["gate_id"]
     assert _gate_status(tmp_db, gate_id) == "pending"
@@ -106,7 +103,7 @@ def test_gate_status_write_writer_rejects_invalid_status_on_set_status(tmp_db):
 
     _seed_task(tmp_db)
     added = add_gate_to_task(
-        "me", "gate-status-brief", 1, "command", status="pending", db_path=tmp_db,
+        "me", "gate-status-brief", 1, "command", db_path=tmp_db,
     )
     gate_id = added["gate_id"]
 
@@ -115,16 +112,6 @@ def test_gate_status_write_writer_rejects_invalid_status_on_set_status(tmp_db):
 
     # Rejected write did not land.
     assert _gate_status(tmp_db, gate_id) == "pending"
-
-
-def test_gate_status_write_writer_rejects_invalid_status_on_add(tmp_db):
-    from gaia.store.writer import add_gate_to_task
-
-    _seed_task(tmp_db)
-    with pytest.raises(ValueError):
-        add_gate_to_task(
-            "me", "gate-status-brief", 1, "command", status="bogus", db_path=tmp_db,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +127,7 @@ def test_gate_status_write_cli_add_set_status_list_round_trip(tmp_db, tmp_path, 
     add_args = argparse.Namespace(
         brief="gate-status-brief", order_num=1, type="command",
         evidence_type="pytest", evidence_shape="pytest -q", artifact_path=None,
-        status="pending", workspace="me", json=True,
+        workspace="me", json=True,
     )
     rc = _cmd_gate_add(add_args)
     assert rc == 0
@@ -178,7 +165,7 @@ def test_gate_status_write_cli_set_status_rejects_invalid_status(tmp_db, tmp_pat
     add_args = argparse.Namespace(
         brief="gate-status-brief", order_num=1, type="command",
         evidence_type=None, evidence_shape=None, artifact_path=None,
-        status="pending", workspace="me", json=True,
+        workspace="me", json=True,
     )
     rc = _cmd_gate_add(add_args)
     assert rc == 0
