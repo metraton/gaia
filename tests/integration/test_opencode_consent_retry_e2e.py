@@ -22,10 +22,10 @@ plugin-side reason it currently would not.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -93,18 +93,37 @@ FIRST_FINGERPRINT = (
 )
 
 
+def _isolated_env(root, bootstrapped_db_template):
+    """Create a workspace whose hook files and substrate share one isolated root."""
+    from tests.conftest import IsolatedRuntimeEnv, copy_bootstrapped_db
+
+    env = IsolatedRuntimeEnv(root)
+    env.prepare_hook_workspace()
+    db_path = Path(env["GAIA_DB"])
+    copy_bootstrapped_db(bootstrapped_db_template, db_path)
+    return env, db_path
+
+
 @pytest.fixture()
 def db_env(tmp_path, monkeypatch, bootstrapped_db_template):
-    """A real bootstrapped database this test alone owns, reachable by subprocess."""
-    from tests.conftest import copy_bootstrapped_db
-
-    db_path = tmp_path / "t5.db"
-    copy_bootstrapped_db(bootstrapped_db_template, db_path)
+    """Use actual hook path resolution inside this test's private workspace."""
+    env, db_path = _isolated_env(tmp_path / "state", bootstrapped_db_template)
+    monkeypatch.chdir(env["WORKSPACE"])
     monkeypatch.setenv("GAIA_DB", str(db_path))
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(db_path)
+    monkeypatch.setenv("GAIA_DATA_DIR", env["GAIA_DATA_DIR"])
+    monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", env["GAIA_OPENCODE_ATTESTATION_DIR"])
     from gaia.paths import db_path as resolved_db_path
     from gaia.store import writer
+    from modules.core.paths import clear_path_cache, find_claude_dir, get_plugin_data_dir
+    from modules.core.state import _get_state_dir, _get_state_file_path
+
+    monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
+    clear_path_cache()
+    claude_dir = Path(env["WORKSPACE"]) / ".claude"
+    assert find_claude_dir() == claude_dir
+    assert get_plugin_data_dir() == claude_dir
+    assert _get_state_dir().parent == claude_dir
+    assert _get_state_file_path().parent == claude_dir
 
     assert resolved_db_path().resolve() == db_path.resolve()
     with writer._connect() as con:
@@ -127,7 +146,7 @@ def _request_set(env, commands=(FIRST_COMMAND, SECOND_COMMAND)):
         "--session-id", SESSION_ID,
         "--json",
     ]
-    result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=180)
+    result = subprocess.run(argv, cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     return json.loads(result.stdout.strip().splitlines()[-1])["approval_id"]
 
@@ -144,7 +163,7 @@ def _decide(env, approval_id, *, reply="once", call_id=CALL_ID, token="t5-token"
             "--decision-lane", "preferred",
             "--json",
         ],
-        env=env, capture_output=True, text=True, timeout=180,
+        cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=180,
     )
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     return json.loads(result.stdout.strip().splitlines()[-1])
@@ -159,7 +178,7 @@ def _present(env, approval_id, *, call_id=CALL_ID, token="t5-token"):
             "--token", token,
             "--json",
         ],
-        env=env, capture_output=True, text=True, timeout=180,
+        cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=180,
     )
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     return json.loads(result.stdout.strip().splitlines()[-1])
@@ -189,7 +208,7 @@ def _drive(env, steps, *, permission_id=PERMISSION_ID):
     }
     result = subprocess.run(
         ["bun", str(DRIVER), json.dumps(scenario)],
-        env=env, capture_output=True, text=True, timeout=300,
+        cwd=env["WORKSPACE"], env=env, capture_output=True, text=True, timeout=300,
     )
     assert result.returncode == 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     return json.loads(result.stdout.strip().splitlines()[-1])
@@ -513,3 +532,51 @@ def test_plugin_delegates_the_permission_request_to_the_host_hook():
     assert '"permission.ask"' in source
     assert "session.permission.create" not in source
     assert "await requestApproval(response, call.sessionID, call.callID)\n        throw new Error" in source
+
+
+def test_overlapping_same_binding_workspaces_settle_independently(tmp_path, bootstrapped_db_template):
+    """Keep two identical call reservations outstanding, then settle opposite outcomes."""
+    contexts = [
+        _isolated_env(tmp_path / name, bootstrapped_db_template)
+        for name in ("success", "failure")
+    ]
+    approvals = []
+    for env, db in contexts:
+        approval = _request_set(env, (FIRST_COMMAND,))
+        _approve_set(env, approval)
+        approvals.append(approval)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reserved = list(pool.map(
+            lambda context: _drive(context[0], [_before("reserve", FIRST_COMMAND)]),
+            contexts,
+        ))
+    for (env, db), approval, driven in zip(contexts, approvals, reserved):
+        assert _step(driven, "reserve")["allowed"] is True
+        grant = _grant(db, approval)
+        assert grant["reservation_session_id"] == SESSION_ID
+        assert grant["reservation_tool_use_id"] == CALL_ID
+        assert _grant(db, approvals[1 - approvals.index(approval)]) is None
+
+    from modules.core.state import STATE_DIR_NAME
+
+    state_paths = [Path(env["WORKSPACE"]) / ".claude" / STATE_DIR_NAME
+                   / f"{SESSION_ID}__{CALL_ID}.json" for env, _ in contexts]
+    snapshots = [path.read_bytes() for path in state_paths]
+    assert state_paths[0] != state_paths[1]
+    for index, ((env, db), approval) in enumerate(zip(contexts, approvals)):
+        driven = _drive(env, [{
+            "kind": "after", "label": "settle", "sessionID": SESSION_ID,
+            "callID": CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
+            "output": "success" if index == 0 else "fatal: rejected",
+            "metadata": {"exitCode": 0 if index == 0 else 7},
+        }])
+        assert _step(driven, "settle")["allowed"] is True
+        grant = _grant(db, approval)
+        assert grant["status"] == ("CONSUMED" if index == 0 else "FAILED")
+        assert json.loads(grant["consumed_indexes_json"]) == ([0] if index == 0 else [])
+        assert grant["reservation_tool_use_id"] is None
+        if index == 0:
+            assert state_paths[1].read_bytes() == snapshots[1]
+            assert _grant(contexts[1][1], approvals[1])["reservation_tool_use_id"] == CALL_ID
+    assert _grant(contexts[0][1], approvals[0])["status"] == "CONSUMED"

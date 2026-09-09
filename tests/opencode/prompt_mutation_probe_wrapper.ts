@@ -21,12 +21,13 @@
 
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 
-const bridgePath = new URL("../../opencode/bridge.py", import.meta.url).pathname
+const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
 
 const MUTATED_MARKER = process.env.GAIA_PROBE_MUTATED_PROMPT ?? "PROBE_MUTATED_534_DEFAULT"
 
 async function realBridge(event: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const child = Bun.spawn(["python3", bridgePath], {
+  const child = Bun.spawn(["python3", bridgePath, "--shell-env-v1"], {
+    cwd: process.env.WORKSPACE,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
     stdout: "pipe",

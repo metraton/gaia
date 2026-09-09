@@ -10,8 +10,67 @@ Provides:
 """
 
 import os
+from collections.abc import MutableMapping
 import pytest
 from pathlib import Path
+
+
+class IsolatedRuntimeEnv(MutableMapping):
+    """Expose only runtime PATH and controlled test paths; never render values."""
+
+    def __init__(self, root):
+        root = Path(root)
+        for directory in (root, root / "home", root / "tmp"):
+            directory.mkdir(parents=True, exist_ok=True)
+        self._values = {
+            "PATH": os.environ.get("PATH", os.defpath),
+            "HOME": str(root / "home"),
+            "TMPDIR": str(root / "tmp"),
+            "GAIA_DATA_DIR": str(root),
+            "GAIA_DB": str(root / "gaia.db"),
+            "GAIA_OPENCODE_ATTESTATION_DIR": str(root / "ledger"),
+            "WORKSPACE": str(root),
+            "PYTHONDONTWRITEBYTECODE": "1",
+        }
+
+    def __getitem__(self, key):
+        return self._values[key]
+
+    def prepare_hook_workspace(self):
+        """Opt bridge-backed tests into a real private cwd, not a resolver mock."""
+        workspace = Path(self["WORKSPACE"])
+        (workspace / ".claude").mkdir(exist_ok=True)
+        return workspace
+
+    def __setitem__(self, key, value):
+        self._values[key] = value
+
+    def __delitem__(self, key):
+        del self._values[key]
+
+    def copy(self):
+        """Copy explicit fixture values without inheriting ambient environment."""
+        copied = object.__new__(type(self))
+        copied._values = self._values.copy()
+        return copied
+
+    def __iter__(self):
+        return iter(self._values)
+
+    def __len__(self):
+        return len(self._values)
+
+    def __repr__(self):
+        return "<IsolatedRuntimeEnv: values redacted>"
+
+
+def bridge_runtime_env():
+    """Join an in-process test's scratch substrate without copying ambient secrets."""
+    env = IsolatedRuntimeEnv(os.environ["WORKSPACE"])
+    for key in ("GAIA_DATA_DIR", "GAIA_OPENCODE_ATTESTATION_DIR"):
+        env[key] = os.environ[key]
+    env["GAIA_DB"] = os.environ.get("GAIA_DB", str(Path(env["GAIA_DATA_DIR"]) / "gaia.db"))
+    return env
 
 
 # ============================================================================
@@ -256,13 +315,10 @@ def bootstrapped_db_template(tmp_path_factory):
     repo_root = Path(__file__).resolve().parents[1]
     bootstrap = repo_root / "scripts" / "bootstrap_database.sh"
     template_dir = tmp_path_factory.mktemp("gaia_db_template")
-    template = template_dir / "template.db"
-
-    env = os.environ.copy()
-    env["GAIA_DB"] = str(template)
+    env = IsolatedRuntimeEnv(template_dir)
+    template = Path(env["GAIA_DB"])
     # WORKSPACE only sets the bootstrap's seeded workspaces.identity row; the
     # writer tests insert their own 'me' workspace and never rely on it.
-    env["WORKSPACE"] = str(template_dir)
     res = subprocess.run(
         ["bash", str(bootstrap)],
         env=env,

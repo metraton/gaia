@@ -15,13 +15,14 @@
 
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 
-const bridgePath = new URL("../../opencode/bridge.py", import.meta.url).pathname
+const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
 const requests: Record<string, unknown>[] = []
 
 async function gaiaBridge(event: Record<string, unknown>) {
   requests.push(event)
   if (event.event !== "identity.attest") return { action: "allow" as const }
   const child = Bun.spawn(["python3", bridgePath], {
+    cwd: process.env.WORKSPACE,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

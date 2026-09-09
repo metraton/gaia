@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url"
 import { lstatSync, realpathSync, statSync } from "node:fs"
 import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
+import { ShellEnvDelivery } from "./shell-env"
 
 type BridgeResponse = {
   action: "allow" | "ask" | "deny"
@@ -8,6 +9,8 @@ type BridgeResponse = {
   approval_id?: string
   updated_input?: Record<string, unknown>
   attestation?: string
+  shell_env?: { session_id: string; call_id: string; agent_type: string }
+  sections_provided?: string[]
 }
 
 type PendingApproval = {
@@ -377,7 +380,7 @@ async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
   if (process.env.GAIA_DEBUG) {
     console.error(`[gaia-opencode-bridge:request] ${JSON.stringify(traceableBridgeRequest(event))}`)
   }
-  const child = Bun.spawn(["python3", bridgePath], {
+  const child = Bun.spawn(["python3", bridgePath, "--shell-env-v1"], {
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
     stdout: "pipe",
@@ -547,7 +550,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   const pending = new Map<string, PendingApproval>()
   const pendingByCall = new Map<string, PendingApproval>()
   const agentBySession = new Map<string, string>()
-  const agentByCall = new Map<string, string>()
+  const authorizedDispatches = new Map<string, {
+    role: string; requestedChildSessionID?: string; childSessionID?: string; reservedChildSessionID?: string; completed: boolean
+  }>()
+  const childBindings = new Map<string, { parentSessionID: string; callID: string; role: string }>()
+  const provisionalBindings = new Map<string, { parentSessionID: string; callID: string; role: string }>()
+  const bindingInFlight = new Map<string, Promise<void>>()
+  const shellIdentities = new ShellEnvDelivery()
   // Replaces a real dependency with a test double only: send is the Gaia
   // policy bridge. The run its attestation ledger is scoped to is derived by
   // the Gaia-side process from the process that spawned it, so this edge does
@@ -564,16 +573,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // cannot exist before the primary one has taken a turn, so the first session
   // seen is the primary and every later one must inherit a grant instead.
   let rootSessionID: string | undefined
-  // The dispatch call that created each child session, keyed by that child's
-  // session. Written only when the parent's tool.execute.after reports the
-  // child it produced, so it is empty for the whole run of the child it
-  // describes: read it directly and every tool call a subagent makes carries no
-  // agent_id. Read it through dispatchHandle instead.
+  // The early host binding names the dispatch before the child finishes.
   const dispatchBySession = new Map<string, string>()
   // One issuance per session even when two edges reach it at once. Without it a
   // tool call landing while the event handler's attest is still in flight sees
   // a named session with no claim yet and composes no context at all.
   const attestInFlight = new Map<string, Promise<void>>()
+  // The backend ledger is read-modify-write: serialize all issuers in this plugin instance.
+  let issuanceTail: Promise<void> = Promise.resolve()
   const decisions = new PermissionDecisionRouter()
 
   /** The dispatch handle Gaia reads as agent_id, or undefined for the primary.
@@ -630,19 +637,28 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       // rootSessionID that can drift from the one dispatchHandle applies.
       return
     }
-    const response = await send({
+    const issuing = issuanceTail.then(() => send({
       event: "identity.attest",
       sessionID,
       role,
       issuer: ROLE_ISSUER,
       parentAttestation,
-    })
+    }))
+    issuanceTail = issuing.then(() => undefined, () => undefined)
+    const response = await issuing
     if (response.action === "allow" && typeof response.attestation === "string" && response.attestation) {
       attestationBySession.set(sessionID, response.attestation)
     }
   }
 
   function attestOnce(sessionID: string, role: string, grantor?: string): Promise<void> {
+    const binding = childBindings.get(sessionID)
+    if (binding && (binding.role !== role || (grantor && grantor !== binding.parentSessionID))) {
+      return Promise.reject(new Error("Gaia child identity conflicts with its authorized dispatch"))
+    }
+    grantor = binding?.parentSessionID ?? grantor
+    // A pre-binding message must not install a no-op promise that absorbs issuance.
+    if (!isPrimarySession(sessionID) && !grantor) return Promise.resolve()
     const running = attestInFlight.get(sessionID)
     if (running) return running
     const started = attest(sessionID, role, grantor).finally(() => {
@@ -650,6 +666,69 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     })
     attestInFlight.set(sessionID, started)
     return started
+  }
+
+  /** Correlate a host child binding with one previously allowed parent Task. */
+  async function bindChild(
+    parentSessionID: string, callID: string, childSessionID: string, reportStart = false,
+  ): Promise<void> {
+    const dispatch = authorizedDispatches.get(JSON.stringify([parentSessionID, callID]))
+    const provisional = provisionalBindings.get(childSessionID)
+    const prior = provisional ?? childBindings.get(childSessionID)
+    const previousDispatch = prior && authorizedDispatches.get(JSON.stringify([prior.parentSessionID, prior.callID]))
+    const sequentialResume = !provisional && prior && prior.callID !== callID
+      && prior.parentSessionID === parentSessionID && prior.role === dispatch?.role
+      && previousDispatch?.completed && !dispatch?.completed
+      && dispatch?.requestedChildSessionID === childSessionID
+    const knownRole = agentBySession.get(childSessionID)
+    const parent = roleContext(parentSessionID)
+    if (!dispatch || !callID || !childSessionID || isPrimarySession(childSessionID)
+      || !isPrimarySession(parentSessionID) || parent?.role !== "gaia-orchestrator"
+      || !parent.attestation
+      || (dispatch.requestedChildSessionID && dispatch.requestedChildSessionID !== childSessionID)
+      || (dispatch.completed && dispatch.childSessionID !== childSessionID)
+      || (dispatch.childSessionID && dispatch.childSessionID !== childSessionID)
+      || (dispatch.reservedChildSessionID && dispatch.reservedChildSessionID !== childSessionID)
+      || (prior && !sequentialResume && (prior.parentSessionID !== parentSessionID || prior.callID !== callID
+        || prior.role !== dispatch.role))
+      || (knownRole && knownRole !== dispatch.role)) {
+      throw new Error("Gaia refused an uncorrelated or conflicting child binding")
+    }
+    const running = bindingInFlight.get(childSessionID)
+    if (running) return running
+    // Reservations exclude conflicts but confer no identity, even to concurrent message callbacks.
+    const reservation = { parentSessionID, callID, role: dispatch.role }
+    if (sequentialResume) shellIdentities.clearSession(childSessionID)
+    dispatch.reservedChildSessionID = childSessionID
+    provisionalBindings.set(childSessionID, reservation)
+    const ready: Promise<void> = Promise.resolve().then(async () => {
+      if (reportStart) {
+        const response = await send({
+          event: "message.part.updated", sessionID: parentSessionID, callID,
+          state: { metadata: { sessionId: childSessionID } },
+        })
+        if (response.action !== "allow"
+          && (response.action !== undefined || !Array.isArray(response.sections_provided))) {
+          throw new Error("Gaia refused the authorized child start binding")
+        }
+      }
+      await attestOnce(childSessionID, dispatch.role, parentSessionID)
+      if (!attestationBySession.has(childSessionID)) {
+        throw new Error("Gaia could not attest the authorized child binding")
+      }
+      dispatch.childSessionID = childSessionID
+      childBindings.set(childSessionID, reservation)
+      dispatchBySession.set(childSessionID, callID)
+      agentBySession.set(childSessionID, dispatch.role)
+    }).finally(() => {
+      if (provisionalBindings.get(childSessionID) === reservation) {
+        provisionalBindings.delete(childSessionID)
+        if (dispatch.reservedChildSessionID === childSessionID) delete dispatch.reservedChildSessionID
+      }
+      if (bindingInFlight.get(childSessionID) === ready) bindingInFlight.delete(childSessionID)
+    })
+    bindingInFlight.set(childSessionID, ready)
+    return ready
   }
 
   /** Read the session's agent back from the host's own message record. */
@@ -685,15 +764,30 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   }
 
   async function identify(sessionID: string, dispatching?: string): Promise<string | undefined> {
+    const ready = bindingInFlight.get(sessionID)
+    if (ready) await ready
     let agent = agentBySession.get(sessionID)
     if (!agent) {
-      agent = await hostAgent(sessionID, dispatching)
+      const recovered = await hostAgent(sessionID, dispatching)
+      const started = bindingInFlight.get(sessionID)
+      if (started) await started
+      agent = agentBySession.get(sessionID) ?? recovered
       if (!agent) return undefined
       agentBySession.set(sessionID, agent)
       if (rootSessionID === undefined) rootSessionID = sessionID
     }
     await attestOnce(sessionID, agent)
     return agent
+  }
+
+  /** Read the requested Task role without accepting contradictory aliases. */
+  function dispatchRole(args?: Record<string, unknown>): string | undefined {
+    if (args?.subagent_type !== undefined && args?.agent !== undefined
+      && args.subagent_type !== args.agent) {
+      throw new Error("Gaia dispatch role aliases disagree")
+    }
+    const role = args?.subagent_type ?? args?.agent
+    return typeof role === "string" ? role : undefined
   }
 
   async function decide(
@@ -729,10 +823,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   }
 
   return {
+    dispose: async () => { shellIdentities.clear() },
     event: async ({ event }) => {
       if (event.type === "message.updated") {
         const info = event.properties?.info
         if (info?.role === "assistant" && typeof info.sessionID === "string" && typeof info.agent === "string") {
+          const ready = bindingInFlight.get(info.sessionID)
+          if (ready) await ready
+          const binding = childBindings.get(info.sessionID)
+          if (binding && binding.role !== info.agent) {
+            throw new Error("Gaia child role conflicts with its authorized dispatch")
+          }
           agentBySession.set(info.sessionID, info.agent)
           if (rootSessionID === undefined) rootSessionID = info.sessionID
           await attestOnce(info.sessionID, info.agent)
@@ -755,18 +856,14 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           && typeof part.callID === "string"
           && typeof part.state?.metadata?.sessionId === "string"
         ) {
-          await send({
-            event: "message.part.updated",
-            sessionID: part.sessionID,
-            callID: part.callID,
-            state: { metadata: { sessionId: part.state.metadata.sessionId } },
-          })
+          await bindChild(part.sessionID, part.callID, part.state.metadata.sessionId, true)
         }
         return
       }
       if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
         const sessionID = event.properties?.sessionID
         if (typeof sessionID === "string") {
+          shellIdentities.clearSession(sessionID)
           await send({ event: event.type, sessionID })
         }
         return
@@ -821,12 +918,21 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       output.status = "ask"
     },
     "tool.execute.before": async (call, output) => {
-      const requested = call.tool === "task"
-        ? (output.args?.subagent_type ?? output.args?.agent)
-        : undefined
-      const dispatching = typeof requested === "string" ? requested : undefined
+      shellIdentities.forget(call.sessionID, call.callID)
+      const dispatching = call.tool === "task" ? dispatchRole(output.args) : undefined
+      const requestedChildSessionID = call.tool === "task" ? output.args?.task_id : undefined
+      if (requestedChildSessionID !== undefined
+        && (typeof requestedChildSessionID !== "string" || !requestedChildSessionID)) {
+        throw new Error("Gaia dispatch has an invalid task_id")
+      }
       const agent = await identify(call.sessionID, dispatching)
-      if (dispatching) agentByCall.set(call.callID, dispatching)
+      const dispatchKey = JSON.stringify([call.sessionID, call.callID])
+      const priorDispatch = authorizedDispatches.get(dispatchKey)
+      if (call.tool === "task" && priorDispatch
+        && (priorDispatch.role !== dispatching || priorDispatch.requestedChildSessionID !== requestedChildSessionID || priorDispatch.completed
+          || priorDispatch.childSessionID || priorDispatch.reservedChildSessionID)) {
+        throw new Error("Gaia refused a reused or relabelled dispatch call")
+      }
       const normalized = normalizeBridgeToolRequest(call.tool, output.args, input)
       const response = await send({
         event: "tool.execute.before",
@@ -844,6 +950,38 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       })
       if (response.action === "allow") {
         applyUpdatedInput(output, response.updated_input)
+        if (dispatching) {
+          const context = roleContext(call.sessionID)
+          const appliedRole = dispatchRole(output.args)
+          if (!call.callID || !isPrimarySession(call.sessionID)
+            || context?.role !== "gaia-orchestrator" || !context.attestation
+            || appliedRole !== dispatching || output.args?.task_id !== requestedChildSessionID) {
+            throw new Error("Gaia dispatch lacks an authenticated unchanged parent request")
+          }
+          const current = authorizedDispatches.get(dispatchKey)
+          if (current && (current.role !== dispatching || current.requestedChildSessionID !== requestedChildSessionID || current.completed
+            || current.childSessionID || current.reservedChildSessionID)) {
+            throw new Error("Gaia refused a concurrently reused dispatch call")
+          }
+          if (!current) authorizedDispatches.set(dispatchKey, { role: dispatching, requestedChildSessionID, completed: false })
+        }
+        if (normalized.tool === "Bash" || normalized.tool === "bash") {
+          const context = roleContext(call.sessionID)
+          const delivery = response.shell_env
+          if (!delivery || delivery.session_id !== call.sessionID || delivery.call_id !== call.callID
+            || delivery.agent_type !== agent || !context?.attestation) {
+            throw new Error("Gaia bridge did not confirm authenticated shell environment delivery")
+          }
+          const directory = output.args?.workdir ?? input.directory
+          if (typeof directory !== "string" || !isAbsolute(directory)) {
+            throw new Error("Gaia shell environment lacks absolute invocation directory")
+          }
+          shellIdentities.remember({
+            sessionID: call.sessionID, callID: call.callID,
+            agent: delivery.agent_type, attestation: context.attestation,
+            cwd: resolve(directory), args: output.args,
+          })
+        }
         return
       }
       if (approvalID(response)) {
@@ -853,14 +991,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },
     "tool.execute.after": async (call, output) => {
+      shellIdentities.forget(call.sessionID, call.callID)
       const agent = agentBySession.get(call.sessionID)
       if (call.tool === "task") {
         const sessionID = output.metadata?.sessionId
-        const dispatchedAgent = agentByCall.get(call.callID)
-        if (typeof sessionID === "string" && dispatchedAgent) {
-          agentBySession.set(sessionID, dispatchedAgent)
-          dispatchBySession.set(sessionID, call.callID)
-          await attestOnce(sessionID, dispatchedAgent, call.sessionID)
+        const dispatch = authorizedDispatches.get(JSON.stringify([call.sessionID, call.callID]))
+        if (typeof sessionID === "string") {
+          await bindChild(call.sessionID, call.callID, sessionID)
+          if (dispatch && output.metadata?.background !== true) {
+            dispatch.completed = true
+            shellIdentities.clearSession(sessionID)
+          }
         }
       }
       const result = toolResult(output)
@@ -878,6 +1019,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         tool: canonicalBridgeToolName(call.tool),
         args: call.args,
         result,
+      })
+    },
+    "shell.env": async (call, output) => {
+      if (!call.sessionID) throw new Error("Gaia shell environment lacks session identity")
+      const context = roleContext(call.sessionID)
+      if (!call.callID && isPrimarySession(call.sessionID)
+        && context?.attestation && context.role === "gaia-orchestrator") return
+      if (!call.callID) throw new Error("Gaia dispatched shell environment lacks call identity")
+      output.env.GAIA_DISPATCH_AGENT = shellIdentities.take({
+        sessionID: call.sessionID, callID: call.callID, cwd: resolve(call.cwd),
+        agent: agentBySession.get(call.sessionID),
+        attestation: context?.attestation,
       })
     },
     // The installed OpenCode host fires this hook mid-compaction, before the

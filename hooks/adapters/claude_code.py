@@ -1666,7 +1666,9 @@ class ClaudeCodeAdapter(HookAdapter):
     # adapt_pre_tool_use: full pre-tool-use lifecycle
     # ------------------------------------------------------------------ #
 
-    def adapt_pre_tool_use(self, event: HookEvent) -> HookResponse:
+    def adapt_pre_tool_use(
+        self, event: HookEvent, *, _dispatch_identity_in_env: bool = False,
+    ) -> HookResponse:
         """Run all pre-tool-use business logic and return a formatted response.
 
         Orchestrates: routing (bash vs task), validation, state management,
@@ -1716,7 +1718,10 @@ class ClaudeCodeAdapter(HookAdapter):
                 return HookResponse(output="Error: Invalid parameters", exit_code=2)
 
             if tool_name.lower() == "bash":
-                return self._adapt_bash(tool_name, tool_input, hook_data=hook_data)
+                return self._adapt_bash(
+                    tool_name, tool_input, hook_data=hook_data,
+                    _dispatch_identity_in_env=_dispatch_identity_in_env,
+                )
             elif tool_name.lower() in ("task", "agent"):
                 return self._adapt_task(
                     tool_name, tool_input,
@@ -1765,6 +1770,8 @@ class ClaudeCodeAdapter(HookAdapter):
         tool_name: str,
         parameters: dict,
         hook_data: dict | None = None,
+        *,
+        _dispatch_identity_in_env: bool = False,
     ) -> HookResponse:
         """Handle Bash tool validation within the adapter.
 
@@ -1870,7 +1877,7 @@ class ClaudeCodeAdapter(HookAdapter):
         # human authority. See build_dispatch_identity_command for why an
         # `export ...;` prefix (not a bare `VAR=x` word) is used.
         final_command = effective_command
-        if is_subagent:
+        if is_subagent and not _dispatch_identity_in_env:
             final_command = build_dispatch_identity_command(
                 effective_command, agent_type
             )

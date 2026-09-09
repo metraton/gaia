@@ -9,21 +9,23 @@
  * executes the real `gaia approvals opencode-present` / `opencode-decide`
  * CLIs against the database in GAIA_DB.
  *
- * Two seams are doubled, and only two, because OpenCode owns both and no
+ * Normal scenarios double two host seams because no
  * OpenCode host runs here: the host-created permission request and the host's
  * decision to invoke a tool at all. The second is
  * why a `before` step in this scenario proves what the PLUGIN does with an
  * invocation carrying a given session/call identity, and never that OpenCode
  * would deliver that invocation -- an invocation this driver issues is this
  * driver's, and the Python side states that limit rather than asserting past
- * it.
+ * it. Controlled-race scenarios additionally hold or fail a bridge request;
+ * every successful request still uses the real bridge, ledger and database.
  *
  * Usage: bun consent_retry_driver.ts '<scenario json>'
  */
 
-import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
+import { isAbsolute } from "node:path"
+import { pathToFileURL } from "node:url"
 
-const bridgePath = new URL("../../opencode/bridge.py", import.meta.url).pathname
+const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
 
 type Exchange = {
   sent: Record<string, unknown>
@@ -38,8 +40,68 @@ const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
 let lastBridgeRequiresApproval = false
 
+/** A manually released barrier, independent of bridge subprocess timing. */
+function barrier() {
+  let release!: () => void
+  const promise = new Promise<void>((resolve) => { release = resolve })
+  return { promise, release }
+}
+
+type HeldRequest = {
+  sessionID: string; outcome: string; used: boolean
+  entered: ReturnType<typeof barrier>; release: ReturnType<typeof barrier>
+}
+let heldStart: HeldRequest | undefined
+let heldIssuance: HeldRequest | undefined
+const startDelivered = new Map<string, ReturnType<typeof barrier>>()
+const identityAttempts: string[] = []
+const observations: Record<string, unknown>[] = []
+let activeIssuers = 0
+let maxActiveIssuers = 0
+
+/** Hold exactly one selected request, optionally failing before any backend execution. */
+async function hold(request: HeldRequest): Promise<boolean> {
+  request.used = true
+  request.entered.release()
+  await request.release.promise
+  if (request.outcome === "throw") throw new Error("driver injected bridge failure")
+  return request.outcome !== "deny"
+}
+
+/** Instrument issuer overlap and start readiness without fabricating a successful claim. */
 async function gaiaBridge(event: Record<string, unknown>) {
-  const child = Bun.spawn(["python3", bridgePath], {
+  if (event.event === "identity.attest") {
+    identityAttempts.push(String(event.sessionID))
+    activeIssuers++
+    maxActiveIssuers = Math.max(maxActiveIssuers, activeIssuers)
+    try {
+      if (heldIssuance && !heldIssuance.used && event.sessionID === heldIssuance.sessionID
+        && !(await hold(heldIssuance))) return { action: "deny" as const }
+      return await policyBridge(event)
+    } finally {
+      activeIssuers--
+    }
+  }
+  if (event.event === "message.part.updated") {
+    const child = (event.state as any)?.metadata?.sessionId
+    if (heldStart && !heldStart.used && child === heldStart.sessionID
+      && !(await hold(heldStart))) return { action: "deny" as const }
+    const response = await policyBridge(event)
+    startDelivered.get(child)?.release()
+    return response
+  }
+  return policyBridge(event)
+}
+
+async function policyBridge(event: Record<string, unknown>) {
+  if (scenario.missingAttestation && event.event === "tool.execute.before" && event.tool === "bash") {
+    event = { ...event, roleContext: undefined }
+  }
+  if (scenario.injectCarrierClaim) {
+    event = { ...event, shell_env_transport: true, _dispatch_identity_in_env: true }
+  }
+  const child = Bun.spawn(["python3", "-B", bridgePath, ...(scenario.legacyBridge ? [] : ["--shell-env-v1"])], {
+    cwd: process.env.WORKSPACE,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
     stdout: "pipe",
@@ -70,12 +132,25 @@ async function gaiaBridge(event: Record<string, unknown>) {
 }
 
 const scenario = JSON.parse(process.argv[2])
+if (scenario.pluginModulePath !== undefined
+  && (typeof scenario.pluginModulePath !== "string" || !isAbsolute(scenario.pluginModulePath))) {
+  throw new Error("pluginModulePath must be an exact absolute module path")
+}
+const { GaiaOpenCodePlugin } = await import(scenario.pluginModulePath === undefined
+  ? new URL("../../opencode/plugin.ts", import.meta.url).href
+  : pathToFileURL(scenario.pluginModulePath).href)
 
 const client = {
-  session: {},
+  session: {
+    async messages({ sessionID }: { sessionID: string }) {
+      return { data: scenario.messages?.[sessionID] ?? [] }
+    },
+  },
 }
 
-const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
+const directory = process.env.WORKSPACE ?? process.cwd()
+const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client, directory })
+const argsByCall = new Map<string, any>()
 
 async function presentPermission(step: any) {
   const permission = {
@@ -91,32 +166,58 @@ async function presentPermission(step: any) {
   return permissionOutput.status
 }
 
-for (const step of scenario.steps) {
+/** Deliver one host event and record its observable result, including refusals. */
+async function runStep(step: any): Promise<void> {
   const record: Record<string, unknown> = { kind: step.kind, label: step.label }
   try {
     if (step.kind === "before") {
       // One args object per step, built here so the Python side can compare the
       // bytes the plugin forwarded across two steps that declare the same input.
+      const args = step.reuseArgs ? argsByCall.get(step.callID) : step.args ?? { command: step.command }
+      argsByCall.set(step.callID, args)
+      record.commandBefore = args.command
       await plugin["tool.execute.before"](
         { sessionID: step.sessionID, callID: step.callID, tool: step.tool ?? "bash" },
-        { args: step.args ?? { command: step.command } },
+        { args },
       )
+      record.commandAfter = args.command
       if (lastBridgeAction === "allow") {
         record.allowed = true
         stepResults.push(record)
-        continue
+        return
       }
       record.allowed = await presentPermission(step) === "allow"
+    } else if (step.kind === "shell-env") {
+      const output = { env: {} as Record<string, string> }
+      await plugin["shell.env"]({ sessionID: step.sessionID, callID: step.callID, cwd: directory }, output)
+      record.env = output.env
+      // Never execute the signed publication text: only observe the delivered child environment.
+      const child = Bun.spawn(["python3", "-B", "-c", "import os; print(os.environ.get('GAIA_DISPATCH_AGENT', '<unset>'))"], {
+        env: { ...process.env, ...output.env }, stdout: "pipe", stderr: "pipe",
+      })
+      record.childIdentity = (await new Response(child.stdout).text()).trim()
+      if (await child.exited !== 0) throw new Error("identity observation child failed")
+      record.allowed = true
     } else if (step.kind === "after") {
+      const args = argsByCall.get(step.callID) ?? step.args ?? { command: step.command }
+      record.commandAfter = args.command
       await plugin["tool.execute.after"](
         {
           sessionID: step.sessionID,
           callID: step.callID,
           tool: step.tool ?? "bash",
-          args: step.args ?? { command: step.command },
+          args,
         },
         { output: step.output ?? "", metadata: step.metadata ?? {} },
       )
+      record.allowed = true
+    } else if (step.kind === "compact") {
+      const output = { context: [] as string[] }
+      await plugin["experimental.session.compacting"]({ sessionID: step.sessionID }, output)
+      record.context = output.context
+      record.allowed = true
+    } else if (step.kind === "lifecycle") {
+      await plugin.event({ event: { type: step.eventType, properties: { sessionID: step.sessionID } } })
       record.allowed = true
     } else if (step.kind === "message") {
       await plugin.event({
@@ -182,4 +283,71 @@ for (const step of scenario.steps) {
   stepResults.push(record)
 }
 
-console.log(JSON.stringify({ steps: stepResults, exchanges, permissionAsks }))
+/** Run competing callbacks while a selected real bridge boundary is held open. */
+async function runHeld(step: any) {
+  const gate: HeldRequest = {
+    sessionID: step.first.childSessionID, outcome: step.outcome, used: false,
+    entered: barrier(), release: barrier(),
+  }
+  if (step.kind === "held-start") heldStart = gate
+  else heldIssuance = gate
+  const first = runStep(step.first)
+  await gate.entered.promise
+  const delivered = barrier()
+  if (step.second) startDelivered.set(step.second.childSessionID, delivered)
+  const second = step.second ? runStep(step.second) : undefined
+  const waiting = (step.during ?? []).map(runStep)
+  if (step.second) await delivered.promise
+  // Drain callbacks scheduled by bridge completion, not a wall-clock race or a sleep.
+  await new Promise<void>((resolve) => setImmediate(resolve))
+  observations.push({
+    label: step.label,
+    identityAttempts: [...identityAttempts], maxActiveIssuers,
+    settledWhileHeld: stepResults.filter((result) =>
+      (step.during ?? []).some((item: any) => item.label === result.label)).map((result) => result.label),
+  })
+  gate.release.release()
+  await Promise.all([first, second, ...waiting])
+  if (step.second) startDelivered.delete(step.second.childSessionID)
+  heldStart = undefined
+  heldIssuance = undefined
+}
+
+for (const step of scenario.steps) {
+  if (step.kind === "concurrent") {
+    await Promise.all(step.steps.map(runStep))
+  } else if (step.kind === "held-start" || step.kind === "held-issuance") {
+    await runHeld(step)
+  } else if (step.kind === "observe") {
+    observations.push({ label: step.label, identityAttempts: [...identityAttempts], maxActiveIssuers })
+  } else {
+    await runStep(step)
+  }
+}
+
+/** Keep identity regression reports useful without emitting issued credentials. */
+function redactIdentity(exchange: Exchange) {
+  const sent: any = { ...exchange.sent }
+  const received: any = { ...(exchange.received as object) }
+  if (sent.parentAttestation) {
+    sent.parentAttestationPresent = true
+    delete sent.parentAttestation
+  }
+  if (sent.roleContext) {
+    sent.roleContext = { ...sent.roleContext, attestationPresent: Boolean(sent.roleContext.attestation) }
+    delete sent.roleContext.attestation
+  }
+  if (received.attestation) {
+    received.attestationPresent = true
+    delete received.attestation
+  }
+  return { ...exchange, sent, received }
+}
+
+console.log(JSON.stringify({
+  steps: stepResults,
+  exchanges: scenario.redactIdentityRecords ? exchanges.map(redactIdentity) : exchanges,
+  permissionAsks,
+  observations,
+  maxActiveIssuers,
+}))
