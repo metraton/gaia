@@ -29,6 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The comparison baseline is not an ancestor of the PR checkout.
+      - name: Fetch pinned plugin comparison baseline
+        run: |
+          git fetch --no-tags --depth=1 origin c407aadd643051d320a3fc90ffbcbe3fdf75cb5a
+          git cat-file -e 'c407aadd643051d320a3fc90ffbcbe3fdf75cb5a^{commit}'
+          git show c407aadd643051d320a3fc90ffbcbe3fdf75cb5a:opencode/plugin.ts > /dev/null
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
         with:
