@@ -17,6 +17,13 @@ host. Its exact shape, field set, render order and absence semantics are stated
 in `template.md`. Show that text verbatim. Compose nothing, summarise nothing,
 reorder nothing, translate no label.
 
+For an existing pending id, read both presentation pieces with `gaia approvals
+show <approval_id> --consent-surface`. The JSON `visible_text` field is that
+rendered surface byte-for-byte; print it unchanged. Use the JSON
+`approve_label` field unchanged for the approval control -- Gaia sources it from
+`render_approve_label`, so the presenter must not rebuild it. This read records
+no `SHOWN` event and makes no decision or grant.
+
 ## Present the surface as text, then ask a minimal decision
 
 A presentation is two pieces. Print the rendered surface verbatim as console

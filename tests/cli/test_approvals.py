@@ -73,6 +73,7 @@ def _make_args(**kwargs):
         "dry_run": False,
         "reason": None,
         "orphans_only": False,
+        "consent_surface": False,
     }
     defaults.update(kwargs)
     return SimpleNamespace(**defaults)
@@ -505,6 +506,99 @@ class TestCmdShow:
         assert data["approval"]["id"] == self.canonical_id
         payload = json.loads(data["approval"]["payload_json"])
         assert payload["exact_content"] == "git push origin main"
+
+    def test_consent_surface_is_exact_complete_and_read_only(self, capsys, db_store):
+        store, _insert_pending = db_store
+        commands = ["git push origin one", "git push origin two"]
+        payload = {
+            "operation": "COMMAND_SET approval request",
+            "exact_content": commands[0],
+            "commands": commands,
+            "command_set": [{"command": command} for command in commands],
+            "scope": "git push",
+            "risk_level": "high",
+            "rationale": "publish two refs",
+        }
+        store.insert_requested(
+            payload,
+            agent_id="test-agent",
+            session_id="test-session",
+            approval_id=self.canonical_id,
+        )
+        before_row = store.get_by_id(self.canonical_id)
+        before_events = store.get_history(self.canonical_id)
+        args = _make_args(consent_surface=True)
+        args.approval_id = self.canonical_id
+
+        with patch.object(
+            approvals_mod,
+            "_import_writer",
+            side_effect=AssertionError("consent rendering must not inspect or create grants"),
+        ):
+            rc = approvals_mod.cmd_show_v2(args)
+
+        assert rc == 0
+        output = json.loads(capsys.readouterr().out)
+        expected = approvals_mod._native_consent_presentation(payload, self.canonical_id)
+        assert output == expected
+        assert output["visible_text"] == expected["visible_text"]
+        assert output["metadata"]["commands"] == commands
+        assert output["metadata"]["fingerprints"] == [
+            _sha256(command) for command in commands
+        ]
+        assert output["approve_label"] == (
+            f"Approve -- COMMAND_SET approval request (2 commands) [{self.canonical_id}]"
+        )
+        assert "No impact statement was declared" in output["visible_text"]
+        assert "No rollback was declared" in output["visible_text"]
+        assert "No verification step was declared" in output["visible_text"]
+        assert "No window was declared" in output["visible_text"]
+        assert store.get_by_id(self.canonical_id) == before_row
+        assert store.get_history(self.canonical_id) == before_events
+        assert [event["event_type"] for event in before_events] == ["REQUESTED"]
+
+    @pytest.mark.parametrize("status", ["approved", "rejected", "revoked"])
+    def test_consent_surface_rejects_non_pending(self, status, capsys, db_store):
+        store, insert_pending = db_store
+        approval_id = insert_pending("git push origin main", approval_id=self.canonical_id)
+        if status == "approved":
+            store.approve(approval_id, "test-session")
+        else:
+            store.revoke(approval_id, "test-session")
+            if status == "rejected":
+                connection = store._open_db()
+                connection.execute(
+                    "UPDATE approvals SET status = 'rejected' WHERE id = ?", (approval_id,)
+                )
+                connection.commit()
+                connection.close()
+        args = _make_args(consent_surface=True)
+        args.approval_id = approval_id
+
+        assert approvals_mod.cmd_show_v2(args) == 1
+        assert f"is {status}" in capsys.readouterr().err
+
+    def test_consent_surface_rejects_malformed_payload(self, capsys, db_store):
+        store, insert_pending = db_store
+        approval_id = insert_pending("git push origin main", approval_id=self.canonical_id)
+        connection = store._open_db()
+        connection.execute(
+            "UPDATE approvals SET payload_json = '{' WHERE id = ?", (approval_id,)
+        )
+        connection.commit()
+        connection.close()
+        args = _make_args(consent_surface=True)
+        args.approval_id = approval_id
+
+        assert approvals_mod.cmd_show_v2(args) == 1
+        assert "Cannot render consent surface" in capsys.readouterr().err
+
+    def test_consent_surface_rejects_unknown_id(self, capsys, db_store):
+        args = _make_args(consent_surface=True)
+        args.approval_id = "P-deadbeefdeadbeefdeadbeefdeadbeef"
+
+        assert approvals_mod.cmd_show_v2(args) == 1
+        assert "No pending approval found" in capsys.readouterr().err
 
     @pytest.mark.parametrize("noncanonical", ["P-abcd1234", "abcd1234ef567890abcd1234ef567890"])
     def test_show_rejects_display_label_and_raw_nonce(
@@ -1095,6 +1189,19 @@ class TestRegister:
         args2 = root.parse_args(["approvals", "list"])
         assert args2.orphans_only is False
 
+    def test_register_show_consent_surface_is_exclusive_with_json(self):
+        import argparse
+        root = argparse.ArgumentParser()
+        subparsers = root.add_subparsers(dest="command")
+        approvals_mod.register(subparsers)
+        args = root.parse_args(["approvals", "show", "P-" + "a" * 32, "--consent-surface"])
+        assert args.consent_surface is True
+        with pytest.raises(SystemExit):
+            root.parse_args([
+                "approvals", "show", "P-" + "a" * 32,
+                "--consent-surface", "--json",
+            ])
+
     def test_register_reject_subcommand_parses(self):
         import argparse
         root = argparse.ArgumentParser()
@@ -1134,6 +1241,12 @@ class TestStandaloneParser:
         parser = approvals_mod._build_standalone_parser()
         args = parser.parse_args(["show", "abcd1234"])
         assert args.approval_id == "abcd1234"
+        assert args.func == approvals_mod.cmd_show_v2
+
+    def test_standalone_parser_show_consent_surface(self):
+        parser = approvals_mod._build_standalone_parser()
+        args = parser.parse_args(["show", "P-" + "a" * 32, "--consent-surface"])
+        assert args.consent_surface is True
         assert args.func == approvals_mod.cmd_show_v2
 
     def test_standalone_parser_clean_dry_run(self):

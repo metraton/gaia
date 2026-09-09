@@ -99,7 +99,7 @@ is pulled with exactly one verb.
 | Verb | What comes back |
 |---|---|
 | `gaia approvals pending` / `gaia approvals list` | Live requests awaiting a decision; `list` adds grant state and command count. |
-| `gaia approvals show <P-id>` | One approval: the exact command, verb, age, session, risk, and why it was gated. |
+| `gaia approvals show <P-id>` | One approval: the exact command, verb, age, session, risk, and why it was gated. `--json` returns machine detail; the mutually exclusive `--consent-surface` returns the trusted unbound `visible_text`, `visible_lines`, `metadata`, and exact resolver-compatible `approve_label` for a pending approval without recording a presentation or decision. |
 | `gaia approvals history [<P-id>]` | The N most recent approvals, or one approval's full event chain. |
 | `gaia approvals stats` | Totals by outcome and the pending verb breakdown. |
 | `gaia notifications list` / `gaia notifications show <id>` | The headless-task inbox: what a scheduled or detached run reported back. |
