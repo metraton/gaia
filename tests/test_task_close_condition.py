@@ -111,7 +111,13 @@ def _seed(
 ) -> None:
     """Seed workspace -> brief -> plan -> one pending task with N gates."""
     from gaia.briefs import upsert_brief
-    from gaia.store.writer import add_gate_to_task, add_task_to_plan, upsert_plan
+    from gaia.store.writer import (
+        add_gate_to_task,
+        add_task_to_plan,
+        set_gate_status,
+        set_task_status,
+        upsert_plan,
+    )
 
     upsert_brief(_WORKSPACE, brief, {"status": "open", "title": brief},
                  db_path=tmp_db)
@@ -119,11 +125,23 @@ def _seed(
                 db_path=tmp_db)
     add_task_to_plan(_WORKSPACE, brief, order_num, "close this task",
                      db_path=tmp_db)
+    gates = []
     for status in gate_statuses:
-        add_gate_to_task(
+        gate = add_gate_to_task(
             _WORKSPACE, brief, order_num, "command",
-            evidence_shape="pytest -q", status=status, db_path=tmp_db,
+            evidence_shape="pytest -q", db_path=tmp_db,
         )
+        gates.append((gate["gate_id"], status))
+    for gate_id, status in gates:
+        if status != "pending":
+            set_gate_status(
+                _WORKSPACE, brief, order_num, gate_id, status,
+                db_path=tmp_db,
+            )
+    if gate_statuses and all(
+        status == APPROVING_GATE_STATUS for status in gate_statuses
+    ):
+        set_task_status(_WORKSPACE, brief, order_num, "pending", db_path=tmp_db)
 
 
 def _task_status(tmp_db: Path, brief: str = _BRIEF,
