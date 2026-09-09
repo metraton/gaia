@@ -520,6 +520,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     status        TEXT NOT NULL DEFAULT 'pending'
                   CHECK (status IN ('pending', 'done', 'skipped')),
     evidence_path TEXT,
+    -- Current-epoch provenance, intentionally not foreign keys: harness event
+    -- retention must not erase whether an override still carries this status or
+    -- whether its divergence was already recorded.
+    close_override_event_id INTEGER,
+    close_override_divergence_event_id INTEGER,
     FOREIGN KEY (plan_id) REFERENCES plans(id) ON DELETE CASCADE
 );
 

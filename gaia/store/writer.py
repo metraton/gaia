@@ -4297,6 +4297,7 @@ def set_task_status(
 
         assert_legal_task_lifecycle(old_status, new_status)
 
+        close_override_event_id = None
         if closure_is_conditioned(new_status):
             # The two impure reads the condition needs, both performed here
             # rather than inside the predicate: WHO is asking (the one identity
@@ -4323,7 +4324,7 @@ def set_task_status(
             if not decision.permitted:
                 raise TaskClosureBlocked(decision.denial_message)
             if decision.override_used:
-                write_task_close_override_event(
+                close_override_event_id = write_task_close_override_event(
                     workspace,
                     brief_name,
                     task_order_num=task_id,
@@ -4339,8 +4340,9 @@ def set_task_status(
 
         now = _now_iso()
         con.execute(
-            "UPDATE tasks SET status = ? WHERE id = ?",
-            (new_status, task_row["id"]),
+            "UPDATE tasks SET status = ?, close_override_event_id = ?, "
+            "close_override_divergence_event_id = NULL WHERE id = ?",
+            (new_status, close_override_event_id, task_row["id"]),
         )
         con.commit()
         return {
@@ -5184,6 +5186,81 @@ def write_task_close_override_event(
     )
 
 
+def write_task_close_override_divergence_event(
+    workspace: str,
+    brief_name: str,
+    task_order_num: int,
+    *,
+    override_event_id: int,
+    actor: str | None = None,
+    details: Mapping[str, Any] | None = None,
+    db_path: Path | None = None,
+) -> int:
+    """Record one divergence for the task's current manual-close epoch."""
+    from gaia.state.task_closure_event import build_override_divergence_event
+
+    con = _connect(db_path)
+    try:
+        con.execute("BEGIN IMMEDIATE")
+        task_id = _resolve_task_id_by_order(
+            con, workspace, brief_name, task_order_num
+        )
+        task_row = con.execute(
+            "SELECT status, close_override_event_id, "
+            "close_override_divergence_event_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            task_row["status"] != "done"
+            or task_row["close_override_event_id"] != override_event_id
+        ):
+            raise RuntimeError("task no longer has the expected current close override")
+        existing_id = task_row["close_override_divergence_event_id"]
+        if existing_id is not None:
+            con.commit()
+            return existing_id
+
+        actor_source = actor if actor is not None else os.environ.get("GAIA_DISPATCH_AGENT")
+        event = build_override_divergence_event(
+            brief_name=brief_name,
+            task_order_num=task_order_num,
+            override_event_id=override_event_id,
+            actor=actor_source,
+            task_id=task_id,
+            details=details,
+        )
+        kwargs = event.as_write_kwargs()
+        payload = json.dumps(kwargs["meta"], separators=(",", ":"))
+        cur = con.execute(
+            "INSERT INTO harness_events "
+            "(workspace, ts, type, source, agent, result, severity, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                workspace,
+                _now_iso(),
+                kwargs["event_type"],
+                kwargs["source"],
+                kwargs["agent"],
+                kwargs["result"],
+                kwargs["severity"],
+                payload,
+            ),
+        )
+        event_id = cur.lastrowid
+        con.execute(
+            "UPDATE tasks SET close_override_divergence_event_id = ? WHERE id = ?",
+            (event_id, task_id),
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+    _maybe_prune_harness_events(db_path=db_path)
+    return event_id
+
+
 def remove_gate_from_task(
     workspace: str,
     brief_name: str,
@@ -5343,6 +5420,20 @@ def _read_task_status(con: sqlite3.Connection, task_id: int) -> str | None:
     return row["status"] or "pending"
 
 
+def _read_task_close_override_provenance(
+    con: sqlite3.Connection, task_id: int
+) -> tuple[int | None, int | None]:
+    """Return current override and divergence event ids for one task."""
+    row = con.execute(
+        "SELECT close_override_event_id, close_override_divergence_event_id "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None, None
+    return row["close_override_event_id"], row["close_override_divergence_event_id"]
+
+
 def _apply_derived_task_closure(
     workspace: str,
     brief_name: str,
@@ -5351,6 +5442,8 @@ def _apply_derived_task_closure(
     gate_rows: list[dict],
     binding_rows: list[dict],
     task_status: str | None,
+    close_override_event_id: int | None,
+    close_override_divergence_event_id: int | None,
     db_path: Path | None,
 ) -> dict:
     """Perform whatever a freshly recorded gate verdict implies for the task.
@@ -5364,8 +5457,9 @@ def _apply_derived_task_closure(
     override travels with it. A derived close satisfies that guard the way it is
     meant to be satisfied -- by evidence -- because the only cell that produces
     one is the cell where every gate passed, which is the condition's first
-    disjunct. A derived reopen is exempt from the condition for the same reason a
-    manual reopen is: it withdraws an assertion rather than making one.
+    disjunct. A derived reopen normally withdraws the assertion, but a current
+    manual-close provenance marker preserves ``done`` and records one divergence
+    for that closure epoch instead.
 
     BEST EFFORT, AND REPORTED RATHER THAN RAISED. By the time this runs the gate
     verdict is committed, and the verdict is what the caller asked to record. So
@@ -5428,6 +5522,28 @@ def _apply_derived_task_closure(
         if decision.target_status is None:
             return outcome
 
+        if decision.action.value == "reopen" and close_override_event_id is not None:
+            divergence_event_id = write_task_close_override_divergence_event(
+                workspace,
+                brief_name,
+                task_order_num,
+                override_event_id=close_override_event_id,
+                actor=caller_agent,
+                details={
+                    "gate_count": verdict.gate_count,
+                    "gate_status_counts": dict(verdict.status_counts),
+                    "verdict_reasons": list(verdict.reasons),
+                },
+                db_path=db_path,
+            )
+            outcome["action"] = "override_preserved"
+            outcome["override_event_id"] = close_override_event_id
+            outcome["divergence_event_id"] = divergence_event_id
+            outcome["divergence_preexisting"] = (
+                close_override_divergence_event_id == divergence_event_id
+            )
+            return outcome
+
         transition = set_task_status(
             workspace,
             brief_name,
@@ -5477,7 +5593,9 @@ def set_gate_status(
     task's own status either still follows from its gates or no longer does, and
     :func:`_apply_derived_task_closure` applies the difference: a pending task
     whose every gate now passes is closed with no manual step, and a closed task
-    whose gates no longer all pass is reopened. Both go through
+    whose gates no longer all pass is reopened unless its current closure carries
+    a human override. That override is preserved and one typed divergence is
+    recorded for its closure epoch. State transitions go through
     :func:`set_task_status`, the single writer, with the same guard in front of
     them -- there is no second writer and no privileged path. What was decided
     is reported under :data:`DERIVED_CLOSURE_RESULT_KEY`, always present, so the
@@ -5541,6 +5659,10 @@ def set_gate_status(
         gate_rows = _read_task_gate_rows(con, task_id)
         binding_rows = _read_task_binding_rows(con, task_id)
         task_status = _read_task_status(con, task_id)
+        (
+            close_override_event_id,
+            close_override_divergence_event_id,
+        ) = _read_task_close_override_provenance(con, task_id)
     finally:
         con.close()
 
@@ -5551,6 +5673,8 @@ def set_gate_status(
         gate_rows=gate_rows,
         binding_rows=binding_rows,
         task_status=task_status,
+        close_override_event_id=close_override_event_id,
+        close_override_divergence_event_id=close_override_divergence_event_id,
         db_path=db_path,
     )
     return result
