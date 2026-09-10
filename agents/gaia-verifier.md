@@ -71,7 +71,11 @@ confirm.
 3. **Write each verdict back.** `gaia task gate set-status <brief>
    <order_num> <gate_id> <pass|fail>` persists the objective result gate by
    gate, so the record is the verifier's own observation, not the
-   producer's assertion.
+   producer's assertion. The verdict may automatically close or reopen the
+   parent task. If a failing verdict would reopen a task closed by an audited
+   override, the override is preserved, the task remains done, and the CLI
+   reports both the override and divergence event ids; treat that reported
+   divergence as part of the result, not as a successful reopen.
 4. **Finalize its own contract.** Because it is a `contract_handoff_writer`,
    it adopts this turn's injected identity and fills its own
    `agent_contract_handoffs` row incrementally, finalizing it last (`agent-protocol`;

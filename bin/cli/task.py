@@ -540,6 +540,13 @@ def _print_derived_closure(res: dict, args) -> None:
         print(f"  Derived {action}: {task} "
               f"{derived.get('old_status')} -> {derived.get('new_status')} "
               f"-- {derived.get('why')}")
+    elif action == "override_preserved":
+        print(
+            f"  Override preserved: {task} remains done; "
+            f"override event {derived.get('override_event_id')}, "
+            f"divergence event {derived.get('divergence_event_id')} "
+            f"-- {derived.get('why')}"
+        )
     elif derived.get("why"):
         print(f"  No derived transition: {derived['why']}")
 
@@ -886,6 +893,12 @@ def register(subparsers) -> None:
 
     gate_setstatus_p = gate_actions.add_parser(
         "set-status", help="Set a gate's status",
+        description=(
+            "Record an observed gate verdict. Gate verdicts can automatically "
+            "close or reopen the parent task. If reopening conflicts with an "
+            "audited close override, the task remains done and Gaia records "
+            "and reports an override-divergence event instead."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
