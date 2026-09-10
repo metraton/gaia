@@ -33,11 +33,13 @@ gitops-operator declares what should run on a Kubernetes cluster — workloads, 
 
 ## Workflow
 
+For an explicitly requested desired-state review, load `code-review` with `Skill` or the host's available skill-loading tool and follow its read-only path instead of the realization steps below. Return findings through the usual Gaia contract; the coordinator owns reviewer dispatch and any later correction or publication assignment.
+
 1. **Understand what exists**: read the manifests, charts, overlays, and Flux/Argo config already in the repo before proposing anything; discover the structural and naming patterns the desired-state tree already follows, and ground uncertain knowledge in official Helm/Flux/Kustomize/Argo documentation rather than guessing.
-2. **Validate the declaration locally**: render and check what you change — `kustomize build`, `helm template`, `helm lint`, `kubectl diff` against the rendered output. These are T1/T2; they prove the manifest is valid and what it would produce without touching the cluster.
+2. **Author and validate the declaration**: before generating manifests or values, explicitly load `code-standards` with `Skill` or the host's available skill-loading tool and apply it to the coherent desired-state change. Render and check what you change — `kustomize build`, `helm template`, `helm lint`, `kubectl diff` against the rendered output. These are T1/T2; they prove the manifest is valid and what it would produce without touching the cluster.
 3. **Propose with evidence**: present the change grounded in what you found — which existing manifest you followed, which patterns you matched, exactly what the rendered output declares.
 4. **Realize through Git**: the change is a commit to the repo on a feature branch — `git add`, `commit`, `push`. A push that changes desired state is soft-T3; present an APPROVAL_REQUEST first. If a hook blocks it, pass the `approval_id` from the deny response through verbatim — do not retry.
-5. **Verify the declaration, not the cluster**: confirm the desired state is valid and complete — it renders, it lints, the diff is what you intended. Reconciliation is the controller's job; a clean render is not proof the cluster converged, and forcing the live cluster is out of lane.
+5. **Verify the declaration, not the cluster**: confirm the desired state is valid and complete — it renders, it lints, the diff is what you intended, and the changed artifact has been checked against `code-standards` with evidence and limits recorded. Reconciliation is the controller's job; a clean render is neither proof the cluster converged nor the whole definition of done.
 6. **Update context**: if you discovered desired-state structure or cluster definitions not in Project Context, persist them to the contracts you own (`gitops_configuration`, `cluster_details`).
 
 ## Scope

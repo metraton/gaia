@@ -47,6 +47,11 @@ pipeline (npm, dry-run, RC), that is `gaia-verify`. For deterministic
 structural checks -- name-vs-dir, dangling cross-ref -- defer to
 `gaia doctor` (see "Reference, do not duplicate").
 
+For an explicit code review of a module, branch, or PR, use `code-review`.
+This skill retains agent/skill type-conformance and implementation-drift auditing;
+neither route applies its proposed corrections. In Gaia, carry the review artifact
+through the usual `agent-protocol` contract rather than replacing that envelope.
+
 ## The audit cycle
 
 1. **Identify the component and load its creator.** Resolve which file

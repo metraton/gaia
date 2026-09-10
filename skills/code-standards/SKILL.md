@@ -10,6 +10,12 @@ maintainability — not which architectural pattern should exist. Use the applic
 domain or pattern guidance to determine the design; use these standards to implement
 that design clearly and safely.
 
+Load and apply this discipline before generating a change, then check the result
+against it as well as the behavioral checks before calling the change done. Ordinary
+coding includes coherent local improvement and verification, not an automatic
+multi-reviewer audit. For an explicitly requested review, use `code-review` to
+organize the examination; this skill remains the owner of the quality criteria.
+
 ## Iron Law
 
 Write code so that its behavior, responsibility, and intent can be understood from
@@ -52,8 +58,16 @@ state changes, and failure paths should be traceable from the implementation.
 
 A change should touch the smallest coherent surface that correctly implements the
 behavior; a small blast radius makes it easier to reason about, verify, and revert.
-Refactoring outside that surface should have a concrete reason connected to the
-change.
+Include coupled declarations, callers, schemas, and tests when they must change
+together to preserve an invariant; the smallest diff is not necessarily coherent.
+Identify those dependencies before editing and verify the relationship afterwards.
+
+A normal modification is not permission to restructure its neighbors. Reassess the
+touched file without treating existing debt as approved; fix within the agreed
+coherent surface and report unrelated debt separately. If correctness requires a
+wider scope, explain the dependency and obtain agreement before expanding. An
+explicit review examines its declared scope without editing; a transformation or
+refactor beyond the modification requires a separate assignment.
 
 ### 5. Protect boundaries
 
@@ -78,11 +92,20 @@ more than about two lines, and four chained facts are four entries in a dry list
 about a line each. Neither figure is a count to satisfy — padding one fact to two lines
 and truncating a real chain to look short fail the same way.
 
-When the code changes or the file is audited, no comment is passed over: each one
-earns its line again, is corrected, or goes. Existing volume is not precedent — every
-comment already in the file faces the same justification as one written today. A pass
+When a file changes or is explicitly reviewed, reassess every comment in that file:
+each one must earn its line again, warrant correction, or warrant removal. Apply
+corrections only within the authorized modification; a read-only review reports
+them, and unrelated cleanup remains declared debt rather than a silent scope increase.
+Existing volume is not precedent — every comment already in the file faces the same
+justification as one written today. A pass
 that leaves a commented file carrying as much comment as it found owes an account of
 why each line survived, whatever route it took to get there.
+
+No comment-density ratio proves quality. Zero is valid where code carries the facts;
+necessary knowledge must survive where it does not. A 5–10% band is only a proposal
+for experimentation, not a quota, cap, gate, or chosen threshold. Keep interface
+contracts, licenses, and tool directives distinct from explanatory comments; do not
+delete their obligations to improve a count.
 
 ### 7. Comments are context, not evidence
 
@@ -92,12 +115,27 @@ executable source of truth before relying on them. A stale comment should not
 override what the system actually does: treating it as truth makes an agent reason
 about behavior that no longer exists.
 
+This is descriptive precedence: executable evidence establishes what happens, not
+what ought to happen. Requirements, safety constraints, and applicable standards
+govern the latter. Existing code or a passing test does not excuse a defect or poor
+practice; name the disagreement instead of turning observed behavior into a norm.
+
 ### 8. Route each fact to the declaration that owns it
 
 Who reads a fact decides where it lives. A fact the caller needs goes in the slot that
-renders at the call site. A fact spanning implementation units is not a comment:
-concepts, workflows, architecture, and usage belong in README and documentation, where
-one statement serves every file instead of drifting per-file copies.
+renders at the call site. Concepts, workflows, architecture, and usage spanning units
+belong in shared documentation, where one statement serves every file instead of
+drifting per-file copies. The turn's reasoning belongs in its report, not automatically
+in the artifact. Do not repeat a fact already expressed by an interface or data field.
+
+A synchronization invariant can belong at the declaration that must preserve it,
+even when it names another unit. State what must remain aligned, why divergence is
+harmful, and the stable counterpart that must be checked when changing it; verify
+both sides and protect the relationship with a meaningful check where feasible.
+That is a maintenance obligation, not a claim that the other file currently behaves
+a certain way. A bare "keep in sync" or "see elsewhere" leaves the reader to recover
+the constraint and does not earn a line. Keep the rule in one owning place rather
+than copying implementations or scattering reciprocal explanations.
 
 A fact only a maintainer needs belongs to the declaration whose constraint produces it,
 not to the line where the value happens to sit. Ask whose change would make it false:
@@ -120,6 +158,12 @@ cannot break what does not depend on position.
 When behavior changes, verify the observable behavior rather than only the shape of
 the implementation. Tests should protect meaningful behavior and invariants,
 especially where a future refactor could accidentally change them.
+Exercise relevant failure paths and boundaries, and assert externally meaningful
+outcomes or cross-file relationships. A test should fail for the regression it
+claims to prevent, not merely confirm an implementation string or echo its own
+fixture. For non-behavioral changes, show preservation of behavior rather than
+manufacturing tests for prose. State what ran, what it establishes, and what remains
+unverified; loading this skill or passing a linter is not evidence of its application.
 
 ## Traps
 
@@ -136,11 +180,10 @@ transformations harder to see; behavior hidden behind convenience helpers makes 
 code shorter while the actual control flow becomes harder to trace. Optimize for
 understanding rather than line count.
 
-### Comment that points outward
+### Pointer without an obligation
 
-A comment that names anything outside the item it annotates: "see above", "handled
-below", any pointer that rots when the file is reordered, or an assertion about the
-current state of another file or module. Nothing invalidates it at the point of
-change — the reorder or the edit elsewhere has no reason to visit this line — so it
-goes silently wrong while still reading as authoritative. State what the item itself
-holds, or say nothing.
+"See above", "handled below", or a copied assertion about another module's current
+state can go stale without any reason to revisit the comment. Naming another unit
+is not itself the defect: making the reader reconstruct the relationship, or copying
+a fact owned elsewhere, is. Preserve a verified synchronization obligation under
+Rule 8; remove redundant navigation rather than deleting the invariant it obscures.
