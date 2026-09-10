@@ -33,12 +33,14 @@ form, the evasion this file was written to catch has reopened.
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add hooks to path so imports resolve from the test environment (matches
 # the convention in tests/hooks/modules/tools/test_bash_pipeline_integration.py).
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-from modules.tools.bash_validator import validate_bash_command  # noqa: E402
+from modules.tools.bash_validator import BashValidator, validate_bash_command  # noqa: E402
 from modules.security.tiers import SecurityTier  # noqa: E402
 
 
@@ -86,3 +88,52 @@ def test_sanitizer_redirect_no_longer_evades_t3_block():
     # The classified command inside the block carries the CLEANED form --
     # confirming the redirect was stripped and re-classified, not ignored.
     assert result.modified_input == {"command": BARE_COMMAND}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'ghx issue edit 1 --body "<p>approval details</p>"',
+        "ghx issue edit 1 --body '<p>approval details</p>'",
+        r"printf approval\>details",
+        r'ghx issue edit 1 --body "escaped quote: \"; terminal </p>"',
+    ],
+)
+def test_sanitizer_preserves_quoted_and_escaped_redirect_characters(command):
+    assert BashValidator()._try_sanitize_command(command) is None
+
+
+@pytest.mark.parametrize(
+    ("command", "cleaned"),
+    [
+        ("terraform apply > /tmp/out", "terraform apply"),
+        ("terraform apply >> /tmp/out", "terraform apply"),
+        ("terraform apply 2> /tmp/err", "terraform apply"),
+        ("terraform apply 2>> /tmp/err", "terraform apply"),
+        ("terraform apply < /tmp/in", "terraform apply"),
+        ("terraform apply <> /tmp/in-out", "terraform apply"),
+        ("terraform apply >| /tmp/out", "terraform apply"),
+        ("terraform apply &> /tmp/all", "terraform apply"),
+        ("terraform apply &>> /tmp/all", "terraform apply"),
+        ('terraform apply > "/tmp/output file"', "terraform apply"),
+    ],
+)
+def test_sanitizer_still_strips_real_trailing_file_redirects(command, cleaned):
+    assert BashValidator()._try_sanitize_command(command) == (cleaned, ["redirect"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "terraform apply 2>&1",
+        "terraform apply <&3",
+        "terraform apply <<< payload",
+        "terraform apply << EOF",
+        "terraform apply <(printf input)",
+        "terraform apply >(cat)",
+        "terraform apply > /tmp/out && printf done",
+        "terraform apply | tee /tmp/out",
+    ],
+)
+def test_sanitizer_leaves_fd_duplication_and_compound_operators_for_parsing(command):
+    assert BashValidator()._try_sanitize_command(command) is None
