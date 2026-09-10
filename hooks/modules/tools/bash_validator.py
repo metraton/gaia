@@ -46,6 +46,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import shlex
 import shutil
 import logging
 from typing import Dict, Any, Optional, List
@@ -401,13 +402,80 @@ class BashValidator:
             return False
         return True
 
-    # Regex patterns for operators that can be safely stripped from commands.
-    # Applied after quote-masking to avoid false positives.
+    # Patterns and helpers for decorators that can be safely stripped.
     _NOHUP_PREFIX_RE = re.compile(r"^\s*nohup\s+")
     _TRAILING_BG_RE = re.compile(r"\s*&\s*$")
-    _REDIRECT_RE = re.compile(r"\s*>{1,2}\s*\S+\s*$")
     # Fd duplication (2>&1) is harmless and should NOT be stripped.
     _FD_DUP_RE = re.compile(r"\d+>&\d+")
+
+    @staticmethod
+    def _trailing_redirect_start(command: str) -> Optional[int]:
+        """Return the start of a trailing file redirect outside shell quotes."""
+        redirects: List[tuple[int, int]] = []
+        quote: Optional[str] = None
+        index = 0
+
+        while index < len(command):
+            char = command[index]
+            if char == "\\" and quote != "'" and index + 1 < len(command):
+                index += 2
+                continue
+            if char in ("'", '"'):
+                if quote is None:
+                    quote = char
+                elif quote == char:
+                    quote = None
+                index += 1
+                continue
+            if quote is not None or char not in "<>":
+                index += 1
+                continue
+
+            start = index
+            if index > 0 and command[index - 1] == "&":
+                boundary = index - 2
+                if boundary < 0 or command[boundary].isspace():
+                    start = index - 1
+            else:
+                descriptor_start = index
+                while descriptor_start > 0 and command[descriptor_start - 1].isdigit():
+                    descriptor_start -= 1
+                boundary = descriptor_start - 1
+                if descriptor_start < index and (boundary < 0 or command[boundary].isspace()):
+                    start = descriptor_start
+
+            following = command[index + 1:index + 2]
+            if following == "(":
+                index += 2
+                continue
+            if char == "<" and following == "<":
+                operator_end = index + 2
+                while operator_end < len(command) and command[operator_end] == "<":
+                    operator_end += 1
+                if operator_end < len(command) and command[operator_end] == "-":
+                    operator_end += 1
+                index = operator_end
+                continue
+            if following == "&":
+                index += 2
+                continue
+
+            operator_end = index + 1
+            if following == char or (char == "<" and following == ">") or (char == ">" and following == "|"):
+                operator_end += 1
+            redirects.append((start, operator_end))
+            index = operator_end
+
+        for start, operator_end in reversed(redirects):
+            target = command[operator_end:].strip()
+            if not target:
+                continue
+            try:
+                if len(shlex.split(target, posix=True)) == 1:
+                    return start
+            except ValueError:
+                continue
+        return None
 
     def _try_sanitize_command(self, command: str) -> Optional[tuple[str, List[str]]]:
         """Strip a decorator that changes nothing about WHAT will run.
@@ -451,20 +519,13 @@ class BashValidator:
             cleaned = self._TRAILING_BG_RE.sub("", cleaned).strip()
             stripped_parts.append("&")
 
-        # Strip trailing redirect (> file or >> file)
-        # Only strip if it's at the end of the command
-        test_str = self._FD_DUP_RE.sub("", cleaned)
-        redirect_match = self._REDIRECT_RE.search(test_str)
-        if redirect_match:
-            # Find the position in the original cleaned string
-            # We need to remove from the redirect operator onward
-            pos = cleaned.rfind(">")
-            if pos > 0:
-                before_redirect = cleaned[:pos].rstrip()
-                # Only strip if the > is not inside a flag value like --output=>
-                if before_redirect and not before_redirect.endswith("="):
-                    cleaned = before_redirect
-                    stripped_parts.append("> redirect")
+        # Strip one trailing file redirect. Quoted and escaped operators are data.
+        redirect_start = self._trailing_redirect_start(cleaned)
+        if redirect_start is not None:
+            before_redirect = cleaned[:redirect_start].rstrip()
+            if before_redirect and not before_redirect.endswith("="):
+                cleaned = before_redirect
+                stripped_parts.append("redirect")
 
         if not stripped_parts:
             return None  # Nothing to sanitize
