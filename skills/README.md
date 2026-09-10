@@ -4,9 +4,9 @@ Skills are the procedural knowledge layer of Gaia. Where agents carry identity �
 
 Each skill lives in its own directory under `skills/<name>/` and contains at minimum a `SKILL.md` file. That file is what gets injected. Supporting material (`reference.md`, `examples.md`) lives in the same directory but is read on-demand — the agent pulls it from disk when needed rather than receiving it at startup. This keeps startup context lean while making full documentation accessible.
 
-Skills are not shared via inheritance or imports — they are text injected verbatim into the agent's context window. The size limit for injected skills is roughly 100 lines. If a skill grows beyond that, the detailed content moves to `reference.md` and the main `SKILL.md` becomes a compact index pointing there.
+Skills are not shared via inheritance or imports — they are text loaded into the agent's context window. Structure and line budgets belong to [skill-creation](skill-creation/SKILL.md); on-demand techniques keep their primary method and output contract together, with secondary mechanics in supporting files.
 
-The assignment matrix below shows which skills each agent receives. The first two — `agent-protocol` and `security-tiers` — appear on every agent. They are the non-negotiables: every agent must understand the response contract and the tier system.
+The assignment matrix below separates declared skills from explicit invocation. Availability is not application: the coding workflows invoke [code-standards](code-standards/SKILL.md) before generation and at done; [code-review](code-review/SKILL.md) is the separate technique for an explicitly requested review, not an automatic extra pass on every change.
 
 ## Cuándo se activa
 
@@ -49,6 +49,11 @@ reaches PreToolUse. This route is entirely host-side too.
 
 Orchestrator-level skills (`agent-response`, `orchestrator-present-approval`) are always Route 2 — they are never in a frontmatter list, only loaded when the orchestrator needs to interpret a specific situation.
 
+The preload route above describes Claude Code, not a host-independent guarantee.
+OpenCode's agent prompt reference does not preload a `skills:` list; the agent uses
+the host's available skill-loading tool at the workflow's invocation point. Neither
+preload nor an explicit load alone proves the artifact was checked against the skill.
+
 ## Qué hay aquí
 
 ```
@@ -63,6 +68,7 @@ skills/
 ├── blog-writing/          # Blog article writing and publishing for metraton.github.io
 ├── brief-spec/            # Brief and spec creation for features before planning
 ├── claude-code-consent-adapter/ # Claude Code adapter vocabulary for its native consent mechanism
+├── code-review/           # Technique: explicit read-only module/branch/PR review, evidence reconciliation and portable report
 ├── code-standards/        # Language-agnostic rules for clear, safe, simple code -- responsibility, explicit behavior, local changes, protected boundaries, and when a comment earns its place
 ├── command-execution/     # Defensive Bash execution, no-pipes discipline
 │   └── reference.md
@@ -113,25 +119,21 @@ skills/
 
 **Skill assignment matrix:**
 
-The two columns are structurally different, not just two lists: **Frontmatter**
-is the literal `skills:` array in the agent's `.md` file — injected at dispatch
-(Route 1 above), present in every session regardless of what the task turns out
-to need. **On-demand** is a skill the agent's own text names loading via
-`Skill('name')` when the matching moment arrives (Route 2) — it is never in
-that agent's frontmatter, and because on-demand loading is discretionary, this
-column lists only what the agent's file documents itself as loading, not every
-skill that could theoretically apply.
+**Frontmatter** is the declared `skills:` array, with host-dependent loading as
+described above. **Explicit invocation** names the skill at the point its workflow
+needs it, even if also declared in frontmatter. The overlap is deliberate: listing
+`code-standards` cannot substitute for applying it during generation and verification.
 
-| Agent | Frontmatter (always loaded) | On-demand (loaded via `Skill(...)`) |
+| Agent | Frontmatter (declared) | Explicit invocation (host skill-loading tool) |
 |-------|------------------------------|--------------------------------------|
 | cloud-troubleshooter | agent-protocol, security-tiers, command-execution, investigation, fast-queries | — |
-| platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | — |
-| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | — |
-| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | — |
-| gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, code-standards | agent-creation, skill-creation, gaia-release, gaia-verify |
+| platform-architect | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
+| gitops-operator | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
+| developer | agent-protocol, security-tiers, investigation, command-execution, git-conventions, code-standards | code-standards; code-review for explicit review |
+| gaia-system | agent-protocol, security-tiers, command-execution, gaia-patterns, investigation, gaia-audit, code-standards | code-standards, code-review, gaia-patterns, gaia-audit, agent-creation, skill-creation, gaia-release, gaia-verify as applicable |
 | gaia-verifier | agent-protocol, security-tiers, command-execution, verification-oracle, verification-rubric | — |
 | gaia-planner | agent-protocol, security-tiers, investigation, command-execution, gaia-planner | — |
-| gaia-orchestrator | agent-protocol, security-tiers, command-execution, memory | agent-response and flow-specific skills |
+| gaia-orchestrator | — | code-review for explicit review; agent-response and flow-specific skills |
 | gaia-operator | agent-protocol, security-tiers, investigation, command-execution | memory, gmail-triage, gmail-policy, gws-setup, blog-writing, brief-spec |
 
 Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatter):
@@ -139,7 +141,8 @@ Orchestrator skills (loaded on-demand via Skill tool, not assigned in frontmatte
 - `orchestrator-present-approval` — T3 approval presentation, host-neutral end to end: the sealed surface and its field set, presenting it as text before asking a minimal decision, the conditional rule that makes the reply resolve to the `approval_id`, and who activates versus who executes
 - `gaia-compact` — compact transient continuity after durable state is persisted
 
-Workflow skills (on-demand injection, not in any agent frontmatter):
+Workflow skills (loaded when applicable; some also appear in agent frontmatter):
+- `code-review` — explicit review with snapshot, coverage, evidence-backed findings and a portable JSON report; Gaia carries the artifact through its usual contract, while standalone readers need no Gaia CLI or database
 - `agent-contract-handoff` — reference field dictionary for the contract envelope (input + output); loaded on demand by producers and the orchestrator when field/trigger precision is needed
 - `agent-approval-protocol` — approval and COMMAND_SET data reference
 - `agent-creation` — coach skill for creating specialist agents; loaded on demand by gaia-system
@@ -161,7 +164,7 @@ Workflow skills (on-demand injection, not in any agent frontmatter):
 
 | Type | Injection | Examples |
 |------|-----------|---------|
-| Core | Always via `skills:` frontmatter | agent-protocol, security-tiers |
+| Core | Declared in specialist `skills:`; loading depends on host | agent-protocol, security-tiers |
 | Common | Most agents via `skills:` frontmatter | command-execution, investigation |
 | Domain | Per-agent via `skills:` frontmatter | gaia-patterns |
 | Workflow | On-demand (agent reads from disk) | subagent-request-approval, execution, git-conventions |
@@ -183,7 +186,7 @@ directly via the Skill tool (as opposed to only via frontmatter injection) is
 not tracked as a frontmatter field -- it is a fact noted in prose where
 relevant (see the skill list above), not a machine-read property.
 
-**Line budget:** Keep injected `SKILL.md` under 100 lines. Move details to `reference.md` (read on-demand). Supporting examples go in `examples.md`.
+**Line budget and validation:** Follow [skill-creation](skill-creation/SKILL.md) for the loading-mode budget and teaching evaluation. The [prompt regression tests](../tests/layer1_prompt_regression/) check structure and references; those checks do not prove that a reader applies the technique.
 
 ## Ver también
 

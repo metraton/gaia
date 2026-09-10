@@ -1,6 +1,6 @@
 # Agents
 
-Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and — for a dispatched subagent — a list of skills the host preloads at startup. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is the agent's own `agent_contract_handoffs` row — findings, changes, and a verification result, written incrementally through `gaia contract` and closed by `finalize`; the agent's final message is the signal that the turn ended, not a second copy of it.
+Agents are the specialists of Gaia. Each one has a narrow domain, a set of allowed tools, and — for a dispatched subagent — declared skills whose loading depends on the host. The orchestrator never does domain work itself — it reads the user's intent, picks the right agent, and dispatches it. What comes back is the agent's own `agent_contract_handoffs` row — findings, changes, and a verification result, written incrementally through `gaia contract` and closed by `finalize`; the agent's final message is the signal that the turn ended, not a second copy of it.
 
 Every agent is defined as a Markdown file with YAML frontmatter at the top. That frontmatter is not decoration — Claude Code (the host, not any Gaia hook) reads it to know which tools the agent may use, which model to run, and — for a dispatched subagent only — which skills to preload before the first turn. No Gaia hook loads skills: `hooks/hooks.json` carries no `Skill` tool matcher, so a `Skill(...)` call never reaches PreToolUse, and the only Gaia component named "skill injection" (`hooks/modules/agents/skill_injection_verifier.py`) runs at SubagentStop and only observes — it checks the transcript for evidence the host already did the preload, it does not perform one. The primary agent (`gaia-orchestrator.md`) has no `skills:` field at all: Claude Code's own docs list only "system prompt, tool restrictions, and model" as inherited on the main thread, so a `skills:` key there would have no effect. The body of the file is the agent's identity: its scope, its error handling, and the tone it uses when talking back to the orchestrator.
 
@@ -13,6 +13,14 @@ All other agents set `permissionMode: acceptEdits` so file edits inside their do
 Adding a new agent is three steps: write the `.md` file here (including a `routing:` frontmatter block if the agent owns a surface), add it to `build/gaia.manifest.json` under `agents`, and re-run `gaia install` so `tools/scan/seed_surface_routing.py` seeds the agent's surface into the DB-backed `surface_routing` table. The agent becomes available on the next Claude Code restart. Surface routing is no longer a `config/surface-routing.json` file — each agent's `routing:` block is the source of truth.
 
 ## Cuándo se activa
+
+The flow below describes Claude Code. A `skills:` declaration is not a preload
+guarantee in OpenCode; workflows explicitly invoke the available skill-loading tool.
+The four builders apply [code-standards](../skills/code-standards/SKILL.md) before
+generation and at done. For an explicit review the orchestrator scopes and dispatches
+using [code-review](../skills/code-review/SKILL.md), while specialists return analysis
+through their usual Gaia contracts. Ordinary coding does not trigger automatic
+multi-agent review; additional risk earns a proposal, not silent scope expansion.
 
 ```
 User sends prompt

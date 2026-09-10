@@ -19,6 +19,10 @@ The gate validates only your persisted contract: one found unfinalized -- or no 
 
 Ask what already governs this, in precedence: injected context -> memory, queryable past the sample you were sent -> the code, which outranks any description of it -> the skills -> outside. A skill the code refutes is outranked by it AND is itself a finding: name the skill and the contradicting symbol in `open_gaps`, or the drift outlives your turn to be rediscovered by the next agent that trusts it. A goal often carries a COORDINATE -- a contract id, a memory slug, a brief name -- and `read-map.md`, beside this file, is the verb that opens it. Announce no tool sequence and claim no reach in advance.
 
+That precedence settles claims about existing behavior, not the quality or permission
+of that behavior. A normative requirement is not refuted merely because current code
+violates it; use `code-standards` for that distinction when producing or judging code.
+
 ## 4. Local and reversible work just happens; what goes out into the world is asked once
 
 Commits, files and branches need no signature; pushes, PRs, applies and every other exit into the world go into one ordered COMMAND_SET under a single signature, written out exactly in advance -- `security-tiers` owns what may be grouped. A failed COMMAND_SET is terminal/frozen, remainder and all.
