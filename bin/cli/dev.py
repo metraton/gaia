@@ -2,7 +2,7 @@
 gaia dev -- Fast local dev loop: pack + install + wire in one command.
 
 Collapses today's manual 3-step loop (`npm pack` -> `npm`/`pnpm add
-<tarball>` -> `gaia install --workspace <target>`) into a single atomic
+<tarball>` -> `gaia install --workspace <target>`) into a single non-atomic
 `gaia dev [--workspace <path>] [--host <host>]` invocation, so testing a source change in a
 real consumer workspace is one command: edit source, run `gaia dev`,
 restart Claude Code, test.
@@ -15,16 +15,11 @@ Two modes:
        primitive, not two) into a STABLE, persistent per-workspace
        directory: `gaia.paths.cache_dir() / "dev-pack" / workspace_id()`
        (see `default_pack_dest`), not a `tempfile.TemporaryDirectory()`.
-       The tarball there is overwritten on every run and never
-       auto-deleted, because it is also the target of the consumer
-       workspace's `file:` dependency (its `package.json` and
-       `pnpm-lock.yaml` reference this exact path) -- deleting it out from
-       under that reference is what breaks a later `pnpm install`/lockfile
-       refresh with ENOENT. This makes `gaia dev` with no flags idempotent
-       across repeated runs against the same workspace.
-    2. Install the freshly packed tarball into the target workspace's
-       `node_modules` (npm or pnpm, auto-detected from lockfile/workspace
-       markers).
+       Each attempt uses a fresh retained child directory so packing cannot
+       overwrite a prior rollback artifact or a foreign tarball. Existing
+        workspace packages require consumer metadata and package-manager resolution.
+    2. Install the tarball into the actual consumer workspace with npm or pnpm.
+       The package manager owns its package entry, .bin, spec and lockfile.
     3. Wire `.claude/` and bootstrap the DB by invoking the FRESHLY
        INSTALLED copy's own `gaia install --workspace <target>` as a
        subprocess. This is deliberate, not incidental: `_install_helpers`
@@ -38,9 +33,9 @@ Two modes:
     machinery a real `npm install` consumer would exercise.
 
   --mode link
-    Symlinks `<workspace>/node_modules/@jaguilar87/gaia` directly at this
-    source tree (skipping the PACK, not the install) and wires `.claude/`
-    in-process by calling this source tree's own `cli.install.cmd_install`
+    Uses the consumer package manager to persist a local source dependency and
+    make `<workspace>/node_modules/@jaguilar87/gaia` a live source symlink,
+    then wires `.claude/` in-process with this source tree's `cmd_install`
     -- which bootstraps and re-seeds global state in `~/.gaia/gaia.db` -- so
     `_install_helpers` naturally resolves `plugin_root` to THIS source
     tree. Edits under `gaia/`, `hooks/`, `agents/`, `skills/`, `config/`,
@@ -55,10 +50,13 @@ DB bootstrap) is never duplicated between them or against `gaia install`.
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -77,7 +75,7 @@ from cli.install import _report_step  # type: ignore  # noqa: E402
 _NPM_PACKAGE_NAME = "@jaguilar87/gaia"
 
 
-def _restart_warning(host: str = install_mod.DEFAULT_HOST) -> str:
+def _restart_warning(host: str = install_mod.ALL_HOSTS) -> str:
     """The mandatory post-`gaia dev` restart notice for the configured hosts.
 
     The Claude Code harness pins each hook's command at SESSION START and does
@@ -120,14 +118,113 @@ def detect_package_manager(workspace: Path) -> str:
     return "npm"
 
 
+def _dependency_section(manifest: dict) -> str | None:
+    """Identify the single consumer declaration of Gaia without moving dependency types."""
+    sections = [name for name in ("dependencies", "devDependencies", "optionalDependencies")
+                if isinstance(manifest.get(name), dict) and _NPM_PACKAGE_NAME in manifest[name]]
+    if len(sections) > 1:
+        raise ValueError("Gaia appears in multiple dependency sections")
+    return sections[0] if sections else None
+
+
+def _dependency_flag(package_manager: str, section: str) -> str:
+    """Return the manager-native flag that preserves a dependency section."""
+    flags = {
+        "npm": {
+            "dependencies": "--save-prod",
+            "devDependencies": "--save-dev",
+            "optionalDependencies": "--save-optional",
+        },
+        "pnpm": {
+            "dependencies": "-P",
+            "devDependencies": "-D",
+            "optionalDependencies": "-O",
+        },
+    }
+    return flags[package_manager][section]
+
+
+def existing_package_error(workspace: Path, *, allow_source_links: bool = False,
+                           legacy_source_root: Path | None = None) -> str | None:
+    """Accept a normal declared npm/pnpm package only when its resolver agrees.
+
+    No receipt or content-tree hash is used: Python caches and other runtime
+    files are not installation identity. A source link also needs a matching
+    local dependency declaration, source-checkout markers and resolver proof.
+    """
+    package = workspace / "node_modules" / "@jaguilar87" / "gaia"
+    for parent in (workspace / "node_modules", package.parent):
+        if parent.is_symlink():
+            return f"refusing redirected package parent: {parent}"
+    if not package.exists() and not package.is_symlink():
+        return None
+    try:
+        target = package.resolve(strict=True)
+        legacy_source = (package.is_symlink() and legacy_source_root is not None
+                         and target == legacy_source_root.resolve() and _is_source_checkout(target))
+        manifest_path = workspace / "package.json"
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        if not isinstance(manifest, dict):
+            raise ValueError("consumer package.json must be an object")
+        section = _dependency_section(manifest)
+        if not legacy_source and (section is None or not isinstance(manifest[section][_NPM_PACKAGE_NAME], str) or not manifest[section][_NPM_PACKAGE_NAME]):
+            raise ValueError("existing package is not declared by the consumer")
+        pm = detect_package_manager(workspace)
+        target = package.resolve(strict=True)
+        if package.is_symlink():
+            store = workspace / "node_modules/.pnpm"
+            spec = manifest[section][_NPM_PACKAGE_NAME] if section else ""
+            if not isinstance(spec, str):
+                raise ValueError("invalid source dependency declaration")
+            source_spec = spec.split(":", 1)[1] if spec.startswith(("file:", "link:")) else None
+            declared_source = (workspace / source_spec).resolve() if source_spec else None
+            source_link = allow_source_links and declared_source == target and _is_source_checkout(target)
+            if not source_link and not legacy_source:
+                if pm != "pnpm" or store.is_symlink():
+                    raise ValueError("unowned source or foreign package symlink")
+                target.relative_to(store.resolve())
+        identity = json.loads((target / "package.json").read_text())
+        if not isinstance(identity, dict) or identity.get("name") != _NPM_PACKAGE_NAME or not (target / "bin/gaia").is_file():
+            raise ValueError("installed package identity or entrypoint is missing")
+        if legacy_source and not source_link:
+            return None
+        command = [pm, "list" if pm == "pnpm" else "ls", "--json", "--depth=0", "--long"]
+        result = subprocess.run(command, cwd=str(workspace), capture_output=True,
+                                text=True, check=False, timeout=30)
+        if result.returncode != 0:
+            raise ValueError(f"{pm} dependency resolution failed (exit {result.returncode})")
+        resolved = json.loads(result.stdout)
+        if pm == "pnpm":
+            if not isinstance(resolved, list) or len(resolved) != 1:
+                raise ValueError("pnpm resolution must identify exactly one consumer")
+            resolved = resolved[0]
+        resolution_section = section if pm == "pnpm" else "dependencies"
+        if not isinstance(resolved, dict) or not isinstance(resolved.get(resolution_section), dict):
+            raise ValueError("package manager did not resolve the declared dependency")
+        if (not isinstance(resolved.get("path"), str)
+                or not Path(resolved["path"]).is_absolute()
+                or Path(resolved["path"]).resolve() != workspace.resolve()):
+            raise ValueError("package manager resolved a different consumer")
+        dependency = resolved[resolution_section].get(_NPM_PACKAGE_NAME)
+        if not isinstance(dependency, dict) or not isinstance(dependency.get("path"), str):
+            raise ValueError("package manager did not provide the installed package path")
+        reported = Path(dependency["path"])
+        if not reported.is_absolute() or reported.resolve(strict=True) != target:
+            raise ValueError("package-manager resolution disagrees with the installed package")
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        return f"existing Gaia package left untouched: {exc}"
+    return None
+
+
 def install_tarball(
     workspace: Path,
     tarball: Path,
     *,
     package_manager: str | None = None,
     timeout: int = 300,
+    source_link: bool = False,
 ) -> dict[str, Any]:
-    """Install *tarball* into workspace/node_modules via npm or pnpm.
+    """Install a tarball or explicit source directory through the consumer manager.
 
     Mirrors `bin/validate-sandbox.sh`'s `install_package()`: if the
     workspace has no package.json yet, create a minimal one first so the
@@ -135,10 +232,20 @@ def install_tarball(
     """
     workspace = Path(workspace).resolve()
     pm = package_manager or detect_package_manager(workspace)
+    try:
+        manifest_path = workspace / "package.json"
+        manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
+        section = _dependency_section(manifest) or "dependencies"
+    except (OSError, ValueError, AttributeError) as exc:
+        return {"action": "error", "path": str(workspace), "details": str(exc), "package_manager": pm}
+    if pm not in ("npm", "pnpm"):
+        return {"action": "error", "path": str(workspace),
+                "details": f"unsupported package manager: {pm}", "package_manager": pm}
+    section_flag = _dependency_flag(pm, section)
 
     if not (workspace / "package.json").is_file():
         try:
-            subprocess.run(
+            anchor = subprocess.run(
                 ["npm", "init", "-y"],
                 cwd=str(workspace),
                 capture_output=True,
@@ -153,36 +260,56 @@ def install_tarball(
                 "details": f"failed to create anchor package.json: {exc}",
                 "package_manager": pm,
             }
+        if anchor.returncode != 0:
+            return {
+                "action": "error",
+                "path": str(workspace / "package.json"),
+                "details": f"npm init exited {anchor.returncode}; package installation not attempted",
+                "package_manager": pm,
+            }
 
-    cmd = ["pnpm", "add", str(tarball)] if pm == "pnpm" else [
-        "npm", "install", "--no-audit", "--no-fund", str(tarball),
-    ]
+    if pm == "pnpm":
+        commands = [["pnpm", "add", section_flag, str(tarball)]]
+        if source_link:
+            commands.append(["pnpm", "link", str(tarball)])
+    else:
+        cmd = ["npm", "install", "--no-audit", "--no-fund", section_flag]
+        if source_link:
+            cmd.append("--install-links=false")
+        cmd.append(str(tarball))
+        commands = [cmd]
 
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {
-            "action": "error",
-            "path": str(workspace),
-            "details": f"{pm} install failed to invoke: {exc}",
-            "package_manager": pm,
-        }
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(workspace),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {
+                "action": "error",
+                "path": str(workspace),
+                "details": f"{pm} {command[1]} failed to invoke: {exc}",
+                "package_manager": pm,
+            }
 
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "unknown error").strip()[-500:]
-        return {
-            "action": "error",
-            "path": str(workspace),
-            "details": f"{pm} install exited {result.returncode}: {detail}",
-            "package_manager": pm,
-        }
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "unknown error").strip()[-500:]
+            return {
+                "action": "error",
+                "path": str(workspace),
+                "details": f"{pm} {command[1]} exited {result.returncode}: {detail}",
+                "package_manager": pm,
+            }
+
+    package = workspace / "node_modules/@jaguilar87/gaia"
+    if not source_link and package.is_symlink() and _is_source_checkout(package.resolve()):
+        return {"action": "error", "path": str(package), "details": "package manager retained a source link in pack mode",
+                "package_manager": pm}
 
     return {
         "action": "created",
@@ -197,7 +324,7 @@ def wire_workspace_via_installed_gaia(
     *,
     quiet: bool = True,
     timeout: int = 120,
-    host: str = "claude_code",
+    host: str = install_mod.ALL_HOSTS,
 ) -> dict[str, Any]:
     """Run the FRESHLY INSTALLED copy's own `gaia install --workspace`.
 
@@ -206,6 +333,7 @@ def wire_workspace_via_installed_gaia(
     -- see the module docstring for why plugin_root must resolve to the
     installed copy, not this dev source tree.
     """
+    install_mod.resolve_hosts(host)
     installed_gaia = (
         workspace / "node_modules" / "@jaguilar87" / "gaia" / "bin" / "gaia"
     )
@@ -224,6 +352,8 @@ def wire_workspace_via_installed_gaia(
         str(workspace),
         "--host",
         host,
+        "--no-path",
+        "--strict-wiring",
     ]
     if quiet:
         cmd.append("--quiet")
@@ -262,55 +392,61 @@ def wire_workspace_via_installed_gaia(
 
 
 # ---------------------------------------------------------------------------
-# Link mode: symlink this source tree directly into the workspace
+# Link mode: persist and link this source through the consumer manager
 # ---------------------------------------------------------------------------
 
-def link_source_into_workspace(workspace: Path, source_root: Path) -> dict[str, Any]:
-    """Symlink `<workspace>/node_modules/@jaguilar87/gaia` -> *source_root*.
-
-    Makes the just-edited source tree visible under the workspace's own
-    `node_modules` (needed by the `~/.local/bin/gaia` PATH launcher, which
-    execs `<workspace>/node_modules/@jaguilar87/gaia/bin/gaia` verbatim)
-    without ever running `npm pack`/`npm install` -- edits to the source
-    tree are visible on the next Claude Code restart, no repack needed.
-
-    Idempotent: re-running when already linked to the same source is a
-    noop. Refuses to clobber a real (non-symlink) install already present
-    -- that is either a prior `--mode pack` run or a real npm install, and
-    either way `--mode link` must not silently destroy it.
-    """
-    target_dir = workspace / "node_modules" / "@jaguilar87" / "gaia"
-    source_root = source_root.resolve()
-
+def install_source_link(workspace: Path, source_root: Path) -> dict[str, Any]:
+    """Save a native local-directory dependency, then prove it is a live source link."""
+    source = source_root.resolve()
+    workspace = workspace.resolve()
+    package = workspace / "node_modules/@jaguilar87/gaia"
+    error = {"action": "error", "path": str(package)}
+    if source.is_relative_to(workspace) or workspace.is_relative_to(source):
+        return {**error, "details": "source and consumer must be separate non-overlapping directories"}
+    if not _is_source_checkout(source):
+        return {**error, "details": "source is not a Gaia checkout"}
     try:
-        target_dir.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:
-        return {"action": "error", "path": str(target_dir), "details": f"failed to create {target_dir.parent}: {exc}"}
-
-    if target_dir.is_symlink():
-        try:
-            current = target_dir.resolve()
-        except OSError:
-            current = None
-        if current == source_root:
-            return {"action": "noop", "path": str(target_dir), "details": "already linked to source"}
-        try:
-            target_dir.unlink()
-        except OSError as exc:
-            return {"action": "error", "path": str(target_dir), "details": f"failed to replace stale link: {exc}"}
-    elif target_dir.exists():
-        return {
-            "action": "skipped",
-            "path": str(target_dir),
-            "details": "a real (non-symlink) install exists there -- remove it or use --mode pack",
-        }
-
+        source_identity = json.loads((source / "package.json").read_text())
+        if source_identity.get("name") != _NPM_PACKAGE_NAME or not (source / "bin/gaia").is_file():
+            return {**error, "details": "source package identity or entrypoint does not match Gaia"}
+    except (OSError, ValueError, AttributeError) as exc:
+        return {**error, "details": f"invalid source identity: {exc}"}
+    ownership = existing_package_error(workspace, allow_source_links=True, legacy_source_root=source)
+    if ownership:
+        return {**error, "details": ownership}
     try:
-        target_dir.symlink_to(source_root, target_is_directory=True)
-    except OSError as exc:
-        return {"action": "error", "path": str(target_dir), "details": f"failed to symlink: {exc}"}
-
-    return {"action": "created", "path": str(target_dir), "details": f"linked -> {source_root}"}
+        parent = default_pack_dest(workspace)
+        parent.mkdir(parents=True, exist_ok=True)
+        recovery_path = Path(tempfile.mkdtemp(prefix="link-attempt-", dir=parent)) / "recovery.json"
+        before = consumer_recovery_state(workspace)
+        path = workspace / "package.json"
+        manifest = json.loads(path.read_text()) if path.exists() else {}
+        section = _dependency_section(manifest) or "dependencies"
+        write_recovery_evidence(recovery_path, workspace, before, "before-install", failed=False)
+    except (OSError, ValueError, RuntimeError, AttributeError) as exc:
+        return {**error, "details": f"cannot preserve source-switch recovery evidence: {exc}"}
+    result = install_tarball(workspace, source, source_link=True)
+    if result["action"] not in ("created", "updated", "noop"):
+        write_recovery_evidence(recovery_path, workspace, before, "source-install", failed=True)
+        return {**error, "details": f"{result['details']}; recovery required, no rollback; evidence: {recovery_path}"}
+    try:
+        after = json.loads((workspace / "package.json").read_text())
+        actual_section = _dependency_section(after)
+        spec = after.get(section, {}).get(_NPM_PACKAGE_NAME, "")
+        if actual_section != section or not isinstance(spec, str) or not spec.startswith(("file:", "link:")):
+            raise ValueError("package manager did not save a local dependency in the original section")
+        if (workspace / spec.split(":", 1)[1]).resolve() != source:
+            raise ValueError("saved local dependency does not identify selected source")
+        if not package.is_symlink() or package.resolve(strict=True) != source:
+            raise ValueError("package manager did not create a live source symlink")
+        ownership = existing_package_error(workspace, allow_source_links=True)
+        if ownership:
+            raise ValueError(ownership)
+    except (OSError, ValueError, RuntimeError, AttributeError) as exc:
+        write_recovery_evidence(recovery_path, workspace, before, "source-verify", failed=True)
+        return {**error, "details": f"{exc}; recovery required, no rollback; evidence: {recovery_path}"}
+    return {"action": "created", "path": str(package), "details": f"consumer linked to {source}",
+            "recovery_path": recovery_path, "before": before}
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +454,12 @@ def link_source_into_workspace(workspace: Path, source_root: Path) -> dict[str, 
 # ---------------------------------------------------------------------------
 
 def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool, host: str) -> int:
-    link_res = link_source_into_workspace(workspace, _PACKAGE_ROOT)
+    """Wire source only after a successful, ownership-safe link."""
+    install_mod.resolve_hosts(host)
+    link_res = install_source_link(workspace, _PACKAGE_ROOT)
     _report_step(name="node_modules link", result=link_res, quiet=quiet, verbose=verbose)
-    if link_res["action"] == "error":
+    if link_res["action"] not in ("created", "noop"):
+        print(f"gaia dev: {link_res['details']}", file=sys.stderr)
         return 1
 
     ns = argparse.Namespace(
@@ -330,10 +469,16 @@ def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool, host: str) ->
         db_path=None,
         workspace=str(workspace),
         skip_workspace=False,
-        no_path=False,
+        no_path=True,
+        strict_wiring=True,
         host=host,
     )
     rc = install_mod.cmd_install(ns)
+    if "recovery_path" in link_res:
+        write_recovery_evidence(link_res["recovery_path"], workspace, link_res["before"],
+                                "complete" if rc == 0 else "source-wire", failed=rc != 0)
+        if rc != 0:
+            print(f"gaia dev: wiring failed; recovery required, no rollback performed; evidence: {link_res['recovery_path']}", file=sys.stderr)
     if rc == 0 and not quiet:
         print(
             "\n  gaia dev (link): workspace wired to the live source tree.\n"
@@ -357,8 +502,8 @@ def default_pack_dest(workspace: Path) -> Path:
     record as a `file:` dependency -- so the very next `pnpm install`
     (e.g. a routine lockfile refresh) failed with ENOENT because the
     referenced path no longer existed. A stable, persistent destination
-    makes `gaia dev` (no flags) idempotent: the tarball is overwritten in
-    place on every run and never auto-deleted.
+    retains each attempt in its own child directory; previous file references
+    are never auto-deleted or overwritten by a subsequent attempt.
     """
     from gaia.paths import cache_dir, workspace_id
 
@@ -392,78 +537,92 @@ def content_address_tarball(tarball: Path) -> Path:
 
 
 def prune_sibling_tarballs(keep: Path) -> list[str]:
-    """Delete every ``*.tgz`` in ``keep.parent`` except *keep*.
+    """Retain artifacts until ownership and rollback references can be proven.
 
-    ``default_pack_dest`` is a per-workspace directory dedicated to dev-pack
-    tarballs, so pruning its other ``.tgz`` files reclaims the stale
-    content-addressed siblings from earlier runs (and the legacy un-suffixed
-    tarball). Pruned only AFTER the new tarball is installed and the
-    workspace ``package.json`` spec is rewritten to point at *keep*, so the
-    ENOENT invariant that ``default_pack_dest`` documents (never delete the
-    tarball the workspace's ``file:`` dependency currently references) holds:
-    by prune time nothing references the removed files.
-
-    Returns the names removed. Never raises.
+    A filename or shared pack directory does not establish ownership, and the
+    previous package may still need its tarball even after successful wiring.
+    Kept as a no-op for callers of the former destructive cleanup helper.
     """
-    removed: list[str] = []
+    return []
+
+
+def consumer_recovery_state(workspace: Path) -> dict[str, Any]:
+    """Capture bounded recovery evidence, not an authorization to overwrite files."""
+    files = {}
+    for name in ("package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml"):
+        path = workspace / name
+        if path.is_symlink():
+            raise ValueError(f"refusing redirected consumer metadata: {path}")
+        data = path.read_bytes() if path.exists() else None
+        files[name] = {
+            "bytes_base64": base64.b64encode(data).decode() if data is not None else None,
+            "sha256": hashlib.sha256(data).hexdigest() if data is not None else None,
+        }
+    package = workspace / "node_modules/@jaguilar87/gaia"
+    identity = package / "package.json"
+    return {
+        "files": files,
+        "package": {
+            "path": str(package),
+            "link": os.readlink(package) if package.is_symlink() else None,
+            "target": str(package.resolve()),
+            "present": package.exists(),
+            "identity": identity.read_text() if identity.is_file() else None,
+        },
+    }
+
+
+def write_recovery_evidence(path: Path, workspace: Path, before: dict, stage: str,
+                            *, failed: bool) -> None:
+    """Retain original metadata plus observed changes without pretending they are ours."""
     try:
-        keep_resolved = keep.resolve()
-        for sibling in keep.parent.glob("*.tgz"):
-            try:
-                if sibling.resolve() == keep_resolved:
-                    continue
-                sibling.unlink()
-                removed.append(sibling.name)
-            except OSError:
-                continue
-    except OSError:
-        pass
-    return removed
+        after = consumer_recovery_state(workspace)
+    except (OSError, ValueError, RuntimeError) as exc:
+        after = {"unreadable": str(exc)}
+    payload = {
+        "workspace": str(workspace), "stage": stage,
+        "status": "recovery-required" if failed else ("completed" if stage == "complete" else "prepared"),
+        "before": before, "observed_after": after,
+        "rollback": "not performed; observed changes may include concurrent or foreign writes",
+    }
+    temporary = path.with_suffix(".pending")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2) + "\n")
+        os.replace(temporary, path)
+    except OSError as exc:
+        if stage == "before-install":
+            raise
+        print(f"gaia dev: cannot update recovery evidence {path}: {exc}; retain prior evidence and inspect consumer state", file=sys.stderr)
 
 
 def rewrite_workspace_dep_spec(workspace: Path, tarball: Path) -> dict[str, Any]:
-    """Rewrite ``dependencies['@jaguilar87/gaia']`` in the workspace
-    ``package.json`` to ``file:<tarball>`` so it matches exactly what was
-    installed.
-
-    Closes the package.json <-> lockfile desync: ``pnpm add`` records its own
-    resolved spec in the lockfile, but a stale hand-authored or prior-tool
-    ``file:`` spec could linger in ``package.json`` and diverge. Writing the
-    spec explicitly (relative to the workspace when possible, else absolute)
-    keeps the two authoritative sources agreeing.
-
-    Idempotent: a no-op when the spec already matches. Never raises; returns
-    the ``{action, path, details}`` contract the install helpers use.
-    """
+    """Verify that the package manager saved the selected local artifact."""
     pkg_path = workspace / "package.json"
     try:
-        rel = os.path.relpath(tarball, workspace)
-        # Prefer the relative form (portable, matches how pnpm records the
-        # dev-pack path) unless it escapes into an absolute-only location.
-        spec = f"file:{rel}"
-    except (ValueError, OSError):
-        spec = f"file:{tarball}"
-
-    try:
         if not pkg_path.is_file():
-            return {"action": "skipped", "path": str(pkg_path), "details": "no package.json to rewrite"}
+            return {"action": "error", "path": str(pkg_path), "details": "package manager did not save package.json"}
         data = json.loads(pkg_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         return {"action": "error", "path": str(pkg_path), "details": f"could not read package.json: {exc}"}
 
-    deps = data.get("dependencies")
-    if not isinstance(deps, dict):
-        return {"action": "skipped", "path": str(pkg_path), "details": "no dependencies map"}
-
-    if deps.get(_NPM_PACKAGE_NAME) == spec:
-        return {"action": "noop", "path": str(pkg_path), "details": f"spec already {spec}"}
-
-    deps[_NPM_PACKAGE_NAME] = spec
+    if not isinstance(data, dict):
+        return {"action": "error", "path": str(pkg_path), "details": "package.json must be an object"}
     try:
-        pkg_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:
-        return {"action": "error", "path": str(pkg_path), "details": f"could not write package.json: {exc}"}
-    return {"action": "updated", "path": str(pkg_path), "details": f"pinned {_NPM_PACKAGE_NAME} -> {spec}"}
+        section = _dependency_section(data)
+    except ValueError as exc:
+        return {"action": "error", "path": str(pkg_path), "details": str(exc)}
+    if section is None:
+        return {"action": "error", "path": str(pkg_path), "details": "package manager did not save Gaia dependency"}
+    spec = data[section][_NPM_PACKAGE_NAME]
+    try:
+        if not isinstance(spec, str) or not spec.startswith("file:"):
+            raise ValueError("saved Gaia dependency is not a file: reference")
+        if (workspace / spec[5:]).resolve() != tarball.resolve():
+            raise ValueError("saved Gaia dependency identifies a different artifact")
+    except (OSError, ValueError) as exc:
+        return {"action": "error", "path": str(pkg_path), "details": str(exc)}
+    return {"action": "noop", "path": str(pkg_path),
+            "details": f"package manager saved {section} reference {spec}"}
 
 
 def record_dev_build(version: str | None) -> str | None:
@@ -523,23 +682,36 @@ def _run_pack_mode(
     keep_tarball: bool,
     pack_dest: str | None,
     no_global_link: bool = False,
-    host: str = "claude_code",
+    host: str = install_mod.ALL_HOSTS,
 ) -> int:
+    """Install through the consumer package manager; report failures without fake rollback."""
     # keep_tarball is retained for CLI compatibility only: now that the
     # pack destination is always stable and persistent (never a tmp dir
     # cleaned up on exit), there is nothing left to delete, so the flag is
     # a no-op.
-    del keep_tarball
+    del keep_tarball, no_global_link
+    install_mod.resolve_hosts(host)
 
-    dest_dir = (
+    ownership_error = existing_package_error(workspace, allow_source_links=True, legacy_source_root=_PACKAGE_ROOT)
+    if ownership_error:
+        print(f"gaia dev: {ownership_error}", file=sys.stderr)
+        return 1
+
+    pack_parent = (
         Path(pack_dest).expanduser().resolve()
         if pack_dest
         else default_pack_dest(workspace)
     )
+    try:
+        pack_parent.mkdir(parents=True, exist_ok=True)
+        dest_dir = Path(tempfile.mkdtemp(prefix="attempt-", dir=pack_parent))
+    except OSError as exc:
+        print(f"gaia dev: cannot prepare retained pack directory: {exc}", file=sys.stderr)
+        return 1
 
     pack_res = _pack_helpers.pack_tarball(_PACKAGE_ROOT, dest_dir=dest_dir)
     _report_step(name="npm pack", result=pack_res, quiet=quiet, verbose=verbose)
-    if pack_res["action"] == "error":
+    if pack_res["action"] not in ("created", "updated", "noop"):
         return 1
 
     # Content-address the packed tarball's FILENAME so a same-version repack
@@ -554,48 +726,40 @@ def _run_pack_mode(
         verbose=verbose,
     )
 
+    recovery_path = dest_dir / "recovery.json"
+    try:
+        before = consumer_recovery_state(workspace)
+        write_recovery_evidence(recovery_path, workspace, before, "before-install", failed=False)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"gaia dev: cannot preserve pre-install recovery evidence: {exc}", file=sys.stderr)
+        return 1
+
     install_res = install_tarball(workspace, tarball)
     pm = install_res.get("package_manager", "npm")
     _report_step(name=f"{pm} install", result=install_res, quiet=quiet, verbose=verbose)
-    if install_res["action"] == "error":
+    if install_res["action"] not in ("created", "updated", "noop"):
+        write_recovery_evidence(recovery_path, workspace, before, "install", failed=True)
+        print(f"gaia dev: recovery evidence retained at {recovery_path}", file=sys.stderr)
+        print("gaia dev: package installation failed; consumer state may be partially changed; no rollback performed", file=sys.stderr)
         return 1
 
-    # Keep package.json's file: spec in lockstep with what was actually
-    # installed, so package.json and the lockfile never diverge.
     spec_res = rewrite_workspace_dep_spec(workspace, tarball)
     _report_step(name="package.json spec", result=spec_res, quiet=quiet, verbose=verbose)
-    if spec_res["action"] == "error":
+    if spec_res["action"] not in ("created", "updated", "noop"):
+        write_recovery_evidence(recovery_path, workspace, before, "spec", failed=True)
+        print(f"gaia dev: recovery evidence retained at {recovery_path}", file=sys.stderr)
+        print("gaia dev: dependency spec update failed after installation; no rollback performed", file=sys.stderr)
         return 1
-
-    # Reclaim stale content-addressed siblings from earlier runs. Done AFTER
-    # install + spec rewrite so the file: dependency the workspace now points
-    # at (this tarball) is never the one removed (ENOENT invariant).
-    pruned = prune_sibling_tarballs(tarball)
-    if pruned:
-        _report_step(
-            name="prune old tarballs",
-            result={"action": "updated", "path": str(tarball.parent), "details": f"removed {len(pruned)}: {', '.join(pruned)}"},
-            quiet=quiet,
-            verbose=verbose,
-        )
 
     wire_res = wire_workspace_via_installed_gaia(workspace, quiet=quiet, host=host)
     _report_step(name="gaia install (wire)", result=wire_res, quiet=quiet, verbose=verbose)
-    if wire_res["action"] == "error":
+    if wire_res["action"] not in ("created", "updated", "noop"):
+        write_recovery_evidence(recovery_path, workspace, before, "wire", failed=True)
+        print(f"gaia dev: recovery evidence retained at {recovery_path}", file=sys.stderr)
+        print("gaia dev: wiring failed after installation; package and host state may be partially changed; no rollback performed", file=sys.stderr)
         return 1
 
-    # Reconcile surface 4 (the global npm install) to the command's ORIGIN. For
-    # `gaia dev` the origin is this local SOURCE tree, so `npm link` makes the
-    # global `gaia` point at the source -- closing the drift where a stale
-    # `npm install -g` copy shadowed the workspace shim (and, run against a
-    # forward-migrated DB, broke `gaia contract finalize`). Best-effort: a link
-    # failure is advisory and never aborts the dev loop. Opt out with
-    # --no-global-link. Then surface a PATH-precedence skew (POSIX + Windows) so
-    # a linked-but-shadowed global is a visible signal, not a silent surprise.
-    if not no_global_link:
-        link_res = install_mod.reconcile_global_via_npm_link(_PACKAGE_ROOT, quiet=quiet)
-        _report_step(name="global npm link", result=link_res, quiet=quiet, verbose=verbose)
-        install_mod._warn_launcher_shadowed(link="~/.local/bin/gaia", quiet=quiet)
+    write_recovery_evidence(recovery_path, workspace, before, "complete", failed=False)
 
     # READ half of the shared convergence routine: confirm the destination's 5
     # surfaces converged on this origin (the local source). Read-only.
@@ -630,19 +794,28 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "\n"
             "  --mode pack (default): npm pack this source tree into a stable,\n"
             "  persistent per-workspace path (default_pack_dest, override with\n"
-            "  --pack-dest), install the tarball into the target workspace's\n"
-            "  node_modules (npm or pnpm), then wire .claude/ + bootstrap the DB\n"
-            "  via the freshly installed copy's own `gaia install`. Idempotent\n"
-            "  across repeated runs and reflects a real shippable version.\n"
+            "  --pack-dest), install into the actual consumer with npm/pnpm,\n"
+            "  update its Gaia dependency spec, then wire hosts + bootstrap DB\n"
+            "  via the freshly installed copy's own `gaia install`. Each pack\n"
+            "  attempt is retained separately. Repeated normal installations\n"
+            "  require matching consumer metadata and package-manager resolution.\n"
+            "  Declared source links and installed packages switch via the consumer\n"
+            "  manager. Unknown entries are refused; legacy links to this exact\n"
+            "  source checkout can be saved as normal local dependencies.\n"
+            "  Package-manager and wiring failures may leave partial changes;\n"
+            "  no transactional rollback is claimed.\n"
             "\n"
-            "  --mode link: symlink node_modules/@jaguilar87/gaia straight at\n"
-            "  this source tree for instant iteration. It skips the PACK only --\n"
+            "  --mode link: npm install --install-links=false <source>, or pnpm\n"
+            "  add <source> followed by pnpm link <source>, saves local metadata\n"
+            "  and leaves node_modules as a live source symlink.\n"
+            "  Source must be outside the consumer. It skips the PACK only --\n"
             "  it still runs the full `gaia install`, which bootstraps and\n"
             "  RE-SEEDS global state in ~/.gaia/gaia.db (schema migrations,\n"
             "  contract permissions, surface routing) and wires the workspace.\n"
             "\n"
             "Use --host=opencode to configure OpenCode, or --host=all to configure\n"
-            "every supported host in one run; otherwise Claude Code is used. The\n"
+            "every supported host in one run (the default). No global npm link\n"
+            "or PATH launcher is changed by dev. --link abbreviates --mode link.\n"
             "global install steps run once regardless of how many hosts are wired.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -652,15 +825,15 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         dest="workspace",
         type=str,
         default=None,
-        help="Target workspace to install/link into (default: cwd)",
+        help="Target workspace (default: INIT_CWD, then cwd)",
     )
     p.add_argument(
         "--host",
         choices=install_mod.HOST_CHOICES,
-        default=install_mod.DEFAULT_HOST,
+        default=install_mod.ALL_HOSTS,
         help=(
             "Host to configure, or `all` for every supported host in one run "
-            "(default: claude_code). Forwarded to `gaia install`, which runs "
+            "(default: all). Forwarded to `gaia install`, which runs "
             "the global steps once and repeats only the per-host wiring."
         ),
     )
@@ -668,9 +841,10 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--mode",
         dest="mode",
         choices=["pack", "link"],
-        default="pack",
+        default=None,
         help="pack (default): npm pack + install + wire. link: symlink source for instant iteration.",
     )
+    p.add_argument("--link", action="store_true", help="Use link mode; conflicts with --mode pack")
     p.add_argument(
         "--quiet",
         action="store_true",
@@ -703,8 +877,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help=(
             "Directory to write the packed tarball into (default: a stable, "
             "persistent path under gaia.paths.cache_dir(), keyed by the "
-            "workspace's identity -- overwritten on every run, never "
-            "auto-deleted, so the workspace's file: dependency always resolves)"
+            "workspace's identity, with a fresh retained attempt subdirectory)"
         ),
     )
     p.add_argument(
@@ -713,12 +886,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help=(
-            "Skip reconciling the global npm `gaia` (surface 4) to this source "
-            "via `npm link`. By default pack mode links the SOURCE CHECKOUT "
-            "globally, so a bare `gaia` on PATH runs this tree -- not the "
-            "workspace's packed build, and it diverges from that build as soon "
-            "as editing continues; pass this to leave the global install "
-            "untouched (ignored in --mode link)"
+            "Compatibility no-op: dev always leaves the global npm alias untouched"
         ),
     )
     return p
@@ -751,12 +919,22 @@ def cmd_dev(args: argparse.Namespace) -> int:
 
     quiet = bool(getattr(args, "quiet", False))
     verbose = bool(getattr(args, "verbose", False))
-    mode = getattr(args, "mode", "pack")
+    explicit_mode = getattr(args, "mode", None)
+    link = bool(getattr(args, "link", False))
+    if explicit_mode not in (None, "pack", "link") or (link and explicit_mode == "pack"):
+        print("gaia dev: invalid mode or contradictory --link and --mode pack", file=sys.stderr)
+        return 1
+    mode = "link" if link else (explicit_mode or "pack")
     keep_tarball = bool(getattr(args, "keep_tarball", False))
     pack_dest = getattr(args, "pack_dest", None)
     no_global_link = bool(getattr(args, "no_global_link", False))
     workspace_arg = getattr(args, "workspace", None)
-    host = getattr(args, "host", "claude_code")
+    host = getattr(args, "host", install_mod.ALL_HOSTS)
+    try:
+        install_mod.resolve_hosts(host)
+    except ValueError as exc:
+        print(f"gaia dev: {exc}", file=sys.stderr)
+        return 1
 
     workspace = (
         Path(workspace_arg).expanduser().resolve()
@@ -764,8 +942,8 @@ def cmd_dev(args: argparse.Namespace) -> int:
         else Path(os.environ.get("INIT_CWD", os.getcwd())).resolve()
     )
 
-    if not workspace.exists():
-        print(f"gaia dev: workspace {workspace} does not exist", file=sys.stderr)
+    if not workspace.is_dir():
+        print(f"gaia dev: workspace {workspace} is not an existing directory", file=sys.stderr)
         return 1
 
     if not quiet:

@@ -1866,9 +1866,10 @@ class TestCheckInstallProvenance:
         )
         return pkg
 
-    def _workspace_pkg(self, workspace: Path, spec: str) -> None:
+    def _workspace_pkg(self, workspace: Path, spec: str,
+                       section: str = "dependencies") -> None:
         (workspace / "package.json").write_text(
-            json.dumps({"name": "my-app", "dependencies": {"@jaguilar87/gaia": spec}})
+            json.dumps({"name": "my-app", section: {"@jaguilar87/gaia": spec}})
         )
 
     def test_no_install_detected_is_info(self, tmp_path):
@@ -1895,6 +1896,15 @@ class TestCheckInstallProvenance:
         r = doctor_mod.check_install_provenance(ws)
         assert r["severity"] == "pass"
         assert "resolves correctly" in r["detail"]
+
+    def test_optional_local_install_is_detected(self, tmp_path):
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        self._install(ws, "5.1.1")
+        self._workspace_pkg(ws, "file:../src", section="optionalDependencies")
+        r = doctor_mod.check_install_provenance(ws)
+        assert r["severity"] == "pass"
+        assert "local (file:)" in r["detail"]
 
     def test_local_install_broken_symlink_is_warning(self, tmp_path):
         ws = tmp_path / "ws"
@@ -2309,6 +2319,20 @@ class TestCheckSourceParity:
         installed = _mk_installed_copy(ws, source)
         (ws / "package.json").write_text(json.dumps(
             {"dependencies": {"@jaguilar87/gaia": "file:../src"}}
+        ))
+        monkeypatch.setattr(doctor_mod, "_package_root", lambda: installed)
+
+        r = doctor_mod.check_source_parity(ws)
+        assert r["severity"] == "pass"
+        assert "2 shipped files identical" in r["detail"]
+
+    def test_optional_file_dep_resolves_the_source(self, tmp_path, monkeypatch):
+        source = _mk_source_checkout(tmp_path / "src")
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        installed = _mk_installed_copy(ws, source)
+        (ws / "package.json").write_text(json.dumps(
+            {"optionalDependencies": {"@jaguilar87/gaia": "file:../src"}}
         ))
         monkeypatch.setattr(doctor_mod, "_package_root", lambda: installed)
 

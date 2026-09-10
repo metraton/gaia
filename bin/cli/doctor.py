@@ -1226,9 +1226,9 @@ def _resolve_source_root(project_root: Path, parity) -> "Path | None":
 
     Two routes, in precedence:
 
-      1. The package root of the CLI now running. `gaia dev` npm-links the
-         global `gaia` at the source tree it packed from, so on a dev machine a
-         bare `gaia doctor` IS executing the source and this route resolves.
+      1. The package root of the CLI now running. This resolves when doctor is
+         explicitly invoked from a Gaia source checkout; `gaia dev` does not
+         mutate a global package-manager link or PATH launcher.
       2. The workspace's ``file:`` dependency spec, when it points at a
          DIRECTORY -- link mode, where the install is the checkout itself.
          A dev-pack spec points at a tarball and does not resolve here.
@@ -1333,12 +1333,12 @@ def _gaia_dep_spec(project_root: Path) -> "str | None":
     """The workspace's declared @jaguilar87/gaia dependency spec, or None.
 
     A ``file:`` spec means a LOCAL (dev) install; a registry range/semver means
-    an NPM install. Reads dependencies then devDependencies.
+    an NPM install. Reads every supported dependency section in precedence.
     """
     pkg = _read_json(project_root / "package.json")
     if not pkg:
         return None
-    for key in ("dependencies", "devDependencies"):
+    for key in ("dependencies", "devDependencies", "optionalDependencies"):
         deps = pkg.get(key)
         if isinstance(deps, dict) and "@jaguilar87/gaia" in deps:
             spec = deps["@jaguilar87/gaia"]
@@ -1584,14 +1584,11 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
 
     Every harness that loads Gaia from node_modules/@jaguilar87/gaia (OpenCode's
     plugin loader, Claude Code's .claude/ symlinks, a bare `require`) runs
-    whatever that path resolves to at THAT moment, never the pin recorded in
-    package.json. A dev workspace commonly runs a live symlink straight at the
-    source checkout (`gaia dev --mode link`) while package.json keeps pointing
-    at a content-addressed tarball (a local `file:*.tgz` spec, dev-pack mode).
-    The two do not disagree until something re-materializes node_modules from
-    that pin -- a plain `pnpm install` or `npm install` -- which silently swaps
-    the live checkout for a stale, already-superseded tarball extraction: no
-    error, no warning, no version bump to notice.
+    whatever that path resolves to at THAT moment. Pack mode records a local
+    tarball and materializes it; explicit link mode records the selected source
+    directory and leaves node_modules as a live source symlink. A subsequent
+    package-manager operation can replace either representation, so this check
+    compares the executed entry with the current declaration.
 
     ALIGNED (pass): the resolved entry carries gaia.source_parity.SOURCE_MARKER
     -- whatever runs today IS the live checkout.
