@@ -149,17 +149,33 @@ def _drive_all_four():
     return (r1, r2, r3, r4), (issued_v3.token, issued_v4.token), (started, ended)
 
 
+def _scoped_rows(scratch, window):
+    """Rows for this run only, scoped in SQL by type, window and sessions.
+
+    The session predicate reads the session back out of the stored payload,
+    so the query itself -- never a whole-surface fetch filtered afterwards --
+    is what bounds the run.
+    """
+    started, ended = window
+    sessions = sorted(RUN_SESSIONS)
+    placeholders = ",".join("?" for _ in sessions)
+    con = sqlite3.connect(str(scratch / "gaia.db"))
+    con.row_factory = sqlite3.Row
+    try:
+        return con.execute(
+            "SELECT type, source, agent, result, severity, payload, ts"
+            " FROM harness_events WHERE type = ? AND ts >= ? AND ts <= ?"
+            f" AND json_extract(payload, '$.session_id') IN ({placeholders})"
+            " ORDER BY id",
+            (EVENT_TYPE, started, ended, *sessions),
+        ).fetchall()
+    finally:
+        con.close()
+
+
 def _scoped_metas(scratch, window):
     """Payloads for this run only: the run's sessions within its window."""
-    started, ended = window
-    metas = []
-    for row in _rows(scratch / "gaia.db"):
-        if not (started <= row["ts"] <= ended):
-            continue
-        meta = json.loads(row["payload"])
-        if meta.get("session_id") in RUN_SESSIONS:
-            metas.append(meta)
-    return metas
+    return [json.loads(row["payload"]) for row in _scoped_rows(scratch, window)]
 
 
 class TestSeamGate:
@@ -172,10 +188,16 @@ class TestSeamGate:
         assert (r4["action"], r4["reason"]) == ("deny", REASON_V4)
 
         metas = _scoped_metas(scratch, window)
-        assert len(metas) == 3, (
-            "expected exactly one durable row per denial and none for the"
-            f" allow, got {len(metas)}"
-        )
+        rows = _scoped_rows(scratch, window)
+        assert len(rows) == 3
+        for row in rows:
+            assert isinstance(row["result"], str) and row["result"]
+            assert json.loads(row["payload"])["reason"] == row["result"]
+        by_result = {row["result"]: row for row in rows}
+        assert set(by_result) == {REASON_V1, REASON_V2, REASON_V4}
+        assert by_result[REASON_V1]["result"] == r1["reason"]
+        assert by_result[REASON_V2]["result"] == r2["reason"]
+        assert by_result[REASON_V4]["result"] == r4["reason"]
         by_reason = {meta["reason"]: meta for meta in metas}
         assert set(by_reason) == {REASON_V1, REASON_V2, REASON_V4}
         assert by_reason[REASON_V1]["reason"] == r1["reason"]
@@ -251,7 +273,7 @@ class TestNonBypassAndNonLeak:
                 "sessionID": SESSION_ALLOW,
                 "callID": "call-ordinary",
                 "tool": "read",
-                "args": {"file_path": str(_ROOT / "README.md")},
+                "args": {"file_path": "README.md"},
                 "cwd": str(_ROOT),
                 "roleContext": _role_context("developer", issued.token),
             }
