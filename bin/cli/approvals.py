@@ -1576,7 +1576,7 @@ def cmd_request_set(args) -> int:
 
 
 def _opencode_binding(args) -> tuple[dict | None, str | None]:
-    """Verify that a native OpenCode permission owns this approval decision."""
+    """Require matching presentations to agree on the approval's owning session."""
     approval_id = _resolve_approval_id(args.approval_id)
     if not _is_canonical_approval_id(approval_id):
         return None, (
@@ -1607,6 +1607,7 @@ def _opencode_binding(args) -> tuple[dict | None, str | None]:
         events = store.get_history(approval_id)
     except Exception as exc:
         return None, f"Failed to load approval history: {exc}"
+    matched = False
     for event in reversed(events):
         if event.get("event_type") != "SHOWN":
             continue
@@ -1619,7 +1620,11 @@ def _opencode_binding(args) -> tuple[dict | None, str | None]:
             and metadata.get("call_id") == call_id
             and hmac.compare_digest(metadata.get("token_sha256", ""), token_hash)
         ):
-            return approval, None
+            if event.get("session_id") != session_id:
+                return None, "Contradictory OpenCode permission presentation session"
+            matched = True
+    if matched:
+        return approval, None
     return None, "No matching OpenCode permission presentation exists"
 
 
@@ -1766,10 +1771,27 @@ def cmd_opencode_decide(args) -> int:
     except Exception as exc:
         _print_error(f"OpenCode approval decision was not normalized: {exc}", args)
         return 1
-    # Refused before any store access, so the refusal provably grants nothing.
-    # Narrowing a standing grant to a single-use one would hand the user a
-    # weaker grant than the one they answered for, without telling them.
     if decision.decision is consent.ConsentDecision.ALWAYS:
+        try:
+            store = _import_approval_store()
+            store.record_event(
+                approval["id"],
+                "NOOP",
+                agent_id=binding.agent_id,
+                session_id=binding.session_id,
+                metadata_json=json.dumps({
+                    "reason": "always_refused",
+                    "decision": decision.decision.value,
+                    "decision_lane": lane,
+                    "correlation_id": decision.correlation_id,
+                    "agent_id": binding.agent_id,
+                    "session_id": binding.session_id,
+                    "call_id": binding.call_id,
+                }, sort_keys=True),
+            )
+        except Exception as exc:
+            _print_error(f"OpenCode refusal audit failed: {exc}", args)
+            return 1
         _print_error(
             "OpenCode 'always' consent is unsupported: this protocol version issues "
             "only single-use grants, and a standing grant would have to be bounded and "

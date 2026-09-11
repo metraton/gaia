@@ -18,6 +18,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -249,6 +250,115 @@ def test_a_reply_outside_the_neutral_vocabulary_grants_nothing(isolated_db, caps
     assert _grant_shape(isolated_db, approval_id) is None
     assert _grant_count(isolated_db) == 0
     assert _approval_status(isolated_db, approval_id) == "pending"
+
+
+def test_refused_decision_is_audited_without_consuming_the_pending_approval(isolated_db):
+    approval_id = _seed_presented_command_set()
+    control_id = _seed_presented_command_set(_OTHER_COMMAND)
+    before = store.get_history(approval_id)
+    reply, lane = _reply_from_the_real_plugin("always")
+
+    with (
+        patch.object(store, "activate_command_set_atomically", wraps=store.activate_command_set_atomically) as activate,
+        patch.object(store, "approve", wraps=store.approve) as approve,
+    ):
+        assert cmd_opencode_decide(_decide_args(approval_id, reply=reply, lane=lane)) == 1
+        activate.assert_not_called()
+        approve.assert_not_called()
+
+    history = store.get_history(approval_id)
+    assert history[:-1] == before
+    assert history[-1]["event_type"] == "NOOP"
+    metadata = json.loads(history[-1]["metadata_json"])
+    assert metadata["reason"] == "always_refused"
+    assert metadata["decision"] == "always"
+    assert metadata["decision_lane"] == lane
+    from adapters.consent_events import binding_from_mapping, mint_correlation_id
+    assert metadata["correlation_id"] == mint_correlation_id(
+        approval_id,
+        binding_from_mapping({"agent_id": _AGENT, "session_id": _SESSION, "call_id": _CALL}),
+    )
+    assert metadata["agent_id"] == _AGENT
+    assert metadata["session_id"] == _SESSION
+    assert metadata["call_id"] == _CALL
+    assert history[-1]["agent_id"] == _AGENT
+    assert history[-1]["session_id"] == _SESSION
+    assert not any(event["event_type"] == "NOOP" for event in store.get_history(control_id))
+    assert _approval_status(isolated_db, approval_id) == "pending"
+    assert _grant_count(isolated_db) == 0
+    assert writer.reserve_plan_command(
+        _COMMAND, session_id=_SESSION, tool_use_id="refused-call", db_path=isolated_db
+    ) is None
+    assert cmd_opencode_decide(_decide_args(approval_id, reply="once", lane=lane)) == 0
+    assert _grant_shape(isolated_db, approval_id)["consumable"] == 1
+    assert store.get_history(approval_id)[:len(history)] == history
+
+
+@pytest.mark.parametrize("field,value", [("token", "forged"), ("call_id", "other-call"),
+                                         ("session_id", "other-session")])
+def test_forged_refusal_binding_is_not_audited(isolated_db, field, value):
+    approval_id = _seed_presented_command_set()
+    before = store.get_history(approval_id)
+    args = _decide_args(approval_id, reply="always", lane="preferred")
+    setattr(args, field, value)
+    assert cmd_opencode_decide(args) == 1
+    assert store.get_history(approval_id) == before
+    assert _approval_status(isolated_db, approval_id) == "pending"
+    assert _grant_count(isolated_db) == 0
+
+
+@pytest.mark.parametrize("foreign_first", [False, True])
+def test_contradictory_presentation_session_is_not_audited(isolated_db, foreign_first):
+    approval_id = _seed_presented_command_set()
+    shown = next(event for event in store.get_history(approval_id) if event["event_type"] == "SHOWN")
+    store.record_event(
+        approval_id, "SHOWN", agent_id="opencode-plugin", session_id="foreign-session",
+        metadata_json=shown["metadata_json"],
+    )
+    if foreign_first:
+        store.record_event(
+            approval_id, "SHOWN", agent_id="opencode-plugin", session_id=_SESSION,
+            metadata_json=shown["metadata_json"],
+        )
+    before = store.get_history(approval_id)
+    with (
+        patch.object(store, "activate_command_set_atomically", wraps=store.activate_command_set_atomically) as activate,
+        patch.object(store, "approve", wraps=store.approve) as approve,
+    ):
+        assert cmd_opencode_decide(
+            _decide_args(approval_id, reply="always", lane="preferred")
+        ) == 1
+        activate.assert_not_called()
+        approve.assert_not_called()
+    assert store.get_history(approval_id) == before
+    assert _approval_status(isolated_db, approval_id) == "pending"
+    assert _grant_count(isolated_db) == 0
+    assert writer.reserve_plan_command(
+        _COMMAND, session_id=_SESSION, tool_use_id="ambiguous-call", db_path=isolated_db
+    ) is None
+
+
+def test_identical_presentation_retry_remains_idempotent(isolated_db):
+    approval_id = _seed_presented_command_set()
+    before = store.get_history(approval_id)
+    assert cmd_opencode_present(_present_args(approval_id)) == 0
+    assert store.get_history(approval_id) == before
+    shown = next(event for event in before if event["event_type"] == "SHOWN")
+    store.record_event(
+        approval_id, "SHOWN", agent_id="opencode-plugin", session_id=_SESSION,
+        metadata_json=shown["metadata_json"],
+    )
+    repeated = store.get_history(approval_id)
+    assert cmd_opencode_present(_present_args(approval_id)) == 0
+    assert store.get_history(approval_id) == repeated
+    assert cmd_opencode_decide(
+        _decide_args(approval_id, reply="always", lane="preferred")
+    ) == 1
+    assert store.get_history(approval_id)[-1]["event_type"] == "NOOP"
+    assert cmd_opencode_decide(
+        _decide_args(approval_id, reply="once", lane="preferred")
+    ) == 0
+    assert _grant_shape(isolated_db, approval_id)["consumable"] == 1
 
 
 def test_a_decision_without_a_recorded_presentation_grants_nothing(isolated_db, capsys):

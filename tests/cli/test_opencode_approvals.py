@@ -60,7 +60,11 @@ def test_opencode_presentation_then_approval_is_bound_to_session_call_and_token(
     store.get_history.side_effect = lambda _id: events
 
     def record_event(*_args, **kwargs):
-        events.append({"event_type": "SHOWN", "metadata_json": kwargs["metadata_json"]})
+        events.append({
+            "event_type": "SHOWN",
+            "session_id": kwargs["session_id"],
+            "metadata_json": kwargs["metadata_json"],
+        })
 
     store.record_event.side_effect = record_event
     with patch("cli.approvals._import_approval_store", return_value=store):
