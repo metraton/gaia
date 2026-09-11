@@ -10,6 +10,7 @@ silently accepting a governed operation.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet
@@ -92,6 +93,14 @@ _UNATTESTED_AGENT_TYPE = "opencode-unattested"
 # from any other policy lane (delegate_mode, an unattested control-plane
 # claim, the tier classifier) -- plan 65, T10, rule 3.
 _CHILD_BINDING_BACKSTOP_EMITTER = "opencode-adapter:child-session-binding-backstop"
+
+# Dotted event category for the Layer O refusal-audit row (task 509): every
+# identity/control-plane refusal denied by _identity_rejection lands exactly
+# one harness_events row of this type. Severity warning (not info) keeps it
+# visible to the triage reader without claiming error-severity defect status.
+_IDENTITY_REFUSAL_EVENT = "opencode.identity.refused"
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_patch_paths(patch_text: object) -> list[str]:
@@ -407,6 +416,7 @@ class OpenCodeAdapter(HookAdapter):
         original_tool = str(payload.get("tool_name", "")).lower()
         rejection = self._identity_rejection(event, original_tool)
         if rejection is not None:
+            self._record_identity_refusal(event, original_tool, rejection)
             return HookResponse(output={"action": "deny", "reason": rejection}, exit_code=2)
         backstop = self._child_binding_backstop_denial(event)
         if backstop is not None:
@@ -415,8 +425,10 @@ class OpenCodeAdapter(HookAdapter):
         if _shell_env_transport and self._policy_tool_name(original_tool) == "Bash":
             env_identity = self._resolved_attestation(event)
             if env_identity is None or not event.session_id or not event.call_id:
+                shell_reason = "Shell environment transport requires attested call correlation"
+                self._record_identity_refusal(event, original_tool, shell_reason)
                 return HookResponse(
-                    output={"action": "deny", "reason": "Shell environment transport requires attested call correlation"},
+                    output={"action": "deny", "reason": shell_reason},
                     exit_code=2,
                 )
         payload = self.build_policy_payload(event)
@@ -613,6 +625,95 @@ class OpenCodeAdapter(HookAdapter):
         if tool_name == "task" and not cls._is_attested_control_plane(event):
             return "ordinary OpenCode agents cannot issue control-plane dispatches"
         return None
+
+    @classmethod
+    def _record_identity_refusal(
+        cls, event: HookEvent, tool_name: str, reason: str,
+    ) -> None:
+        """Leave one durable row for an identity/control-plane refusal.
+
+        Never raises and never affects the verdict: the caller has already
+        decided the denial and ignores this method's outcome entirely, so a
+        failure here cannot turn an allow into a deny, soften a denial, or
+        change any byte the caller sees. The row carries the six answers an
+        after-the-fact reader needs with no live session, no host log and no
+        debug channel -- session_id, tool, the refusal reason verbatim and
+        untruncated, whether an agent name was presented (agent_presented plus
+        the declared string), whether a role context was present
+        (role_context_present plus the claimed role name), and whether it was
+        attested (attested, with attestation_present and attestation_resolved
+        distinguishing token-absent from token-present-unresolved from
+        token-present-and-resolved). The attestation token VALUE is never
+        recorded -- in no field, no nested field, and no encoded form of it,
+        not even a hash. The reason is stored byte-equal in both the result
+        column and the payload so either read path attributes the refusal to
+        the exact layer that fired it.
+
+        Silent-write resolution (accepted gap, stated here rather than left
+        silent): EventWriter.write_event swallows every exception by design so
+        audit can never block the hook pipeline. A failed refusal-write
+        therefore leaves no row and is visible only as a debug log from this
+        method. That swallowing is accepted because the refusal itself is
+        still delivered synchronously as the host tool error (deny plus the
+        verbatim reason), so enforcement never depends on the mirror -- the
+        gap is a lost audit row under DB or ledger outage, never a lost
+        denial. Making the write blocking instead would let an audit outage
+        turn a deny into an error or an allow into a deny, which the
+        blast-radius constraint below forbids.
+
+        Blast radius: this runs on the early identity-refusal return path of
+        adapt_pre_tool_use, which executes on EVERY OpenCode tool call but
+        writes only when a refusal was already decided -- the allow path never
+        reaches it. NOT verified: interleaving rows from concurrent bridge
+        processes (ordering is by ts only), ledger outage mid-call (the row
+        is still written, with attested/resolved as False), retention pruning
+        of old refusal rows, and attribution beyond the workspace cascade.
+        """
+        try:
+            from modules.events.event_writer import EventWriter
+
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            declared = str(
+                payload.get("agent") or payload.get("agent_type") or ""
+            ).strip()
+            context = event.role_context
+            attested = False
+            resolved = False
+            try:
+                attested = bool(cls._is_attested_control_plane(event))
+            except Exception:
+                attested = False
+            try:
+                resolved = cls._resolved_attestation(event) is not None
+            except Exception:
+                resolved = False
+            agent_name = declared
+            if not agent_name and context is not None:
+                agent_name = context.role
+            meta: Dict[str, Any] = {
+                "session_id": event.session_id,
+                "tool": tool_name,
+                "reason": reason,
+                "agent_presented": bool(declared),
+                "declared_agent": declared,
+                "role_context_present": context is not None,
+                "role": context.role if context is not None else "",
+                "attested": attested,
+                "attestation_present": bool(
+                    getattr(context, "attestation", "") or ""
+                ),
+                "attestation_resolved": resolved,
+            }
+            EventWriter().write_event(
+                _IDENTITY_REFUSAL_EVENT,
+                "opencode-adapter",
+                agent_name,
+                reason,
+                severity="warning",
+                meta=meta,
+            )
+        except Exception as exc:  # pragma: no cover - telemetry must never block
+            logger.debug("identity refusal audit write failed (non-fatal): %s", exc)
 
     @classmethod
     def _child_binding_backstop_denial(cls, event: HookEvent) -> "HookResponse | None":
