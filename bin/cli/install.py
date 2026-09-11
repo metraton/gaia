@@ -122,12 +122,9 @@ HOST_CHOICES = SUPPORTED_HOSTS + (ALL_HOSTS,)
 
 
 def resolve_hosts(host: str) -> tuple[str, ...]:
-    """Expand a ``--host`` value into the ordered hosts to configure.
-
-    ``all`` expands to every supported host; any other value is itself. The
-    default is unchanged by design: only an explicit ``all`` configures more
-    than one host.
-    """
+    """Validate a CLI selection and expand it into ordered supported hosts."""
+    if host not in HOST_CHOICES:
+        raise ValueError(f"unsupported host {host!r}; choose from {', '.join(HOST_CHOICES)}")
     if host == ALL_HOSTS:
         return SUPPORTED_HOSTS
     return (host,)
@@ -1111,6 +1108,7 @@ def _configure_host(
     postinstall: bool,
     quiet: bool,
     verbose: bool,
+    strict: bool = False,
 ) -> bool:
     """Wire one host into *workspace*; return whether it was configured.
 
@@ -1123,6 +1121,8 @@ def _configure_host(
     if host == "opencode":
         opencode_res = _install_helpers.configure_opencode_plugin(workspace)
         _report_step(name="OpenCode plugin", result=opencode_res, quiet=quiet, verbose=verbose)
+        if strict:
+            return opencode_res.get("action") in ("created", "updated", "noop")
         return opencode_res.get("action") != "error"
 
     # Step 1.5 -- ensure workspace .claude/ exists BEFORE invoking helpers.
@@ -1144,22 +1144,34 @@ def _configure_host(
 
     settings_res = _install_helpers.configure_settings_json(workspace)
     _report_step(name="settings.json", result=settings_res, quiet=quiet, verbose=verbose)
+    if strict and settings_res.get("action") not in ("created", "updated", "noop"):
+        return False
 
     perms_res = _install_helpers.merge_local_permissions(workspace)
     _report_step(name="permissions", result=perms_res, quiet=quiet, verbose=verbose)
+    if strict and perms_res.get("action") not in ("created", "updated", "noop"):
+        return False
 
     hooks_res = _install_helpers.merge_local_hooks(workspace)
     _report_step(name="hooks", result=hooks_res, quiet=quiet, verbose=verbose)
+    if strict and hooks_res.get("action") not in ("created", "updated", "noop"):
+        return False
 
     worktree_res = _install_helpers.merge_worktree_settings(workspace)
     _report_step(name="worktree", result=worktree_res, quiet=quiet, verbose=verbose)
+    if strict and worktree_res.get("action") not in ("created", "updated", "noop"):
+        return False
 
     sym_res = _install_helpers.manage_symlinks(workspace)
     _report_step(name="symlinks", result=sym_res, quiet=quiet, verbose=verbose)
+    if strict and sym_res.get("action") not in ("created", "updated", "noop"):
+        return False
 
     registry_source = "npm-postinstall" if postinstall else "cli-install"
     reg_res = _install_helpers.register_plugin(workspace, source=registry_source)
     _report_step(name="plugin-registry", result=reg_res, quiet=quiet, verbose=verbose)
+    if strict:
+        return reg_res.get("action") in ("created", "updated", "noop")
     return True
 
 
@@ -1285,7 +1297,12 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         dest="no_path",
         action="store_true",
         default=False,
-        help="Skip creating the ~/.local/bin/gaia launcher",
+        help="Skip PATH launchers and persistent Windows workspace environment changes",
+    )
+    p.add_argument(
+        "--strict-wiring",
+        action="store_true",
+        help="Fail if any requested host or required wiring step fails or is skipped",
     )
     return p
 
@@ -1298,8 +1315,13 @@ def cmd_install(args: argparse.Namespace) -> int:
     db_path = getattr(args, "db_path", None)
     skip_workspace = bool(getattr(args, "skip_workspace", False))
     no_path = bool(getattr(args, "no_path", False))
+    strict_wiring = bool(getattr(args, "strict_wiring", False))
     workspace_arg = getattr(args, "workspace", None)
-    hosts = resolve_hosts(getattr(args, "host", DEFAULT_HOST))
+    try:
+        hosts = resolve_hosts(getattr(args, "host", DEFAULT_HOST))
+    except ValueError as exc:
+        print(f"gaia install: {exc}", file=sys.stderr)
+        return 1
 
     workspace = (
         Path(workspace_arg).expanduser().resolve()
@@ -1364,6 +1386,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             postinstall=postinstall,
             quiet=quiet,
             verbose=verbose,
+            strict=strict_wiring,
         ):
             wired.append(host_key)
         else:
@@ -1374,6 +1397,9 @@ def cmd_install(args: argparse.Namespace) -> int:
             f"  [!] host configuration failed: {', '.join(failed)}",
             file=sys.stderr,
         )
+
+    if strict_wiring and failed:
+        return 1
 
     if not wired:
         # Every requested host failed, so there is nothing to finish wiring --
@@ -1405,13 +1431,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         if shadow_warning is None:
             _warn_launcher_dir_absent(link="~/.local/bin/gaia", quiet=quiet)
 
-    # Step 6.6 -- Windows: persist GAIA_WORKSPACE_PATH to the user environment
-    # so `gaia doctor` resolves THIS workspace regardless of which `gaia` wins
-    # PATH. The launcher only exports it process-scoped; without this, when
-    # npm's shim wins, doctor derives the npm prefix and emits a false CRITICAL
-    # (the rc.2 bug). Runs even under --no-path: the env var, not the launcher,
-    # is what makes doctor's derivation correct. No-op on POSIX.
-    if _is_windows():
+    if not no_path and _is_windows():
         env_res = _persist_workspace_env(workspace)
         _report_step(name="workspace-env", result=env_res, quiet=quiet, verbose=verbose)
 

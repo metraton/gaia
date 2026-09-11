@@ -1226,9 +1226,9 @@ def _resolve_source_root(project_root: Path, parity) -> "Path | None":
 
     Two routes, in precedence:
 
-      1. The package root of the CLI now running. `gaia dev` npm-links the
-         global `gaia` at the source tree it packed from, so on a dev machine a
-         bare `gaia doctor` IS executing the source and this route resolves.
+      1. The package root of the CLI now running. This resolves when doctor is
+         explicitly invoked from a Gaia source checkout; `gaia dev` does not
+         mutate a global package-manager link or PATH launcher.
       2. The workspace's ``file:`` dependency spec, when it points at a
          DIRECTORY -- link mode, where the install is the checkout itself.
          A dev-pack spec points at a tarball and does not resolve here.
@@ -1333,12 +1333,12 @@ def _gaia_dep_spec(project_root: Path) -> "str | None":
     """The workspace's declared @jaguilar87/gaia dependency spec, or None.
 
     A ``file:`` spec means a LOCAL (dev) install; a registry range/semver means
-    an NPM install. Reads dependencies then devDependencies.
+    an NPM install. Reads every supported dependency section in precedence.
     """
     pkg = _read_json(project_root / "package.json")
     if not pkg:
         return None
-    for key in ("dependencies", "devDependencies"):
+    for key in ("dependencies", "devDependencies", "optionalDependencies"):
         deps = pkg.get(key)
         if isinstance(deps, dict) and "@jaguilar87/gaia" in deps:
             spec = deps["@jaguilar87/gaia"]
@@ -1349,27 +1349,18 @@ def _gaia_dep_spec(project_root: Path) -> "str | None":
 
 @register_check("Install provenance", order=57)
 def check_install_provenance(project_root: Path) -> dict:
-    """Detect HOW @jaguilar87/gaia was installed, self-sufficiently from the
-    workspace's own `package.json` -- no dependency on locating the Gaia
-    SOURCE checkout.
+    """Diagnose recorded dev-install drift, retaining legacy resolution checks when no record exists."""
+    from gaia.install_provenance import inspect_install
 
-    Provenance replaces the retired `gaia release sync-local` command: the
-    intelligence of "where did this install come from?" belongs in a fast
-    diagnostic, not a mass action command.
-
-      * LOCAL (dependency spec ``file:...``) -> a dev install; the check
-        verifies the ``file:`` install actually resolves (symlink/extraction
-        is not broken).
-      * NPM (registry spec) -> is the installed version behind the latest? That
-        comparison needs a network round-trip, so it is NOT done here (see the
-        offline note below); the check reports mode + installed version and
-        points at `npm outdated`.
-
-    Offline-first and deterministic by design: this check makes no network
-    call and never reaches outside the workspace it is given. See the module
-    docstring's severity contract.
-    """
     name = "Install provenance"
+    provenance = inspect_install(project_root, _gaia_dep_spec(project_root))
+    if provenance is not None:
+        diagnostics = provenance["diagnostics"]
+        result = _result(name, "error" if diagnostics else "pass",
+                         "; ".join(diagnostics) if diagnostics else "recorded source, artifact and destination match",
+                         "Inspect provenance and reinstall from the selected source if intended")
+        result["provenance"] = provenance
+        return result
     nm_gaia = project_root / "node_modules" / "@jaguilar87" / "gaia"
     installed = _read_json(nm_gaia / "package.json")
     installed_ver = installed.get("version") if installed else None
@@ -1584,14 +1575,11 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
 
     Every harness that loads Gaia from node_modules/@jaguilar87/gaia (OpenCode's
     plugin loader, Claude Code's .claude/ symlinks, a bare `require`) runs
-    whatever that path resolves to at THAT moment, never the pin recorded in
-    package.json. A dev workspace commonly runs a live symlink straight at the
-    source checkout (`gaia dev --mode link`) while package.json keeps pointing
-    at a content-addressed tarball (a local `file:*.tgz` spec, dev-pack mode).
-    The two do not disagree until something re-materializes node_modules from
-    that pin -- a plain `pnpm install` or `npm install` -- which silently swaps
-    the live checkout for a stale, already-superseded tarball extraction: no
-    error, no warning, no version bump to notice.
+    whatever that path resolves to at THAT moment. Pack mode records a local
+    tarball and materializes it; explicit link mode records the selected source
+    directory and leaves node_modules as a live source symlink. A subsequent
+    package-manager operation can replace either representation, so this check
+    compares the executed entry with the current declaration.
 
     ALIGNED (pass): the resolved entry carries gaia.source_parity.SOURCE_MARKER
     -- whatever runs today IS the live checkout.
