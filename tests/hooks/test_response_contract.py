@@ -210,7 +210,7 @@ class TestBlockingPromotions:
         assert result.is_valid, f"Expected valid. Missing: {result.missing}"
 
     def test_approval_request_missing_rollback_is_valid(self):
-        """AC-5: rollback is relayed as null by design; absence is advisory only."""
+        """AC-5: rollback is null for verbs the hook authors no statement for; absence is advisory only."""
         output = _make_complete_output(
             with_approval_request=True,
             approval_rollback=False,
@@ -474,7 +474,7 @@ class TestResponseContractBlockingPromotions:
         assert any("VERIFICATION" in m for m in result.missing)
 
     def test_approval_request_status_missing_rollback_is_valid(self):
-        """AC-5: rollback is relayed as null by design; absence is advisory only (warnings, not missing)."""
+        """AC-5: rollback is null for verbs the hook authors no statement for; absence is advisory only (warnings, not missing)."""
         output = _make_approval_request_output(with_rollback=False, with_verification=True)
         result = validate_response_contract(output)
         assert result.valid, f"Expected valid (rollback non-blocking). Missing: {result.missing}"

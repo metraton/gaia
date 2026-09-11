@@ -640,7 +640,8 @@ def validate_response_contract(
     warnings: List[str] = []
     approval_req = contract.get("approval_request")
     if approval_req and isinstance(approval_req, dict):
-        # Non-blocking (advisory): rollback is relayed as null by design.
+        # Non-blocking (advisory): rollback is null for verbs the hook authors
+        # no statement for (only push, apply, delete, destroy and create seal one).
         if not approval_req.get("rollback"):
             warnings.append("APPROVAL_REQUEST_ROLLBACK")
         # Blocking: verification must be present (T2.2)
