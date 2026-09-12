@@ -2038,6 +2038,9 @@ def _build_sealed_payload(
         three and the presented surface says so, rather than a claim about a
         reach or a reversibility the verdict did not determine.
 
+    risk_level seals 'medium' in production: no classifier reaching this
+    producer emits DESTRUCTIVE, so the 'high' arm goes live only if one starts.
+
     Args:
         command: The full Bash command string that was blocked (the primary /
             first command; used for ``exact_content`` and the singular display).
@@ -2082,11 +2085,6 @@ def _build_sealed_payload(
         "operation": f"{category} command intercepted: {verb}",
         "exact_content": command,
         "scope": command.split()[0] if command.strip() else "unknown",
-        # Record (task 485, inherited, not repaired): the 'high' arm is dead
-        # while no classifier reaching this producer emits DESTRUCTIVE -- the
-        # same pre-existing condition as the category table above -- so this
-        # path assigns 'medium' in production. It goes live only if a
-        # classifier emits that category; repairing it is a separate decision.
         "risk_level": "high" if category.upper() == "DESTRUCTIVE" else "medium",
         "impact": authored.get("impact"),
         "rollback_hint": authored.get("rollback"),

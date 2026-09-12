@@ -757,41 +757,13 @@ class OpenCodeAdapter(HookAdapter):
         """Leave one durable row for an identity/control-plane refusal.
 
         Never raises and never affects the verdict: the caller has already
-        decided the denial and ignores this method's outcome entirely, so a
-        failure here cannot turn an allow into a deny, soften a denial, or
-        change any byte the caller sees. The row carries the six answers an
-        after-the-fact reader needs with no live session, no host log and no
-        debug channel -- session_id, tool, the refusal reason verbatim and
-        untruncated, whether an agent name was presented (agent_presented plus
-        the declared string), whether a role context was present
-        (role_context_present plus the claimed role name), and whether it was
-        attested (attested, with attestation_present and attestation_resolved
-        distinguishing token-absent from token-present-unresolved from
-        token-present-and-resolved). The attestation token VALUE is never
-        recorded -- in no field, no nested field, and no encoded form of it,
-        not even a hash. The reason is stored byte-equal in both the result
-        column and the payload so either read path attributes the refusal to
-        the exact layer that fired it.
+        decided the denial and ignores this method's outcome entirely.
 
-        Silent-write resolution (accepted gap, stated here rather than left
-        silent): EventWriter.write_event swallows every exception by design so
-        audit can never block the hook pipeline. A failed refusal-write
-        therefore leaves no row and is visible only as a debug log from this
-        method. That swallowing is accepted because the refusal itself is
-        still delivered synchronously as the host tool error (deny plus the
-        verbatim reason), so enforcement never depends on the mirror -- the
-        gap is a lost audit row under DB or ledger outage, never a lost
-        denial. Making the write blocking instead would let an audit outage
-        turn a deny into an error or an allow into a deny, which the
-        blast-radius constraint below forbids.
+        The attestation token value is never recorded -- in no field, no
+        encoded form of it, not even a hash.
 
-        Blast radius: this runs on the early identity-refusal return path of
-        adapt_pre_tool_use, which executes on EVERY OpenCode tool call but
-        writes only when a refusal was already decided -- the allow path never
-        reaches it. NOT verified: interleaving rows from concurrent bridge
-        processes (ordering is by ts only), ledger outage mid-call (the row
-        is still written, with attested/resolved as False), retention pruning
-        of old refusal rows, and attribution beyond the workspace cascade.
+        Accepted gap: EventWriter.write_event swallows every exception by
+        design, so a failed write loses the audit row, never the denial.
         """
         try:
             from modules.events.event_writer import EventWriter
