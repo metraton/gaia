@@ -3309,6 +3309,14 @@ class ClaudeCodeAdapter(HookAdapter):
                 exit_code=0,
             )
 
+        # A rejection reaches the exit code through this latch, not through
+        # `result`: the handler at the end of this method rebuilds that dict
+        # from scratch, so every call standing between the verdict and the
+        # return would otherwise be one more way to close a rejected turn at
+        # exit 0.
+        _rejection_latched = False
+        _latched_rejection_reason = ""
+
         # Run the main processing chain
         try:
             from datetime import datetime as _dt
@@ -3568,6 +3576,15 @@ class ClaudeCodeAdapter(HookAdapter):
             # anomaly append both happen earlier in this method and both have to
             # know the turn was cut.
             _circuit_tripped = bool(_circuit is not None and _circuit.tripped)
+
+            # The verdict is settled at this point -- the gate produced it and
+            # the breaker is the only thing entitled to lower it -- so this is
+            # where it is latched. Latching HERE rather than at the result dict
+            # far below is what makes the rejection independent of everything
+            # that runs in between, including calls added later.
+            if _gate.rejected and not _circuit_tripped:
+                _rejection_latched = True
+                _latched_rejection_reason = _gate.rejection_reason
 
             # Preserve a pending approval this turn's own record still
             # references via APPROVAL_REQUEST. Cleanup must not destroy an
@@ -4194,12 +4211,10 @@ class ClaudeCodeAdapter(HookAdapter):
                 # salvaged draft via --draft-id instead of re-emitting the block.
                 result["salvage_resume_hint"] = _salvage.get("resume_hint")
 
-            # The verdict is recorded BEFORE the relay runs. exit_code=2 is
-            # driven by result['contract_rejected'] alone, and the outer except
-            # below rebuilds `result` without that key -- so anything that can
-            # raise between here and the return would downgrade a rejection to
-            # exit 0. The relay is an enrichment of the rejection, never a
-            # precondition for it, and is isolated accordingly.
+            # The verdict is recorded BEFORE the relay runs, and the latch set
+            # at the gate already holds it independently of this dict. The
+            # relay is an enrichment of the rejection, never a precondition for
+            # it, and is isolated accordingly.
             if contract_rejected:
                 result["contract_rejected"] = True
                 result["contract_rejection_reason"] = contract_rejection_reason
@@ -4392,6 +4407,14 @@ class ClaudeCodeAdapter(HookAdapter):
                 "error": str(e),
                 "status": "partial_update",
             }
+
+        if _rejection_latched and not result.get("contract_rejected"):
+            result["contract_rejected"] = True
+            result["contract_rejection_reason"] = _latched_rejection_reason
+            logger.error(
+                "Contract rejection restored from the latch: the result dict "
+                "lost it, so exit_code=2 is taken from the verdict itself.",
+            )
 
         if result.get("contract_rejected"):
             logger.warning("Returning exit_code=2 due to contract rejection")
