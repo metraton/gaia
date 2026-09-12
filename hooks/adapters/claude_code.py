@@ -1577,20 +1577,42 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def _get_gaia_agent_names(self) -> set:
-        """Get names of Gaia-managed agents from the agents/ directory.
+        """Names of the Gaia-managed agents, unioned over every lane that resolves.
 
-        Returns a set of agent names (filenames without .md extension).
-        Native Claude Code agents (Explore, Plan, claude-code-guide) will
-        not appear in this set, enabling bypass of contract validation.
+        An empty set means the roster could not be resolved AT ALL, and never
+        that Gaia has no agents -- a name is absent from an unresolved roster
+        the same way it is absent from an empty one, which is why the caller
+        grants the native-agent bypass only against a non-empty result.
         """
-        agents_dir = Path(__file__).resolve().parent.parent.parent / "agents"
-        if not agents_dir.is_dir():
-            return set()
-        return {
-            f.stem
-            for f in agents_dir.iterdir()
-            if f.suffix == ".md" and f.is_file()
-        }
+        from modules.security.protected_paths import declared_hook_tree_roots
+
+        # Two lanes, because the first one is a function of the deployment
+        # layout: the directory beside the running module is not the agents
+        # directory once the hooks are materialised away from their checkout
+        # (a package store, a plain copy, a container mount). The registry lane
+        # is the identity declared OUTSIDE any deployment -- the same inversion,
+        # and the same remedy, that protected_paths.py carries for the
+        # write-protected tree.
+        candidates = [Path(__file__).resolve().parent.parent.parent / "agents"]
+        candidates.extend(
+            Path(root).parent / "agents" for root in declared_hook_tree_roots()
+        )
+
+        names: set = set()
+        for agents_dir in candidates:
+            try:
+                if not agents_dir.is_dir():
+                    continue
+                names.update(
+                    f.stem
+                    for f in agents_dir.iterdir()
+                    if f.suffix == ".md" and f.is_file()
+                )
+            except OSError:
+                # A lane that cannot be read declines to CONTRIBUTE names; it
+                # never removes what another lane already found.
+                continue
+        return names
 
     # ------------------------------------------------------------------ #
     # format_ask_response: for interactive permission requests
@@ -3292,14 +3314,23 @@ class ClaudeCodeAdapter(HookAdapter):
         task_info = build_task_info_from_hook_data(hook_data, agent_output)
 
         # ----------------------------------------------------------
-        # Native agent bypass: agents not defined in agents/ dir
-        # (e.g. claude-code-guide, Explore, Plan) do not emit
-        # agent_contract_handoff. Skip contract validation to avoid
-        # an infinite retry loop (exit_code=2 -> retry -> no contract).
+        # Native agent bypass: an agent that is not one of Gaia's own
+        # (claude-code-guide, Explore, Plan) emits no agent_contract_handoff,
+        # so gating it would reject every turn it ever takes.
+        #
+        # It takes a resolved roster AND an identified agent to earn that
+        # bypass. An unresolved roster granting it made contract enforcement a
+        # function of the deployment layout -- every agent reads as native when
+        # no roster resolves -- and a missing agent_type is evidence of nothing
+        # at all, least of all that the turn was native. Failing closed on
+        # either costs a bounded number of rejections, since the circuit
+        # breaker cuts the turn and closes it degraded; it is not the unbounded
+        # retry loop that justified this bypass before that breaker existed.
         # ----------------------------------------------------------
         _native_agent_type = task_info.get("agent", "unknown")
         _gaia_agents = self._get_gaia_agent_names()
-        if _native_agent_type not in _gaia_agents:
+        _agent_identified = _native_agent_type not in ("", "unknown")
+        if _gaia_agents and _agent_identified and _native_agent_type not in _gaia_agents:
             logger.info(
                 "Native agent '%s' — skipping contract validation (gaia agents: %s)",
                 _native_agent_type, _gaia_agents,
@@ -3307,6 +3338,13 @@ class ClaudeCodeAdapter(HookAdapter):
             return HookResponse(
                 output={"success": True, "native_agent": True, "agent": _native_agent_type},
                 exit_code=0,
+            )
+        if not _gaia_agents:
+            logger.error(
+                "Agent roster did not resolve on any lane; gating '%s' instead "
+                "of treating it as native. Contract enforcement is NOT "
+                "disabled, but this deployment cannot see its own agents.",
+                _native_agent_type,
             )
 
         # A rejection reaches the exit code through this latch, not through
