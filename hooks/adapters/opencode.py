@@ -9,6 +9,7 @@ silently accepting a governed operation.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -22,6 +23,7 @@ from .types import (
     AgentCompletion,
     BootstrapResult,
     CompletionResult,
+    ConsentBinding,
     ConsentRequest,
     ContextResult,
     HookEvent,
@@ -431,6 +433,12 @@ class OpenCodeAdapter(HookAdapter):
                     output={"action": "deny", "reason": shell_reason},
                     exit_code=2,
                 )
+        retry_rejection = self._consent_retry_rejection(event, original_tool)
+        if retry_rejection is not None:
+            return HookResponse(
+                output={"action": "deny", "reason": retry_rejection},
+                exit_code=2,
+            )
         payload = self.build_policy_payload(event)
         policy_event = HookEvent(
             event_type=event.event_type,
@@ -479,6 +487,122 @@ class OpenCodeAdapter(HookAdapter):
                 "agent_type": env_identity.role,
             }
         return translated
+
+    @classmethod
+    def _consent_retry_rejection(
+        cls, event: HookEvent, tool_name: str,
+    ) -> str | None:
+        """Require an attested, fresh retry bound to one executable grant."""
+        if cls._policy_tool_name(tool_name) != "Bash":
+            return None
+        tool_input = event.payload.get("tool_input") or event.payload.get("args") or {}
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str) or not command:
+            return None
+
+        try:
+            from gaia.store.writer import (
+                list_approval_grants,
+                pending_plan_command_exists,
+            )
+
+            pending = pending_plan_command_exists(command)
+        except Exception as exc:
+            return f"OpenCode consent retry lookup failed closed: {exc}"
+
+        proof = event.payload.get("consentRetry")
+        if proof is None:
+            return (
+                "OpenCode COMMAND_SET retry requires a fresh bound consent proof"
+                if pending else None
+            )
+        if not isinstance(proof, dict):
+            return "OpenCode consent retry proof is malformed"
+        if not pending:
+            return "OpenCode consent retry proof names no executable command"
+        try:
+            attestation = cls._resolved_attestation(event)
+        except Exception:
+            attestation = None
+        if attestation is None:
+            return "OpenCode consent retry proof is not host-attested"
+
+        approval_id = proof.get("approval_id")
+        agent_id = proof.get("agent_id")
+        original_call_id = proof.get("original_call_id")
+        retry_call_id = proof.get("retry_call_id")
+        fingerprint = proof.get("command_fingerprint")
+        index = proof.get("expected_index")
+        if (
+            not isinstance(approval_id, str)
+            or re.fullmatch(r"P-[0-9a-f]{32}", approval_id) is None
+            or agent_id != cls._policy_agent_type(event)
+            or proof.get("session_id") != event.session_id
+            or retry_call_id != event.call_id
+            or not isinstance(original_call_id, str)
+            or not original_call_id
+            or original_call_id == retry_call_id
+            or proof.get("command") != command
+            or fingerprint != hashlib.sha256(command.encode("utf-8")).hexdigest()
+            or isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+        ):
+            return "OpenCode consent retry proof does not match this fresh tool call"
+
+        try:
+            from .consent_events import mint_correlation_id
+
+            expected_correlation = mint_correlation_id(
+                approval_id,
+                ConsentBinding(
+                    agent_id=agent_id,
+                    session_id=event.session_id,
+                    call_id=original_call_id,
+                ),
+            )
+            grants = list_approval_grants(status="PENDING", limit=1000)
+            grant = next(
+                (row for row in grants if row.get("approval_id") == approval_id),
+                None,
+            )
+            items = json.loads(grant.get("command_set_json") or "[]") if grant else []
+            grant_index = int(grant.get("next_index") or 0) if grant else -1
+            matching_ids = []
+            for candidate in grants:
+                candidate_items = json.loads(candidate.get("command_set_json") or "[]")
+                candidate_index = int(candidate.get("next_index") or 0)
+                if (
+                    candidate.get("scope") == "COMMAND_SET"
+                    and candidate.get("source") == "plan-first"
+                    and not candidate.get("reservation_tool_use_id")
+                    and candidate_index >= 0
+                    and candidate_index < len(candidate_items)
+                    and isinstance(candidate_items[candidate_index], dict)
+                    and candidate_items[candidate_index].get("command") == command
+                    and candidate_items[candidate_index].get("fingerprint") == fingerprint
+                ):
+                    matching_ids.append(candidate.get("approval_id"))
+        except Exception:
+            return "OpenCode consent retry proof could not be verified"
+
+        if (
+            proof.get("correlation_id") != expected_correlation
+            or grant is None
+            or grant.get("scope") != "COMMAND_SET"
+            or grant.get("source") != "plan-first"
+            or grant.get("reservation_tool_use_id")
+            or grant.get("agent_id") != agent_id
+            or grant.get("session_id") != event.session_id
+            or grant_index != index
+            or index >= len(items)
+            or not isinstance(items[index], dict)
+            or items[index].get("command") != command
+            or items[index].get("fingerprint") != fingerprint
+            or matching_ids != [approval_id]
+        ):
+            return "OpenCode consent retry proof drifted from its bound grant"
+        return None
 
     def _adapt_task_with_kernel(
         self, policy_adapter: "ClaudeCodeAdapter", policy_event: HookEvent,

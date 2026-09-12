@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url"
 import { lstatSync, realpathSync, statSync } from "node:fs"
+import { createHash } from "node:crypto"
 import { dirname, isAbsolute, parse, relative, resolve, sep } from "node:path"
 import { ShellEnvDelivery } from "./shell-env"
 
@@ -19,6 +20,38 @@ type PendingApproval = {
   callID: string
   token: string
   surface: NativeConsentPresentation
+}
+
+type BoundRetry = PendingApproval & {
+  agentID: string
+  correlationID: string
+  commands: string[]
+  fingerprints: string[]
+  expectedIndex: number
+  usedCallIDs: Set<string>
+}
+
+export type BinaryDecisionRequest = {
+  sessionID: string
+  approvalID: string
+  correlationID: string
+  visibleText: string
+  metadata: Record<string, unknown>
+  question: {
+    header: string
+    question: string
+    options: Array<{ label: string; description: string }>
+    multiple: false
+  }
+}
+
+type ControlDecision = {
+  approval: PendingApproval
+  request: BinaryDecisionRequest
+  retry: BoundRetry
+  questionCallID?: string
+  questionID?: string
+  closed: boolean
 }
 
 type RoleCapabilityContext = {
@@ -267,11 +300,9 @@ const PERMISSION_REPLIES: Record<string, PermissionReply> = {
   deny: "reject",
 }
 
-export function normalizePermissionReply(reply: unknown): PermissionReply {
-  // An unrecognized reply must not grant capability by default: a spelling this
-  // edge has not been taught is treated as a refusal, never as consent.
-  if (typeof reply !== "string") return "reject"
-  return PERMISSION_REPLIES[reply.trim().toLowerCase()] ?? "reject"
+export function normalizePermissionReply(reply: unknown): PermissionReply | undefined {
+  if (typeof reply !== "string") return undefined
+  return PERMISSION_REPLIES[reply.trim().toLowerCase()]
 }
 
 /** The event OpenCode is expected to deliver a permission reply on. */
@@ -284,10 +315,10 @@ export const PREFERRED_PERMISSION_EVENT = "permission.replied"
  */
 export const COMPATIBILITY_PERMISSION_EVENTS = ["permission.v2.replied"]
 
-export type DecisionLane = "preferred" | "compatibility"
+export type DecisionLane = "control" | "preferred" | "compatibility"
 
 /** Ordered strongest-first: a lane's index is its precedence rank. */
-export const DECISION_LANE_PRECEDENCE: DecisionLane[] = ["preferred", "compatibility"]
+export const DECISION_LANE_PRECEDENCE: DecisionLane[] = ["control", "preferred", "compatibility"]
 
 /**
  * Lifecycle events that carry no host decision to gate -- OpenCode never
@@ -326,21 +357,21 @@ export type LaneAdmission = {
 export class PermissionDecisionRouter {
   private readonly lanes = new Map<string, DecisionLane>()
 
-  admit(requestID: string, lane: DecisionLane): LaneAdmission {
-    const prior = this.lanes.get(requestID)
+  admit(correlationID: string, lane: DecisionLane): LaneAdmission {
+    const prior = this.lanes.get(correlationID)
     if (prior === undefined) {
-      this.lanes.set(requestID, lane)
+      this.lanes.set(correlationID, lane)
       return { lane, accepted: true, duplicate: false }
     }
     if (DECISION_LANE_PRECEDENCE.indexOf(lane) < DECISION_LANE_PRECEDENCE.indexOf(prior)) {
-      this.lanes.set(requestID, lane)
+      this.lanes.set(correlationID, lane)
       return { lane, accepted: false, duplicate: true, supersededLane: prior }
     }
     return { lane: prior, accepted: false, duplicate: true }
   }
 
-  effectiveLane(requestID: string): DecisionLane | undefined {
-    return this.lanes.get(requestID)
+  effectiveLane(correlationID: string): DecisionLane | undefined {
+    return this.lanes.get(correlationID)
   }
 }
 
@@ -424,6 +455,89 @@ async function gaia(args: string[]): Promise<boolean> {
 export type NativeConsentPresentation = {
   visibleLines: string[]
   metadata: Record<string, unknown>
+}
+
+function commandFingerprint(command: string): string {
+  return createHash("sha256").update(command, "utf8").digest("hex")
+}
+
+function boundRetry(approval: PendingApproval): BoundRetry {
+  const metadata = approval.surface.metadata
+  const binding = metadata.binding as Record<string, unknown> | undefined
+  const commands = Array.isArray(metadata.commands) ? metadata.commands : []
+  const fingerprints = Array.isArray(metadata.fingerprints) ? metadata.fingerprints : []
+  const correlationID = metadata.correlation_id
+  if (
+    metadata.approval_id !== approval.approvalID
+    || typeof correlationID !== "string"
+    || !correlationID
+    || !binding
+    || typeof binding.agent_id !== "string"
+    || !binding.agent_id
+    || binding.session_id !== approval.sessionID
+    || binding.call_id !== approval.callID
+    || commands.length === 0
+    || commands.length !== fingerprints.length
+    || commands.some((command) => typeof command !== "string" || !command)
+    || fingerprints.some((fingerprint, index) => (
+      typeof fingerprint !== "string"
+      || fingerprint !== commandFingerprint(String(commands[index]))
+    ))
+  ) {
+    throw new Error("Gaia refused malformed or drifted consent retry metadata")
+  }
+  return {
+    ...approval,
+    agentID: binding.agent_id,
+    correlationID,
+    commands: commands.map(String),
+    fingerprints: fingerprints.map(String),
+    expectedIndex: 0,
+    usedCallIDs: new Set([approval.callID]),
+  }
+}
+
+export function binaryDecisionRequest(
+  approval: PendingApproval,
+  controlSessionID: string,
+): BinaryDecisionRequest {
+  const retry = boundRetry(approval)
+  const visibleText = approval.surface.visibleLines.join("\n")
+  if (!visibleText.includes(approval.approvalID)) {
+    throw new Error("Gaia consent surface does not visibly identify its approval")
+  }
+  const approve = `Approve once [${approval.approvalID}]`
+  const reject = `Reject [${approval.approvalID}]`
+  return {
+    sessionID: controlSessionID,
+    approvalID: approval.approvalID,
+    correlationID: retry.correlationID,
+    visibleText,
+    metadata: { ...approval.surface.metadata },
+    question: {
+      header: "Gaia approval",
+      question: `${visibleText}\n\nDECISION: ${approval.approvalID} / ${retry.correlationID}`,
+      options: [
+        { label: approve, description: "Activate this exact request once" },
+        { label: reject, description: "Create no grant and perform no operation" },
+      ],
+      multiple: false,
+    },
+  }
+}
+
+export function readBinaryDecision(
+  request: BinaryDecisionRequest,
+  answers: unknown,
+): PermissionReply | undefined {
+  if (!Array.isArray(answers) || answers.length !== 1 || !Array.isArray(answers[0])) {
+    return undefined
+  }
+  if (answers[0].length !== 1) return undefined
+  const selected = answers[0][0]
+  if (selected === request.question.options[0].label) return "once"
+  if (selected === request.question.options[1].label) return "reject"
+  return undefined
 }
 
 /**
@@ -549,6 +663,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   await announceLiveness(input)
   const pending = new Map<string, PendingApproval>()
   const pendingByCall = new Map<string, PendingApproval>()
+  const controlBySession = new Map<string, ControlDecision>()
+  const controlByQuestion = new Map<string, ControlDecision>()
+  const retryBySession = new Map<string, BoundRetry>()
+  const retryByCall = new Map<string, BoundRetry>()
   const agentBySession = new Map<string, string>()
   const authorizedDispatches = new Map<string, {
     role: string; requestedChildSessionID?: string; childSessionID?: string; reservedChildSessionID?: string; completed: boolean
@@ -794,16 +912,110 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     approval: PendingApproval,
     reply: PermissionReply,
     lane: DecisionLane = "preferred",
-  ) {
-    await gaia([
+  ): Promise<boolean> {
+    return gaia([
       "approvals", "opencode-decide", approval.approvalID,
       "--session-id", approval.sessionID,
       "--call-id", approval.callID,
       "--token", approval.token,
       "--reply", reply,
-      "--decision-lane", lane,
+      "--decision-lane", lane === "compatibility" ? "compatibility" : "preferred",
       "--json",
     ])
+  }
+
+  function closeControl(control: ControlDecision): void {
+    control.closed = true
+    if (control.questionID && controlByQuestion.get(control.questionID) === control) {
+      controlByQuestion.delete(control.questionID)
+    }
+  }
+
+  function clearPendingApproval(approvalID: string): void {
+    for (const [key, approval] of pendingByCall) {
+      if (approval.approvalID === approvalID) pendingByCall.delete(key)
+    }
+    for (const [key, approval] of pending) {
+      if (approval.approvalID === approvalID) pending.delete(key)
+    }
+    for (const control of controlBySession.values()) {
+      if (control.approval.approvalID === approvalID) closeControl(control)
+    }
+  }
+
+  async function applyDecision(
+    control: ControlDecision,
+    reply: PermissionReply,
+    lane: DecisionLane,
+  ): Promise<boolean> {
+    const existing = retryBySession.get(control.approval.sessionID)
+    if (reply === "once" && existing && existing.correlationID !== control.retry.correlationID) {
+      closeControl(control)
+      return false
+    }
+    const admission = decisions.admit(control.request.correlationID, lane)
+    if (!admission.accepted) {
+      closeControl(control)
+      return false
+    }
+    const applied = await decide(control.approval, reply, lane)
+    if (applied && reply === "once") {
+      retryBySession.set(control.approval.sessionID, {
+        ...control.retry,
+        usedCallIDs: new Set(control.retry.usedCallIDs),
+      })
+    }
+    clearPendingApproval(control.approval.approvalID)
+    return applied
+  }
+
+  async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
+    const session = input?.client?.session
+    if (typeof session?.create !== "function" || typeof session?.promptAsync !== "function" || !rootSessionID) {
+      throw new Error("OpenCode control plane cannot provide a binary question")
+    }
+    const created = await session.create({
+      body: { parentID: rootSessionID, title: `Gaia ${approval.approvalID}` },
+    })
+    const controlSessionID = created?.data?.id ?? created?.id
+    if (
+      typeof controlSessionID !== "string"
+      || !controlSessionID
+      || controlSessionID === rootSessionID
+      || controlSessionID === approval.sessionID
+      || controlBySession.has(controlSessionID)
+    ) {
+      throw new Error("OpenCode did not create a fresh control-plane decision session")
+    }
+    const request = binaryDecisionRequest(approval, controlSessionID)
+    const control: ControlDecision = {
+      approval,
+      request,
+      retry: boundRetry(approval),
+      closed: false,
+    }
+    controlBySession.set(controlSessionID, control)
+    const instruction = [
+      "You are a mechanical consent control plane.",
+      "Invoke the question tool exactly once with the JSON below and do nothing else.",
+      "Do not answer the question, infer consent, rewrite any text, or emit approval prose.",
+      JSON.stringify({ questions: [request.question] }),
+    ].join("\n")
+    try {
+      await session.promptAsync({
+        path: { id: controlSessionID },
+        body: {
+          agent: "gaia-orchestrator",
+          system: ["Only the question tool is available. Free text has no decision authority."],
+          tools: { "*": false, question: true },
+          parts: [{ type: "text", text: instruction }],
+        },
+      })
+    } catch (error) {
+      closeControl(control)
+      throw error
+    }
+    return control
   }
 
   async function requestApproval(response: BridgeResponse, sessionID: string, callID: string) {
@@ -819,12 +1031,93 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     ])
     if (!presented.ok) throw new Error("Gaia could not present the approval request")
     const surface = readConsentPresentation(presented.stdout)
-    pendingByCall.set(`${sessionID}:${callID}`, { ...approval, surface })
+    const pendingApproval = { ...approval, surface }
+    const control = await openBinaryDecision(pendingApproval)
+    if (!control.closed) pendingByCall.set(`${sessionID}:${callID}`, pendingApproval)
+  }
+
+  function consentRetry(
+    retry: BoundRetry | undefined,
+    call: { sessionID?: string; callID?: string },
+    agent: string | undefined,
+    tool: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> | undefined {
+    const command = args.command
+    if (
+      !retry
+      || tool.toLowerCase() !== "bash"
+      || call.sessionID !== retry.sessionID
+      || typeof call.callID !== "string"
+      || !call.callID
+      || retry.usedCallIDs.has(call.callID)
+      || agent !== retry.agentID
+      || typeof command !== "string"
+      || retry.commands[retry.expectedIndex] !== command
+      || retry.fingerprints[retry.expectedIndex] !== commandFingerprint(command)
+    ) {
+      return undefined
+    }
+    return {
+      approval_id: retry.approvalID,
+      correlation_id: retry.correlationID,
+      agent_id: retry.agentID,
+      session_id: retry.sessionID,
+      original_call_id: retry.callID,
+      retry_call_id: call.callID,
+      command,
+      command_fingerprint: commandFingerprint(command),
+      expected_index: retry.expectedIndex,
+    }
   }
 
   return {
-    dispose: async () => { shellIdentities.clear() },
+    dispose: async () => {
+      shellIdentities.clear()
+      pending.clear()
+      pendingByCall.clear()
+      controlByQuestion.clear()
+      controlBySession.clear()
+      retryByCall.clear()
+      retryBySession.clear()
+    },
     event: async ({ event }) => {
+      if (event.type === "question.asked") {
+        const sessionID = event.properties?.sessionID
+        const requestID = event.properties?.id
+        const control = typeof sessionID === "string" ? controlBySession.get(sessionID) : undefined
+        if (!control || control.closed || typeof requestID !== "string" || !requestID) return
+        if (
+          control.questionID
+          || controlByQuestion.has(requestID)
+          || JSON.stringify(event.properties?.questions) !== JSON.stringify([control.request.question])
+        ) {
+          closeControl(control)
+          return
+        }
+        control.questionID = requestID
+        controlByQuestion.set(requestID, control)
+        return
+      }
+      if (event.type === "question.rejected") {
+        const requestID = event.properties?.requestID ?? event.properties?.id
+        const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
+        if (control) closeControl(control)
+        return
+      }
+      if (event.type === "question.replied") {
+        const requestID = event.properties?.requestID
+        const sessionID = event.properties?.sessionID
+        const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
+        if (!control || control.closed || control.request.sessionID !== sessionID) return
+        const reply = readBinaryDecision(control.request, event.properties?.answers)
+        if (!reply) {
+          clearPendingApproval(control.approval.approvalID)
+          return
+        }
+        await applyDecision(control, reply, "control")
+        return
+      }
       if (event.type === "message.updated") {
         const info = event.properties?.info
         if (info?.role === "assistant" && typeof info.sessionID === "string" && typeof info.agent === "string") {
@@ -863,6 +1156,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (LIFECYCLE_EVENT_TYPES.has(event.type)) {
         const sessionID = event.properties?.sessionID
         if (typeof sessionID === "string") {
+          const control = controlBySession.get(sessionID)
+          if (control) {
+            closeControl(control)
+            controlBySession.delete(sessionID)
+            return
+          }
           shellIdentities.clearSession(sessionID)
           await send({ event: event.type, sessionID })
         }
@@ -873,15 +1172,18 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       const requestID = event.properties.permissionID
       const sessionID = event.properties.sessionID
       if (typeof requestID !== "string" || typeof sessionID !== "string") return
-      // Admitted before the approval lookup so a later delivery on the
-      // preferred lane is still recorded once a compatibility one has acted.
-      const admission = decisions.admit(requestID, lane)
-      if (!admission.accepted) return
       const approval = pending.get(requestID)
       if (!approval) return
       if (approval.sessionID !== sessionID) return
-      pending.delete(requestID)
-      await decide(approval, normalizePermissionReply(event.properties.response ?? event.properties.reply), lane)
+      const reply = normalizePermissionReply(event.properties.response ?? event.properties.reply)
+      const control = [...controlBySession.values()].find(
+        (candidate) => candidate.approval.approvalID === approval.approvalID,
+      )
+      if (!reply || !control || control.closed) {
+        clearPendingApproval(approval.approvalID)
+        return
+      }
+      await applyDecision(control, reply, lane)
     },
     "permission.ask": async (permission: any, output: { status: "ask" | "deny" | "allow" }) => {
       const sessionID = permission?.sessionID
@@ -918,6 +1220,22 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       output.status = "ask"
     },
     "tool.execute.before": async (call, output) => {
+      const control = controlBySession.get(call.sessionID)
+      if (control) {
+        if (control.closed) {
+          throw new Error("Gaia consent control plane is already closed")
+        }
+        if (
+          canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
+          || JSON.stringify(output.args?.questions) !== JSON.stringify([control.request.question])
+          || (control.questionCallID !== undefined && control.questionCallID !== call.callID)
+        ) {
+          closeControl(control)
+          throw new Error("Gaia consent control plane permits one exact binary question")
+        }
+        control.questionCallID = call.callID
+        return
+      }
       shellIdentities.forget(call.sessionID, call.callID)
       const dispatching = call.tool === "task" ? dispatchRole(output.args) : undefined
       const requestedChildSessionID = call.tool === "task" ? output.args?.task_id : undefined
@@ -934,6 +1252,11 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         throw new Error("Gaia refused a reused or relabelled dispatch call")
       }
       const normalized = normalizeBridgeToolRequest(call.tool, output.args, input)
+      const retry = retryBySession.get(call.sessionID)
+      const retryProof = consentRetry(retry, call, agent, normalized.tool, normalized.args)
+      if (retry && !retryProof) {
+        throw new Error("Gaia refused a drifted or replayed consent retry")
+      }
       const response = await send({
         event: "tool.execute.before",
         sessionID: call.sessionID,
@@ -947,8 +1270,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         worktree: normalized.worktree,
         originalTool: normalized.originalTool,
         originalArgs: normalized.originalArgs,
+        consentRetry: retryProof,
       })
       if (response.action === "allow") {
+        if (retry && retryProof) {
+          retry.usedCallIDs.add(call.callID)
+          retryByCall.set(`${call.sessionID}:${call.callID}`, retry)
+        }
         applyUpdatedInput(output, response.updated_input)
         if (dispatching) {
           const context = roleContext(call.sessionID)
@@ -991,6 +1319,17 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       throw new Error(response.reason ?? "Gaia denied this tool call without a persisted approval")
     },
     "tool.execute.after": async (call, output) => {
+      const control = controlBySession.get(call.sessionID)
+      if (control) {
+        if (
+          canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
+          || control.questionCallID !== call.callID
+        ) {
+          closeControl(control)
+          throw new Error("Gaia refused a drifted control-plane tool result")
+        }
+        return
+      }
       shellIdentities.forget(call.sessionID, call.callID)
       const agent = agentBySession.get(call.sessionID)
       if (call.tool === "task") {
@@ -1020,6 +1359,19 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         args: call.args,
         result,
       })
+      const retryKey = `${call.sessionID}:${call.callID}`
+      const retried = retryByCall.get(retryKey)
+      if (retried) {
+        retryByCall.delete(retryKey)
+        if (result.exit_code === 0) {
+          retried.expectedIndex += 1
+          if (retried.expectedIndex >= retried.commands.length) {
+            if (retryBySession.get(call.sessionID) === retried) retryBySession.delete(call.sessionID)
+          }
+        } else if (retryBySession.get(call.sessionID) === retried) {
+          retryBySession.delete(call.sessionID)
+        }
+      }
     },
     "shell.env": async (call, output) => {
       if (!call.sessionID) throw new Error("Gaia shell environment lacks session identity")

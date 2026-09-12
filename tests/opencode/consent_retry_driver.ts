@@ -36,6 +36,7 @@ type Exchange = {
 
 const exchanges: Exchange[] = []
 const permissionAsks: Record<string, unknown>[] = []
+const controlPrompts: Record<string, any>[] = []
 const stepResults: Record<string, unknown>[] = []
 let lastBridgeAction: string | undefined
 let lastBridgeRequiresApproval = false
@@ -144,6 +145,12 @@ const client = {
   session: {
     async messages({ sessionID }: { sessionID: string }) {
       return { data: scenario.messages?.[sessionID] ?? [] }
+    },
+    async create({ body }: any) {
+      return { data: { id: `control-${controlPrompts.length + 1}`, title: body.title } }
+    },
+    async promptAsync(request: any) {
+      controlPrompts.push(request)
     },
   },
 }
@@ -267,6 +274,47 @@ async function runStep(step: any): Promise<void> {
         },
       })
       record.allowed = true
+    } else if (step.kind === "control-decision") {
+      const prompt = controlPrompts.at(-1)
+      const controlSessionID = prompt?.path?.id
+      const instruction = prompt?.body?.parts?.[0]?.text
+      const encoded = typeof instruction === "string" ? instruction.split("\n").at(-1) : undefined
+      const questions = encoded ? JSON.parse(encoded).questions : undefined
+      if (typeof controlSessionID !== "string" || !Array.isArray(questions)) {
+        throw new Error("driver observed no structured Gaia control question")
+      }
+      const question = questions[0]
+      const requestID = step.requestID ?? `question-${controlPrompts.length}`
+      const callID = step.callID ?? `question-call-${controlPrompts.length}`
+      await plugin["tool.execute.before"](
+        { sessionID: controlSessionID, callID, tool: "question" },
+        { args: { questions } },
+      )
+      await plugin.event({ event: {
+        type: "question.asked",
+        properties: { sessionID: controlSessionID, id: requestID, questions },
+      } })
+      const selected = step.answer === "approve"
+        ? question.options[0].label
+        : step.answer === "reject"
+          ? question.options[1].label
+          : step.answer
+      await plugin.event({ event: {
+        type: "question.replied",
+        properties: {
+          sessionID: controlSessionID,
+          requestID,
+          answers: step.answers ?? [[selected]],
+        },
+      } })
+      await plugin["tool.execute.after"](
+        { sessionID: controlSessionID, callID, tool: "question", args: { questions } },
+        { output: "User has answered your questions.", metadata: { answers: [[selected]] } },
+      )
+      record.controlSessionID = controlSessionID
+      record.question = question
+      record.selected = selected
+      record.allowed = true
     } else {
       throw new Error(`unknown scenario step: ${step.kind}`)
     }
@@ -348,6 +396,7 @@ console.log(JSON.stringify({
   steps: stepResults,
   exchanges: scenario.redactIdentityRecords ? exchanges.map(redactIdentity) : exchanges,
   permissionAsks,
+  controlPrompts,
   observations,
   maxActiveIssuers,
 }))
