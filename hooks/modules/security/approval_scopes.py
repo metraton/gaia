@@ -103,9 +103,9 @@ def build_approval_signature(
         cli_family=CLI_FAMILY_LOOKUP.get(semantics.base_cmd, "unknown"),
         danger_category=resolved_category,
         verb=resolved_verb,
-        semantic_tokens=tuple(semantics.semantic_tokens),
-        normalized_flags=_sorted_unique_lower(semantics.flag_tokens),
-        dangerous_flags=_sorted_unique_lower(danger.dangerous_flags),
+        semantic_tokens=_approval_identity_tokens(semantics),
+        normalized_flags=_sorted_unique(semantics.flag_tokens_raw),
+        dangerous_flags=_sorted_unique(danger.dangerous_flags),
         exact_tokens=exact_tokens,
     )
 
@@ -141,8 +141,8 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
         return False
 
     if signature.scope_type == SCOPE_SEMANTIC_SIGNATURE:
-        incoming_semantic_tokens = tuple(semantics.semantic_tokens)
-        incoming_flags = _sorted_unique_lower(semantics.flag_tokens)
+        incoming_semantic_tokens = _approval_identity_tokens(semantics)
+        incoming_flags = _sorted_unique(semantics.flag_tokens_raw)
         return (
             incoming_semantic_tokens == signature.semantic_tokens
             and incoming_flags == signature.normalized_flags
@@ -203,6 +203,29 @@ def matches_file_path_approval(signature: ApprovalSignature, file_path: str) -> 
     return bool(signature.exact_tokens) and signature.exact_tokens[0] == stripped
 
 
-def _sorted_unique_lower(values: Union[Tuple[str, ...], list[str]]) -> Tuple[str, ...]:
-    """Normalize string tokens for deterministic matching."""
-    return tuple(sorted({value.lower() for value in values if value}))
+def _approval_identity_tokens(semantics) -> Tuple[str, ...]:
+    """The tokens a grant binds to: the command, then its operands verbatim.
+
+    ``analyze_command`` produces two views of the same operands and they are not
+    interchangeable here. CLASSIFICATION reads the folded one
+    (``semantic_tokens``), correctly: a mutative verb is the verb however it is
+    typed, and unfolding it would open gating holes. An APPROVAL SIGNATURE binds
+    a consent to the thing consented over, and ``s3://bucket/Archive/old.tar``
+    and ``s3://bucket/archive/old.tar`` are two objects -- as are two POSIX
+    paths or two git refs differing only in case.
+
+    ``base_cmd`` stays folded because it names the CLI, not an object, and the
+    signature already compares it as its own field.
+    """
+    return (semantics.base_cmd, *semantics.non_flag_tokens_raw)
+
+
+def _sorted_unique(values: Union[Tuple[str, ...], list[str]]) -> Tuple[str, ...]:
+    """Normalize flag tokens for deterministic matching.
+
+    Order and multiplicity are dropped because neither carries meaning in the
+    CLIs this layer classifies. Case is NOT dropped: ``-d`` and ``-D`` are git's
+    safe and force deletions, and folding them let a grant minted for one be
+    consumed by the other.
+    """
+    return tuple(sorted({value for value in values if value}))

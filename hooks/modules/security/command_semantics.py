@@ -127,7 +127,17 @@ class CommandSemantics:
     base_cmd: str = ""
     args: Tuple[str, ...] = ()
     flag_tokens: Tuple[str, ...] = ()
+    # The same flags with their original case, for the same split the operands
+    # carry below: ``-d`` and ``-D`` are git's safe and force deletions, and a
+    # consent bound to the folded form covers both.
+    flag_tokens_raw: Tuple[str, ...] = ()
     non_flag_tokens: Tuple[str, ...] = ()
+    # The same operands with their original case. Classification reads the
+    # folded view above, because a verb is the verb however it is typed;
+    # an approval signature reads this one, because the operands ARE the
+    # object consented over and S3 keys, POSIX paths and git refs are
+    # case-sensitive (approval_scopes.build_approval_signature).
+    non_flag_tokens_raw: Tuple[str, ...] = ()
     semantic_tokens: Tuple[str, ...] = ()
     semantic_head_tokens: Tuple[str, ...] = ()
     # Same as semantic_head_tokens but preserves original token casing.
@@ -282,6 +292,7 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
     args = tuple(tokens[1:])
 
     flag_tokens = []
+    flag_tokens_raw = []
     non_flag_tokens = []
     non_flag_tokens_raw = []  # preserve original casing for camelCase splitting
     skip_next = False
@@ -293,10 +304,12 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
             # analysis (e.g., the path after ``git -C <path>`` is not a
             # subcommand or positional argument).
             flag_tokens.append(token.lower())
+            flag_tokens_raw.append(token)
             skip_next = False
             continue
         if _is_flag(token):
             flag_tokens.extend(_normalize_flag_token(token))
+            flag_tokens_raw.extend(_normalize_flag_token(token, fold=False))
             # A single-letter short flag appearing *before* the first
             # non-flag token (the subcommand) typically consumes the next
             # token as its value argument (POSIX convention).  Examples:
@@ -328,7 +341,9 @@ def analyze_command(command: str, semantic_scan_limit: int = SEMANTIC_SCAN_LIMIT
         base_cmd=base_cmd,
         args=args,
         flag_tokens=tuple(flag_tokens),
+        flag_tokens_raw=tuple(flag_tokens_raw),
         non_flag_tokens=tuple(non_flag_tokens),
+        non_flag_tokens_raw=tuple(non_flag_tokens_raw),
         semantic_tokens=tuple(semantic_tokens),
         semantic_head_tokens=tuple(semantic_tokens[:head_size]),
         semantic_head_tokens_raw=tuple(semantic_tokens_raw[:head_size]),
@@ -405,7 +420,7 @@ def absorbs_next_token(base_cmd: str, token: str) -> bool:
     return _is_short_value_flag(token) and not is_boolean_short_flag(base_cmd, token)
 
 
-def _normalize_flag_token(token: str) -> Tuple[str, ...]:
+def _normalize_flag_token(token: str, *, fold: bool = True) -> Tuple[str, ...]:
     """Normalize flag tokens for matching while preserving exact variants.
 
     For a long flag carrying an inline value (``--data=amount=10``), this emits
@@ -425,22 +440,27 @@ def _normalize_flag_token(token: str) -> Tuple[str, ...]:
     semantic token; only the inline ``--flag=value`` form was unbound.
 
     Build (approval_scopes.build_approval_signature) and match
-    (approval_scopes.matches_approval_signature) both derive flag_tokens from
+    (approval_scopes.matches_approval_signature) both derive their flags from
     this same function via analyze_command, so the two paths stay symmetric --
     a command still matches its own grant (reflexivity preserved).
-    """
-    token_lower = token.lower()
 
-    if token_lower.startswith("--"):
-        key = token_lower.split("=", 1)[0]
-        if "=" in token_lower:
+    ``fold`` selects which of the two views the caller is building. Folded is
+    for CLASSIFICATION, where a flag is the flag however it is typed. Unfolded
+    is for the APPROVAL SIGNATURE, where the case is part of the object being
+    consented over -- both the flag's own identity and any value carried inline.
+    """
+    working = token.lower() if fold else token
+
+    if working.startswith("--"):
+        key = working.split("=", 1)[0]
+        if "=" in working:
             # Emit both the bare key (for classification membership) and the
             # whole key=value token (to bind the value into the signature).
-            return (key, token_lower)
+            return (key, working)
         return (key,)
 
-    normalized = [token_lower]
-    short_body = token_lower[1:]
+    normalized = [working]
+    short_body = working[1:]
     if len(short_body) > 1 and short_body.isalpha():
         normalized.extend(f"-{char}" for char in short_body)
     return tuple(normalized)
