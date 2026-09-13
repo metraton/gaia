@@ -3570,46 +3570,49 @@ class ClaudeCodeAdapter(HookAdapter):
             # degraded outcome and it is reported rather than swallowed.
             # ----------------------------------------------------------
             _circuit = None
+            _turn_key = None
             _circuit_key = None
-            _circuit_unkeyed = False
-            if _gate.rejected:
-                try:
-                    from modules.agents import rejection_circuit
+            try:
+                from modules.agents import rejection_circuit
 
-                    _circuit_key = rejection_circuit.counter_key(session_id, task_info)
-                    if _circuit_key:
-                        # This rejection's own typed codes (empty in 3-case
-                        # mode, or whenever the gate produced none) -- handed
-                        # to the counter so the NEXT pass can read them back
-                        # as CircuitState.previous_codes for its own retry
-                        # notice. Same extraction _record_contract_rejection_defect
-                        # already uses for the event-log codes list.
-                        _current_codes = [
-                            str(a.get("code", ""))
-                            for a in _gate.anomalies
-                            if isinstance(a, dict) and a.get("code")
-                        ]
-                        _circuit = rejection_circuit.record_rejection(
-                            _circuit_key, codes=_current_codes,
-                        )
-                    else:
-                        # No per-dispatch identity -> no key that belongs to this
-                        # turn alone. Cutting on a shared key ends turns that
-                        # never failed, so the breaker stands down and says so.
-                        _circuit_unkeyed = True
+                # Resolved for EVERY verdict, not only a rejecting one: the
+                # accepted branch further down clears the counter, and building
+                # the key only while rejecting left that reset unreachable.
+                # Costless while every key was per-dispatch and not costless now
+                # that one can be shared between turns.
+                _turn_key = rejection_circuit.counter_key(session_id, task_info)
+                _circuit_key = _turn_key.key
+                if _gate.rejected:
+                    # This rejection's own typed codes (empty in 3-case
+                    # mode, or whenever the gate produced none) -- handed
+                    # to the counter so the NEXT pass can read them back
+                    # as CircuitState.previous_codes for its own retry
+                    # notice. Same extraction _record_contract_rejection_defect
+                    # already uses for the event-log codes list.
+                    _current_codes = [
+                        str(a.get("code", ""))
+                        for a in _gate.anomalies
+                        if isinstance(a, dict) and a.get("code")
+                    ]
+                    _circuit = rejection_circuit.record_rejection(
+                        _circuit_key,
+                        codes=_current_codes,
+                        shared=not _turn_key.per_turn,
+                    )
+                    if not _turn_key.per_turn:
                         logger.warning(
-                            "Rejection circuit: no harness agent_id for %s "
-                            "(session=%s), so this turn cannot be counted "
-                            "separately from any other; the ceiling is NOT in "
-                            "force for it.",
+                            "Rejection circuit: %s (session=%s) carried no "
+                            "per-dispatch identity, so it is counted under a "
+                            "ceiling shared with every other unidentified turn "
+                            "of this session.",
                             agent_type, session_id,
                         )
-                except Exception as _circuit_exc:
-                    logger.warning(
-                        "Rejection circuit failed for %s (non-fatal); the retry "
-                        "ceiling is NOT in force this turn: %s",
-                        agent_type, _circuit_exc,
-                    )
+            except Exception as _circuit_exc:
+                logger.warning(
+                    "Rejection circuit failed for %s (non-fatal); the retry "
+                    "ceiling is NOT in force this turn: %s",
+                    agent_type, _circuit_exc,
+                )
             # Resolved here, not at the verdict below: the episode write and the
             # anomaly append both happen earlier in this method and both have to
             # know the turn was cut.
@@ -3857,13 +3860,17 @@ class ClaudeCodeAdapter(HookAdapter):
             # reach the returned dict. A breaker that could not count is
             # recorded too: a turn running without the ceiling must not look
             # like a turn that simply never reached it.
-            if _circuit is not None or _circuit_unkeyed:
+            if _circuit is not None:
                 try:
                     from modules.agents import rejection_circuit
 
-                    if _circuit_unkeyed:
-                        anomalies.append(rejection_circuit.no_key_anomaly(agent_type))
-                    elif _circuit.tripped:
+                    if _turn_key is not None and not _turn_key.per_turn:
+                        anomalies.append(
+                            rejection_circuit.shared_ceiling_anomaly(
+                                agent_type, _circuit,
+                            )
+                        )
+                    if _circuit.tripped:
                         anomalies.append(
                             rejection_circuit.circuit_anomaly(agent_type, _circuit)
                         )
