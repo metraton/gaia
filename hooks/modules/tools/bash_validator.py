@@ -2038,6 +2038,9 @@ def _build_sealed_payload(
         three and the presented surface says so, rather than a claim about a
         reach or a reversibility the verdict did not determine.
 
+    risk_level seals 'medium' in production: no classifier reaching this
+    producer emits DESTRUCTIVE, so the 'high' arm goes live only if one starts.
+
     Args:
         command: The full Bash command string that was blocked (the primary /
             first command; used for ``exact_content`` and the singular display).

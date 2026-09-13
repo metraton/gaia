@@ -302,17 +302,18 @@ def _validate_from_handoff(contract: Optional[dict], task_info: Dict[str, Any]) 
                 all_missing.append(token)
 
     # approval_request.verification must be present (blocking).
-    # approval_request.rollback is advisory only (non-blocking): the hook
-    # hardcodes rollback_hint=None by design (bash_validator.py
-    # _build_sealed_payload), so a well-formed APPROVAL_REQUEST always
-    # relays rollback=null -- treating that as a blocking violation
+    # approval_request.rollback is advisory only (non-blocking) because the
+    # hook seals a rollback for only five verbs: bash_validator
+    # _STATEMENTS_BY_VERB carries push, apply, delete, destroy and create,
+    # and neither statement table carries a catch-all, so every other verb
+    # still relays rollback=null -- treating that as a blocking violation
     # produced ~600 of 678 recorded false-positive anomalies (AC-5).
     approval_req = contract.get("approval_request") if isinstance(contract, dict) else None
     if approval_req and isinstance(approval_req, dict):
         if not approval_req.get("rollback"):
             logger.warning(
-                "approval_request.rollback is null/missing (expected -- "
-                "the hook relays rollback_hint=None by design); advisory only, not blocking"
+                "approval_request.rollback is null/missing (expected for verbs "
+                "the hook authors no statement for); advisory only, not blocking"
             )
         if not approval_req.get("verification"):
             all_missing.append("APPROVAL_REQUEST_VERIFICATION_REQUIRED")

@@ -3,8 +3,7 @@ Tests for `--host all` across `gaia install` and `gaia dev`.
 
 Three properties, one file:
 
-  1. The default is untouched. `--host claude_code` (and no flag at all) wires
-     exactly what it wired before, in the same order, with the same output.
+  1. Standalone install still defaults to Claude Code; dev omission selects all.
   2. `--host all` runs the GLOBAL steps once and wires every supported host.
      The loop lives inside `cmd_install`, after the global steps, which is what
      makes run-once free rather than asserted.
@@ -25,6 +24,8 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 _ROOT = Path(__file__).resolve().parents[2]
 _BIN_DIR = _ROOT / "bin"
@@ -52,7 +53,48 @@ _CLAUDE_HELPERS = (
 _GLOBAL_STEPS = ("_run_bootstrap", "_seed_contract_permissions", "_seed_surface_routing")
 
 
-def _run_install(workspace, *, host, postinstall=False, failing=()):
+@pytest.fixture(autouse=True)
+def isolated_host_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
+    """Reject external runners and isolate all personal path fallbacks."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("GAIA_DB", str(tmp_path / "data" / "gaia.db"))
+    monkeypatch.setattr(install_mod.subprocess, "run",
+                        lambda *a, **k: pytest.fail("unexpected external runner"))
+
+
+@pytest.mark.parametrize("host", ["codex", "unknown", None])
+def test_internal_invalid_host_fails_before_bootstrap(host):
+    with patch.object(install_mod, "_run_bootstrap") as bootstrap:
+        assert install_mod.cmd_install(argparse.Namespace(host=host)) == 1
+    bootstrap.assert_not_called()
+    with pytest.raises(ValueError):
+        resolve_hosts(host)
+
+
+@pytest.mark.parametrize("register,name", [(register_dev, "dev"), (register_install, "install")])
+@pytest.mark.parametrize("host", ["codex", "unknown"])
+def test_both_parsers_reject_unknown_host(register, name, host):
+    parser = argparse.ArgumentParser()
+    register(parser.add_subparsers())
+    with pytest.raises(SystemExit):
+        parser.parse_args([name, "--host", host])
+
+
+def test_missing_install_host_defaults_claude_without_windows_persistence(tmp_path):
+    rc, calls, _, _ = _run_install(tmp_path, host=None, windows=True)
+    assert rc == 0
+    assert all(step in calls for step in _GLOBAL_STEPS)
+    assert "configure_opencode_plugin" not in calls
+    assert all(name in calls for name in _CLAUDE_HELPERS)
+    # --no-path suppresses machine-level launchers and Windows user environment,
+    # not the requested workspace bootstrap, seeds, or host wiring above.
+    assert "launcher" not in calls
+    assert "workspace_env" not in calls
+
+
+def _run_install(workspace, *, host="all", postinstall=False, failing=(), windows=False,
+                 strict=False, failure_action="error"):
     """Run `cmd_install` with every side effect mocked.
 
     Returns ``(rc, calls, stdout, stderr)`` where *calls* is the ordered trace
@@ -68,14 +110,17 @@ def _run_install(workspace, *, host, postinstall=False, failing=()):
         skip_workspace=False,
         no_path=True,
         host=host,
+        strict_wiring=strict,
     )
+    if host is None:
+        del ns.host
     calls = []
 
     def helper(name):
         def call(*_args, **_kwargs):
             calls.append(name)
             if name in failing:
-                return {"action": "error", "path": "x", "details": "boom"}
+                return {"action": failure_action, "path": "x", "details": "boom"}
             return {"action": "created", "path": "x", "details": "ok"}
 
         return call
@@ -99,7 +144,10 @@ def _run_install(workspace, *, host, postinstall=False, failing=()):
         patch.object(install_mod._install_helpers, "configure_opencode_plugin",
                      helper("configure_opencode_plugin")),
         patch.object(install_mod, "_clear_install_error_marker", lambda *a, **k: None),
-        patch.object(install_mod, "_is_windows", lambda: False),
+        patch.object(install_mod, "_is_windows", lambda: windows),
+        patch.object(install_mod, "_install_path_launcher", helper("launcher")),
+        patch.object(install_mod, "_persist_workspace_env", helper("workspace_env")),
+        patch.object(install_mod, "_write_install_error_marker", lambda *a, **k: None),
     ]
     patches += [
         patch.object(install_mod._install_helpers, name, helper(name))
@@ -127,6 +175,28 @@ class TestResolveHosts(unittest.TestCase):
         self.assertEqual(resolve_hosts("opencode"), ("opencode",))
 
 
+@pytest.mark.parametrize("step", [*_CLAUDE_HELPERS, "configure_opencode_plugin"])
+@pytest.mark.parametrize("action", ["error", "skipped"])
+def test_strict_wiring_propagates_each_helper_failure(tmp_path, step, action):
+    rc, calls, out, _ = _run_install(
+        tmp_path, host="all", strict=True, failing=(step,), failure_action=action,
+    )
+    assert rc == 1
+    assert step in calls
+    assert "Gaia ready" not in out
+    assert "launcher" not in calls
+    assert "workspace_env" not in calls
+    if step in _CLAUDE_HELPERS:
+        assert not any(name in calls for name in _CLAUDE_HELPERS[_CLAUDE_HELPERS.index(step) + 1:])
+
+
+def test_strict_wiring_does_not_fail_soft_for_postinstall(tmp_path):
+    rc, _, out, _ = _run_install(tmp_path, host="all", strict=True,
+                                 postinstall=True, failing=("configure_opencode_plugin",))
+    assert rc == 1
+    assert "Gaia ready" not in out
+
+
 class TestHostChoices(unittest.TestCase):
     def _parse(self, register, argv):
         parser = argparse.ArgumentParser()
@@ -143,8 +213,8 @@ class TestHostChoices(unittest.TestCase):
     def test_install_default_is_still_claude_code(self):
         self.assertEqual(self._parse(register_install, ["install"]).host, "claude_code")
 
-    def test_dev_default_is_still_claude_code(self):
-        self.assertEqual(self._parse(register_dev, ["dev"]).host, "claude_code")
+    def test_dev_default_is_all(self):
+        self.assertEqual(self._parse(register_dev, ["dev"]).host, "all")
 
     def test_both_parsers_offer_the_same_choices(self):
         """One tuple, not two: dev imports install's, so they cannot drift."""
@@ -166,9 +236,9 @@ class TestHostChoices(unittest.TestCase):
 
 
 class TestSingleHostIsUnchanged(unittest.TestCase):
-    """The default path must be indistinguishable from before the change."""
+    """Explicit single-host selection keeps its prior wiring behavior."""
 
-    def test_default_wires_only_claude_code(self):
+    def test_explicit_host_wires_only_claude_code(self):
         with tempfile.TemporaryDirectory() as tmp:
             rc, calls, out, _ = _run_install(Path(tmp), host="claude_code")
 

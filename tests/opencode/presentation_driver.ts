@@ -17,6 +17,7 @@ import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
 
 const scenario = JSON.parse(process.argv[2])
 const asked: Record<string, unknown>[] = []
+const controlPrompts: Record<string, unknown>[] = []
 
 async function gaiaBridge(event: Record<string, unknown>) {
   if (event.event === "identity.attest") {
@@ -42,7 +43,17 @@ async function gaiaBridge(event: Record<string, unknown>) {
 }
 
 const client = {
-  session: {},
+  session: {
+    async messages() {
+      return { data: [{ info: { role: "assistant", agent: "gaia-orchestrator" } }] }
+    },
+    async create({ body }: any) {
+      return { data: { id: `control-${scenario.callID}`, title: body.title } }
+    },
+    async promptAsync(request: Record<string, unknown>) {
+      controlPrompts.push(request)
+    },
+  },
 }
 
 const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
@@ -75,4 +86,4 @@ if (scenario.outcome === undefined || scenario.outcome === "pending" || scenario
   }
 }
 
-console.log(JSON.stringify({ asked, error, originalInvocationExecuted }))
+console.log(JSON.stringify({ asked, controlPrompts, error, originalInvocationExecuted }))

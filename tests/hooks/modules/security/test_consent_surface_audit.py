@@ -28,6 +28,7 @@ import itertools
 import json
 import sqlite3
 import sys
+from collections import UserDict
 from pathlib import Path
 
 import pytest
@@ -235,6 +236,44 @@ def _shown_event(store, approval_id: str, con) -> dict:
 # ---------------------------------------------------------------------------
 # Defect 1 -- a COMMAND_SET cannot be presented as fewer than N commands
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param(
+            {"command_set": ({"command": "first"}, {"command": "second"})},
+            id="tuple-command-set",
+        ),
+        pytest.param(
+            {"command_set": [UserDict(command="first"), UserDict(command="second")]},
+            id="mapping-not-dict-items",
+        ),
+        pytest.param({"commands": ("first", "second")}, id="tuple-commands"),
+        pytest.param({"exact_content": 42}, id="truthy-nonstr-exact-content"),
+        pytest.param(
+            {"command_set": [{"command": "first"}, {"command": "second"}]},
+            id="list-command-set",
+        ),
+        pytest.param({"exact_content": "first"}, id="singular-string"),
+        pytest.param({}, id="empty"),
+    ],
+)
+def test_payload_command_emptiness_domains_and_activation(payload):
+    """Both shipped readers agree on domain and nonempty inputs build an envelope."""
+    from adapters.consent_presentation import (
+        UNBOUND_PRESENTATION,
+        envelope_from_sealed_payload,
+        payload_commands as neutral_payload_commands,
+    )
+    from modules.security.approval_grants import payload_commands
+
+    commands = payload_commands(payload)
+    assert bool(commands) == bool(neutral_payload_commands(payload))
+    if commands:
+        envelope_from_sealed_payload(
+            payload, approval_id="P-domain-test", binding=UNBOUND_PRESENTATION
+        )
+
 
 class TestConsentSurfaceCompleteness:
     """The rendering guard: N covered commands means N shown commands."""

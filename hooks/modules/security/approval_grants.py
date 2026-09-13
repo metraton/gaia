@@ -418,37 +418,11 @@ _CONSENT_SURFACE_NO_COMMAND = (
 
 
 def payload_commands(payload: Dict[str, Any]) -> List[str]:
-    """Return every command the user must be shown for this payload, in order.
+    """Return the neutral presentation commands in order, preserving the list interface."""
+    # Import locally because adapters initialization reaches this module.
+    from adapters.consent_presentation import payload_commands as neutral_payload_commands
 
-    A ``command_set`` of more than one item is authoritative: those N commands
-    are what one consent covers, and ``exact_content`` is merely the singular
-    stand-in for the first of them (see ``activate_db_pending_by_id``).
-    Falls back to ``commands``, then to the single ``exact_content`` -- which
-    for a SCOPE_FILE_PATH pending is the blocked file path, not a command.
-    """
-    raw_set = payload.get("command_set")
-    if isinstance(raw_set, list):
-        from_set = [
-            item["command"]
-            for item in raw_set
-            if isinstance(item, dict) and item.get("command")
-        ]
-        if len(from_set) > 1:
-            return from_set
-
-    raw_commands = payload.get("commands")
-    from_list = (
-        [c for c in raw_commands if isinstance(c, str) and c]
-        if isinstance(raw_commands, list)
-        else []
-    )
-    if len(from_list) > 1:
-        return from_list
-
-    single = payload.get("exact_content") or ""
-    if single:
-        return [single]
-    return from_list
+    return list(neutral_payload_commands(payload))
 
 
 def render_consent_surface(

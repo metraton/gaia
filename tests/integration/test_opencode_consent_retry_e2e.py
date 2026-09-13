@@ -9,14 +9,11 @@ reached through Gaia's own pre/post tool policy. Nothing here hand-writes a
 payload under test.
 
 WHAT IS NOT PROVEN, stated because the gate this file answers asks for it and a
-test cannot supply it: no OpenCode host runs in this suite, so the second
-invocation carrying the first invocation's ``session_id``/``call_id`` is issued
-by the driver, not observed being issued by OpenCode. What is established is
-that the plugin plus Gaia treat such an invocation as one continuous consent --
-identical bytes, identical fingerprint, one reservation index. That OpenCode
-DELIVERS it is a fact about OpenCode's runtime; see
-``test_plugin_aborts_instead_of_awaiting_the_host_deferred``, which records the
-plugin-side reason it currently would not.
+test cannot supply it: no OpenCode host runs in this suite, so the original and
+fresh retry invocations are issued by the driver, not observed being issued by
+OpenCode. What is established is that the plugin plus Gaia require a new call
+identity with identical command bytes and fingerprint, then reserve and settle
+exactly one bound grant index.
 """
 
 from __future__ import annotations
@@ -25,7 +22,6 @@ import json
 import sqlite3
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -44,6 +40,7 @@ ROOT_SESSION_ID = "ses-t5-root"
 DISPATCH_CALL_ID = "call-t5-dispatch"
 SESSION_ID = "ses-t5-retry"
 CALL_ID = "call-t5-retry"
+RETRY_CALL_ID = "call-t5-retry-fresh"
 LATER_CALL_ID = "call-t5-later"
 PERMISSION_ID = "perm-t5-retry"
 AGENT_ID = "gaia-system"
@@ -231,6 +228,20 @@ def _grant(db_path, approval_id):
     return dict(row) if row is not None else None
 
 
+def _approval_status(db_path, approval_id):
+    with sqlite3.connect(db_path) as con:
+        return con.execute(
+            "SELECT status FROM approvals WHERE id=?", (approval_id,)
+        ).fetchone()[0]
+
+
+def _row_count(db_path, table):
+    if table not in {"approvals", "approval_grants"}:
+        raise ValueError(f"unsupported table: {table}")
+    with sqlite3.connect(db_path) as con:
+        return con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
 def _tool_exchanges(driven, event="tool.execute.before", tool="bash"):
     """The bridge exchanges for one tool, in the order the plugin sent them.
 
@@ -250,13 +261,122 @@ def _step(driven, label):
     return matched[0]
 
 
-def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db_env):
-    """The whole chain, on one session/call binding, through the real plugin.
+def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
 
-    The retry is the same identity as the blocked attempt and carries the same
-    bytes; the reservation is the exact index; the failure freezes the set; and
-    the freeze is asserted as the grant's terminal state, not merely as an
-    index that happened not to run in this test.
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+    ])
+
+    assert _step(driven, "blocked")["allowed"] is False, driven
+    decision = _step(driven, "approve")
+    assert decision["allowed"] is True, driven
+    assert decision["controlSessionID"].startswith("control-")
+    question = decision["question"]
+    visible = question["question"]
+    assert approval_id in visible
+    assert "DECISION:" in visible and "correlation C-" in visible
+    for command in (FIRST_COMMAND, SECOND_COMMAND):
+        assert command in visible
+    assert [option["label"] for option in question["options"]] == [
+        f"Approve once [{approval_id}]",
+        f"Reject [{approval_id}]",
+    ]
+    prompt = driven["controlPrompts"][0]["body"]
+    assert prompt["tools"] == {"*": False, "question": True}
+    assert _approval_status(db_path, approval_id) == "approved"
+    grant = _grant(db_path, approval_id)
+    assert grant is not None
+    assert grant["agent_id"] == AGENT_ID
+    assert grant["session_id"] == SESSION_ID
+    assert grant["status"] == "PENDING"
+    assert grant["next_index"] == 0
+    assert grant["reservation_tool_use_id"] is None
+    assert _row_count(db_path, "approval_grants") == 1
+
+
+@pytest.mark.parametrize(
+    ("steps", "expected_status"),
+    [
+        ([{"kind": "control-decision", "label": "decision", "answer": "reject"}], "rejected"),
+        ([{"kind": "control-decision", "label": "decision", "answer": "Approve"}], "pending"),
+        ([{"kind": "control-decision", "label": "decision", "answers": []}], "pending"),
+        ([{
+            "kind": "replied",
+            "label": "decision",
+            "requestID": PERMISSION_ID,
+            "reply": "always",
+        }], "pending"),
+        ([], "pending"),
+    ],
+    ids=["reject", "free-text", "malformed", "autoapproval", "no-decision"],
+)
+def test_non_yes_decisions_create_no_executable_effect(db_env, steps, expected_status):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [_before("blocked", FIRST_COMMAND), *steps])
+
+    assert _step(driven, "blocked")["allowed"] is False, driven
+    assert _approval_status(db_path, approval_id) == expected_status
+    assert _grant(db_path, approval_id) is None
+    assert _row_count(db_path, "approval_grants") == 0
+    assert _row_count(db_path, "approvals") == 1
+
+
+def test_drift_after_yes_is_refused_before_policy_and_changes_no_state(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+    drifted = FIRST_COMMAND + " "
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+        _before("drifted", drifted, call_id=RETRY_CALL_ID),
+    ])
+
+    assert _step(driven, "drifted")["allowed"] is False, driven
+    assert "drifted or replayed" in _step(driven, "drifted")["error"]
+    assert len(_tool_exchanges(driven)) == 1
+    grant = _grant(db_path, approval_id)
+    assert grant["status"] == "PENDING"
+    assert grant["next_index"] == 0
+    assert grant["reservation_tool_use_id"] is None
+    assert _row_count(db_path, "approval_grants") == 1
+    assert _row_count(db_path, "approvals") == 1
+
+
+def test_replayed_retry_is_refused_before_a_second_policy_effect(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+        _before("retry", FIRST_COMMAND, call_id=RETRY_CALL_ID),
+        _before("replay", FIRST_COMMAND, call_id=RETRY_CALL_ID),
+    ])
+
+    assert _step(driven, "retry")["allowed"] is True, driven
+    assert _step(driven, "replay")["allowed"] is False, driven
+    assert "drifted or replayed" in _step(driven, "replay")["error"]
+    assert len(_tool_exchanges(driven)) == 2
+    grant = _grant(db_path, approval_id)
+    assert grant["status"] == "PENDING"
+    assert grant["next_index"] == 0
+    assert grant["reservation_tool_use_id"] == RETRY_CALL_ID
+    assert _row_count(db_path, "approval_grants") == 1
+    assert _row_count(db_path, "approvals") == 1
+
+
+def test_fresh_bound_retry_reserves_exact_index_executes_settles_and_freezes(db_env):
+    """The whole chain, from the original call to one fresh bound retry.
+
+    The retry keeps the agent/session/approval identity and exact command bytes
+    while using a fresh call id; the reservation is the exact index; the failure
+    freezes the set; and the freeze is asserted as the grant's terminal state.
     """
     env, db_path = db_env
     approval_id = _request_set(env)
@@ -264,46 +384,33 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
 
     # Attempt BEFORE any reply exists: no executable grant, so the tool call is
     # refused. This is the invocation the retry must later match identically.
-    blocked = _drive(env, [_before("pre-approval", FIRST_COMMAND)])
-    first_attempt = _step(blocked, "pre-approval")
-    assert first_attempt["allowed"] is False, blocked
-    first_exchange = _tool_exchanges(blocked)[0]
-    assert _grant(db_path, approval_id) is None
-
-    # The user's reply, applied through the same CLI the plugin's
-    # permission.replied lane invokes (see the reply-lane test below).
-    decision = _approve_set(env, approval_id)
-    assert decision["decision"] == "once"
-    assert decision["status"] == "approved"
-    assert decision["protocol_version"]
-    grant = _grant(db_path, approval_id)
-    assert grant is not None and grant["status"] == "PENDING"
-    assert grant["scope"] == "COMMAND_SET" and grant["source"] == "plan-first"
-
-    # The retry: same session, same call, same command bytes.
-    retried = _drive(
+    driven = _drive(
         env,
         [
-            _before("retry", FIRST_COMMAND),
+            _before("pre-approval", FIRST_COMMAND),
+            {"kind": "control-decision", "label": "approve", "answer": "approve"},
+            _before("retry", FIRST_COMMAND, call_id=RETRY_CALL_ID),
             {
                 "kind": "after", "label": "settle", "sessionID": SESSION_ID,
-                "callID": CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
+                "callID": RETRY_CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
                 "output": "fatal: remote rejected", "metadata": {"exitCode": 7},
             },
             _before("later-index", SECOND_COMMAND, call_id=LATER_CALL_ID),
         ],
     )
-    retry_step = _step(retried, "retry")
-    assert retry_step["allowed"] is True, retried
-    retry_exchange = _tool_exchanges(retried)[0]
+    first_attempt = _step(driven, "pre-approval")
+    assert first_attempt["allowed"] is False, driven
+    assert _step(driven, "approve")["allowed"] is True, driven
+    retry_step = _step(driven, "retry")
+    assert retry_step["allowed"] is True, driven
+    first_exchange, retry_exchange = _tool_exchanges(driven)[:2]
 
-    # Same binding, byte-identical input, identical fingerprint.
+    # Fresh call, same bound identity, byte-identical input and fingerprint.
     assert retry_exchange["sent"]["sessionID"] == first_exchange["sent"]["sessionID"] == SESSION_ID
-    assert retry_exchange["sent"]["callID"] == first_exchange["sent"]["callID"] == CALL_ID
+    assert first_exchange["sent"]["callID"] == CALL_ID
+    assert retry_exchange["sent"]["callID"] == RETRY_CALL_ID
     assert retry_exchange["sentArgsJSON"] == first_exchange["sentArgsJSON"]
     assert json.loads(retry_exchange["sentArgsJSON"])["command"] == FIRST_COMMAND
-    # The binding, pinned literally, so a reader sees the two invocations are
-    # one identity rather than taking the equality assertions above on trust.
     def _observed(exchange):
         command = json.loads(exchange["sentArgsJSON"])["command"]
         return {
@@ -313,14 +420,37 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
             "fingerprint": command_fingerprint(command),
         }
 
-    expected_binding = {
+    assert _observed(first_exchange) == {
         "session_id": SESSION_ID,
         "call_id": CALL_ID,
         "args": '{"command":"' + FIRST_COMMAND + '"}',
         "fingerprint": FIRST_FINGERPRINT,
     }
-    assert _observed(first_exchange) == expected_binding
-    assert _observed(retry_exchange) == expected_binding
+    assert _observed(retry_exchange) == {
+        "session_id": SESSION_ID,
+        "call_id": RETRY_CALL_ID,
+        "args": '{"command":"' + FIRST_COMMAND + '"}',
+        "fingerprint": FIRST_FINGERPRINT,
+    }
+    proof = retry_exchange["sent"]["consentRetry"]
+    assert proof == {
+        "approval_id": approval_id,
+        "correlation_id": (
+            driven["permissionAsks"][0]["permission"]["metadata"]
+            ["gaiaConsent"]["correlation_id"]
+        ),
+        "agent_id": AGENT_ID,
+        "session_id": SESSION_ID,
+        "original_call_id": CALL_ID,
+        "retry_call_id": RETRY_CALL_ID,
+        "command": FIRST_COMMAND,
+        "command_fingerprint": FIRST_FINGERPRINT,
+        "expected_index": 0,
+    }
+
+    grant = _grant(db_path, approval_id)
+    assert grant is not None and grant["scope"] == "COMMAND_SET"
+    assert grant["source"] == "plan-first"
 
     items = json.loads(grant["command_set_json"])
     assert items[0]["fingerprint"] == command_fingerprint(FIRST_COMMAND)
@@ -337,7 +467,7 @@ def test_same_binding_retry_reserves_exact_index_executes_settles_and_freezes(db
     # Zero later executions -- refused at the tool boundary AND unreachable in
     # the store, which is the terminal claim: no index after the failed one can
     # ever run under this grant, by any route.
-    assert _step(retried, "later-index")["allowed"] is False, retried
+    assert _step(driven, "later-index")["allowed"] is False, driven
     from gaia.store import writer
 
     assert writer.reserve_plan_command(
@@ -354,14 +484,16 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
     """A different call cannot settle the reservation the retry established."""
     env, db_path = db_env
     approval_id = _request_set(env)
-    _approve_set(env, approval_id)
-
-    driven = _drive(env, [_before("retry", FIRST_COMMAND)])
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+        _before("retry", FIRST_COMMAND, call_id=RETRY_CALL_ID),
+    ])
     assert _step(driven, "retry")["allowed"] is True, driven
     reserved = _grant(db_path, approval_id)
     assert reserved["reservation_index"] == 0
     assert reserved["reservation_session_id"] == SESSION_ID
-    assert reserved["reservation_tool_use_id"] == CALL_ID
+    assert reserved["reservation_tool_use_id"] == RETRY_CALL_ID
 
     from gaia.store import writer
 
@@ -374,7 +506,7 @@ def test_reservation_is_bound_to_the_retrying_call_not_merely_to_the_command(db_
     # reservation still belongs to the call that took it.
     assert _grant(db_path, approval_id) == reserved
     assert writer.settle_plan_command(
-        approval_id, session_id=SESSION_ID, tool_use_id=CALL_ID,
+        approval_id, session_id=SESSION_ID, tool_use_id=RETRY_CALL_ID,
         success=True, db_path=db_path,
     ) is True
 
@@ -534,40 +666,39 @@ def test_plugin_delegates_the_permission_request_to_the_host_hook():
     assert "await requestApproval(response, call.sessionID, call.callID)\n        throw new Error" in source
 
 
-def test_overlapping_same_binding_workspaces_settle_independently(tmp_path, bootstrapped_db_template):
+def test_overlapping_bound_workspaces_settle_independently(tmp_path, bootstrapped_db_template):
     """Keep two identical call reservations outstanding, then settle opposite outcomes."""
     contexts = [
         _isolated_env(tmp_path / name, bootstrapped_db_template)
         for name in ("success", "failure")
     ]
     approvals = []
+    reserved = []
     for env, db in contexts:
         approval = _request_set(env, (FIRST_COMMAND,))
-        _approve_set(env, approval)
         approvals.append(approval)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        reserved = list(pool.map(
-            lambda context: _drive(context[0], [_before("reserve", FIRST_COMMAND)]),
-            contexts,
-        ))
+        reserved.append(_drive(env, [
+            _before("blocked", FIRST_COMMAND),
+            {"kind": "control-decision", "label": "approve", "answer": "approve"},
+            _before("reserve", FIRST_COMMAND, call_id=RETRY_CALL_ID),
+        ]))
     for (env, db), approval, driven in zip(contexts, approvals, reserved):
         assert _step(driven, "reserve")["allowed"] is True
         grant = _grant(db, approval)
         assert grant["reservation_session_id"] == SESSION_ID
-        assert grant["reservation_tool_use_id"] == CALL_ID
+        assert grant["reservation_tool_use_id"] == RETRY_CALL_ID
         assert _grant(db, approvals[1 - approvals.index(approval)]) is None
 
     from modules.core.state import STATE_DIR_NAME
 
     state_paths = [Path(env["WORKSPACE"]) / ".claude" / STATE_DIR_NAME
-                   / f"{SESSION_ID}__{CALL_ID}.json" for env, _ in contexts]
+                    / f"{SESSION_ID}__{RETRY_CALL_ID}.json" for env, _ in contexts]
     snapshots = [path.read_bytes() for path in state_paths]
     assert state_paths[0] != state_paths[1]
     for index, ((env, db), approval) in enumerate(zip(contexts, approvals)):
         driven = _drive(env, [{
             "kind": "after", "label": "settle", "sessionID": SESSION_ID,
-            "callID": CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
+            "callID": RETRY_CALL_ID, "tool": "bash", "command": FIRST_COMMAND,
             "output": "success" if index == 0 else "fatal: rejected",
             "metadata": {"exitCode": 0 if index == 0 else 7},
         }])
@@ -578,5 +709,5 @@ def test_overlapping_same_binding_workspaces_settle_independently(tmp_path, boot
         assert grant["reservation_tool_use_id"] is None
         if index == 0:
             assert state_paths[1].read_bytes() == snapshots[1]
-            assert _grant(contexts[1][1], approvals[1])["reservation_tool_use_id"] == CALL_ID
+            assert _grant(contexts[1][1], approvals[1])["reservation_tool_use_id"] == RETRY_CALL_ID
     assert _grant(contexts[0][1], approvals[0])["status"] == "CONSUMED"

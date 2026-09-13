@@ -23,6 +23,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
@@ -35,7 +37,6 @@ from cli.dev import (  # noqa: E402
     detect_package_manager,
     install_tarball,
     wire_workspace_via_installed_gaia,
-    link_source_into_workspace,
     content_address_tarball,
     prune_sibling_tarballs,
     rewrite_workspace_dep_spec,
@@ -44,14 +45,257 @@ from cli.dev import (  # noqa: E402
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def isolated_provenance(monkeypatch):
+    """Keep mocked install tests independent of the separately exercised recorder."""
+    monkeypatch.setattr(dev_mod.install_provenance, "capture_source", lambda *a, **k: {})
+    monkeypatch.setattr(dev_mod.install_provenance, "record_install", lambda *a, **k: None)
+
+
+@pytest.fixture
+def isolated_dev_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
+    """Keep policy tests off personal state and reject unmocked runners."""
+    from gaia import project
+
+    monkeypatch.setattr(project, "git_common_dir", lambda *a, **k: None)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("GAIA_DB", str(tmp_path / "data" / "gaia.db"))
+    monkeypatch.setattr(dev_mod.subprocess, "run", lambda *a, **k: pytest.fail("unexpected external runner"))
+    monkeypatch.setattr(dev_mod, "record_dev_build", lambda *a: None)
+    monkeypatch.setattr(dev_mod, "_print_convergence_report", lambda *a, **k: {})
+    monkeypatch.setattr(dev_mod, "rewrite_workspace_dep_spec", lambda *a: {
+        "action": "noop", "path": "package.json", "details": "mock spec matches",
+    })
+    monkeypatch.setattr(dev_mod.install_mod, "reconcile_global_via_npm_link",
+                        lambda *a, **k: pytest.fail("unexpected global npm link"))
+
+
 def _npm_available() -> bool:
     import shutil
     return shutil.which("npm") is not None
 
 
+@pytest.mark.usefixtures("isolated_dev_policy")
+class TestSimpleDevPolicy:
+    @pytest.mark.parametrize("host", ["codex", "unknown"])
+    def test_internal_helpers_validate_host_before_effects(self, tmp_path, host):
+        with patch.object(dev_mod, "install_source_link") as link, \
+             patch.object(dev_mod._pack_helpers, "pack_tarball") as pack:
+            with pytest.raises(ValueError):
+                dev_mod._run_link_mode(tmp_path, quiet=True, verbose=False, host=host)
+            with pytest.raises(ValueError):
+                dev_mod._run_pack_mode(tmp_path, quiet=True, verbose=False,
+                                       host=host, keep_tarball=False, pack_dest=None)
+            with pytest.raises(ValueError):
+                wire_workspace_via_installed_gaia(tmp_path, host=host)
+        link.assert_not_called()
+        pack.assert_not_called()
+
+    @pytest.mark.parametrize("flags,mode,rc", [
+        ([], "pack", 0),
+        (["--mode", "pack"], "pack", 0),
+        (["--mode", "link"], "link", 0),
+        (["--link"], "link", 0),
+        (["--link", "--mode", "link"], "link", 0),
+        (["--mode", "link", "--link"], "link", 0),
+        (["--link", "--mode", "pack"], None, 1),
+        (["--mode", "pack", "--link"], None, 1),
+    ])
+    def test_mode_matrix(self, tmp_path, flags, mode, rc):
+        parser = argparse.ArgumentParser()
+        register(parser.add_subparsers())
+        args = parser.parse_args(["dev", "--workspace", str(tmp_path), *flags])
+        with patch.object(dev_mod, "_run_pack_mode", return_value=0) as pack, \
+             patch.object(dev_mod, "_run_link_mode", return_value=0) as link:
+            assert cmd_dev(args) == rc
+        assert pack.call_count == (mode == "pack")
+        assert link.call_count == (mode == "link")
+        if mode:
+            assert (pack if mode == "pack" else link).call_args.kwargs["host"] == "all"
+
+    @pytest.mark.parametrize("overrides", [
+        {"mode": "bogus"}, {"host": "codex"}, {"host": "unknown"},
+        {"host": None}, {"mode": "pack", "link": True},
+    ])
+    def test_internal_invalid_options_have_no_effects(self, tmp_path, overrides):
+        args = argparse.Namespace(workspace=str(tmp_path), **overrides)
+        with patch.object(dev_mod, "_run_pack_mode") as pack, \
+             patch.object(dev_mod, "_run_link_mode") as link:
+            assert cmd_dev(args) == 1
+        pack.assert_not_called()
+        link.assert_not_called()
+
+    @pytest.mark.parametrize("kind", ["missing", "file"])
+    def test_workspace_validation_precedes_modes(self, tmp_path, kind):
+        target = tmp_path / kind
+        if kind == "file":
+            target.write_text("sentinel")
+        for mode in ("pack", "link"):
+            with patch.object(dev_mod, "_run_pack_mode") as pack, \
+                 patch.object(dev_mod, "_run_link_mode") as link:
+                assert cmd_dev(argparse.Namespace(workspace=str(target), mode=mode)) == 1
+            pack.assert_not_called()
+            link.assert_not_called()
+
+    @pytest.mark.parametrize("host", ["claude_code", "opencode"])
+    def test_explicit_host_and_workspace_fallback(self, tmp_path, monkeypatch, host):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("INIT_CWD", raising=False)
+        for use_init in (False, True):
+            target = tmp_path
+            if use_init:
+                target = tmp_path / "init"
+                target.mkdir()
+                monkeypatch.setenv("INIT_CWD", str(target))
+            with patch.object(dev_mod, "_run_pack_mode", return_value=0) as pack:
+                assert cmd_dev(argparse.Namespace(host=host)) == 0
+            assert pack.call_args.args[0] == target
+            assert pack.call_args.kwargs["host"] == host
+
+    @pytest.mark.parametrize("action", ["skipped", "error"])
+    def test_required_link_failure_never_wires(self, tmp_path, action, capsys):
+        with patch.object(dev_mod, "install_source_link", return_value={
+            "action": action, "path": "x", "details": "unsupported switch",
+        }), patch.object(dev_mod.install_mod, "cmd_install") as wire:
+            assert cmd_dev(argparse.Namespace(workspace=str(tmp_path), link=True)) == 1
+        wire.assert_not_called()
+        assert "Restart" not in capsys.readouterr().out
+
 # ---------------------------------------------------------------------------
 # register() / argparse
 # ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("isolated_dev_policy")
+class TestRecoveryPrerequisites:
+    @pytest.mark.parametrize("pm", ["npm", "pnpm"])
+    def test_anchor_failure_stops_package_manager(self, tmp_path, pm):
+        with patch.object(dev_mod.subprocess, "run", return_value=
+                          subprocess.CompletedProcess([], 2, "", "init failed")) as runner:
+            res = install_tarball(tmp_path, tmp_path / "pkg.tgz", package_manager=pm)
+        assert res["action"] == "error"
+        assert runner.call_count == 1
+        assert runner.call_args.args[0] == ["npm", "init", "-y"]
+
+    @pytest.mark.parametrize("pm", ["npm", "pnpm"])
+    def test_runner_failure_is_not_reported_as_recovery(self, tmp_path, pm):
+        manifest = tmp_path / "package.json"
+        manifest.write_text('{"dependencies":{"foreign":"1"}}')
+        lock = tmp_path / ("pnpm-lock.yaml" if pm == "pnpm" else "package-lock.json")
+        lock.write_text("old lock")
+
+        def failed_runner(command, **kwargs):
+            assert command[0] == pm
+            assert Path(kwargs["cwd"]) == tmp_path
+            lock.write_text("package manager partial effect")
+            return subprocess.CompletedProcess(command, 1, "", "injected failure")
+
+        with patch.object(dev_mod.subprocess, "run", side_effect=failed_runner):
+            res = install_tarball(tmp_path, tmp_path / "pkg.tgz", package_manager=pm)
+        assert res["action"] == "error"
+        assert manifest.read_text() == '{"dependencies":{"foreign":"1"}}'
+        assert lock.read_text() == "package manager partial effect"
+
+    def test_fresh_pack_attempt_cannot_overwrite_foreign_basename(self, tmp_path):
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        custom = tmp_path / "custom"
+        custom.mkdir()
+        foreign = custom / "jaguilar87-gaia-1.tgz"
+        foreign.write_bytes(b"foreign")
+
+        def pack(source, dest_dir):
+            assert dest_dir.parent == custom
+            assert dest_dir != custom
+            output = dest_dir / foreign.name
+            output.write_bytes(b"new")
+            return {"action": "created", "path": str(output), "details": "mock",
+                    "tarball": output, "name": "gaia", "version": "1"}
+
+        with patch.object(dev_mod._pack_helpers, "pack_tarball", side_effect=pack), \
+             patch.object(dev_mod, "install_tarball", return_value={
+                 "action": "error", "path": "x", "details": "injected",
+             }):
+            assert cmd_dev(argparse.Namespace(workspace=str(workspace), pack_dest=str(custom))) == 1
+        assert foreign.read_bytes() == b"foreign"
+        assert len(list(custom.glob("attempt-*/*.tgz"))) == 1
+
+    @pytest.mark.parametrize("kind", ["npm-directory", "source-link", "pnpm-store-link", "broken-link"])
+    def test_existing_package_requires_provenance_before_pack(self, tmp_path, kind):
+        package = tmp_path / "node_modules" / "@jaguilar87" / "gaia"
+        package.parent.mkdir(parents=True)
+        if kind == "npm-directory":
+            package.mkdir()
+            (package / "package.json").write_text('{"name":"@jaguilar87/gaia"}')
+        else:
+            source = tmp_path / ("node_modules/.pnpm/gaia/node_modules/@jaguilar87/gaia"
+                                 if kind == "pnpm-store-link" else "source")
+            if kind != "broken-link":
+                source.mkdir(parents=True)
+            package.symlink_to(source)
+        manifest = tmp_path / "package.json"
+        manifest.write_text('{"dependencies":{"foreign":"1"}}')
+        lock = tmp_path / "pnpm-lock.yaml"
+        lock.write_text("foreign lock sentinel")
+        with patch.object(dev_mod._pack_helpers, "pack_tarball") as pack, \
+             patch.object(dev_mod, "install_tarball") as install, \
+             patch.object(dev_mod, "wire_workspace_via_installed_gaia") as wire:
+            assert cmd_dev(argparse.Namespace(workspace=str(tmp_path))) == 1
+        pack.assert_not_called()
+        install.assert_not_called()
+        wire.assert_not_called()
+        assert package.exists() or package.is_symlink()
+        assert manifest.read_text() == '{"dependencies":{"foreign":"1"}}'
+        assert lock.read_text() == "foreign lock sentinel"
+
+    @pytest.mark.parametrize("pm", ["npm", "pnpm"])
+    @pytest.mark.parametrize("stage", ["install", "spec", "wire"])
+    @pytest.mark.parametrize("action", ["skipped", "error"])
+    def test_failed_stage_retains_artifacts_without_success(self, tmp_path, pm, stage, action, capsys):
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        dest = tmp_path / "custom-pack"
+        dest.mkdir()
+        old = dest / "jaguilar87-gaia-previous.tgz"
+        foreign = dest / "foreign.tgz"
+        old.write_bytes(b"rollback package")
+        foreign.write_bytes(b"foreign package")
+        tarball = dest / "new.tgz"
+        tarball.write_bytes(b"new package")
+        calls = []
+
+        def result(name):
+            def run(*args, **kwargs):
+                calls.append(name)
+                return {"action": action if stage == name else "created",
+                        "path": "x", "details": name, "package_manager": pm}
+            return run
+
+        with patch.object(dev_mod._pack_helpers, "pack_tarball", return_value={
+            "action": "created", "path": str(tarball), "details": "mock pack",
+            "tarball": tarball, "name": "@jaguilar87/gaia", "version": "1",
+        }), patch.object(dev_mod, "install_tarball", side_effect=result("install")), \
+             patch.object(dev_mod, "rewrite_workspace_dep_spec", side_effect=result("spec")), \
+             patch.object(dev_mod, "wire_workspace_via_installed_gaia", side_effect=result("wire")), \
+             patch.object(dev_mod, "record_dev_build") as build:
+            assert cmd_dev(argparse.Namespace(workspace=str(workspace), pack_dest=str(dest))) == 1
+        assert calls == ["install", "spec", "wire"][:["install", "spec", "wire"].index(stage) + 1]
+        assert old.read_bytes() == b"rollback package"
+        assert foreign.read_bytes() == b"foreign package"
+        build.assert_not_called()
+        assert "Restart" not in capsys.readouterr().out
+
+    def test_cleanup_retains_foreign_symlink_and_rollback_artifact(self, tmp_path):
+        keep = tmp_path / "new.tgz"
+        old = tmp_path / "gaia-old.tgz"
+        foreign = tmp_path / "foreign.tgz"
+        keep.write_bytes(b"new")
+        old.write_bytes(b"old")
+        foreign.symlink_to(old)
+        assert prune_sibling_tarballs(keep) == []
+        assert old.read_bytes() == b"old"
+        assert foreign.is_symlink()
+
 
 class TestRegisterSubcommand(unittest.TestCase):
     def test_register_creates_dev_parser(self):
@@ -60,7 +304,8 @@ class TestRegisterSubcommand(unittest.TestCase):
         register(subparsers)
         args = parser.parse_args(["dev"])
         self.assertEqual(args.subcommand, "dev")
-        self.assertEqual(args.mode, "pack")  # default
+        self.assertIsNone(args.mode)
+        self.assertEqual(args.host, "all")
 
     def test_mode_link_flag(self):
         parser = argparse.ArgumentParser()
@@ -314,6 +559,9 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
             self.assertIn("--workspace", captured["cmd"])
             self.assertIn(str(workspace), captured["cmd"])
             self.assertIn("--quiet", captured["cmd"])
+            self.assertIn("--no-path", captured["cmd"])
+            self.assertIn("--strict-wiring", captured["cmd"])
+            self.assertEqual(captured["cmd"][captured["cmd"].index("--host") + 1], "all")
 
     def test_nonzero_exit_returns_error(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -330,68 +578,6 @@ class TestWireWorkspaceViaInstalledGaia(unittest.TestCase):
 
             self.assertEqual(res["action"], "error")
             self.assertIn("boom", res["details"])
-
-
-# ---------------------------------------------------------------------------
-# link_source_into_workspace (real filesystem, no subprocess)
-# ---------------------------------------------------------------------------
-
-class TestLinkSourceIntoWorkspace(unittest.TestCase):
-    def test_creates_symlink_to_source(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "ws"
-            workspace.mkdir()
-            source = Path(tmp) / "source"
-            source.mkdir()
-
-            res = link_source_into_workspace(workspace, source)
-
-            target = workspace / "node_modules" / "@jaguilar87" / "gaia"
-            self.assertEqual(res["action"], "created")
-            self.assertTrue(target.is_symlink())
-            self.assertEqual(target.resolve(), source.resolve())
-
-    def test_idempotent_when_already_linked(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "ws"
-            workspace.mkdir()
-            source = Path(tmp) / "source"
-            source.mkdir()
-
-            link_source_into_workspace(workspace, source)
-            res2 = link_source_into_workspace(workspace, source)
-
-            self.assertEqual(res2["action"], "noop")
-
-    def test_relinks_when_pointing_elsewhere(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "ws"
-            workspace.mkdir()
-            old_source = Path(tmp) / "old-source"
-            old_source.mkdir()
-            new_source = Path(tmp) / "new-source"
-            new_source.mkdir()
-
-            link_source_into_workspace(workspace, old_source)
-            res2 = link_source_into_workspace(workspace, new_source)
-
-            target = workspace / "node_modules" / "@jaguilar87" / "gaia"
-            self.assertEqual(res2["action"], "created")
-            self.assertEqual(target.resolve(), new_source.resolve())
-
-    def test_refuses_to_clobber_real_directory(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "ws"
-            source = Path(tmp) / "source"
-            source.mkdir()
-            target = workspace / "node_modules" / "@jaguilar87" / "gaia"
-            target.mkdir(parents=True)
-            (target / "package.json").write_text("{}")
-
-            res = link_source_into_workspace(workspace, source)
-
-            self.assertEqual(res["action"], "skipped")
-            self.assertTrue((target / "package.json").exists())
 
 
 # ---------------------------------------------------------------------------
@@ -442,6 +628,8 @@ class TestCmdDevRefusesNonSourceCheckout(unittest.TestCase):
                 "tarball": fake_tarball, "name": "@jaguilar87/gaia", "version": "9.9.9",
             }), patch("cli.dev.install_tarball", return_value={
                 "action": "created", "path": str(workspace), "details": "ok", "package_manager": "npm",
+            }), patch("cli.dev.rewrite_workspace_dep_spec", return_value={
+                "action": "noop", "path": "package.json", "details": "mock manager saved spec",
             }), patch("cli.dev.wire_workspace_via_installed_gaia", return_value={
                 "action": "created", "path": str(workspace), "details": "ok",
             }):
@@ -455,6 +643,7 @@ class TestCmdDevRefusesNonSourceCheckout(unittest.TestCase):
 # cmd_dev orchestration (mocked pack/install/wire steps)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("isolated_dev_policy")
 class TestCmdDevOrchestrationPackMode(unittest.TestCase):
     """Every test here pins GAIA_DATA_DIR to an isolated tmp dir in setUp:
     the default (pack_dest=None) path now resolves through
@@ -467,7 +656,11 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
         self._data_dir_ctx = tempfile.TemporaryDirectory()
         self._gaia_data_dir = Path(self._data_dir_ctx.name) / "gaia-data"
         self._gaia_data_dir.mkdir()
-        self._env_patcher = patch.dict(os.environ, {"GAIA_DATA_DIR": str(self._gaia_data_dir)})
+        self._env_patcher = patch.dict(os.environ, {
+            "HOME": self._data_dir_ctx.name,
+            "GAIA_DATA_DIR": str(self._gaia_data_dir),
+            "GAIA_DB": str(self._gaia_data_dir / "gaia.db"),
+        })
         self._env_patcher.start()
 
     def tearDown(self):
@@ -482,9 +675,6 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
         ns.verbose = overrides.get("verbose", False)
         ns.keep_tarball = overrides.get("keep_tarball", False)
         ns.pack_dest = overrides.get("pack_dest", None)
-        # Default OFF in these orchestration tests so they never invoke a real
-        # `npm link` against the machine's global store. The reconcile-ON default
-        # path is covered by TestGlobalNpmLinkReconcile below (runner mocked).
         ns.no_global_link = overrides.get("no_global_link", True)
         return ns
 
@@ -610,7 +800,7 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             # renames it in place before install), so assert the dest dir
             # still holds a tarball rather than the pre-rename filename.
             self.assertTrue(any(captured["dest_dir"].glob("*.tgz")))
-            self.assertEqual(captured["dest_dir"], default_pack_dest(workspace))
+            self.assertEqual(captured["dest_dir"].parent, default_pack_dest(workspace))
 
     def test_second_consecutive_pack_run_succeeds_no_enoent(self):
         # Regression test for the incident: a fresh tempfile.TemporaryDirectory()
@@ -651,7 +841,8 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             self.assertEqual(rc1, 0)
             self.assertEqual(rc2, 0)
             self.assertEqual(len(captured_dests), 2)
-            self.assertEqual(captured_dests[0], captured_dests[1])
+            self.assertEqual(captured_dests[0].parent, captured_dests[1].parent)
+            self.assertNotEqual(captured_dests[0], captured_dests[1])
 
     def test_keep_tarball_preserves_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -679,7 +870,7 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             self.assertEqual(rc, 0)
             # Content-addressed in place: the pre-rename `pkg.tgz` becomes
             # `pkg+<sha8>.tgz`, so assert a tarball survives in pack_dest.
-            self.assertTrue(any(pack_dest.glob("*.tgz")))
+            self.assertTrue(any(pack_dest.glob("attempt-*/*.tgz")))
 
     def _mock_pack_steps(self, tarball: Path):
         """Context-manager stack of the pack/install/wire mocks shared below."""
@@ -712,13 +903,13 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             self.assertIn("hooks", out)
             self.assertIn("⚠", out)  # the warning glyph
 
-    def test_global_link_reconcile_invoked_by_default(self):
-        """By default (no --no-global-link) pack mode reconciles surface 4 by
-        `npm link`-ing the SOURCE tree globally. The reconcile function is
-        mocked so no real global mutation happens; we assert it was called with
-        the source root (_PACKAGE_ROOT), and the shadow check ran after it."""
+    def test_global_link_reconcile_never_invoked_by_default(self):
+        """Default dev must not retarget the global alias to source."""
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
+            alias = Path(os.environ["HOME"]) / "gaia-alias"
+            alias.symlink_to(workspace / "previous-global-install")
+            original_alias = alias.readlink()
             fake_tarball = Path(tmp) / "pkg.tgz"; fake_tarball.write_bytes(b"x")
             p_pack, p_install, p_wire = self._mock_pack_steps(fake_tarball)
             with p_pack, p_install, p_wire, \
@@ -729,11 +920,9 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
                     rc = cmd_dev(self._make_args(workspace, no_global_link=False))
 
             self.assertEqual(rc, 0)
-            spy_link.assert_called_once()
-            # First positional arg is the SOURCE tree (the command's origin).
-            called_root = Path(spy_link.call_args[0][0])
-            self.assertEqual(called_root, dev_mod._PACKAGE_ROOT)
-            spy_warn.assert_called_once()
+            spy_link.assert_not_called()
+            spy_warn.assert_not_called()
+            self.assertEqual(alias.readlink(), original_alias)
 
     def test_no_global_link_skips_reconcile(self):
         """--no-global-link leaves the global install untouched: neither the
@@ -773,10 +962,12 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
             def fake_cmd_install(ns):
                 captured["workspace"] = ns.workspace
                 captured["skip_workspace"] = ns.skip_workspace
+                captured["no_path"] = ns.no_path
+                captured["strict_wiring"] = ns.strict_wiring
                 captured["host"] = ns.host
                 return 0
 
-            with patch("cli.dev.link_source_into_workspace",
+            with patch("cli.dev.install_source_link",
                        return_value={"action": "created", "path": "x", "details": "ok"}), \
                  patch("cli.dev.install_mod.cmd_install", side_effect=fake_cmd_install):
                 with redirect_stdout(io.StringIO()):
@@ -785,6 +976,8 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(captured["workspace"], str(workspace))
             self.assertFalse(captured["skip_workspace"])
+            self.assertTrue(captured["no_path"])
+            self.assertTrue(captured["strict_wiring"])
             self.assertEqual(captured["host"], "claude_code")
 
     def test_link_mode_propagates_opencode_host(self):
@@ -796,7 +989,7 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
                 captured["host"] = ns.host
                 return 0
 
-            with patch("cli.dev.link_source_into_workspace",
+            with patch("cli.dev.install_source_link",
                        return_value={"action": "created", "path": "x", "details": "ok"}), \
                  patch("cli.dev.install_mod.cmd_install", side_effect=fake_cmd_install):
                 with redirect_stdout(io.StringIO()):
@@ -810,7 +1003,7 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
             pack_calls = []
             install_calls = []
 
-            with patch("cli.dev.link_source_into_workspace",
+            with patch("cli.dev.install_source_link",
                        return_value={"action": "created", "path": "x", "details": "ok"}), \
                  patch("cli.dev.install_mod.cmd_install", return_value=0), \
                  patch("cli.dev._pack_helpers.pack_tarball", side_effect=lambda *a, **k: pack_calls.append(1)), \
@@ -826,7 +1019,7 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
             workspace = Path(tmp)
             install_calls = []
 
-            with patch("cli.dev.link_source_into_workspace",
+            with patch("cli.dev.install_source_link",
                        return_value={"action": "error", "path": "x", "details": "boom"}), \
                  patch("cli.dev.install_mod.cmd_install", side_effect=lambda *a, **k: install_calls.append(1)):
                 with redirect_stdout(io.StringIO()):
@@ -839,7 +1032,7 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             buf = io.StringIO()
-            with patch("cli.dev.link_source_into_workspace",
+            with patch("cli.dev.install_source_link",
                        return_value={"action": "created", "path": "x", "details": "ok"}), \
                  patch("cli.dev.install_mod.cmd_install", return_value=0):
                 with redirect_stdout(buf):
@@ -854,7 +1047,7 @@ class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             buf = io.StringIO()
-            with patch("cli.dev.link_source_into_workspace",
+            with patch("cli.dev.install_source_link",
                        return_value={"action": "created", "path": "x", "details": "ok"}), \
                  patch("cli.dev.install_mod.cmd_install", return_value=1):
                 with redirect_stdout(buf):
@@ -913,7 +1106,7 @@ class TestLinkModeSharesTheOpenCodeExportGuard(unittest.TestCase):
         # configure_opencode_plugin resolves the fixture's plugin.ts instead
         # of the real one, mirroring how tests/cli/test_opencode_install.py
         # passes an explicit plugin_root to the same function directly.
-        with patch("cli.dev.link_source_into_workspace",
+        with patch("cli.dev.install_source_link",
                     return_value={"action": "created", "path": "x", "details": "ok"}), \
              patch("cli._install_helpers._PACKAGE_ROOT", pkg_root), \
              patch.dict(os.environ, env_patch):
@@ -1087,9 +1280,9 @@ class TestPruneSiblingTarballs(unittest.TestCase):
             removed = prune_sibling_tarballs(keep)
 
             self.assertTrue(keep.exists())
-            self.assertFalse(old1.exists())
-            self.assertFalse(old2.exists())
-            self.assertEqual(set(removed), {old1.name, old2.name})
+            self.assertTrue(old1.exists())
+            self.assertTrue(old2.exists())
+            self.assertEqual(removed, [])
 
     def test_noop_when_only_kept_present(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1105,7 +1298,7 @@ class TestPruneSiblingTarballs(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestRewriteWorkspaceDepSpec(unittest.TestCase):
-    def test_rewrites_stale_spec(self):
+    def test_refuses_stale_spec_without_rewriting_manager_metadata(self):
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp) / "ws"
             ws.mkdir()
@@ -1119,11 +1312,10 @@ class TestRewriteWorkspaceDepSpec(unittest.TestCase):
 
             res = rewrite_workspace_dep_spec(ws, tarball)
 
-            self.assertEqual(res["action"], "updated")
+            self.assertEqual(res["action"], "error")
             data = json.loads((ws / "package.json").read_text())
             spec = data["dependencies"]["@jaguilar87/gaia"]
-            self.assertTrue(spec.startswith("file:"))
-            self.assertIn("jaguilar87-gaia-5.1.1+abcd1234.tgz", spec)
+            self.assertEqual(spec, "file:gaia/jaguilar87-gaia-5.1.0.tgz")
 
     def test_noop_when_spec_already_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1146,7 +1338,7 @@ class TestRewriteWorkspaceDepSpec(unittest.TestCase):
             tarball = Path(tmp) / "x.tgz"
             tarball.write_bytes(b"x")
             res = rewrite_workspace_dep_spec(ws, tarball)
-            self.assertEqual(res["action"], "skipped")
+            self.assertEqual(res["action"], "error")
 
 
 # ---------------------------------------------------------------------------
@@ -1266,6 +1458,7 @@ class TestPackModeReportsTheDevIteration(unittest.TestCase):
         buf = io.StringIO()
         with patch("cli.dev._pack_helpers.pack_tarball", side_effect=fake_pack), \
              patch("cli.dev.install_tarball", return_value={"action": "created", "path": "x", "details": "ok", "package_manager": "npm"}), \
+             patch("cli.dev.rewrite_workspace_dep_spec", return_value={"action": "noop", "path": "package.json", "details": "mock manager saved spec"}), \
              patch("cli.dev.wire_workspace_via_installed_gaia", return_value={"action": "created", "path": "x", "details": "ok"}), \
              patch("cli.dev._print_convergence_report", return_value={}):
             with redirect_stdout(buf):

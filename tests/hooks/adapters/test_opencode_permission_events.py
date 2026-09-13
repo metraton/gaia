@@ -113,11 +113,20 @@ def _presented_store():
         "status": "pending",
         "session_id": "ses-1",
         "agent_id": "agent-1",
+        "payload_json": json.dumps({
+            "operation": "PUSH command intercepted: push",
+            "exact_content": "git push origin main",
+            "scope": "SINGULAR",
+        }),
     }
     events: list[dict[str, str]] = []
     store.get_history.side_effect = lambda _id: events
     store.record_event.side_effect = lambda *_a, **kw: events.append(
-        {"event_type": "SHOWN", "metadata_json": kw["metadata_json"]}
+        {
+            "event_type": "SHOWN",
+            "session_id": kw["session_id"],
+            "metadata_json": kw["metadata_json"],
+        }
     )
     return store
 
@@ -171,4 +180,4 @@ def test_the_plugin_edge_routes_both_events_to_one_effect():
     assert observed["preferred"]["accepted"] is False
     assert observed["preferred"]["supersededLane"] == "compatibility"
     assert observed["effective"] == "preferred"
-    assert observed["unknownReply"] == "reject"
+    assert "unknownReply" not in observed

@@ -9,7 +9,9 @@ silently accepting a governed operation.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import re
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any, Dict, FrozenSet
@@ -21,6 +23,7 @@ from .types import (
     AgentCompletion,
     BootstrapResult,
     CompletionResult,
+    ConsentBinding,
     ConsentRequest,
     ContextResult,
     HookEvent,
@@ -92,6 +95,14 @@ _UNATTESTED_AGENT_TYPE = "opencode-unattested"
 # from any other policy lane (delegate_mode, an unattested control-plane
 # claim, the tier classifier) -- plan 65, T10, rule 3.
 _CHILD_BINDING_BACKSTOP_EMITTER = "opencode-adapter:child-session-binding-backstop"
+
+# Dotted event category for the Layer O refusal-audit row (task 509): every
+# identity/control-plane refusal denied by _identity_rejection lands exactly
+# one harness_events row of this type. Severity warning (not info) keeps it
+# visible to the triage reader without claiming error-severity defect status.
+_IDENTITY_REFUSAL_EVENT = "opencode.identity.refused"
+
+logger = logging.getLogger(__name__)
 
 
 def _apply_patch_paths(patch_text: object) -> list[str]:
@@ -407,6 +418,7 @@ class OpenCodeAdapter(HookAdapter):
         original_tool = str(payload.get("tool_name", "")).lower()
         rejection = self._identity_rejection(event, original_tool)
         if rejection is not None:
+            self._record_identity_refusal(event, original_tool, rejection)
             return HookResponse(output={"action": "deny", "reason": rejection}, exit_code=2)
         backstop = self._child_binding_backstop_denial(event)
         if backstop is not None:
@@ -415,10 +427,18 @@ class OpenCodeAdapter(HookAdapter):
         if _shell_env_transport and self._policy_tool_name(original_tool) == "Bash":
             env_identity = self._resolved_attestation(event)
             if env_identity is None or not event.session_id or not event.call_id:
+                shell_reason = "Shell environment transport requires attested call correlation"
+                self._record_identity_refusal(event, original_tool, shell_reason)
                 return HookResponse(
-                    output={"action": "deny", "reason": "Shell environment transport requires attested call correlation"},
+                    output={"action": "deny", "reason": shell_reason},
                     exit_code=2,
                 )
+        retry_rejection = self._consent_retry_rejection(event, original_tool)
+        if retry_rejection is not None:
+            return HookResponse(
+                output={"action": "deny", "reason": retry_rejection},
+                exit_code=2,
+            )
         payload = self.build_policy_payload(event)
         policy_event = HookEvent(
             event_type=event.event_type,
@@ -467,6 +487,122 @@ class OpenCodeAdapter(HookAdapter):
                 "agent_type": env_identity.role,
             }
         return translated
+
+    @classmethod
+    def _consent_retry_rejection(
+        cls, event: HookEvent, tool_name: str,
+    ) -> str | None:
+        """Require an attested, fresh retry bound to one executable grant."""
+        if cls._policy_tool_name(tool_name) != "Bash":
+            return None
+        tool_input = event.payload.get("tool_input") or event.payload.get("args") or {}
+        command = tool_input.get("command") if isinstance(tool_input, dict) else None
+        if not isinstance(command, str) or not command:
+            return None
+
+        try:
+            from gaia.store.writer import (
+                list_approval_grants,
+                pending_plan_command_exists,
+            )
+
+            pending = pending_plan_command_exists(command)
+        except Exception as exc:
+            return f"OpenCode consent retry lookup failed closed: {exc}"
+
+        proof = event.payload.get("consentRetry")
+        if proof is None:
+            return (
+                "OpenCode COMMAND_SET retry requires a fresh bound consent proof"
+                if pending else None
+            )
+        if not isinstance(proof, dict):
+            return "OpenCode consent retry proof is malformed"
+        if not pending:
+            return "OpenCode consent retry proof names no executable command"
+        try:
+            attestation = cls._resolved_attestation(event)
+        except Exception:
+            attestation = None
+        if attestation is None:
+            return "OpenCode consent retry proof is not host-attested"
+
+        approval_id = proof.get("approval_id")
+        agent_id = proof.get("agent_id")
+        original_call_id = proof.get("original_call_id")
+        retry_call_id = proof.get("retry_call_id")
+        fingerprint = proof.get("command_fingerprint")
+        index = proof.get("expected_index")
+        if (
+            not isinstance(approval_id, str)
+            or re.fullmatch(r"P-[0-9a-f]{32}", approval_id) is None
+            or agent_id != cls._policy_agent_type(event)
+            or proof.get("session_id") != event.session_id
+            or retry_call_id != event.call_id
+            or not isinstance(original_call_id, str)
+            or not original_call_id
+            or original_call_id == retry_call_id
+            or proof.get("command") != command
+            or fingerprint != hashlib.sha256(command.encode("utf-8")).hexdigest()
+            or isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+        ):
+            return "OpenCode consent retry proof does not match this fresh tool call"
+
+        try:
+            from .consent_events import mint_correlation_id
+
+            expected_correlation = mint_correlation_id(
+                approval_id,
+                ConsentBinding(
+                    agent_id=agent_id,
+                    session_id=event.session_id,
+                    call_id=original_call_id,
+                ),
+            )
+            grants = list_approval_grants(status="PENDING", limit=1000)
+            grant = next(
+                (row for row in grants if row.get("approval_id") == approval_id),
+                None,
+            )
+            items = json.loads(grant.get("command_set_json") or "[]") if grant else []
+            grant_index = int(grant.get("next_index") or 0) if grant else -1
+            matching_ids = []
+            for candidate in grants:
+                candidate_items = json.loads(candidate.get("command_set_json") or "[]")
+                candidate_index = int(candidate.get("next_index") or 0)
+                if (
+                    candidate.get("scope") == "COMMAND_SET"
+                    and candidate.get("source") == "plan-first"
+                    and not candidate.get("reservation_tool_use_id")
+                    and candidate_index >= 0
+                    and candidate_index < len(candidate_items)
+                    and isinstance(candidate_items[candidate_index], dict)
+                    and candidate_items[candidate_index].get("command") == command
+                    and candidate_items[candidate_index].get("fingerprint") == fingerprint
+                ):
+                    matching_ids.append(candidate.get("approval_id"))
+        except Exception:
+            return "OpenCode consent retry proof could not be verified"
+
+        if (
+            proof.get("correlation_id") != expected_correlation
+            or grant is None
+            or grant.get("scope") != "COMMAND_SET"
+            or grant.get("source") != "plan-first"
+            or grant.get("reservation_tool_use_id")
+            or grant.get("agent_id") != agent_id
+            or grant.get("session_id") != event.session_id
+            or grant_index != index
+            or index >= len(items)
+            or not isinstance(items[index], dict)
+            or items[index].get("command") != command
+            or items[index].get("fingerprint") != fingerprint
+            or matching_ids != [approval_id]
+        ):
+            return "OpenCode consent retry proof drifted from its bound grant"
+        return None
 
     def _adapt_task_with_kernel(
         self, policy_adapter: "ClaudeCodeAdapter", policy_event: HookEvent,
@@ -613,6 +749,67 @@ class OpenCodeAdapter(HookAdapter):
         if tool_name == "task" and not cls._is_attested_control_plane(event):
             return "ordinary OpenCode agents cannot issue control-plane dispatches"
         return None
+
+    @classmethod
+    def _record_identity_refusal(
+        cls, event: HookEvent, tool_name: str, reason: str,
+    ) -> None:
+        """Leave one durable row for an identity/control-plane refusal.
+
+        Never raises and never affects the verdict: the caller has already
+        decided the denial and ignores this method's outcome entirely.
+
+        The attestation token value is never recorded -- in no field, no
+        encoded form of it, not even a hash.
+
+        Accepted gap: EventWriter.write_event swallows every exception by
+        design, so a failed write loses the audit row, never the denial.
+        """
+        try:
+            from modules.events.event_writer import EventWriter
+
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            declared = str(
+                payload.get("agent") or payload.get("agent_type") or ""
+            ).strip()
+            context = event.role_context
+            attested = False
+            resolved = False
+            try:
+                attested = bool(cls._is_attested_control_plane(event))
+            except Exception:
+                attested = False
+            try:
+                resolved = cls._resolved_attestation(event) is not None
+            except Exception:
+                resolved = False
+            agent_name = declared
+            if not agent_name and context is not None:
+                agent_name = context.role
+            meta: Dict[str, Any] = {
+                "session_id": event.session_id,
+                "tool": tool_name,
+                "reason": reason,
+                "agent_presented": bool(declared),
+                "declared_agent": declared,
+                "role_context_present": context is not None,
+                "role": context.role if context is not None else "",
+                "attested": attested,
+                "attestation_present": bool(
+                    getattr(context, "attestation", "") or ""
+                ),
+                "attestation_resolved": resolved,
+            }
+            EventWriter().write_event(
+                _IDENTITY_REFUSAL_EVENT,
+                "opencode-adapter",
+                agent_name,
+                reason,
+                severity="warning",
+                meta=meta,
+            )
+        except Exception as exc:  # pragma: no cover - telemetry must never block
+            logger.debug("identity refusal audit write failed (non-fatal): %s", exc)
 
     @classmethod
     def _child_binding_backstop_denial(cls, event: HookEvent) -> "HookResponse | None":
