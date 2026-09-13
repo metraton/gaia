@@ -60,6 +60,9 @@ TEE_WRITES = [
     ("shell-rc", "tee ~/.bashrc"),
     ("aws-credentials", "tee -a ~/.aws/credentials"),
     ("git-config", "tee -a ~/.gitconfig"),
+    ("git-config-home-var", "tee -a $HOME/.gitconfig"),
+    ("git-config-home-braced", "tee -a ${HOME}/.gitconfig"),
+    ("git-config-absolute", f"tee -a {HOME}/.gitconfig"),
 ]
 
 # The redirect route: the destination is an operator target the sanitizer
@@ -70,6 +73,8 @@ REDIRECT_WRITES = [
     ("ssh-home-var", "echo 'ssh-rsa AAAAB3Nza key' >> $HOME/.ssh/authorized_keys"),
     ("shell-rc", "echo 'export PATH=/tmp/x:$PATH' >> ~/.zshrc"),
     ("git-config-xdg", "echo '[alias]' >> ~/.config/git/config"),
+    ("git-config-xdg-home-var", "echo '[alias]' >> $HOME/.config/git/config"),
+    ("git-config-xdg-absolute", f"echo '[alias]' >> {HOME}/.config/git/config"),
     ("ssh-clobber-override", "echo 'ssh-rsa AAAAB3Nza key' >| ~/.ssh/authorized_keys"),
 ]
 
@@ -81,6 +86,12 @@ ACCOUNT_WRITES = TEE_WRITES + REDIRECT_WRITES
 # working-tree destination is deliberately absent: a shell-authored write into
 # a git tree is refused by shell_write_guard on the CHANNEL, a categorical
 # verdict that has nothing to do with the destination set measured here.
+#
+# The two neighbour entries fix the COMPARISON, not the product they happen to
+# name: a sensitive file matches in full and a sensitive prefix matches whole
+# segments. Relaxing either to a bare `startswith` -- dropping the `+ "/"` from
+# the prefix test -- would charge consent for every adjacent name under
+# `~/.config`, and nothing else in this suite would notice.
 ORDINARY_WRITES = [
     ("cache", "tee ~/.cache/build.log"),
     ("scratch", "tee -a ~/.gaia/scratch/a967a85a994f1db23.dc233de56ed6.txt"),
@@ -90,6 +101,7 @@ ORDINARY_WRITES = [
     ("tmp-redirect", "echo hello > /tmp/notes.txt"),
     ("unrelated-config", "tee ~/.config/nvim/init.lua"),
     ("neighbour-of-a-sensitive-name", "tee ~/.gitconfig.bak"),
+    ("neighbour-of-a-sensitive-prefix", "tee ~/.config/github-copilot/hosts.json"),
 ]
 
 
