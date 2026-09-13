@@ -2531,7 +2531,10 @@ class ClaudeCodeAdapter(HookAdapter):
             build_reminder_context,
             should_remind,
         )
-        from modules.security.protected_paths import is_protected_hook_path
+        from modules.security.protected_paths import (
+            is_protected_hook_path,
+            resolved_write_target,
+        )
 
         file_path = parameters.get("file_path", "")
         if not file_path:
@@ -2564,6 +2567,16 @@ class ClaudeCodeAdapter(HookAdapter):
             tool_name, file_path, is_subagent,
         )
 
+        # Everything downstream of here keys a PERMISSION, and a permission binds
+        # to a file rather than to the spelling that reached it. Resolved once,
+        # so the grant lookup, the pending lookup, the pending write and the
+        # surface the user reads all name the same object; resolving for some of
+        # them and not others just moves the mismatch. The protection check above
+        # deliberately keeps the path AS WRITTEN, because it judges the literal,
+        # absolute and resolved forms together and the literal one carries the
+        # `.claude` component that a symlinked install destroys on resolution.
+        consent_path = resolved_write_target(file_path)
+
         if not is_subagent:
             # Foreground / orchestrator context: ask the user for consent
             # inline (the adapter maps this to the native approval dialog).
@@ -2573,7 +2586,7 @@ class ClaudeCodeAdapter(HookAdapter):
             )
             return self.request_consent(
                 ConsentRequest(
-                    operation=file_path,
+                    operation=consent_path,
                     kind="file",
                     reason=reason,
                     tier="T3_BLOCKED",
@@ -2584,29 +2597,29 @@ class ClaudeCodeAdapter(HookAdapter):
 
         # 1. Check if a grant has already been activated for this path (retry
         #    after user approved).
-        existing_grant = check_approval_grant_for_file(file_path, session_id or None)
+        existing_grant = check_approval_grant_for_file(consent_path, session_id or None)
         if existing_grant:
             logger.info(
                 "File-path grant active, allowing %s through: %s",
-                tool_name, file_path,
+                tool_name, consent_path,
             )
             return HookResponse(output={}, exit_code=0)
 
         # 2. Check if a pending approval already exists (guard against infinite
         #    approval_id generation while the user is still reviewing).
-        existing_nonce = find_pending_for_file(session_id or "", file_path)
+        existing_nonce = find_pending_for_file(session_id or "", consent_path)
         if existing_nonce:
             approval_id = existing_nonce
             logger.info(
                 "Reusing pending approval_id=%s for retry: %s",
-                approval_id, file_path,
+                approval_id, consent_path,
             )
         else:
             # 3. No existing pending -- generate a new nonce.
             approval_id = generate_nonce()
             pending_path = write_pending_approval_for_file(
                 nonce=approval_id,
-                file_path=file_path,
+                file_path=consent_path,
                 session_id=session_id or None,
             )
             if pending_path is None:
@@ -2614,7 +2627,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 logger.warning(
                     "Failed to persist pending file-path approval for subagent; "
                     "falling back to ask: %s",
-                    file_path,
+                    consent_path,
                 )
                 reason = (
                     "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
@@ -2657,14 +2670,14 @@ class ClaudeCodeAdapter(HookAdapter):
             f"edits and the tests between them) is spent inside that one window, and "
             f"nothing you do extends it. A write attempted after it lapses is blocked "
             f"again under a NEW approval_id; this one will not work twice.\n"
-            f"File: {file_path}\n"
+            f"File: {consent_path}\n"
             f"Tool: {tool_name}\n"
             f"approval_id: P-{approval_id}"
         )
         # Out-of-band approval flow: consent is keyed to the persisted approval_id.
         return self.request_consent(
             ConsentRequest(
-                operation=file_path,
+                operation=consent_path,
                 kind="file",
                 reason=reason,
                 tier="T3_BLOCKED",

@@ -187,8 +187,15 @@ def matches_file_path_approval(signature: ApprovalSignature, file_path: str) -> 
     """Return True when file_path is covered by a SCOPE_FILE_PATH grant.
 
     Exact-path comparison only -- both sides are normalised by stripping
-    leading/trailing whitespace.  Symlink resolution is NOT performed here
-    (the hook already resolves paths before storing the grant).
+    leading/trailing whitespace.
+
+    Symlink resolution is NOT performed here, and must already have happened to
+    both sides before they arrive: the hook resolves a write target once
+    (``protected_paths.resolved_write_target``) and keys the grant, the pending
+    and the consent surface on that single form. Comparing raw here is what
+    makes a link retargeted after the grant was minted resolve elsewhere on the
+    retry, fail to match, and be blocked again under a new approval_id -- the
+    intended behaviour, not a gap for this function to close.
 
     Args:
         signature: The ApprovalSignature from a stored grant.
