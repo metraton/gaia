@@ -324,7 +324,7 @@ def test_the_event_plugin_ts_emits_reaches_the_attested_control_plane_lane(
     fields = _bridge_call_fields("tool.execute.before")
 
     assert set(fields) == set(PLUGIN_CONTROL_PLANE_EVENT) | {
-        "agentID", "cwd", "worktree", "originalTool", "originalArgs",
+        "agentID", "cwd", "worktree", "originalTool", "originalArgs", "consentRetry",
     }
     assert fields["agent"] == "agent"
     # Any truthy agent_id classifies SUBAGENT before classify_session_role
