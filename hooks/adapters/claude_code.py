@@ -1579,20 +1579,16 @@ class ClaudeCodeAdapter(HookAdapter):
     def _get_gaia_agent_names(self) -> set:
         """Names of the Gaia-managed agents, unioned over every lane that resolves.
 
-        An empty set means the roster could not be resolved AT ALL, and never
-        that Gaia has no agents -- a name is absent from an unresolved roster
-        the same way it is absent from an empty one, which is why the caller
-        grants the native-agent bypass only against a non-empty result.
+        An empty set means the roster did not resolve, never that Gaia has no
+        agents, so the caller grants the native-agent bypass only on a non-empty
+        result.
         """
         from modules.security.protected_paths import declared_hook_tree_roots
 
-        # Two lanes, because the first one is a function of the deployment
-        # layout: the directory beside the running module is not the agents
-        # directory once the hooks are materialised away from their checkout
-        # (a package store, a plain copy, a container mount). The registry lane
-        # is the identity declared OUTSIDE any deployment -- the same inversion,
-        # and the same remedy, that protected_paths.py carries for the
-        # write-protected tree.
+        # Two lanes because the first is a function of the deployment layout:
+        # the directory beside the running module is not the agents directory
+        # once the hooks are materialised away from their checkout. The registry
+        # lane is the identity declared outside any deployment.
         candidates = [Path(__file__).resolve().parent.parent.parent / "agents"]
         candidates.extend(
             Path(root).parent / "agents" for root in declared_hook_tree_roots()
@@ -2567,14 +2563,11 @@ class ClaudeCodeAdapter(HookAdapter):
             tool_name, file_path, is_subagent,
         )
 
-        # Everything downstream of here keys a PERMISSION, and a permission binds
-        # to a file rather than to the spelling that reached it. Resolved once,
-        # so the grant lookup, the pending lookup, the pending write and the
-        # surface the user reads all name the same object; resolving for some of
-        # them and not others just moves the mismatch. The protection check above
-        # deliberately keeps the path AS WRITTEN, because it judges the literal,
-        # absolute and resolved forms together and the literal one carries the
-        # `.claude` component that a symlinked install destroys on resolution.
+        # Resolved once, so the grant lookup, the pending lookup, the pending
+        # write and the surface the user reads all name the same object. The
+        # protection check above keeps the path AS WRITTEN instead: it judges
+        # all three forms, and only the literal one carries the `.claude`
+        # component that a symlinked install destroys on resolution.
         consent_path = resolved_write_target(file_path)
 
         if not is_subagent:
@@ -3327,18 +3320,12 @@ class ClaudeCodeAdapter(HookAdapter):
         task_info = build_task_info_from_hook_data(hook_data, agent_output)
 
         # ----------------------------------------------------------
-        # Native agent bypass: an agent that is not one of Gaia's own
-        # (claude-code-guide, Explore, Plan) emits no agent_contract_handoff,
-        # so gating it would reject every turn it ever takes.
-        #
-        # It takes a resolved roster AND an identified agent to earn that
-        # bypass. An unresolved roster granting it made contract enforcement a
-        # function of the deployment layout -- every agent reads as native when
-        # no roster resolves -- and a missing agent_type is evidence of nothing
-        # at all, least of all that the turn was native. Failing closed on
-        # either costs a bounded number of rejections, since the circuit
-        # breaker cuts the turn and closes it degraded; it is not the unbounded
-        # retry loop that justified this bypass before that breaker existed.
+        # Native agent bypass: an agent that is not one of Gaia's own emits no
+        # agent_contract_handoff, so gating it would reject every turn it takes.
+        # It needs a resolved roster AND an identified agent, or enforcement
+        # becomes a function of the deployment layout -- every agent reads as
+        # native when no roster resolves. Failing closed instead costs a bounded
+        # number of rejections, since the circuit breaker ends the turn.
         # ----------------------------------------------------------
         _native_agent_type = task_info.get("agent", "unknown")
         _gaia_agents = self._get_gaia_agent_names()
@@ -3589,19 +3576,11 @@ class ClaudeCodeAdapter(HookAdapter):
                 from modules.agents import rejection_circuit
 
                 # Resolved for EVERY verdict, not only a rejecting one: the
-                # accepted branch further down clears the counter, and building
-                # the key only while rejecting left that reset unreachable.
-                # Costless while every key was per-dispatch and not costless now
-                # that one can be shared between turns.
+                # accepted branch further down clears the counter, and a key
+                # built only while rejecting leaves that reset unreachable.
                 _turn_key = rejection_circuit.counter_key(session_id, task_info)
                 _circuit_key = _turn_key.key
                 if _gate.rejected:
-                    # This rejection's own typed codes (empty in 3-case
-                    # mode, or whenever the gate produced none) -- handed
-                    # to the counter so the NEXT pass can read them back
-                    # as CircuitState.previous_codes for its own retry
-                    # notice. Same extraction _record_contract_rejection_defect
-                    # already uses for the event-log codes list.
                     _current_codes = [
                         str(a.get("code", ""))
                         for a in _gate.anomalies
@@ -3631,11 +3610,8 @@ class ClaudeCodeAdapter(HookAdapter):
             # know the turn was cut.
             _circuit_tripped = bool(_circuit is not None and _circuit.tripped)
 
-            # The verdict is settled at this point -- the gate produced it and
-            # the breaker is the only thing entitled to lower it -- so this is
-            # where it is latched. Latching HERE rather than at the result dict
-            # far below is what makes the rejection independent of everything
-            # that runs in between, including calls added later.
+            # Latched here because this is the last point the breaker can lower
+            # the gate's verdict; nothing below is entitled to change it.
             if _gate.rejected and not _circuit_tripped:
                 _rejection_latched = True
                 _latched_rejection_reason = _gate.rejection_reason
@@ -4269,10 +4245,8 @@ class ClaudeCodeAdapter(HookAdapter):
                 # salvaged draft via --draft-id instead of re-emitting the block.
                 result["salvage_resume_hint"] = _salvage.get("resume_hint")
 
-            # The verdict is recorded BEFORE the relay runs, and the latch set
-            # at the gate already holds it independently of this dict. The
-            # relay is an enrichment of the rejection, never a precondition for
-            # it, and is isolated accordingly.
+            # Recorded before the relay runs: the relay enriches a rejection and
+            # is never a precondition for one, so it is isolated below.
             if contract_rejected:
                 result["contract_rejected"] = True
                 result["contract_rejection_reason"] = contract_rejection_reason

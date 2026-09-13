@@ -281,8 +281,7 @@ def subagent_stop_hook(task_info, agent_output):
         # eleven-field dataclass with no such field, and so was always 0.
         # The key must be the breaker's own: rejected_turn_relay's preservation
         # key coincides with it only when the payload carries a harness
-        # agent_id, so reading that one reports 0 for exactly the unidentified
-        # turns the breaker now counts.
+        # agent_id, so it reports 0 for exactly the unidentified turns.
         try:
             from modules.agents.rejection_circuit import (
                 count as _rejection_count,

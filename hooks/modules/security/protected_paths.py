@@ -219,23 +219,16 @@ def _candidates(path_str: str) -> Tuple[Path, ...]:
 def resolved_write_target(path_str: str) -> str:
     """The single form a write is granted and consented against.
 
-    Protection and permission want opposite things from the same path, which is
-    why this is a separate entry point rather than a change to :func:`_candidates`.
-    PROTECTION must fire on ANY form, so it judges all three. A GRANT binds to
-    one object, so it takes the form a symlink actually lands on -- otherwise a
-    file reached by two spellings is two permissions, and the narrower one is
-    whichever the caller happened to type.
+    Separate from :func:`is_protected_hook_path`, which must fire on ANY form
+    and so judges all three: a grant binds to one object, or a file reached by
+    two spellings is two permissions.
 
-    Two consequences worth knowing before relying on it. The user is shown this
-    value, not the spelling they wrote, because a consent that binds to one file
-    while naming another is worse than no resolution at all. And resolving at
-    mint does not freeze the link: a target retargeted afterwards resolves
-    elsewhere on the retry, fails to match the grant, and is blocked again under
-    a new approval_id.
+    Resolving at mint does not freeze the link -- a target retargeted afterwards
+    resolves elsewhere, fails to match the grant, and is blocked again under a
+    new approval_id.
 
     Depends on :func:`_candidates` ordering its forms literal, absolute,
-    resolved, so the last is the resolved one; a form appended after it there
-    would silently become what grants bind to.
+    resolved; a form appended after the last would become what grants bind to.
     """
     if not path_str:
         return path_str

@@ -766,16 +766,12 @@ class BashValidator:
 
         # ================================================================
         # ACCOUNT-PATH WRITE
-        # A redirect onto a path that grants access to the user's own account
-        # (~/.ssh, the shell rc files, the credential stores) is a persistent
-        # sensitive write, and a signature is exactly what it needs -- so it
-        # converges on the single T3 decision point instead of on one of the
-        # categorical guards above. Position is load-bearing twice: BEFORE the
-        # sanitizer, which strips a trailing redirect and would delete the
-        # destination the verdict rests on, and before the cloud-pipe phase,
-        # which refuses a redirect as a CHANNEL and would leave a legitimate
-        # write with no way to consent to it. The `tee` spelling of the same
-        # write is decided in phase 5 by mutative_verbs._check_tee_write.
+        # A redirect onto a path that grants account access is legitimate work
+        # needing a signature, so it is decided here as T3 rather than by one of
+        # the categorical guards above. Position is load-bearing twice: BEFORE
+        # the sanitizer, which strips the trailing redirect the verdict rests
+        # on, and before the cloud-pipe phase, which refuses a redirect as a
+        # CHANNEL and would leave this write with no way to consent to it.
         # ================================================================
         account_write_target = account_path_redirect_target(command)
         if account_write_target:

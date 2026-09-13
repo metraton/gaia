@@ -785,11 +785,6 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # shallow compound-verb scan, so paths and arguments containing cheap
         # tier words must not leave a real credential mutation ungated.
         MutativeAnchor(path=("sql", "users", "set-password")),
-        # An IAM policy binding is NOT anchored per surface. Six anchors used to
-        # sit here and they trailed the CLI: `organizations` and
-        # `resource-manager folders` were never among them, and every gcloud
-        # group that owns a resource grows the same add/remove pair. The form
-        # decides it instead, at any depth -- see IAM_BINDING_TOKEN_SUFFIXES.
         # `config` is a READ_ONLY_VERBS entry, so the Step 4 scan stops at it
         # and returns before it ever reads the verb behind it: `gcloud config
         # set project other-project` and `gcloud config set account
@@ -1971,8 +1966,7 @@ def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
 #
 #   * a path under $HOME that is sensitive by its CONTENTS rather than by its
 #     location (is_account_sensitive_path) -- `~/.ssh`, the shell rc files,
-#     the credential stores. Home used to be treated as safe wholesale here,
-#     which is what left `tee -a ~/.ssh/authorized_keys` at T0.
+#     the credential stores.
 #
 # Everything else -- no file at all, a relative path, the working tree, the
 # rest of the user's home, /tmp, the Gaia scratch directory -- is left exactly
@@ -2017,8 +2011,8 @@ def _tee_sensitive_targets(tokens: tuple) -> Tuple[str, ...]:
             continue
 
         if token.startswith("~/") or token == "~" or not os.path.isabs(token):
-            # Every other home-relative or relative destination is an ordinary
-            # working-tree, cache or scratch target.
+            # Every other home-relative or relative destination is ordinary
+            # working-tree, cache or scratch space.
             continue
 
         norm = os.path.normpath(token)
@@ -2051,18 +2045,16 @@ def _check_iam_policy_binding(
     """Gate a cloud IAM binding change by the FORM of its subcommand token.
 
     Granting a capability must never classify below revoking it, and the verb
-    scan cannot deliver that: `add-iam-policy-binding` hyphen-splits onto
-    `add`, deliberately absent from MUTATIVE_VERBS so `git add` stays free,
-    while `remove-iam-policy-binding` splits onto `remove` and gates. The
-    split also stops at semantic_index <= 2, so on a deeper path neither
-    direction is reached.
+    scan cannot deliver that: `add-iam-policy-binding` splits onto `add`, absent
+    from MUTATIVE_VERBS so `git add` stays free, while
+    `remove-iam-policy-binding` splits onto `remove` and gates. The split also
+    stops at semantic_index <= 2, so a deeper path reaches neither.
 
-    Decided by form rather than by one anchor per surface because the surfaces
-    are open-ended: every gcloud group that owns a resource grows the same
-    pair, so an enumeration reads as coverage while the newest surface stays
-    ungated. The read forms of these same groups are spelled differently
-    (`get-iam-policy`, `describe`, `list`) and do not carry the suffix, which
-    is what keeps the rule from taxing them.
+    By form rather than one anchor per surface because the surfaces are
+    open-ended: every gcloud group owning a resource grows the same pair, so an
+    enumeration reads as coverage while the newest surface stays ungated. The
+    read forms (`get-iam-policy`, `describe`, `list`) do not carry the suffix,
+    which is what keeps the rule from taxing them.
     """
     if family != "cloud":
         return None
@@ -2109,9 +2101,8 @@ _REDIRECT_TARGET_RE = _re.compile(r"\d?>>?\|?\s*&?\s*([^\s;|&]+)")
 def _home_relative_path(token: str) -> str:
     """The part of *token* under $HOME, or "" when it lands anywhere else.
 
-    Three spellings reach the same file and must fold onto one answer: `~/x`,
-    an unexpanded `$HOME/x` (classification runs before the shell expands
-    anything), and the absolute form.
+    Three spellings must fold onto one answer -- `~/x`, an unexpanded `$HOME/x`
+    (classification runs before the shell expands anything), and the absolute.
     """
     import os
 
@@ -2154,13 +2145,7 @@ def is_account_sensitive_path(token: str) -> bool:
 
 
 def account_path_redirect_target(command: str) -> str:
-    """The first redirect destination in *command* that grants account access.
-
-    Read by bash_validator ahead of its sanitizer, which strips a trailing
-    redirect, and ahead of the cloud-pipe phase, which refuses a redirect as a
-    CHANNEL: for these destinations the write is legitimate work that needs a
-    signature, so it must reach the approvable T3 decision point instead.
-    """
+    """The first redirect destination in *command* that grants account access."""
     for match in _REDIRECT_TARGET_RE.finditer(command):
         target = match.group(1).strip("\"'")
         if is_account_sensitive_path(target):
@@ -4024,9 +4009,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
 
     # --- Step 0-redirect: a redirect onto an account-sensitive path ---
-    # Ahead of every step below because the ones that answer first -- the alias
-    # fast-path and the read-only base commands -- key on the base command
-    # alone and return before any destination is looked at.
+    # Ahead of every step below: the alias fast-path and the read-only base
+    # commands key on the base command alone and return before any destination
+    # is looked at.
     account_redirect = _check_account_path_redirect(command)
     if account_redirect is not None:
         return account_redirect
@@ -4486,9 +4471,9 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
         return tee_result
 
     # --- Step 3e.4: IAM binding change, decided by the token's form ---
-    # Placed with the anchors it replaced, so simulation (Step 3) and --help
-    # (Step 3.5) still outrank it, and ahead of the Step 4 verb scan that
-    # splits `add-iam-policy-binding` onto a verb the taxonomy leaves free.
+    # Behind simulation (Step 3) and --help (Step 3.5) so both still outrank it,
+    # ahead of the Step 4 verb scan that splits `add-iam-policy-binding` onto a
+    # verb the taxonomy leaves free.
     iam_binding_result = _check_iam_policy_binding(family, semantics)
     if iam_binding_result is not None:
         return iam_binding_result

@@ -189,13 +189,9 @@ def matches_file_path_approval(signature: ApprovalSignature, file_path: str) -> 
     Exact-path comparison only -- both sides are normalised by stripping
     leading/trailing whitespace.
 
-    Symlink resolution is NOT performed here, and must already have happened to
-    both sides before they arrive: the hook resolves a write target once
-    (``protected_paths.resolved_write_target``) and keys the grant, the pending
-    and the consent surface on that single form. Comparing raw here is what
-    makes a link retargeted after the grant was minted resolve elsewhere on the
-    retry, fail to match, and be blocked again under a new approval_id -- the
-    intended behaviour, not a gap for this function to close.
+    Both sides must already be resolved by
+    ``protected_paths.resolved_write_target``; this compares them raw, so a
+    caller that resolves one side only matches nothing, silently.
 
     Args:
         signature: The ApprovalSignature from a stored grant.
@@ -213,16 +209,9 @@ def matches_file_path_approval(signature: ApprovalSignature, file_path: str) -> 
 def _approval_identity_tokens(semantics) -> Tuple[str, ...]:
     """The tokens a grant binds to: the command, then its operands verbatim.
 
-    ``analyze_command`` produces two views of the same operands and they are not
-    interchangeable here. CLASSIFICATION reads the folded one
-    (``semantic_tokens``), correctly: a mutative verb is the verb however it is
-    typed, and unfolding it would open gating holes. An APPROVAL SIGNATURE binds
-    a consent to the thing consented over, and ``s3://bucket/Archive/old.tar``
-    and ``s3://bucket/archive/old.tar`` are two objects -- as are two POSIX
-    paths or two git refs differing only in case.
-
-    ``base_cmd`` stays folded because it names the CLI, not an object, and the
-    signature already compares it as its own field.
+    Deliberately the raw operands, not ``semantic_tokens``: a signature binds to
+    the object consented over, and case distinguishes two objects. ``base_cmd``
+    stays folded because it names the CLI, not an object.
     """
     return (semantics.base_cmd, *semantics.non_flag_tokens_raw)
 
@@ -230,8 +219,7 @@ def _approval_identity_tokens(semantics) -> Tuple[str, ...]:
 def _sorted_unique(values: Union[Tuple[str, ...], list[str]]) -> Tuple[str, ...]:
     """Normalize flag tokens for deterministic matching.
 
-    Order and multiplicity are dropped because neither carries meaning in the
-    CLIs this layer classifies. Case is NOT dropped: ``-d`` and ``-D`` are git's
+    Order and multiplicity are dropped; case is NOT. ``-d`` and ``-D`` are git's
     safe and force deletions, and folding them let a grant minted for one be
     consumed by the other.
     """

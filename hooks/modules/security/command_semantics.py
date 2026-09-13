@@ -127,16 +127,13 @@ class CommandSemantics:
     base_cmd: str = ""
     args: Tuple[str, ...] = ()
     flag_tokens: Tuple[str, ...] = ()
-    # The same flags with their original case, for the same split the operands
-    # carry below: ``-d`` and ``-D`` are git's safe and force deletions, and a
-    # consent bound to the folded form covers both.
+    # Case preserved for the approval signature: ``-d`` and ``-D`` are git's
+    # safe and force deletions, and a consent bound to the folded form covers
+    # both.
     flag_tokens_raw: Tuple[str, ...] = ()
     non_flag_tokens: Tuple[str, ...] = ()
-    # The same operands with their original case. Classification reads the
-    # folded view above, because a verb is the verb however it is typed;
-    # an approval signature reads this one, because the operands ARE the
-    # object consented over and S3 keys, POSIX paths and git refs are
-    # case-sensitive (approval_scopes.build_approval_signature).
+    # Case preserved: these operands are the object consented over, and S3 keys,
+    # POSIX paths and git refs are case-sensitive.
     non_flag_tokens_raw: Tuple[str, ...] = ()
     semantic_tokens: Tuple[str, ...] = ()
     semantic_head_tokens: Tuple[str, ...] = ()

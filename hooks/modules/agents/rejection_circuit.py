@@ -83,12 +83,9 @@ DEFAULT_MAX_REJECTIONS = 3
 _MAX_REJECTIONS_ENV_VAR = "GAIA_CONTRACT_MAX_REJECTIONS"
 
 # How long a SHARED counter keeps accumulating. A rejection loop refreshes the
-# count on every pass, well inside one repair cycle; two unrelated turns are
-# minutes or hours apart. Expiring on idle is what turns a session-wide key from
-# "count every failure this session ever had" into "count this loop", and it is
-# the whole reason a shared key can carry a ceiling without cutting turns that
-# never looped. It applies to the shared lane ONLY -- a key that identifies its
-# turn counts that turn's rejections however far apart they arrive.
+# count on every pass; two unrelated turns are minutes apart, so expiring on
+# idle measures one loop instead of the whole session. Shared lane ONLY -- a key
+# that identifies its turn counts that turn's rejections however far apart.
 _SHARED_COUNTER_IDLE_SECONDS = 300.0
 
 CIRCUIT_OPEN_EVENT = "agent.contract_circuit_open"
@@ -160,12 +157,8 @@ class TurnKey:
     """The key a turn is counted under, and how well it identifies that turn.
 
     Attributes:
-        key: the counter's name in the relay directory.
-        source: which field of the payload produced it.
-        per_turn: True -> the key belongs to this dispatch alone. False -> it is
-            shared by every unidentifiable turn of the session, the caller
-            records that the ceiling in force is not this turn's own, and
-            :func:`record_rejection` must be told so.
+        per_turn: False -> the key is shared by every unidentifiable turn of the
+            session, and :func:`record_rejection` must be told so.
     """
 
     key: str
@@ -180,34 +173,15 @@ def _safe_key(raw: str) -> str:
 def counter_key(session_id: Optional[str], task_info: Dict[str, Any]) -> TurnKey:
     """The key this turn is counted under. Always returns one.
 
-    Deliberately NOT ``rejected_turn_relay.preservation_key``. That key exists
-    to locate PRESERVED TEXT, and its fallback chain is right for that job and
-    wrong for this one: it degrades to the agent TYPE and then to the literal
-    ``unknown``, both of which every dispatch of that agent in the session
-    shares. Sharing a key costs the relay a merged text file; it costs the
-    breaker a turn cut for rejections it never made -- MEASURED: a turn on its
-    FIRST EVER rejection came back ``attempt=3, tripped=True`` because an
-    unrelated turn had already spent the ceiling under the same key.
+    Deliberately NOT ``rejected_turn_relay.preservation_key``: that chain
+    degrades to the agent TYPE and then to ``unknown``, which every dispatch of
+    that agent shares. MEASURED under it, a turn on its FIRST rejection came
+    back ``attempt=3, tripped=True`` for rejections an unrelated turn had made.
 
-    The answer to that is not to decline a key. A turn whose identity cannot be
-    established is the one that most needs the ceiling, and it is now also the
-    common one: gating a payload that carries no ``agent_type`` also gates the
-    payloads that carry no ``agent_id``, so "no key" would have meant "no
-    ceiling" for exactly the population the gate newly rejects.
-
-    So the harness ``agent_id`` is tried first and is not the only identity in
-    the payload. Two more are per-dispatch and survive its absence: the MINTED
-    contract id, and the subagent's own transcript -- one file per dispatch,
-    hashed here only to keep the key short. Any of the three keeps a turn
-    counted alone, with the semantics this module always had.
-
-    Only a payload carrying none of them reaches the last lane, and there the
-    key is shared by every unidentifiable turn of the session. Two things keep
-    that from cutting innocent turns, and neither is a guess about which turn is
-    which. The count expires on idle (see :data:`_SHARED_COUNTER_IDLE_SECONDS`),
-    so it measures a loop and not a session. And an accepted turn resets it, so
-    it only ever accumulates across consecutive failures. The session remains
-    the outer bound: a counter shared across sessions would be a global one.
+    Declining a key instead was rejected: a turn whose identity cannot be
+    established is the one that most needs a ceiling, and the gate that rejects
+    a payload carrying no ``agent_type`` rejects the ones carrying no
+    ``agent_id`` too.
     """
     prefix = session_id or "nosession"
 
@@ -322,11 +296,9 @@ def record_rejection(
     try:
         state = _read(key)
         if shared and _idle_expired(state):
-            # Not the same loop: a shared key carries whatever the previous
-            # unidentifiable turn left behind, and inheriting it is what cuts a
-            # turn for rejections it never made. The trip is dropped with the
-            # count, so one cut turn cannot latch the ceiling shut for the rest
-            # of the session.
+            # A shared key carries whatever the previous unidentifiable turn
+            # left behind. The trip is dropped with the count, so one cut turn
+            # cannot latch the ceiling shut for the rest of the session.
             state = {}
         if state.get("tripped"):
             # Sticky: a turn already cut out of the loop must not be able to
@@ -480,10 +452,8 @@ def circuit_anomaly(agent_type: str, state: CircuitState) -> Dict[str, Any]:
 def shared_ceiling_anomaly(agent_type: str, state: CircuitState) -> Dict[str, Any]:
     """Anomaly for a turn guarded by a ceiling it does not have to itself.
 
-    Recorded rather than logged because the count this turn was judged on may
-    include rejections another turn made. That does not make the cut wrong --
-    an unidentifiable turn still needs a ceiling -- but it makes the cut worth
-    seeing, and it names the payload gap that caused it.
+    Recorded rather than logged because the count it was judged on may include
+    rejections another turn made.
     """
     return {
         "type": "contract_rejection_circuit_shared",
