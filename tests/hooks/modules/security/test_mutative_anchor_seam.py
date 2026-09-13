@@ -245,9 +245,11 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
     def test_cloud_cli_paths_are_the_reviewed_mutative_forms(self):
         """Reviewed gcloud mutations whose path depth bypassed the verb scan.
 
-        The two-token removals (`projects`, `secrets`) are absent because the
-        verb scan already decides them; the three-token ones are here because
-        the hyphen split never reaches that depth.
+        IAM bindings are deliberately absent: six anchors used to carry them
+        and the enumeration trailed the CLI, so their gate is now a form rule
+        (`IAM_BINDING_TOKEN_SUFFIXES`) that holds at any depth on any surface.
+        What remains here is the mutation that has no distinguishing form and
+        can only be named by its path.
         """
         paths = {
             a.path
@@ -255,12 +257,6 @@ class TestShippedTableDeclaresExactlyWhatWasReviewed:
             if a.path[0] != "config"
         }
         assert paths == {
-            ("projects", "add-iam-policy-binding"),
-            ("secrets", "add-iam-policy-binding"),
-            ("storage", "buckets", "add-iam-policy-binding"),
-            ("storage", "buckets", "remove-iam-policy-binding"),
-            ("iam", "service-accounts", "add-iam-policy-binding"),
-            ("iam", "service-accounts", "remove-iam-policy-binding"),
             ("sql", "users", "set-password"),
         }
 

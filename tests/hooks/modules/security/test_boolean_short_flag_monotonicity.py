@@ -168,13 +168,18 @@ def test_a_wrong_entry_cannot_open_a_gate():
     to be built rather than found. ``-x`` is injected into the table as if
     someone had audited it wrongly, and the command written the way that flag
     would really be used. Without the floor the injected entry leaves
-    ``my-project`` standing at the head, the bucket-IAM anchor misses, and a
-    public-access grant classifies T0. With it, the corrupted reading is still
-    consulted and the gate holds.
+    ``my-project`` standing at the head, the ``sql users set-password`` anchor
+    misses, and a credential mutation classifies T0. With it, the corrupted
+    reading is still consulted and the gate holds.
+
+    The adversarial command is an ANCHORED path rather than an IAM binding: a
+    binding is decided by the form of its token now, at any position, so a
+    shifted head no longer breaks it and it can no longer demonstrate the
+    damage this test exists to measure.
     """
     command = (
-        "gcloud -x my-project storage buckets add-iam-policy-binding gs://b "
-        "--member=allUsers --role=roles/storage.objectViewer"
+        "gcloud -x my-project sql users set-password postgres "
+        "--instance=prod --prompt-for-password"
     )
 
     original = BOOLEAN_SHORT_FLAGS["gcloud"]
