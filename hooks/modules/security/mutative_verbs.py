@@ -2090,18 +2090,20 @@ def _check_iam_policy_binding(
 
 ACCOUNT_SENSITIVE_HOME_PREFIXES: FrozenSet[str] = frozenset({
     ".ssh", ".gnupg", ".aws", ".kube", ".docker",
-    ".config/gcloud", ".config/gh",
+    ".config/gcloud", ".config/gh", ".config/git",
 })
 
 ACCOUNT_SENSITIVE_HOME_FILES: FrozenSet[str] = frozenset({
     ".bashrc", ".bash_profile", ".bash_login", ".profile",
     ".zshrc", ".zprofile", ".zshenv",
-    ".netrc", ".git-credentials",
+    ".netrc", ".git-credentials", ".gitconfig",
 })
 
-# A redirect's destination, taken from the operator onward. `2>&1` yields the
-# fd `1`, which no path predicate matches, so the fd forms need no exclusion.
-_REDIRECT_TARGET_RE = _re.compile(r"\d?>>?\s*&?\s*([^\s;|&]+)")
+# A redirect's destination, taken from the operator onward, the clobber
+# override `>|` included: it writes the same file as `>`, and a gate one
+# operator away is not a gate. `2>&1` yields the fd `1`, which no path
+# predicate matches, so the fd forms need no exclusion.
+_REDIRECT_TARGET_RE = _re.compile(r"\d?>>?\|?\s*&?\s*([^\s;|&]+)")
 
 
 def _home_relative_path(token: str) -> str:
@@ -2136,8 +2138,9 @@ def is_account_sensitive_path(token: str) -> bool:
     LOCATION (privileged OS directories) and treats the whole home directory
     as safe, which is the reasoning that left `~/.ssh/authorized_keys` open.
     These paths are sensitive by CONTENTS -- they decide who may log in, they
-    run on the next shell, or they are the credentials themselves -- and an
-    object valuable by its contents stays T3 wherever it sits.
+    run on the next shell or the next git invocation, they name the program
+    that hands out the credentials, or they are the credentials themselves --
+    and an object valuable by its contents stays T3 wherever it sits.
     """
     relative = _home_relative_path(token)
     if not relative:

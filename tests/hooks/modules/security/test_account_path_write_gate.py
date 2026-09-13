@@ -21,7 +21,12 @@ out login access (``~/.ssh``), or they run on the next shell (the rc
 files), or they are the credentials themselves.
 
 Both spellings are asserted here because closing one leaves the other open,
-and a gate reachable by a second spelling is not a gate.
+and a gate reachable by a second spelling is not a gate. That is why ``>|``,
+bash's clobber override, is measured beside ``>``: same destination, same
+write, one operator apart. And because membership follows contents, the file
+that DECLARES a credential helper belongs with the store that helper reads --
+a helper rewritten in the config redirects the same credentials without ever
+touching the store.
 
 The negatives are half the suite. The sensitive set is small on purpose: an
 ordinary write under ``~/.cache``, the Gaia scratch directory, or the
@@ -54,6 +59,7 @@ TEE_WRITES = [
     ("ssh-absolute", f"tee -a {HOME}/.ssh/authorized_keys"),
     ("shell-rc", "tee ~/.bashrc"),
     ("aws-credentials", "tee -a ~/.aws/credentials"),
+    ("git-config", "tee -a ~/.gitconfig"),
 ]
 
 # The redirect route: the destination is an operator target the sanitizer
@@ -63,6 +69,8 @@ REDIRECT_WRITES = [
     ("ssh-truncate", f"printf key > {HOME}/.ssh/authorized_keys"),
     ("ssh-home-var", "echo 'ssh-rsa AAAAB3Nza key' >> $HOME/.ssh/authorized_keys"),
     ("shell-rc", "echo 'export PATH=/tmp/x:$PATH' >> ~/.zshrc"),
+    ("git-config-xdg", "echo '[alias]' >> ~/.config/git/config"),
+    ("ssh-clobber-override", "echo 'ssh-rsa AAAAB3Nza key' >| ~/.ssh/authorized_keys"),
 ]
 
 ACCOUNT_WRITES = TEE_WRITES + REDIRECT_WRITES
@@ -80,6 +88,8 @@ ORDINARY_WRITES = [
     ("cache-redirect", "echo building > ~/.cache/build.log"),
     ("scratch-redirect", "echo '{}' > ~/.gaia/scratch/a967a85a994f1db23.txt"),
     ("tmp-redirect", "echo hello > /tmp/notes.txt"),
+    ("unrelated-config", "tee ~/.config/nvim/init.lua"),
+    ("neighbour-of-a-sensitive-name", "tee ~/.gitconfig.bak"),
 ]
 
 
@@ -214,3 +224,24 @@ def test_both_spellings_of_the_same_effect_agree():
     )
     assert via_tee.allowed == via_redirect.allowed is False
     assert via_tee.tier == via_redirect.tier == T3
+
+
+def test_the_credential_store_and_its_declaration_agree():
+    """The file naming the credential helper costs what the store costs.
+
+    Protecting ``~/.git-credentials`` while leaving ``~/.gitconfig`` free is an
+    imbalance rather than a narrower set: pointing ``credential.helper`` at
+    another program redirects the same credentials with no write to the store.
+    """
+    store = validate_bash_command("tee -a ~/.git-credentials")
+    declaration = validate_bash_command("tee -a ~/.gitconfig")
+    assert store.allowed == declaration.allowed is False
+    assert store.tier == declaration.tier == T3
+
+
+def test_clobber_override_agrees_with_plain_truncation():
+    """``>|`` is ``>`` with noclobber overridden, and must classify as ``>``."""
+    plain = validate_bash_command(f"printf key > {HOME}/.ssh/authorized_keys")
+    override = validate_bash_command(f"printf key >| {HOME}/.ssh/authorized_keys")
+    assert plain.allowed == override.allowed is False
+    assert plain.tier == override.tier == T3
