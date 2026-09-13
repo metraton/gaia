@@ -2636,7 +2636,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
                 return self.request_consent(
                     ConsentRequest(
-                        operation=file_path,
+                        operation=consent_path,
                         kind="file",
                         reason=reason,
                         tier="T3_BLOCKED",

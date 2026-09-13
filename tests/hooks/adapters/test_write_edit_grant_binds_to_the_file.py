@@ -124,6 +124,54 @@ def test_a_retargeted_symlink_is_blocked_again_under_a_new_request(tmp_path):
     assert find_pending_for_file(SESSION, str(second))
 
 
+def test_the_persistence_fallback_consents_against_the_resolved_file(
+    tmp_path, monkeypatch
+):
+    """The fallback branch names the same object as the three consumers above.
+
+    When the pending cannot be persisted the adapter drops the Gaia approval
+    id and asks the host inline instead. That request is built from its own
+    local, and it kept the raw spelling while everything around it moved to
+    the resolved one -- one branch consenting against the link while the rest
+    bind to the file.
+
+    Asserted on the ``ConsentRequest`` rather than on the rendered response
+    because the native-ask shape renders ``reason`` alone; ``operation`` is
+    the field this branch carries the path in, and the host is its reader.
+    """
+    real, _second, through_link = _tree(tmp_path)
+
+    from modules.security import approval_grants
+
+    monkeypatch.setattr(
+        approval_grants,
+        "write_pending_approval_for_file",
+        lambda **_kwargs: None,
+    )
+
+    adapter = ClaudeCodeAdapter()
+    seen = {}
+    original_request_consent = adapter.request_consent
+
+    def _capture(request):
+        seen["operation"] = request.operation
+        return original_request_consent(request)
+
+    monkeypatch.setattr(adapter, "request_consent", _capture)
+    adapter._adapt_write_edit(
+        "Edit",
+        {"file_path": str(through_link)},
+        session_id=SESSION,
+        is_subagent=True,
+        agent_id=AGENT_ID,
+    )
+
+    assert seen.get("operation") == str(real), (
+        "the fallback must consent against the file the write lands on, not "
+        "the spelling that reached it"
+    )
+
+
 def test_the_resolver_keeps_the_form_the_symlink_actually_lands_on(tmp_path):
     from modules.security.protected_paths import resolved_write_target
 
