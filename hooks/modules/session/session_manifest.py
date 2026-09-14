@@ -4,8 +4,12 @@ Phase 4 of the context-injection redesign moves what was previously emitted
 on every UserPromptSubmit to a one-shot SessionStart manifest. The blocks
 that move:
 
-- Environment manifest (NEW) -- workspace identity, machine, gaia version,
-  mode, cwd, plugin data dir. Stable for the lifetime of the session.
+- Where I am (NEW) -- workspace identity, machine, gaia version, cwd, plugin
+  root. Stable for the lifetime of the session.
+- What I can run here (NEW) -- the trusted absolute path to the `gaia` CLI
+  and which known tools resolve on PATH. Split from the block above because
+  it can go stale (a tool install, a rebuilt CLI symlink) independently of
+  the machine/workspace facts, which never change mid-session.
 
 Pending approvals are NOT surfaced here. Cross-session surfacing of pendings
 (the former [ACTIONABLE] block) has been removed entirely: the DB remains the
@@ -137,6 +141,104 @@ def _read_workspace_identity() -> Optional[str]:
     return None
 
 
+def _scan_live_gaia_installation() -> Optional[dict]:
+    """In-process re-run of the install detector, for THIS machine, right now.
+
+    Delegates to ``tools.scan.store_populator._scan_gaia_installations`` --
+    the same read-only heuristic ``gaia scan`` persists into the
+    ``gaia_installations`` table -- but calls it directly against the current
+    workspace root instead of reading that table back. The table only
+    refreshes when someone runs `gaia scan`, and it can age silently: a row
+    written before a same-day `gaia dev` rebuild keeps reporting the old
+    version until the next scan. Returns the one dict for this hostname, or
+    None when no install marker (npm/dev/plugin) is found. Never raises.
+    """
+    try:
+        from ..core.paths import find_claude_dir
+        workspace_root = find_claude_dir().parent
+
+        _pkg_root = str(Path(__file__).resolve().parents[3])
+        if _pkg_root not in sys.path:
+            sys.path.insert(0, _pkg_root)
+        from tools.scan.store_populator import _scan_gaia_installations
+
+        installations = _scan_gaia_installations(workspace_root)
+        return installations[0] if installations else None
+    except Exception as exc:
+        logger.debug("_scan_live_gaia_installation failed (non-fatal): %s", exc)
+        return None
+
+
+def _resolve_gaia_cli_path() -> Optional[str]:
+    """Absolute path to the `gaia` CLI the orchestrator should invoke.
+
+    Publishes the workspace's own `node_modules/@jaguilar87/gaia/bin/gaia`
+    symlink path, not its realpath -- `gaia dev`/pnpm repoint that symlink at
+    a fresh store entry on every rebuild, so the symlink always resolves to
+    whatever is currently installed. Publishing a resolved snapshot instead
+    would keep pointing at a specific pnpm store attempt that a later
+    install can prune while the file itself stays executable (measured:
+    three coexisting store roots on this machine) -- silent staleness with
+    no error. Resolved from the manifest's own `bin` field rather than a
+    hardcoded "bin/gaia", and verified against the real trust guard before
+    being returned, never merely reasoned to be correct. None when no
+    npm-style install is found or the guard rejects the candidate.
+    """
+    try:
+        from ..core.paths import find_claude_dir
+        workspace_root = find_claude_dir().parent
+
+        gaia_dir = workspace_root / "node_modules" / "@jaguilar87" / "gaia"
+        manifest_path = gaia_dir / "package.json"
+        if not manifest_path.is_file():
+            return None
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        bin_field = manifest.get("bin") if isinstance(manifest, dict) else None
+        bin_rel = bin_field.get("gaia") if isinstance(bin_field, dict) else None
+        if not isinstance(bin_rel, str) or not bin_rel.strip():
+            return None
+        candidate = str(gaia_dir / bin_rel)
+
+        from ..security.gaia_cli_only_guard import is_trusted_gaia_binary
+        if not is_trusted_gaia_binary(candidate):
+            return None
+        return candidate
+    except Exception as exc:
+        logger.debug("_resolve_gaia_cli_path failed (non-fatal): %s", exc)
+        return None
+
+
+# Corpus-derived: every name below was measured with at least one mention in
+# skills/*.md or agents/*.md (grep, 2026-09-14). `acli` carries zero corpus
+# mentions and is listed anyway -- it is the case this inventory exists for:
+# installed on this machine, invoked by nothing here that names it.
+_CANDIDATE_TOOLS: tuple = (
+    "git", "go", "npm", "terraform", "node", "gcloud", "flux", "kubectl",
+    "gh", "terragrunt", "helm", "aws", "pulumi", "python3", "gws", "jq",
+    "pnpm", "curl", "ssh", "eslint", "cargo", "prettier", "vault",
+    "playwright", "acli",
+)
+
+
+def _scan_available_tools(candidates: tuple = _CANDIDATE_TOOLS) -> list:
+    """Which *candidates* resolve on PATH right now, in declared order.
+
+    ``shutil.which`` is a pure PATH lookup -- no subprocess, no version probe
+    -- so this reflects the current install rather than a snapshot. Never
+    raises: a lookup failure for one name is skipped, not fatal to the rest.
+    """
+    import shutil
+
+    found = []
+    for name in candidates:
+        try:
+            if shutil.which(name):
+                found.append(name)
+        except Exception:
+            continue
+    return found
+
+
 def _machine_label() -> str:
     """Return a short machine label like ``hostname (Linux/x86_64)``.
 
@@ -160,18 +262,29 @@ def _machine_label() -> str:
 # Builders
 # ---------------------------------------------------------------------------
 
-def build_environment_block() -> str:
-    """Render the Environment section: workspace, machine, gaia, paths.
+def build_where_i_am_block() -> str:
+    """Render "## Where I am": workspace, machine, gaia version, paths.
 
-    Returns "" if every subcomponent fails -- the block is purely informational
-    and a half-filled block is worse than nothing. In practice cwd and
+    Stable facts for the lifetime of the session -- unlike "## What I can run
+    here" (build_capabilities_block), which can go stale independently (a
+    tool install, a CLI rebuild) and is therefore its own block. Returns ""
+    if every subcomponent fails -- the block is purely informational and a
+    half-filled block is worse than nothing. In practice cwd and
     machine_label always succeed, so this rarely happens.
     """
     try:
         workspace = _read_workspace_identity()
         machine = _machine_label()
-        version = _read_gaia_version()
         cwd = str(Path.cwd())
+
+        # Live, in-process re-scan (never the gaia_installations table, which
+        # only refreshes on `gaia scan` and can report a stale version -- see
+        # _scan_live_gaia_installation). Falls back to the package.json
+        # ancestor walk only when no install marker is found at all.
+        installation = _scan_live_gaia_installation()
+        version = installation.get("version") if installation else None
+        if not version:
+            version = _read_gaia_version()
 
         # Data dir resolution can fail under headless tests with no .claude/
         # tree; treat as soft-missing.
@@ -183,7 +296,7 @@ def build_environment_block() -> str:
             plugin_root = None
             data_dir = None
 
-        lines = ["## Environment"]
+        lines = ["## Where I am"]
         if workspace:
             # Not "Workspace": the bare word reads as "where we are working",
             # and this value is where GAIA is installed -- the orchestrator is
@@ -206,7 +319,35 @@ def build_environment_block() -> str:
             return ""
         return "\n".join(lines)
     except Exception as exc:
-        logger.debug("build_environment_block failed (non-fatal): %s", exc)
+        logger.debug("build_where_i_am_block failed (non-fatal): %s", exc)
+        return ""
+
+
+def build_capabilities_block() -> str:
+    """Render "## What I can run here": the CLI path and tool presence.
+
+    The orchestrator's identity declares it invokes `gaia` by the absolute
+    path this block publishes -- with no path published, it fell back to the
+    bare token `gaia`, which the trust guard categorically rejects
+    (is_trusted_gaia_binary requires an absolute path). Both facts here are
+    live, in-process lookups (no subprocess, no table): the CLI path is
+    resolved and guard-verified by _resolve_gaia_cli_path, and tool presence
+    is a shutil.which pass over a fixed candidate list. Returns "" when
+    neither the CLI path resolves nor any candidate tool is found.
+    """
+    try:
+        lines = ["## What I can run here"]
+        cli_path = _resolve_gaia_cli_path()
+        if cli_path:
+            lines.append(f"- gaia CLI: {cli_path}")
+        tools = _scan_available_tools()
+        if tools:
+            lines.append(f"- Tools on PATH: {', '.join(tools)}")
+        if len(lines) <= 1:
+            return ""
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.debug("build_capabilities_block failed (non-fatal): %s", exc)
         return ""
 
 
@@ -266,17 +407,12 @@ def build_workspace_memory_block(
             # Without a workspace we cannot scope the query; skip the block.
             return ""
 
-        # Resolve the CLI: prefer the in-repo bin/gaia when present so the
-        # hook works from any cwd, fall back to PATH lookup otherwise.
-        cli_args: list[str]
-        try:
-            from ..core.paths import find_claude_dir
-            claude_dir = find_claude_dir()
-            # In-repo / symlinked layout: .claude/tools/gaia or PATH.
-            cli_args = ["gaia"]
-            _ = claude_dir  # documented dependency, future-proofing
-        except Exception:
-            cli_args = ["gaia"]
+        # Resolve the CLI: prefer the guard-verified absolute path (see
+        # _resolve_gaia_cli_path) so this subprocess call works from any cwd
+        # regardless of PATH; fall back to the bare token only when no
+        # install marker resolves.
+        cli_path = _resolve_gaia_cli_path()
+        cli_args: list[str] = [cli_path] if cli_path else ["gaia"]
 
         cmd = cli_args + [
             "memory", "get-relevant",
@@ -649,7 +785,11 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
 
     total_available = len(live)
     header = "## Project Context — Projects"
-    pointer = "Ficha de un proyecto: gaia context project <nombre>"
+    # This is the first command a newly-born orchestrator is likely to try --
+    # the bare `gaia` token the guard categorically rejects (it accepts only
+    # an absolute, guard-verified path) must never be what it suggests here.
+    _cli = _resolve_gaia_cli_path() or "gaia"
+    pointer = f"Ficha de un proyecto: {_cli} context project <nombre>"
 
     def _display_name(e: dict) -> str:
         """The identifier shown in the index -- resolvable, not necessarily stored.
@@ -1080,13 +1220,20 @@ def build_session_context() -> str:
     """
     try:
         blocks = [
-            build_environment_block(),
+            build_where_i_am_block(),
+            # What I can run here: the guard-verified CLI path plus tool
+            # presence. Split from Where I am (different freshness: a tool
+            # install or CLI rebuild can go stale mid-session while machine/
+            # workspace facts never do) but still emitted right after it --
+            # both are the operational-setup pair the orchestrator reads
+            # before anything project-specific.
+            build_capabilities_block(),
             # Project Context — Projects: the index of projects that have active
             # project context (a project_identity contract), each as name +
-            # on-disk path. Emitted immediately after Environment so it reads as
-            # part of the project-context setup the orchestrator receives -- it
-            # lets a bare mention in memory (e.g. "AOS", "nfi") resolve to a
-            # path the orchestrator already holds, without spending a subagent.
+            # on-disk path. Emitted immediately after so it reads as part of
+            # the project-context setup the orchestrator receives -- it lets a
+            # bare mention in memory (e.g. "AOS", "nfi") resolve to a path the
+            # orchestrator already holds, without spending a subagent.
             build_projects_context_block(),
             # Project Context — Contract Index: which project-context sections
             # each specialist surface receives when dispatched (surface ->

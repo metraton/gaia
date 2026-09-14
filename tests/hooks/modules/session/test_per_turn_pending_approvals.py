@@ -77,7 +77,10 @@ class TestNoPendingSurfacingBuilderRemains:
         offline; the result must contain none of the pending-surfacing markers.
         """
         monkeypatch.setattr(
-            session_manifest, "build_environment_block", lambda: "ENV"
+            session_manifest, "build_where_i_am_block", lambda: "ENV"
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_capabilities_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_projects_context_block", lambda: "PROJ"

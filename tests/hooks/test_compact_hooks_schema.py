@@ -238,8 +238,8 @@ class TestSessionStartCompactDeliversRefresh:
         _assert_schema_valid(response)
         hso = response.get("hookSpecificOutput", {})
         ctx = hso.get("additionalContext", "")
-        assert "## Environment" in ctx, (
+        assert "## Where I am" in ctx, (
             "source=startup must still build the full session manifest "
-            "(Environment block), not the lightweight compact refresh."
+            "(Where I am block), not the lightweight compact refresh."
         )
         assert "Post-Compaction Context Refresh" not in ctx

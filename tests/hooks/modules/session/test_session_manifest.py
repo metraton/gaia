@@ -18,17 +18,18 @@ sys.path.insert(0, str(HOOKS_DIR))
 
 from modules.session import session_manifest
 from modules.session.session_manifest import (
-    build_environment_block,
+    build_capabilities_block,
     build_session_context,
+    build_where_i_am_block,
     build_workspace_memory_block,
 )
 
 
 # ---------------------------------------------------------------------------
-# build_environment_block
+# build_where_i_am_block
 # ---------------------------------------------------------------------------
 
-class TestBuildEnvironmentBlock:
+class TestBuildWhereIAmBlock:
     def test_block_includes_cwd_and_machine_minimum(self, monkeypatch):
         """Even with no workspace identity, the block must carry the basics."""
         # No project-context.json so workspace is None.
@@ -40,8 +41,8 @@ class TestBuildEnvironmentBlock:
             session_manifest, "_machine_label", lambda: "host (Linux/x86_64)"
         )
 
-        result = build_environment_block()
-        assert "## Environment" in result
+        result = build_where_i_am_block()
+        assert "## Where I am" in result
         assert "cwd:" in result
         assert "host (Linux/x86_64)" in result
 
@@ -53,21 +54,44 @@ class TestBuildEnvironmentBlock:
             session_manifest, "_machine_label", lambda: "host (Linux/x86_64)"
         )
 
-        result = build_environment_block()
+        result = build_where_i_am_block()
         assert "Gaia workspace (memory/db scope): my-workspace" in result
 
-    def test_block_includes_version_when_available(self, monkeypatch):
+    def test_block_prefers_the_live_scan_over_the_package_json_fallback(self, monkeypatch):
+        """Version comes from the live install scan first -- never a table,
+        and never the ancestor-walk fallback while the scan has an answer."""
         monkeypatch.setattr(
             session_manifest, "_read_workspace_identity", lambda: None
         )
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
         monkeypatch.setattr(
-            session_manifest, "_machine_label", lambda: "host"
+            session_manifest,
+            "_scan_live_gaia_installation",
+            lambda: {"version": "5.5.0-rc.1", "install_mode": "npm"},
         )
         monkeypatch.setattr(
             session_manifest, "_read_gaia_version", lambda: "5.0.0-rc.3"
         )
 
-        result = build_environment_block()
+        result = build_where_i_am_block()
+        assert "Gaia: 5.5.0-rc.1" in result
+        assert "5.0.0-rc.3" not in result
+
+    def test_block_falls_back_to_package_json_when_scan_finds_nothing(self, monkeypatch):
+        """No install marker found (e.g. a bare checkout) -> the old
+        ancestor-walk source still renders a version."""
+        monkeypatch.setattr(
+            session_manifest, "_read_workspace_identity", lambda: None
+        )
+        monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(
+            session_manifest, "_scan_live_gaia_installation", lambda: None
+        )
+        monkeypatch.setattr(
+            session_manifest, "_read_gaia_version", lambda: "5.0.0-rc.3"
+        )
+
+        result = build_where_i_am_block()
         assert "Gaia: 5.0.0-rc.3" in result
 
     def test_block_failsafe_when_workspace_helper_raises(self, monkeypatch):
@@ -82,7 +106,7 @@ class TestBuildEnvironmentBlock:
 
         # Should not raise; result is allowed to be either "" or a
         # partial block built without the workspace line.
-        result = build_environment_block()
+        result = build_where_i_am_block()
         assert isinstance(result, str)
         # The catch is at the function boundary; we tolerate either branch
         # but must not see a Workspace line for the failing helper.
@@ -94,21 +118,27 @@ class TestBuildEnvironmentBlock:
         monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
         monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
         monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(
+            session_manifest, "_scan_live_gaia_installation", lambda: None
+        )
         monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
 
         from gaia.dev_builds import record_build
         record_build("5.3.0", "fb27693c")
 
-        assert "Gaia: 5.3.0 (dev.1, build fb27693c)" in build_environment_block()
+        assert "Gaia: 5.3.0 (dev.1, build fb27693c)" in build_where_i_am_block()
 
     def test_version_line_is_bare_when_no_dev_build_was_recorded(self, monkeypatch, tmp_path):
         """A pristine npm install has no sidecar, and must render as it always did."""
         monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
         monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
         monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(
+            session_manifest, "_scan_live_gaia_installation", lambda: None
+        )
         monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
 
-        result = build_environment_block()
+        result = build_where_i_am_block()
         assert "Gaia: 5.3.0" in result
         assert "dev." not in result
 
@@ -117,10 +147,13 @@ class TestBuildEnvironmentBlock:
 
         Same discipline as the memory block: any failure yields the display
         that existed before the counter did, never an exception and never a
-        dropped Environment block.
+        dropped Where I am block.
         """
         monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
         monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(
+            session_manifest, "_scan_live_gaia_installation", lambda: None
+        )
         monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
 
         import gaia.dev_builds as dev_builds
@@ -130,7 +163,7 @@ class TestBuildEnvironmentBlock:
 
         monkeypatch.setattr(dev_builds, "describe_version", _boom)
 
-        result = build_environment_block()
+        result = build_where_i_am_block()
         assert "Gaia: 5.3.0" in result
         assert "dev." not in result
 
@@ -138,10 +171,150 @@ class TestBuildEnvironmentBlock:
         """A partial install without gaia.dev_builds still renders the version."""
         monkeypatch.setattr(session_manifest, "_read_workspace_identity", lambda: None)
         monkeypatch.setattr(session_manifest, "_machine_label", lambda: "host")
+        monkeypatch.setattr(
+            session_manifest, "_scan_live_gaia_installation", lambda: None
+        )
         monkeypatch.setattr(session_manifest, "_read_gaia_version", lambda: "5.3.0")
         monkeypatch.setitem(sys.modules, "gaia.dev_builds", None)
 
-        assert "Gaia: 5.3.0" in build_environment_block()
+        assert "Gaia: 5.3.0" in build_where_i_am_block()
+
+
+# ---------------------------------------------------------------------------
+# _scan_live_gaia_installation / _resolve_gaia_cli_path / _scan_available_tools
+# ---------------------------------------------------------------------------
+
+class TestScanLiveGaiaInstallation:
+    def test_delegates_to_the_pure_scanner_for_this_workspace_root(self, monkeypatch, tmp_path):
+        """The live scan calls the real, table-free detector against the
+        resolved workspace root -- never the gaia_installations table."""
+        captured = {}
+
+        def _fake_scan(workspace_root):
+            captured["root"] = workspace_root
+            return [{"machine": "host", "version": "9.9.9", "install_mode": "npm"}]
+
+        import modules.core.paths as core_paths_mod
+
+        monkeypatch.setattr(
+            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
+        )
+        import tools.scan.store_populator as store_populator
+
+        monkeypatch.setattr(store_populator, "_scan_gaia_installations", _fake_scan)
+
+        result = session_manifest._scan_live_gaia_installation()
+        assert result == {"machine": "host", "version": "9.9.9", "install_mode": "npm"}
+        assert captured["root"] == tmp_path / "ws"
+
+    def test_returns_none_on_any_failure(self, monkeypatch):
+        import modules.core.paths as core_paths_mod
+
+        def _boom():
+            raise RuntimeError("no .claude tree")
+
+        monkeypatch.setattr(core_paths_mod, "find_claude_dir", _boom)
+        assert session_manifest._scan_live_gaia_installation() is None
+
+
+class TestResolveGaiaCliPath:
+    def _make_npm_layout(self, tmp_path, bin_rel="bin/gaia"):
+        gaia_dir = tmp_path / "ws" / "node_modules" / "@jaguilar87" / "gaia"
+        gaia_dir.mkdir(parents=True)
+        (gaia_dir / "package.json").write_text(
+            json.dumps({"name": "@jaguilar87/gaia", "bin": {"gaia": bin_rel}})
+        )
+        bin_path = gaia_dir / bin_rel
+        bin_path.parent.mkdir(parents=True, exist_ok=True)
+        bin_path.write_text("#!/usr/bin/env node\n")
+        return gaia_dir, bin_path
+
+    def test_returns_none_when_no_npm_marker(self, monkeypatch, tmp_path):
+        import modules.core.paths as core_paths_mod
+
+        monkeypatch.setattr(
+            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
+        )
+        assert session_manifest._resolve_gaia_cli_path() is None
+
+    def test_returns_none_when_guard_rejects_the_candidate(self, monkeypatch, tmp_path):
+        """A candidate that resolves but fails the real trust guard is
+        never published -- the guard is consulted, not merely trusted."""
+        import modules.core.paths as core_paths_mod
+
+        self._make_npm_layout(tmp_path)
+        monkeypatch.setattr(
+            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
+        )
+        import modules.security.gaia_cli_only_guard as guard
+
+        monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _token: False)
+
+        assert session_manifest._resolve_gaia_cli_path() is None
+
+    def test_returns_the_candidate_when_the_guard_accepts_it(self, monkeypatch, tmp_path):
+        import modules.core.paths as core_paths_mod
+
+        _gaia_dir, bin_path = self._make_npm_layout(tmp_path)
+        monkeypatch.setattr(
+            core_paths_mod, "find_claude_dir", lambda: tmp_path / "ws" / ".claude"
+        )
+        import modules.security.gaia_cli_only_guard as guard
+
+        monkeypatch.setattr(guard, "is_trusted_gaia_binary", lambda _token: True)
+
+        assert session_manifest._resolve_gaia_cli_path() == str(bin_path)
+
+
+class TestScanAvailableTools:
+    def test_only_resolvable_candidates_are_returned_in_order(self, monkeypatch):
+        import shutil as _shutil
+
+        monkeypatch.setattr(
+            _shutil, "which", lambda name: "/usr/bin/" + name if name in ("git", "acli") else None
+        )
+        result = session_manifest._scan_available_tools(("playwright", "git", "acli"))
+        assert result == ["git", "acli"]
+
+    def test_a_lookup_failure_is_skipped_not_fatal(self, monkeypatch):
+        import shutil as _shutil
+
+        def _boom(_name):
+            raise OSError("simulated PATH lookup failure")
+
+        monkeypatch.setattr(_shutil, "which", _boom)
+        assert session_manifest._scan_available_tools(("git",)) == []
+
+
+# ---------------------------------------------------------------------------
+# build_capabilities_block
+# ---------------------------------------------------------------------------
+
+class TestBuildCapabilitiesBlock:
+    def test_renders_both_lines_when_both_resolve(self, monkeypatch):
+        monkeypatch.setattr(
+            session_manifest, "_resolve_gaia_cli_path", lambda: "/abs/bin/gaia"
+        )
+        monkeypatch.setattr(
+            session_manifest, "_scan_available_tools", lambda: ["git", "acli"]
+        )
+        result = build_capabilities_block()
+        assert "## What I can run here" in result
+        assert "- gaia CLI: /abs/bin/gaia" in result
+        assert "- Tools on PATH: git, acli" in result
+
+    def test_empty_when_neither_resolves(self, monkeypatch):
+        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
+        monkeypatch.setattr(session_manifest, "_scan_available_tools", lambda: [])
+        assert build_capabilities_block() == ""
+
+    def test_failsafe_when_a_subcomponent_raises(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("simulated guard failure")
+
+        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", _boom)
+        result = build_capabilities_block()
+        assert isinstance(result, str)
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +323,10 @@ class TestBuildEnvironmentBlock:
 
 class TestBuildSessionContext:
     """Pending approvals are no longer surfaced (M2): the assembler concatenates
-    Environment, Projects, Contract Index, task notifications, schedule
-    reconciliation, schedule suspensions, and Workspace Memory (digest +
-    anchors) -- there is no pending-approvals block in the join.
+    Where I am, What I can run here, Projects, Contract Index, task
+    notifications, schedule reconciliation, schedule suspensions, and
+    Workspace Memory (digest + anchors) -- there is no pending-approvals
+    block in the join.
     """
 
     def test_retired_loop_builder_is_gone(self):
@@ -162,7 +336,10 @@ class TestBuildSessionContext:
 
     def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
         monkeypatch.setattr(
-            session_manifest, "build_environment_block", lambda: "ENV BLOCK"
+            session_manifest, "build_where_i_am_block", lambda: "ENV BLOCK"
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_capabilities_block", lambda: "CAPS BLOCK"
         )
         monkeypatch.setattr(
             session_manifest, "build_projects_context_block", lambda: "PROJ BLOCK"
@@ -198,16 +375,16 @@ class TestBuildSessionContext:
 
         result = build_session_context()
         assert result == (
-            "ENV BLOCK\n\nPROJ BLOCK\n\nCONTRACTS BLOCK\n\n"
+            "ENV BLOCK\n\nCAPS BLOCK\n\nPROJ BLOCK\n\nCONTRACTS BLOCK\n\n"
             "DIGEST BLOCK\n\nANCHOR BLOCK"
         ), (
             "Blocks must be joined with exactly one blank line separator -- "
             "markdown convention; agents render this as paragraph breaks. "
-            "Project Context — Projects sits right after Environment, then "
-            "the Contract Index (Bug 1 fix: wired but never called before). "
-            "Workspace Memory is now two calls: the digest, then the anchors "
-            "(Bug 2 fix). Pending approvals are no longer part of the "
-            "manifest."
+            "What I can run here sits right after Where I am (same "
+            "operational-setup pair, different freshness), then Projects, "
+            "then the Contract Index. Workspace Memory is now two calls: "
+            "the digest, then the anchors. Pending approvals are no longer "
+            "part of the manifest."
         )
         assert "[ACTIONABLE]" not in result
 
@@ -215,7 +392,8 @@ class TestBuildSessionContext:
         """Bug 2: the assembler calls build_workspace_memory_block twice --
         once with no sections (digest) and once with sections=["anchor"] --
         so the orchestrator receives both without duplicating either."""
-        monkeypatch.setattr(session_manifest, "build_environment_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_where_i_am_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_capabilities_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_projects_context_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_contracts_index_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_task_notifications_block", lambda: "")
@@ -240,7 +418,10 @@ class TestBuildSessionContext:
     def test_skips_empty_blocks_in_join(self, monkeypatch):
         """Empty blocks must not leave dangling blank lines in the output."""
         monkeypatch.setattr(
-            session_manifest, "build_environment_block", lambda: "ENV BLOCK"
+            session_manifest, "build_where_i_am_block", lambda: "ENV BLOCK"
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_capabilities_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_projects_context_block", lambda: ""
@@ -276,7 +457,10 @@ class TestBuildSessionContext:
 
     def test_returns_empty_when_all_blocks_empty(self, monkeypatch):
         monkeypatch.setattr(
-            session_manifest, "build_environment_block", lambda: ""
+            session_manifest, "build_where_i_am_block", lambda: ""
+        )
+        monkeypatch.setattr(
+            session_manifest, "build_capabilities_block", lambda: ""
         )
         monkeypatch.setattr(
             session_manifest, "build_projects_context_block", lambda: ""
@@ -307,7 +491,7 @@ class TestBuildSessionContext:
             raise RuntimeError("simulated builder failure")
 
         monkeypatch.setattr(
-            session_manifest, "build_environment_block", _boom
+            session_manifest, "build_where_i_am_block", _boom
         )
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda *a, **kw: ""
@@ -560,10 +744,27 @@ class TestBuildProjectsBlockIsAnIndexWithCuratedDescriptions:
         assert "plainproj" not in block
 
     def test_pointer_footer_names_the_ficha_verb(self, monkeypatch):
+        """Bare 'gaia' is the degraded fallback for a host with no resolvable
+        CLI path -- pinned explicitly so the assertion never depends on
+        whatever npm layout happens to sit on the machine running this test."""
+        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
         payload = {"p": {"name": "p", "local_path": "/p"}}
         block = self._run_with_rows(monkeypatch, payload)
         assert block.rstrip().endswith(
             "Ficha de un proyecto: gaia context project <nombre>"
+        )
+
+    def test_pointer_uses_the_resolved_cli_path_when_available(self, monkeypatch):
+        """The first command a newborn orchestrator tries must be one the
+        guard accepts -- a resolvable install publishes its absolute path,
+        not the bare token the guard categorically rejects."""
+        monkeypatch.setattr(
+            session_manifest, "_resolve_gaia_cli_path", lambda: "/abs/bin/gaia"
+        )
+        payload = {"p": {"name": "p", "local_path": "/p"}}
+        block = self._run_with_rows(monkeypatch, payload)
+        assert block.rstrip().endswith(
+            "Ficha de un proyecto: /abs/bin/gaia context project <nombre>"
         )
 
     def test_vanished_entry_is_not_injected_at_all(self, monkeypatch):
@@ -929,6 +1130,10 @@ class TestBuildProjectsBlockNoSilentDrop:
         assert "... (" not in block  # no truncation footer -- full set landed
 
     def test_overflow_always_ends_in_footer(self, monkeypatch):
+        # Pin the fallback: this exercises the fixed-width footer/pointer
+        # budget math at small caps, which must not depend on how long an
+        # ambient machine's resolved CLI path happens to be.
+        monkeypatch.setattr(session_manifest, "_resolve_gaia_cli_path", lambda: None)
         self._patch_rows(monkeypatch, self._payload_17())
         for cap in (150, 300, 600, 1000):
             block = session_manifest.build_projects_context_block(max_chars=cap)
