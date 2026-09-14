@@ -1577,20 +1577,38 @@ class ClaudeCodeAdapter(HookAdapter):
     # ------------------------------------------------------------------ #
 
     def _get_gaia_agent_names(self) -> set:
-        """Get names of Gaia-managed agents from the agents/ directory.
+        """Names of the Gaia-managed agents, unioned over every lane that resolves.
 
-        Returns a set of agent names (filenames without .md extension).
-        Native Claude Code agents (Explore, Plan, claude-code-guide) will
-        not appear in this set, enabling bypass of contract validation.
+        An empty set means the roster did not resolve, never that Gaia has no
+        agents, so the caller grants the native-agent bypass only on a non-empty
+        result.
         """
-        agents_dir = Path(__file__).resolve().parent.parent.parent / "agents"
-        if not agents_dir.is_dir():
-            return set()
-        return {
-            f.stem
-            for f in agents_dir.iterdir()
-            if f.suffix == ".md" and f.is_file()
-        }
+        from modules.security.protected_paths import declared_hook_tree_roots
+
+        # Two lanes because the first is a function of the deployment layout:
+        # the directory beside the running module is not the agents directory
+        # once the hooks are materialised away from their checkout. The registry
+        # lane is the identity declared outside any deployment.
+        candidates = [Path(__file__).resolve().parent.parent.parent / "agents"]
+        candidates.extend(
+            Path(root).parent / "agents" for root in declared_hook_tree_roots()
+        )
+
+        names: set = set()
+        for agents_dir in candidates:
+            try:
+                if not agents_dir.is_dir():
+                    continue
+                names.update(
+                    f.stem
+                    for f in agents_dir.iterdir()
+                    if f.suffix == ".md" and f.is_file()
+                )
+            except OSError:
+                # A lane that cannot be read declines to CONTRIBUTE names; it
+                # never removes what another lane already found.
+                continue
+        return names
 
     # ------------------------------------------------------------------ #
     # format_ask_response: for interactive permission requests
@@ -2509,7 +2527,10 @@ class ClaudeCodeAdapter(HookAdapter):
             build_reminder_context,
             should_remind,
         )
-        from modules.security.protected_paths import is_protected_hook_path
+        from modules.security.protected_paths import (
+            is_protected_hook_path,
+            resolved_write_target,
+        )
 
         file_path = parameters.get("file_path", "")
         if not file_path:
@@ -2542,6 +2563,13 @@ class ClaudeCodeAdapter(HookAdapter):
             tool_name, file_path, is_subagent,
         )
 
+        # Resolved once, so the grant lookup, the pending lookup, the pending
+        # write and the surface the user reads all name the same object. The
+        # protection check above keeps the path AS WRITTEN instead: it judges
+        # all three forms, and only the literal one carries the `.claude`
+        # component that a symlinked install destroys on resolution.
+        consent_path = resolved_write_target(file_path)
+
         if not is_subagent:
             # Foreground / orchestrator context: ask the user for consent
             # inline (the adapter maps this to the native approval dialog).
@@ -2551,7 +2579,7 @@ class ClaudeCodeAdapter(HookAdapter):
             )
             return self.request_consent(
                 ConsentRequest(
-                    operation=file_path,
+                    operation=consent_path,
                     kind="file",
                     reason=reason,
                     tier="T3_BLOCKED",
@@ -2562,29 +2590,29 @@ class ClaudeCodeAdapter(HookAdapter):
 
         # 1. Check if a grant has already been activated for this path (retry
         #    after user approved).
-        existing_grant = check_approval_grant_for_file(file_path, session_id or None)
+        existing_grant = check_approval_grant_for_file(consent_path, session_id or None)
         if existing_grant:
             logger.info(
                 "File-path grant active, allowing %s through: %s",
-                tool_name, file_path,
+                tool_name, consent_path,
             )
             return HookResponse(output={}, exit_code=0)
 
         # 2. Check if a pending approval already exists (guard against infinite
         #    approval_id generation while the user is still reviewing).
-        existing_nonce = find_pending_for_file(session_id or "", file_path)
+        existing_nonce = find_pending_for_file(session_id or "", consent_path)
         if existing_nonce:
             approval_id = existing_nonce
             logger.info(
                 "Reusing pending approval_id=%s for retry: %s",
-                approval_id, file_path,
+                approval_id, consent_path,
             )
         else:
             # 3. No existing pending -- generate a new nonce.
             approval_id = generate_nonce()
             pending_path = write_pending_approval_for_file(
                 nonce=approval_id,
-                file_path=file_path,
+                file_path=consent_path,
                 session_id=session_id or None,
             )
             if pending_path is None:
@@ -2592,7 +2620,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 logger.warning(
                     "Failed to persist pending file-path approval for subagent; "
                     "falling back to ask: %s",
-                    file_path,
+                    consent_path,
                 )
                 reason = (
                     "[PROTECTED_PATH] Modifications to Gaia hooks and security config "
@@ -2601,7 +2629,7 @@ class ClaudeCodeAdapter(HookAdapter):
                 )
                 return self.request_consent(
                     ConsentRequest(
-                        operation=file_path,
+                        operation=consent_path,
                         kind="file",
                         reason=reason,
                         tier="T3_BLOCKED",
@@ -2635,14 +2663,14 @@ class ClaudeCodeAdapter(HookAdapter):
             f"edits and the tests between them) is spent inside that one window, and "
             f"nothing you do extends it. A write attempted after it lapses is blocked "
             f"again under a NEW approval_id; this one will not work twice.\n"
-            f"File: {file_path}\n"
+            f"File: {consent_path}\n"
             f"Tool: {tool_name}\n"
             f"approval_id: P-{approval_id}"
         )
         # Out-of-band approval flow: consent is keyed to the persisted approval_id.
         return self.request_consent(
             ConsentRequest(
-                operation=file_path,
+                operation=consent_path,
                 kind="file",
                 reason=reason,
                 tier="T3_BLOCKED",
@@ -3292,14 +3320,17 @@ class ClaudeCodeAdapter(HookAdapter):
         task_info = build_task_info_from_hook_data(hook_data, agent_output)
 
         # ----------------------------------------------------------
-        # Native agent bypass: agents not defined in agents/ dir
-        # (e.g. claude-code-guide, Explore, Plan) do not emit
-        # agent_contract_handoff. Skip contract validation to avoid
-        # an infinite retry loop (exit_code=2 -> retry -> no contract).
+        # Native agent bypass: an agent that is not one of Gaia's own emits no
+        # agent_contract_handoff, so gating it would reject every turn it takes.
+        # It needs a resolved roster AND an identified agent, or enforcement
+        # becomes a function of the deployment layout -- every agent reads as
+        # native when no roster resolves. Failing closed instead costs a bounded
+        # number of rejections, since the circuit breaker ends the turn.
         # ----------------------------------------------------------
         _native_agent_type = task_info.get("agent", "unknown")
         _gaia_agents = self._get_gaia_agent_names()
-        if _native_agent_type not in _gaia_agents:
+        _agent_identified = _native_agent_type not in ("", "unknown")
+        if _gaia_agents and _agent_identified and _native_agent_type not in _gaia_agents:
             logger.info(
                 "Native agent '%s' — skipping contract validation (gaia agents: %s)",
                 _native_agent_type, _gaia_agents,
@@ -3308,6 +3339,21 @@ class ClaudeCodeAdapter(HookAdapter):
                 output={"success": True, "native_agent": True, "agent": _native_agent_type},
                 exit_code=0,
             )
+        if not _gaia_agents:
+            logger.error(
+                "Agent roster did not resolve on any lane; gating '%s' instead "
+                "of treating it as native. Contract enforcement is NOT "
+                "disabled, but this deployment cannot see its own agents.",
+                _native_agent_type,
+            )
+
+        # A rejection reaches the exit code through this latch, not through
+        # `result`: the handler at the end of this method rebuilds that dict
+        # from scratch, so every call standing between the verdict and the
+        # return would otherwise be one more way to close a rejected turn at
+        # exit 0.
+        _rejection_latched = False
+        _latched_rejection_reason = ""
 
         # Run the main processing chain
         try:
@@ -3524,50 +3570,51 @@ class ClaudeCodeAdapter(HookAdapter):
             # degraded outcome and it is reported rather than swallowed.
             # ----------------------------------------------------------
             _circuit = None
+            _turn_key = None
             _circuit_key = None
-            _circuit_unkeyed = False
-            if _gate.rejected:
-                try:
-                    from modules.agents import rejection_circuit
+            try:
+                from modules.agents import rejection_circuit
 
-                    _circuit_key = rejection_circuit.counter_key(session_id, task_info)
-                    if _circuit_key:
-                        # This rejection's own typed codes (empty in 3-case
-                        # mode, or whenever the gate produced none) -- handed
-                        # to the counter so the NEXT pass can read them back
-                        # as CircuitState.previous_codes for its own retry
-                        # notice. Same extraction _record_contract_rejection_defect
-                        # already uses for the event-log codes list.
-                        _current_codes = [
-                            str(a.get("code", ""))
-                            for a in _gate.anomalies
-                            if isinstance(a, dict) and a.get("code")
-                        ]
-                        _circuit = rejection_circuit.record_rejection(
-                            _circuit_key, codes=_current_codes,
-                        )
-                    else:
-                        # No per-dispatch identity -> no key that belongs to this
-                        # turn alone. Cutting on a shared key ends turns that
-                        # never failed, so the breaker stands down and says so.
-                        _circuit_unkeyed = True
+                # Resolved for EVERY verdict, not only a rejecting one: the
+                # accepted branch further down clears the counter, and a key
+                # built only while rejecting leaves that reset unreachable.
+                _turn_key = rejection_circuit.counter_key(session_id, task_info)
+                _circuit_key = _turn_key.key
+                if _gate.rejected:
+                    _current_codes = [
+                        str(a.get("code", ""))
+                        for a in _gate.anomalies
+                        if isinstance(a, dict) and a.get("code")
+                    ]
+                    _circuit = rejection_circuit.record_rejection(
+                        _circuit_key,
+                        codes=_current_codes,
+                        shared=not _turn_key.per_turn,
+                    )
+                    if not _turn_key.per_turn:
                         logger.warning(
-                            "Rejection circuit: no harness agent_id for %s "
-                            "(session=%s), so this turn cannot be counted "
-                            "separately from any other; the ceiling is NOT in "
-                            "force for it.",
+                            "Rejection circuit: %s (session=%s) carried no "
+                            "per-dispatch identity, so it is counted under a "
+                            "ceiling shared with every other unidentified turn "
+                            "of this session.",
                             agent_type, session_id,
                         )
-                except Exception as _circuit_exc:
-                    logger.warning(
-                        "Rejection circuit failed for %s (non-fatal); the retry "
-                        "ceiling is NOT in force this turn: %s",
-                        agent_type, _circuit_exc,
-                    )
+            except Exception as _circuit_exc:
+                logger.warning(
+                    "Rejection circuit failed for %s (non-fatal); the retry "
+                    "ceiling is NOT in force this turn: %s",
+                    agent_type, _circuit_exc,
+                )
             # Resolved here, not at the verdict below: the episode write and the
             # anomaly append both happen earlier in this method and both have to
             # know the turn was cut.
             _circuit_tripped = bool(_circuit is not None and _circuit.tripped)
+
+            # Latched here because this is the last point the breaker can lower
+            # the gate's verdict; nothing below is entitled to change it.
+            if _gate.rejected and not _circuit_tripped:
+                _rejection_latched = True
+                _latched_rejection_reason = _gate.rejection_reason
 
             # Preserve a pending approval this turn's own record still
             # references via APPROVAL_REQUEST. Cleanup must not destroy an
@@ -3802,13 +3849,17 @@ class ClaudeCodeAdapter(HookAdapter):
             # reach the returned dict. A breaker that could not count is
             # recorded too: a turn running without the ceiling must not look
             # like a turn that simply never reached it.
-            if _circuit is not None or _circuit_unkeyed:
+            if _circuit is not None:
                 try:
                     from modules.agents import rejection_circuit
 
-                    if _circuit_unkeyed:
-                        anomalies.append(rejection_circuit.no_key_anomaly(agent_type))
-                    elif _circuit.tripped:
+                    if _turn_key is not None and not _turn_key.per_turn:
+                        anomalies.append(
+                            rejection_circuit.shared_ceiling_anomaly(
+                                agent_type, _circuit,
+                            )
+                        )
+                    if _circuit.tripped:
                         anomalies.append(
                             rejection_circuit.circuit_anomaly(agent_type, _circuit)
                         )
@@ -4194,12 +4245,8 @@ class ClaudeCodeAdapter(HookAdapter):
                 # salvaged draft via --draft-id instead of re-emitting the block.
                 result["salvage_resume_hint"] = _salvage.get("resume_hint")
 
-            # The verdict is recorded BEFORE the relay runs. exit_code=2 is
-            # driven by result['contract_rejected'] alone, and the outer except
-            # below rebuilds `result` without that key -- so anything that can
-            # raise between here and the return would downgrade a rejection to
-            # exit 0. The relay is an enrichment of the rejection, never a
-            # precondition for it, and is isolated accordingly.
+            # Recorded before the relay runs: the relay enriches a rejection and
+            # is never a precondition for one, so it is isolated below.
             if contract_rejected:
                 result["contract_rejected"] = True
                 result["contract_rejection_reason"] = contract_rejection_reason
@@ -4392,6 +4439,14 @@ class ClaudeCodeAdapter(HookAdapter):
                 "error": str(e),
                 "status": "partial_update",
             }
+
+        if _rejection_latched and not result.get("contract_rejected"):
+            result["contract_rejected"] = True
+            result["contract_rejection_reason"] = _latched_rejection_reason
+            logger.error(
+                "Contract rejection restored from the latch: the result dict "
+                "lost it, so exit_code=2 is taken from the verdict itself.",
+            )
 
         if result.get("contract_rejected"):
             logger.warning("Returning exit_code=2 due to contract rejection")

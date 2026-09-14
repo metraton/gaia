@@ -216,6 +216,25 @@ def _candidates(path_str: str) -> Tuple[Path, ...]:
     return tuple(forms)
 
 
+def resolved_write_target(path_str: str) -> str:
+    """The single form a write is granted and consented against.
+
+    Separate from :func:`is_protected_hook_path`, which must fire on ANY form
+    and so judges all three: a grant binds to one object, or a file reached by
+    two spellings is two permissions.
+
+    Resolving at mint does not freeze the link -- a target retargeted afterwards
+    resolves elsewhere, fails to match the grant, and is blocked again under a
+    new approval_id.
+
+    Depends on :func:`_candidates` ordering its forms literal, absolute,
+    resolved; a form appended after the last would become what grants bind to.
+    """
+    if not path_str:
+        return path_str
+    return str(_candidates(path_str)[-1])
+
+
 def is_protected_hook_path(path_str: str) -> bool:
     """Return True iff `path_str` names write-protected Gaia configuration.
 

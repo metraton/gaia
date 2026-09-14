@@ -56,6 +56,7 @@ from ..security.tiers import SecurityTier
 from ..security.blocked_commands import is_blocked_command
 from ..security.kubectl_secret_output import check_kubectl_secret_output
 from ..security.mutative_verbs import (
+    account_path_redirect_target,
     detect_mutative_command,
     build_t3_block_response,
     cwd_after_component,
@@ -761,6 +762,31 @@ class BashValidator:
                     "Use the Write or Edit tool on the file instead; a "
                     "throwaway dump belongs under ~/.gaia/scratch.",
                 ],
+            )
+
+        # ================================================================
+        # ACCOUNT-PATH WRITE
+        # A redirect onto a path that grants account access is legitimate work
+        # needing a signature, so it is decided here as T3 rather than by one of
+        # the categorical guards above. Position is load-bearing twice: BEFORE
+        # the sanitizer, which strips the trailing redirect the verdict rests
+        # on, and before the cloud-pipe phase, which refuses a redirect as a
+        # CHANNEL and would leave this write with no way to consent to it.
+        # ================================================================
+        account_write_target = account_path_redirect_target(command)
+        if account_write_target:
+            return decide_t3_outcome(
+                command,
+                verb="account-path-write",
+                category="MUTATIVE",
+                has_orchestrator_above=is_subagent,
+                native_ask_reason=(
+                    f"[T3_APPROVAL_REQUIRED] This command writes "
+                    f"'{account_write_target}', which grants access to your "
+                    f"own account."
+                ),
+                session_id=session_id,
+                agent_type=agent_type,
             )
 
         # ================================================================

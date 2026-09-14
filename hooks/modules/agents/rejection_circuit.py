@@ -13,9 +13,9 @@ to 37 KB.
 Three things were missing and are supplied here:
 
   * A COUNT that outlives the attempt but dies with the turn. It lives in the
-    relay's own per-turn key space (``<data_dir>/rejected_turns/<key>.attempts``,
-    keyed on session + harness agent id, exactly like the preserved text), so
-    the gate can read on attempt N what it wrote on attempt N-1.
+    relay's own directory (``<data_dir>/rejected_turns/<key>.attempts``) under
+    this module's own key -- see :func:`counter_key` -- so the gate can read on
+    attempt N what it wrote on attempt N-1.
   * A NUMBER IN THE MESSAGE -- see :func:`retry_notice`. An agent told "attempt
     2 of 3, 1 remaining" can change strategy; an agent handed the same bytes
     twice cannot tell the two attempts apart.
@@ -54,11 +54,13 @@ both degrading to nothing, silently, when their input is absent.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import re
 import secrets
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -79,6 +81,12 @@ _NON_IDENTIFYING = frozenset({"", "unknown", "none", "null"})
 # ends the turn instead of extending the loop.
 DEFAULT_MAX_REJECTIONS = 3
 _MAX_REJECTIONS_ENV_VAR = "GAIA_CONTRACT_MAX_REJECTIONS"
+
+# How long a SHARED counter keeps accumulating. A rejection loop refreshes the
+# count on every pass; two unrelated turns are minutes apart, so expiring on
+# idle measures one loop instead of the whole session. Shared lane ONLY -- a key
+# that identifies its turn counts that turn's rejections however far apart.
+_SHARED_COUNTER_IDLE_SECONDS = 300.0
 
 CIRCUIT_OPEN_EVENT = "agent.contract_circuit_open"
 CIRCUIT_ANOMALY_TYPE = "contract_rejection_circuit_open"
@@ -144,28 +152,52 @@ class CircuitState:
         return max(0, self.limit - self.attempt)
 
 
-def counter_key(session_id: Optional[str], task_info: Dict[str, Any]) -> Optional[str]:
-    """A key that identifies ONE turn, or None when it cannot be built.
+@dataclass(frozen=True)
+class TurnKey:
+    """The key a turn is counted under, and how well it identifies that turn.
 
-    Deliberately NOT ``rejected_turn_relay.preservation_key``. That key exists
-    to locate PRESERVED TEXT, and its fallback chain is right for that job and
-    catastrophic for this one: it degrades to the agent TYPE and then to the
-    literal ``unknown``, both of which every dispatch of that agent in the
-    session shares. Sharing a key costs the relay a merged text file; it costs
-    the breaker a turn cut for rejections it never made -- MEASURED: a turn on
-    its FIRST EVER rejection came back ``attempt=3, tripped=True`` because an
-    unrelated turn had already spent the ceiling under the same key.
-
-    So this key requires the harness's per-dispatch ``agent_id`` and returns
-    None without it. None means NO CEILING for that turn -- the same fail-open
-    direction the rest of this module takes, and the only safe one: a breaker
-    that cannot tell two turns apart must decline to cut either, not guess.
+    Attributes:
+        per_turn: False -> the key is shared by every unidentifiable turn of the
+            session, and :func:`record_rejection` must be told so.
     """
-    harness_agent_id = str(task_info.get("agent_id") or "").strip()
-    if harness_agent_id.lower() in _NON_IDENTIFYING:
-        return None
-    raw = f"{session_id or 'nosession'}.{harness_agent_id}"
+
+    key: str
+    source: str
+    per_turn: bool
+
+
+def _safe_key(raw: str) -> str:
     return _KEY_SAFE_RE.sub("-", raw)[:120]
+
+
+def counter_key(session_id: Optional[str], task_info: Dict[str, Any]) -> TurnKey:
+    """The key this turn is counted under. Always returns one.
+
+    Deliberately NOT ``rejected_turn_relay.preservation_key``: that chain
+    degrades to the agent TYPE and then to ``unknown``, which every dispatch of
+    that agent shares. MEASURED under it, a turn on its FIRST rejection came
+    back ``attempt=3, tripped=True`` for rejections an unrelated turn had made.
+
+    Declining a key instead was rejected: a turn whose identity cannot be
+    established is the one that most needs a ceiling, and the gate that rejects
+    a payload carrying no ``agent_type`` rejects the ones carrying no
+    ``agent_id`` too.
+    """
+    prefix = session_id or "nosession"
+
+    for field in ("agent_id", "minted_agent_id"):
+        value = str(task_info.get(field) or "").strip()
+        if value and value.lower() not in _NON_IDENTIFYING:
+            return TurnKey(_safe_key(f"{prefix}.{value}"), field, True)
+
+    transcript = str(task_info.get("agent_transcript_path") or "").strip()
+    if transcript:
+        digest = hashlib.sha1(transcript.encode("utf-8")).hexdigest()[:16]
+        return TurnKey(
+            _safe_key(f"{prefix}.t{digest}"), "agent_transcript_path", True,
+        )
+
+    return TurnKey(_safe_key(f"{prefix}.shared"), "session", False)
 
 
 def _counter_dir() -> Path:
@@ -202,7 +234,20 @@ def _read(key: str) -> Dict[str, Any]:
         return {}
 
 
+def _now() -> float:
+    return time.time()
+
+
+def _idle_expired(state: Dict[str, Any]) -> bool:
+    """True when a SHARED count is too old to be the same loop still running."""
+    try:
+        return _now() - float(state.get("updated_at") or 0.0) > _SHARED_COUNTER_IDLE_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
 def _write(key: str, payload: Dict[str, Any]) -> None:
+    payload = {**payload, "updated_at": _now()}
     directory = _counter_dir()
     target = directory / f"{key}{_SUFFIX}"
     tmp = directory / f".{key}.{os.getpid()}.{secrets.token_hex(4)}.count.tmp"
@@ -226,7 +271,9 @@ def reset(key: str) -> None:
         logger.debug("Rejection circuit: reset failed for %s: %s", key, exc)
 
 
-def record_rejection(key: str, codes: Iterable[str] = ()) -> CircuitState:
+def record_rejection(
+    key: str, codes: Iterable[str] = (), *, shared: bool = False,
+) -> CircuitState:
     """Count one rejection of ``key`` and say whether the breaker trips.
 
     ``codes`` are THIS rejection's typed codes (the gate's anomaly codes;
@@ -248,6 +295,11 @@ def record_rejection(key: str, codes: Iterable[str] = ()) -> CircuitState:
     codes_tuple = tuple(dict.fromkeys(str(c) for c in codes if c))
     try:
         state = _read(key)
+        if shared and _idle_expired(state):
+            # A shared key carries whatever the previous unidentifiable turn
+            # left behind. The trip is dropped with the count, so one cut turn
+            # cannot latch the ceiling shut for the rest of the session.
+            state = {}
         if state.get("tripped"):
             # Sticky: a turn already cut out of the loop must not be able to
             # re-enter it with a fresh count.
@@ -397,22 +449,23 @@ def circuit_anomaly(agent_type: str, state: CircuitState) -> Dict[str, Any]:
     }
 
 
-def no_key_anomaly(agent_type: str) -> Dict[str, Any]:
-    """Anomaly for a turn the breaker could not identify, and so did not guard.
+def shared_ceiling_anomaly(agent_type: str, state: CircuitState) -> Dict[str, Any]:
+    """Anomaly for a turn guarded by a ceiling it does not have to itself.
 
-    Recorded rather than logged because the alternative -- guessing a key -- is
-    what cuts innocent turns, and the alternative to recording is a turn silently
-    running with no ceiling at all.
+    Recorded rather than logged because the count it was judged on may include
+    rejections another turn made.
     """
     return {
-        "type": "contract_rejection_circuit_unavailable",
+        "type": "contract_rejection_circuit_shared",
         "severity": "warning",
         "message": (
             f"Contract rejection circuit could not identify this turn for "
             f"{agent_type} (the SubagentStop payload carried no harness "
-            "agent_id), so no per-turn counter could be kept. The rejection "
-            "ceiling is NOT in force and the retry loop is unbounded for this "
-            "turn."
+            "agent_id, no minted contract id and no agent transcript), so it "
+            f"was counted under a ceiling SHARED with every other unidentified "
+            f"turn of this session: rejection {state.attempt} of {state.limit}. "
+            "The count expires on idle and is cleared by any accepted turn, so "
+            "it spans a retry loop rather than the whole session."
         ),
     }
 

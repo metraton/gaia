@@ -1,115 +1,95 @@
 #!/usr/bin/env python3
-"""Tests for .md exemption in _is_protected() path guard.
+"""The .md carve-out of the protected set, measured on the live predicate.
 
-Verifies Batch D Drift 8: .md files under hooks/ must NOT be protected
-because they are pure documentation and cannot execute code.
+Documentation under a hook tree is exempt because it cannot execute code; its
+executable siblings are not. Both halves are asserted against
+``protected_paths.is_protected_hook_path``, the predicate both write surfaces
+consume.
 
-The _is_protected() logic lives as a nested function inside
-ClaudeCodeAdapter._adapt_write_edit(). We replicate it here using the
-same hooks_dir anchor (Path(claude_code.__file__).parent.parent.resolve())
-so the test matches runtime behavior exactly.
+Until this rewrite the file carried a COPY of an older, nested ``_is_protected``
+and asserted against that, so it stayed green while the algorithm it claimed to
+replicate was replaced -- and replaced precisely because anchoring the protected
+set to the evaluating module's load path left every other hook tree, the source
+checkout included, ungated. The last class below is the assertion that copy could
+not make.
+
+Every call is written module-qualified so the binding resolves per call: a
+predicate that breaks or disappears turns this file red instead of leaving it
+measuring a symbol captured at import time.
 """
 
 import sys
 from pathlib import Path
 
-import pytest
-
-HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+HOOKS_DIR = REPO_ROOT / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 
-import adapters.claude_code as _cc_module
+from modules.security import protected_paths  # noqa: E402
 
-# Replicate the hooks_dir anchor used at runtime.
-# Path(__file__) inside claude_code.py -> adapters/claude_code.py
-# .parent -> adapters/
-# .parent -> hooks/
-# This is the same expression used on line 783 of claude_code.py.
-_hooks_dir = Path(_cc_module.__file__).parent.parent.resolve()
-
-
-def _is_protected(path_str: str) -> bool:
-    """Replica of the nested _is_protected() from _adapt_write_edit().
-
-    Kept in sync with hooks/adapters/claude_code.py lines 785-802.
-    When the production function changes, update this copy and its tests.
-    """
-    p = Path(path_str)
-    try:
-        rp = p.resolve()
-    except Exception:
-        rp = p
-    try:
-        rp.relative_to(_hooks_dir)
-        if rp.suffix == ".md":
-            return False  # docs don't execute code; exempt from protection
-        return True
-    except ValueError:
-        pass
-    if p.name in ("settings.json", "settings.local.json"):
-        for part in rp.parts:
-            if part == ".claude":
-                return True
-    return False
+# Hook trees this test did not load its code from: the harness install root and
+# a package-store materialisation. Both are decided by path shape alone, so they
+# hold on any machine and under any install mode.
+HARNESS_HOOKS = Path(".claude") / "hooks"
+PACKAGE_HOOKS = Path("/opt/store/node_modules/@jaguilar87/gaia/hooks")
 
 
 class TestMdExemptionUnderHooks:
-    """After the fix, .md files under hooks/ must return False.
+    """A .md under a hook tree is documentation and stays writable."""
 
-    These tests are RED before the fix (they fail because current code
-    returns True for .md under hooks/). They turn GREEN after the fix.
-    """
+    def test_md_at_the_hook_tree_root_is_not_protected(self):
+        path = str(HOOKS_DIR / "README.md")
+        assert protected_paths.is_protected_hook_path(path) is False
 
-    def test_md_under_hooks_is_not_protected(self):
-        """hooks/README.md must NOT be protected -- it is pure documentation."""
-        path = str(_hooks_dir / "README.md")
-        assert _is_protected(path) is False, (
-            "hooks/README.md is currently protected (returns True). "
-            "Fix: add early return for .suffix == '.md' before the True return."
-        )
-
-    def test_md_under_hooks_modules_is_not_protected(self):
-        """hooks/modules/README.md must NOT be protected."""
-        path = str(_hooks_dir / "modules" / "README.md")
-        assert _is_protected(path) is False, (
-            "hooks/modules/README.md is currently protected (returns True). "
-            "Fix: add early return for .suffix == '.md' before the True return."
-        )
+    def test_md_deeper_in_the_hook_tree_is_not_protected(self):
+        path = str(HOOKS_DIR / "modules" / "README.md")
+        assert protected_paths.is_protected_hook_path(path) is False
 
 
-class TestNonMdFilesRemainProtected:
-    """Python files under hooks/ must remain protected regardless of the fix."""
+class TestExecutableSiblingsRemainProtected:
+    """The carve-out reaches documentation only."""
 
-    def test_py_under_hooks_still_protected(self):
-        """Python files under hooks/modules/security/ must remain blocked."""
-        path = str(_hooks_dir / "modules" / "security" / "mutative_verbs.py")
-        assert _is_protected(path) is True, (
-            f"hooks/modules/security/mutative_verbs.py must remain protected. "
-            f"Got False."
-        )
+    def test_module_under_hooks_is_protected(self):
+        path = str(HOOKS_DIR / "modules" / "security" / "mutative_verbs.py")
+        assert protected_paths.is_protected_hook_path(path) is True
 
-    def test_py_under_hooks_modules_still_protected(self):
-        """Python files under hooks/modules/session/ must remain blocked."""
-        path = str(_hooks_dir / "modules" / "session" / "pending_scanner.py")
-        assert _is_protected(path) is True, (
-            f"hooks/modules/session/pending_scanner.py must remain protected. "
-            f"Got False."
-        )
+    def test_session_module_under_hooks_is_protected(self):
+        path = str(HOOKS_DIR / "modules" / "session" / "pending_scanner.py")
+        assert protected_paths.is_protected_hook_path(path) is True
 
-    def test_adapter_file_still_protected(self):
-        """The adapter itself (claude_code.py) must remain protected."""
-        path = str(_hooks_dir / "adapters" / "claude_code.py")
-        assert _is_protected(path) is True, (
-            f"hooks/adapters/claude_code.py must remain protected. Got False."
-        )
+    def test_adapter_is_protected(self):
+        path = str(HOOKS_DIR / "adapters" / "claude_code.py")
+        assert protected_paths.is_protected_hook_path(path) is True
 
 
 class TestNonHooksPathsUnchanged:
-    """Paths outside hooks/ must continue to behave as before."""
+    """Outside every hook tree the predicate decides nothing."""
 
-    def test_non_hooks_md_still_passes(self):
-        """A .md file outside hooks/ was never protected and must stay False."""
-        path = "/tmp/foo.md"
-        assert _is_protected(path) is False, (
-            f"/tmp/foo.md must not be protected (outside hooks/). Got True."
-        )
+    def test_md_outside_a_hook_tree_is_not_protected(self):
+        assert protected_paths.is_protected_hook_path("/tmp/foo.md") is False
+
+    def test_code_outside_a_hook_tree_is_not_protected(self):
+        assert protected_paths.is_protected_hook_path("/tmp/foo.py") is False
+
+
+class TestVerdictDoesNotFollowTheLoadPath:
+    """The assertion a load-path-anchored copy answers wrong on every case.
+
+    These paths lie outside the hook tree this test imported its code from, so a
+    predicate anchored on ``__file__`` reports them unprotected -- the regression
+    that made the source checkout, the only place an edit is durable, the one
+    tree left open.
+    """
+
+    def test_harness_hook_module_is_protected(self):
+        path = str(HARNESS_HOOKS / "pre_tool_use.py")
+        assert protected_paths.is_protected_hook_path(path) is True
+
+    def test_package_store_hook_module_is_protected(self):
+        path = str(PACKAGE_HOOKS / "modules" / "security" / "mutative_verbs.py")
+        assert protected_paths.is_protected_hook_path(path) is True
+
+    def test_the_carve_out_reaches_those_trees_too(self):
+        assert protected_paths.is_protected_hook_path(
+            str(HARNESS_HOOKS / "README.md")
+        ) is False

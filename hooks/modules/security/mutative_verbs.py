@@ -785,38 +785,6 @@ COMMAND_PATH_MUTATIVE_UPGRADES: Dict[str, Tuple[MutativeAnchor, ...]] = _validat
         # shallow compound-verb scan, so paths and arguments containing cheap
         # tier words must not leave a real credential mutation ungated.
         MutativeAnchor(path=("sql", "users", "set-password")),
-        # Changing an IAM policy binding was gated in ONE direction and on a
-        # subset of surfaces, for two independent reasons.
-        #
-        # `add-iam-policy-binding` hyphen-splits onto `add`, which is
-        # deliberately absent from MUTATIVE_VERBS so that `git add` stays free;
-        # nothing matched it on any surface. And the hyphen split itself only
-        # runs at semantic_index <= 2 (deeper tokens are argument slugs, not
-        # subcommands), so on the three-token paths even
-        # `remove-iam-policy-binding` sits too deep to reach `remove`. Removal
-        # was therefore gated on `projects` and `secrets` alone -- their paths
-        # are two tokens -- and granting was gated nowhere.
-        #
-        # Granting is not the lesser half. It widens whoever receives it, and
-        # unlike a removal nothing observable happens until someone uses the
-        # capability, so it is the direction more likely to pass unnoticed.
-        #
-        # Anchored per surface rather than by returning `add` to MUTATIVE_VERBS:
-        # `add` in its ordinary form is harmless, and a global entry would tax
-        # `git add` and every other CLI that shares the word.
-        #
-        # `projects remove-iam-policy-binding` and `secrets
-        # remove-iam-policy-binding` are absent on purpose -- the verb scan
-        # already decides them MUTATIVE, and an anchor that re-decides a form
-        # already correct would add a declaration without adding coverage.
-        MutativeAnchor(path=("projects", "add-iam-policy-binding")),
-        MutativeAnchor(path=("secrets", "add-iam-policy-binding")),
-        MutativeAnchor(path=("storage", "buckets", "add-iam-policy-binding")),
-        MutativeAnchor(path=("storage", "buckets", "remove-iam-policy-binding")),
-        MutativeAnchor(path=("iam", "service-accounts", "add-iam-policy-binding")),
-        MutativeAnchor(
-            path=("iam", "service-accounts", "remove-iam-policy-binding")
-        ),
         # `config` is a READ_ONLY_VERBS entry, so the Step 4 scan stops at it
         # and returns before it ever reads the verb behind it: `gcloud config
         # set project other-project` and `gcloud config set account
@@ -1994,10 +1962,15 @@ def _mkdir_targets_sensitive_path(tokens: tuple) -> bool:
 #     execute, mirroring the same carve-out in protected_path_guard.py for
 #     the installed ``.claude/hooks`` tree -- this is that guard's
 #     SOURCE-tree sibling, reached through the tier classifier instead of a
-#     categorical block, because a source checkout is not `.claude/`.
+#     categorical block, because a source checkout is not `.claude/`, or
+#
+#   * a path under $HOME that is sensitive by its CONTENTS rather than by its
+#     location (is_account_sensitive_path) -- `~/.ssh`, the shell rc files,
+#     the credential stores.
 #
 # Everything else -- no file at all, a relative path, the working tree, the
-# user's home, /tmp, the Gaia scratch directory -- is left exactly where it was.
+# rest of the user's home, /tmp, the Gaia scratch directory -- is left exactly
+# where it was.
 
 
 def _tee_sensitive_targets(tokens: tuple) -> Tuple[str, ...]:
@@ -2033,12 +2006,13 @@ def _tee_sensitive_targets(tokens: tuple) -> Tuple[str, ...]:
             continue
 
         # token is a file argument (positional, or after --)
-        if token.startswith("~/") or token == "~":
-            # Home-relative paths are always safe -- they resolve under $HOME.
+        if is_account_sensitive_path(token):
+            sensitive.append(token)
             continue
 
-        if not os.path.isabs(token):
-            # Relative path -> working-tree, not sensitive.
+        if token.startswith("~/") or token == "~" or not os.path.isabs(token):
+            # Every other home-relative or relative destination is ordinary
+            # working-tree, cache or scratch space.
             continue
 
         norm = os.path.normpath(token)
@@ -2057,6 +2031,149 @@ def _tee_sensitive_targets(tokens: tuple) -> Tuple[str, ...]:
                 sensitive.append(token)
 
     return tuple(sensitive)
+
+
+IAM_BINDING_TOKEN_SUFFIXES: FrozenSet[str] = frozenset({
+    "-iam-policy-binding",
+})
+
+
+def _check_iam_policy_binding(
+    family: str,
+    semantics: "CommandSemantics",
+) -> "Optional[MutativeResult]":
+    """Gate a cloud IAM binding change by the FORM of its subcommand token.
+
+    Granting a capability must never classify below revoking it, and the verb
+    scan cannot deliver that: `add-iam-policy-binding` splits onto `add`, absent
+    from MUTATIVE_VERBS so `git add` stays free, while
+    `remove-iam-policy-binding` splits onto `remove` and gates. The split also
+    stops at semantic_index <= 2, so a deeper path reaches neither.
+
+    By form rather than one anchor per surface because the surfaces are
+    open-ended: every gcloud group owning a resource grows the same pair, so an
+    enumeration reads as coverage while the newest surface stays ungated. The
+    read forms (`get-iam-policy`, `describe`, `list`) do not carry the suffix,
+    which is what keeps the rule from taxing them.
+    """
+    if family != "cloud":
+        return None
+
+    for token in semantics.non_flag_tokens:
+        lowered = token.lower()
+        if not any(
+            lowered.endswith(suffix) and lowered != suffix
+            for suffix in IAM_BINDING_TOKEN_SUFFIXES
+        ):
+            continue
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb=lowered,
+            cli_family=family,
+            confidence="high",
+            reason=(
+                f"IAM policy binding change '{lowered}' mutates who holds a "
+                f"capability, in either direction"
+            ),
+        )
+    return None
+
+
+ACCOUNT_SENSITIVE_HOME_PREFIXES: FrozenSet[str] = frozenset({
+    ".ssh", ".gnupg", ".aws", ".kube", ".docker",
+    ".config/gcloud", ".config/gh", ".config/git",
+})
+
+ACCOUNT_SENSITIVE_HOME_FILES: FrozenSet[str] = frozenset({
+    ".bashrc", ".bash_profile", ".bash_login", ".profile",
+    ".zshrc", ".zprofile", ".zshenv",
+    ".netrc", ".git-credentials", ".gitconfig",
+})
+
+# A redirect's destination, taken from the operator onward, the clobber
+# override `>|` included: it writes the same file as `>`, and a gate one
+# operator away is not a gate. `2>&1` yields the fd `1`, which no path
+# predicate matches, so the fd forms need no exclusion.
+_REDIRECT_TARGET_RE = _re.compile(r"\d?>>?\|?\s*&?\s*([^\s;|&]+)")
+
+
+def _home_relative_path(token: str) -> str:
+    """The part of *token* under $HOME, or "" when it lands anywhere else.
+
+    Three spellings must fold onto one answer -- `~/x`, an unexpanded `$HOME/x`
+    (classification runs before the shell expands anything), and the absolute.
+    """
+    import os
+
+    home = os.path.expanduser("~")
+    candidate = token
+    for prefix in ("~/", "$HOME/", "${HOME}/"):
+        if candidate.startswith(prefix):
+            candidate = os.path.join(home, candidate[len(prefix):])
+            break
+
+    if not os.path.isabs(candidate):
+        return ""
+
+    norm = os.path.normpath(candidate)
+    if norm != home and not norm.startswith(home + os.sep):
+        return ""
+    return os.path.relpath(norm, home)
+
+
+def is_account_sensitive_path(token: str) -> bool:
+    """True when writing *token* hands out access to the user's own account.
+
+    Deliberately NOT MKDIR_SENSITIVE_PATH_PREFIXES: that set is sensitive by
+    LOCATION (privileged OS directories) and treats the whole home directory
+    as safe, which is the reasoning that left `~/.ssh/authorized_keys` open.
+    These paths are sensitive by CONTENTS -- they decide who may log in, they
+    run on the next shell or the next git invocation, they name the program
+    that hands out the credentials, or they are the credentials themselves --
+    and an object valuable by its contents stays T3 wherever it sits.
+    """
+    relative = _home_relative_path(token)
+    if not relative:
+        return False
+    if relative in ACCOUNT_SENSITIVE_HOME_FILES:
+        return True
+    return any(
+        relative == prefix or relative.startswith(prefix + "/")
+        for prefix in ACCOUNT_SENSITIVE_HOME_PREFIXES
+    )
+
+
+def account_path_redirect_target(command: str) -> str:
+    """The first redirect destination in *command* that grants account access."""
+    for match in _REDIRECT_TARGET_RE.finditer(command):
+        target = match.group(1).strip("\"'")
+        if is_account_sensitive_path(target):
+            return target
+    return ""
+
+
+def _check_account_path_redirect(command: str) -> "Optional[MutativeResult]":
+    """Classify a redirect whose destination grants account access.
+
+    The destination, not the verb, is what makes this mutative:
+    `echo 'ssh-rsa ...' >> ~/.ssh/authorized_keys` grants login access while
+    its base command is a read.
+    """
+    target = account_path_redirect_target(command)
+    if target:
+        return MutativeResult(
+            is_mutative=True,
+            category=CATEGORY_MUTATIVE,
+            verb="account-path-write",
+            cli_family="system",
+            confidence="high",
+            reason=(
+                f"Redirect writes '{target}', which grants access to the "
+                f"user's own account"
+            ),
+        )
+    return None
 
 
 def _check_tee_write(
@@ -3891,6 +4008,14 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     base_cmd = semantics.base_cmd
     family = CLI_FAMILY_LOOKUP.get(base_cmd, "unknown")
 
+    # --- Step 0-redirect: a redirect onto an account-sensitive path ---
+    # Ahead of every step below: the alias fast-path and the read-only base
+    # commands key on the base command alone and return before any destination
+    # is looked at.
+    account_redirect = _check_account_path_redirect(command)
+    if account_redirect is not None:
+        return account_redirect
+
     # --- Step 1: Command alias fast-path ---
     if base_cmd in COMMAND_ALIASES:
         alias_category = COMMAND_ALIASES[base_cmd]
@@ -4344,6 +4469,14 @@ def _detect_mutative_command(  # noqa: C901 -- classification ladder, one step p
     tee_result = _check_tee_write(base_cmd, tuple(tokens))
     if tee_result is not None:
         return tee_result
+
+    # --- Step 3e.4: IAM binding change, decided by the token's form ---
+    # Behind simulation (Step 3) and --help (Step 3.5) so both still outrank it,
+    # ahead of the Step 4 verb scan that splits `add-iam-policy-binding` onto a
+    # verb the taxonomy leaves free.
+    iam_binding_result = _check_iam_policy_binding(family, semantics)
+    if iam_binding_result is not None:
+        return iam_binding_result
 
     # --- Step 3e.5: Command-path mutative UPGRADE (anchored) ---
     # The symmetric opposite of the downgrade exception in Step 3e: anchor an

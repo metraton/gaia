@@ -103,9 +103,9 @@ def build_approval_signature(
         cli_family=CLI_FAMILY_LOOKUP.get(semantics.base_cmd, "unknown"),
         danger_category=resolved_category,
         verb=resolved_verb,
-        semantic_tokens=tuple(semantics.semantic_tokens),
-        normalized_flags=_sorted_unique_lower(semantics.flag_tokens),
-        dangerous_flags=_sorted_unique_lower(danger.dangerous_flags),
+        semantic_tokens=_approval_identity_tokens(semantics),
+        normalized_flags=_sorted_unique(semantics.flag_tokens_raw),
+        dangerous_flags=_sorted_unique(danger.dangerous_flags),
         exact_tokens=exact_tokens,
     )
 
@@ -141,8 +141,8 @@ def matches_approval_signature(signature: ApprovalSignature, command: str) -> bo
         return False
 
     if signature.scope_type == SCOPE_SEMANTIC_SIGNATURE:
-        incoming_semantic_tokens = tuple(semantics.semantic_tokens)
-        incoming_flags = _sorted_unique_lower(semantics.flag_tokens)
+        incoming_semantic_tokens = _approval_identity_tokens(semantics)
+        incoming_flags = _sorted_unique(semantics.flag_tokens_raw)
         return (
             incoming_semantic_tokens == signature.semantic_tokens
             and incoming_flags == signature.normalized_flags
@@ -187,8 +187,11 @@ def matches_file_path_approval(signature: ApprovalSignature, file_path: str) -> 
     """Return True when file_path is covered by a SCOPE_FILE_PATH grant.
 
     Exact-path comparison only -- both sides are normalised by stripping
-    leading/trailing whitespace.  Symlink resolution is NOT performed here
-    (the hook already resolves paths before storing the grant).
+    leading/trailing whitespace.
+
+    Both sides must already be resolved by
+    ``protected_paths.resolved_write_target``; this compares them raw, so a
+    caller that resolves one side only matches nothing, silently.
 
     Args:
         signature: The ApprovalSignature from a stored grant.
@@ -203,6 +206,21 @@ def matches_file_path_approval(signature: ApprovalSignature, file_path: str) -> 
     return bool(signature.exact_tokens) and signature.exact_tokens[0] == stripped
 
 
-def _sorted_unique_lower(values: Union[Tuple[str, ...], list[str]]) -> Tuple[str, ...]:
-    """Normalize string tokens for deterministic matching."""
-    return tuple(sorted({value.lower() for value in values if value}))
+def _approval_identity_tokens(semantics) -> Tuple[str, ...]:
+    """The tokens a grant binds to: the command, then its operands verbatim.
+
+    Deliberately the raw operands, not ``semantic_tokens``: a signature binds to
+    the object consented over, and case distinguishes two objects. ``base_cmd``
+    stays folded because it names the CLI, not an object.
+    """
+    return (semantics.base_cmd, *semantics.non_flag_tokens_raw)
+
+
+def _sorted_unique(values: Union[Tuple[str, ...], list[str]]) -> Tuple[str, ...]:
+    """Normalize flag tokens for deterministic matching.
+
+    Order and multiplicity are dropped; case is NOT. ``-d`` and ``-D`` are git's
+    safe and force deletions, and folding them let a grant minted for one be
+    consumed by the other.
+    """
+    return tuple(sorted({value for value in values if value}))

@@ -429,61 +429,120 @@ def test_a_cut_turn_is_not_recorded_as_a_successful_episode(tmp_path):
     )
 
 
-def test_the_counter_never_shares_a_key_with_another_turn():
+def test_an_identified_turn_is_counted_apart_from_every_other():
     """A key that falls back to the agent TYPE is shared by every dispatch of
     that type in the session, and the trip is sticky -- so an innocent turn was
-    cut on its first ever rejection."""
+    cut on its first ever rejection. Every identity the payload can carry is
+    per-dispatch, and each one alone is enough to keep two turns apart."""
     circuit = _circuit()
 
-    shared_shape = {"agent": "developer"}
-    assert circuit.counter_key("sess-x", shared_shape) is None, (
-        "a payload with no per-dispatch identity must yield NO key at all"
-    )
-    assert circuit.counter_key("sess-x", {}) is None
-    assert circuit.counter_key("sess-x", {"agent_id": ""}) is None
-    # task_info_builder substitutes this literal when the payload carries no
-    # agent_id, so every unidentified turn arrives wearing the same name.
-    assert circuit.counter_key("sess-x", {"agent_id": "unknown"}) is None
-
-    # Two real dispatches in one session are two different keys.
     a = circuit.counter_key("sess-x", {"agent_id": "a" + "1" * 16})
     b = circuit.counter_key("sess-x", {"agent_id": "a" + "2" * 16})
-    assert a and b and a != b
+    assert a.per_turn and b.per_turn and a.key != b.key
+    assert a.source == "agent_id"
+
+    # The harness id is not the only per-dispatch identity in the payload: the
+    # minted contract id and the subagent's own transcript are both one-per-
+    # dispatch, and either one keeps the turn out of the shared lane.
+    minted = circuit.counter_key("sess-x", {"agent_id": "unknown", "minted_agent_id": MINTED_AGENT_ID})
+    assert minted.per_turn and minted.source == "minted_agent_id"
+
+    t1 = circuit.counter_key("sess-x", {"agent_transcript_path": "/t/one.jsonl"})
+    t2 = circuit.counter_key("sess-x", {"agent_transcript_path": "/t/two.jsonl"})
+    assert t1.per_turn and t2.per_turn and t1.key != t2.key
+    assert t1.source == "agent_transcript_path"
 
 
-def test_an_unidentifiable_turn_is_never_cut_and_says_so(tmp_path):
-    """Fail open, loudly: a breaker that cannot tell two turns apart must
-    decline to cut either."""
+def test_an_unidentifiable_turn_still_gets_a_key_and_that_key_stays_in_its_session():
+    """No identity is not a reason to go uncounted -- it is the turn that most
+    needs the ceiling. The key it falls back to is shared, and the containment
+    is that it never widens past the session."""
+    circuit = _circuit()
+
+    anonymous = circuit.counter_key("sess-x", {"agent": "developer"})
+    assert anonymous.key, "an unidentifiable turn must still be counted"
+    assert not anonymous.per_turn, "and must say the ceiling it got is shared"
+
+    # task_info_builder substitutes this literal when the payload carries no
+    # agent_id, so every unidentified turn arrives wearing the same name.
+    assert circuit.counter_key("sess-x", {}).key == anonymous.key
+    assert circuit.counter_key("sess-x", {"agent_id": ""}).key == anonymous.key
+    assert circuit.counter_key("sess-x", {"agent_id": "unknown"}).key == anonymous.key
+
+    assert circuit.counter_key("sess-y", {}).key != anonymous.key, (
+        "the fallback is session-scoped; a counter shared across sessions is a "
+        "global one"
+    )
+
+
+def test_a_shared_ceiling_counts_a_loop_and_not_a_session(monkeypatch):
+    """The cost of sharing a key is cutting a turn for rejections it never made.
+    It is bounded by counting only rejections that arrive inside one repair
+    cycle of each other: a loop refreshes the count on every pass, an unrelated
+    later turn finds it expired and starts from zero."""
+    import time
+
+    circuit = _circuit()
+    key = circuit.counter_key("sess-decay", {}).key
+
+    assert circuit.record_rejection(key, shared=True).attempt == 1
+    assert circuit.record_rejection(key, shared=True).attempt == 2
+
+    base = time.time()
+    monkeypatch.setattr(
+        circuit, "_now",
+        lambda: base + circuit._SHARED_COUNTER_IDLE_SECONDS + 1,
+    )
+    assert circuit.record_rejection(key, shared=True).attempt == 1, (
+        "a turn rejected long after the last one is not the same loop and must "
+        "not inherit its count"
+    )
+
+    # A key that DOES identify its turn keeps the semantics it already had:
+    # the count is the turn's own and no gap expires it.
+    per_turn = circuit.counter_key("sess-decay", {"agent_id": HARNESS_AGENT_ID}).key
+    assert circuit.record_rejection(per_turn).attempt == 1
+    assert circuit.record_rejection(per_turn).attempt == 2
+
+
+def test_an_unidentifiable_turn_is_cut_too_and_says_the_ceiling_was_shared(tmp_path):
+    """The turns commit 152ecbd newly gates are exactly the turns whose payload
+    carries no agent_id -- so the ceiling has to hold there or the new gating
+    has none. Measured cost of no ceiling: eleven passes, 361k tokens."""
     from gaia.store.reader import read_defects
 
     adapter = ClaudeCodeAdapter()
-    for _ in range(4):
+    responses = []
+    for _ in range(3):
         event = adapter.parse_event(json.dumps({
             "hook_event_name": "SubagentStop",
             "session_id": "sess-circuit-nokey",
             "agent_type": "developer",
-            # No harness agent_id -- the shape that used to collapse onto a
-            # key shared by every developer turn in the session.
+            # No harness agent_id -- the shape that used to yield no key at all
+            # and so no ceiling at all.
             "agent_transcript_path": "",
             "last_assistant_message": SUBSTANTIVE,
             "stop_reason": "end_turn",
             "cwd": "/tmp",
         }))
-        response = adapter.adapt_subagent_stop(event)
+        responses.append(adapter.adapt_subagent_stop(event))
 
-    assert response.exit_code == 2, (
-        "an unidentifiable turn keeps the ordinary gate; it is never cut"
+    assert responses[0].exit_code == 2, "the first rejection still invites a repair"
+    assert responses[2].exit_code == 0, (
+        "the third rejection of an unidentified turn must END it; an "
+        "unidentified turn is the one that most needs the ceiling"
     )
-    assert response.output.get("contract_circuit_open") is not True
+    assert responses[2].output["contract_circuit_open"] is True
+    assert responses[2].output["contract_complete"] is False
 
-    unavailable = read_defects(
+    shared = read_defects(
         origin="subagent", workspace=None,
-        type="contract_rejection_circuit_unavailable", limit=50,
+        type="contract_rejection_circuit_shared", limit=50,
     )
-    assert unavailable, (
-        "a turn running with no ceiling must be visible, not silently unguarded"
+    assert shared, (
+        "a turn cut by a ceiling it shares with others must be visible as such"
     )
-    assert "NOT in force" in unavailable[0]["message"]
+    assert "SHARED" in shared[0]["message"]
 
 
 def test_the_cut_notice_reaches_the_channel_that_does_not_resume_the_turn(tmp_path):

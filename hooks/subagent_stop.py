@@ -279,10 +279,17 @@ def subagent_stop_hook(task_info, agent_output):
         # increments it -- the gate in the adapter is the only writer. It used
         # to read a `repair_attempts` key off ResponseContractValidation, an
         # eleven-field dataclass with no such field, and so was always 0.
+        # The key must be the breaker's own: rejected_turn_relay's preservation
+        # key coincides with it only when the payload carries a harness
+        # agent_id, so it reports 0 for exactly the unidentified turns.
         try:
-            from modules.agents.rejected_turn_relay import preservation_key
-            from modules.agents.rejection_circuit import count as _rejection_count
-            contract_attempts = _rejection_count(preservation_key(session_id, task_info))
+            from modules.agents.rejection_circuit import (
+                count as _rejection_count,
+                counter_key,
+            )
+            contract_attempts = _rejection_count(
+                counter_key(session_id, task_info).key
+            )
         except Exception as exc:
             logger.warning("Rejection count unavailable (non-fatal): %s", exc)
             contract_attempts = 0
