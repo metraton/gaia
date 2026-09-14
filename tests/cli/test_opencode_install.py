@@ -6,12 +6,11 @@ import json
 import sys
 from pathlib import Path
 
-
 _BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
 if str(_BIN_DIR) not in sys.path:
     sys.path.insert(0, str(_BIN_DIR))
 
-from cli import _install_helpers
+from cli import _install_helpers  # noqa: E402
 
 
 def test_registers_the_packaged_plugin_without_creating_claude_config(tmp_path):
@@ -207,7 +206,10 @@ def test_host_policy_overrides_frontmatter_permissions(tmp_path):
     )["gaia-orchestrator"]
 
     assert generated["permission"]["read"] == "allow"
-    assert generated["permission"]["bash"] == {"*": "deny", "gaia *": "allow"}
+    cli = str(package / "bin" / "gaia")
+    assert generated["permission"]["bash"] == {
+        "*": "deny", cli: "allow", f"{cli} *": "allow",
+    }
 
 
 def test_orchestrator_task_policy_is_closed_and_nominal():
@@ -273,7 +275,13 @@ def test_contract_scratch_is_the_only_external_directory_for_subagents():
         ("*", "deny"),
         ("~/.gaia/scratch/**", "allow"),
     ]
-    assert "external_directory" not in generated["gaia-orchestrator"]["permission"]
+    from gaia.paths import evidence_dir, scratch_dir
+
+    assert generated["gaia-orchestrator"]["permission"]["external_directory"] == {
+        "*": "deny",
+        f"{scratch_dir().resolve().as_posix()}/**": "allow",
+        f"{evidence_dir().resolve().as_posix()}/**": "allow",
+    }
 
 
 def test_replaces_stale_gaia_plugin_but_preserves_foreign_plugin(tmp_path):
@@ -308,7 +316,9 @@ def test_only_portable_provider_model_is_emitted(tmp_path):
     agents = package / "agents"
     agents.mkdir(parents=True)
     (agents / "portable.md").write_text("---\nname: portable\ndescription: P\nmodel: openai/gpt-5\n---\n")
-    (agents / "alias.md").write_text("---\nname: alias\ndescription: A\nmodel: sonnet\neffort: high\npermissionMode: acceptEdits\n---\n")
+    (agents / "alias.md").write_text(
+        "---\nname: alias\ndescription: A\nmodel: sonnet\neffort: high\npermissionMode: acceptEdits\n---\n"
+    )
     generated = _install_helpers._opencode_agents(package, {"default": {"mode": "subagent"}}, None)
     assert generated["portable"]["model"] == "openai/gpt-5"
     assert "model" not in generated["alias"]

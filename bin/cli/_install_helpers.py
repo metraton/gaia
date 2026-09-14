@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -225,7 +226,10 @@ def configure_opencode_plugin(
 
     foreign_plugins = [item for item in plugins if not _is_gaia_opencode_plugin(item)]
     desired["plugin"] = [*foreign_plugins, entry]
-    desired["agent"] = _opencode_agents(config_root, policy, existing.get("agent"))
+    try:
+        desired["agent"] = _opencode_agents(config_root, policy, existing.get("agent"))
+    except ValueError as exc:
+        return _result("error", config_path, str(exc))
     desired["default_agent"] = "gaia-orchestrator"
     config_changed = existing != desired
     if not config_changed and not skills_changed:
@@ -325,10 +329,35 @@ def _opencode_agents(package_root: Path, policy: dict, existing: object) -> dict
                 "~/.gaia/scratch/**": "allow",
             }
         permission.update(host_policy.get("permission", {}))
+        if name == "gaia-orchestrator":
+            permission.update(_opencode_orchestrator_paths(package_root))
         if permission:
             agent["permission"] = permission
         agents[name] = agent
     return agents
+
+
+def _opencode_orchestrator_paths(package_root: Path) -> dict[str, Any]:
+    """Admit the installed CLI and canonical evidence roots, leaving verb authority to Gaia's guard."""
+    from gaia.paths import evidence_dir, scratch_dir
+
+    cli = str(package_root.absolute() / "bin" / "gaia")
+    roots = [scratch_dir().resolve().as_posix(), evidence_dir().resolve().as_posix()]
+    if any(char in path for path in [cli, *roots] for char in "*?"):
+        raise ValueError("OpenCode permission paths cannot contain wildcard characters (* or ?)")
+
+    # OpenCode's last-match policy must not inherit the stale bare-name grant.
+    bash = {"*": "deny"}
+    for executable in (cli, shlex.quote(cli)):
+        bash[executable] = "allow"
+        bash[f"{executable} *"] = "allow"
+    return {
+        "bash": bash,
+        "external_directory": {"*": "deny", **{f"{root}/**": "allow" for root in roots}},
+        "edit": "deny",
+        "glob": "deny",
+        "grep": "deny",
+    }
 
 
 def _opencode_frontmatter_permissions(frontmatter: dict[str, Any]) -> dict[str, Any]:

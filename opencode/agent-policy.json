@@ -6,8 +6,7 @@
     "mode": "primary",
     "permission": {
       "bash": {
-        "*": "deny",
-        "gaia *": "allow"
+        "*": "deny"
       },
       "task": {
         "*": "deny",
