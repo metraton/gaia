@@ -60,7 +60,15 @@ def register(subparsers):
             "  no injection side effects (no telemetry, no DB writes)."
         ),
     )
-    session_parser.set_defaults(func=None, _session_parser=session_parser)
+    # No `func=None` default here: an explicit default would shadow the
+    # `cmd_<stem>` fallback that call-graph tooling (e.g. the package-
+    # lifecycle-spawn invariant test) reads off `parser._defaults.get("func",
+    # fallback)` for a chain with no subparser match of its own. Leaving the
+    # key unset means the bare `gaia session` chain still resolves to
+    # `cmd_session`, and `getattr(args, "func", None)` below is unaffected --
+    # it already tolerates a missing attribute the same way it tolerates one
+    # explicitly set to None.
+    session_parser.set_defaults(_session_parser=session_parser)
 
     actions = session_parser.add_subparsers(dest="session_action", metavar="<action>")
 

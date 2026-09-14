@@ -511,6 +511,16 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     ("schedule", "list"),
     ("schedule", "show"),
     ("schedule", "status"),
+    # `session preview` exists precisely so the orchestrator can render
+    # build_session_context()'s output in-process instead of closing and
+    # reopening a session to see a manifest edit take effect (see
+    # bin/cli/session.py's module docstring). Verified read-only by
+    # following `_cmd_preview`: it calls build_session_context() and
+    # print()s the result -- no injection side effects (no session
+    # bookkeeping, no telemetry, no DB write) and no INSERT/UPDATE/DELETE
+    # reachable. Denying it would leave the verb built for the orchestrator
+    # unreachable by the orchestrator.
+    ("session", "preview"),
 })
 
 ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
