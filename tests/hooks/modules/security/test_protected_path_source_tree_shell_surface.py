@@ -10,6 +10,14 @@ difference that the shell route was not previously blocked.
 The two surfaces are kept in agreement STRUCTURALLY, not by prose -- a prose
 claim that they mirror each other is exactly what failed here, so the last two
 tests read the syntax tree instead of believing a docstring.
+
+Protection now follows the INSTALLATION, not the repository (decision
+``decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo``): a shell writer
+into the SOURCE checkout is an ordinary git-tracked edit and must pass on both
+surfaces, exactly like the harness/install tree must still deny it.
+``TestSourceCheckoutWritersDenied`` below was the prior intention (the
+checkout treated as protected); it is now ``TestSourceCheckoutWritersAllowed``,
+asserting the opposite.
 """
 
 from __future__ import annotations
@@ -32,8 +40,8 @@ SOURCE_TARGET = str(HOOKS_DIR / "modules" / "security" / "mutative_verbs.py")
 HARNESS_TARGET = ".claude/hooks/pre_tool_use.py"
 
 
-class TestSourceCheckoutWritersDenied:
-    """Every shell writer, against the tree where an edit is actually durable."""
+class TestSourceCheckoutWritersAllowed:
+    """Every shell writer, against the checkout -- gated by git, not this guard."""
 
     @pytest.mark.parametrize(
         "command",
@@ -45,12 +53,13 @@ class TestSourceCheckoutWritersDenied:
             f"git checkout -- {SOURCE_TARGET}",
         ],
     )
-    def test_writer_into_source_hook_tree_is_denied(self, command):
+    def test_writer_into_source_hook_tree_is_allowed(self, command):
         allowed, reason = check(command)
-        assert allowed is False, (
-            f"{command!r} writes Gaia hook source and must be denied"
+        assert allowed is True, (
+            f"{command!r} writes the Gaia source checkout and must pass -- "
+            f"a checkout is gated by git, not the protected-path guard "
+            f"(got denied: {reason!r})"
         )
-        assert "PROTECTED_PATH" in (reason or "")
 
 
 class TestHarnessDenialsUnchanged:

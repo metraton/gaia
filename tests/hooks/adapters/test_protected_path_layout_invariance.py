@@ -48,6 +48,20 @@ HARNESS_HOOKS_REAL = Path(os.path.realpath(HARNESS_HOOKS_LITERAL))
 WORKSPACE_HOOKS_LITERAL = REPO_ROOT.parent / ".claude" / "hooks"
 WORKSPACE_HOOKS_REAL = Path(os.path.realpath(WORKSPACE_HOOKS_LITERAL))
 
+# Protection now follows the installation, not the repository (decision
+# decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo). On a machine
+# where the user-level `.claude` install is a live symlink straight into THIS
+# checkout (a `gaia dev --mode link`-style global install), HARNESS_HOOKS_REAL
+# resolves to the very tree IN_PLACE_HOOKS names -- at that point a write
+# addressed by its resolved form IS a write to the checkout, not to a
+# materialisation distinct from it, so the checkout's ungated status applies.
+# On a machine where the user-level install is its own copy (package store,
+# not a symlink to this checkout), the two trees are genuinely different and
+# the install stays protected. Computed, not asserted, so this test measures
+# whichever layout the machine running it actually has.
+HARNESS_REAL_IS_THIS_CHECKOUT = HARNESS_HOOKS_REAL == IN_PLACE_HOOKS.resolve()
+HARNESS_REAL_EXPECTED = "unprotected" if HARNESS_REAL_IS_THIS_CHECKOUT else "protected"
+
 # A package-store shape with no filesystem dependency, so the store layout is
 # exercised even on a machine where the local install is a symlink-back.
 SYNTHETIC_STORE_HOOKS = Path(
@@ -73,12 +87,12 @@ TARGETS = {
 }
 
 EXPECTED = {
-    "source_checkout_py": "protected",
-    "source_checkout_adapter": "protected",
+    "source_checkout_py": "unprotected",
+    "source_checkout_adapter": "unprotected",
     "source_checkout_md": "unprotected",
     "harness_literal_py": "protected",
     "harness_literal_md": "unprotected",
-    "harness_real_py": "protected",
+    "harness_real_py": HARNESS_REAL_EXPECTED,
     "workspace_literal_py": "protected",
     "workspace_real_py": "protected",
     "store_shape_py": "protected",
@@ -202,13 +216,21 @@ class TestLayoutInvariance:
 
 
 class TestNoTrade:
-    """The installed-copy protection must survive; this is a union, not a move."""
+    """The installed-copy protection must survive; this is a union, not a move.
+
+    harness_real_py is deliberately absent from these fixed-"protected" lists:
+    its correct verdict depends on whether the machine's user-level `.claude`
+    happens to be a live symlink into THIS checkout (see
+    HARNESS_REAL_EXPECTED above and TestHarnessRealFollowsWhatItResolvesTo
+    below), so a label whose expectation can genuinely be "unprotected" on a
+    link-mode dev machine does not belong in a list asserting "protected"
+    unconditionally.
+    """
 
     @pytest.mark.parametrize(
         "label",
         [
             "harness_literal_py",
-            "harness_real_py",
             "workspace_literal_py",
             "workspace_real_py",
             "store_shape_py",
@@ -223,7 +245,6 @@ class TestNoTrade:
         "label",
         [
             "harness_literal_py",
-            "harness_real_py",
             "workspace_literal_py",
             "workspace_real_py",
             "store_shape_py",
@@ -235,18 +256,47 @@ class TestNoTrade:
         assert verdicts_relocated[label] == "protected"
 
 
-class TestSourceCheckoutGated:
-    @pytest.mark.parametrize(
-        "label", ["source_checkout_py", "source_checkout_adapter"]
-    )
-    def test_source_checkout_gated_in_place(self, verdicts_in_place, label):
-        assert verdicts_in_place[label] == "protected"
+class TestHarnessRealFollowsWhatItResolvesTo:
+    """harness_real_py: protected when it is a genuine install distinct from
+    this checkout, unprotected when the machine's install IS this checkout
+    (link mode) -- computed against the same HARNESS_REAL_EXPECTED the fixed
+    EXPECTED table above uses, so this is the property spelled out rather
+    than folded silently into one dict entry."""
+
+    def test_matches_computed_expectation_in_place(self, verdicts_in_place):
+        assert verdicts_in_place["harness_real_py"] == HARNESS_REAL_EXPECTED
+
+    def test_matches_computed_expectation_relocated(self, verdicts_relocated):
+        assert verdicts_relocated["harness_real_py"] == HARNESS_REAL_EXPECTED
+
+    def test_literal_form_stays_protected_regardless(
+        self, verdicts_in_place, verdicts_relocated
+    ):
+        # Whatever harness_real_py resolves to, the literal `.claude/...`
+        # spelling must still be protected: an agent that reaches the
+        # install by its ordinary, documented address is never let through
+        # by this ambiguity.
+        assert verdicts_in_place["harness_literal_py"] == "protected"
+        assert verdicts_relocated["harness_literal_py"] == "protected"
+
+
+class TestSourceCheckoutUngated:
+    """Protection follows the installation, not the repository (decision
+    decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo). A checkout is
+    an ordinary project gated by git, never by a per-file approval -- flipped
+    from the prior expectation that the checkout was itself protected."""
 
     @pytest.mark.parametrize(
         "label", ["source_checkout_py", "source_checkout_adapter"]
     )
-    def test_source_checkout_gated_relocated(self, verdicts_relocated, label):
-        assert verdicts_relocated[label] == "protected"
+    def test_source_checkout_ungated_in_place(self, verdicts_in_place, label):
+        assert verdicts_in_place[label] == "unprotected"
+
+    @pytest.mark.parametrize(
+        "label", ["source_checkout_py", "source_checkout_adapter"]
+    )
+    def test_source_checkout_ungated_relocated(self, verdicts_relocated, label):
+        assert verdicts_relocated[label] == "unprotected"
 
 
 class TestPreservedCarveOuts:
@@ -291,18 +341,28 @@ class TestFailsClosed:
         "label",
         [
             "harness_literal_py",
-            "harness_real_py",
             "workspace_literal_py",
             "workspace_real_py",
             "store_shape_py",
-            "source_checkout_py",
         ],
     )
     def test_structural_lane_still_fires_without_identity(
         self, verdicts_identity_unresolvable, label
     ):
+        # source_checkout_py and harness_real_py are deliberately absent:
+        # source_checkout_py is never protected, with or without a resolvable
+        # identity, and harness_real_py's verdict is conditional on whether it
+        # resolves into this checkout (HARNESS_REAL_EXPECTED) -- neither
+        # proves anything about the structural lane's independence from
+        # identity resolution, which is what this test isolates.
         for layout, verdicts in verdicts_identity_unresolvable.items():
             assert verdicts[label] == "protected", f"{layout}/{label}"
+
+    def test_harness_real_matches_computed_expectation_without_identity(
+        self, verdicts_identity_unresolvable
+    ):
+        for layout, verdicts in verdicts_identity_unresolvable.items():
+            assert verdicts["harness_real_py"] == HARNESS_REAL_EXPECTED, layout
 
     def test_predicate_never_reads_its_own_load_location(self):
         """The negative read directly off the syntax tree, not off the prose.

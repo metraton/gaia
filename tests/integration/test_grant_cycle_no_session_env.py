@@ -47,6 +47,12 @@ HOOKS_DIR = REPO_ROOT / "hooks"
 sys.path.insert(0, str(HOOKS_DIR))
 sys.path.insert(0, str(REPO_ROOT))
 
+# An install-shaped hooks dir, deliberately NOT HOOKS_DIR (this repo's own
+# checkout): protection follows the installation, not the repository
+# (decision decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo), so a
+# checkout path no longer drives the protected-path block this file exercises.
+INSTALL_HOOKS_DIR = Path.home() / ".claude" / "hooks"
+
 from tests.fixtures.grant_cycle_harness import run_pre_tool_use_event
 
 
@@ -180,8 +186,8 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
         """
         cwd = _make_cwd(tmp_path)
 
-        # Target a real path inside the hooks dir so _is_protected() returns True.
-        protected_file = str(HOOKS_DIR / "pre_tool_use.py")
+        # An install-shaped path so is_protected_hook_path() returns True.
+        protected_file = str(INSTALL_HOOKS_DIR / "pre_tool_use.py")
 
         # ── Phase 1: block ──────────────────────────────────────────────────
         block_event = {
@@ -254,7 +260,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
         outright allow) instead of the hard block.
         """
         cwd = _make_cwd(tmp_path)
-        protected_file = str(HOOKS_DIR / "pre_tool_use.py")
+        protected_file = str(INSTALL_HOOKS_DIR / "pre_tool_use.py")
 
         # ── Phase 1: block the Write, then activate its grant ────────────────
         block_event = {
@@ -331,7 +337,7 @@ class TestWriteEditFilePathGrantCycleNoSessionEnv:
         )
 
         cwd = _make_cwd(tmp_path)
-        protected_file = str(HOOKS_DIR / "pre_tool_use.py")
+        protected_file = str(INSTALL_HOOKS_DIR / "pre_tool_use.py")
 
         block_result = run_pre_tool_use_event(
             {

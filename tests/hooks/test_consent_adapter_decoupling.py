@@ -113,8 +113,11 @@ class TestConsentFlowGoesViaAdapter:
     def test_protected_file_foreground_requests_consent_via_adapter(self):
         """A protected-path Write in foreground asks the user VIA request_consent."""
         adapter = FakeConsentAdapter()
-        # A path inside the gaia hooks dir is protected (see _adapt_write_edit).
-        protected = str(HOOKS_DIR / "modules" / "tools" / "bash_validator.py")
+        # An install-shaped hooks path is protected (see _adapt_write_edit);
+        # HOOKS_DIR (this repo's own checkout) is deliberately NOT used here
+        # -- protection follows the installation, not the repository
+        # (decision decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo).
+        protected = str(Path.home() / ".claude" / "hooks" / "modules" / "tools" / "bash_validator.py")
 
         resp = adapter._adapt_write_edit(
             "Edit", {"file_path": protected},
@@ -124,7 +127,13 @@ class TestConsentFlowGoesViaAdapter:
         assert len(adapter.consent_requests) == 1
         req = adapter.consent_requests[0]
         assert req.kind == "file"
-        assert req.operation == protected
+        # _adapt_write_edit consents against resolved_write_target(file_path),
+        # not the literal string -- on a machine where ~/.claude/hooks is
+        # itself a live symlink into a Gaia checkout (a link-mode-style
+        # global install), that resolves somewhere other than `protected`.
+        from modules.security.protected_paths import resolved_write_target
+
+        assert req.operation == resolved_write_target(protected)
         assert req.approval_id is None  # foreground -> inline consent
         _assert_consent_via_abstraction(resp)
 

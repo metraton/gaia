@@ -1670,24 +1670,32 @@ class TestEdgeCases:
 
 
 def _hooks_dir():
-    """Return the resolved hooks/ directory, mirroring the closure in
-    _adapt_write_edit so test paths are always consistent with the adapter."""
-    return Path(__file__).parent.parent.parent.parent / "hooks"
+    """An install-shaped hooks/ directory (not this repo's own checkout).
+
+    Protection follows the installation, not the repository (decision
+    decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo): a path under
+    THIS checkout's own hooks/ is no longer protected, so the fixtures below
+    need a path shaped like a live install (`.claude/hooks/...`) to still
+    exercise is_protected_hook_path's "ask" branch. The predicate only
+    inspects the path string (no file I/O), so the target need not exist on
+    disk -- and neither did it when this pointed at the real checkout."""
+    return Path.home() / ".claude" / "hooks"
 
 
 def _protected_py():
-    """A real .py file inside hooks/ that must always be protected."""
+    """A .py path inside an install-shaped hooks/ that must always be protected."""
     return str(_hooks_dir() / "modules" / "security" / "approval_grants.py")
 
 
 def _protected_json():
-    """A real .json file inside hooks/ that must always be protected
-    (kills the < ".md" and <= ".md" operator mutants on L956)."""
+    """A .json path inside an install-shaped hooks/ that must always be
+    protected (kills the < ".md" and <= ".md" operator mutants on L956)."""
     return str(_hooks_dir() / "hooks.json")
 
 
 def _exempt_md():
-    """A real .md file inside hooks/ that must be EXEMPT from protection."""
+    """A .md path inside an install-shaped hooks/ that must be EXEMPT from
+    protection."""
     return str(_hooks_dir() / "README.md")
 
 

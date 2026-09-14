@@ -277,8 +277,10 @@ class TestIsProtectedClaudePath:
         (".claude/hooks/README.md", False),      # doc exempt
         (".claude/agents/gaia-system.md", False),  # not hooks, not settings
         (".claude-backup/hooks/x.py", False),    # exact component match only
-        # The source checkout is protected too now: one predicate, both trees.
-        (str(Path(__file__).resolve().parents[4] / "hooks" / "pre_tool_use.py"), True),
+        # Protection follows the installation, not the repository (decision
+        # decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo): the
+        # source checkout is an ordinary project, gated by git only.
+        (str(Path(__file__).resolve().parents[4] / "hooks" / "pre_tool_use.py"), False),
         ("src/hooks/pre_tool_use.py", False),     # a hooks dir in no Gaia root
         ("-f", False),                           # flag token
         ("", False),

@@ -5,11 +5,16 @@ Task 508, gate 968. The Claude Code PreToolUse chain is an independent
 enforcement point from the OpenCode plugin seam (different trigger, different
 process); no OpenCode result is cited or inherited here.
 
-The proof drives a Write attempt at a controlled protected target through the
-REAL entrypoint file (hooks/pre_tool_use.py) as a subprocess and requires a
-categorical deny with the target byte-identical, naming the hooks.json matcher
-that fired and the resolved entrypoint that executed so the installed copy and
-the source checkout are distinguished rather than assumed to agree.
+Protection now follows the INSTALLATION, not the repository (decision
+``decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo``): the installed
+copy and the source checkout are DELIBERATELY distinguished, not assumed to
+agree. The proof drives a Write attempt at a controlled target through the
+REAL entrypoint file (hooks/pre_tool_use.py) as a subprocess, for both trees:
+a checkout target must pass with the file byte-identical (it was never
+written -- this test only reads the verdict, never performs the write) and no
+approval_id minted; a ``.claude``-shaped harness target must still be
+categorically denied, naming the hooks.json matcher that fired and the
+resolved entrypoint that executed.
 """
 
 from __future__ import annotations
@@ -99,15 +104,19 @@ def test_file_tool_matcher_names_pre_tool_use_entrypoint():
     assert executed == Path(os.path.realpath(SOURCE_ENTRYPOINT))
 
 
-def test_protected_write_denied_through_real_entrypoint_byte_identical(probe_env):
-    target = SOURCE_ENTRYPOINT
-    digest_before, size_before = _digest_and_size(target)
-    diff_before, status_before = _worktree_marks(target)
+def _run_entrypoint(target: str, probe_env: dict) -> tuple[dict | None, subprocess.CompletedProcess]:
+    """Drive the real entrypoint; return (verdict, completed).
 
+    ``verdict`` is ``None`` when the entrypoint printed nothing -- per
+    ``hooks/pre_tool_use.py``'s own print gate (``if response.output: ...``),
+    a pure pass-through/allow response (``output == {}``) is deliberately
+    silent, matching Claude Code's own hook contract where no output means
+    proceed. That silence is itself a verdict, not a failure to produce one.
+    """
     payload = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Write",
-        "tool_input": {"file_path": str(target)},
+        "tool_input": {"file_path": target},
         "session_id": "sess-layer-d-proof",
         "agent_id": SUBAGENT_AGENT_ID,
         "agent_type": SUBAGENT_AGENT_TYPE,
@@ -119,23 +128,34 @@ def test_protected_write_denied_through_real_entrypoint_byte_identical(probe_env
         capture_output=True, text=True, timeout=120, env=probe_env,
     )
     lines = [line for line in completed.stdout.splitlines() if line.strip()]
-    assert lines, f"entrypoint emitted no verdict\nstderr:\n{completed.stderr}"
-    verdict = json.loads(lines[-1])
-    specific = verdict.get("hookSpecificOutput", {})
+    if not lines:
+        return None, completed
+    return json.loads(lines[-1]), completed
+
+
+def test_source_checkout_write_allowed_through_real_entrypoint_byte_identical(probe_env):
+    """The checkout is an ordinary project: the real entrypoint must not deny
+    a Write into it, and -- since this test only reads the verdict and never
+    performs the write itself -- the file must stay byte-identical either way."""
+    target = SOURCE_ENTRYPOINT
+    digest_before, size_before = _digest_and_size(target)
+    diff_before, status_before = _worktree_marks(target)
+
+    verdict, completed = _run_entrypoint(str(target), probe_env)
+    specific = (verdict or {}).get("hookSpecificOutput", {})
     decision = specific.get("permissionDecision", "")
     reason = specific.get("permissionDecisionReason", "")
-    print(f"matcher={EXPECTED_MATCHER}")
-    print(f"executed={executed}")
-    print(f"installed_resolved={os.path.realpath(HARNESS_HOOKS_LITERAL / 'pre_tool_use.py')}")
-    print(f"decision={decision}")
+    print(f"executed={os.path.realpath(SOURCE_ENTRYPOINT)}")
+    print(f"verdict={verdict!r}")
+    print(f"decision={decision!r}")
     print(f"exit_code={completed.returncode}")
     assert completed.returncode == 0, completed.stderr
-    assert decision == "deny", f"expected a categorical deny, got {decision!r}"
-    assert re.search(r"P-[a-f0-9]{32}", reason), (
-        "the deny must carry the subagent protected-path approval_id"
+    assert decision != "deny", (
+        f"a checkout write must not be categorically denied, got {decision!r} "
+        f"({reason!r})"
     )
-    assert "PROTECTED" in reason.upper() or "T3_BLOCKED" in reason, (
-        "the deny must come from protected-path policy, not a session-wide guard"
+    assert not re.search(r"P-[a-f0-9]{32}", reason), (
+        "no protected-path approval_id should be minted for a checkout write"
     )
 
     digest_after, size_after = _digest_and_size(target)
@@ -146,3 +166,29 @@ def test_protected_write_denied_through_real_entrypoint_byte_identical(probe_env
     print(f"bytes_after={size_after}")
     assert (digest_after, size_after) == (digest_before, size_before)
     assert (diff_after, status_after) == (diff_before, status_before) == ("", "")
+
+
+def test_harness_write_still_denied_through_real_entrypoint(probe_env):
+    """The installed copy still requires consent -- the union did not trade
+    one tree for the other."""
+    target = str(HARNESS_HOOKS_LITERAL / "pre_tool_use.py")
+    verdict, completed = _run_entrypoint(target, probe_env)
+    assert verdict is not None, (
+        f"a categorical deny must print a verdict, entrypoint was silent\n"
+        f"stderr:\n{completed.stderr}"
+    )
+    specific = verdict.get("hookSpecificOutput", {})
+    decision = specific.get("permissionDecision", "")
+    reason = specific.get("permissionDecisionReason", "")
+    print(f"matcher={EXPECTED_MATCHER}")
+    print(f"target={target}")
+    print(f"decision={decision!r}")
+    print(f"exit_code={completed.returncode}")
+    assert completed.returncode == 0, completed.stderr
+    assert decision == "deny", f"expected a categorical deny, got {decision!r}"
+    assert re.search(r"P-[a-f0-9]{32}", reason), (
+        "the deny must carry the subagent protected-path approval_id"
+    )
+    assert "PROTECTED" in reason.upper() or "T3_BLOCKED" in reason, (
+        "the deny must come from protected-path policy, not a session-wide guard"
+    )

@@ -96,7 +96,10 @@ def test_protected_path_pending_round_trips_as_one_opaque_machine_identity(
     # boundary that file's own tests use.
     monkeypatch.setattr("gaia.store.writer.is_harness_session_bound", lambda *a, **k: True)
 
-    protected_path = REPO_ROOT / "hooks" / "modules" / "security" / "tiers.py"
+    # An install-shaped path, not REPO_ROOT's own checkout: protection follows
+    # the installation, not the repository (decision
+    # decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo).
+    protected_path = Path.home() / ".claude" / "hooks" / "modules" / "security" / "tiers.py"
     event = OpenCodeAdapter().parse_event(json.dumps({
         "event": "tool.execute.before",
         "sessionID": "session-gate-929",

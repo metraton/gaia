@@ -114,12 +114,17 @@ def _step(label: str, tool: str, args: object, *, request_permission: bool = Fal
 
 
 def _workspace(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A harness-shaped tree: ``.claude/hooks/guard.py`` is protected because
+    of its path SHAPE, not a Gaia-root marker file -- protection follows the
+    installation, not the repository (decision
+    decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo), and a bare
+    ``build/gaia.manifest.json``/``package.json`` marker (what this used to
+    write) no longer makes a tree protected on its own."""
     root = tmp_path / "workspace"
-    hooks = root / "hooks"
+    hooks = root / ".claude" / "hooks"
     hooks.mkdir(parents=True)
     protected = hooks / "guard.py"
     protected.write_text("ORIGINAL\n")
-    (root / "package.json").write_text(json.dumps({"name": "@jaguilar87/gaia"}))
     unprotected = root / "src" / "safe.py"
     unprotected.parent.mkdir()
     unprotected.write_text("SAFE\n")
@@ -133,7 +138,7 @@ def test_exhaustive_file_alias_payload_and_path_matrix_reaches_real_bridge(
     nested = root / "nested"
     nested.mkdir()
     symlink = nested / "hook-link"
-    symlink.symlink_to(root / "hooks", target_is_directory=True)
+    symlink.symlink_to(root / ".claude" / "hooks", target_is_directory=True)
 
     edit_aliases = ["Edit", "edit", "EDIT", "e_d-i.t"]
     write_aliases = ["Write", "write", "WRITE", "w-r_i.t e"]
@@ -228,7 +233,7 @@ def test_literal_apply_patch_relative_target_reaches_guard_before_native_patch(
     tmp_path, isolated_gaia_db,
 ):
     root, protected, _ = _workspace(tmp_path)
-    patch = _patch("patchText", "hooks/guard.py")
+    patch = _patch("patchText", ".claude/hooks/guard.py")
 
     driven = _drive(root, root, [
         _step("native-identity", "apply_patch", patch, request_permission=True),
@@ -266,25 +271,25 @@ def test_host_permission_without_bridge_approval_stays_denied(tmp_path):
 
 def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed(tmp_path):
     root, protected, _ = _workspace(tmp_path)
-    second = root / "hooks" / "second.py"
+    second = root / ".claude" / "hooks" / "second.py"
     second.write_text("SECOND\n")
     valid_patch = "\n".join([
         "*** Begin Patch",
-        "*** Add File: hooks/new.py",
+        "*** Add File: .claude/hooks/new.py",
         "+NEW",
-        "*** Update File: hooks/guard.py",
-        "*** Move to: hooks/moved.py",
+        "*** Update File: .claude/hooks/guard.py",
+        "*** Move to: .claude/hooks/moved.py",
         "@@",
         "-ORIGINAL",
         "+MOVED",
-        "*** Update File: hooks/guard.py",
+        "*** Update File: .claude/hooks/guard.py",
         "@@",
         "-MOVED",
         "+MOVED-AGAIN",
-        "*** Delete File: hooks/second.py",
+        "*** Delete File: .claude/hooks/second.py",
         "*** End Patch",
     ])
-    invalid_patch = valid_patch.replace("hooks/second.py", "/")
+    invalid_patch = valid_patch.replace(".claude/hooks/second.py", "/")
     driven = _drive(root, root, [
         _step("ordered", "ApplyPatch", {"patchText": valid_patch}),
         _step("one-invalid", "apply_patch", {"patchText": invalid_patch}),
@@ -296,7 +301,7 @@ def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed
         _step(
             "malformed-body",
             "ApplyPatch",
-            {"patchText": "*** Begin Patch\n*** Update File: hooks/guard.py\n*** End Patch"},
+            {"patchText": "*** Begin Patch\n*** Update File: .claude/hooks/guard.py\n*** End Patch"},
         ),
     ])
 
@@ -304,9 +309,9 @@ def test_multiple_patch_paths_preserve_order_and_any_invalid_target_fails_closed
     assert ordered["allowed"] is False
     exchange = _exchange(driven, ordered["callID"])
     assert exchange["sent"]["args"]["file_paths"] == [
-        str((root / "hooks" / "new.py").resolve()),
+        str((root / ".claude" / "hooks" / "new.py").resolve()),
         str(protected.resolve()),
-        str((root / "hooks" / "moved.py").resolve()),
+        str((root / ".claude" / "hooks" / "moved.py").resolve()),
         str(protected.resolve()),
         str(second.resolve()),
     ]

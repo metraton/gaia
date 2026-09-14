@@ -9,9 +9,18 @@ consume.
 Until this rewrite the file carried a COPY of an older, nested ``_is_protected``
 and asserted against that, so it stayed green while the algorithm it claimed to
 replicate was replaced -- and replaced precisely because anchoring the protected
-set to the evaluating module's load path left every other hook tree, the source
-checkout included, ungated. The last class below is the assertion that copy could
-not make.
+set to the evaluating module's load path left every other hook tree ungated. The
+``TestVerdictDoesNotFollowTheLoadPath`` class below is the assertion that copy
+could not make.
+
+Protection now follows the INSTALLATION, not the repository (decision
+``decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo``): a Gaia source
+checkout, HOOKS_DIR included, is DELIBERATELY ungated here -- an ordinary
+project gated by git, not by this predicate. That is a different claim from the
+load-path bug above: the bug ungated the checkout by accident, as a side
+effect of where the evaluating module happened to load from; the current
+design ungates it on purpose, regardless of load location, because it is a
+checkout and not a live install.
 
 Every call is written module-qualified so the binding resolves per call: a
 predicate that breaks or disappears turns this file red instead of leaving it
@@ -46,20 +55,26 @@ class TestMdExemptionUnderHooks:
         assert protected_paths.is_protected_hook_path(path) is False
 
 
-class TestExecutableSiblingsRemainProtected:
-    """The carve-out reaches documentation only."""
+class TestSourceCheckoutExecutablesAreUngated:
+    """HOOKS_DIR here is the SOURCE CHECKOUT tree (this repo's own hooks/),
+    not an install. Protection follows the installation, not the repository
+    (decision decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo): a
+    checkout is an ordinary project gated by git, never by a per-file
+    approval -- flipped from the prior expectation that these were protected.
+    ``TestVerdictDoesNotFollowTheLoadPath`` below exercises the install shapes
+    that DO stay protected."""
 
-    def test_module_under_hooks_is_protected(self):
+    def test_module_under_checkout_hooks_is_ungated(self):
         path = str(HOOKS_DIR / "modules" / "security" / "mutative_verbs.py")
-        assert protected_paths.is_protected_hook_path(path) is True
+        assert protected_paths.is_protected_hook_path(path) is False
 
-    def test_session_module_under_hooks_is_protected(self):
+    def test_session_module_under_checkout_hooks_is_ungated(self):
         path = str(HOOKS_DIR / "modules" / "session" / "pending_scanner.py")
-        assert protected_paths.is_protected_hook_path(path) is True
+        assert protected_paths.is_protected_hook_path(path) is False
 
-    def test_adapter_is_protected(self):
+    def test_adapter_under_checkout_hooks_is_ungated(self):
         path = str(HOOKS_DIR / "adapters" / "claude_code.py")
-        assert protected_paths.is_protected_hook_path(path) is True
+        assert protected_paths.is_protected_hook_path(path) is False
 
 
 class TestNonHooksPathsUnchanged:

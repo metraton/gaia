@@ -51,7 +51,13 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 
-TARGET_PATH = str(HOOKS_DIR / "adapters" / "opencode.py")
+# An ABSOLUTE, install-shaped path, not a checkout one: protection now follows
+# the installation, not the repository (decision
+# decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo), so a path under
+# HOOKS_DIR (this repo's own checkout) no longer drives the protected-path
+# FILE_WRITE flow this file exercises. Absolute because
+# build_file_path_signature requires it (see _file_write_payload below).
+TARGET_PATH = str(Path.home() / ".claude" / "hooks" / "adapters" / "opencode.py")
 
 DEAD_SESSION = "ses_fa68f9e0fffeKKmgCWFzAhBJeO"
 LIVE_SESSION = "79d46c41-48c5-47a7-8411-b12b8788f4e1"
