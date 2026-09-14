@@ -2,40 +2,46 @@
 
 Gaia's executable hook code is write-protected on two surfaces: the Write/Edit
 gate in ``adapters/claude_code.py`` and the Bash command-string guard in
-``protected_path_guard.py``. Until this module existed the scope was stated
-twice, in prose, with the guard's docstring claiming to mirror the adapter --
-and that duplication is what produced the inversion below. Both surfaces now
-consume this predicate, so widening one cannot leave the other behind.
+``protected_path_guard.py``. Both surfaces consume this predicate, so widening
+one cannot leave the other behind.
 
-THE INVERSION THIS FIXES. The adapter derived its protected root from
-``Path(__file__).parent.parent`` -- the directory the RUNNING hook module was
-loaded from. While the installed hook directory was a symlink back into the
-checkout both resolved identically and the source tree was protected
-INCIDENTALLY. Once a dev install materialises the installed copy into a package
-store, the source hook tree is no longer under that root, the containment check
-raises, and the write passes UNGATED. The scope of a security control was
-therefore a function of the deployment layout, protecting the copy that the next
-install overwrites and leaving unprotected the only place an edit is durable.
+THE BOUNDARY. Protection follows the INSTALLATION, not the repository. A Gaia
+checkout living inside a workspace is a project like any other: edited freely,
+gated by git -- status, review at commit, the push -- never by a per-file
+approval. What stays protected is a LIVE materialization a host actually loads
+and executes: the ``.claude`` harness install, or the scoped npm package store
+(``@jaguilar87/gaia``).
 
-THE DERIVATION. The protected set is a UNION of lanes, none of which reads the
-load location of the evaluating module, so materialising the hooks differently
-(symlink, package store, plain copy, container mount) changes NEITHER lane:
+WHY THE PRIOR RULE PROTECTED THE CHECKOUT INSTEAD, AND WHY THAT WAS WRONG. An
+earlier version additionally protected any directory carrying a Gaia root
+marker (``build/gaia.manifest.json`` or a matching ``package.json``) or
+recorded in the workspace registry -- and that is precisely how a checkout got
+swept in: a plain ``git clone`` of this repository carries the identical
+marker, and a scanned workspace project is exactly what the registry records.
+Neither lane can tell a checkout from an install, because nothing distinguishes
+them at that marker. A source edit's durability is already git's job; a
+runtime guard adding a per-file consent step on top of it protects a
+relationship that holds on exactly one machine -- a Gaia developer's, where a
+checkout happens to sit beside that developer's own install -- and nowhere
+else, since every other install of Gaia has no checkout at all. Live installs
+remain protected because they are what actually executes; the six verbs that
+materialize or refresh one (``install``, ``update``, ``uninstall``, ``cleanup``,
+``dev``, ``release``) are T3-gated in code, so replacing a live install still
+requires consent even though editing the checkout beside it no longer does.
 
-  * DECLARED IDENTITY -- the checkout paths recorded in the workspace registry
-    (``projects.path``), i.e. outside any deployment, narrowed to the rows that
-    are Gaia checkouts.
-  * STRUCTURAL SHAPE -- a ``hooks`` directory anchored under a harness install
-    root (a ``.claude`` component) or under the distributed package directory
-    (``@jaguilar87/gaia``). Pure path shape: no filesystem, no database.
-  * ROOT MARKER -- a ``hooks`` directory whose parent carries a Gaia package
-    marker. This reads the filesystem AROUND THE TARGET, never around this
-    module, and covers a plain copy or a container mount that neither of the
-    other lanes names.
+THE DERIVATION. ``_shape_hit`` is the only lane that is install-specific BY
+CONSTRUCTION: it matches the literal path components a live install is
+required to have -- a ``hooks`` directory anchored under a harness root (a
+``.claude`` component) or under the scoped package directory
+(``@jaguilar87/gaia``) -- never a marker file or a registry row a checkout
+carries identically. It is therefore the sole lane this predicate consults for
+protection, evaluated against a path's literal, absolute, and symlink-resolved
+forms alike so a symlinked install cannot dodge it by spelling.
 
-Resolution fails CLOSED: the identity lane needs a database read, which can
-fail inside PreToolUse, and an empty root set from a failed read is the same
-inversion by a new route. So a lane that yields nothing only ever declines to
-ADD roots -- the structural and marker lanes still fire on their own.
+``declared_hook_tree_roots()`` still resolves checkout roots from the
+workspace registry, for a DIFFERENT caller: ``_get_gaia_agent_names`` in
+``adapters/claude_code.py`` uses it to find the agents directory beside a
+checkout for agent-name discovery, not to decide what is write-protected.
 
 The ``.md`` carve-out (documentation does not execute code) and the
 ``settings.json`` / ``settings.local.json`` special case keep their existing
@@ -143,7 +149,10 @@ def _read_registry_hook_roots() -> Tuple[str, ...]:
 
 
 def declared_hook_tree_roots() -> Tuple[str, ...]:
-    """Hook-tree roots declared in the workspace registry, or () if unresolvable."""
+    """Checkout hook-tree roots declared in the workspace registry, or () if
+    unresolvable. Consumed only for agent-name discovery
+    (``adapters/claude_code.py::_get_gaia_agent_names``); not a protection
+    lane -- see the module docstring."""
     global _declared_roots_cache
     if _declared_roots_cache is None:
         try:
@@ -166,27 +175,6 @@ def _shape_hit(parts: Tuple[str, ...]) -> bool:
             and remainder[:1] == (_PACKAGE_DIR,)
             and _HOOKS_DIR in remainder[1:]
         ):
-            return True
-    return False
-
-
-def _declared_root_hit(candidate: Path) -> bool:
-    roots = declared_hook_tree_roots()
-    if not roots:
-        return False
-    for root in roots:
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            continue
-        return True
-    return False
-
-
-def _marker_hit(candidate: Path) -> bool:
-    """True iff some ``hooks`` ancestor of `candidate` sits in a Gaia root."""
-    for ancestor in (candidate,) + tuple(candidate.parents):
-        if ancestor.name == _HOOKS_DIR and _is_gaia_root(ancestor.parent):
             return True
     return False
 
@@ -244,9 +232,11 @@ def is_protected_hook_path(path_str: str) -> bool:
             out of a Bash command string.
 
     Returns:
-        True when the path is inside a Gaia hook tree (any lane, any
-        deployment) and is not documentation, or when it is a ``.claude``
-        settings file.
+        True when the path is inside a live-install hook tree (``.claude`` or
+        the ``@jaguilar87/gaia`` package store, any deployment shape) and is
+        not documentation, or when it is a ``.claude`` settings file. A Gaia
+        source checkout is never matched by this predicate -- see the module
+        docstring.
     """
     if not path_str:
         return False
@@ -254,11 +244,7 @@ def is_protected_hook_path(path_str: str) -> bool:
     candidates = _candidates(path_str)
 
     for candidate in candidates:
-        if (
-            _shape_hit(candidate.parts)
-            or _declared_root_hit(candidate)
-            or _marker_hit(candidate)
-        ):
+        if _shape_hit(candidate.parts):
             # Documentation does not execute code and is exempt.
             return candidate.suffix != ".md"
 
