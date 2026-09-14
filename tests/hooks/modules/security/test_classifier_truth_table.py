@@ -405,6 +405,110 @@ CLASSIFIER_TRUTH_TABLE = [
     ("tier-floor-free-plan", FREE, "terraform plan", False, T2),
     ("tier-floor-free-diff", FREE, "git diff --stat", False, T0),
     ("tier-floor-free-template", FREE, "helm template app ./chart", False, T2),
+    # ---- Subordination pins the LIVE instance, not just the synthetic family --
+    # The floor rows above cover `kubectl delete pod <word>` with no namespace
+    # and never touched the one command this repository actually runs that
+    # carries the same shape: `gaia release check` is genuinely mutative (it
+    # spawns the npm prepack lifecycle) yet ends in the exact token T1_PATTERNS
+    # matches. Sharing that command string with the floor rows is impossible
+    # (duplicate commands fail the corpus test), so each mutative control below
+    # adds `-n default` to stay a distinct string while pinning the same
+    # property, and each free control uses a different real tool per T1/T2
+    # word so nothing collides with the rows already above.
+    (
+        "tier_pattern_subordination_live_release_check",
+        GATED,
+        "gaia release check",
+        True,
+        T3,
+    ),
+    (
+        "tier_pattern_subordination_mutative_check",
+        GATED,
+        "kubectl delete pod check -n default",
+        True,
+        T3,
+    ),
+    (
+        "tier_pattern_subordination_mutative_validate",
+        GATED,
+        "kubectl delete pod validate -n default",
+        True,
+        T3,
+    ),
+    (
+        "tier_pattern_subordination_mutative_lint",
+        GATED,
+        "kubectl delete pod lint -n default",
+        True,
+        T3,
+    ),
+    (
+        "tier_pattern_subordination_mutative_fmt",
+        GATED,
+        "kubectl delete pod fmt -n default",
+        True,
+        T3,
+    ),
+    (
+        "tier_pattern_subordination_mutative_plan",
+        GATED,
+        "kubectl delete pod plan -n default",
+        True,
+        T3,
+    ),
+    (
+        "tier_pattern_subordination_mutative_diff",
+        GATED,
+        "kubectl delete pod diff -n default",
+        True,
+        T3,
+    ),
+    (
+        "tier_pattern_subordination_mutative_template",
+        GATED,
+        "kubectl delete pod template -n default",
+        True,
+        T3,
+    ),
+    ("tier_pattern_subordination_free_check", FREE, "black --check .", False, T1),
+    (
+        "tier_pattern_subordination_free_validate",
+        FREE,
+        "cfn-lint validate stack.yaml",
+        False,
+        T1,
+    ),
+    (
+        "tier_pattern_subordination_free_lint",
+        FREE,
+        "shellcheck lint script.sh",
+        False,
+        T1,
+    ),
+    ("tier_pattern_subordination_free_fmt", FREE, "gofmt fmt ./...", False, T1),
+    ("tier_pattern_subordination_free_plan", FREE, "opentofu plan", False, T2),
+    (
+        "tier_pattern_subordination_free_diff",
+        FREE,
+        "helm diff upgrade myrelease ./chart",
+        False,
+        T2,
+    ),
+    (
+        "tier_pattern_subordination_free_template",
+        FREE,
+        "kompose convert --template docker-compose.yml",
+        False,
+        T2,
+    ),
+    (
+        "tier_pattern_subordination_free_release_sibling",
+        FREE,
+        "gaia release notes",
+        False,
+        T0,
+    ),
     # ---- FREE controls: reads that must not start paying a toll ----
     ("read-gcloud-config", FREE, "gcloud config get-value project", False, T0),
     ("read-gh-run-list", FREE, "gh run list --limit 5", False, T0),
@@ -1353,7 +1457,7 @@ def test_no_overcorrection_census_carries_both_directions():
 # there to catch. It is a literal, not ``len(CLASSIFIER_TRUTH_TABLE)``, because
 # deriving it from the table would assert nothing; adding a row is meant to
 # cost one deliberate edit here.
-_MINIMUM_MEASURED_CASES = 164
+_MINIMUM_MEASURED_CASES = 180
 
 
 @pytest.mark.parametrize(
