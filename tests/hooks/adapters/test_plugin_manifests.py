@@ -374,9 +374,16 @@ class TestGeneratorRefusesProtectedOverwrite:
 
     These tests drive the ACTUAL invocation `prepack` runs -- the script
     itself, as a subprocess, differing only in --output-dir -- against a tree
-    that carries the same Gaia root marker (build/gaia.manifest.json) the
-    protected-path predicate's marker lane keys on, so the refusal exercises
-    the same lane that protects the real checkout.
+    that carries the Gaia root marker (build/gaia.manifest.json).
+
+    This refusal no longer depends on
+    hooks/modules/security/protected_paths.py::is_protected_hook_path: that
+    predicate stopped covering the source checkout (decision
+    decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo), so a refusal
+    keyed on it would silently stop firing for the real repo's own
+    hooks/hooks.json. The generator's refusal is unconditional on divergence
+    instead (see build-plugin.py::_write_generated_manifest) -- the property
+    these tests protect never needed the narrower, install-only question.
     """
 
     SCRIPT = PROJECT_ROOT / "scripts" / "build-plugin.py"
@@ -444,16 +451,54 @@ class TestGeneratorRefusesProtectedOverwrite:
         assert result.returncode == 0, result.stderr
         assert (tree / "hooks" / "hooks.json").read_text() == self._expected_hooks_text()
 
-    def test_repo_hooks_json_is_inside_the_protected_set(self):
-        """Tie the guard to the ONE predicate on the real target path."""
-        spec = importlib.util.spec_from_file_location(
-            "_gaia_protected_paths",
-            PROJECT_ROOT / "hooks" / "modules" / "security" / "protected_paths.py",
+    def test_refusal_no_longer_depends_on_the_protected_path_predicate(self):
+        """The decoupling is structural, not incidental.
+
+        Before decision decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo,
+        this refusal was gated by protected_paths.is_protected_hook_path -- which
+        now returns False for the real checkout's own hooks/hooks.json (it is a
+        checkout path, not a live install). Asserting the refusal still fires on
+        that exact real path (as the OLD test here did) would therefore prove
+        nothing: on THIS machine it would pass only if some OTHER lane happened
+        to still classify it as protected, which is precisely the coincidence
+        that made the checkout's protection a function of deployment layout in
+        the first place. So this checks the actual decoupling: the generator no
+        longer imports or calls is_protected_hook_path at all, and its refusal
+        function takes no `is_protected` parameter -- the behavioral proof that
+        it still refuses on divergence, unconditionally, is
+        test_refuses_divergent_overwrite_without_force above.
+        """
+        import ast
+        import inspect
+
+        module = _load_build_plugin_module()
+        assert not hasattr(module, "_load_protected_predicate"), (
+            "the predicate loader should have been removed, not left unused"
         )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        module.reset_caches()
-        assert module.is_protected_hook_path(str(PROJECT_ROOT / "hooks" / "hooks.json"))
+        params = inspect.signature(module._write_generated_manifest).parameters
+        assert "is_protected" not in params, (
+            "_write_generated_manifest still takes an is_protected callable -- "
+            "the refusal is still coupled to the narrower, install-only question"
+        )
+
+        # AST, not a text/docstring search: the prose above is allowed to name
+        # is_protected_hook_path when explaining the decoupling; the code must
+        # not import or call it.
+        tree = ast.parse(
+            (PROJECT_ROOT / "scripts" / "build-plugin.py").read_text(encoding="utf-8")
+        )
+        calls_and_imports = [
+            node
+            for node in ast.walk(tree)
+            if (isinstance(node, ast.Name) and node.id == "is_protected_hook_path")
+            or (
+                isinstance(node, ast.ImportFrom)
+                and any(alias.name == "is_protected_hook_path" for alias in node.names)
+            )
+        ]
+        assert not calls_and_imports, (
+            "build-plugin.py must not import or call is_protected_hook_path in code"
+        )
 
 
 class TestMarketplaceJson:

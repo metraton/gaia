@@ -16,11 +16,17 @@ Usage:
     python3 scripts/build-plugin.py <plugin-name> --manifests-only [--output-dir <path>] [--force]
 
 A regeneration that would CHANGE an existing hooks/hooks.json refuses without
---force: that file is inside the protected set
-(hooks/modules/security/protected_paths.py::is_protected_hook_path), and this
-script is reachable as a subprocess side effect (npm prepack under `npm pack`),
-where a silent rewrite would apply a hook-configuration change no one consented
-to. An in-sync tree regenerates as a no-op, so pack/publish flows are unaffected.
+--force, unconditionally -- this script is reachable as a subprocess side
+effect (npm prepack under `npm pack`), where a silent rewrite would apply a
+hook-configuration change no one consented to. This no longer depends on
+hooks/modules/security/protected_paths.py::is_protected_hook_path: that
+predicate governs interactive per-file consent for a Write/Edit or shell
+write, a narrower question than "is an existing generated manifest about to
+be silently overwritten with different content" -- the two questions
+diverged once is_protected_hook_path stopped covering the source checkout
+(decision decision_gaia_proteccion_sigue_a_la_instalacion_no_al_repo), and
+this script's own safety net does not need that narrower answer. An in-sync
+tree regenerates as a no-op, so pack/publish flows are unaffected.
 
 Exit codes:
     0  Build successful
@@ -28,7 +34,6 @@ Exit codes:
 """
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
@@ -326,41 +331,19 @@ def _atomic_write_json(path: Path, data: dict) -> None:
         raise
 
 
-def _load_protected_predicate():
-    """Load is_protected_hook_path -- the ONE protected-path predicate.
-
-    The same predicate the Write/Edit gate and the Bash guard consume decides
-    here too, so this writer cannot disagree with the guarded surfaces about
-    what is protected. Fails CLOSED: if the predicate cannot be loaded, every
-    target is treated as protected -- a broken import can only add refusals,
-    never remove one.
-    """
-    try:
-        spec = importlib.util.spec_from_file_location(
-            "_gaia_protected_paths",
-            REPO_ROOT / "hooks" / "modules" / "security" / "protected_paths.py",
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.is_protected_hook_path
-    except Exception:
-        return lambda _path: True
-
-
-def _write_generated_manifest(path: Path, data: dict, *, force: bool, is_protected) -> str:
-    """Write one generated manifest, refusing a silent change to a protected file.
+def _write_generated_manifest(path: Path, data: dict, *, force: bool) -> str:
+    """Write one generated manifest, refusing a silent change to its content.
 
     Returns "unchanged", "created", or "updated"; exits 1 instead of
-    overwriting a protected file whose content would change without `force`.
+    overwriting an existing file whose content would change without `force`.
 
-    The distinction that matters is OVERWRITE vs CREATE: an existing protected
-    file is a committed, consent-governed artifact, so changing its bytes from
-    inside a subprocess (npm prepack under `npm pack`, reachable from a test
-    run or `gaia release check`) is exactly the ungoverned mutation the
-    protected-path gates exist to stop -- it must be loud and explicit, never
-    a lifecycle side effect. Creating the file where none exists (materializing
-    a fresh tree) overwrites nothing and stays free, and deleting the committed
-    file first is itself denied by the guarded surfaces.
+    The distinction that matters is OVERWRITE vs CREATE: an existing generated
+    manifest is a committed artifact, so changing its bytes from inside a
+    subprocess (npm prepack under `npm pack`, reachable from a test run or
+    `gaia release check`) must be loud and explicit, never a lifecycle side
+    effect -- unconditionally, regardless of where this script's output
+    directory happens to sit. Creating the file where none exists
+    (materializing a fresh tree) overwrites nothing and stays free.
     """
     rendered = json.dumps(data, indent=2) + "\n"
     try:
@@ -371,14 +354,14 @@ def _write_generated_manifest(path: Path, data: dict, *, force: bool, is_protect
     if current == rendered:
         return "unchanged"
 
-    if current is not None and not force and is_protected(str(path)):
+    if current is not None and not force:
         print(
             f"Error: refusing to overwrite protected generated file: {path}\n"
             "  Its content differs from what build/gaia.manifest.json generates.\n"
             "  If the manifest change is deliberate, regenerate explicitly:\n"
             "    npm run generate:plugin-root -- --force\n"
             "  A silent rewrite here would apply a hook-configuration change "
-            "without consent (see hooks/modules/security/protected_paths.py).",
+            "without an explicit decision behind it.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -430,12 +413,10 @@ def write_root_manifests(plugin_name: str, output_dir: Path, *, force: bool = Fa
     # should carry only the tool's actual data, never incidental narration).
     print(f"Regenerating root manifests for plugin '{plugin_name}' in: {output_dir}", file=sys.stderr)
 
-    is_protected = _load_protected_predicate()
-
     hooks_json = generate_hooks_json(manifest)
     outcome = _write_generated_manifest(
         output_dir / "hooks" / "hooks.json", hooks_json,
-        force=force, is_protected=is_protected,
+        force=force,
     )
     print(
         f"  hooks/hooks.json: {outcome} ({len(hooks_json['hooks'])} events)",
@@ -445,7 +426,7 @@ def write_root_manifests(plugin_name: str, output_dir: Path, *, force: bool = Fa
     plugin_json = generate_plugin_json(manifest)
     outcome = _write_generated_manifest(
         output_dir / ".claude-plugin" / "plugin.json", plugin_json,
-        force=force, is_protected=is_protected,
+        force=force,
     )
     print(
         f"  .claude-plugin/plugin.json: {outcome} (metadata only, no inline hooks)",
