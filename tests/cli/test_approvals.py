@@ -1130,6 +1130,75 @@ class TestCmdStats:
 
 
 # ---------------------------------------------------------------------------
+# Tests: cmd_request_file_write -- the plan-first FILE_WRITE producer
+# ---------------------------------------------------------------------------
+
+class TestCmdRequestFileWrite:
+    """cmd_request_file_write mints a SCOPE_FILE_PATH pending up front, through
+    the same write_pending_approval_for_file() the reactive PreToolUse block
+    uses -- so what this handler wires from argparse into `context` is what
+    ends up sealed. tests/hooks/modules/security/test_file_write_context_sealing.py
+    covers the sealing and reuse properties directly against that function;
+    this covers the CLI layer this handler itself adds (argument wiring,
+    validation, printed/returned shape)."""
+
+    def _args(self, **kwargs):
+        defaults = {
+            "path": "/tmp/does-not-need-to-exist/protected.py",
+            "rationale": None,
+            "verification": None,
+            "rollback": None,
+            "impact": None,
+            "agent_id": None,
+            "session_id": "test-session-aaa",
+            "json": False,
+        }
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
+
+    def test_rejects_a_relative_path(self, capsys, db_store):
+        rc = approvals_mod.cmd_request_file_write(
+            self._args(path="relative/file.py")
+        )
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "absolute" in (captured.out + captured.err).lower()
+
+    def test_mints_a_pending_and_prints_the_approval_id(self, capsys, db_store):
+        rc = approvals_mod.cmd_request_file_write(self._args())
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Requested P-" in captured.out
+        assert "/tmp/does-not-need-to-exist/protected.py" in captured.out
+
+    def test_json_output_carries_the_approval_id_and_path(self, db_store, capsys):
+        rc = approvals_mod.cmd_request_file_write(self._args(json=True))
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["status"] == "pending"
+        assert data["approval_id"].startswith("P-")
+        assert data["path"] == "/tmp/does-not-need-to-exist/protected.py"
+
+    def test_declared_fields_reach_the_stored_payload(self, db_store, capsys):
+        _store, _insert_pending = db_store
+        rc = approvals_mod.cmd_request_file_write(
+            self._args(
+                rollback="git checkout HEAD -- other.py",
+                verification="pytest tests/y.py -q",
+                impact="other.py starts validating input",
+                json=True,
+            )
+        )
+        assert rc == 0
+        result = json.loads(capsys.readouterr().out)
+        row = _store.get_by_id(result["approval_id"])
+        payload = json.loads(row["payload_json"])
+        assert payload["rollback_hint"] == "git checkout HEAD -- other.py"
+        assert payload["verification"] == "pytest tests/y.py -q"
+        assert payload["impact"] == "other.py starts validating input"
+
+
+# ---------------------------------------------------------------------------
 # Tests: _format_age helper
 # ---------------------------------------------------------------------------
 

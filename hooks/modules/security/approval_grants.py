@@ -1079,7 +1079,11 @@ def write_pending_approval_for_file(
       - operation      = "FILE_WRITE command intercepted: write"
       - scope          = SCOPE_FILE_PATH constant
       - scope_signature = serialised ApprovalSignature for check/activation
-      - risk_level, rollback_hint, rationale from context when available
+      - risk_level, rollback_hint, verification, impact, rationale from
+        context when available (verification/impact seal exactly like
+        rollback_hint always did: present when the caller's context carries
+        them, None -- rendered as "not declared" by consent_presentation.py's
+        existing VISIBLE_FIELDS table -- when it does not)
 
     Args:
         nonce: Cryptographic nonce from generate_nonce().  The DB row is stored
@@ -1115,6 +1119,8 @@ def write_pending_approval_for_file(
         "scope_signature": signature.to_dict(),
         "risk_level": ctx.get("risk", "medium") or "medium",
         "rollback_hint": ctx.get("rollback"),
+        "verification": ctx.get("verification"),
+        "impact": ctx.get("impact"),
         "rationale": (
             ctx.get("description")
             or f"Protected-path write to {file_path!r} requires user approval."

@@ -1575,6 +1575,62 @@ def cmd_request_set(args) -> int:
     return 0
 
 
+def cmd_request_file_write(args) -> int:
+    """Proactively seal rollback/verification/impact for a protected-path write.
+
+    The reactive PreToolUse block for a protected-path Write/Edit mints a
+    SCOPE_FILE_PATH pending through write_pending_approval_for_file() with no
+    way for the requesting agent to declare rollback/verification/impact --
+    its one call site (hooks/adapters/claude_code.py) never passes a
+    ``context`` dict. This verb is the producer that DOES: it mints the SAME
+    kind of pending, through the SAME function, up front. When the write is
+    then actually attempted, the PreToolUse handler's existing pending-reuse
+    step (already there for retry dedup, matched by file-path signature
+    across all sessions via find_pending_for_file(), within
+    PENDING_REUSE_WINDOW_MINUTES) finds THIS pending and reuses its nonce --
+    surfacing the fields declared here instead of minting a fresh, field-
+    empty one. No PreToolUse code change was needed for this to work: the
+    reuse path already existed for a different reason (retry dedup) and
+    serves this one for free.
+    """
+    path = (args.path or "").strip()
+    if not path or not os.path.isabs(path):
+        _print_error("--path must be an absolute file path", args)
+        return 1
+    try:
+        from modules.security.approval_grants import (
+            generate_nonce,
+            write_pending_approval_for_file,
+        )
+        nonce = generate_nonce()
+        context = {
+            "risk": "medium",
+            "rollback": (args.rollback or "").strip() or None,
+            "verification": (args.verification or "").strip() or None,
+            "impact": (args.impact or "").strip() or None,
+            "description": (args.rationale or "").strip() or None,
+        }
+        pending = write_pending_approval_for_file(
+            nonce=nonce,
+            file_path=path,
+            session_id=args.session_id,
+            context=context,
+        )
+        if pending is None:
+            _print_error("Failed to persist pending file-write approval", args)
+            return 1
+    except Exception as exc:
+        _print_error(f"File-write request rejected: {exc}", args)
+        return 1
+    approval_id = f"P-{nonce}"
+    result = {"status": "pending", "approval_id": approval_id, "path": path}
+    if args.json:
+        print(json.dumps(result))
+    else:
+        print(f"Requested {approval_id} for file write: {path}")
+    return 0
+
+
 def _opencode_binding(args) -> tuple[dict | None, str | None]:
     """Require matching presentations to agree on the approval's owning session."""
     approval_id = _resolve_approval_id(args.approval_id)
@@ -2150,6 +2206,32 @@ def register(subparsers) -> None:
     p_request_set.add_argument("--session-id")
     p_request_set.add_argument("--json", action="store_true")
     p_request_set.set_defaults(func=cmd_request_set)
+
+    p_request_file_write = sub.add_parser(
+        "request-file-write",
+        help=(
+            "Proactively seal rollback/verification/impact for an upcoming "
+            "protected-path Write/Edit"
+        ),
+    )
+    p_request_file_write.add_argument("--path", required=True)
+    p_request_file_write.add_argument("--rationale")
+    p_request_file_write.add_argument(
+        "--verification",
+        help="How the resulting state will be confirmed; sealed and shown verbatim",
+    )
+    p_request_file_write.add_argument(
+        "--rollback",
+        help="How the edit is undone; sealed and shown verbatim",
+    )
+    p_request_file_write.add_argument(
+        "--impact",
+        help="What changes for whoever runs it, in one line; sealed and shown verbatim",
+    )
+    p_request_file_write.add_argument("--agent-id")
+    p_request_file_write.add_argument("--session-id")
+    p_request_file_write.add_argument("--json", action="store_true")
+    p_request_file_write.set_defaults(func=cmd_request_file_write)
 
     for name, handler, help_text in (
         ("opencode-present", cmd_opencode_present, "Record an OpenCode approval presentation"),

@@ -85,6 +85,8 @@ def _file_write_payload(file_path: str) -> dict:
         "scope_signature": signature.to_dict(),
         "risk_level": "medium",
         "rollback_hint": None,
+        "verification": None,
+        "impact": None,
         "rationale": f"Protected-path write to {file_path!r} requires user approval.",
         "commands": [file_path],
     }
