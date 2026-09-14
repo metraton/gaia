@@ -6,16 +6,15 @@ Detailed runbooks, diagnostic guide, release checklist, and schema-migration pro
 
 Install the working tree into a real workspace so a live Claude Code picks it up.
 
-**Primary path -- one command, either mode:**
+**Primary path -- one command:**
 ```
-gaia dev --workspace <TARGET>                      # --mode pack (default): pack + install + wire
-gaia dev --workspace <TARGET> --mode link           # --mode link: symlink source, no pack, instant iteration
+gaia dev --workspace <TARGET>                      # pack + install + wire
 ```
-`gaia dev` (`bin/cli/dev.py`) is what the manual sequences below collapse into. `--mode pack` runs `npm pack` (via the shared `_pack_helpers.pack_tarball` primitive) against the CURRENT source tree, installs the freshly packed tarball into `<TARGET>`'s `node_modules` (npm or pnpm, auto-detected from lockfile/workspace markers), then wires `.claude/` and bootstraps the DB by invoking the freshly-installed copy's own `gaia install --workspace <TARGET>` -- reflecting a real shippable version and exercising the exact machinery a real consumer would. `--mode link` symlinks `<TARGET>/node_modules/@jaguilar87/gaia` straight at this source tree (no pack, no install) and wires in-process, for the tightest possible loop when fidelity to the shipped tarball does not matter yet. Extra flags: `--keep-tarball`, `--pack-dest <dir>`, `--quiet`, `--verbose` -- see `gaia dev --help`.
+`gaia dev` (`bin/cli/dev.py`) is what the manual sequence below collapses into. It runs `npm pack` (via the shared `_pack_helpers.pack_tarball` primitive) against the CURRENT source tree, installs the freshly packed tarball into `<TARGET>`'s `node_modules` (npm or pnpm, auto-detected from lockfile/workspace markers), then wires `.claude/` and bootstraps the DB by invoking the freshly-installed copy's own `gaia install --workspace <TARGET>` -- reflecting a real shippable version and exercising the exact machinery a real consumer would. There is no source-linking mode: the consumer workspace, its `.claude/`, and every global alias only ever depend on the packed tarball. Extra flags: `--host`, `--keep-tarball`, `--pack-dest <dir>`, `--quiet`, `--verbose` -- see `gaia dev --help`.
 
 `gaia dev` is **T3** (it installs into a workspace) and will block for approval before it runs; the `gaia` launcher and `python3 <path>/bin/gaia dev` classify identically. It runs **no tests** (the fast loop stays cheap; tests are Layer 2/3 + CI) and prints a **restart notice** on success -- restart Claude Code before testing, since the harness pins hook commands at session start (see `SKILL.md` -> "Reloading a change").
 
-**What `gaia dev --mode pack` wraps** (for diagnosing which step failed, or working entirely by hand):
+**What `gaia dev` wraps** (for diagnosing which step failed, or working entirely by hand):
 
 *tarball (fidelity to what ships):*
 ```
@@ -26,20 +25,14 @@ pnpm add file:/home/jorge/ws/me/gaia/jaguilar87-gaia-<ver>.tgz
 gaia install --workspace <TARGET>
 ```
 
-*path link (what `--mode link` wraps) -- reflects the working tree without a repack:*
-```
-cd <TARGET>
-pnpm link /home/jorge/ws/me/gaia            # links the source tree in place
-gaia install --workspace <TARGET>
-```
-`pnpm link --global` was removed in modern pnpm; use a path link (above) or `pnpm add -g .` from the source repo for a global CLI. Trade-off: the tarball proves what a consumer actually receives (respecting `package.json` `files[]`); the path link is faster to iterate but can mask a missing-from-tarball file. Use the tarball (`gaia dev`'s default `--mode pack`) before any pre-release work.
+Making `gaia` itself available globally from source is a separate concern from wiring a consumer workspace: `pnpm link --global` was removed in modern pnpm, so use `pnpm link <path-to-this-repo>` from the target project, or `pnpm add -g .` from this repo, for a global CLI. `gaia dev` itself only ever wires a consumer workspace's tarball dependency -- there is no source-linking mode, so the tarball above is what any pre-release work should exercise.
 
 **npm equivalent (when the target is an npm project):**
 ```
 cd /home/jorge/ws/me/gaia
 npm run gaia:install-local -- --workspace <TARGET>
 ```
-`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. `gaia dev --mode pack` auto-detects npm vs pnpm from the target workspace, so it covers this case too; use the raw npm script only when diagnosing.
+`gaia:install-local` runs `npm pack` (whose `prepack` regenerates the root `plugin.json` (metadata only) + `hooks/hooks.json`) + `validate-sandbox.sh --target local`. `gaia dev` auto-detects npm vs pnpm from the target workspace, so it covers this case too; use the raw npm script only when diagnosing.
 
 **fresh (wipe install metadata first):**
 Append `--fresh` to the `validate-sandbox.sh` form, or manually clear `node_modules/ package.json package-lock.json` (or the pnpm equivalents) in `<TARGET>` before reinstalling. Use when a prior install left state you want gone.

@@ -59,18 +59,16 @@ def test_selected_source_reexecutes_with_exact_ref(source_pair, tmp_path):
     parser = argparse.ArgumentParser()
     dev.register(parser.add_subparsers())
     args = parser.parse_args(["dev", "--from-worktree", str(source), "--ref", commit,
-                              "--workspace", str(tmp_path), "--link"])
+                              "--workspace", str(tmp_path)])
     with patch.object(dev, "_is_source_checkout", return_value=True), \
          patch.object(dev, "validate_source_ref", return_value=commit), \
          patch.object(dev.subprocess, "run", return_value=subprocess.CompletedProcess([], 7)) as run, \
-         patch.object(dev, "_run_pack_mode") as pack, \
-         patch.object(dev, "_run_link_mode") as link:
+         patch.object(dev, "_run_pack_mode") as pack:
         assert dev.cmd_dev(args) == 7
     assert run.call_args.args[0] == [dev.sys.executable, str(source / "bin/gaia"), "dev",
                                     "--workspace", str(tmp_path), "--ref", commit,
-                                    "--mode", "link", "--host", "all"]
+                                    "--host", "all"]
     pack.assert_not_called()
-    link.assert_not_called()
 
 
 def test_mismatch_stops_before_installation(source_pair, tmp_path):
@@ -78,8 +76,6 @@ def test_mismatch_stops_before_installation(source_pair, tmp_path):
     args = argparse.Namespace(from_worktree=str(second), ref=dev.validate_source_ref(first, None),
                               workspace=str(tmp_path))
     with patch.object(dev, "_is_source_checkout", return_value=True), \
-         patch.object(dev, "_run_pack_mode") as pack, \
-         patch.object(dev, "_run_link_mode") as link:
+         patch.object(dev, "_run_pack_mode") as pack:
         assert dev.cmd_dev(args) == 1
     pack.assert_not_called()
-    link.assert_not_called()

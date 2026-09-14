@@ -42,8 +42,6 @@ def consumer(tmp_path, monkeypatch, _isolate_gaia_data_dir):
         "commit": "a" * 40, "branch": "fixture", "dirty": False,
     })
     monkeypatch.setattr(dev, "_print_convergence_report", lambda *a, **k: {})
-    monkeypatch.setattr(dev.install_mod, "reconcile_global_via_npm_link",
-                        lambda *a, **k: pytest.fail("global npm link forbidden"))
 
     def pack(root, dest_dir):
         state["calls"].append("pack")
@@ -149,15 +147,10 @@ def consumer(tmp_path, monkeypatch, _isolate_gaia_data_dir):
 
     monkeypatch.setattr(dev._pack_helpers, "pack_tarball", pack)
     monkeypatch.setattr(dev.subprocess, "run", runner)
-    def source_wire(ns):
-        assert ns.workspace == str(workspace) and ns.no_path and ns.strict_wiring
-        state["calls"].append("source-wire")
-        return int(state["failure"] == "wire")
-    monkeypatch.setattr(dev.install_mod, "cmd_install", source_wire)
 
-    def run(mode="pack"):
+    def run():
         return dev.cmd_dev(argparse.Namespace(workspace=str(workspace),
-                                             pack_dest=str(tmp_path / "packs"), quiet=True, mode=mode))
+                                             pack_dest=str(tmp_path / "packs"), quiet=True))
     return workspace, state, run
 
 
@@ -229,38 +222,12 @@ def test_name_alone_is_not_package_manager_ownership(consumer):
 
 
 @pytest.mark.parametrize("pm", ["npm", "pnpm"])
-@pytest.mark.parametrize("section", ["dependencies", "devDependencies", "optionalDependencies"])
-def test_native_pack_link_repeat_pack_transitions(consumer, pm, section):
-    workspace, state, run = consumer
-    state.update(pm=pm, section=section)
-    if pm == "pnpm":
-        (workspace / "pnpm-lock.yaml").write_text("consumer")
-    # Establish the section before the first manager call, as real consumers do.
-    manifest = json.loads((workspace / "package.json").read_text())
-    manifest.setdefault(section, {})["@jaguilar87/gaia"] = "1.0.0"
-    (workspace / "package.json").write_text(json.dumps(manifest))
-    for mode in ("pack", "link", "link", "pack"):
-        assert run(mode) == 0
-        package = workspace / "node_modules/@jaguilar87/gaia"
-        metadata = json.loads((workspace / "package.json").read_text())
-        assert metadata["dependencies"]["foreign"] == "1"
-        spec = metadata[section]["@jaguilar87/gaia"]
-        lock = workspace / ("pnpm-lock.yaml" if pm == "pnpm" else "package-lock.json")
-        assert json.loads(lock.read_text())["GaiaSpec"] == spec
-        if mode == "link":
-            assert package.is_symlink() and package.resolve() == state["source"]
-            assert spec.startswith("file:")
-            assert (workspace / "node_modules/.bin/gaia").read_text().endswith("source")
-            assert state["calls"][-1] == "source-wire"
-        else:
-            assert package.resolve() != state["source"]
-            assert state["calls"][-1] == "wire"
-    assert (state["source"] / "bin/gaia").read_text() == "source executable"
-    assert not (workspace / ".gaia-dev").exists()
-
-
-@pytest.mark.parametrize("pm", ["npm", "pnpm"])
-def test_legacy_same_source_is_saved_by_manager(consumer, pm):
+def test_legacy_source_link_is_replaced_by_a_tarball_install(consumer, pm):
+    """A `node_modules/@jaguilar87/gaia` symlink left over from Gaia's
+    removed source-linking dev mode is tolerated by the ownership check
+    (`existing_package_error`'s `legacy_source_root` allowance) so pack can
+    proceed, then the package manager's own install replaces it with a
+    normal tarball artifact -- pack never leaves that legacy symlink in place."""
     workspace, state, run = consumer
     state["pm"] = pm
     if pm == "pnpm":
@@ -268,78 +235,27 @@ def test_legacy_same_source_is_saved_by_manager(consumer, pm):
     package = workspace / "node_modules/@jaguilar87/gaia"
     package.parent.mkdir(parents=True)
     package.symlink_to(state["source"])
-    assert run("link") == 0
-    assert run("pack") == 0
-
-
-@pytest.mark.parametrize("pm,failure", [
-    ("npm", "install"), ("npm", "copy-instead-of-link"),
-    ("pnpm", "install"), ("pnpm", "link"), ("pnpm", "copy-instead-of-link"),
-])
-def test_bad_source_switch_never_wires(consumer, failure, pm):
-    workspace, state, run = consumer
-    state["pm"] = pm
-    if pm == "pnpm":
-        (workspace / "pnpm-lock.yaml").write_text("consumer")
     assert run() == 0
-    state["failure"] = failure
-    assert run("link") == 1
-    assert "source-wire" not in state["calls"]
-    records = [json.loads(p.read_text()) for p in (workspace.parent / "packs").glob("link-attempt-*/recovery.json")]
-    assert records[-1]["status"] == "recovery-required"
-
-
-@pytest.mark.parametrize("section", ["dependencies", "devDependencies", "optionalDependencies"])
-def test_pnpm_link_persists_consumer_state_without_global_pm_state(consumer, section):
-    workspace, state, run = consumer
-    state.update(pm="pnpm", section=section)
-    (workspace / "pnpm-lock.yaml").write_text("consumer")
-    manifest = json.loads((workspace / "package.json").read_text())
-    manifest.setdefault(section, {})["@jaguilar87/gaia"] = "1.0.0"
-    (workspace / "package.json").write_text(json.dumps(manifest))
-    assert run("link") == 0
-    assert state["commands"][:2] == [
-        ["pnpm", "add", {"dependencies": "-P", "devDependencies": "-D",
-                           "optionalDependencies": "-O"}[section], str(state["source"])],
-        ["pnpm", "link", str(state["source"])],
-    ]
-    assert all("--global" not in command and "-g" not in command for command in state["commands"])
-
-
-@pytest.mark.parametrize("section", ["dependencies", "devDependencies", "optionalDependencies"])
-def test_npm_link_uses_external_folder_symlink_semantics(consumer, section):
-    workspace, state, run = consumer
-    state["section"] = section
-    manifest = json.loads((workspace / "package.json").read_text())
-    manifest.setdefault(section, {})["@jaguilar87/gaia"] = "1.0.0"
-    (workspace / "package.json").write_text(json.dumps(manifest))
-    assert run("link") == 0
-    assert state["commands"][0] == [
-        "npm", "install", "--no-audit", "--no-fund",
-        {"dependencies": "--save-prod", "devDependencies": "--save-dev",
-         "optionalDependencies": "--save-optional"}[section],
-        "--install-links=false", str(state["source"]),
-    ]
-    assert all("--global" not in command and "-g" not in command for command in state["commands"])
-
-
-def test_source_within_consumer_refused(consumer, monkeypatch):
-    workspace, state, run = consumer
-    monkeypatch.setattr(dev, "_PACKAGE_ROOT", workspace)
-    monkeypatch.setattr(dev, "_is_source_checkout", lambda root: True)
-    assert run("link") == 1
-    assert state["calls"] == []
+    # pnpm still symlinks (into its own .pnpm store, not the source
+    # checkout); npm materializes a plain directory. Either way, the
+    # package no longer resolves to the legacy source symlink target.
+    assert package.resolve() != state["source"]
 
 
 @pytest.mark.parametrize("pm", ["npm", "pnpm"])
-def test_pack_never_wires_retained_source_link(consumer, pm):
+def test_pack_never_wires_a_retained_source_link(consumer, pm):
+    """`install_tarball` fails loud if the package manager still leaves the
+    package pointed at a source checkout after a reported-successful
+    install; wiring must never run on top of that."""
     workspace, state, run = consumer
     state["pm"] = pm
     if pm == "pnpm":
         (workspace / "pnpm-lock.yaml").write_text("consumer")
-    assert run("link") == 0
+    package = workspace / "node_modules/@jaguilar87/gaia"
+    package.parent.mkdir(parents=True)
+    package.symlink_to(state["source"])
     state["failure"] = "retained-source-in-pack"
-    assert run("pack") == 1
+    assert run() == 1
     assert "wire" not in state["calls"]
     assert (workspace / "node_modules/@jaguilar87/gaia").resolve() == state["source"]
 
@@ -411,28 +327,27 @@ def test_foreign_change_is_observed_not_restored(consumer, monkeypatch):
     assert base64.b64decode(record["observed_after"]["files"]["package.json"]["bytes_base64"]) == b'{"foreign":"concurrent edit"}'
 
 
-@pytest.mark.parametrize("mode", ["pack", "link"])
-def test_success_records_common_provenance_after_wiring(consumer, mode):
+def test_success_records_common_provenance_after_wiring(consumer):
     workspace, state, run = consumer
-    assert run(mode) == 0
+    assert run() == 0
     payload = json.loads(install_provenance.provenance_path(workspace).read_text())
     assert payload["source_path"] == str(state["source"].resolve())
     assert payload["destination"] == str((workspace / "node_modules/@jaguilar87/gaia").resolve())
-    assert payload["tarball_hash_kind"] == ("tarball" if mode == "pack" else "source-snapshot")
+    # "source-snapshot" was link mode's kind (`capture_source` called with no
+    # tarball); `gaia dev` always packs now, so this is always "tarball".
+    assert payload["tarball_hash_kind"] == "tarball"
     spec = json.loads((workspace / "package.json").read_text())["dependencies"]["@jaguilar87/gaia"]
     assert install_provenance.inspect_install(workspace, spec)["diagnostics"] == []
 
 
-@pytest.mark.parametrize("mode", ["pack", "link"])
-def test_failed_wiring_never_publishes_success_provenance(consumer, mode):
+def test_failed_wiring_never_publishes_success_provenance(consumer):
     workspace, state, run = consumer
     state["failure"] = "wire"
-    assert run(mode) == 1
+    assert run() == 1
     assert not install_provenance.provenance_path(workspace).exists()
 
 
-@pytest.mark.parametrize("mode", ["pack", "link"])
-def test_record_failure_exposes_partial_install_without_success(consumer, monkeypatch, mode, capsys):
+def test_record_failure_exposes_partial_install_without_success(consumer, monkeypatch, capsys):
     workspace, _, run = consumer
 
     def denied(*args):
@@ -440,7 +355,7 @@ def test_record_failure_exposes_partial_install_without_success(consumer, monkey
         raise OSError("record storage denied")
 
     monkeypatch.setattr(install_provenance, "record_install", denied)
-    assert run(mode) == 1
+    assert run() == 1
     assert "no rollback performed" in capsys.readouterr().err
     assert not install_provenance.provenance_path(workspace).exists()
     records = list((workspace.parent / "packs").glob("*/recovery.json"))
@@ -450,8 +365,7 @@ def test_record_failure_exposes_partial_install_without_success(consumer, monkey
     assert recovery["status"] == "recovery-required"
 
 
-@pytest.mark.parametrize("mode", ["pack", "link"])
-def test_capture_failure_prevents_consumer_install(consumer, monkeypatch, mode):
+def test_capture_failure_prevents_consumer_install(consumer, monkeypatch):
     workspace, state, run = consumer
 
     def denied(*args, **kwargs):
@@ -459,6 +373,6 @@ def test_capture_failure_prevents_consumer_install(consumer, monkeypatch, mode):
         raise OSError("source unreadable")
 
     monkeypatch.setattr(install_provenance, "capture_source", denied)
-    assert run(mode) == 1
+    assert run() == 1
     assert "install" not in state["calls"]
     assert not install_provenance.provenance_path(workspace).exists()

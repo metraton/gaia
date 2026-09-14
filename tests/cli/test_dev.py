@@ -67,8 +67,6 @@ def isolated_dev_policy(tmp_path, monkeypatch, _isolate_gaia_data_dir):
     monkeypatch.setattr(dev_mod, "rewrite_workspace_dep_spec", lambda *a: {
         "action": "noop", "path": "package.json", "details": "mock spec matches",
     })
-    monkeypatch.setattr(dev_mod.install_mod, "reconcile_global_via_npm_link",
-                        lambda *a, **k: pytest.fail("unexpected global npm link"))
 
 
 def _npm_available() -> bool:
@@ -80,63 +78,29 @@ def _npm_available() -> bool:
 class TestSimpleDevPolicy:
     @pytest.mark.parametrize("host", ["codex", "unknown"])
     def test_internal_helpers_validate_host_before_effects(self, tmp_path, host):
-        with patch.object(dev_mod, "install_source_link") as link, \
-             patch.object(dev_mod._pack_helpers, "pack_tarball") as pack:
-            with pytest.raises(ValueError):
-                dev_mod._run_link_mode(tmp_path, quiet=True, verbose=False, host=host)
+        with patch.object(dev_mod._pack_helpers, "pack_tarball") as pack:
             with pytest.raises(ValueError):
                 dev_mod._run_pack_mode(tmp_path, quiet=True, verbose=False,
                                        host=host, keep_tarball=False, pack_dest=None)
             with pytest.raises(ValueError):
                 wire_workspace_via_installed_gaia(tmp_path, host=host)
-        link.assert_not_called()
         pack.assert_not_called()
 
-    @pytest.mark.parametrize("flags,mode,rc", [
-        ([], "pack", 0),
-        (["--mode", "pack"], "pack", 0),
-        (["--mode", "link"], "link", 0),
-        (["--link"], "link", 0),
-        (["--link", "--mode", "link"], "link", 0),
-        (["--mode", "link", "--link"], "link", 0),
-        (["--link", "--mode", "pack"], None, 1),
-        (["--mode", "pack", "--link"], None, 1),
-    ])
-    def test_mode_matrix(self, tmp_path, flags, mode, rc):
-        parser = argparse.ArgumentParser()
-        register(parser.add_subparsers())
-        args = parser.parse_args(["dev", "--workspace", str(tmp_path), *flags])
-        with patch.object(dev_mod, "_run_pack_mode", return_value=0) as pack, \
-             patch.object(dev_mod, "_run_link_mode", return_value=0) as link:
-            assert cmd_dev(args) == rc
-        assert pack.call_count == (mode == "pack")
-        assert link.call_count == (mode == "link")
-        if mode:
-            assert (pack if mode == "pack" else link).call_args.kwargs["host"] == "all"
-
-    @pytest.mark.parametrize("overrides", [
-        {"mode": "bogus"}, {"host": "codex"}, {"host": "unknown"},
-        {"host": None}, {"mode": "pack", "link": True},
-    ])
-    def test_internal_invalid_options_have_no_effects(self, tmp_path, overrides):
+    @pytest.mark.parametrize("overrides", [{"host": "codex"}, {"host": "unknown"}, {"host": None}])
+    def test_invalid_host_has_no_pack_effects(self, tmp_path, overrides):
         args = argparse.Namespace(workspace=str(tmp_path), **overrides)
-        with patch.object(dev_mod, "_run_pack_mode") as pack, \
-             patch.object(dev_mod, "_run_link_mode") as link:
+        with patch.object(dev_mod, "_run_pack_mode") as pack:
             assert cmd_dev(args) == 1
         pack.assert_not_called()
-        link.assert_not_called()
 
     @pytest.mark.parametrize("kind", ["missing", "file"])
-    def test_workspace_validation_precedes_modes(self, tmp_path, kind):
+    def test_workspace_validation_precedes_pack(self, tmp_path, kind):
         target = tmp_path / kind
         if kind == "file":
             target.write_text("sentinel")
-        for mode in ("pack", "link"):
-            with patch.object(dev_mod, "_run_pack_mode") as pack, \
-                 patch.object(dev_mod, "_run_link_mode") as link:
-                assert cmd_dev(argparse.Namespace(workspace=str(target), mode=mode)) == 1
-            pack.assert_not_called()
-            link.assert_not_called()
+        with patch.object(dev_mod, "_run_pack_mode") as pack:
+            assert cmd_dev(argparse.Namespace(workspace=str(target))) == 1
+        pack.assert_not_called()
 
     @pytest.mark.parametrize("host", ["claude_code", "opencode"])
     def test_explicit_host_and_workspace_fallback(self, tmp_path, monkeypatch, host):
@@ -152,15 +116,6 @@ class TestSimpleDevPolicy:
                 assert cmd_dev(argparse.Namespace(host=host)) == 0
             assert pack.call_args.args[0] == target
             assert pack.call_args.kwargs["host"] == host
-
-    @pytest.mark.parametrize("action", ["skipped", "error"])
-    def test_required_link_failure_never_wires(self, tmp_path, action, capsys):
-        with patch.object(dev_mod, "install_source_link", return_value={
-            "action": action, "path": "x", "details": "unsupported switch",
-        }), patch.object(dev_mod.install_mod, "cmd_install") as wire:
-            assert cmd_dev(argparse.Namespace(workspace=str(tmp_path), link=True)) == 1
-        wire.assert_not_called()
-        assert "Restart" not in capsys.readouterr().out
 
 # ---------------------------------------------------------------------------
 # register() / argparse
@@ -304,22 +259,14 @@ class TestRegisterSubcommand(unittest.TestCase):
         register(subparsers)
         args = parser.parse_args(["dev"])
         self.assertEqual(args.subcommand, "dev")
-        self.assertIsNone(args.mode)
         self.assertEqual(args.host, "all")
 
-    def test_mode_link_flag(self):
-        parser = argparse.ArgumentParser()
-        subparsers = parser.add_subparsers(dest="subcommand")
-        register(subparsers)
-        args = parser.parse_args(["dev", "--mode", "link"])
-        self.assertEqual(args.mode, "link")
-
-    def test_invalid_mode_rejected(self):
+    def test_invalid_host_rejected_at_parse_time(self):
         parser = argparse.ArgumentParser()
         subparsers = parser.add_subparsers(dest="subcommand")
         register(subparsers)
         with self.assertRaises(SystemExit):
-            parser.parse_args(["dev", "--mode", "bogus"])
+            parser.parse_args(["dev", "--host", "bogus"])
 
     def test_workspace_flag(self):
         parser = argparse.ArgumentParser()
@@ -903,243 +850,6 @@ class TestCmdDevOrchestrationPackMode(unittest.TestCase):
             self.assertIn("hooks", out)
             self.assertIn("⚠", out)  # the warning glyph
 
-    def test_global_link_reconcile_never_invoked_by_default(self):
-        """Default dev must not retarget the global alias to source."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            alias = Path(os.environ["HOME"]) / "gaia-alias"
-            alias.symlink_to(workspace / "previous-global-install")
-            original_alias = alias.readlink()
-            fake_tarball = Path(tmp) / "pkg.tgz"; fake_tarball.write_bytes(b"x")
-            p_pack, p_install, p_wire = self._mock_pack_steps(fake_tarball)
-            with p_pack, p_install, p_wire, \
-                 patch("cli.install.reconcile_global_via_npm_link",
-                       return_value={"action": "created", "path": "src", "details": "linked"}) as spy_link, \
-                 patch("cli.install._warn_launcher_shadowed", return_value=None) as spy_warn:
-                with redirect_stdout(io.StringIO()):
-                    rc = cmd_dev(self._make_args(workspace, no_global_link=False))
-
-            self.assertEqual(rc, 0)
-            spy_link.assert_not_called()
-            spy_warn.assert_not_called()
-            self.assertEqual(alias.readlink(), original_alias)
-
-    def test_no_global_link_skips_reconcile(self):
-        """--no-global-link leaves the global install untouched: neither the
-        reconcile nor the shadow check runs."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            fake_tarball = Path(tmp) / "pkg.tgz"; fake_tarball.write_bytes(b"x")
-            p_pack, p_install, p_wire = self._mock_pack_steps(fake_tarball)
-            with p_pack, p_install, p_wire, \
-                 patch("cli.install.reconcile_global_via_npm_link") as spy_link, \
-                 patch("cli.install._warn_launcher_shadowed") as spy_warn:
-                with redirect_stdout(io.StringIO()):
-                    rc = cmd_dev(self._make_args(workspace, no_global_link=True))
-
-            self.assertEqual(rc, 0)
-            spy_link.assert_not_called()
-            spy_warn.assert_not_called()
-
-
-class TestCmdDevOrchestrationLinkMode(unittest.TestCase):
-    def _make_args(self, workspace, **overrides) -> argparse.Namespace:
-        ns = argparse.Namespace()
-        ns.workspace = str(workspace)
-        ns.mode = "link"
-        ns.quiet = overrides.get("quiet", True)
-        ns.verbose = overrides.get("verbose", False)
-        ns.keep_tarball = False
-        ns.pack_dest = None
-        ns.host = overrides.get("host", "claude_code")
-        return ns
-
-    def test_link_mode_calls_cmd_install_with_workspace(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            captured = {}
-
-            def fake_cmd_install(ns):
-                captured["workspace"] = ns.workspace
-                captured["skip_workspace"] = ns.skip_workspace
-                captured["no_path"] = ns.no_path
-                captured["strict_wiring"] = ns.strict_wiring
-                captured["host"] = ns.host
-                return 0
-
-            with patch("cli.dev.install_source_link",
-                       return_value={"action": "created", "path": "x", "details": "ok"}), \
-                 patch("cli.dev.install_mod.cmd_install", side_effect=fake_cmd_install):
-                with redirect_stdout(io.StringIO()):
-                    rc = cmd_dev(self._make_args(workspace))
-
-            self.assertEqual(rc, 0)
-            self.assertEqual(captured["workspace"], str(workspace))
-            self.assertFalse(captured["skip_workspace"])
-            self.assertTrue(captured["no_path"])
-            self.assertTrue(captured["strict_wiring"])
-            self.assertEqual(captured["host"], "claude_code")
-
-    def test_link_mode_propagates_opencode_host(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            captured = {}
-
-            def fake_cmd_install(ns):
-                captured["host"] = ns.host
-                return 0
-
-            with patch("cli.dev.install_source_link",
-                       return_value={"action": "created", "path": "x", "details": "ok"}), \
-                 patch("cli.dev.install_mod.cmd_install", side_effect=fake_cmd_install):
-                with redirect_stdout(io.StringIO()):
-                    cmd_dev(self._make_args(workspace, host="opencode"))
-
-            self.assertEqual(captured["host"], "opencode")
-
-    def test_link_mode_never_packs_or_installs_tarball(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            pack_calls = []
-            install_calls = []
-
-            with patch("cli.dev.install_source_link",
-                       return_value={"action": "created", "path": "x", "details": "ok"}), \
-                 patch("cli.dev.install_mod.cmd_install", return_value=0), \
-                 patch("cli.dev._pack_helpers.pack_tarball", side_effect=lambda *a, **k: pack_calls.append(1)), \
-                 patch("cli.dev.install_tarball", side_effect=lambda *a, **k: install_calls.append(1)):
-                with redirect_stdout(io.StringIO()):
-                    cmd_dev(self._make_args(workspace))
-
-            self.assertEqual(pack_calls, [])
-            self.assertEqual(install_calls, [])
-
-    def test_link_mode_short_circuits_on_link_error(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            install_calls = []
-
-            with patch("cli.dev.install_source_link",
-                       return_value={"action": "error", "path": "x", "details": "boom"}), \
-                 patch("cli.dev.install_mod.cmd_install", side_effect=lambda *a, **k: install_calls.append(1)):
-                with redirect_stdout(io.StringIO()):
-                    rc = cmd_dev(self._make_args(workspace))
-
-            self.assertEqual(rc, 1)
-            self.assertEqual(install_calls, [])
-
-    def test_link_mode_emits_restart_warning(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            buf = io.StringIO()
-            with patch("cli.dev.install_source_link",
-                       return_value={"action": "created", "path": "x", "details": "ok"}), \
-                 patch("cli.dev.install_mod.cmd_install", return_value=0):
-                with redirect_stdout(buf):
-                    rc = cmd_dev(self._make_args(workspace, quiet=False))
-
-            self.assertEqual(rc, 0)
-            out = buf.getvalue()
-            self.assertIn("Restart your Claude Code session", out)
-            self.assertIn("⚠", out)
-
-    def test_link_mode_no_warning_when_install_fails(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp)
-            buf = io.StringIO()
-            with patch("cli.dev.install_source_link",
-                       return_value={"action": "created", "path": "x", "details": "ok"}), \
-                 patch("cli.dev.install_mod.cmd_install", return_value=1):
-                with redirect_stdout(buf):
-                    rc = cmd_dev(self._make_args(workspace, quiet=False))
-
-            self.assertEqual(rc, 1)
-            self.assertNotIn("Restart your Claude Code session", buf.getvalue())
-
-
-# ---------------------------------------------------------------------------
-# Link mode and install mode must run the identical OpenCode export guard --
-# see e9468d8 / plan 65 task 531. dev.py's --mode link and install.py's
-# gaia install both terminate in cmd_install -> _configure_host ->
-# _install_helpers.configure_opencode_plugin, so this proves parity by
-# actually running that chain end to end, not by inspecting the source.
-# ---------------------------------------------------------------------------
-
-class TestLinkModeSharesTheOpenCodeExportGuard(unittest.TestCase):
-    def _fixture_package_root(self, tmp_path: Path, plugin_source: str) -> Path:
-        pkg = tmp_path / "fixture-package"
-        opencode_dir = pkg / "opencode"
-        opencode_dir.mkdir(parents=True)
-        (opencode_dir / "plugin.ts").write_text(plugin_source)
-        (opencode_dir / "agent-policy.json").write_text("{}\n")
-        (pkg / "skills").mkdir()
-        return pkg
-
-    def _run_link_mode_opencode(self, tmp_path: Path, plugin_source: str):
-        workspace = tmp_path / "workspace"
-        workspace.mkdir()
-        pkg_root = self._fixture_package_root(tmp_path, plugin_source)
-        data_dir = tmp_path / ".gaia-data"
-        data_dir.mkdir()
-        home = tmp_path / "home"
-        home.mkdir()
-
-        env_patch = {
-            "GAIA_DATA_DIR": str(data_dir),
-            "GAIA_DB": str(data_dir / "gaia.db"),
-            "HOME": str(home),
-            "INIT_CWD": str(workspace),
-        }
-        ns = argparse.Namespace(
-            workspace=str(workspace),
-            mode="link",
-            quiet=False,
-            verbose=True,
-            keep_tarball=False,
-            pack_dest=None,
-            host="opencode",
-        )
-
-        # link_source_into_workspace is mocked out (it symlinks THIS source
-        # tree, not the fixture) -- only cmd_install's real chain is under
-        # test here. _install_helpers._PACKAGE_ROOT is patched so
-        # configure_opencode_plugin resolves the fixture's plugin.ts instead
-        # of the real one, mirroring how tests/cli/test_opencode_install.py
-        # passes an explicit plugin_root to the same function directly.
-        with patch("cli.dev.install_source_link",
-                    return_value={"action": "created", "path": "x", "details": "ok"}), \
-             patch("cli._install_helpers._PACKAGE_ROOT", pkg_root), \
-             patch.dict(os.environ, env_patch):
-            with redirect_stdout(io.StringIO()) as out:
-                rc = cmd_dev(ns)
-        return rc, out.getvalue()
-
-    def test_violating_export_fails_naming_the_install_guard(self):
-        """A plugin with no default {id, server} export fails the guard: the
-        installed OpenCode loader's fallback would scan and invoke every
-        exported value as its own plugin entry point (dk()/lk()/pk(),
-        decompiled) once a real second export exists -- the guard requires
-        the default export that makes the loader skip that scan entirely."""
-        with tempfile.TemporaryDirectory(prefix="gaia-dev-link-guard-") as tmp:
-            rc, out = self._run_link_mode_opencode(
-                Path(tmp),
-                'export const GaiaOpenCodePlugin = async () => ({})\n',
-            )
-            self.assertEqual(rc, 1, out)
-            self.assertIn(
-                "OpenCode plugin has no default {id, server} export", out
-            )
-
-    def test_conforming_export_passes_through_the_same_guard(self):
-        with tempfile.TemporaryDirectory(prefix="gaia-dev-link-guard-") as tmp:
-            rc, out = self._run_link_mode_opencode(
-                Path(tmp),
-                'export const GaiaOpenCodePlugin = async () => ({})\n'
-                'export default { id: "gaia", server: GaiaOpenCodePlugin }\n',
-            )
-            self.assertEqual(rc, 0, out)
-            self.assertIn("OpenCode plugin", out)
-
 
 # ---------------------------------------------------------------------------
 # Real end-to-end: pack -> install -> wire against an isolated tmp workspace.
@@ -1168,7 +878,6 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
 
             args = argparse.Namespace(
                 workspace=str(workspace),
-                mode="pack",
                 quiet=True,
                 verbose=False,
                 keep_tarball=False,
@@ -1187,15 +896,14 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
             # The workspace must now be a healthy, wired Gaia install.
             claude_dir = workspace / ".claude"
             self.assertTrue(claude_dir.is_dir())
+            installed_root_link = workspace / "node_modules" / "@jaguilar87" / "gaia"
+            installed_root = installed_root_link.resolve()
             for name in ("agents", "hooks", "config", "skills", "tools"):
                 link = claude_dir / name
                 self.assertTrue(link.is_symlink(), f".claude/{name} is not a symlink")
                 # Must resolve into the INSTALLED tarball copy, not this dev
                 # source tree -- the safeguard the module docstring documents.
                 resolved = link.resolve()
-                installed_root = (
-                    workspace / "node_modules" / "@jaguilar87" / "gaia"
-                ).resolve()
                 self.assertTrue(
                     str(resolved).startswith(str(installed_root)),
                     f".claude/{name} -> {resolved} does not resolve under {installed_root}",
@@ -1206,6 +914,20 @@ class TestDevPackModeRealEndToEnd(unittest.TestCase):
 
             # DB must exist ONLY at the isolated tmp path.
             self.assertTrue((data_dir / "gaia.db").exists())
+
+            # The install must leave no reference to this dev source
+            # checkout: `node_modules/@jaguilar87/gaia` (what every
+            # `.claude/*` symlink above resolves under) is a real extracted
+            # copy from the tarball, never a symlink back at _REPO_ROOT --
+            # the property the removal of link mode exists to guarantee.
+            self.assertFalse(
+                installed_root_link.is_symlink(),
+                f"{installed_root_link} is a symlink, not a materialized tarball install",
+            )
+            self.assertFalse(
+                str(installed_root).startswith(str(_REPO_ROOT)),
+                f"installed package {installed_root} resolves under the source checkout {_REPO_ROOT}",
+            )
 
 
 # ---------------------------------------------------------------------------
