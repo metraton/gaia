@@ -327,13 +327,14 @@ def _handler_node(handler) -> tuple[Path, str] | None:
 def test_no_free_gaia_verb_can_spawn_a_package_lifecycle_script():
     """Asserted against ``detect_mutative_command``, which is what enforces.
 
-    Not against ``classify_command_tier``: that function tests T1_PATTERNS
-    (``check``, ``validate``, ``lint``) and returns before it ever consults the
-    detector, so ``gaia release check`` reads T1 there no matter what the
-    detector decides. Its own docstring says it produces tier metadata AFTER
-    the bash validator has enforced, and the validator enforces on
-    ``is_mutative`` -- that boolean is the consent decision, so that is the
-    assertion. The tier is reported in the failure text for context only.
+    Not against ``classify_command_tier``: its own docstring says it produces
+    tier metadata AFTER the bash validator has enforced, and the validator
+    enforces on ``is_mutative`` -- that boolean is the consent decision, so
+    that is the assertion. ``classify_command_tier`` now runs the same
+    detector before its T1/T2 patterns and agrees for ``gaia release check``
+    too, but this test's assertion does not depend on that agreement holding
+    for every command. The tier is reported in the failure text for context
+    only.
     """
     index = SourceIndex()
     violations = []
