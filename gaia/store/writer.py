@@ -6749,35 +6749,96 @@ def reserve_plan_command(
         con.close()
 
 
-def pending_plan_command_exists(command: str, *, db_path: Path | None = None) -> bool:
-    """Return whether ``command`` is the exact next item of an active request-set."""
+def _iter_live_plan_grants(con: sqlite3.Connection, now_iso: str):
+    """Yield ``(identity, items)`` for every plan-first grant still inside its TTL.
+
+    A database predating the plan-first columns yields nothing instead of
+    raising, so a lookup on an old substrate reports "no live grant".
+    """
+    try:
+        rows = con.execute(
+            "SELECT approval_id, command_set_json, next_index, created_at, expires_at "
+            "FROM approval_grants "
+            "WHERE scope='COMMAND_SET' AND source='plan-first' AND status='PENDING'"
+        ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such column" in str(exc):
+            return
+        raise
+    for row in rows:
+        grant = {
+            "approval_id": row[0],
+            "next_index": int(row[2] or 0),
+            "created_at": row[3],
+            "expires_at": row[4],
+        }
+        if not _plan_grant_is_live(grant, now_iso):
+            continue
+        yield grant, _json.loads(row[1])
+
+
+def find_pending_plan_command(command: str, *, db_path: Path | None = None) -> dict | None:
+    """Identify the live plan-first grant whose NEXT item is exactly ``command``.
+
+    Returns the ``approval_id`` that authorizes the command, the ``index`` it
+    would consume and the stored ``fingerprint``; ``None`` when no live grant is
+    waiting for this command at the position it authorizes next.
+    """
     from gaia.approvals.command_set import command_fingerprint
 
+    fingerprint = command_fingerprint(command)
     con = _connect(db_path)
     now_iso = _now_iso()
     try:
-        try:
-            rows = con.execute(
-                "SELECT command_set_json, next_index, created_at, expires_at FROM approval_grants "
-                "WHERE scope='COMMAND_SET' AND source='plan-first' AND status='PENDING'"
-            ).fetchall()
-        except sqlite3.OperationalError as exc:
-            if "no such column" in str(exc):
-                return False
-            raise
-        for row in rows:
-            grant = {"created_at": row[2], "expires_at": row[3]}
-            if not _plan_grant_is_live(grant, now_iso):
+        for grant, items in _iter_live_plan_grants(con, now_iso):
+            index = grant["next_index"]
+            if index >= len(items):
                 continue
-            items = _json.loads(row[0])
-            index = int(row[1] or 0)
-            if index < len(items):
-                item = items[index]
-                if item.get("command") == command and item.get("fingerprint") == command_fingerprint(command):
-                    return True
-        return False
+            item = items[index]
+            if item.get("command") == command and item.get("fingerprint") == fingerprint:
+                return {
+                    "approval_id": grant["approval_id"],
+                    "index": index,
+                    "fingerprint": fingerprint,
+                }
+        return None
     finally:
         con.close()
+
+
+def find_plan_grant_for_command(command: str, *, db_path: Path | None = None) -> dict | None:
+    """Identify the live plan-first grant whose set CONTAINS ``command``.
+
+    Where :func:`find_pending_plan_command` answers "may this run now", this
+    answers "which approval does this command belong to" -- so a refused
+    out-of-order attempt can still name the approval, the index it sits at and
+    the ``next_index`` that was expected instead.
+    """
+    from gaia.approvals.command_set import command_fingerprint
+
+    fingerprint = command_fingerprint(command)
+    con = _connect(db_path)
+    now_iso = _now_iso()
+    try:
+        for grant, items in _iter_live_plan_grants(con, now_iso):
+            for index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                if item.get("command") == command and item.get("fingerprint") == fingerprint:
+                    return {
+                        "approval_id": grant["approval_id"],
+                        "index": index,
+                        "next_index": grant["next_index"],
+                        "fingerprint": fingerprint,
+                    }
+        return None
+    finally:
+        con.close()
+
+
+def pending_plan_command_exists(command: str, *, db_path: Path | None = None) -> bool:
+    """Return whether ``command`` is the exact next item of an active request-set."""
+    return find_pending_plan_command(command, db_path=db_path) is not None
 
 
 def settle_plan_command(

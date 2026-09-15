@@ -17,6 +17,12 @@ Public API::
                  fingerprint, payload_json, metadata_json, con=None)
         -> event row id (int)
 
+    record_execution_denial(approval_id, reason_code, *, host, session_id,
+                            call_id, index, command_fingerprint, agent_id,
+                            detail=None)
+        -> None  -- append-only NOOP record of one refused execution; never
+                    raises and never changes approval or grant state
+
     get_pending(session_id=None, all_sessions=False, con=None)
         -> list[dict]  -- pending approval rows
 
@@ -490,6 +496,88 @@ def record_event(
         if owned:
             _con.close()
     return event_id
+
+
+EXECUTION_DENIAL_KIND = "execution_denied"
+
+
+def _execution_denial_recorded(
+    con: sqlite3.Connection, approval_id: str, call_id: str,
+) -> bool:
+    """Report whether this approval already carries a denial for ``call_id``."""
+    rows = con.execute(
+        "SELECT metadata_json FROM approval_events "
+        "WHERE approval_id = ? AND event_type = 'NOOP'",
+        (approval_id,),
+    ).fetchall()
+    for row in rows:
+        try:
+            metadata = json.loads(row[0] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(metadata, dict):
+            continue
+        if (
+            metadata.get("kind") == EXECUTION_DENIAL_KIND
+            and metadata.get("call_id", "") == call_id
+        ):
+            return True
+    return False
+
+
+def record_execution_denial(
+    approval_id: str,
+    reason_code: str,
+    *,
+    host: str,
+    session_id: Optional[str] = None,
+    call_id: Optional[str] = None,
+    index: Optional[int] = None,
+    command_fingerprint: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    detail: Optional[str] = None,
+) -> None:
+    """Append one refused execution to an approval's chain, changing no state.
+
+    The event type is NOOP because the user's consent still stands: FAILED marks
+    an execution that ran and failed, and settle_plan_command(success=False)
+    freezes the grant terminally -- which would turn a refusal the user never
+    made into a withdrawal of their consent, and bar the corrected retry.
+
+    At most one event is written per (approval_id, call_id), so an agent looping
+    on the same call appends one record rather than one per attempt.
+
+    Never raises: a failed write loses the record, never the denial.
+    """
+    try:
+        metadata = {
+            "kind": EXECUTION_DENIAL_KIND,
+            "reason_code": reason_code,
+            "host": host,
+            "session_id": session_id or "",
+            "call_id": call_id or "",
+            "index": index,
+            "command_fingerprint": command_fingerprint or "",
+        }
+        if detail:
+            metadata["detail"] = detail
+        con = _open_db()
+        try:
+            if _execution_denial_recorded(con, approval_id, call_id or ""):
+                return
+            insert_event(
+                con,
+                approval_id,
+                "NOOP",
+                agent_id=agent_id,
+                session_id=session_id,
+                metadata_json=json.dumps(metadata, sort_keys=True),
+            )
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        return
 
 
 def get_pending(

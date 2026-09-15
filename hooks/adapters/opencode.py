@@ -435,6 +435,7 @@ class OpenCodeAdapter(HookAdapter):
                 )
         retry_rejection = self._consent_retry_rejection(event, original_tool)
         if retry_rejection is not None:
+            self._record_retry_denial(event, original_tool, retry_rejection)
             return HookResponse(
                 output={"action": "deny", "reason": retry_rejection},
                 exit_code=2,
@@ -489,33 +490,77 @@ class OpenCodeAdapter(HookAdapter):
         return translated
 
     @classmethod
-    def _consent_retry_rejection(
-        cls, event: HookEvent, tool_name: str,
-    ) -> str | None:
-        """Require an attested, fresh retry bound to one executable grant."""
+    def _bash_command(cls, event: HookEvent, tool_name: str) -> str | None:
+        """Return the Bash command string this event carries, if it carries one."""
         if cls._policy_tool_name(tool_name) != "Bash":
             return None
         tool_input = event.payload.get("tool_input") or event.payload.get("args") or {}
         command = tool_input.get("command") if isinstance(tool_input, dict) else None
         if not isinstance(command, str) or not command:
             return None
+        return command
+
+    @classmethod
+    def _record_retry_denial(
+        cls, event: HookEvent, tool_name: str, reason: str,
+    ) -> None:
+        """Leave a durable denial on the approval a refused retry belongs to.
+
+        Never raises and never affects the verdict: the caller has already
+        decided the denial. A command matching no live plan-first grant has no
+        approval row to write on and is skipped.
+        """
+        try:
+            from gaia.approvals.store import record_execution_denial
+            from gaia.store.writer import find_pending_plan_command
+
+            command = cls._bash_command(event, tool_name)
+            if command is None:
+                return
+            match = find_pending_plan_command(command)
+            if match is None:
+                return
+            record_execution_denial(
+                match["approval_id"],
+                "consent_retry_proof_rejected",
+                host="opencode",
+                session_id=event.session_id,
+                call_id=event.call_id,
+                index=match["index"],
+                command_fingerprint=match["fingerprint"],
+                agent_id=cls._policy_agent_type(event),
+                detail=reason,
+            )
+        except Exception:
+            return
+
+    @classmethod
+    def _consent_retry_rejection(
+        cls, event: HookEvent, tool_name: str,
+    ) -> str | None:
+        """Verify a supplied consent proof against the grant it names.
+
+        A call carrying no proof is left to the host-neutral policy: the
+        question lane cannot produce one, and requiring it here gated that lane
+        on evidence only the plugin's native lane can mint.
+        """
+        command = cls._bash_command(event, tool_name)
+        if command is None:
+            return None
 
         try:
             from gaia.store.writer import (
+                find_pending_plan_command,
                 list_approval_grants,
-                pending_plan_command_exists,
             )
 
-            pending = pending_plan_command_exists(command)
+            pending = find_pending_plan_command(command) is not None
         except Exception as exc:
             return f"OpenCode consent retry lookup failed closed: {exc}"
 
         proof = event.payload.get("consentRetry")
         if proof is None:
-            return (
-                "OpenCode COMMAND_SET retry requires a fresh bound consent proof"
-                if pending else None
-            )
+            return None
         if not isinstance(proof, dict):
             return "OpenCode consent retry proof is malformed"
         if not pending:

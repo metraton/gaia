@@ -215,6 +215,49 @@ INDIRECT_EXEC_PATTERNS = [
     re.compile(r"^" + _WRAPPER_PREFIX + r"sh\s+<\(", re.IGNORECASE),
 ]
 
+def _plan_grant_for_denial(command: str) -> Optional[dict]:
+    """Identify the plan-first grant a refused command belongs to, or None."""
+    try:
+        from gaia.store.writer import find_plan_grant_for_command
+
+        return find_plan_grant_for_command(command)
+    except Exception:
+        return None
+
+
+def _record_plan_command_denial(
+    match: Optional[dict],
+    reason_code: str,
+    *,
+    session_id: str,
+    tool_use_id: str,
+    agent_type: str,
+) -> None:
+    """Leave a durable denial on the approval a refused command belongs to.
+
+    Never raises and changes no grant state: the caller has already decided the
+    denial. A command belonging to no live plan-first grant has no approval row
+    to write on and is skipped.
+    """
+    if match is None:
+        return
+    try:
+        from gaia.approvals.store import record_execution_denial
+
+        record_execution_denial(
+            match["approval_id"],
+            reason_code,
+            host=os.environ.get("GAIA_HOST", "claude_code"),
+            session_id=session_id,
+            call_id=tool_use_id,
+            index=match["index"],
+            command_fingerprint=match["fingerprint"],
+            agent_id=agent_type,
+        )
+    except Exception:
+        return
+
+
 class BashValidator:
     """Validator for Bash tool invocations.
 
@@ -1053,16 +1096,21 @@ class BashValidator:
         # against the workspace the chain navigated to, not the hook's own cwd.
         result = detect_mutative_command(command, cwd=cwd)
         if result.is_mutative:
-            from gaia.store.writer import pending_plan_command_exists
+            from gaia.store.writer import find_pending_plan_command
             if not session_id or not tool_use_id:
                 try:
-                    pending_set = pending_plan_command_exists(command)
+                    pending_set = find_pending_plan_command(command)
                 except Exception as exc:
                     return BashValidationResult(
                         allowed=False, tier=SecurityTier.T3_BLOCKED,
                         reason=f"COMMAND_SET persistence failed closed: {exc}",
                     )
-                if pending_set:
+                if pending_set is not None:
+                    _record_plan_command_denial(
+                        pending_set, "adapter_lacks_correlation",
+                        session_id=session_id, tool_use_id=tool_use_id,
+                        agent_type=agent_type,
+                    )
                     return BashValidationResult(
                         allowed=False, tier=SecurityTier.T3_BLOCKED,
                         reason="COMMAND_SET denied: adapter lacks stable tool-call correlation",
@@ -1158,6 +1206,11 @@ class BashValidator:
                 # orchestrator above (subagent context), it denies with a
                 # persisted approval_id; otherwise (the main session) it falls
                 # back to the native ask dialog.
+                _record_plan_command_denial(
+                    _plan_grant_for_denial(command), "plan_command_not_reserved",
+                    session_id=session_id, tool_use_id=tool_use_id,
+                    agent_type=agent_type,
+                )
                 native_ask_reason = (
                     f"[T3_APPROVAL_REQUIRED] {result.category} operation detected.\n"
                     f"Command: {command}\n"
