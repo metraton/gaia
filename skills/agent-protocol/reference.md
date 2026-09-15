@@ -1,6 +1,6 @@
 # Agent Protocol -- Reference
 
-Mechanics behind `SKILL.md`: the argument standing behind each of the eleven
+Mechanics behind `SKILL.md`: the argument standing behind each of the twelve
 principles, the table of what the gate rejects, the two state machines, where
 each moment's answer lands in the envelope, the dispatch kernel field by field,
 how the contract is stored and recovered, and the edge cases. Read on demand;
@@ -27,7 +27,7 @@ in `gaia/contract/validator.py`.
 `SKILL.md` states each principle as its rule and its consequence -- what it asks
 and what goes wrong when it is violated. What follows is the elaboration behind
 it: the measured evidence, the worked cases, the extended why, keyed by the same
-number. The eleven run the arc of a turn:
+number. The twelve run the arc of a turn:
 
 ```
 Ground   what already governs this -- injected context, memory, the code, the skills

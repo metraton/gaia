@@ -5,7 +5,7 @@ description: Use when producing any agent response
 
 # Agent Protocol
 
-Every agent turn writes one contract -- what it was asked, what it found, what it changed, how it ended -- during the turn, not composed at the close. The eleven principles run that arc, ground to close.
+Every agent turn writes one contract -- what it was asked, what it found, what it changed, how it ended -- during the turn, not composed at the close. The twelve principles run that arc, ground to close.
 
 ## 1. Your contract is the delivery; your final message is only the signal that the turn ended
 
