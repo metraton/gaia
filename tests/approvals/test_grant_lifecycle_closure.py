@@ -101,7 +101,7 @@ class TestGrantExpiry:
         assert writer.reserve_plan_command(
             first, session_id="s", tool_use_id="call-1", db_path=isolated_db,
         ) is None
-        assert writer.pending_plan_command_exists(first, db_path=isolated_db) is False
+        assert writer.find_pending_plan_command(first, db_path=isolated_db) is None
         assert _row(isolated_db)["status"] == "PENDING"
 
     def test_partly_consumed_set_lapses_on_its_remainder(self, isolated_db):

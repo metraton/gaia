@@ -6852,11 +6852,6 @@ def find_plan_grant_for_command(command: str, *, db_path: Path | None = None) ->
         con.close()
 
 
-def pending_plan_command_exists(command: str, *, db_path: Path | None = None) -> bool:
-    """Return whether ``command`` is the exact next item of an active request-set."""
-    return find_pending_plan_command(command, db_path=db_path) is not None
-
-
 def settle_plan_command(
     approval_id: str,
     *,
