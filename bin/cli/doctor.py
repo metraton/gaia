@@ -1575,11 +1575,13 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
 
     Every harness that loads Gaia from node_modules/@jaguilar87/gaia (OpenCode's
     plugin loader, Claude Code's .claude/ symlinks, a bare `require`) runs
-    whatever that path resolves to at THAT moment. Pack mode records a local
-    tarball and materializes it; explicit link mode records the selected source
-    directory and leaves node_modules as a live source symlink. A subsequent
-    package-manager operation can replace either representation, so this check
-    compares the executed entry with the current declaration.
+    whatever that path resolves to at THAT moment. `gaia dev` always records a
+    packed tarball; Gaia itself has no source-linking install mode, but a
+    manually created local dependency (e.g. a hand-run `npm link`/`pnpm link`
+    against this checkout) leaves node_modules as a live source symlink
+    instead. A subsequent package-manager operation can replace either
+    representation, so this check compares the executed entry with the
+    current declaration.
 
     ALIGNED (pass): the resolved entry carries gaia.source_parity.SOURCE_MARKER
     -- whatever runs today IS the live checkout.
@@ -1633,9 +1635,11 @@ def check_executed_copy_alignment(project_root: Path) -> dict:
         name, "warning",
         f"divergent: node_modules/@jaguilar87/gaia -> {resolved} (a materialized copy, "
         f"NOT the source checkout) while package.json pins the tarball {spec} -- a "
-        "previous dev link was replaced by its pinned, possibly-stale package",
-        f"Run `gaia dev --mode link --workspace {project_root}` to restore the live "
-        "checkout, or confirm this materialized copy is the build you intend to run.",
+        "previous source link was replaced by its pinned, possibly-stale package",
+        f"Run `gaia dev --workspace {project_root}` to repack and reinstall from "
+        "source, or confirm this materialized copy is the build you intend to run. "
+        "Gaia has no source-linking install mode -- a live checkout entry must have "
+        "been created outside `gaia dev`.",
     )
 
 

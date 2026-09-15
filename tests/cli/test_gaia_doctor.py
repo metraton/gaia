@@ -2401,7 +2401,7 @@ class TestCheckExecutedCopyAlignment:
         assert "divergent" in r["detail"]
         assert str(nm.resolve()) in r["detail"]
         assert "e1c4f7b5.tgz" in r["detail"]
-        assert "gaia dev --mode link" in r["fix"]
+        assert "gaia dev --workspace" in r["fix"]
 
     def test_non_tarball_spec_with_no_checkout_is_info_not_divergent(self, tmp_path):
         # A registry install has no link to have lost -- this check's object

@@ -7,9 +7,11 @@ Collapses today's manual 3-step loop (`npm pack` -> `npm`/`pnpm add
 real consumer workspace is one command: edit source, run `gaia dev`,
 restart Claude Code, test.
 
-Two modes:
+One mode, always pack -- there is no source-linking mode. `gaia dev` never
+leaves a consumer workspace, its `.claude/`, or any global alias pointing at
+this source checkout; the only thing a consumer ever depends on is a packed
+tarball.
 
-  --mode pack (default)
     1. `npm pack` the CURRENT source tree (via `_pack_helpers.pack_tarball`,
        shared with the Phase-2 `gaia release check` gate -- one pack
        primitive, not two) into a STABLE, persistent per-workspace
@@ -32,19 +34,9 @@ Two modes:
     Reflects a real shippable version and reuses the exact install
     machinery a real `npm install` consumer would exercise.
 
-  --mode link
-    Uses the consumer package manager to persist a local source dependency and
-    make `<workspace>/node_modules/@jaguilar87/gaia` a live source symlink,
-    then wires `.claude/` in-process with this source tree's `cmd_install`
-    -- which bootstraps and re-seeds global state in `~/.gaia/gaia.db` -- so
-    `_install_helpers` naturally resolves `plugin_root` to THIS source
-    tree. Edits under `gaia/`, `hooks/`, `agents/`, `skills/`, `config/`,
-    `tools/` are visible on the next Claude Code restart with no pack step
-    at all. Instant iteration; does not reflect what actually ships.
-
-Both modes terminate in the same place: `cli.install.cmd_install`, so the
-wiring logic (settings.json, permissions, hooks, symlinks, plugin-registry,
-DB bootstrap) is never duplicated between them or against `gaia install`.
+This terminates in `cli.install.cmd_install`, so the wiring logic
+(settings.json, permissions, hooks, symlinks, plugin-registry, DB bootstrap)
+is never duplicated between this and a plain `gaia install`.
 """
 
 from __future__ import annotations
@@ -82,8 +74,7 @@ def _restart_warning(host: str = install_mod.ALL_HOSTS) -> str:
     The Claude Code harness pins each hook's command at SESSION START and does
     not hot-reload it, so a session that is already open keeps running the OLD
     hooks until it is restarted -- a freshly installed fix is inert until then.
-    Emitted verbatim by both pack and link modes so the notice is identical and
-    testable.
+    Emitted verbatim on every run so the notice is identical and testable.
 
     Accumulative over hosts: `--host all` warns about every host it configured,
     since dropping one host's notice leaves that host silently running the old
@@ -223,9 +214,8 @@ def install_tarball(
     *,
     package_manager: str | None = None,
     timeout: int = 300,
-    source_link: bool = False,
 ) -> dict[str, Any]:
-    """Install a tarball or explicit source directory through the consumer manager.
+    """Install a packed tarball through the consumer package manager.
 
     Mirrors `bin/validate-sandbox.sh`'s `install_package()`: if the
     workspace has no package.json yet, create a minimal one first so the
@@ -271,14 +261,8 @@ def install_tarball(
 
     if pm == "pnpm":
         commands = [["pnpm", "add", section_flag, str(tarball)]]
-        if source_link:
-            commands.append(["pnpm", "link", str(tarball)])
     else:
-        cmd = ["npm", "install", "--no-audit", "--no-fund", section_flag]
-        if source_link:
-            cmd.append("--install-links=false")
-        cmd.append(str(tarball))
-        commands = [cmd]
+        commands = [["npm", "install", "--no-audit", "--no-fund", section_flag, str(tarball)]]
 
     for command in commands:
         try:
@@ -308,7 +292,7 @@ def install_tarball(
             }
 
     package = workspace / "node_modules/@jaguilar87/gaia"
-    if not source_link and package.is_symlink() and _is_source_checkout(package.resolve()):
+    if package.is_symlink() and _is_source_checkout(package.resolve()):
         return {"action": "error", "path": str(package), "details": "package manager retained a source link in pack mode",
                 "package_manager": pm}
 
@@ -393,110 +377,8 @@ def wire_workspace_via_installed_gaia(
 
 
 # ---------------------------------------------------------------------------
-# Link mode: persist and link this source through the consumer manager
-# ---------------------------------------------------------------------------
-
-def install_source_link(workspace: Path, source_root: Path) -> dict[str, Any]:
-    """Save a native local-directory dependency, then prove it is a live source link."""
-    source = source_root.resolve()
-    workspace = workspace.resolve()
-    package = workspace / "node_modules/@jaguilar87/gaia"
-    error = {"action": "error", "path": str(package)}
-    if source.is_relative_to(workspace) or workspace.is_relative_to(source):
-        return {**error, "details": "source and consumer must be separate non-overlapping directories"}
-    if not _is_source_checkout(source):
-        return {**error, "details": "source is not a Gaia checkout"}
-    try:
-        source_identity = json.loads((source / "package.json").read_text())
-        if source_identity.get("name") != _NPM_PACKAGE_NAME or not (source / "bin/gaia").is_file():
-            return {**error, "details": "source package identity or entrypoint does not match Gaia"}
-    except (OSError, ValueError, AttributeError) as exc:
-        return {**error, "details": f"invalid source identity: {exc}"}
-    ownership = existing_package_error(workspace, allow_source_links=True, legacy_source_root=source)
-    if ownership:
-        return {**error, "details": ownership}
-    try:
-        parent = default_pack_dest(workspace)
-        parent.mkdir(parents=True, exist_ok=True)
-        recovery_path = Path(tempfile.mkdtemp(prefix="link-attempt-", dir=parent)) / "recovery.json"
-        before = consumer_recovery_state(workspace)
-        path = workspace / "package.json"
-        manifest = json.loads(path.read_text()) if path.exists() else {}
-        section = _dependency_section(manifest) or "dependencies"
-        write_recovery_evidence(recovery_path, workspace, before, "before-install", failed=False)
-    except (OSError, ValueError, RuntimeError, AttributeError) as exc:
-        return {**error, "details": f"cannot preserve source-switch recovery evidence: {exc}"}
-    result = install_tarball(workspace, source, source_link=True)
-    if result["action"] not in ("created", "updated", "noop"):
-        write_recovery_evidence(recovery_path, workspace, before, "source-install", failed=True)
-        return {**error, "details": f"{result['details']}; recovery required, no rollback; evidence: {recovery_path}"}
-    try:
-        after = json.loads((workspace / "package.json").read_text())
-        actual_section = _dependency_section(after)
-        spec = after.get(section, {}).get(_NPM_PACKAGE_NAME, "")
-        if actual_section != section or not isinstance(spec, str) or not spec.startswith(("file:", "link:")):
-            raise ValueError("package manager did not save a local dependency in the original section")
-        if (workspace / spec.split(":", 1)[1]).resolve() != source:
-            raise ValueError("saved local dependency does not identify selected source")
-        if not package.is_symlink() or package.resolve(strict=True) != source:
-            raise ValueError("package manager did not create a live source symlink")
-        ownership = existing_package_error(workspace, allow_source_links=True)
-        if ownership:
-            raise ValueError(ownership)
-    except (OSError, ValueError, RuntimeError, AttributeError) as exc:
-        write_recovery_evidence(recovery_path, workspace, before, "source-verify", failed=True)
-        return {**error, "details": f"{exc}; recovery required, no rollback; evidence: {recovery_path}"}
-    return {"action": "created", "path": str(package), "details": f"consumer linked to {source}",
-            "recovery_path": recovery_path, "before": before}
-
-
-# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
-
-def _run_link_mode(workspace: Path, *, quiet: bool, verbose: bool, host: str) -> int:
-    """Wire source only after a successful, ownership-safe link."""
-    install_mod.resolve_hosts(host)
-    try:
-        captured = install_provenance.capture_source(_PACKAGE_ROOT)
-    except (OSError, ValueError, RuntimeError) as exc:
-        print(f"gaia dev: cannot capture source provenance: {exc}", file=sys.stderr)
-        return 1
-    link_res = install_source_link(workspace, _PACKAGE_ROOT)
-    _report_step(name="node_modules link", result=link_res, quiet=quiet, verbose=verbose)
-    if link_res["action"] not in ("created", "noop"):
-        print(f"gaia dev: {link_res['details']}", file=sys.stderr)
-        return 1
-
-    ns = argparse.Namespace(
-        postinstall=False,
-        quiet=quiet,
-        verbose=verbose,
-        db_path=None,
-        workspace=str(workspace),
-        skip_workspace=False,
-        no_path=True,
-        strict_wiring=True,
-        host=host,
-    )
-    rc = install_mod.cmd_install(ns)
-    failed_stage = "source-wire"
-    if rc == 0 and not _record_install_provenance(workspace, captured):
-        rc = 1
-        failed_stage = "provenance"
-    if "recovery_path" in link_res:
-        write_recovery_evidence(link_res["recovery_path"], workspace, link_res["before"],
-                                "complete" if rc == 0 else failed_stage, failed=rc != 0)
-        if rc != 0:
-            print(f"gaia dev: {failed_stage} failed; recovery required, no rollback performed; evidence: {link_res['recovery_path']}", file=sys.stderr)
-    if rc == 0 and not quiet:
-        print(
-            "\n  gaia dev (link): workspace wired to the live source tree.\n"
-        )
-        print(_restart_warning(host))
-        print()
-    return rc
-
 
 def default_pack_dest(workspace: Path) -> Path:
     """Return the stable, persistent pack destination for *workspace*.
@@ -812,35 +694,29 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register the 'dev' subcommand."""
     p = subparsers.add_parser(
         "dev",
-        help="Fast local dev loop: pack/link + install + wire in one command",
+        help="Fast local dev loop: pack + install + wire in one command",
         description=(
             "Collapse the manual pack+add+install loop into one command.\n"
             "\n"
-            "  --mode pack (default): npm pack this source tree into a stable,\n"
-            "  persistent per-workspace path (default_pack_dest, override with\n"
-            "  --pack-dest), install into the actual consumer with npm/pnpm,\n"
-            "  update its Gaia dependency spec, then wire hosts + bootstrap DB\n"
-            "  via the freshly installed copy's own `gaia install`. Each pack\n"
-            "  attempt is retained separately. Repeated normal installations\n"
-            "  require matching consumer metadata and package-manager resolution.\n"
-            "  Declared source links and installed packages switch via the consumer\n"
-            "  manager. Unknown entries are refused; legacy links to this exact\n"
-            "  source checkout can be saved as normal local dependencies.\n"
-            "  Package-manager and wiring failures may leave partial changes;\n"
-            "  no transactional rollback is claimed.\n"
+            "  npm pack this source tree into a stable, persistent per-workspace\n"
+            "  path (default_pack_dest, override with --pack-dest), install into\n"
+            "  the actual consumer with npm/pnpm, update its Gaia dependency spec,\n"
+            "  then wire hosts + bootstrap DB via the freshly installed copy's own\n"
+            "  `gaia install`. Each pack attempt is retained separately. Repeated\n"
+            "  normal installations require matching consumer metadata and\n"
+            "  package-manager resolution. A legacy link to this exact source\n"
+            "  checkout can be saved as a normal local dependency; any other\n"
+            "  unknown entry is refused. Package-manager and wiring failures may\n"
+            "  leave partial changes; no transactional rollback is claimed.\n"
             "\n"
-            "  --mode link: npm install --install-links=false <source>, or pnpm\n"
-            "  add <source> followed by pnpm link <source>, saves local metadata\n"
-            "  and leaves node_modules as a live source symlink.\n"
-            "  Source must be outside the consumer. It skips the PACK only --\n"
-            "  it still runs the full `gaia install`, which bootstraps and\n"
-            "  RE-SEEDS global state in ~/.gaia/gaia.db (schema migrations,\n"
-            "  contract permissions, surface routing) and wires the workspace.\n"
+            "There is no source-linking mode: the consumer workspace, its\n"
+            "`.claude/`, and every global alias only ever depend on a packed\n"
+            "tarball, never on this source checkout directly.\n"
             "\n"
             "Use --host=opencode to configure OpenCode, or --host=all to configure\n"
             "every supported host in one run (the default). No global npm link\n"
-            "or PATH launcher is changed by dev. --link abbreviates --mode link.\n"
-            "global install steps run once regardless of how many hosts are wired.\n"
+            "or PATH launcher is changed by dev. Global install steps run once\n"
+            "regardless of how many hosts are wired.\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -861,14 +737,6 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "the global steps once and repeats only the per-host wiring."
         ),
     )
-    p.add_argument(
-        "--mode",
-        dest="mode",
-        choices=["pack", "link"],
-        default=None,
-        help="pack (default): npm pack + install + wire. link: symlink source for instant iteration.",
-    )
-    p.add_argument("--link", action="store_true", help="Use link mode; conflicts with --mode pack")
     p.add_argument("--from-worktree", help="Use this resolved Gaia checkout instead of the running copy")
     p.add_argument("--ref", help="Require HEAD to equal this full commit SHA; dirty changes remain included")
     p.add_argument(
@@ -891,8 +759,7 @@ def register(subparsers: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=False,
         help=(
             "Deprecated, kept for compatibility: the packed tarball now always "
-            "persists at a stable per-workspace location, so this is a no-op "
-            "(ignored in --mode link)"
+            "persists at a stable per-workspace location, so this is a no-op"
         ),
     )
     p.add_argument(
@@ -932,12 +799,6 @@ def cmd_dev(args: argparse.Namespace) -> int:
     """Execute the dev subcommand."""
     quiet = bool(getattr(args, "quiet", False))
     verbose = bool(getattr(args, "verbose", False))
-    explicit_mode = getattr(args, "mode", None)
-    link = bool(getattr(args, "link", False))
-    if explicit_mode not in (None, "pack", "link") or (link and explicit_mode == "pack"):
-        print("gaia dev: invalid mode or contradictory --link and --mode pack", file=sys.stderr)
-        return 1
-    mode = "link" if link else (explicit_mode or "pack")
     keep_tarball = bool(getattr(args, "keep_tarball", False))
     pack_dest = getattr(args, "pack_dest", None)
     no_global_link = bool(getattr(args, "no_global_link", False))
@@ -976,7 +837,7 @@ def cmd_dev(args: argparse.Namespace) -> int:
         if source != _PACKAGE_ROOT:
             command = [sys.executable, str(source / "bin/gaia"), "dev",
                        "--workspace", str(workspace), "--ref", commit,
-                       "--mode", mode, "--host", host]
+                       "--host", host]
             if quiet:
                 command.append("--quiet")
             if verbose:
@@ -990,12 +851,9 @@ def cmd_dev(args: argparse.Namespace) -> int:
                 return 1
 
     if not quiet:
-        print(f"\n  gaia dev ({mode} mode)")
+        print("\n  gaia dev (pack mode)")
         print(f"  source:    {_PACKAGE_ROOT}")
         print(f"  workspace: {workspace}\n")
-
-    if mode == "link":
-        return _run_link_mode(workspace, quiet=quiet, verbose=verbose, host=host)
 
     return _run_pack_mode(
         workspace,

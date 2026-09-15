@@ -51,7 +51,6 @@ from cli.install import (  # noqa: E402
     _warn_launcher_dir_absent,
     _npm_global_prefix,
     _npm_config_prefix_posix,
-    reconcile_global_via_npm_link,
 )
 import cli.install as install_mod  # noqa: E402  # for monkeypatching the marker path
 
@@ -1326,71 +1325,6 @@ class TestNpmGlobalPrefixResolution(unittest.TestCase):
                 self.assertEqual(
                     _npm_global_prefix(), Path("C:/Users/u/AppData/Roaming") / "npm"
                 )
-
-
-class TestGlobalNpmLinkReconcile(unittest.TestCase):
-    """`reconcile_global_via_npm_link` links the origin so the global `gaia`
-    matches the command's source. The npm runner is injectable so the reconcile
-    is unit-testable without mutating the machine's real global store."""
-
-    def _make_source(self, tmp: str) -> Path:
-        root = Path(tmp) / "src"
-        root.mkdir()
-        (root / "package.json").write_text('{"name": "@jaguilar87/gaia"}\n')
-        return root
-
-    def test_runs_npm_link_from_source_root(self):
-        calls = {}
-
-        def fake_run(cmd, **kwargs):
-            calls["cmd"] = cmd
-            calls["cwd"] = kwargs.get("cwd")
-            return subprocess.CompletedProcess(cmd, 0, "linked", "")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._make_source(tmp)
-            res = reconcile_global_via_npm_link(root, runner=fake_run)
-
-        self.assertEqual(res["action"], "created")
-        self.assertEqual(calls["cmd"], ["npm", "link"])
-        self.assertEqual(Path(calls["cwd"]), root)
-
-    def test_skips_when_no_package_json(self):
-        recorded = []
-
-        def fake_run(cmd, **kwargs):
-            recorded.append(cmd)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp) / "empty"
-            root.mkdir()
-            res = reconcile_global_via_npm_link(root, runner=fake_run)
-
-        self.assertEqual(res["action"], "skipped")
-        self.assertEqual(recorded, [])  # runner never invoked
-
-    def test_nonzero_exit_is_error_not_raise(self):
-        def fake_run(cmd, **kwargs):
-            return subprocess.CompletedProcess(cmd, 1, "", "EACCES: permission denied")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._make_source(tmp)
-            res = reconcile_global_via_npm_link(root, runner=fake_run)
-
-        self.assertEqual(res["action"], "error")
-        self.assertIn("EACCES", res["details"])
-
-    def test_invocation_failure_is_error_not_raise(self):
-        def fake_run(cmd, **kwargs):
-            raise OSError("npm not found")
-
-        with tempfile.TemporaryDirectory() as tmp:
-            root = self._make_source(tmp)
-            res = reconcile_global_via_npm_link(root, runner=fake_run)
-
-        self.assertEqual(res["action"], "error")
-        self.assertIn("npm not found", res["details"])
 
 
 class TestLauncherShellBehavior(unittest.TestCase):
