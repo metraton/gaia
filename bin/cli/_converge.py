@@ -26,8 +26,10 @@ The 5 surfaces (design):
   5. DB schema (`~/.gaia/gaia.db` schema_version vs the code's EXPECTED)
 
 The WRITE half (the actual reconcile) lives in the install actors, not here:
-dev's pack/install/wire, `install.reconcile_global_via_npm_link` (surface 4),
-and `scripts/bootstrap_database.py`'s forward migration + direction guard
+dev's pack/install/wire, npm itself for surface 4 (`npm install -g`/`npm
+link` writes the global shim; Gaia never rewrites it -- `install._warn_launcher_shadowed`
+only detects when it wins PATH precedence over Gaia's own launcher), and
+`scripts/bootstrap_database.py`'s forward migration + direction guard
 (surface 5). Keeping inspection here -- pure, read-only, dependency-light --
 lets `gaia dev`, `gaia release`, and `gaia doctor` share ONE classification of
 "where does the destination stand relative to the origin?" without duplicating
