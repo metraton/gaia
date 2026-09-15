@@ -104,7 +104,7 @@ is pulled with exactly one verb.
 | `gaia approvals stats` | Totals by outcome and the pending verb breakdown. |
 | `gaia notifications list` / `gaia notifications show <id>` | The headless-task inbox: what a scheduled or detached run reported back. |
 | `gaia schedule list` / `gaia schedule show <name>` / `gaia schedule status` | Registered recurring tasks, their native translation, and desired-state-vs-scheduler reconciliation. |
-| `gaia session preview` | The manifest printed at subagent birth: session configuration, contract kernel, and available context sections. |
+| `gaia session preview` | The SessionStart injection manifest — what the orchestrator receives at session start, built read-only with no side effects. |
 | `gaia workspace current` / `gaia workspace info` | Which workspace a read will resolve against, and where its storage actually is. |
 
 ## Where the membership of this lane is enforced, and the one asymmetry
