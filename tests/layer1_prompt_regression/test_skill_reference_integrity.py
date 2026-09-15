@@ -59,6 +59,7 @@ TOP_LEVEL_DIRS = frozenset(
         "bin",
         "build",
         "config",
+        "gaia",
         "hooks",
         "scripts",
         "skills",
@@ -97,11 +98,24 @@ def _candidate_citations(text: str):
         yield path_part, symbols
 
 
+_CONST_ASSIGN_TEMPLATE = r"^[ \t]*{name}[ \t]*(:[^=\n]+)?=(?!=)"
+_BASH_FUNC_TEMPLATE = r"^[ \t]*(?:function[ \t]+)?{name}[ \t]*\(\)[ \t]*\{{"
+
+
 def _symbol_is_defined(source: str, symbol: str) -> bool:
-    return any(
+    if any(
         _SYMBOL_DEF.format(kind=kind, name=symbol) in source
         for kind in ("def", "class")
-    )
+    ):
+        return True
+    escaped = re.escape(symbol)
+    # A module-level (or class-body) constant and a shell function have no
+    # `def`/`class` keyword to match against -- `NAME = value` and
+    # `name() {` are their only definition sites, so an anchor naming either
+    # must be recognized here too or it can never resolve.
+    const_re = re.compile(_CONST_ASSIGN_TEMPLATE.format(name=escaped), re.MULTILINE)
+    bash_func_re = re.compile(_BASH_FUNC_TEMPLATE.format(name=escaped), re.MULTILINE)
+    return bool(const_re.search(source) or bash_func_re.search(source))
 
 
 def _resolve(path_part: str, repo_root: Path, skill_dir):
@@ -260,3 +274,31 @@ class TestDetectionBoundary:
 
     def test_placeholders_are_ignored(self):
         assert check_text("`skills/<name>/SKILL.md` and `agents/*.md`") == []
+
+    def test_gaia_package_anchors_are_validated(self):
+        """`gaia/` is a top-level dir of this repo -- a citation into it must
+        resolve exactly like `hooks/` or `bin/`, not be silently skipped."""
+        assert check_text(
+            "see `gaia/project.py::current` and `gaia/project.py::no_such_fn`"
+        ) == [
+            "gaia/project.py::no_such_fn -- file exists but defines no such symbol"
+        ]
+
+    def test_module_level_constant_anchors_resolve(self):
+        """A constant has no `def`/`class` keyword -- its assignment line is
+        its only definition site, and an anchor naming it must resolve too."""
+        assert check_text(
+            "see `tests/layer1_prompt_regression/"
+            "test_skill_reference_integrity.py::TOP_LEVEL_DIRS`"
+        ) == []
+
+    def test_bash_function_anchors_resolve(self):
+        """A shell function has no `def` keyword either -- `name() {` is its
+        only definition site."""
+        assert check_text(
+            "see `bin/validate-sandbox.sh::is_gaia_repo_root` and "
+            "`bin/validate-sandbox.sh::no_such_shell_fn`"
+        ) == [
+            "bin/validate-sandbox.sh::no_such_shell_fn -- file exists but "
+            "defines no such symbol"
+        ]
