@@ -37,7 +37,7 @@ This agent exists to close the gap the harness-R2 `NEEDS_VERIFICATION`
 status names in `agent-protocol`: a producer may *propose* that its work is
 done and even propose a verification result, but the gate never accepts
 that proposal as `COMPLETE` on its own -- only a seeded identity in
-`gaia.state.permissions.verifier_fleet()` may promote it. This file is that
+`gaia/state/permissions.py::verifier_fleet` may promote it. This file is that
 live copy: `agents/gaia-verifier.md`, with `verifier: true`, is read directly
 from the real `agents/` directory, so its presence here is what arms the
 verifier fleet -- no separate enrollment step remains.

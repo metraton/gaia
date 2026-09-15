@@ -81,9 +81,9 @@ Three forces shape the judgment:
 
 ## Reference implementation
 
-`scripts/rubric_verdict.py` provides the deterministic assembly half of the
-cycle: `parse_rubric_criteria()` splits rubric prose into discrete criteria
-(step 2), and `assemble_verdict()` aggregates a list of `CriterionAssessment`
+`skills/verification-rubric/scripts/rubric_verdict.py` provides the deterministic assembly half of the
+cycle: `skills/verification-rubric/scripts/rubric_verdict.py::parse_rubric_criteria` splits rubric prose into discrete criteria
+(step 2), and `skills/verification-rubric/scripts/rubric_verdict.py::assemble_verdict` aggregates a list of `CriterionAssessment`
 (`criterion`, `met`, `reasoning`) into a `RubricVerdict` (`verdict`,
 `criteria`, `overall_reasoning`), rejecting an empty assessment list and any
 assessment with blank `reasoning` -- the honesty rule enforced structurally,

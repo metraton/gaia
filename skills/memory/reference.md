@@ -71,7 +71,7 @@ mechanism existed stay `project_ref IS NULL` -- the memory-row-to-project
 mapping is genuinely ambiguous whenever a workspace hosts more than one
 project, so no backfill can guess it. A `project_*` row gets anchored only
 by an explicit `--project` / `--project-ref` at write time.
-`upsert_memory()` treats `project_ref` with coalesce-or-omit discipline:
+`gaia/store/writer.py::upsert_memory` treats `project_ref` with coalesce-or-omit discipline:
 omitting it on a later update never clobbers a previously-set anchor back to
 NULL (a later `add` that re-supplies only `--workspace` keeps the prior
 anchor).
@@ -114,7 +114,7 @@ cwd:
 
 The *workspace* itself (not the project within it) may still be cwd-inferred
 when `--workspace` is omitted -- `_resolve_workspace` falls back to
-`gaia.project.current()`, same as the write side's default -- but that is
+`gaia/project.py::current`, same as the write side's default -- but that is
 workspace identity, not project-level filtering/reordering, and it was never
 the "active project" mechanism this note is about.
 
@@ -255,7 +255,7 @@ used" is asked without reading the tail of an untopped list. Neither surface
 ever combines two counters into one number or one sort key -- the same
 never-merge rule as the write side. `kernel_count`/`last_kernel_at` are
 written (see the call-site table above) but neither surface projects them --
-`get_memory()` and `list_memory()`'s own `SELECT`s name only the injection
+`gaia/store/writer.py::get_memory` and `gaia/store/writer.py::list_memory`'s own `SELECT`s name only the injection
 and deliberate columns -- so today the kernel pair is readable only by a
 direct query against the `memory` table, never through `show` or `list`.
 

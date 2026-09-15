@@ -66,7 +66,7 @@ approvals approve` makes, and the only shape the runtime's execution check
 (`reserve_plan_command`, keyed on `source='plan-first'`) finds. The structured
 decision path and the admin verb therefore activate a `request-set` pending
 identically. The
-legacy `create_command_set_grant()` route survives only for a multi-command
+legacy `hooks/modules/security/approval_grants.py::create_command_set_grant` route survives only for a multi-command
 payload with NO `request_fingerprint`, a chain-intake shape production no longer
 emits; it is kept as a defensive fallback, not as the plan-first path. The
 earlier defect -- a correctly labeled Approve reporting success while the

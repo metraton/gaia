@@ -89,7 +89,7 @@ A dispatched SUBAGENT is instantiated as: identity (.md) + skills (preloaded by 
 
 ## Routing Patterns
 
-The DB-backed `surface_routing` table maps user intent to agents. The source of truth is each agent's `routing:` frontmatter block (`agents/*.md`): `surface`, `adjacent_surfaces`, `signals` (`commands`/`artifacts`), `required_checks`, optional `sub_surfaces`. Keywords were retired as a signal source -- the matcher (`tools/context/surface_router.py::_score_surface`) scores `commands` and `artifacts` only; a legacy `keywords` key in a signals block is ignored by scoring. The surface's `intent` is the agent's `description`; `contract_sections` derives from `project_context_contracts.read`. `tools/scan/seed_surface_routing.py` seeds the table at install time (mirror of `seed_contract_permissions.py`); `tools/context/surface_router.py` reads it via `load_surface_routing_config()`.
+The DB-backed `surface_routing` table maps user intent to agents. The source of truth is each agent's `routing:` frontmatter block (`agents/*.md`): `surface`, `adjacent_surfaces`, `signals` (`commands`/`artifacts`), `required_checks`, optional `sub_surfaces`. Keywords were retired as a signal source -- the matcher (`tools/context/surface_router.py::_score_surface`) scores `commands` and `artifacts` only; a legacy `keywords` key in a signals block is ignored by scoring. The surface's `intent` is the agent's `description`; `contract_sections` derives from `project_context_contracts.read`. `tools/scan/seed_surface_routing.py` seeds the table at install time (mirror of `seed_contract_permissions.py`); `tools/context/surface_router.py` reads it via `tools/context/surface_router.py::load_surface_routing_config`.
 
 **To add a surface:** Add a `routing:` block to the owning agent's frontmatter, register the agent in `build/gaia.manifest.json`, re-run `gaia install`, and update the surface-router tests.
 **To add a signal:** Add command/artifact patterns to the owning agent's `routing:` block.
@@ -105,7 +105,7 @@ When you modify any Gaia component (hook, skill, agent definition, routing confi
 **Do NOT update docs yourself** -- your job is to flag the drift and let the orchestrator choose the next action.
 
 **Examples of drift to flag:**
-- Changed `_is_protected()` paths in `adapters/claude_code.py` → check `security-tiers/SKILL.md` for path documentation
+- Changed `hooks/modules/security/protected_paths.py::is_protected_hook_path` paths → check `security-tiers/SKILL.md` for path documentation
 - Added a new agent definition → check `gaia-patterns/reference.md` for agents table
 - Modified hook enforcement logic → check `security-tiers` and `agent-protocol` references
 - When adding or modifying files in agents/, skills/, hooks/, config/, bin/, tests/, build/ or the repo root, load Skill('readme-writing') to update the relevant README.md

@@ -37,7 +37,7 @@ npm run gaia:install-local -- --workspace <TARGET>
 **fresh (wipe install metadata first):**
 Append `--fresh` to the `validate-sandbox.sh` form, or manually clear `node_modules/ package.json package-lock.json` (or the pnpm equivalents) in `<TARGET>` before reinstalling. Use when a prior install left state you want gone.
 
-**Always pass `--workspace` when invoking from inside the gaia repo.** The self-referencing `node_modules/@jaguilar87/gaia/` entry tricks the workspace auto-detector; `is_gaia_repo_root()` in `validate-sandbox.sh` guards against it, but explicit is safest:
+**Always pass `--workspace` when invoking from inside the gaia repo.** The self-referencing `node_modules/@jaguilar87/gaia/` entry tricks the workspace auto-detector; `bin/validate-sandbox.sh::is_gaia_repo_root` guards against it, but explicit is safest:
 ```
 cd /home/jorge/ws/me/gaia
 npm pack
@@ -184,7 +184,7 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Install reports PASS, `~/.gaia/gaia.db` migrated, but `.claude/hooks` symlink still points to an old version after reload | The workspace detector matched the gaia repo itself (self-referencing `node_modules/@jaguilar87/gaia/`) instead of the consumer workspace. Symlinks got wired to the repo's `node_modules`, not the consumer workspace's. | Always pass `--workspace /home/jorge/ws/me` explicitly. `is_gaia_repo_root()` guards this, but explicit `--workspace` is safest. Verify with `readlink /home/jorge/ws/me/.claude/hooks` -- it must resolve under the workspace, not the repo. |
+| Install reports PASS, `~/.gaia/gaia.db` migrated, but `.claude/hooks` symlink still points to an old version after reload | The workspace detector matched the gaia repo itself (self-referencing `node_modules/@jaguilar87/gaia/`) instead of the consumer workspace. Symlinks got wired to the repo's `node_modules`, not the consumer workspace's. | Always pass `--workspace /home/jorge/ws/me` explicitly. `bin/validate-sandbox.sh::is_gaia_repo_root` guards this, but explicit `--workspace` is safest. Verify with `readlink /home/jorge/ws/me/.claude/hooks` -- it must resolve under the workspace, not the repo. |
 | `.claude/` not wired after install | `gaia install` not run, or it exited non-zero | `cat ~/.gaia/last-install-error.json` (written by `gaia install` on failure). Re-run `gaia install --workspace <path>`. If it persists, file a bug. |
 | `gaia doctor` walks up to the user `.claude/` instead of the workspace | Workspace not initialized (`.claude/` missing or no `plugin-registry.json`) | Re-run `gaia install --workspace <path>`. |
 | DB missing / `no such table` on first use | Lazy bootstrap did not run (e.g. `gaia` never invoked yet) | Run any `gaia` command (it triggers `_ensure_db_bootstrapped`), or `gaia install` for the full seed. There is no postinstall to "re-run". |
@@ -200,9 +200,9 @@ Symptoms encountered in real install sessions, with the root cause and the fix.
 
 When you bump `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py`, the four steps below must move in lockstep. `tests/cli/test_schema_version_lockstep.py` verifies the relationship; skipping a step fails in CI.
 
-1. Update `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py` -- the single source of truth for the target version (`_read_expected_schema_version()` in the bootstrapper reads it).
+1. Update `EXPECTED_SCHEMA_VERSION` in `bin/cli/doctor.py` -- the single source of truth for the target version (`scripts/bootstrap_database.py::_read_expected_schema_version` in the bootstrapper reads it).
 2. Add the forward-migration file `scripts/migrations/v{N-1}_to_v{N}.sql` -- the `ALTER TABLE` / `UPDATE` / `CREATE` that advances a DB from `N-1` to `N`. This is **required**, not optional: the bootstrapper ABORTS with "missing migration file" if `EXPECTED_SCHEMA_VERSION` is bumped past the migrations on disk.
-3. Do NOT hand-write any `schema_version` insert into a bootstrap script. The canonical bootstrapper is `scripts/bootstrap_database.py` (the cross-platform install/lazy path; `bootstrap_database.sh` is retained for shell/test parity -- see the same distinction in "What `gaia install` does" above). It uses the **floor + forward-migration** model: it seals a fresh DB at `SCHEMA_FLOOR` from `schema.sql`, then applies every pending migration from `floor+1` up to `_read_expected_schema_version()`, stamping each in the ledger with `INSERT OR IGNORE INTO schema_version (version, applied_at, description) VALUES (n, ...)` automatically -- so shipping the migration file (step 2) is what makes fresh installs and in-place upgrades both land at the new version.
+3. Do NOT hand-write any `schema_version` insert into a bootstrap script. The canonical bootstrapper is `scripts/bootstrap_database.py` (the cross-platform install/lazy path; `bootstrap_database.sh` is retained for shell/test parity -- see the same distinction in "What `gaia install` does" above). It uses the **floor + forward-migration** model: it seals a fresh DB at `SCHEMA_FLOOR` from `schema.sql`, then applies every pending migration from `floor+1` up to `scripts/bootstrap_database.py::_read_expected_schema_version`, stamping each in the ledger with `INSERT OR IGNORE INTO schema_version (version, applied_at, description) VALUES (n, ...)` automatically -- so shipping the migration file (step 2) is what makes fresh installs and in-place upgrades both land at the new version.
 4. Run `pytest tests/cli/test_schema_version_lockstep.py` -- it verifies `EXPECTED_SCHEMA_VERSION` agrees with the migration files present (equal to the highest `v{N-1}_to_v{N}.sql` target, or the floor when none exist yet).
 
 ### Build/pre-publish Schema-Drift Guard

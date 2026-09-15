@@ -159,7 +159,7 @@ Permanently denied by the hook -- `gmail.modify` OAuth scope excludes delete at 
 
 ### Macro Prefix Handling
 
-`gws` CLI exposes convenience macros prefixed with `+` (e.g. `+reply`, `+send`, `+search`). The hook strips the leading `+` before the verb taxonomy lookup inside `detect_mutative_command()`, so each macro classifies like its base verb:
+`gws` CLI exposes convenience macros prefixed with `+` (e.g. `+reply`, `+send`, `+search`). The hook strips the leading `+` before the verb taxonomy lookup inside `hooks/modules/security/mutative_verbs.py::detect_mutative_command`, so each macro classifies like its base verb:
 
 - `gws gmail +reply` → token `reply` → match in MUTATIVE_VERBS → T3 block
 - `gws gmail +send` → token `send` → match in MUTATIVE_VERBS → T3 block
