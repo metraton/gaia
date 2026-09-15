@@ -420,6 +420,162 @@ def test_dirty_worktree_missing_capture_args_leaves_worktree_untouched(repo):
     assert _snapshot(worktree) == before
 
 
+# ---------------------------------------------------------------------------
+# contract_id fallback: a dirty worktree from a turn with no brief -- the
+# fix under test. Every turn is born with an agent_contract_handoffs row
+# (insert_dispatched_handoff mirrors that birth); the brief triple is never
+# supplied here on purpose.
+# ---------------------------------------------------------------------------
+
+def _seed_dispatched_contract(contract_id: str, agent_id: str) -> None:
+    from gaia.store.writer import insert_dispatched_handoff
+
+    insert_dispatched_handoff(contract_id, agent_id, "me")
+
+
+def test_dirty_worktree_with_no_brief_captures_onto_contract_row_and_is_recoverable(repo):
+    """AC-scoped: an ad-hoc turn's worktree (no brief/AC) still deposits its
+    diff -- onto its own contract row -- and that diff is readable back
+    afterwards, not merely "deposited"."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+    from gaia.evidence.fs import read_blob
+    from gaia.store.writer import get_contract_worktree_capture
+
+    contract_id = "cXnobrief.deadbeef"
+    _seed_dispatched_contract(contract_id, "aXnobriefdeadbeefdead")
+
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXnobriefdeadbeefdead", branch="wt-nobrief")
+    worktree = Path(metadata.path)
+    (worktree / "README.md").write_text("hello\nad-hoc turn's real work\n", encoding="utf-8")
+
+    result = wr.reclaim_worktree(repo, worktree, contract_id=contract_id)
+
+    assert result["status"] == "captured_pending_removal"
+    assert result["captured"] is True
+    assert result["evidence_id"] is None, "no brief -> no evidence-table row"
+    assert result["contract_capture_path"]
+    assert worktree.exists(), "dirty worktree is left in place, same as the brief path"
+
+    # Recoverable through the DEDICATED read API, independent of this call's
+    # own return value -- the property the task demands is "deposited AND
+    # recoverable later", not merely "the call said it worked".
+    capture = get_contract_worktree_capture(contract_id)
+    assert capture is not None
+    assert capture["artifact_path"] == result["contract_capture_path"]
+    assert capture["size_bytes"] > 0
+
+    diff_bytes = read_blob(capture["artifact_path"])
+    assert diff_bytes is not None
+    diff_text = diff_bytes.decode("utf-8")
+    assert "ad-hoc turn's real work" in diff_text
+
+
+def test_contract_capture_is_idempotent(repo):
+    """A second release of the still-dirty worktree reuses the same blob,
+    exactly like the brief-based path already does."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+    from gaia.paths import evidence_dir
+
+    contract_id = "cXidempotent.deadbeef"
+    _seed_dispatched_contract(contract_id, "aXidempotentdeadbeefde")
+
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXidempotentdeadbeefde", branch="wt-nobrief-idem")
+    worktree = Path(metadata.path)
+    (worktree / "README.md").write_text("hello\nidempotent capture\n", encoding="utf-8")
+
+    first = wr.reclaim_worktree(repo, worktree, contract_id=contract_id)
+    second = wr.reclaim_worktree(repo, worktree, contract_id=contract_id)
+
+    assert first["status"] == second["status"] == "captured_pending_removal"
+    assert first["contract_capture_path"] == second["contract_capture_path"]
+    contract_blobs = list((evidence_dir() / "_contracts" / contract_id).glob("*.diff"))
+    assert len(contract_blobs) == 1
+    assert worktree.exists()
+
+
+def test_contract_capture_deposit_failure_leaves_worktree_untouched(repo, monkeypatch):
+    """Forcing the blob write to fail: the hard property holds on the
+    contract_id path exactly like it does on the brief path -- nothing moves
+    until deposit succeeds."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+
+    contract_id = "cXfails.deadbeef"
+    _seed_dispatched_contract(contract_id, "aXfailsdeadbeefdeadbee")
+
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXfailsdeadbeefdeadbee", branch="wt-nobrief-fail")
+    worktree = Path(metadata.path)
+    (worktree / "README.md").write_text("hello\nshould never be lost\n", encoding="utf-8")
+    before = _snapshot(worktree)
+
+    def failing_write_contract_blob(*args, **kwargs):
+        raise OSError("simulated disk full")
+
+    monkeypatch.setattr("gaia.evidence.fs.write_contract_blob", failing_write_contract_blob)
+
+    result = wr.reclaim_worktree(repo, worktree, contract_id=contract_id)
+
+    assert result["status"] == "deposit_failed"
+    assert result["recycled"] is False
+    assert result["captured"] is False
+    assert result["evidence_id"] is None
+    assert "contract capture deposit failed" in result["reason"]
+
+    # The hard property: directory and contents are exactly as found.
+    assert worktree.exists()
+    assert _snapshot(worktree) == before
+
+    from gaia.store.writer import get_contract_worktree_capture
+    assert get_contract_worktree_capture(contract_id) is None
+
+
+def test_contract_capture_attach_failure_leaves_worktree_and_blob_untouched(repo, monkeypatch):
+    """The row-attach half fails instead of the blob-write half -- the
+    orphan-blob cleanup guarantee must hold here too."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+    from gaia.paths import evidence_dir
+
+    contract_id = "cXattachfails.deadbeef"
+    _seed_dispatched_contract(contract_id, "aXattachfailsdeadbeefd")
+
+    metadata = create_canonical_worktree(repo, "gaia", contract_id, "aXattachfailsdeadbeefd", branch="wt-nobrief-attachfail")
+    worktree = Path(metadata.path)
+    (worktree / "README.md").write_text("hello\nattach should fail cleanly\n", encoding="utf-8")
+    before = _snapshot(worktree)
+
+    def failing_attach(*args, **kwargs):
+        raise RuntimeError("simulated handoff-write outage")
+
+    monkeypatch.setattr("gaia.store.writer.attach_worktree_capture_to_contract", failing_attach)
+
+    result = wr.reclaim_worktree(repo, worktree, contract_id=contract_id)
+
+    assert result["status"] == "deposit_failed"
+    assert worktree.exists()
+    assert _snapshot(worktree) == before
+    assert list((evidence_dir() / "_contracts" / contract_id).glob("*.diff")) == []
+
+
+def test_no_attribution_at_all_is_still_capture_args_missing(repo):
+    """Neither the brief triple nor contract_id: unchanged behavior."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+
+    metadata = create_canonical_worktree(repo, "gaia", "cX.neither", "aXneither", branch="wt-neither")
+    worktree = Path(metadata.path)
+    (worktree / "README.md").write_text("hello\nedited\n", encoding="utf-8")
+    before = _snapshot(worktree)
+
+    result = wr.reclaim_worktree(repo, worktree, contract_id=None)
+
+    assert result["status"] == "capture_args_missing"
+    assert worktree.exists()
+    assert _snapshot(worktree) == before
+
+
 def test_reclaiming_absent_worktree_is_idempotent(repo, tmp_path):
     """An already-removed worktree has converged on the recycled state."""
     import gaia.retention.worktree_reclaim as wr
