@@ -499,6 +499,28 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # WRITES from a dispatched subagent regardless of tier -- this exception
     # changes the tier, never who is allowed to write.
     ("gaia", "memory"): CATEGORY_READ_ONLY,
+    # `gaia worktree <verb>` (create/list/show/release): the host-agnostic
+    # door onto Gaia's own agentic-worktree machinery (gaia.worktree,
+    # gaia.retention.worktree_reclaim/worktree_collector). Without this
+    # exception `create` and `release` (both in MUTATIVE_VERBS generically)
+    # would trip the Step 4 verb scan and demand T3 -- on the OUTER `gaia`
+    # invocation, never on the `git worktree add`/`remove` subprocess the CLI
+    # runs internally, which never passes through this hook at all (it is a
+    # subprocess of the already-classified CLI process, not a separate Bash
+    # tool call). `create` is bounded by construction: the worktree is born
+    # under worktrees_dir() (never inside the caller's checkout), and its
+    # identity is stamped into the git lock's reason so the reclaim machinery
+    # can always find and account for it. `release` can never destroy
+    # uncaptured work -- reclaim_worktree deposits a dirty worktree's full
+    # diff as evidence BEFORE anything about it changes, and only ever calls
+    # an UNFORCED `git worktree remove` on a worktree already confirmed
+    # clean (see gaia.retention.worktree_reclaim's module docstring). Both
+    # are therefore reversible-by-design, exactly like the brief/ac/plan/
+    # task/notifications/contract/schedule/memory groups above, and there is
+    # no destructive verb in this group for the global deny-verb guard to
+    # re-gate (`create`/`list`/`show`/`release` all miss
+    # COMMAND_SUBCOMMAND_EXCEPTION_DENY_VERBS).
+    ("gaia", "worktree"): CATEGORY_READ_ONLY,
 }
 
 # Verbs that stay gated even under an excepted group above.  The exception
