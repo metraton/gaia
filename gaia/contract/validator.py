@@ -654,13 +654,22 @@ EVIDENCE_FIELD_TYPES = dict(
 #                       (``bin/cli/contract.py::cmd_reconcile``) when a
 #                       hook-written residue row has its cut mark cleared.
 #
-# The last two are the reason this list is built from a CODE sweep and not
-# only from the persisted population. ``reconciled`` appears in ZERO rows --
-# it is written by a verb whose output nothing had yet re-read -- so a sweep
-# of the database, however careful, is structurally incapable of finding it.
-# ``binding_rejection`` is written as a key inside a dict LITERAL, which a
-# sweep looking for ``envelope["key"] = ...`` cannot see either. A sweep is
-# only as complete as the shapes it knows to look for.
+# ``reconciled`` and ``binding_rejection`` above are the reason this list is
+# built from a CODE sweep and not only from the persisted population.
+# ``reconciled`` appears in ZERO rows -- it is written by a verb whose output
+# nothing had yet re-read -- so a sweep of the database, however careful, is
+# structurally incapable of finding it. ``binding_rejection`` is written as a
+# key inside a dict LITERAL, which a sweep looking for ``envelope["key"] =
+# ...`` cannot see either. A sweep is only as complete as the shapes it knows
+# to look for.
+#
+#   worktree_scope      "managed" | "shared" | "unknown", stamped by
+#                       ``bin/cli/contract.py::cmd_finalize`` on every close
+#                       (``_finalize_worktree_scope``) -- DETECTION for the
+#                       agent-protocol rule that a turn implementing work
+#                       runs in its own Gaia-managed worktree. Registers the
+#                       fact only; never gates a close. Queryable via
+#                       ``json_extract(raw_handoff_json, '$.worktree_scope')``.
 SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "_contract_tag",
     "agent_name",
@@ -679,6 +688,7 @@ SYSTEM_WRITTEN_ENVELOPE_KEYS: Tuple[str, ...] = (
     "reconstructed_from_finalized_draft",
     "salvaged",
     "superseded_by_contract_id",
+    "worktree_scope",
 )
 
 # Agent-authored top-level keys, per the agent-contract-handoff envelope: the

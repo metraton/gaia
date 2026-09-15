@@ -1743,6 +1743,24 @@ def _resolve_finalize_workspace(explicit: Optional[str]) -> str:
     return "me"
 
 
+def _finalize_worktree_scope() -> str:
+    """"managed" when this process's cwd is inside Gaia's worktrees root, else "shared".
+
+    Read by ``cmd_finalize`` and stamped onto every closing envelope as
+    ``worktree_scope`` -- see that call site for why this is detection-only,
+    never a gate. "unknown" is returned, never raised, when the worktrees
+    root cannot be resolved (e.g. an unavailable ``GAIA_DATA_DIR``).
+    """
+    try:
+        from gaia.paths import worktrees_dir
+
+        cwd = Path.cwd().resolve()
+        root = worktrees_dir().resolve()
+    except Exception:
+        return "unknown"
+    return "managed" if root == cwd or root in cwd.parents else "shared"
+
+
 def cmd_finalize(args) -> int:
     """Validate the draft as final AND write it to the store (T7 -- the SOLE
     idempotent writer of the agent_contract_handoffs row).
@@ -1906,6 +1924,20 @@ def cmd_finalize(args) -> int:
             return 1
 
     from gaia.store.writer import finalize_agent_contract_handoff
+
+    # Detection surface for the agent-protocol rule that a turn implementing
+    # work runs inside its own Gaia-managed worktree rather than the shared
+    # checkout: DETECT AND REGISTER ONLY, never a gate -- adoption today is
+    # zero, so refusing a close on this would block the whole fleet at
+    # install time. Stamped on EVERY finalize (not only a turn that
+    # committed), because raw_handoff_json is the only queryable surface a
+    # later count can join against; a query that also wants "did this turn
+    # commit" filters evidence_report.commands_run itself, so this needs no
+    # commit-detection logic of its own. Best-effort by construction: the
+    # process cwd at finalize time is the only signal available without
+    # trusting anything the agent self-reports, so it degrades to "unknown"
+    # rather than raise when the worktree root cannot be resolved.
+    envelope["worktree_scope"] = _finalize_worktree_scope()
 
     try:
         outcome = finalize_agent_contract_handoff(
