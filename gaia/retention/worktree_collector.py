@@ -61,10 +61,15 @@ Five-way property this module exists to prove (AC-8's five worktrees):
         it," the same posture ``gaia.retention.fs_rules`` already commits
         to for the whole package.
 
-The decision fires at session start, driven by ``gaia cleanup`` (mirroring
-``fs_rules``' wiring note: no automatic hook sweeps this yet), never mid-turn
--- a worktree that is the ACTIVE subject of the very turn evaluating it would
-otherwise be at risk of judging itself.
+The decision fires at session start -- driven by ``hooks/session_start.py``'s
+automatic sweep (``sweep_repo_worktrees``) and, on demand, by ``gaia cleanup``
+-- never mid-turn: a worktree that is the ACTIVE subject of the very turn
+evaluating it would otherwise be at risk of judging itself. SessionStart's
+sweep runs only after that hook's own ``register_session`` call has already
+refreshed THIS session's heartbeat, so if this session owns the worktree
+being evaluated, ``session_dead_past_grace`` reads it ALIVE and case (b)
+protects it -- the ordering, not a special case in this module, is what keeps
+a live turn from judging itself.
 
 Public API::
 
@@ -74,6 +79,7 @@ Public API::
     list_managed_worktrees(repo_path) -> list[dict]
     collect_worktrees(repo_path, *, workspace, brief_slug, ac_id, ...)
         -> list[dict]
+    sweep_repo_worktrees(repo_path, *, dry_run=False) -> list[dict]
 """
 
 from __future__ import annotations
@@ -101,6 +107,20 @@ from gaia.worktree import parse_lock_reason
 EXPLICIT_DEATH_CUT_REASONS = frozenset(
     {CUT_REASON_REAPED, CUT_REASON_BACKSTOP_CAPTURE}
 )
+
+# Evidence bucket a worktree's captured diff is filed under when a GENERIC
+# sweep collects it -- SessionStart's automatic sweep, or `gaia cleanup
+# --prune` -- as opposed to a curator or specialist reclaiming a specific
+# worktree with its own brief/AC already in hand. A generic sweep does not
+# know which brief owned an abandoned worktree, so it cannot supply a real
+# one. This matters only for a DIRTY worktree (uncommitted changes or
+# unpushed commits): a CLEAN worktree never reaches the evidence-deposit
+# path at all. If this sentinel brief does not exist in a given workspace,
+# reclaim_worktree already fails closed on that lookup (status
+# "deposit_failed") and leaves the worktree untouched.
+SWEEP_WORKSPACE = "_gaia_system"
+SWEEP_BRIEF_SLUG = "_orphaned_worktrees"
+SWEEP_AC_ID = "_orphaned"
 
 
 # ---------------------------------------------------------------------------
@@ -333,3 +353,29 @@ def collect_worktrees(
             **result,
         })
     return out
+
+
+def sweep_repo_worktrees(
+    repo_path: Path, *, dry_run: bool = False
+) -> List[Dict[str, object]]:
+    """Collect every abandoned agentic worktree registered to *repo_path*,
+    under the one fixed sweep identity (``SWEEP_WORKSPACE``/``SWEEP_BRIEF_SLUG``/
+    ``SWEEP_AC_ID`` above) shared by every generic caller -- ``gaia cleanup``'s
+    retention pass and the SessionStart hook's automatic sweep -- so the
+    evidence-bucket identity used for a captured diff is one value, not a
+    copy per caller. Fails closed like ``collect_worktrees`` itself: a
+    *repo_path* that is not a git working tree, or any error walking it,
+    yields an empty list rather than propagating.
+    """
+    if not (Path(repo_path) / ".git").exists():
+        return []
+    try:
+        return collect_worktrees(
+            repo_path,
+            workspace=SWEEP_WORKSPACE,
+            brief_slug=SWEEP_BRIEF_SLUG,
+            ac_id=SWEEP_AC_ID,
+            dry_run=dry_run,
+        )
+    except Exception:  # noqa: BLE001 -- a generic sweep must never abort its caller
+        return []
