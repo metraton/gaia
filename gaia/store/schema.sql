@@ -1333,6 +1333,15 @@ CREATE TABLE IF NOT EXISTS agent_contract_handoffs (
     -- from failing when a window boundary falls between two links of one chain;
     -- a pruned parent simply ends the walk.
     continues_handoff_id INTEGER,
+    -- v53: capture-before-recycle evidence for a worktree released by a turn
+    -- that never had a brief/AC to attribute a diff to (every turn has THIS
+    -- row; only a planned one also has a brief). JSON object {artifact_path,
+    -- sha256, size_bytes, worktree_path, captured_at} written by
+    -- gaia.store.writer.attach_worktree_capture_to_contract, read back by
+    -- get_contract_worktree_capture. NULL on every row this never applies to.
+    -- No CHECK / FK, mirroring continues_handoff_id and its neighbors above:
+    -- ALTER TABLE ADD COLUMN on the migrated path carries no constraint.
+    worktree_capture_json TEXT,
     raw_handoff_json TEXT NOT NULL,               -- full contract envelope serialized
     created_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     -- v33: ON DELETE CASCADE on workspace -- see memory_history's v33 note
