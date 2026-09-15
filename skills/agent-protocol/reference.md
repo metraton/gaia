@@ -202,6 +202,30 @@ The costs are not symmetric. A partial turn that says so is worth exactly its
 evidence. A complete-looking turn with one invented field is worth nothing,
 because a reader who catches one has no way to bound how many others there are.
 
+### 12. Why worktree scope is not about disk cost
+
+The read half of the rule is the one that is easy to skip, because staying on
+the live tree feels like the path of least resistance. It is not a shortcut:
+`gaia worktree create` checks out one branch at one commit, frozen at creation
+time. Investigate inside it and every file read, every grep, every git status
+reflects that frozen commit -- not the edits another turn has sitting
+uncommitted in the main tree right now. A finding built on that view is a
+finding about a repository state nobody currently occupies, and it is wrong in
+the specific, silent way that is hardest to catch: it looks like the live
+repo and is not.
+
+The write half exists because the same repo directory is not safe to share.
+`git`'s working tree and index are single-writer state: a `git checkout` in
+one process changes what HEAD means for every other process still pointed at
+that path, and two writers touching the index at once corrupt whichever one
+loses the race. This repo measured both failure shapes before the rule
+existed: a session's mid-turn branch checkout landed a concurrent session's
+commit on the wrong branch, and a turn that believed itself the only occupant
+of a shared tree ran `git stash push` -- a mutation, not the read-only probe it
+thought it was -- into work another agent had in flight. `gaia worktree
+create`/`release` (T0, see `security-tiers`) is the isolation that removes
+both failure shapes at the source: one tree, one index, one writer.
+
 ## The two state machines
 
 A turn runs two machines at once, and they never collapse into one.

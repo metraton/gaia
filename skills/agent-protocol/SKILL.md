@@ -57,5 +57,9 @@ Evidence is the command's output, not your assertion about it: a `COMPLETE` need
 
 What you could not do, what you did not verify and what stayed open go in the record: a gap declared gets routed, a gap hidden surfaces later. A complete-looking turn with one invented field is worth nothing.
 
+## 12. Your worktree is scoped to what you touch
+
+A turn about to write to a repository works inside its own worktree, created with `gaia worktree create` and released with `gaia worktree release` at close. A turn that only reads stays on the live tree instead: a worktree is a checkout of one branch, so it cannot see work still uncommitted in the main tree, and an investigation run inside it reports on a state nobody is actually in -- that half carries as much weight as the other. Two turns concurrently on the same repo today share one tree and one index, and that already cost real work here: a mid-turn branch checkout landed one session's commit on the other's branch, and an agent ran `git stash push` believing itself alone in a tree several agents were sharing.
+
 ## Where to go next
 - `reference.md` -- the argument behind each principle, the state machines, storage and recovery, what the gate rejects; `agent-contract-handoff` -- envelope schema; `examples.md` -- filled envelopes; `read-map.md` -- read verbs. Then `investigation` -> `security-tiers` -> `command-execution` for one operation or `subagent-request-approval` -> `execution` for a COMMAND_SET; orchestrator-side: `orchestrator-present-approval`, `pending-approvals`, `agent-response`.
