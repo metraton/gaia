@@ -349,6 +349,148 @@ def test_a_command_that_is_not_the_next_index_is_recorded_as_denied(substrate, t
     assert row["reservation_tool_use_id"] is None
 
 
+def _isolated_substrate(tmp_path, monkeypatch, name):
+    """Give one host its own database, ledger and cwd, as ``substrate`` does.
+
+    The parity test drives two adapters over the same fixture, and a grant holds
+    one reservation: run in a shared database the second host would be refused
+    for the first host's reservation rather than judged on its own event.
+    """
+    from gaia.store import writer
+
+    root = tmp_path / name
+    root.mkdir()
+    db_path = root / "gaia.db"
+    con = sqlite3.connect(db_path)
+    con.executescript(writer._SCHEMA_PATH.read_text())
+    con.commit()
+    con.close()
+    monkeypatch.setenv("GAIA_DATA_DIR", str(root))
+    monkeypatch.setenv("GAIA_DB", str(db_path))
+    monkeypatch.setenv("GAIA_OPENCODE_ATTESTATION_DIR", str(root / "ledger"))
+    monkeypatch.setenv("CLAUDE_SESSION_ID", SUBAGENT_SESSION)
+    monkeypatch.chdir(root)
+    return root, db_path
+
+
+def _claude_code_verdict(command, call_id=SUBAGENT_CALL):
+    """Drive the Claude Code adapter over its native spelling of the event."""
+    from adapters.claude_code import ClaudeCodeAdapter
+
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "session_id": SUBAGENT_SESSION,
+        "tool_use_id": call_id,
+        "agent_id": AGENT_ID,
+        "agent_type": AGENT_ID,
+        "tool_name": "Bash",
+        "tool_input": {"command": command},
+    }
+    adapter = ClaudeCodeAdapter()
+    response = adapter.adapt_pre_tool_use(
+        adapter.parse_event(json.dumps(payload)), _dispatch_identity_in_env=True,
+    )
+    decision = (response.output or {}).get("hookSpecificOutput", {}) \
+        if isinstance(response.output, dict) else {}
+    return response.exit_code == 0 and decision.get("permissionDecision") != "deny"
+
+
+def _opencode_verdict(command, token):
+    """Drive the OpenCode adapter over its native spelling of the same event."""
+    from adapters.opencode import OpenCodeAdapter
+
+    response = OpenCodeAdapter().adapt_pre_tool_use(_bash_event(command, token))
+    return response.output.get("action") == "allow"
+
+
+def _reservation_outcome(db_path, approval_id):
+    row = _grant_row(db_path, approval_id)
+    return {
+        key: row[key]
+        for key in (
+            "status", "next_index", "reservation_index",
+            "reservation_session_id", "reservation_tool_use_id",
+            "reserved_tool_use_ids_json",
+        )
+    }
+
+
+def test_both_hosts_reach_the_same_verdict_on_the_same_granted_command(
+    tmp_path, monkeypatch,
+):
+    """The requirement itself: one grant, one command, two hosts, one outcome.
+
+    The events are equivalent in what Gaia's consent layer reads -- the same
+    command, the same subagent session, the same call id, the same agent role --
+    each written in its host's own spelling, which is the only difference a
+    parity claim can tolerate. The verdict is normalized because each host
+    encodes allow differently (Claude Code by exit code and permissionDecision,
+    OpenCode by an action field); the reservation outcome is compared raw.
+    """
+    outcomes = {}
+    for host in ("claude_code", "opencode"):
+        root, db_path = _isolated_substrate(tmp_path, monkeypatch, host)
+        approval_id = _request_set(root)
+        _approve_in_question_lane(approval_id)
+        _bind_child_session(db_path)
+
+        if host == "claude_code":
+            allowed = _claude_code_verdict(FIRST_COMMAND)
+        else:
+            from modules.security.host_attestation import host_run_id, issue
+
+            token = issue(
+                host_run=host_run_id(), session_id=SUBAGENT_SESSION,
+                role=AGENT_ID, issuer="opencode-runtime",
+            ).token
+            allowed = _opencode_verdict(FIRST_COMMAND, token)
+
+        outcomes[host] = {
+            "allowed": allowed,
+            "reservation": _reservation_outcome(db_path, approval_id),
+        }
+
+    assert outcomes["claude_code"]["allowed"] is True, outcomes
+    assert outcomes["claude_code"] == outcomes["opencode"], outcomes
+    assert outcomes["opencode"]["reservation"]["reservation_tool_use_id"] == SUBAGENT_CALL
+    assert json.loads(
+        outcomes["opencode"]["reservation"]["reserved_tool_use_ids_json"]
+    ) == [SUBAGENT_CALL]
+
+
+def test_neither_host_lets_one_call_reserve_twice(substrate, tmp_path, attestation):
+    """The restored freshness property, met identically on both hosts.
+
+    The call that reserved index 0 is replayed against index 1 through each
+    adapter in turn: the neutral point refuses it whichever host asks.
+    """
+    approval_id = _request_set(tmp_path)
+    _approve_in_question_lane(approval_id)
+    _bind_child_session(substrate)
+
+    from gaia.store import writer
+
+    assert _opencode_verdict(FIRST_COMMAND, attestation) is True
+    assert writer.settle_plan_command(
+        approval_id, session_id=SUBAGENT_SESSION, tool_use_id=SUBAGENT_CALL,
+        success=True,
+    ) is True
+
+    assert _opencode_verdict(SECOND_COMMAND, attestation) is False
+    assert _claude_code_verdict(SECOND_COMMAND) is False
+    row = _grant_row(substrate, approval_id)
+    assert row["next_index"] == 1
+    assert row["reservation_tool_use_id"] is None
+    assert json.loads(row["reserved_tool_use_ids_json"]) == [SUBAGENT_CALL]
+
+    # What was refused is the reused call, not the command or the host: a fresh
+    # call id runs the same index the two refusals above could not reach.
+    assert _claude_code_verdict(SECOND_COMMAND, call_id="call-subagent-2") is True
+    assert json.loads(
+        _grant_row(substrate, approval_id)["reserved_tool_use_ids_json"]
+    ) == [SUBAGENT_CALL, "call-subagent-2"]
+
+
 def test_a_retry_loop_appends_one_denial_per_call(substrate, tmp_path):
     """Dedupe per (approval_id, call_id): attempts collapse, calls do not."""
     approval_id = _request_set(tmp_path)

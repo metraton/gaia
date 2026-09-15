@@ -406,3 +406,97 @@ def test_a_settlement_by_a_different_pair_returns_false_and_mutates_nothing(isol
         db_path=isolated_db,
     ) is True
     assert _grant_row(isolated_db)["next_index"] == 1
+
+
+def test_a_call_that_already_reserved_cannot_reserve_again(isolated_db):
+    """One host tool call authorizes at most one item of a grant, ever.
+
+    Settlement clears reservation_tool_use_id, so without the durable history
+    the very call that consumed index 0 could walk on to index 1 -- which is the
+    freshness property the OpenCode adapter used to carry alone.
+    """
+    first, second = _approved_set(isolated_db)
+
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 0}
+    assert writer.settle_plan_command(
+        "P-plan", session_id="s", tool_use_id="call-1", success=True,
+        db_path=isolated_db,
+    ) is True
+    settled = _grant_row(isolated_db)
+    assert settled["reservation_tool_use_id"] is None
+    assert json.loads(settled["reserved_tool_use_ids_json"]) == ["call-1"]
+
+    assert writer.reserve_plan_command(
+        second, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    ) is None
+    assert _grant_row(isolated_db) == settled
+
+    assert writer.reserve_plan_command(
+        second, session_id="s", tool_use_id="call-2", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 1}
+    assert json.loads(
+        _grant_row(isolated_db)["reserved_tool_use_ids_json"]
+    ) == ["call-1", "call-2"]
+
+
+def test_a_grant_predating_the_history_column_still_reserves(isolated_db):
+    """NULL is exactly what the v53->v54 ALTER TABLE leaves on existing grants."""
+    first, _second = _approved_set(isolated_db)
+    con = sqlite3.connect(isolated_db)
+    try:
+        con.execute(
+            "UPDATE approval_grants SET reserved_tool_use_ids_json=NULL "
+            "WHERE approval_id='P-plan'"
+        )
+        con.commit()
+    finally:
+        con.close()
+    assert _grant_row(isolated_db)["reserved_tool_use_ids_json"] is None
+
+    assert writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    ) == {"approval_id": "P-plan", "index": 0}
+    assert json.loads(
+        _grant_row(isolated_db)["reserved_tool_use_ids_json"]
+    ) == ["call-1"]
+
+
+def _wrapper_agrees(command, db_path):
+    """Assert the wrapper matches its lookup, and return the verdict compared."""
+    lookup = writer.find_pending_plan_command(command, db_path=db_path)
+    exists = writer.pending_plan_command_exists(command, db_path=db_path)
+    assert exists is (lookup is not None), (command, exists, lookup)
+    return exists
+
+
+def test_the_pending_wrapper_cannot_diverge_from_the_lookup_it_wraps(isolated_db):
+    """pending_plan_command_exists is find_pending_plan_command, truth-valued.
+
+    The verdicts are collected across the grant's stages so the agreement is
+    asserted where it changes, not only where both answer the same by default.
+    """
+    first, second = _approved_set(isolated_db)
+    unknown = "git push origin release"
+
+    verdicts = [
+        _wrapper_agrees(first, isolated_db),
+        _wrapper_agrees(second, isolated_db),
+        _wrapper_agrees(unknown, isolated_db),
+    ]
+
+    writer.reserve_plan_command(
+        first, session_id="s", tool_use_id="call-1", db_path=isolated_db,
+    )
+    assert writer.settle_plan_command(
+        "P-plan", session_id="s", tool_use_id="call-1", success=True,
+        db_path=isolated_db,
+    ) is True
+
+    verdicts += [
+        _wrapper_agrees(first, isolated_db),
+        _wrapper_agrees(second, isolated_db),
+    ]
+
+    assert verdicts == [True, False, False, False, True]

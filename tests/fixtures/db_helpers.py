@@ -400,6 +400,7 @@ def bootstrap_m4_schema(db_path: Path) -> None:
         reservation_index    INTEGER,
         reservation_session_id TEXT,
         reservation_tool_use_id TEXT,
+        reserved_tool_use_ids_json TEXT,
         reservation_at       TEXT,
         failed_index         INTEGER,
         failure_reason       TEXT,

@@ -1172,6 +1172,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_schedule_suspensions_task
 -- Replaces the filesystem JSON store (.claude/cache/approvals/).
 -- Per D5/D10: no TTL column (enforced at query time via created_at + 10 min);
 -- byte-for-byte command match per command_set item; each item is single-use.
+-- reservation_tool_use_id holds only the CURRENT reservation and is cleared on
+-- settlement; reserved_tool_use_ids_json is the durable history a settled item
+-- leaves behind, which is what makes each host tool call usable once per grant.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS approval_grants (
     approval_id          TEXT PRIMARY KEY,           -- nonce, e.g. 32-char hex
@@ -1192,6 +1195,7 @@ CREATE TABLE IF NOT EXISTS approval_grants (
     reservation_index    INTEGER,
     reservation_session_id TEXT,
     reservation_tool_use_id TEXT,
+    reserved_tool_use_ids_json TEXT,
     reservation_at       TEXT,
     failed_index         INTEGER,
     failure_reason       TEXT,

@@ -6698,7 +6698,15 @@ def reserve_plan_command(
     tool_use_id: str,
     db_path: Path | None = None,
 ) -> dict | None:
-    """Reserve the exact next command for one correlated Bash tool call."""
+    """Reserve the exact next command for one correlated Bash tool call.
+
+    A ``tool_use_id`` that already reserved under this grant is refused: a retry
+    must be a different host tool call than the one that was blocked, and both
+    hosts supply a unique per-call id (Claude Code natively, OpenCode through
+    build_policy_payload), so the rule is meetable on either. A grant predating
+    the reserved_tool_use_ids_json column carries an empty history and therefore
+    reserves exactly as it did before the column existed.
+    """
     if not session_id or not tool_use_id:
         return None
     from gaia.approvals.command_set import command_fingerprint
@@ -6726,14 +6734,22 @@ def reserve_plan_command(
             item = items[index]
             if item.get("command") != command or item.get("fingerprint") != command_fingerprint(command):
                 continue
+            reserved_ids = _json.loads(grant.get("reserved_tool_use_ids_json") or "[]")
+            if tool_use_id in reserved_ids:
+                con.rollback()
+                return None
             if grant.get("reservation_tool_use_id"):
                 con.rollback()
                 return None
             changed = con.execute(
                 "UPDATE approval_grants SET reservation_index=?, reservation_session_id=?, "
-                "reservation_tool_use_id=?, reservation_at=? WHERE approval_id=? "
-                "AND reservation_tool_use_id IS NULL AND next_index=?",
-                (index, session_id, tool_use_id, _now_iso(), grant["approval_id"], index),
+                "reservation_tool_use_id=?, reservation_at=?, reserved_tool_use_ids_json=? "
+                "WHERE approval_id=? AND reservation_tool_use_id IS NULL AND next_index=?",
+                (
+                    index, session_id, tool_use_id, _now_iso(),
+                    _json.dumps(reserved_ids + [tool_use_id]),
+                    grant["approval_id"], index,
+                ),
             ).rowcount
             if changed != 1:
                 con.rollback()
