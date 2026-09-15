@@ -513,9 +513,14 @@ COMMAND_SUBCOMMAND_TIER_EXCEPTIONS: Dict[Tuple[str, str], str] = {
     # can always find and account for it. `release` can never destroy
     # uncaptured work -- reclaim_worktree deposits a dirty worktree's full
     # diff as evidence BEFORE anything about it changes, and only ever calls
-    # an UNFORCED `git worktree remove` on a worktree already confirmed
-    # clean (see gaia.retention.worktree_reclaim's module docstring). Both
-    # are therefore reversible-by-design, exactly like the brief/ac/plan/
+    # `git worktree remove` on a worktree already confirmed clean (see
+    # gaia.retention.worktree_reclaim's module docstring). That call is
+    # forced ONLY to override Gaia's own untracked `.gaia-worktree.json`
+    # sidecar -- the one case a fresh, independently-recomputed content check
+    # (`_exempt_metadata_filename`) has already proven carries no agent work
+    # -- and stays unforced otherwise; `--force` never overrides anything
+    # this module has not itself just verified is safe. Both `create` and
+    # `release` are therefore reversible-by-design, exactly like the brief/ac/plan/
     # task/notifications/contract/schedule/memory groups above, and there is
     # no destructive verb in this group for the global deny-verb guard to
     # re-gate (`create`/`list`/`show`/`release` all miss

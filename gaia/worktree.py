@@ -176,16 +176,58 @@ def _remove_created_worktree(repo: Path, target: Path) -> None:
         pass
 
 
+_METADATA_REQUIRED_KEYS = {
+    "repo", "project", "contract_id", "agent_id", "branch", "commit", "lifecycle", "path",
+}
+
+
+def _read_metadata_sidecar(path: Path) -> Optional[WorktreeMetadata]:
+    """Read and validate the ``.gaia-worktree.json`` sidecar in isolation.
+
+    Returns the parsed metadata only when the file exists, parses as JSON, and
+    carries exactly the required key set with a ``path`` that resolves to
+    *path* itself -- the same three checks ``read_worktree_metadata`` already
+    applied inline. Any other content (missing file, malformed JSON, wrong
+    keys, or a ``path`` pointing elsewhere) returns ``None``. This is the sole
+    discriminator between "Gaia's own accounting" and "an agent wrote a
+    same-named file": it is never trusted by filename alone.
+    """
+    metadata_path = worktree_metadata_path(path)
+    if not metadata_path.is_file():
+        return None
+    try:
+        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict) or set(raw) != _METADATA_REQUIRED_KEYS:
+        return None
+    try:
+        if Path(str(raw["path"])).resolve() != path:
+            return None
+    except (TypeError, ValueError, OSError):
+        return None
+    return WorktreeMetadata(**raw)
+
+
+def is_valid_own_metadata_sidecar(worktree_path: Path | str) -> bool:
+    """True when the metadata sidecar exists and parses as *this* worktree's own identity.
+
+    Used by ``gaia.retention.worktree_reclaim`` to exempt Gaia's own
+    accounting file from the dirtiness predicate -- but only by CONTENT, never
+    by filename: a file named ``.gaia-worktree.json`` that does not parse as
+    valid metadata for this exact worktree counts as ordinary untracked work,
+    so an agent cannot hide work in a same-named file to buy a capture-free
+    release.
+    """
+    return _read_metadata_sidecar(Path(worktree_path).resolve()) is not None
+
+
 def read_worktree_metadata(worktree_path: Path | str) -> Optional[WorktreeMetadata]:
     """Read canonical metadata, or a complete legacy lock identity without migrating it."""
     path = Path(worktree_path).resolve()
     metadata_path = worktree_metadata_path(path)
     if metadata_path.is_file():
-        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
-        required = {"repo", "project", "contract_id", "agent_id", "branch", "commit", "lifecycle", "path"}
-        if set(raw) != required or Path(raw["path"]).resolve() != path:
-            return None
-        return WorktreeMetadata(**raw)
+        return _read_metadata_sidecar(path)
     try:
         repo = Path(_git_value(path, "rev-parse", "--git-common-dir")).resolve().parent
         listing = _git_value(repo, "worktree", "list", "--porcelain")

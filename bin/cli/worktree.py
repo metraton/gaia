@@ -23,9 +23,13 @@ Subcommands:
 
     gaia worktree show    <path> [--json]
 
-    gaia worktree release <path> --workspace <W> --brief <slug> --ac <ac_id>
+    gaia worktree release <path> [--workspace <W> --brief <slug> --ac <ac_id>]
                           [--repo <path>] [--task-id <id>]
                           [--created-by <agent>] [--json]
+
+    (``--workspace``/``--brief``/``--ac`` are required only when the worktree
+    actually carries work to capture -- an untouched worktree releases with
+    none of the three.)
 """
 
 from __future__ import annotations
@@ -187,7 +191,10 @@ def _cmd_release(args) -> int:
             print(f"evidence_id={result['evidence_id']}")
         if result.get("reason"):
             print(f"reason={result['reason']}")
-    return 0 if result.get("status") not in ("capture_failed", "deposit_failed", "removal_failed") else 1
+    _FAILURE_STATUSES = (
+        "capture_failed", "capture_args_missing", "deposit_failed", "removal_failed",
+    )
+    return 0 if result.get("status") not in _FAILURE_STATUSES else 1
 
 
 # ---------------------------------------------------------------------------
@@ -286,12 +293,16 @@ def register(subparsers) -> None:
     release_p.add_argument("path", metavar="PATH", help="Worktree directory to release.")
     release_p.add_argument("--repo", default=None, metavar="PATH",
                            help="Owning repository. Default: read from the worktree's own metadata.")
-    release_p.add_argument("--workspace", required=True, metavar="W",
-                           help="Workspace identity for the evidence deposit, if one is needed.")
-    release_p.add_argument("--brief", required=True, metavar="BRIEF",
-                           help="Brief slug the captured diff is evidence for.")
-    release_p.add_argument("--ac", required=True, dest="ac", metavar="AC_ID",
-                           help="Acceptance-criteria id the captured diff is evidence for.")
+    release_p.add_argument("--workspace", default=None, metavar="W",
+                           help="Workspace identity for the evidence deposit. Only required "
+                                "when the worktree actually carries work to capture; an "
+                                "already-clean worktree recycles without it.")
+    release_p.add_argument("--brief", default=None, metavar="BRIEF",
+                           help="Brief slug the captured diff is evidence for. Only required "
+                                "when the worktree actually carries work to capture.")
+    release_p.add_argument("--ac", default=None, dest="ac", metavar="AC_ID",
+                           help="Acceptance-criteria id the captured diff is evidence for. "
+                                "Only required when the worktree actually carries work to capture.")
     release_p.add_argument("--task-id", default=None, dest="task_id", metavar="TASK_ID",
                            help="Opaque task reference (optional).")
     release_p.add_argument("--created-by", default=None, dest="created_by", metavar="AGENT",

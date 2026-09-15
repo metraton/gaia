@@ -326,6 +326,100 @@ def test_reclaiming_captured_worktree_is_idempotent(repo):
     assert worktree.exists()
 
 
+# ---------------------------------------------------------------------------
+# Metadata-sidecar exemption: a worktree is not dirty merely for existing.
+# ---------------------------------------------------------------------------
+
+def test_untouched_canonical_worktree_releases_clean_with_no_brief_or_ac(repo):
+    """The defect this task closes: `.gaia-worktree.json` is untracked by
+    construction, so an unused canonical worktree used to look dirty from the
+    moment it was created. workspace/brief_slug/ac_id are not even required
+    on this path."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+
+    metadata = create_canonical_worktree(repo, "gaia", "cX.untouched", "aXuntouched", branch="wt-untouched")
+    worktree = Path(metadata.path)
+
+    assert wr.worktree_needs_capture(worktree) is False
+
+    result = wr.reclaim_worktree(repo, worktree)
+
+    assert result == {
+        "status": "recycled",
+        "recycled": True, "captured": False, "evidence_id": None, "reason": None,
+    }
+    assert not worktree.exists()
+
+
+def test_forged_metadata_file_counts_as_dirty_and_is_not_ignored(repo):
+    """A `.gaia-worktree.json` whose content is NOT valid metadata for this
+    worktree is ordinary untracked work -- the exemption is bound to content,
+    never to the filename, or an agent could hide work behind it."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+
+    metadata = create_canonical_worktree(repo, "gaia", "cX.forged", "aXforged", branch="wt-forged")
+    worktree = Path(metadata.path)
+    (worktree / ".gaia-worktree.json").write_text('{"not": "valid metadata"}\n', encoding="utf-8")
+
+    assert wr.worktree_needs_capture(worktree) is True
+
+    _seed_brief()
+    result = wr.reclaim_worktree(
+        repo, worktree, workspace="me", brief_slug="wt-reclaim-test", ac_id="AC-9",
+    )
+    assert result["status"] == "captured_pending_removal"
+    assert result["captured"] is True
+    assert worktree.exists()
+
+
+def test_real_work_alongside_valid_metadata_is_captured_and_metadata_excluded(repo):
+    """A canonical worktree that carries real work still deposits its full
+    diff before anything is touched; the exemption only removes Gaia's own
+    accounting file from the capture, never real content."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+    from gaia.evidence.store import get_evidence
+
+    metadata = create_canonical_worktree(repo, "gaia", "cX.realwork", "aXrealwork", branch="wt-realwork")
+    worktree = Path(metadata.path)
+    (worktree / "README.md").write_text("hello\nreal agent work\n", encoding="utf-8")
+
+    _seed_brief()
+    result = wr.reclaim_worktree(
+        repo, worktree, workspace="me", brief_slug="wt-reclaim-test", ac_id="AC-9",
+    )
+
+    assert result["status"] == "captured_pending_removal"
+    row = get_evidence(result["evidence_id"])
+    diff_text = Path(row["artifact_path"]).read_text(encoding="utf-8")
+    assert "real agent work" in diff_text
+    assert ".gaia-worktree.json" not in diff_text
+    assert worktree.exists()
+
+
+def test_dirty_worktree_missing_capture_args_leaves_worktree_untouched(repo):
+    """The CLI-level property: a dirty worktree released with no
+    workspace/brief/ac fails loudly and touches nothing -- it does not fall
+    back to a partial or silent capture."""
+    from gaia.worktree import create_canonical_worktree
+    import gaia.retention.worktree_reclaim as wr
+
+    metadata = create_canonical_worktree(repo, "gaia", "cX.missingargs", "aXmissingargs", branch="wt-missingargs")
+    worktree = Path(metadata.path)
+    (worktree / "README.md").write_text("hello\nedited\n", encoding="utf-8")
+    before = _snapshot(worktree)
+
+    result = wr.reclaim_worktree(repo, worktree)
+
+    assert result["status"] == "capture_args_missing"
+    assert result["recycled"] is False
+    assert result["captured"] is False
+    assert worktree.exists()
+    assert _snapshot(worktree) == before
+
+
 def test_reclaiming_absent_worktree_is_idempotent(repo, tmp_path):
     """An already-removed worktree has converged on the recycled state."""
     import gaia.retention.worktree_reclaim as wr

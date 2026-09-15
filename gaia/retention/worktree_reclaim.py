@@ -80,10 +80,17 @@ decision below exists to avoid: an exemption that LOOKS conditional and
 is not.
 
 **THE DECISION THIS MODULE ACTS ON:** a dirty worktree is always captured.
-It is auto-recycled (unlocked and removed, unforced) ONLY when it is
-already clean by the time this function inspects it -- the existing,
-unconditionally safe task-11 exemption, which needs nothing new. A worktree
-that DID carry uncommitted changes or unpushed commits is captured and then
+It is auto-recycled (unlocked and removed) ONLY when it is already clean --
+by AGENT content -- by the time this function inspects it: the existing,
+unconditionally safe task-11 exemption, which needs nothing new, EXTENDED
+by one later addition (see ``_exempt_metadata_filename``) to also ignore
+Gaia's own untracked ``.gaia-worktree.json`` accounting file when its
+content independently re-parses as this exact worktree's own metadata.
+That extension is what makes the removal call FORCED in exactly that one
+case -- overriding only the sidecar git itself would otherwise refuse to
+see past, never an agent's own untracked work, which this function has
+already recomputed and confirmed absent before reaching that call. A
+worktree that DID carry uncommitted changes or unpushed commits is captured and then
 LEFT IN PLACE, deliberately: ``reclaim_worktree`` returns ``status:
 "captured_pending_removal"`` rather than removing it, because forcing that
 removal today would either (a) silently re-demand a signature per recycle
@@ -171,26 +178,70 @@ def _has_unpushed_commits(worktree_path: Path) -> bool:
     return bool(out.strip())
 
 
-def _has_uncommitted_changes(worktree_path: Path) -> bool:
+def _exempt_metadata_filename(worktree_path: Path) -> Optional[str]:
+    """The ``.gaia-worktree.json`` sidecar's name, when exempt from dirtiness -- else None.
+
+    Gaia's own accounting file is born UNTRACKED inside every canonical
+    worktree (task 12's ``create_canonical_worktree`` writes it directly, with
+    no ``git add``), so an unused worktree's own identity record made every
+    such worktree look dirty from the moment it was created -- the defect this
+    module exists to close. The exemption is bound to CONTENT, never to the
+    filename: ``gaia.worktree.is_valid_own_metadata_sidecar`` re-parses the
+    file and confirms it carries exactly this worktree's own required key set
+    with a matching ``path``. A file named ``.gaia-worktree.json`` that does
+    not parse that way -- forged, truncated, or pointed at a different
+    worktree -- is NOT exempt and counts as ordinary untracked work, which is
+    what keeps this exemption unforgeable: an agent cannot hide real work
+    behind the same filename to buy a capture-free release.
+    """
+    from gaia.worktree import is_valid_own_metadata_sidecar, worktree_metadata_path
+
+    if is_valid_own_metadata_sidecar(worktree_path):
+        return worktree_metadata_path(worktree_path).name
+    return None
+
+
+def _has_uncommitted_changes(worktree_path: Path, *, exempt: Optional[str] = None) -> bool:
     out = _run_git(worktree_path, ["status", "--porcelain"])
-    return bool(out.strip())
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        # Porcelain v1 status line: "XY PATH" (or "XY PATH1 -> PATH2" for a
+        # rename). The path starts after the two status characters and the
+        # separating space; comparing just that against the exempt filename
+        # keeps this blind to status codes, which are not what is being
+        # matched here.
+        path_field = line[3:] if len(line) > 3 else ""
+        if exempt is not None and path_field == exempt:
+            continue
+        return True
+    return False
 
 
-def _untracked_files(worktree_path: Path) -> List[str]:
+def _untracked_files(worktree_path: Path, *, exempt: Optional[str] = None) -> List[str]:
     out = _run_git(worktree_path, ["ls-files", "--others", "--exclude-standard"])
-    return [line for line in out.splitlines() if line]
+    return [line for line in out.splitlines() if line and line != exempt]
 
 
 def worktree_needs_capture(worktree_path: Path) -> bool:
-    """True when *worktree_path* carries uncommitted changes or unpushed commits."""
-    return _has_uncommitted_changes(worktree_path) or _has_unpushed_commits(worktree_path)
+    """True when *worktree_path* carries uncommitted changes or unpushed commits.
+
+    Gaia's own ``.gaia-worktree.json`` sidecar is excluded from the
+    uncommitted-changes check when (and only when) it parses as this
+    worktree's own valid metadata -- see ``_exempt_metadata_filename``.
+    """
+    exempt = _exempt_metadata_filename(worktree_path)
+    return (
+        _has_uncommitted_changes(worktree_path, exempt=exempt)
+        or _has_unpushed_commits(worktree_path)
+    )
 
 
 # ---------------------------------------------------------------------------
 # Diff capture
 # ---------------------------------------------------------------------------
 
-def _untracked_files_as_diff(worktree_path: Path) -> str:
+def _untracked_files_as_diff(worktree_path: Path, *, exempt: Optional[str] = None) -> str:
     """Render every untracked file as a synthetic unified-diff hunk.
 
     ``git diff`` never shows untracked content, so without this an
@@ -198,9 +249,14 @@ def _untracked_files_as_diff(worktree_path: Path) -> str:
     or undecodable content is noted by name and size rather than embedded --
     the file's presence is still on record, which is what "nothing lost
     silently" requires; embedding raw bytes into a text diff is not.
+
+    *exempt*, when given, is Gaia's own accounting file's name (see
+    ``_exempt_metadata_filename``): it is not the agent's work, so it is left
+    out of the captured diff the same way it is left out of the dirtiness
+    check that decides whether to capture at all.
     """
     blocks = []
-    for rel in _untracked_files(worktree_path):
+    for rel in _untracked_files(worktree_path, exempt=exempt):
         full = worktree_path / rel
         try:
             text = full.read_text(encoding="utf-8")
@@ -236,6 +292,7 @@ def capture_worktree_diff(worktree_path: Path) -> Optional[str]:
     capture rather than returning a partial diff a caller could mistake for
     complete.
     """
+    exempt = _exempt_metadata_filename(worktree_path)
     parts: List[str] = []
 
     unpushed = _run_git(
@@ -248,7 +305,7 @@ def capture_worktree_diff(worktree_path: Path) -> Optional[str]:
     if uncommitted.strip():
         parts.append(uncommitted)
 
-    untracked = _untracked_files_as_diff(worktree_path)
+    untracked = _untracked_files_as_diff(worktree_path, exempt=exempt)
     if untracked.strip():
         parts.append(untracked)
 
@@ -341,28 +398,40 @@ def _deposit_diff_evidence(
 # Removal -- only ever reached for a worktree that is ALREADY clean
 # ---------------------------------------------------------------------------
 
-def _remove_worktree(repo_path: Path, worktree_path: Path) -> None:
-    """Deregister and delete *worktree_path*, unforced.
+def _remove_worktree(repo_path: Path, worktree_path: Path, *, exempt: Optional[str] = None) -> None:
+    """Deregister and delete *worktree_path*.
 
     Only ever called on a worktree ``capture_worktree_diff`` has already
-    found clean (see ``reclaim_worktree``) -- there is nothing left for
-    ``--force`` to override, so this is exactly the unforced,
-    managed-root-scoped call task 11 already exempts. Unlocks first: every
-    worktree ``gaia.worktree.create_agentic_worktree`` creates is born
-    locked, and an unforced ``remove`` refuses a locked worktree regardless
-    of how clean it is. The unlock call's own failure (e.g. it was never
-    locked, or already unlocked) is swallowed -- the ``remove`` immediately
-    after is what actually verifies removability, so a spurious unlock
-    error here would only be noise ahead of the real check.
+    found clean (see ``reclaim_worktree``) -- there is nothing of the AGENT's
+    to capture, so this stays exactly the managed-root-scoped exemption task
+    11 already covers. Unlocks first: every worktree
+    ``gaia.worktree.create_agentic_worktree``/``create_canonical_worktree``
+    creates is born locked, and ``remove`` refuses a locked worktree
+    regardless of how clean it is. The unlock call's own failure (e.g. it was
+    never locked, or already unlocked) is swallowed -- the ``remove``
+    immediately after is what actually verifies removability, so a spurious
+    unlock error here would only be noise ahead of the real check.
+
+    ``exempt``, when not None, names Gaia's own metadata sidecar as it sits
+    on disk (see ``_exempt_metadata_filename``) -- the file that made
+    ``capture_worktree_diff`` return ``None`` in the first place is still
+    physically present and UNTRACKED, so git's own unforced ``remove``
+    refuses it exactly as it would refuse any dirty worktree. ``--force`` is
+    used ONLY in that one, already-verified-safe case: ``reclaim_worktree``
+    reached this call precisely because it recomputed that the worktree
+    carries nothing beyond this one already-validated accounting file, so
+    what ``--force`` overrides here is Gaia's own bookkeeping, never
+    uncaptured agent work -- the exact distinction the module docstring's
+    design-tension section requires before ``--force`` is ever safe to use.
     """
     subprocess.run(
         ["git", "-C", str(repo_path), "worktree", "unlock", str(worktree_path)],
         capture_output=True, text=True,
     )
-    subprocess.run(
-        ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)],
-        check=True, capture_output=True, text=True,
-    )
+    remove_cmd = ["git", "-C", str(repo_path), "worktree", "remove", str(worktree_path)]
+    if exempt is not None:
+        remove_cmd.append("--force")
+    subprocess.run(remove_cmd, check=True, capture_output=True, text=True)
 
 
 # ---------------------------------------------------------------------------
@@ -373,9 +442,9 @@ def reclaim_worktree(
     repo_path: Path,
     worktree_path: Path,
     *,
-    workspace: str,
-    brief_slug: str,
-    ac_id: str,
+    workspace: Optional[str] = None,
+    brief_slug: Optional[str] = None,
+    ac_id: Optional[str] = None,
     task_id: Optional[str] = None,
     created_by_agent: Optional[str] = None,
     db_path=None,
@@ -390,18 +459,31 @@ def reclaim_worktree(
 
     What happens next depends on what was found, and this is the corrected
     half of the design (see the module docstring for why): a worktree that
-    was ALREADY CLEAN is unlocked and removed, unforced -- the existing,
-    unconditionally safe exemption, nothing new. A worktree that carried
+    was ALREADY CLEAN of agent content is unlocked and removed -- the
+    existing, unconditionally safe exemption, forced only to override
+    Gaia's own untracked metadata sidecar when present and valid (see
+    ``_exempt_metadata_filename``), never anything else. A worktree that carried
     real work is captured and then LEFT IN PLACE: destroying it would need
     either a signature every time (defeating the point) or a not-yet-built,
     not-yet-hardened content-bound exemption (see the module docstring).
     Auto-discarding captured work without either is not a choice this
     function makes silently.
 
+    ``workspace``/``brief_slug``/``ac_id`` are OPTIONAL and are never even
+    inspected for an ALREADY-CLEAN worktree: a worktree nobody touched has
+    nothing to attribute a brief/AC to, so demanding them unconditionally
+    (as the CLI used to) forced a real brief and AC onto a release that never
+    needed one. They are required ONLY on the path that actually deposits a
+    diff -- a dirty worktree with any of the three missing returns
+    ``status: "capture_args_missing"`` without touching the worktree, the
+    same "nothing moves until deposit succeeds" guarantee as a genuine
+    deposit failure.
+
     Returns a dict shaped::
 
         {"status": "recycled" | "captured_pending_removal"
-                  | "capture_failed" | "deposit_failed" | "removal_failed",
+                  | "capture_failed" | "capture_args_missing"
+                  | "deposit_failed" | "removal_failed",
          "recycled": bool, "captured": bool,
          "evidence_id": int | None, "reason": str | None}
 
@@ -431,7 +513,10 @@ def reclaim_worktree(
 
     if diff_text is None:
         try:
-            _remove_worktree(repo_path, worktree_path)
+            _remove_worktree(
+                repo_path, worktree_path,
+                exempt=_exempt_metadata_filename(worktree_path),
+            )
         except Exception as exc:  # noqa: BLE001 -- report, do not mask it
             return {
                 "status": "removal_failed",
@@ -446,6 +531,19 @@ def reclaim_worktree(
             "captured": False,
             "evidence_id": None,
             "reason": None,
+        }
+
+    if not workspace or not brief_slug or not ac_id:
+        return {
+            "status": "capture_args_missing",
+            "recycled": False,
+            "captured": False,
+            "evidence_id": None,
+            "reason": (
+                "worktree carries uncommitted changes or unpushed commits; "
+                "workspace/brief_slug/ac_id are required to deposit its diff "
+                "as evidence before any release can proceed -- none supplied"
+            ),
         }
 
     try:
