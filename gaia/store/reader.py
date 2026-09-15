@@ -142,6 +142,69 @@ def get_notification(
 
 
 # ---------------------------------------------------------------------------
+# memory reads -- live-pending count per initiative
+# ---------------------------------------------------------------------------
+
+def count_pending_by_initiative(
+    workspace: str,
+    initiatives: list[str],
+    db_path: Path | None = None,
+) -> dict[str, int]:
+    """Live-pending thread count per initiative, scoped like a project.
+
+    Mirrors the selection predicate ``bin/cli/memory.py::_PENDING_VIVO_SELECT``
+    (``class='thread'``, ``status`` in ``carry_forward``/``open``,
+    ``deleted_at IS NULL``, a supersedes-destination row excluded) plus the
+    host-sentinel union ``_reader_workspaces`` performs there -- keep both
+    aligned if either changes; a count here that diverges from what
+    ``gaia memory get-relevant --initiative <key>`` returns for the same key
+    is exactly the drift this function exists to prevent, since a project's
+    on-screen count and its actual corpus size must always agree.
+
+    Returns ``{}`` for an empty ``initiatives`` list and on any DB error --
+    never raises, since a caller renders this as an optional annotation.
+    """
+    if not initiatives:
+        return {}
+    try:
+        from gaia.store.writer import HOST_WORKSPACE
+        workspaces = (
+            [workspace] if workspace == HOST_WORKSPACE
+            else [workspace, HOST_WORKSPACE]
+        )
+    except Exception:
+        workspaces = [workspace]
+
+    try:
+        con = _connect(db_path)
+    except Exception:
+        return {}
+    try:
+        ws_ph = ", ".join("?" for _ in workspaces)
+        init_ph = ", ".join("?" for _ in initiatives)
+        sql = (
+            "SELECT initiative, COUNT(*) AS cnt FROM memory "
+            f"WHERE workspace IN ({ws_ph}) "
+            "  AND deleted_at IS NULL "
+            "  AND class = 'thread' "
+            "  AND status IN ('carry_forward', 'open') "
+            f"  AND initiative IN ({init_ph}) "
+            "  AND name NOT IN ("
+            "    SELECT dst_name FROM memory_links "
+            f"    WHERE workspace IN ({ws_ph}) AND kind = 'supersedes'"
+            "  ) "
+            "GROUP BY initiative"
+        )
+        params = list(workspaces) + list(initiatives) + list(workspaces)
+        rows = con.execute(sql, params).fetchall()
+        return {r["initiative"]: r["cnt"] for r in rows}
+    except Exception:
+        return {}
+    finally:
+        con.close()
+
+
+# ---------------------------------------------------------------------------
 # scheduled_tasks reads (OS-agnostic desired state)
 # ---------------------------------------------------------------------------
 #

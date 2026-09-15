@@ -85,31 +85,23 @@ class TestNoPendingSurfacingBuilderRemains:
         monkeypatch.setattr(
             session_manifest, "build_projects_context_block", lambda: "PROJ"
         )
-        # Contract Index (Bug 1 fix): stub to "" here -- this test targets the
-        # pending-approvals contract, not the contract index's own rendering.
+        # Recurring work (schedule drift/suspensions + task notifications,
+        # collapsed): stub to "" here -- this test targets the
+        # pending-approvals contract, not that block's own rendering, and it
+        # does live I/O (DB / crontab) that must not leak environment-dependent
+        # content into this deterministic join test.
         monkeypatch.setattr(
-            session_manifest, "build_contracts_index_block", lambda: ""
+            session_manifest, "build_recurring_work_block", lambda: ""
         )
-        # Neutralize task-notifications and schedule-reconciliation: both do
-        # live I/O (DB / crontab) and must not leak environment-dependent
-        # content (e.g. an orphaned crontab entry on the host machine) into
-        # this deterministic join test.
-        monkeypatch.setattr(
-            session_manifest, "build_task_notifications_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_schedule_reconciliation_block", lambda: ""
-        )
-        # Bug 2 fix: build_workspace_memory_block is now called twice -- once
-        # with no args (digest) and once with sections=["anchor"] -- so the
-        # stub must accept both call shapes and render distinguishable text.
+        # The assembler now calls build_workspace_memory_block ONCE, with
+        # sections=["anchor"] -- the no-sections digest call was retired.
         monkeypatch.setattr(
             session_manifest,
             "build_workspace_memory_block",
-            lambda *a, **kw: ("ANCHOR" if kw.get("sections") == ["anchor"] else "MEM"),
+            lambda *a, **kw: "ANCHOR",
         )
 
         result = session_manifest.build_session_context()
-        assert result == "ENV\n\nPROJ\n\nMEM\n\nANCHOR"
+        assert result == "ENV\n\nPROJ\n\nANCHOR"
         assert "[ACTIONABLE]" not in result
         assert "PENDING-APPROVALS-VERIFIED" not in result

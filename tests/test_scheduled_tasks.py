@@ -684,7 +684,7 @@ def test_session_block_announces_a_live_suspension_with_time_left(db, monkeypatc
     writer.suspend_scheduled_tasks(name=None, until=_future(hours=8),
                                    reason="debugging", workspace="me", db_path=db)
     out = mod.build_schedule_suspension_block()
-    assert "## Scheduled Tasks (suspended)" in out
+    assert "## Schedule suspended" in out
     assert "all tasks" in out
     assert "7h 59m more" in out, f"must state the time left. got:\n{out}"
     assert "debugging" in out
@@ -704,7 +704,7 @@ def test_session_block_announces_a_lapse_more_prominently(db, monkeypatch):
     out = mod.build_schedule_suspension_block()
 
     lapsed_at = out.index("SUSPENSION LAPSED")
-    live_at = out.index("## Scheduled Tasks (suspended)")
+    live_at = out.index("## Schedule suspended")
     assert lapsed_at < live_at, f"the lapse must lead. got:\n{out}"
     assert "- ! a — suspension expired 30m ago" in out
     assert "active again: a" in out

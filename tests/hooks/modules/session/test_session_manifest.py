@@ -323,16 +323,23 @@ class TestBuildCapabilitiesBlock:
 
 class TestBuildSessionContext:
     """Pending approvals are no longer surfaced (M2): the assembler concatenates
-    Where I am, What I can run here, Projects, Contract Index, task
-    notifications, schedule reconciliation, schedule suspensions, and
-    Workspace Memory (digest + anchors) -- there is no pending-approvals
-    block in the join.
+    Where I am, What I can run here, Projects I can reach, Recurring work and
+    what it left me, and the durable memory anchors -- there is no
+    pending-approvals block, no Contract Index, and no separate digest call
+    in the join.
     """
 
     def test_retired_loop_builder_is_gone(self):
         """The agentic-loop capability was removed whole; a surviving builder
         would let the block be resurrected by a single call site."""
         assert not hasattr(session_manifest, "build_agentic_loop_block")
+
+    def test_retired_contract_index_builder_is_gone(self):
+        """The per-surface Contract Index was retired outright: it echoed
+        agent_contract_permissions.can_read without gating anything a
+        dispatched agent could request, and enabled no orchestrator decision."""
+        assert not hasattr(session_manifest, "build_contracts_index_block")
+        assert not hasattr(session_manifest, "_load_surface_routing")
 
     def test_assembles_all_blocks_with_blank_line_separator(self, monkeypatch):
         monkeypatch.setattr(
@@ -345,75 +352,50 @@ class TestBuildSessionContext:
             session_manifest, "build_projects_context_block", lambda: "PROJ BLOCK"
         )
         monkeypatch.setattr(
-            session_manifest, "build_contracts_index_block", lambda: "CONTRACTS BLOCK"
-        )
-        # Bug 2 fix: build_workspace_memory_block is now called twice -- once
-        # with no args (digest) and once with sections=["anchor"]. Assert on
-        # the call args so each call renders its own distinguishable text.
-        def _fake_memory(*args, **kwargs):
-            if kwargs.get("sections") == ["anchor"]:
-                return "ANCHOR BLOCK"
-            return "DIGEST BLOCK"
-
-        monkeypatch.setattr(
-            session_manifest, "build_workspace_memory_block", _fake_memory
-        )
-        # Neutralize the two blocks the assembler runs between the contract
-        # index and workspace-memory blocks that are NOT under test here: task
-        # notifications and schedule reconciliation both do live I/O (DB /
-        # crontab) and must not leak environment-dependent content into this
-        # deterministic join test.
-        monkeypatch.setattr(
-            session_manifest, "build_task_notifications_block", lambda: ""
+            session_manifest, "build_recurring_work_block", lambda: "RECURRING BLOCK"
         )
         monkeypatch.setattr(
-            session_manifest, "build_schedule_reconciliation_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_schedule_suspension_block", lambda: ""
+            session_manifest, "build_workspace_memory_block",
+            lambda *a, **kw: "ANCHOR BLOCK",
         )
 
         result = build_session_context()
         assert result == (
-            "ENV BLOCK\n\nCAPS BLOCK\n\nPROJ BLOCK\n\nCONTRACTS BLOCK\n\n"
-            "DIGEST BLOCK\n\nANCHOR BLOCK"
+            "ENV BLOCK\n\nCAPS BLOCK\n\nPROJ BLOCK\n\nRECURRING BLOCK\n\n"
+            "ANCHOR BLOCK"
         ), (
             "Blocks must be joined with exactly one blank line separator -- "
             "markdown convention; agents render this as paragraph breaks. "
             "What I can run here sits right after Where I am (same "
             "operational-setup pair, different freshness), then Projects, "
-            "then the Contract Index. Workspace Memory is now two calls: "
-            "the digest, then the anchors. Pending approvals are no longer "
-            "part of the manifest."
+            "then Recurring work, then the durable memory anchors. Pending "
+            "approvals and the Contract Index are no longer part of the "
+            "manifest."
         )
         assert "[ACTIONABLE]" not in result
 
-    def test_workspace_memory_called_twice_disjoint_sections(self, monkeypatch):
-        """Bug 2: the assembler calls build_workspace_memory_block twice --
-        once with no sections (digest) and once with sections=["anchor"] --
-        so the orchestrator receives both without duplicating either."""
+    def test_workspace_memory_called_once_with_anchor_sections(self, monkeypatch):
+        """The transversal digest call was retired (its per-project count
+        moved onto the Projects block); only the anchor-sections call
+        remains."""
         monkeypatch.setattr(session_manifest, "build_where_i_am_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_capabilities_block", lambda: "")
         monkeypatch.setattr(session_manifest, "build_projects_context_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_contracts_index_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_task_notifications_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_schedule_reconciliation_block", lambda: "")
-        monkeypatch.setattr(session_manifest, "build_schedule_suspension_block", lambda: "")
+        monkeypatch.setattr(session_manifest, "build_recurring_work_block", lambda: "")
 
         calls = []
 
         def _fake_memory(*args, **kwargs):
             calls.append(kwargs.get("sections"))
-            return "DIGEST" if kwargs.get("sections") is None else "ANCHORS"
+            return "ANCHORS"
 
         monkeypatch.setattr(session_manifest, "build_workspace_memory_block", _fake_memory)
 
         result = build_session_context()
-        assert calls == [None, ["anchor"]], (
-            "Expected exactly two calls: digest (no sections) then "
-            "anchor-only (sections=['anchor']), in that order."
+        assert calls == [["anchor"]], (
+            "Expected exactly one call, anchor-only (sections=['anchor'])."
         )
-        assert result == "DIGEST\n\nANCHORS"
+        assert result == "ANCHORS"
 
     def test_skips_empty_blocks_in_join(self, monkeypatch):
         """Empty blocks must not leave dangling blank lines in the output."""
@@ -427,30 +409,16 @@ class TestBuildSessionContext:
             session_manifest, "build_projects_context_block", lambda: ""
         )
         monkeypatch.setattr(
-            session_manifest, "build_contracts_index_block", lambda: ""
+            session_manifest, "build_recurring_work_block", lambda: ""
         )
-        monkeypatch.setattr(
-            session_manifest, "build_task_notifications_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_schedule_reconciliation_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_schedule_suspension_block", lambda: ""
-        )
-        # Called twice by the assembler (digest, then sections=["anchor"]);
-        # accept both call shapes and return distinct text for each so the
-        # join is unambiguous.
         monkeypatch.setattr(
             session_manifest,
             "build_workspace_memory_block",
-            lambda *a, **kw: (
-                "ANCHOR BLOCK" if kw.get("sections") == ["anchor"] else "DIGEST BLOCK"
-            ),
+            lambda *a, **kw: "ANCHOR BLOCK",
         )
 
         result = build_session_context()
-        assert result == "ENV BLOCK\n\nDIGEST BLOCK\n\nANCHOR BLOCK"
+        assert result == "ENV BLOCK\n\nANCHOR BLOCK"
         assert "\n\n\n" not in result, (
             "Triple-newline indicates an empty block sneaked into the join."
         )
@@ -466,19 +434,8 @@ class TestBuildSessionContext:
             session_manifest, "build_projects_context_block", lambda: ""
         )
         monkeypatch.setattr(
-            session_manifest, "build_contracts_index_block", lambda: ""
+            session_manifest, "build_recurring_work_block", lambda: ""
         )
-        monkeypatch.setattr(
-            session_manifest, "build_task_notifications_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_schedule_reconciliation_block", lambda: ""
-        )
-        monkeypatch.setattr(
-            session_manifest, "build_schedule_suspension_block", lambda: ""
-        )
-        # Called twice by the assembler (digest, then sections=["anchor"]);
-        # accept both call shapes.
         monkeypatch.setattr(
             session_manifest, "build_workspace_memory_block", lambda *a, **kw: ""
         )
@@ -923,167 +880,6 @@ class TestProjectsBlockDeduplicatesAtTheSource:
         assert block.count("nfi-oro-com") == 1, block
         assert "unresolved" not in block
         assert "### nfi" not in block
-
-
-# ---------------------------------------------------------------------------
-# build_contracts_index_block
-# ---------------------------------------------------------------------------
-
-class TestBuildContractsIndexBlock:
-    """Static surface -> contract_sections index read from surface-routing.json.
-
-    Tests patch _load_surface_routing to keep the unit isolated from disk.
-    """
-
-    def test_renders_surface_to_sections(self, monkeypatch):
-        data = {
-            "surfaces": {
-                "iac": {
-                    "primary_agent": "platform-architect",
-                    "contract_sections": ["project_identity", "stack", "git"],
-                },
-                "workspace": {
-                    "primary_agent": "gaia-operator",
-                    "contract_sections": ["project_identity", "workspace_repos"],
-                },
-            }
-        }
-        monkeypatch.setattr(
-            session_manifest, "_load_surface_routing", lambda: data
-        )
-        block = session_manifest.build_contracts_index_block()
-        assert "## Project Context — Contract Index (per surface)" in block
-        assert "- iac (platform-architect) → project_identity, stack, git" in block
-        assert (
-            "- workspace (gaia-operator) → project_identity, workspace_repos"
-            in block
-        )
-        # Section CONTENTS are never emitted -- only the names. Sanity: the
-        # block is short (names only), not a dump of section bodies.
-        assert "→" in block
-
-    def test_skips_surface_without_contract_sections(self, monkeypatch):
-        data = {
-            "surfaces": {
-                "iac": {
-                    "primary_agent": "platform-architect",
-                    "contract_sections": ["project_identity"],
-                },
-                "broken": {"primary_agent": "x"},  # no contract_sections
-            }
-        }
-        monkeypatch.setattr(
-            session_manifest, "_load_surface_routing", lambda: data
-        )
-        block = session_manifest.build_contracts_index_block()
-        assert "iac" in block
-        assert "broken" not in block
-
-    def test_agent_optional(self, monkeypatch):
-        data = {
-            "surfaces": {
-                "iac": {"contract_sections": ["project_identity"]},
-            }
-        }
-        monkeypatch.setattr(
-            session_manifest, "_load_surface_routing", lambda: data
-        )
-        block = session_manifest.build_contracts_index_block()
-        assert "- iac → project_identity" in block
-
-    def test_empty_config_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            session_manifest, "_load_surface_routing", lambda: {}
-        )
-        assert session_manifest.build_contracts_index_block() == ""
-
-    def test_no_surfaces_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(
-            session_manifest, "_load_surface_routing", lambda: {"version": "1"}
-        )
-        assert session_manifest.build_contracts_index_block() == ""
-
-    def test_failsafe_when_loader_raises(self, monkeypatch):
-        def _boom():
-            raise RuntimeError("boom")
-
-        monkeypatch.setattr(session_manifest, "_load_surface_routing", _boom)
-        assert session_manifest.build_contracts_index_block() == ""
-
-    def test_overflow_drops_tail_with_footer(self, monkeypatch):
-        # Many surfaces with long section lists to force the budget trim.
-        surfaces = {
-            f"surface_{i}": {
-                "primary_agent": f"agent_{i}",
-                "contract_sections": [f"section_{j}" for j in range(12)],
-            }
-            for i in range(20)
-        }
-        monkeypatch.setattr(
-            session_manifest, "_load_surface_routing", lambda: {"surfaces": surfaces}
-        )
-        block = session_manifest.build_contracts_index_block(max_chars=600)
-        assert len(block) <= 600
-        assert "more, use 'gaia context get-contract --section <s>'" in block
-
-    def test_real_config_has_all_surfaces(self, tmp_path, monkeypatch):
-        """Integration: against a DB seeded from the real agent frontmatters,
-        all 7 surfaces land.
-
-        Routing moved from config/surface-routing.json (retired, git-rm'd) to
-        the surface_routing table, seeded from each agent's `routing:`
-        frontmatter block. Seed a temp DB the same way tests/tools/test_surface_router.py
-        does (bootstrap_gaia_schema + seed_surface_routing_from_agents) and
-        point GAIA_DATA_DIR at it so _load_surface_routing's real DB-backed
-        loader resolves it, exercising the production path end to end.
-        """
-        import sys as _sys
-
-        repo_root = Path(__file__).resolve().parents[4]
-        if str(repo_root) not in _sys.path:
-            _sys.path.insert(0, str(repo_root))
-        from tests.fixtures.db_helpers import (
-            bootstrap_gaia_schema,
-            seed_surface_routing_from_agents,
-        )
-
-        db = tmp_path / "gaia.db"
-        bootstrap_gaia_schema(db)
-        seed_surface_routing_from_agents(db)
-        monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
-
-        block = session_manifest.build_contracts_index_block()
-        # The seeded surface_routing table defines these 7 surfaces.
-        for surface in (
-            "live_runtime", "gitops_desired_state", "iac", "app_ci_tooling",
-            "planning_specs", "gaia_system", "workspace",
-        ):
-            assert surface in block, f"missing surface {surface}"
-
-    def test_overflow_footer_reserved_even_when_tight(self, monkeypatch):
-        """FIX (b): the footer must land even when the cap is so tight that the
-        old ``if len(block)+len(footer) <= max_chars`` guard would have dropped
-        it. Footer space is reserved BEFORE trimming, so a silent tail-drop with
-        no footer can never happen. Regression for the drop-without-footer bug.
-        """
-        surfaces = {
-            f"surface_{i}": {
-                "primary_agent": f"agent_{i}",
-                "contract_sections": [f"section_{j}" for j in range(30)],
-            }
-            for i in range(40)
-        }
-        monkeypatch.setattr(
-            session_manifest, "_load_surface_routing", lambda: {"surfaces": surfaces}
-        )
-        # A cap that leaves almost no slack after the last kept entry.
-        for cap in (120, 200, 350, 500):
-            block = session_manifest.build_contracts_index_block(max_chars=cap)
-            assert block, f"cap={cap} produced empty block"
-            assert "more, use 'gaia context get-contract --section <s>'" in block, (
-                f"cap={cap}: overflow dropped entries WITHOUT a footer"
-            )
-            assert len(block) <= cap, f"cap={cap}: block exceeded cap"
 
 
 # ---------------------------------------------------------------------------

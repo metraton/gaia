@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import platform
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -369,14 +370,13 @@ def build_workspace_memory_block(
     grouped by ``memory.initiative``, ordered by recency, top-K initiatives
     with global + per-initiative overflow. It no longer anchors to the launch
     directory -- the digest is identical whether the session starts at a
-    workspace root or inside one project.
-
-    The orchestrator's SessionStart assembler (``build_session_context``)
-    calls this builder TWICE: once with no ``sections`` for the digest above,
-    and once more with ``sections=["anchor"]`` for the durable "About you /
-    What I know" anchors (``class='anchor'``) -- see the ``sections``
-    paragraph below. The two calls query DISJOINT DB classes (``thread`` vs
-    ``anchor``), so nothing is duplicated between the two injected blocks.
+    workspace root or inside one project. The orchestrator's SessionStart
+    assembler no longer calls this no-``sections`` form: the per-project count
+    it produced now sits directly on ``build_projects_context_block``'s own
+    index, next to the name it was always about, so the digest's live-pending
+    corpus is reached by naming a project (``gaia memory get-relevant
+    --initiative <name>``) rather than pushed on every session start. The
+    no-``sections`` form itself is unchanged and still callable directly.
 
     Budget: ``--max-chars`` is raised 800 -> 1500. The old 800 cap, combined
     with the retired cwd anchoring, truncated the block to a SINGLE project as
@@ -388,13 +388,13 @@ def build_workspace_memory_block(
 
     ``sections`` (optional): a subset of ``carry_forward``/``anchor``/
     ``thread_open``. When set, the CLI uses the class/status section renderer
-    instead of the digest. The orchestrator's SessionStart assembler passes
-    ``["anchor"]`` so its caller receives only the durable "About you / What
-    I know" anchors -- never the session-scoped
-    ``carry_forward``/``thread_open`` state, which is instead carried by the
-    no-``sections`` digest call. (Dispatched subagents get their anchors from
-    the kernel's ``build_memory_block``, not from this builder.) When set, it
-    is forwarded verbatim as ``--sections`` to the CLI.
+    instead of the digest. The orchestrator's SessionStart assembler calls
+    this builder ONCE, with ``sections=["anchor"]``, for the durable "What the
+    user has established" anchors (``class='anchor'``) -- never the
+    session-scoped ``carry_forward``/``thread_open`` state. (Dispatched
+    subagents get their anchors from the kernel's ``build_memory_block``, not
+    from this builder.) When set, ``sections`` is forwarded verbatim as
+    ``--sections`` to the CLI.
 
     Fail-safe: any error (subprocess timeout, non-zero exit, missing CLI,
     empty output) returns "". SessionStart must not block on memory.
@@ -420,16 +420,12 @@ def build_workspace_memory_block(
             "--max-chars", "1500",
         ]
         if sections:
-            # This helper is called TWICE by the SessionStart assembler: once
-            # with no sections (the digest, which carries the recoverable-
-            # pointer footer), once with sections=["anchor"] for the durable
-            # "About you / What I know" block. --no-pointer suppresses the
-            # CLI's footer on this second call only, so the guide is emitted
-            # once per manifest instead of twice verbatim -- and so it never
-            # sits under a section its write/curate verbs (close a thread,
-            # graduate, reclassify) don't apply to. A direct/agent invocation
-            # of `gaia memory get-relevant --sections ...` outside SessionStart
-            # never passes this flag and keeps the footer.
+            # --no-pointer suppresses the CLI's recoverable-pointer footer for
+            # this section-scoped call, so it never sits under a section whose
+            # write/curate verbs (close a thread, graduate, reclassify) don't
+            # apply to it. A direct/agent invocation of `gaia memory
+            # get-relevant --sections ...` outside SessionStart never passes
+            # this flag and keeps the footer.
             cmd += ["--sections", ",".join(sections), "--no-pointer"]
 
         result = subprocess.run(
@@ -645,6 +641,16 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     overflow, live projects are dropped from the tail and a recoverable footer
     stating the dropped count ALWAYS lands (footer space, plus the verb
     pointer, is reserved before trimming). Fail-safe: any error returns "".
+
+    Each name carries a live-pending count in parentheses -- ``aos-iac (3)`` --
+    when ``gaia.store.reader.count_pending_by_initiative`` finds at least one
+    live-pending thread (``class='thread'``, ``status`` in
+    ``carry_forward``/``open``) whose ``initiative`` normalizes to that
+    project's displayed name; a project with nothing pending carries no
+    annotation at all. This replaces the retired transversal digest, the
+    SessionStart block that used to list live-pending threads by project on
+    its own: the count is a signal to ask about, not content to read here, so
+    it sits beside the name rather than pushing its own block.
     """
     # Ensure the package root (which holds the `gaia/` package) is importable.
     # At real SessionStart, session_start.py already inserts it; this self-heal
@@ -784,7 +790,7 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
         roots[ws] = _workspace_root([e["path"] for e in live if e["ws"] == ws])
 
     total_available = len(live)
-    header = "## Project Context — Projects"
+    header = "## Projects I can reach"
     # This is the first command a newly-born orchestrator is likely to try --
     # the bare `gaia` token the guard categorically rejects (it accepts only
     # an absolute, guard-verified path) must never be what it suggests here.
@@ -804,6 +810,38 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
                 return base
         return e["name"]
 
+    # Live-pending count per project, keyed exactly like the memory reader's
+    # own initiative bucketing (gaia.store.writer.normalize_initiative) so a
+    # count shown here always equals `gaia memory get-relevant --initiative
+    # <name>`'s row count for that same project -- the retired transversal
+    # digest is not gone, it moved next to the name it was always about.
+    # Zero-count projects show no annotation at all: a project with nothing
+    # pending needs no signal (fail-safe -- any error here leaves every
+    # project unannotated, never breaks the index).
+    from gaia.store.writer import normalize_initiative
+
+    pending_counts: dict = {}
+    try:
+        from gaia.store import reader as _reader
+
+        by_ws_inits: dict = {}
+        for e in live:
+            key = normalize_initiative(_display_name(e))
+            if key:
+                by_ws_inits.setdefault(e["ws"], set()).add(key)
+        for ws, inits in by_ws_inits.items():
+            counts = _reader.count_pending_by_initiative(ws, sorted(inits))
+            for key, n in counts.items():
+                pending_counts[(ws, key)] = n
+    except Exception as exc:
+        logger.debug("project pending counts failed (non-fatal): %s", exc)
+
+    def _label_with_count(e: dict) -> str:
+        name = _display_name(e)
+        key = normalize_initiative(name)
+        count = pending_counts.get((e["ws"], key), 0) if key else 0
+        return f"{name} ({count})" if count else name
+
     def _render_body(items: list[dict]) -> str:
         parts = [header]
         for ws in group_order:
@@ -811,7 +849,7 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
             if not group:
                 continue
             root = roots.get(ws) or ""
-            names = ", ".join(_display_name(e) for e in group)
+            names = ", ".join(_label_with_count(e) for e in group)
             lines = [f"### {ws} — {root}" if root else f"### {ws}", names]
             for e in group:
                 if not e["desc"]:
@@ -860,124 +898,6 @@ def build_projects_context_block(max_chars: int = 8000) -> str:
     return block
 
 
-def _load_surface_routing() -> dict:
-    """Best-effort load of the surface routing config. Never raises.
-
-    Routing moved from ``config/surface-routing.json`` (retired, git-rm'd) to
-    the ``surface_routing`` table in gaia.db, seeded from each agent's
-    ``routing:`` frontmatter block by ``tools/scan/seed_surface_routing.py``.
-    This delegates to ``tools.context.surface_router.load_surface_routing_config``
-    -- the same DB-backed loader ``surface_router.classify_surfaces`` uses --
-    so this builder and the matcher never drift on where routing data comes
-    from.
-
-    Returns the same in-memory shape the retired JSON produced:
-    ``{version, reconnaissance_agent, surfaces: {name: {primary_agent,
-    contract_sections, ...}}}``. Returns ``{}`` on any import/query failure --
-    callers treat an empty dict (or a degraded ``surfaces: {}``) as "no
-    routing config" and emit no block.
-    """
-    try:
-        pkg_root = Path(__file__).resolve().parents[3]
-        tools_dir = pkg_root / "tools" / "context"
-        if str(tools_dir) not in sys.path:
-            sys.path.insert(0, str(tools_dir))
-        from surface_router import load_surface_routing_config
-        return load_surface_routing_config()
-    except Exception:
-        return {}
-
-
-def build_contracts_index_block(max_chars: int = 2000) -> str:
-    """Render a compact ``surface -> contract_sections`` index for SessionStart.
-
-    DB-backed: reads the ``surface_routing`` table via ``_load_surface_routing``
-    (which delegates to ``load_surface_routing_config``), not the retired
-    ``config/surface-routing.json``. It tells the orchestrator which
-    project-context sections each specialist surface will receive when
-    dispatched -- section NAMES only, never their contents. This lets the
-    orchestrator reason about what a target surface can see before spending a
-    subagent, without duplicating the (potentially large) section bodies here.
-
-    Format, one line per surface::
-
-        - iac (platform-architect) → project_identity, stack, git, ...
-
-    The ``primary_agent`` is included in parentheses when present because it is
-    the concrete handle the orchestrator dispatches to; it is cheap (one token)
-    and makes the surface actionable. Surfaces with no ``contract_sections`` are
-    skipped -- an empty section list carries no signal.
-
-    Budget: bounded to ``max_chars`` (default 2000). The full 7-surface index is
-    ~1.25 KB today and is meant to land complete; the bound is a guard rail, not
-    a target. On overflow, whole surface lines are dropped from the tail with a
-    recoverable footer that names a verb actually reachable from the
-    orchestrator's lane (``gaia context get-contract --section <s>``) -- the
-    prior footer ("inspect the DB-backed surface_routing registry") named no
-    command the orchestrator's CLI lane can run; a dead pointer teaches it to
-    ignore pointers. Fail-safe: any error, a missing file, or an absent
-
-    ``surfaces`` map returns "".
-    """
-    try:
-        data = _load_surface_routing()
-    except Exception as exc:
-        logger.debug("build_contracts_index_block load failed: %s", exc)
-        return ""
-
-    surfaces = data.get("surfaces") if isinstance(data, dict) else None
-    if not isinstance(surfaces, dict) or not surfaces:
-        return ""
-
-    entries: list[tuple[str, str, list[str]]] = []
-    for name, cfg in surfaces.items():
-        if not isinstance(cfg, dict):
-            continue
-        sections = cfg.get("contract_sections")
-        if not isinstance(sections, list) or not sections:
-            continue
-        section_names = [str(s) for s in sections if isinstance(s, str) and s]
-        if not section_names:
-            continue
-        agent = cfg.get("primary_agent")
-        agent = str(agent) if isinstance(agent, str) and agent else ""
-        entries.append((str(name), agent, section_names))
-
-    if not entries:
-        return ""
-
-    total_available = len(entries)
-    header = "## Project Context — Contract Index (per surface)"
-
-    def _render(items: list[tuple[str, str, list[str]]]) -> str:
-        lines = [header, ""]
-        for name, agent, sections in items:
-            label = f"{name} ({agent})" if agent else name
-            lines.append(f"- {label} → {', '.join(sections)}")
-        return "\n".join(lines)
-
-    block = _render(entries)
-    # Reserve the footer's worst-case width before trimming so a tail-drop can
-    # never happen silently -- the footer that states how many surfaces were
-    # omitted always lands. See FIX (b).
-    if len(block) > max_chars:
-        def _footer(n: int) -> str:
-            return f"\n... ({n} more, use 'gaia context get-contract --section <s>')"
-
-        footer_budget = len(_footer(total_available))
-        trim_target = max(0, max_chars - footer_budget)
-
-        kept = list(entries)
-        while kept and len(_render(kept)) > trim_target:
-            kept.pop()
-        dropped = total_available - len(kept)
-        block = _render(kept)
-        if dropped > 0:
-            block = block + _footer(dropped)
-
-    return block
-
-
 def build_task_notifications_block(
     workspace: Optional[str] = None,
     limit: int = 10,
@@ -1015,7 +935,7 @@ def build_task_notifications_block(
         if not rows:
             return ""
 
-        lines = ["## Task Notifications (unread)"]
+        lines = ["## Unread task notifications"]
         for r in rows:
             sid = r.get("session_id") or "-"
             when = r.get("created_at") or "?"
@@ -1102,7 +1022,7 @@ def build_schedule_suspension_block(
         lines: list[str] = []
 
         if lapsed:
-            lines.append("## Scheduled Tasks — SUSPENSION LAPSED (running again)")
+            lines.append("## SUSPENSION LAPSED (running again)")
             for s in lapsed:
                 who = s.get("task_name") or "all tasks"
                 resumed = ", ".join(s.get("resumed_names") or [])
@@ -1122,7 +1042,7 @@ def build_schedule_suspension_block(
         if live:
             if lapsed:
                 lines.append("")
-            lines.append("## Scheduled Tasks (suspended)")
+            lines.append("## Schedule suspended")
             for s in live:
                 who = s.get("task_name") or "all tasks"
                 window = ("suspended indefinitely (no deadline)"
@@ -1182,7 +1102,7 @@ def build_schedule_reconciliation_block(
         if plan.in_sync and not daemon_down and not plan.invalid:
             return ""  # zero-noise: everything reconciled
 
-        lines = [f"## Scheduled Tasks (drift on {plan.machine})"]
+        lines = [f"## Schedule drift on {plan.machine}"]
         if plan.missing:
             names = ", ".join(m["name"] for m in plan.missing)
             lines.append(f"- {len(plan.missing)} not installed here: {names}")
@@ -1209,6 +1129,61 @@ def build_schedule_reconciliation_block(
         return ""
 
 
+_RECURRING_HEADER_RE = re.compile(r"(?m)^## (.+)$")
+
+
+def _demote_recurring_headers(text: str) -> str:
+    """Turn a sub-builder's own ``## `` header line(s) into a bold sub-label.
+
+    ``build_schedule_suspension_block``, ``build_schedule_reconciliation_block``
+    and ``build_task_notifications_block`` each keep their OWN standalone
+    ``## ...`` header for direct/unit use -- calling one alone (as their own
+    tests do) still returns a normal top-level block. ``build_recurring_work_block``
+    collapses all three (plus a lapsed suspension, which the suspension
+    builder can emit as a second embedded header) under ONE shared header, so
+    each sub-block's own header is demoted here to a bold label instead of
+    surviving as a second (or fourth) top-level ``##`` line.
+    """
+    return _RECURRING_HEADER_RE.sub(r"**\1**", text)
+
+
+def build_recurring_work_block(workspace: Optional[str] = None) -> str:
+    """Render "## Recurring work and what it left me": one shared header over
+    four independently-triggered notices about unattended scheduled work.
+
+    Collapses what used to be four separate top-level blocks -- schedule
+    drift, a lapsed suspension, live suspensions, and unread task
+    notifications -- under a single header. Only the header is shared: each
+    notice keeps its OWN trigger condition exactly as its own builder computes
+    it (see ``build_schedule_reconciliation_block``, ``build_schedule_suspension_block``,
+    ``build_task_notifications_block``), and this emits "" when every one of
+    them is empty -- the umbrella never appears on its own.
+
+    Order is severity, not build order: a LAPSED suspension leads -- it is the
+    one notice here that changed what actually RUNS (something restarted with
+    no one asking just now), so it must never be buried under quieter items.
+    Live suspensions follow (deliberate, already understood -- just a reminder
+    of how long they have left), then schedule drift (Gaia's desired state
+    disagreeing with this machine), then unread task notifications last
+    (purely informational -- whatever needed consent already resolved through
+    `claude --resume`).
+    """
+    try:
+        ws = workspace or _read_workspace_identity()
+        parts = [
+            build_schedule_suspension_block(ws),
+            build_schedule_reconciliation_block(ws),
+            build_task_notifications_block(ws),
+        ]
+        demoted = [_demote_recurring_headers(p) for p in parts if p]
+        if not demoted:
+            return ""
+        return "## Recurring work and what it left me\n\n" + "\n\n".join(demoted)
+    except Exception as exc:
+        logger.debug("build_recurring_work_block failed (non-fatal): %s", exc)
+        return ""
+
+
 # ---------------------------------------------------------------------------
 # Assembler
 # ---------------------------------------------------------------------------
@@ -1228,62 +1203,36 @@ def build_session_context() -> str:
             # both are the operational-setup pair the orchestrator reads
             # before anything project-specific.
             build_capabilities_block(),
-            # Project Context — Projects: the index of projects that have active
-            # project context (a project_identity contract), each as name +
-            # on-disk path. Emitted immediately after so it reads as part of
-            # the project-context setup the orchestrator receives -- it lets a
+            # Projects I can reach: the index of projects that have active
+            # project context (a project_identity contract), each as a name
+            # (plus a live-pending count when one exists) and on-disk path.
+            # Emitted immediately after so it reads as part of the
+            # project-context setup the orchestrator receives -- it lets a
             # bare mention in memory (e.g. "AOS", "nfi") resolve to a path the
-            # orchestrator already holds, without spending a subagent.
+            # orchestrator already holds, without spending a subagent. The
+            # per-surface Contract Index that used to follow this block was
+            # retired: it echoed agent_contract_permissions.can_read without
+            # ever gating what a dispatched agent could actually request
+            # (gaia context get-contract never checked it), so it enabled no
+            # orchestrator decision -- confirmed unused across a full working
+            # session (936 measured chars, zero reads).
             build_projects_context_block(),
-            # Project Context — Contract Index: which project-context sections
-            # each specialist surface receives when dispatched (surface ->
-            # contract_sections, DB-backed via surface_routing). Grouped right
-            # after Projects because both are static "project-context setup"
-            # blocks the orchestrator reads before routing/dispatch decisions --
-            # this was implemented and tested (42a6231) but never wired into
-            # the assembler until this fix.
-            build_contracts_index_block(),
-            # Unread headless-task notifications: a compact list of reports left
-            # by scheduled tasks (task_name + headline + time + resumable
-            # session_id). Emitted after the static project-context setup so the
-            # user sees what ran unattended and can `claude --resume` to grant
-            # pending T3s. Zero-noise: emits nothing when there are no unread rows.
-            build_task_notifications_block(),
-            # Scheduled-task drift: DETECT-ONLY (T0). When the desired state in
-            # gaia.db diverges from this machine's local scheduler, surface a
-            # compact "N not installed here -> gaia schedule sync" line. Zero-
-            # noise when reconciled. The hook never writes the scheduler -- that
-            # is the T3 `gaia schedule sync` the user runs after seeing this.
-            build_schedule_reconciliation_block(),
-            # Scheduled-task suspensions: DETECT-ONLY (T0). A LIVE suspension is
-            # announced with the time it has left, so nothing stays switched off
-            # by being forgotten; a LAPSED one is announced first and marked,
-            # because it means tasks are running again. Placed after the drift
-            # block so the two read together: the lapse says WHAT changed in
-            # desired state, the drift block says whether this machine still
-            # matches it. Zero-noise when nothing is suspended. Like the drift
-            # block it never writes the scheduler -- reading is what expires a
-            # suspension, and expiry restores desired state only.
-            build_schedule_suspension_block(),
-            # Pending approvals are no longer surfaced here. Cross-session
-            # surfacing of pendings (the [ACTIONABLE] block) was removed: the
-            # DB remains the pending store, TTL hygiene keeps it clean, and the
-            # user inspects/acts on pendings on demand via `gaia approvals`.
+            # Recurring work and what it left me: schedule drift, a lapsed
+            # suspension, live suspensions and unread task notifications,
+            # collapsed under one header (see build_recurring_work_block).
+            # Placed after the static project-context setup so the user sees
+            # what ran or changed unattended before anything project-specific.
+            build_recurring_work_block(),
             # Workspace Memory is injected last so the orchestrator sees the
-            # operational state (environment, projects, schedule) before the
-            # curated knowledge it should anchor against. Two calls, DISJOINT classes
-            # so neither duplicates the other's tokens:
-            #   1. No `sections` -> the transversal initiative digest, the
-            #      live-pending worklist (class='thread', status in
-            #      carry_forward/open).
-            #   2. `sections=["anchor"]` -> the durable "About you / What I
-            #      know" anchors (class='anchor'). This second call is the
-            #      Bug-2 fix: d2fba1c (15 jul) moved the orchestrator's default
-            #      call from the three-section renderer to the digest-only
-            #      call above, dropping the anchors with no replacement. This
-            #      restores them via the disjoint class so the orchestrator's
-            #      durable "about you" facts are never silently lost again.
-            build_workspace_memory_block(),
+            # operational state (environment, projects, recurring work)
+            # before the curated knowledge it should anchor against. Only the
+            # durable "What the user has established" anchors
+            # (class='anchor') are injected here now -- the transversal
+            # live-pending digest (class='thread') this used to call with no
+            # `sections` was retired: its per-project counts moved onto the
+            # Projects block above, right next to the name they were always
+            # about, so a pending worklist is reached by naming a project
+            # rather than pushed on every session start.
             build_workspace_memory_block(sections=["anchor"]),
         ]
         non_empty = [b for b in blocks if b]
