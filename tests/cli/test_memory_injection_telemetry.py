@@ -196,7 +196,7 @@ class TestDigestModeInjection:
 
         assert rc == 0
         assert payload["items"][0]["name"] == "gaia_open"
-        assert "Pendientes vivos por proyecto" in payload["block"]
+        assert "Live pending across every project" in payload["block"]
 
 
 # ---------------------------------------------------------------------------

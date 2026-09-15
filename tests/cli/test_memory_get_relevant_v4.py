@@ -542,7 +542,7 @@ class TestEmptySectionsOmitHeader:
         assert rc == 0
         payload = json.loads(out)
         block = payload["block"]
-        assert "About you" in block
+        assert "What the user has established" in block
         assert "For this session" not in block
         assert "Open threads" not in block
 
@@ -618,7 +618,7 @@ class TestHeaderStructure:
         payload = json.loads(out)
         block = payload["block"]
         assert "## Memory — For this session" in block
-        assert "## Memory — About you / What I know" in block
+        assert "## What the user has established" in block
         assert "## Memory — Open threads" in block
 
 
@@ -653,7 +653,7 @@ class TestSectionsFilter:
         assert rc == 0
         payload = json.loads(out)
         block = payload["block"]
-        assert "## Memory — About you / What I know" in block
+        assert "## What the user has established" in block
         assert "## Memory — For this session" not in block
         assert "## Memory — Open threads" not in block
         # items are anchors only
@@ -668,7 +668,7 @@ class TestSectionsFilter:
         assert rc == 0
         block = json.loads(out)["block"]
         assert "## Memory — For this session" in block
-        assert "## Memory — About you / What I know" in block
+        assert "## What the user has established" in block
         assert "## Memory — Open threads" in block
 
     def test_sections_omitted_now_renders_digest_not_sections(self, tmp_db, capsys):
@@ -680,8 +680,8 @@ class TestSectionsFilter:
         out = capsys.readouterr().out
         assert rc == 0
         block = json.loads(out)["block"]
-        assert "## Memory — Pendientes vivos por proyecto" in block
-        assert "## Memory — About you / What I know" not in block
+        assert "## Memory — Live pending across every project" in block
+        assert "## What the user has established" not in block
 
     def test_sections_empty_string_falls_back_to_all(self, tmp_db, capsys):
         """A blank/whitespace --sections is a safe fallback to all sections."""
@@ -691,7 +691,7 @@ class TestSectionsFilter:
         assert rc == 0
         block = json.loads(out)["block"]
         assert "## Memory — For this session" in block
-        assert "## Memory — About you / What I know" in block
+        assert "## What the user has established" in block
         assert "## Memory — Open threads" in block
 
     def test_sections_unknown_token_ignored_falls_back_to_all(self, tmp_db, capsys):
@@ -701,7 +701,7 @@ class TestSectionsFilter:
         out = capsys.readouterr().out
         assert rc == 0
         block = json.loads(out)["block"]
-        assert "## Memory — About you / What I know" in block
+        assert "## What the user has established" in block
         assert "## Memory — For this session" in block
 
     def test_sections_multi_subset(self, tmp_db, capsys):
@@ -711,6 +711,6 @@ class TestSectionsFilter:
         out = capsys.readouterr().out
         assert rc == 0
         block = json.loads(out)["block"]
-        assert "## Memory — About you / What I know" in block
+        assert "## What the user has established" in block
         assert "## Memory — Open threads" in block
         assert "## Memory — For this session" not in block

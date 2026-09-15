@@ -122,7 +122,7 @@ class TestMemoryDigestCrossProject:
         # All three initiatives are present in the same digest (transversal).
         initiatives = {i["initiative"] for i in payload["items"]}
         assert {"gaia", "balance", "branchkinect"} <= initiatives
-        assert "Pendientes vivos por proyecto" in block
+        assert "Live pending across every project" in block
         assert "[gaia]" in block and "[balance]" in block
 
         # Ordered by recency of freshest pending: balance (07-15) first.

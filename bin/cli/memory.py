@@ -1379,7 +1379,7 @@ def _print_memory_pointer(as_json: bool) -> None:
 # if all three are empty the whole block is empty.
 _SECTION_HEADERS = {
     "carry_forward": "## Memory — For this session",
-    "anchor":        "## Memory — About you / What I know",
+    "anchor":        "## What the user has established",
     "thread_open":   "## Memory — Open threads",
 }
 
@@ -1393,7 +1393,13 @@ _SECTION_HEADERS = {
 # ('carry_forward','open'). Anchors (durable "about you" facts), logs, and
 # resolved/snapshot threads are excluded by design -- the digest is a worklist,
 # not a knowledge dump.
-_DIGEST_HEADER = "## Memory — Pendientes vivos por proyecto"
+#
+# No longer auto-injected at SessionStart (its per-project count moved onto
+# the "Projects I can reach" block instead -- see
+# hooks/modules/session/session_manifest.py::build_projects_context_block);
+# this renderer and its header stay reachable through a direct
+# `gaia memory get-relevant` call with no flags.
+_DIGEST_HEADER = "## Memory — Live pending across every project"
 # Top-K initiatives shown in the cross-project digest; the rest roll up into a
 # single "+N proyectos más" overflow line.
 _DIGEST_TOP_K = 10
@@ -1459,7 +1465,7 @@ def _cmd_get_relevant(args) -> int:
       * ``--sections=...`` -> SECTION renderer: the class/status sections
         (carry_forward / anchor / thread_open). This is the subagent-dispatch
         path (``--sections=anchor`` gives a dispatched subagent the durable
-        "About you / What I know" anchors). cwd anchoring is gone here too.
+        "What the user has established" anchors). cwd anchoring is gone here too.
       * (no flag) -> TRANSVERSAL DIGEST: a cross-project worklist grouped by
         the canonical ``memory.initiative`` key. This is the orchestrator's
         SessionStart view -- "what is open, everywhere", independent of the
@@ -1768,7 +1774,7 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
                 section_start = i
                 in_section = True
                 continue
-            if in_section and ln.startswith("## Memory"):
+            if in_section and ln in _SECTION_HEADERS.values():
                 section_end = i
                 break
         if section_start < 0:
@@ -1839,10 +1845,9 @@ def _render_sections(args, workspace: str, as_json: bool) -> int:
     # Recoverable-pointer guidance (P2a). Appended AFTER budget trimming so the
     # pointer is never the line that gets dropped; its length was reserved from
     # max_chars above, so block + pointer still respects the caller's budget.
-    # Suppressed only for the SessionStart assembler's second (anchor-only)
-    # call, which passes --no-pointer -- the first call already emitted this
-    # same guidance once, and "About you / What I know" is not where write/
-    # curate verbs (close a thread, graduate, reclassify) belong.
+    # Suppressed for the SessionStart assembler's anchor-only call, which
+    # passes --no-pointer -- "What the user has established" is not where
+    # write/curate verbs (close a thread, graduate, reclassify) belong.
     if not no_pointer:
         block = block + "\n\n" + _MEMORY_POINTER
 
@@ -3742,7 +3747,7 @@ def register(subparsers):
         help="Comma-separated subset of curated sections to render "
              "(carry_forward,anchor,thread_open). When set, uses the class/"
              "status section renderer -- the subagent-dispatch path passes "
-             "--sections=anchor to inject only 'About you / What I know'. "
+             "--sections=anchor to inject only 'What the user has established'. "
              "When omitted (and no --initiative/--types), the transversal "
              "initiative digest is emitted instead.",
     )
