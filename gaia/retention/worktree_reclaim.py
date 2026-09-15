@@ -341,6 +341,55 @@ def _resolve_brief_id(workspace: str, brief_slug: str, db_path=None) -> int:
         con.close()
 
 
+def _deposit_diff_evidence_to_contract(
+    diff_text: str,
+    *,
+    contract_id: str,
+    worktree_path: Path,
+    db_path,
+) -> dict:
+    """Write *diff_text* as a blob under *contract_id*'s own namespace, then
+    attach its pointer directly to that contract row.
+
+    Mirrors ``_deposit_diff_evidence``'s write-then-attach shape and its
+    write-then-cleanup-on-reject guarantee, but for the no-brief case: the
+    row and blob confirm together or neither exists. Idempotent the same
+    way -- a capture already on the row with the same digest is returned
+    unchanged rather than duplicated, so releasing an already-captured
+    worktree a second time (still dirty, still left in place) does not pile
+    up blobs.
+    """
+    from gaia.evidence.fs import delete_blob, read_blob, write_contract_blob
+    from gaia.store.writer import attach_worktree_capture_to_contract, get_contract_worktree_capture
+
+    payload = diff_text.encode("utf-8")
+    digest = hashlib.sha256(payload).hexdigest()
+
+    existing = get_contract_worktree_capture(contract_id, db_path=db_path)
+    if existing is not None and existing.get("sha256") == digest:
+        existing_payload = read_blob(existing.get("artifact_path", ""))
+        if existing_payload is not None and hashlib.sha256(existing_payload).hexdigest() == digest:
+            return existing
+
+    blob_path, size = write_contract_blob(contract_id, payload, ext=".diff")
+    try:
+        result = attach_worktree_capture_to_contract(
+            contract_id,
+            artifact_path=str(blob_path),
+            sha256=digest,
+            size_bytes=size,
+            worktree_path=str(worktree_path),
+            db_path=db_path,
+        )
+    except Exception:
+        delete_blob(str(blob_path))
+        raise
+    if result is None:
+        delete_blob(str(blob_path))
+        raise ValueError(f"no contract row found for contract_id={contract_id!r}")
+    return result["worktree_capture"]
+
+
 def _deposit_diff_evidence(
     diff_text: str,
     *,
@@ -445,6 +494,7 @@ def reclaim_worktree(
     workspace: Optional[str] = None,
     brief_slug: Optional[str] = None,
     ac_id: Optional[str] = None,
+    contract_id: Optional[str] = None,
     task_id: Optional[str] = None,
     created_by_agent: Optional[str] = None,
     db_path=None,
@@ -469,12 +519,18 @@ def reclaim_worktree(
     Auto-discarding captured work without either is not a choice this
     function makes silently.
 
-    ``workspace``/``brief_slug``/``ac_id`` are OPTIONAL and are never even
-    inspected for an ALREADY-CLEAN worktree: a worktree nobody touched has
-    nothing to attribute a brief/AC to, so demanding them unconditionally
-    (as the CLI used to) forced a real brief and AC onto a release that never
-    needed one. They are required ONLY on the path that actually deposits a
-    diff -- a dirty worktree with any of the three missing returns
+    ``workspace``/``brief_slug``/``ac_id``/``contract_id`` are all OPTIONAL
+    and are never even inspected for an ALREADY-CLEAN worktree: a worktree
+    nobody touched has nothing to attribute anything to, so demanding
+    attribution unconditionally (as the CLI used to) forced a real brief and
+    AC onto a release that never needed one. On the path that actually
+    deposits a diff, exactly one attribution is required, and either
+    satisfies it: the full ``workspace``/``brief_slug``/``ac_id`` triple
+    deposits through the brief/AC evidence lane exactly as before (a PLANNED
+    turn, attributed to its brief); ``contract_id`` alone deposits directly
+    onto that contract row instead (an AD-HOC turn -- every turn has one, no
+    brief required). The brief triple is tried first when both are given, so
+    a planned turn's attribution is unchanged. Neither supplied returns
     ``status: "capture_args_missing"`` without touching the worktree, the
     same "nothing moves until deposit succeeds" guarantee as a genuine
     deposit failure.
@@ -489,7 +545,12 @@ def reclaim_worktree(
 
     ``recycled`` is True only for ``status == "recycled"``. ``reason`` is
     set on every non-recycled status, naming what stopped it or, for
-    ``captured_pending_removal``, why removal was deliberately withheld.
+    ``captured_pending_removal``, why removal was deliberately withheld. On
+    the ``contract_id``-only deposit path, the returned dict also carries
+    ``contract_capture_path`` (the deposited blob's absolute path) --
+    ``evidence_id`` stays ``None`` there, since no ``evidence`` table row was
+    created; retrieve the capture later with
+    ``gaia.store.writer.get_contract_worktree_capture(contract_id)``.
     """
     if not worktree_path.exists():
         return {
@@ -533,7 +594,8 @@ def reclaim_worktree(
             "reason": None,
         }
 
-    if not workspace or not brief_slug or not ac_id:
+    have_brief_triple = bool(workspace and brief_slug and ac_id)
+    if not have_brief_triple and not contract_id:
         return {
             "status": "capture_args_missing",
             "recycled": False,
@@ -541,40 +603,64 @@ def reclaim_worktree(
             "evidence_id": None,
             "reason": (
                 "worktree carries uncommitted changes or unpushed commits; "
-                "workspace/brief_slug/ac_id are required to deposit its diff "
-                "as evidence before any release can proceed -- none supplied"
+                "depositing its diff before any release can proceed requires "
+                "either workspace/brief_slug/ac_id (a planned turn's brief/AC) "
+                "or contract_id (an ad-hoc turn's own contract row) -- neither "
+                "was supplied"
             ),
         }
 
-    try:
-        brief_id = _resolve_brief_id(workspace, brief_slug, db_path=db_path)
-        row = _deposit_diff_evidence(
-            diff_text,
-            workspace=workspace,
-            brief_slug=brief_slug,
-            brief_id=brief_id,
-            ac_id=ac_id,
-            task_id=task_id,
-            created_by_agent=created_by_agent,
-            db_path=db_path,
-        )
-    except Exception as exc:  # noqa: BLE001 -- the worktree must stay untouched
-        return {
-            "status": "deposit_failed",
-            "recycled": False,
-            "captured": False,
-            "evidence_id": None,
-            "reason": f"evidence deposit failed: {exc}",
-        }
+    if have_brief_triple:
+        try:
+            brief_id = _resolve_brief_id(workspace, brief_slug, db_path=db_path)
+            row = _deposit_diff_evidence(
+                diff_text,
+                workspace=workspace,
+                brief_slug=brief_slug,
+                brief_id=brief_id,
+                ac_id=ac_id,
+                task_id=task_id,
+                created_by_agent=created_by_agent,
+                db_path=db_path,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the worktree must stay untouched
+            return {
+                "status": "deposit_failed",
+                "recycled": False,
+                "captured": False,
+                "evidence_id": None,
+                "reason": f"evidence deposit failed: {exc}",
+            }
+        evidence_id = row["id"]
+        extra = {}
+    else:
+        try:
+            capture = _deposit_diff_evidence_to_contract(
+                diff_text,
+                contract_id=contract_id,
+                worktree_path=worktree_path,
+                db_path=db_path,
+            )
+        except Exception as exc:  # noqa: BLE001 -- the worktree must stay untouched
+            return {
+                "status": "deposit_failed",
+                "recycled": False,
+                "captured": False,
+                "evidence_id": None,
+                "reason": f"contract capture deposit failed: {exc}",
+            }
+        evidence_id = None
+        extra = {"contract_capture_path": capture["artifact_path"]}
 
     return {
         "status": "captured_pending_removal",
         "recycled": False,
         "captured": True,
-        "evidence_id": row["id"],
+        "evidence_id": evidence_id,
+        **extra,
         "reason": (
             "worktree carried uncommitted changes or unpushed commits; its diff "
-            "is durably captured (evidence_id above), but forced removal is "
+            "is durably captured, but forced removal is "
             "deliberately withheld -- no unforgeable, content-bound exemption "
             "for forcing a dirty worktree's removal exists yet (see module "
             "docstring). Left in place pending a human/curator decision."
