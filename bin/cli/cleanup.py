@@ -423,11 +423,12 @@ def _prune_rejected_turns(root: Optional[Path], label: str, dry_run: bool) -> li
 def _prune_worktrees(root: Path, label: str, dry_run: bool) -> list:
     """Sweep abandoned agentic worktrees registered against the repo at *root*.
 
-    Delegates the entire collectibility decision AND the fixed sweep
-    identity to ``gaia.retention.worktree_collector.sweep_repo_worktrees``
-    -- the same function the SessionStart hook's automatic sweep calls --
-    this function only reshapes the result into this module's action-dict
-    format. An import failure yields no actions rather than raising,
+    Delegates the entire collectibility decision AND each collected
+    worktree's evidence attribution (its own owning ``contract_id``) to
+    ``gaia.retention.worktree_collector.sweep_repo_worktrees`` -- the same
+    function the SessionStart hook's automatic sweep calls -- this function
+    only reshapes the result into this module's action-dict format. An
+    import failure yields no actions rather than raising,
     matching ``_prune_turn_scoped``'s posture for its own missing-directory
     case; ``sweep_repo_worktrees`` itself already fails closed on a
     non-git ``root`` or any walking error.
