@@ -82,6 +82,8 @@ is pulled with exactly one verb.
 | `gaia task show <brief> <order>` | `--json` | One task, printing both numbers with that distinction stated. |
 | `gaia task gate list <brief> <order>` | `--json` | The task's verification gates: id, type, status. |
 | `gaia evidence list --brief <b>` / `gaia evidence show <id>` | -- | Recorded per-AC evidence. |
+| `gaia worktree list` | `--repo`, `--json` | Every Gaia-managed worktree for a repo (default: cwd): identity (contract_id, agent_id), branch, commit, lifecycle. |
+| `gaia worktree show <path>` | `--json` | One worktree's identity. `create`/`release` are the specialist's own writes, not a read -- see `gaia-patterns`. |
 
 ## Across surfaces, and the operational record
 

@@ -277,6 +277,10 @@ READ -- changes nothing. The orchestrator runs these itself.
                  episode-show | story
   notifications  list | show
   approvals      list | pending | show | history | stats
+  worktree       list | show
+                 inspect a specialist's own isolated git worktree (never
+                 create or release it -- those are the specialist's own
+                 governed writes, below).
 
 WRITE the orchestrator owns -- coordination state, in bounded shapes.
   brief          new | edit | set-status | ac add|edit|remove
@@ -303,7 +307,11 @@ WRITE a specialist owns -- DELEGATE; do not run it here.
                  CLI call
   owning agent   ac | milestone | evidence add | plan save|delete |
                  task add|remove|reorder | task gate add|remove|set-status |
-                 contract set|add|fill|finalize
+                 contract set|add|fill|finalize |
+                 worktree create|release -- create/release its OWN isolated
+                 git worktree (T0 at the tier layer -- see
+                 COMMAND_SUBCOMMAND_TIER_EXCEPTIONS in mutative_verbs.py --
+                 but still outside the orchestrator's bare CLI lane)
 
 The READ lane and the orchestrator-WRITE lane above are the same set the
 orchestrator CLI guard allows (hooks/modules/security/gaia_cli_only_guard.py).
