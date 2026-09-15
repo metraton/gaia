@@ -1,16 +1,21 @@
 """
 gaia.worktree -- creation and identity-locking of agentic git worktrees.
 
-A canonical worktree an agent creates for isolated repo work is born under the
-workspace-owned ``<workspace>/.project-worktrees/<project>/`` root, never inside the
-repository it works on. That root exists precisely so this module never has
-to ask what the target repo tracks: the native harness location
-(``.claude/worktrees``, *inside* the repo) is safe only because Gaia's own
-repo ignores that folder in block. At least one client repo tracks it in
-git on purpose (a hundred committed files); a worktree born there would show
-up as untracked changes someone could commit. Living under the managed root
-instead makes that impossible by construction -- the worktree is outside
-every repository's working tree, so no repo's git status can see it at all.
+A worktree an agent creates for isolated repo work is born under Gaia's one
+central root, ``gaia.paths.worktrees_dir()`` (``~/.gaia/worktrees`` by
+default, relocated whole by ``GAIA_DATA_DIR``), never inside the repository
+it works on. That root exists precisely so this module never has to ask what
+the target repo tracks: the native harness location (``.claude/worktrees``,
+*inside* the repo) is safe only because Gaia's own repo ignores that folder
+in block. At least one client repo tracks it in git on purpose (a hundred
+committed files); a worktree born there would show up as untracked changes
+someone could commit. Living under the central root instead makes that
+impossible by construction -- the worktree is outside every repository's
+working tree, so no repo's git status can see it at all. It is also the
+exact root ``hooks/modules/security/mutative_verbs.py::_gaia_worktrees_root``
+resolves for the T0 recycling exemption on ``git worktree remove`` -- a
+single root means every worktree this module creates is, by construction,
+inside the scope that exemption already covers.
 
 Canonical metadata is the primary identity record. The worktree's contract
 and agent identity also travel in its git lock's *reason*, never in its
@@ -86,30 +91,6 @@ class WorktreeMetadata:
         }
 
 
-def _safe_component(value: str, label: str) -> str:
-    """Accept one non-empty path component and reject traversal syntax."""
-    if not isinstance(value, str) or not value or value in {".", ".."}:
-        raise WorktreePathError(f"invalid {label} path component")
-    if "\x00" in value or "/" in value or "\\" in value or Path(value).is_absolute():
-        raise WorktreePathError(f"invalid {label} path component")
-    return value
-
-
-def workspace_worktrees_root(workspace: Path | str, project: str) -> Path:
-    """Resolve the workspace-owned root for one project without following escapes."""
-    workspace_path = Path(workspace).resolve()
-    if not workspace_path.is_dir():
-        raise WorktreePathError("workspace must be an existing directory")
-    project_name = _safe_component(project, "project")
-    root = workspace_path / ".project-worktrees" / project_name
-    resolved_root = root.resolve()
-    if resolved_root != workspace_path / ".project-worktrees" / project_name:
-        raise WorktreePathError("project root resolves through a symlink")
-    if workspace_path not in resolved_root.parents:
-        raise WorktreePathError("project root escapes workspace")
-    return resolved_root
-
-
 def _git_value(repo_path: Path, *args: str) -> str:
     """Read one required identity value from git, failing closed on ambiguity."""
     result = subprocess.run(
@@ -128,17 +109,15 @@ def worktree_metadata_path(worktree_path: Path | str) -> Path:
 
 def create_canonical_worktree(
     repo_path: Path | str,
-    workspace: Path | str,
     project: str,
     contract_id: str,
     agent_id: str,
     *,
     branch: Optional[str] = None,
 ) -> WorktreeMetadata:
-    """Create and lock a worktree under the workspace-owned canonical root."""
+    """Create and lock a worktree, with metadata, under Gaia's central worktrees root."""
     repo = Path(repo_path).resolve()
-    workspace_path = Path(workspace).resolve()
-    root = workspace_worktrees_root(workspace_path, project)
+    root = worktrees_dir()
     if root == repo or repo in root.parents:
         raise WorktreePathError("canonical worktree root must be outside the checkout")
     root.mkdir(parents=True, exist_ok=True)
@@ -228,9 +207,6 @@ def read_worktree_metadata(worktree_path: Path | str) -> Optional[WorktreeMetada
         agent_id=identity["agent_id"], branch=None, commit=_git_value(path, "rev-parse", "HEAD"),
         lifecycle="legacy", path=str(path),
     )
-
-
-create_workspace_worktree = create_canonical_worktree
 
 
 def lock_reason(contract_id: str, agent_id: str) -> str:

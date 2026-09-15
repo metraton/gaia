@@ -29,10 +29,9 @@ def _repo(path: Path) -> Path:
     return path
 
 
-def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsys):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    repo = _repo(workspace / "project-checkout")
+def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+    repo = _repo(tmp_path / "project-checkout")
     main_before = {
         "pwd": str(repo), "status": _git(repo, "status", "--porcelain"),
         "branch": _git(repo, "branch", "--show-current"),
@@ -49,7 +48,7 @@ def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsy
         "subprocess.run(['git','commit','-q','-m','specialist'],check=True)"
     )
     result = dispatch_writing_agent(
-        repo, workspace, "project-checkout", "contract-62", "agent-62",
+        repo, "project-checkout", "contract-62", "agent-62",
         [sys.executable, "-c", script], branch="task-62",
     )
     specialist = json.loads(result.stdout)
@@ -70,14 +69,15 @@ def test_real_writing_dispatch_uses_cwd_and_returns_ac2_identity(tmp_path, capsy
     assert capsys.readouterr().out
 
 
-def test_failed_writing_dispatch_does_not_leave_worktree(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    repo = _repo(workspace / "project-checkout")
+def test_failed_writing_dispatch_does_not_leave_worktree(tmp_path, monkeypatch):
+    from gaia.paths import worktrees_dir
+
+    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path / "gaia-data"))
+    repo = _repo(tmp_path / "project-checkout")
     with pytest.raises(subprocess.CalledProcessError):
         dispatch_writing_agent(
-            repo, workspace, "project-checkout", "contract-fail", "agent-fail",
+            repo, "project-checkout", "contract-fail", "agent-fail",
             [sys.executable, "-c", "open('half-owned.txt','w').write('x'); raise SystemExit(7)"],
         )
     assert _git(repo, "worktree", "list", "--porcelain").count("worktree ") == 1
-    assert not list((workspace / ".project-worktrees").rglob("half-owned.txt"))
+    assert not list(worktrees_dir().rglob("half-owned.txt"))

@@ -54,7 +54,6 @@ def _post_execution_metadata(metadata: WorktreeMetadata) -> WorktreeMetadata:
 
 def dispatch_writing_agent(
     repo_path: Path | str,
-    workspace: Path | str,
     project: str,
     contract_id: str,
     agent_id: str,
@@ -73,7 +72,7 @@ def dispatch_writing_agent(
         raise ValueError("command must be a non-empty argv sequence")
     dispatch_branch = branch or f"gaia/{agent_id}"
     metadata = create_canonical_worktree(
-        repo_path, workspace, project, contract_id, agent_id, branch=dispatch_branch,
+        repo_path, project, contract_id, agent_id, branch=dispatch_branch,
     )
     process_env = None if env is None else {**os.environ, **env}
     try:

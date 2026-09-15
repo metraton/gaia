@@ -12,7 +12,7 @@ from typing import Any
 
 from gaia.paths import state_dir
 
-_IGNORED = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".project-worktrees"}
+_IGNORED = {".git", ".venv", "node_modules", "__pycache__", ".pytest_cache"}
 
 
 def provenance_path(workspace: Path) -> Path:
