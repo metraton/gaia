@@ -241,6 +241,29 @@ if __name__ == "__main__":
         except Exception as _gc_exc:
             logger.debug("gc_contract_drafts failed (non-fatal): %s", _gc_exc)
 
+        # Abandoned agentic worktree sweep. gaia.retention.worktree_collector
+        # only decided WHICH worktrees are collectible; until now nothing
+        # fired that decision automatically, so worktrees accumulated on
+        # disk between manual `gaia cleanup` runs. Scoped to Path.cwd() --
+        # the same workspace root ensure_workspace_hooks_link() above already
+        # treats as the project -- so a session only ever sweeps its own
+        # repo's worktree family. Ordered AFTER register_session() above on
+        # purpose: this session's own heartbeat is already fresh in the
+        # registry by the time the sweep runs, so a worktree THIS session
+        # owns reads ALIVE and is protected -- the collector's own
+        # never-judge-the-active-turn's-own-worktree rule, satisfied by this
+        # ordering rather than a special case in the collector.
+        try:
+            from gaia.retention.worktree_collector import sweep_repo_worktrees
+            _wt_collected = sweep_repo_worktrees(Path.cwd())
+            if _wt_collected:
+                logger.info(
+                    "worktree_collector: collected %d abandoned worktree(s) at SessionStart",
+                    len(_wt_collected),
+                )
+        except Exception as _wt_exc:
+            logger.debug("sweep_repo_worktrees failed (non-fatal): %s", _wt_exc)
+
         # First-time setup: create project permissions if needed.
         # mark_done=False so UserPromptSubmit can detect first-run
         # and show the welcome message before marking initialized.
