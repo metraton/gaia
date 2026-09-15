@@ -10086,6 +10086,129 @@ def stamp_harness_agent_id(
 
 
 # ---------------------------------------------------------------------------
+# Public API: attach_worktree_capture_to_contract / get_contract_worktree_capture
+# (capture-before-recycle evidence for a turn with no brief -- see
+# gaia.retention.worktree_reclaim's module docstring for the caller)
+# ---------------------------------------------------------------------------
+
+def attach_worktree_capture_to_contract(
+    contract_id: "str | None",
+    *,
+    artifact_path: str,
+    sha256: str,
+    size_bytes: int,
+    worktree_path: "str | None" = None,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """Record a captured worktree diff directly on its owning contract row.
+
+    The brief-based evidence lane (``gaia.evidence.store.insert_evidence``)
+    requires a ``brief_id`` the row's own schema makes NOT NULL -- there is no
+    way to insert an evidence row for a turn that never had a brief. Every
+    turn's ``agent_contract_handoffs`` row exists regardless (born at
+    dispatch, per agent-protocol principle 2), so this writes the same
+    "captured, durable, recoverable" fact there instead: an UPDATE, never an
+    INSERT, mirroring ``stamp_harness_agent_id``'s single-column-write shape.
+
+    Unlike ``stamp_harness_agent_id`` this does NOT refuse a terminal row --
+    a dirty worktree's release happens at turn close, which is normally
+    AFTER ``gaia contract finalize`` already landed the verdict (confirmed
+    against the live orphaned-worktree case this function was built for: its
+    contract row was already ``COMPLETE``). Writing capture metadata is not
+    editing the verdict in place -- it is audit-side annex, the same
+    relationship an ``evidence`` row has to a brief/AC whose own state this
+    table never gates either.
+
+    Returns ``{"status": "applied", "handoff_id": int, "contract_id": str,
+    "worktree_capture": <the JSON object just written as a dict>}`` on
+    success, or ``None`` when no row exists for *contract_id* -- the caller
+    (``gaia.retention.worktree_reclaim``) treats that exactly like any other
+    deposit failure and leaves the worktree untouched.
+    """
+    if not contract_id:
+        return None
+
+    _assert_dispatch_can_write_handoff()
+
+    import json as _json
+
+    capture = {
+        "artifact_path": artifact_path,
+        "sha256": sha256,
+        "size_bytes": size_bytes,
+        "worktree_path": worktree_path,
+        "captured_at": _now_iso(),
+    }
+    capture_json = _json.dumps(capture)
+
+    con = _connect(db_path)
+    try:
+        cur = con.execute(
+            """
+            UPDATE agent_contract_handoffs
+               SET worktree_capture_json = ?
+             WHERE contract_id = ?
+            RETURNING id
+            """,
+            (capture_json, contract_id),
+        )
+        returned = cur.fetchone()
+        con.commit()
+        if returned is None:
+            return None
+        return {
+            "status": "applied",
+            "handoff_id": returned["id"],
+            "contract_id": contract_id,
+            "worktree_capture": capture,
+        }
+    finally:
+        con.close()
+
+
+def get_contract_worktree_capture(
+    contract_id: "str | None",
+    *,
+    db_path: "Path | None" = None,
+) -> "dict | None":
+    """Read back the capture ``attach_worktree_capture_to_contract`` wrote.
+
+    Returns the parsed JSON object, or ``None`` when *contract_id* is falsy,
+    no row exists, the row predates schema v53 (no such column), or the
+    column is NULL / unparseable -- every one of those reads as "nothing
+    captured for this contract," never as an error the caller must handle
+    separately.
+    """
+    if not contract_id:
+        return None
+
+    import json as _json
+
+    con = _connect(db_path)
+    try:
+        row = con.execute(
+            "SELECT worktree_capture_json FROM agent_contract_handoffs "
+            "WHERE contract_id = ? LIMIT 1",
+            (contract_id,),
+        ).fetchone()
+    finally:
+        con.close()
+
+    if row is None:
+        return None
+    try:
+        raw = row["worktree_capture_json"]
+    except (IndexError, KeyError):
+        return None
+    if not raw:
+        return None
+    try:
+        return _json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Public API: bind_harness_child_session / is_harness_session_bound
 # (plan 65 T10 -- unambiguous binding via the PARENT's own start-adjacent
 # event, plus its read side for the fail-closed backstop)

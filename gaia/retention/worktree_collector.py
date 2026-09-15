@@ -77,7 +77,7 @@ Public API::
     worktree_collect_reason(contract_id, mtime, *, grace_hours=None, now=None)
         -> str | None
     list_managed_worktrees(repo_path) -> list[dict]
-    collect_worktrees(repo_path, *, workspace, brief_slug, ac_id, ...)
+    collect_worktrees(repo_path, *, workspace=None, brief_slug=None, ac_id=None, ...)
         -> list[dict]
     sweep_repo_worktrees(repo_path, *, dry_run=False) -> list[dict]
 """
@@ -108,19 +108,18 @@ EXPLICIT_DEATH_CUT_REASONS = frozenset(
     {CUT_REASON_REAPED, CUT_REASON_BACKSTOP_CAPTURE}
 )
 
-# Evidence bucket a worktree's captured diff is filed under when a GENERIC
-# sweep collects it -- SessionStart's automatic sweep, or `gaia cleanup
-# --prune` -- as opposed to a curator or specialist reclaiming a specific
-# worktree with its own brief/AC already in hand. A generic sweep does not
-# know which brief owned an abandoned worktree, so it cannot supply a real
-# one. This matters only for a DIRTY worktree (uncommitted changes or
-# unpushed commits): a CLEAN worktree never reaches the evidence-deposit
-# path at all. If this sentinel brief does not exist in a given workspace,
-# reclaim_worktree already fails closed on that lookup (status
-# "deposit_failed") and leaves the worktree untouched.
-SWEEP_WORKSPACE = "_gaia_system"
-SWEEP_BRIEF_SLUG = "_orphaned_worktrees"
-SWEEP_AC_ID = "_orphaned"
+# A GENERIC sweep -- SessionStart's automatic sweep, or `gaia cleanup
+# --prune` -- never knows which brief owned an abandoned worktree, as
+# opposed to a curator or specialist reclaiming a specific worktree with its
+# own brief/AC already in hand. It used to paper over that with a fixed
+# sentinel workspace/brief/AC identity, which only worked once that sentinel
+# brief actually existed (it did not, in practice: `reclaim_worktree` failed
+# closed with status "deposit_failed" for every DIRTY worktree a sweep ever
+# collected -- CLEAN ones never reach the evidence-deposit path at all, so
+# this never showed up there). `reclaim_worktree`'s `contract_id` attribution
+# is the real fix: every worktree's owning contract row always exists, so
+# `sweep_repo_worktrees` below attributes through that instead of a brief
+# that was never real to begin with.
 
 
 # ---------------------------------------------------------------------------
@@ -272,9 +271,9 @@ def list_managed_worktrees(repo_path: Path) -> List[Dict[str, object]]:
 def collect_worktrees(
     repo_path: Path,
     *,
-    workspace: str,
-    brief_slug: str,
-    ac_id: str,
+    workspace: Optional[str] = None,
+    brief_slug: Optional[str] = None,
+    ac_id: Optional[str] = None,
     grace_hours: Optional[int] = None,
     now: Optional[float] = None,
     task_id: Optional[str] = None,
@@ -286,8 +285,14 @@ def collect_worktrees(
 
     For each Gaia-minted worktree (``list_managed_worktrees``), asks
     ``worktree_collect_reason`` whether it is collectible; if so, hands it
-    to ``gaia.retention.worktree_reclaim.reclaim_worktree`` UNCHANGED --
-    this function never captures or removes anything itself. A worktree
+    to ``gaia.retention.worktree_reclaim.reclaim_worktree`` together with
+    its own ``contract_id`` (read straight from the git lock identity) --
+    this function never captures or removes anything itself. ``workspace``/
+    ``brief_slug``/``ac_id`` are OPTIONAL and, when a caller who genuinely
+    holds a real brief supplies all three, take priority over the
+    ``contract_id`` fallback (``reclaim_worktree``'s own rule); a generic
+    sweep supplies none of them and always attributes through
+    ``contract_id`` instead (see ``sweep_repo_worktrees``). A worktree
     ``worktree_collect_reason`` protects (or cannot judge) is left
     completely alone and does not appear in the returned list at all.
 
@@ -344,6 +349,7 @@ def collect_worktrees(
         result = reclaim_worktree(
             repo_path, worktree_path,
             workspace=workspace, brief_slug=brief_slug, ac_id=ac_id,
+            contract_id=contract_id,
             task_id=task_id, created_by_agent=created_by_agent, db_path=db_path,
         )
         out.append({
@@ -359,23 +365,18 @@ def sweep_repo_worktrees(
     repo_path: Path, *, dry_run: bool = False
 ) -> List[Dict[str, object]]:
     """Collect every abandoned agentic worktree registered to *repo_path*,
-    under the one fixed sweep identity (``SWEEP_WORKSPACE``/``SWEEP_BRIEF_SLUG``/
-    ``SWEEP_AC_ID`` above) shared by every generic caller -- ``gaia cleanup``'s
-    retention pass and the SessionStart hook's automatic sweep -- so the
-    evidence-bucket identity used for a captured diff is one value, not a
-    copy per caller. Fails closed like ``collect_worktrees`` itself: a
+    for every generic caller -- ``gaia cleanup``'s retention pass and the
+    SessionStart hook's automatic sweep. Supplies no workspace/brief/ac: a
+    generic sweep never has a real brief to attribute a collected worktree's
+    diff to, so ``collect_worktrees`` falls through to each worktree's own
+    ``contract_id`` (see the module-level comment above) -- always real,
+    never fabricated. Fails closed like ``collect_worktrees`` itself: a
     *repo_path* that is not a git working tree, or any error walking it,
     yields an empty list rather than propagating.
     """
     if not (Path(repo_path) / ".git").exists():
         return []
     try:
-        return collect_worktrees(
-            repo_path,
-            workspace=SWEEP_WORKSPACE,
-            brief_slug=SWEEP_BRIEF_SLUG,
-            ac_id=SWEEP_AC_ID,
-            dry_run=dry_run,
-        )
+        return collect_worktrees(repo_path, dry_run=dry_run)
     except Exception:  # noqa: BLE001 -- a generic sweep must never abort its caller
         return []

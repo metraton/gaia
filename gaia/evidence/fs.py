@@ -4,6 +4,14 @@ gaia.evidence.fs -- Filesystem blob storage for the evidence layer.
 Layout: <data_dir>/evidence/{workspace}/{brief_slug}/{ac_id}/{uuid4}.{ext}
 (``data_dir()`` is ``~/.gaia`` unless overridden by ``GAIA_DATA_DIR``.)
 
+A second, brief-free layout sits alongside it:
+<data_dir>/evidence/_contracts/{contract_id}/{uuid4}.{ext} -- for a turn whose
+row (``agent_contract_handoffs``) exists but whose brief/AC does not, since a
+brief is optional and the contract row is not (see
+``gaia.store.writer.attach_worktree_capture_to_contract``). ``_contracts`` is
+reserved: no real workspace slug may collide with it (workspace names come
+from ``gaia workspace``, never from this constant).
+
 This module does NOT enforce the permission guard: writes to the filesystem
 always accompany an insert_evidence() call that already applied the guard.
 
@@ -11,6 +19,8 @@ Public API::
 
     blob_path_for(workspace, brief_slug, ac_id, uuid_str, ext) -> Path
     write_blob(workspace, brief_slug, ac_id, data, *, ext=".bin") -> tuple[Path, int]
+    contract_blob_path_for(contract_id, uuid_str, ext) -> Path
+    write_contract_blob(contract_id, data, *, ext=".bin") -> tuple[Path, int]
     read_blob(artifact_path) -> bytes | None
     delete_blob(artifact_path) -> bool
 """
@@ -19,6 +29,11 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+
+
+# Reserved top-level segment for contract-scoped blobs (see module docstring).
+# Never a valid workspace slug, so it cannot collide with a real one.
+CONTRACT_BLOB_NAMESPACE = "_contracts"
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +147,37 @@ def write_blob(
     """
     uuid_str = str(uuid.uuid4())
     path = blob_path_for(workspace, brief_slug, ac_id, uuid_str, ext)
+    path.write_bytes(data)
+    return path, len(data)
+
+
+# ---------------------------------------------------------------------------
+# Contract-scoped blobs (no brief)
+# ---------------------------------------------------------------------------
+
+def contract_blob_path_for(contract_id: str, uuid_str: str, ext: str) -> Path:
+    """Build the canonical filesystem path for a contract-scoped blob.
+
+    Mirrors ``blob_path_for`` but keys on ``contract_id`` under the reserved
+    ``CONTRACT_BLOB_NAMESPACE`` segment instead of workspace/brief_slug/ac_id
+    -- the layout for evidence attributed to a turn's own contract row rather
+    than a brief/AC pair. Creates all parent directories.
+    """
+    if ext and not ext.startswith("."):
+        ext = "." + ext
+
+    path = _evidence_root() / CONTRACT_BLOB_NAMESPACE / contract_id / f"{uuid_str}{ext}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_contract_blob(contract_id: str, data: bytes, *, ext: str = ".bin") -> tuple[Path, int]:
+    """Write ``data`` to a new UUID4-named blob under *contract_id*'s namespace.
+
+    Returns ``(path, size_bytes)``, exactly like ``write_blob``.
+    """
+    uuid_str = str(uuid.uuid4())
+    path = contract_blob_path_for(contract_id, uuid_str, ext)
     path.write_bytes(data)
     return path, len(data)
 
