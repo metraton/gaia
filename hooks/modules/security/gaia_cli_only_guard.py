@@ -525,15 +525,18 @@ ALLOWED_READ_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({
     # (never create or release) another turn's isolated worktree, the same
     # posture it already has over every other specialist-owned resource.
     # Verified read-only by following what bin/cli/worktree.py's `_cmd_list`/
-    # `_cmd_show` call: gaia.retention.worktree_collector.list_managed_worktrees
-    # and gaia.worktree.read_worktree_metadata, both read-only (a `git worktree
-    # list --porcelain` and a metadata-sidecar read; no INSERT/UPDATE/DELETE, no
-    # git mutation). `create`/`release` are deliberately absent -- they are the
-    # specialist's own governed writes (see COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
+    # `_cmd_show`/`_cmd_show_capture` call: gaia.retention.worktree_collector.
+    # list_managed_worktrees, gaia.worktree.read_worktree_metadata, and
+    # gaia.store.writer.get_contract_worktree_capture + gaia.evidence.fs.
+    # read_blob, all read-only (a `git worktree list --porcelain`, a
+    # metadata-sidecar read, and a SELECT + file read; no INSERT/UPDATE/DELETE,
+    # no git mutation). `create`/`release` are deliberately absent -- they are
+    # the specialist's own governed writes (see COMMAND_SUBCOMMAND_TIER_EXCEPTIONS
     # in mutative_verbs.py for why they need no T3 signature at the tier layer,
     # which is orthogonal to this guard's narrower orchestrator-lane question).
     ("worktree", "list"),
     ("worktree", "show"),
+    ("worktree", "show-capture"),
 })
 
 ALLOWED_WRITE_PHRASES: FrozenSet[Tuple[str, ...]] = frozenset({

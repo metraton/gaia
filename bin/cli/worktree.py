@@ -24,12 +24,17 @@ Subcommands:
     gaia worktree show    <path> [--json]
 
     gaia worktree release <path> [--workspace <W> --brief <slug> --ac <ac_id>]
-                          [--repo <path>] [--task-id <id>]
+                          [--contract-id <id>] [--repo <path>] [--task-id <id>]
                           [--created-by <agent>] [--json]
 
-    (``--workspace``/``--brief``/``--ac`` are required only when the worktree
-    actually carries work to capture -- an untouched worktree releases with
-    none of the three.)
+    (Attribution is required only when the worktree actually carries work to
+    capture -- an untouched worktree releases with none of it. A dirty one
+    needs EITHER the full ``--workspace``/``--brief``/``--ac`` triple -- a
+    planned turn's brief/AC -- OR ``--contract-id`` -- an ad-hoc turn's own
+    contract row, defaulted from the worktree's own metadata when omitted.
+    See ``gaia worktree show-capture`` to retrieve a contract-row capture.)
+
+    gaia worktree show-capture <contract_id> [--diff] [--json]
 """
 
 from __future__ import annotations
@@ -147,6 +152,45 @@ def _cmd_show(args) -> int:
     return 0
 
 
+def _cmd_show_capture(args) -> int:
+    """Read back a worktree diff captured onto a contract row (no brief/AC)."""
+    from gaia.evidence.fs import read_blob
+    from gaia.store.writer import get_contract_worktree_capture
+
+    as_json = getattr(args, "json", False)
+    capture = get_contract_worktree_capture(args.contract_id)
+    if capture is None:
+        return _err(
+            f"no worktree capture found for contract_id={args.contract_id!r}",
+            as_json,
+        )
+
+    diff_text = None
+    if getattr(args, "diff", False):
+        payload = read_blob(capture.get("artifact_path", ""))
+        if payload is None:
+            return _err(
+                f"capture row found but its blob is unreadable: "
+                f"{capture.get('artifact_path')!r}",
+                as_json,
+            )
+        diff_text = payload.decode("utf-8", errors="replace")
+
+    if as_json:
+        out = dict(capture)
+        if diff_text is not None:
+            out["diff"] = diff_text
+        print(json.dumps(out))
+        return 0
+
+    for key in ("artifact_path", "sha256", "size_bytes", "worktree_path", "captured_at"):
+        print(f"{key}={capture.get(key)}")
+    if diff_text is not None:
+        print("--- diff ---")
+        print(diff_text)
+    return 0
+
+
 def _cmd_release(args) -> int:
     from gaia.retention.worktree_reclaim import reclaim_worktree
     from gaia.worktree import read_worktree_metadata
@@ -156,7 +200,8 @@ def _cmd_release(args) -> int:
 
     repo = Path(args.repo).resolve() if args.repo else None
     created_by = args.created_by
-    if repo is None or created_by is None:
+    contract_id = args.contract_id
+    if repo is None or created_by is None or contract_id is None:
         metadata = read_worktree_metadata(worktree_path)
         if repo is None:
             if metadata is None:
@@ -167,6 +212,8 @@ def _cmd_release(args) -> int:
             repo = Path(metadata.repo)
         if created_by is None and metadata is not None:
             created_by = metadata.agent_id
+        if contract_id is None and metadata is not None:
+            contract_id = metadata.contract_id
 
     try:
         result = reclaim_worktree(
@@ -175,6 +222,7 @@ def _cmd_release(args) -> int:
             workspace=args.workspace,
             brief_slug=args.brief,
             ac_id=args.ac,
+            contract_id=contract_id,
             task_id=args.task_id,
             created_by_agent=created_by,
         )
@@ -189,6 +237,8 @@ def _cmd_release(args) -> int:
         print(f"captured={result['captured']}")
         if result.get("evidence_id") is not None:
             print(f"evidence_id={result['evidence_id']}")
+        if result.get("contract_capture_path"):
+            print(f"contract_capture_path={result['contract_capture_path']}")
         if result.get("reason"):
             print(f"reason={result['reason']}")
     _FAILURE_STATUSES = (
@@ -278,8 +328,9 @@ def register(subparsers) -> None:
         help="Capture-then-recycle a worktree (never destroys uncaptured work)",
         description=(
             "Recycle a clean worktree (unlock + remove, unforced). A dirty "
-            "worktree's full diff is deposited as evidence for the given "
-            "brief/AC first, and the worktree is then left in place -- see "
+            "worktree's full diff is deposited as evidence -- for the given "
+            "brief/AC, or for its own contract row when there is no brief --"
+            "first, and the worktree is then left in place -- see "
             "gaia.retention.worktree_reclaim for why forced removal is "
             "deliberately withheld."
         ),
@@ -288,6 +339,8 @@ def register(subparsers) -> None:
             "Examples:\n"
             "  gaia worktree release ~/.gaia/worktrees/<id> "
             "--workspace me --brief my-brief --ac AC-1\n"
+            "  gaia worktree release ~/.gaia/worktrees/<id> "
+            "--contract-id c1.abc\n"
         ),
     )
     release_p.add_argument("path", metavar="PATH", help="Worktree directory to release.")
@@ -303,12 +356,35 @@ def register(subparsers) -> None:
     release_p.add_argument("--ac", default=None, dest="ac", metavar="AC_ID",
                            help="Acceptance-criteria id the captured diff is evidence for. "
                                 "Only required when the worktree actually carries work to capture.")
+    release_p.add_argument("--contract-id", default=None, dest="contract_id", metavar="ID",
+                           help="Owning contract id, for a dirty worktree with no brief/AC "
+                                "(an ad-hoc turn) -- its diff is deposited on that contract's "
+                                "own row instead. Default: read from the worktree's own metadata.")
     release_p.add_argument("--task-id", default=None, dest="task_id", metavar="TASK_ID",
                            help="Opaque task reference (optional).")
     release_p.add_argument("--created-by", default=None, dest="created_by", metavar="AGENT",
                            help="Agent slug attributed on the evidence row. Default: the worktree's own agent_id.")
     release_p.add_argument("--json", action="store_true", default=False,
                            help="Emit JSON output.")
+
+    # -- show-capture --------------------------------------------------------
+    show_capture_p = actions.add_parser(
+        "show-capture",
+        help="Read back a worktree diff captured onto a contract row (no brief/AC)",
+        description=(
+            "Print the artifact path/sha256/size a dirty, brief-less worktree's "
+            "diff was captured to (see `gaia worktree release --contract-id`); "
+            "--diff also prints the captured diff content itself."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Examples:\n  gaia worktree show-capture c1.abc --diff\n",
+    )
+    show_capture_p.add_argument("contract_id", metavar="CONTRACT_ID",
+                                help="The contract_id the capture was attached to.")
+    show_capture_p.add_argument("--diff", action="store_true", default=False,
+                                help="Also print the captured diff content.")
+    show_capture_p.add_argument("--json", action="store_true", default=False,
+                                help="Emit JSON output.")
 
 
 def cmd_worktree(args) -> int:
@@ -319,9 +395,10 @@ def cmd_worktree(args) -> int:
         "list": _cmd_list,
         "show": _cmd_show,
         "release": _cmd_release,
+        "show-capture": _cmd_show_capture,
     }
     if action in handlers:
         return handlers[action](args)
 
-    print("Usage: gaia worktree <create|list|show|release>", file=sys.stderr)
+    print("Usage: gaia worktree <create|list|show|release|show-capture>", file=sys.stderr)
     return 0
