@@ -555,6 +555,34 @@ def test_the_bridge_records_a_closed_control_with_its_reason(db_env, approval_id
     assert payload["detail"] == "host asked [...]"
 
 
+def test_the_bridge_records_an_applied_decision_and_who_was_told(db_env, approval_id):
+    sys.path.insert(0, str(REPO_ROOT / "opencode"))
+    import bridge as opencode_bridge
+
+    from gaia.approvals.decision_audit import DECISION_APPLIED_EVENT
+    from gaia.store.reader import cross_surface_query
+
+    common = {
+        "event": "decision.applied", "sessionID": SESSION_ID, "callID": "call-applied",
+        "approvalID": approval_id, "controlSessionID": "control-call-applied",
+        "reply": "once", "lane": "control", "nextIndex": 0,
+    }
+    assert opencode_bridge.handle({**common, "notifiedSessionID": "ses-root"})["action"] == "allow"
+    assert opencode_bridge.handle({**common, "notifyFailure": "no root session"})["action"] == "allow"
+
+    rows = cross_surface_query(
+        surface="harness_events", type=DECISION_APPLIED_EVENT,
+        db_path=Path(db_env["GAIA_DB"]),
+    )
+    assert len(rows) == 2, rows
+    payloads = {row["raw"]["severity"]: json.loads(row["raw"]["payload"]) for row in rows}
+    assert payloads["info"]["notified_session_id"] == "ses-root"
+    assert payloads["info"]["approval_id"] == approval_id
+    assert payloads["info"]["next_index"] == 0
+    assert payloads["warning"]["notified_session_id"] == ""
+    assert payloads["warning"]["notify_failure"] == "no root session"
+
+
 def test_the_bridge_records_an_opened_control_by_approval(db_env, approval_id):
     sys.path.insert(0, str(REPO_ROOT / "opencode"))
     import bridge as opencode_bridge

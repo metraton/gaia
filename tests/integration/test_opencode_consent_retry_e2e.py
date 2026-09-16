@@ -316,6 +316,59 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     assert _control_closures(db_path) == [("decided", approval_id)]
 
 
+def test_an_activated_approval_is_announced_to_the_orchestrator_and_traced(db_env):
+    """The user's yes has an actor: the root session is prompted to resume the specialist.
+
+    The specialist's turn ended with the blocked attempt, so the notice goes to
+    the orchestrator's ROOT session, naming the specialist session to resume
+    with task_id and the index it must retry.
+    """
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve", "answer": "approve"},
+    ])
+
+    prompts = driven["controlPrompts"]
+    assert len(prompts) == 2, prompts
+    notice = prompts[1]
+    assert notice["path"] == {"id": ROOT_SESSION_ID}
+    assert notice["body"]["parts"] == [{
+        "type": "text",
+        "text": (
+            f"Gaia: approval {approval_id} activated by the user. "
+            f"Resume the specialist session {SESSION_ID} (task_id) so it retries command [0] now."
+        ),
+    }]
+    assert "agent" not in notice["body"]
+    applied = _harness_payloads(db_path, "consent.decision.applied")
+    assert len(applied) == 1, applied
+    assert applied[0]["approval_id"] == approval_id
+    assert applied[0]["session_id"] == SESSION_ID
+    assert applied[0]["call_id"] == CALL_ID
+    assert applied[0]["control_session_id"] == _step(driven, "approve")["controlSessionID"]
+    assert applied[0]["reply"] == "once"
+    assert applied[0]["lane"] == "control"
+    assert applied[0]["next_index"] == 0
+    assert applied[0]["notified_session_id"] == ROOT_SESSION_ID
+    assert "notify_failure" not in applied[0]
+
+
+def test_a_rejection_is_not_announced(db_env):
+    env, db_path = db_env
+    _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "reject", "answer": "reject"},
+    ])
+
+    assert len(driven["controlPrompts"]) == 1, driven["controlPrompts"]
+    assert _harness_payloads(db_path, "consent.decision.applied") == []
+
+
 @pytest.mark.parametrize("encoding", ["reordered", "extra-keys"])
 def test_the_hosts_own_encoding_of_the_question_still_correlates(db_env, encoding):
     """question.asked carries the host's re-serialization of the question, not the plugin's bytes.

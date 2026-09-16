@@ -55,6 +55,13 @@ CONTROL_OPENED_EVENT = "consent.control.opened"
 CONTROL_CLOSED_EVENT = "consent.control.closed"
 CONTROL_CLOSE_DECIDED = "decided"
 
+# The user's "yes" reached Gaia and the plugin armed the grant. approval_events
+# holds the decision itself (opencode-decide writes it); this record holds what
+# the plugin did next -- which session it told to resume the specialist, or
+# that it could tell none -- because an armed grant nobody resumes is the state
+# that used to read as a command never attempted.
+DECISION_APPLIED_EVENT = "consent.decision.applied"
+
 # A decision that grants nothing is not automatically a fault -- a plain
 # rejection is the consent layer working as designed. Only the reasons where a
 # signature was given and could not be honored -- or, for presentation_failed
@@ -332,10 +339,55 @@ def record_control_closed(
     )
 
 
+def record_decision_applied(
+    *,
+    approval_id: str,
+    session_id: str,
+    call_id: str,
+    control_session_id: str,
+    reply: str,
+    lane: str,
+    next_index: int | None,
+    notified_session_id: str = "",
+    notify_failure: str = "",
+) -> int | None:
+    """Append the record that a grant was armed and the orchestrator told.
+
+    ``notified_session_id`` names the session that received the activation
+    notice; empty means no session was told, and ``notify_failure`` says why.
+    Graded warning in that case: the grant exists, but nothing in the host is
+    now moving toward the retry.
+    """
+    meta: dict[str, Any] = {
+        "lane": lane,
+        "reply": reply,
+        "approval_id": approval_id,
+        "session_id": session_id,
+        "call_id": call_id,
+        "control_session_id": control_session_id,
+        "next_index": next_index,
+        "notified_session_id": notified_session_id,
+    }
+    if notify_failure:
+        meta["notify_failure"] = notify_failure
+    told = (
+        f"orchestrator session {notified_session_id} told to resume {session_id}"
+        if notified_session_id
+        else f"no session told to resume {session_id} -- {notify_failure or 'unspecified'}"
+    )
+    return _record_control_event(
+        DECISION_APPLIED_EVENT,
+        result=f"{reply}: grant for {approval_id} armed at index {next_index}; {told}",
+        severity="info" if notified_session_id else "warning",
+        meta=meta,
+    )
+
+
 __all__ = [
     "CONTROL_CLOSED_EVENT",
     "CONTROL_CLOSE_DECIDED",
     "CONTROL_OPENED_EVENT",
+    "DECISION_APPLIED_EVENT",
     "DECISION_NOT_ACTIVATED_EVENT",
     "DECISION_NOT_ACTIVATED_SOURCE",
     "DETAILS_PAYLOAD_KEY",
@@ -352,5 +404,6 @@ __all__ = [
     "build_decision_not_activated",
     "record_control_closed",
     "record_control_opened",
+    "record_decision_applied",
     "record_decision_not_activated",
 ]

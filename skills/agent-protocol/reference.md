@@ -343,6 +343,19 @@ guessed value is owned by a session that will never present it, and no other
 session can. `subagent-request-approval` states the same rule from the
 producer's side.
 
+**Approval on OpenCode ends the turn.** There a blocked T3 attempt is a tool
+error, not a prompt the specialist can wait behind: the attempt raises the
+consent question in a control session the plugin opens, and the specialist's
+own turn is over the moment the error returns. Close `APPROVAL_REQUEST` and
+finalize; do not plan to stay in the turn for the answer, because no OpenCode
+specialist can. When the user activates the approval, the plugin prompts the
+orchestrator's root session with a fixed notice naming the specialist session
+and the command index (`opencode/plugin.ts::activationNotice`), and the
+orchestrator re-dispatches with `task_id` = that session so the retry lands on
+the session the grant is bound to (`orchestrator-present-approval`, "Two ways
+consent reaches Gaia"). A resumed specialist retries the byte-identical command
+at the index the notice names and nothing else.
+
 **The gate at the wall.** `_resolve_subagent_stop_gate_full` in
 `hooks/adapters/claude_code.py` resolves this turn's own dispatch row and
 decides in three cases, all of them about the row -- nothing in the agent's

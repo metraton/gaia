@@ -341,6 +341,22 @@ const LIFECYCLE_EVENT_TYPES = new Set([
 export const UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
 export const CONTROL_OPENED_EVENT = "control.opened"
 export const CONTROL_CLOSED_EVENT = "control.closed"
+export const DECISION_APPLIED_EVENT = "decision.applied"
+
+/**
+ * The one message the plugin puts in the orchestrator's session once the user
+ * activated an approval. Deterministic so the orchestrator can match it, and
+ * addressed to the ROOT session because the specialist's turn is already over:
+ * its blocked attempt was a tool error that ended the turn, so nobody is left
+ * in that session to retry, and a prompt sent there would run the specialist
+ * with no dispatch, no contract row and no coordinator reading the result.
+ * The orchestrator re-dispatches with task_id = the specialist session, which
+ * is the only shape the plugin's retry accounting accepts.
+ */
+export function activationNotice(approvalID: string, specialistSessionID: string, nextIndex: number): string {
+  return `Gaia: approval ${approvalID} activated by the user. `
+    + `Resume the specialist session ${specialistSessionID} (task_id) so it retries command [${nextIndex}] now.`
+}
 
 /**
  * Why a consent control was released. Recorded verbatim by the bridge, so a
@@ -1103,6 +1119,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         ...control.retry,
         usedCallIDs: new Set(control.retry.usedCallIDs),
       })
+      await announceActivation(control, lane)
     }
     // Cleared on a refused decision too: the question is consumed and the
     // lane admitted, so nothing left here could carry a second reply to Gaia.
@@ -1115,6 +1132,54 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       await clearPendingApproval(control.approval.approvalID, "decide_failed", decided.cause)
     }
     return decided.ok
+  }
+
+  /** Give the user's "yes" an actor: tell the orchestrator, and record that it was told.
+   *
+   * The grant is armed by then; neither the notice nor its trace can undo it,
+   * so both failures are logged and the activation stands. The trace carries
+   * which session was notified (or none), because a grant nobody resumes is
+   * exactly the state that used to look like a command never attempted.
+   */
+  async function announceActivation(control: ControlDecision, lane: DecisionLane): Promise<void> {
+    const { approvalID, sessionID, callID } = control.approval
+    const nextIndex = control.retry.expectedIndex
+    let notifiedSessionID: string | undefined
+    let notifyFailure: string | undefined
+    const session = input?.client?.session
+    if (typeof session?.promptAsync !== "function" || !rootSessionID) {
+      notifyFailure = "no root session or host prompt API to notify"
+    } else {
+      try {
+        const prompted = await session.promptAsync({
+          path: { id: rootSessionID },
+          body: { parts: [{ type: "text", text: activationNotice(approvalID, sessionID, nextIndex) }] },
+        })
+        notifyFailure = hostRejection(prompted)
+        if (!notifyFailure) notifiedSessionID = rootSessionID
+      } catch (error) {
+        notifyFailure = error instanceof Error ? error.message : String(error)
+      }
+    }
+    if (notifyFailure) {
+      console.error(`[gaia-opencode:control] activation of ${approvalID} was not announced to the orchestrator: ${notifyFailure}`)
+    }
+    try {
+      await send({
+        event: DECISION_APPLIED_EVENT,
+        sessionID,
+        callID,
+        approvalID,
+        controlSessionID: control.request.sessionID,
+        reply: "once",
+        lane,
+        nextIndex,
+        ...(notifiedSessionID ? { notifiedSessionID } : {}),
+        ...(notifyFailure ? { notifyFailure } : {}),
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:control] activation of ${approvalID} went unaudited: ${error}`)
+    }
   }
 
   /** The host's account of an SDK call that resolved with an error instead of throwing.

@@ -101,17 +101,37 @@ ATTEMPTS the operation: the attempt is denied carrying the `approval_id` of the
 set already pending (`hooks/modules/tools/bash_validator.py::_find_pending_plan_set_in_db`
 matches the attempted command to it, so no second request is minted); the plugin
 runs `gaia approvals opencode-present`, which records SHOWN and adopts the
-session when the row was minted without one; the host asks; the reply runs
-`gaia approvals opencode-decide`, which records the decision and arms the grant;
-the byte-identical command is retried. So on OpenCode the move after an
-APPROVAL_REQUEST is not to present anything: dispatch the owning specialist
-with `execution` to attempt the first command of the requested set, and let the
-host ask.
+session when the row was minted without one; the plugin opens a child control
+session under the root and asks the binary question there; the reply runs
+`gaia approvals opencode-decide`, which records the decision and arms the grant.
+So on OpenCode the move after an APPROVAL_REQUEST is not to present anything:
+dispatch the owning specialist with `execution` to attempt the first command of
+the requested set, and let the host ask.
+
+The attempt ENDS the specialist's turn. On OpenCode the block is a tool error,
+and a tool error terminates the specialist's capacity to wait: it closes
+`APPROVAL_REQUEST` and returns. "Stay in the turn until the user answers" is an
+instruction no OpenCode specialist can follow, and a plan that relies on it
+leaves an armed grant with nobody to use it (measured 2026-09-16: the user
+approved 55 seconds before the orchestrator closed its own turn). The retry
+therefore has a second dispatch, and its shape is fixed: once the user
+activates the approval, the plugin prompts the ROOT session -- yours -- with
+`Gaia: approval <id> activated by the user. Resume the specialist session
+<sessionID> (task_id) so it retries command [<index>] now.`
+(`opencode/plugin.ts::activationNotice`). Re-dispatch the specialist with
+`task_id` set to that session id and `execution` as the instruction. The grant
+is bound to that specialist session (`opencode/plugin.ts::consentRetry` requires
+the same session, agent and command at the reserved index), so a fresh dispatch
+without `task_id` falls back to the host-neutral pending-command match and
+bypasses the plugin's retry accounting; the notice goes to the root rather than
+to the specialist session because the specialist's turn is over -- a prompt
+there would run it with no dispatch, no contract row and no coordinator reading
+the result.
 
 In one line: on Claude Code consent is resolved by reply; on OpenCode it is
-provoked by attempt. This skill names the two hosts because the selection is
-the orchestrator's decision, not an adapter detail; what each host calls its
-controls still belongs in its adapter.
+provoked by attempt and resumed by re-dispatch. This skill names the two hosts
+because the selection is the orchestrator's decision, not an adapter detail;
+what each host calls its controls still belongs in its adapter.
 
 ## What failure looks like
 
@@ -130,12 +150,31 @@ On OpenCode, the same picture -- one REQUESTED event, no SHOWN, status
 however well-formed the control. Re-presenting is not a remedy there; it is a
 loop that never terminates (measured live, 2026-09-16). The remedy is the other
 modality: dispatch the specialist to attempt the first command. If that attempt
-itself fails to raise the permission, the error the specialist receives carries
-the `approval_id` and the cause Gaia returned verbatim
-(`opencode/plugin.ts::requestApproval`), and the refusal is recorded as a
-`presentation_failed` non-activation in `harness_events`
-(`opencode/bridge.py::_record_uncorrelated_permission`). Read the cause and act
-on it; do not re-present.
+itself fails to raise the question, the error the specialist receives carries
+the `approval_id` and the cause verbatim (`opencode/plugin.ts::requestApproval`
+/ `openBinaryDecision`), and every point where the plugin gives up a control or
+a decision leaves a row in `harness_events` (`gaia query --surface
+harness_events`), written by `opencode/bridge.py` through
+`gaia/approvals/decision_audit.py`. Read the cause there and act on it; do not
+re-present. The records, by type:
+
+- `consent.decision.not_activated` with `reason`: `presentation_failed` (`gaia
+  approvals opencode-present` refused -- the session does not own the approval,
+  or the surface could not be sealed), `control_plane_failed` (the host refused
+  to create or prompt the control session), `decide_failed` (the user answered
+  and `gaia approvals opencode-decide` refused the reply), `no_session_binding`
+  (a host permission request matched no Gaia verdict).
+- `consent.control.opened` (info): the question reached the host, in
+  `control_session_id`. SHOWN alone does not say this.
+- `consent.control.closed` with `reason`: `decided` (info; the answer reached
+  Gaia) or one of the abandonments (warning): `question_mismatch`,
+  `question_rejected`, `reply_unreadable`, `permission_reply_unusable`,
+  `decision_duplicate`, `retry_conflict`, `prompt_rejected`, `session_ended`,
+  `drifted_tool_call`, `drifted_tool_result`, `decide_failed`
+  (`opencode/plugin.ts::ControlCloseReason`).
+- `consent.decision.applied`: the grant was armed for `once`;
+  `notified_session_id` is the root session that received the activation
+  notice, empty (warning) with `notify_failure` when none could be told.
 
 On either host, before dispatching execution confirm with `gaia approvals show
 <approval_id>` that the approval actually left `pending`. Presentation and
