@@ -996,15 +996,54 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return applied
   }
 
+  /** The host's account of an SDK call that resolved with an error instead of throwing.
+   *
+   * The generated client returns `{ error, response }` for a rejected request
+   * unless it was built with throwOnError, which OpenCode's plugin client is
+   * not. Reading the outcome is therefore the only way to learn the host
+   * refused; an awaited call that "succeeded" proves nothing on its own.
+   */
+  function hostRejection(result: unknown): string | undefined {
+    const outcome = result as { error?: unknown; response?: { ok?: boolean; status?: number } } | undefined
+    if (outcome?.error === undefined && outcome?.response?.ok !== false) return undefined
+    const status = outcome?.response?.status
+    const error = outcome?.error
+    const detail = typeof error === "string" ? error : error === undefined ? "" : JSON.stringify(error)
+    return [status === undefined ? "" : `HTTP ${status}`, detail].filter(Boolean).join(" ")
+      || "host resolved with an error carrying no detail"
+  }
+
+  /** Release a control whose question never reached the host.
+   *
+   * The child session already exists by then, so it is deleted when the SDK
+   * can; an orphan that survives is reported, never allowed to keep a control
+   * registered for a question nobody will answer.
+   */
+  async function abandonControl(control: ControlDecision, controlSessionID: string): Promise<void> {
+    closeControl(control)
+    if (controlBySession.get(controlSessionID) === control) controlBySession.delete(controlSessionID)
+    const session = input?.client?.session
+    if (typeof session?.delete !== "function") return
+    try {
+      await session.delete({ path: { id: controlSessionID } })
+    } catch (error) {
+      console.error(`[gaia-opencode:control] orphan control session ${controlSessionID} was not deleted: ${error}`)
+    }
+  }
+
   async function openBinaryDecision(approval: PendingApproval): Promise<ControlDecision> {
     const session = input?.client?.session
     if (typeof session?.create !== "function" || typeof session?.promptAsync !== "function" || !rootSessionID) {
       throw new Error("OpenCode control plane cannot provide a binary question")
     }
+    const failClosed = (cause: string): Error =>
+      new Error(`Gaia could not open the consent control plane for ${approval.approvalID}: ${cause}`)
     const created = await session.create({
       body: { parentID: rootSessionID, title: `Gaia ${approval.approvalID}` },
     })
-    const controlSessionID = created?.data?.id ?? created?.id
+    const createRejected = hostRejection(created)
+    if (createRejected) throw failClosed(`control-plane session.create failed: ${createRejected}`)
+    const controlSessionID = created?.data?.id
     if (
       typeof controlSessionID !== "string"
       || !controlSessionID
@@ -1012,7 +1051,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       || controlSessionID === approval.sessionID
       || controlBySession.has(controlSessionID)
     ) {
-      throw new Error("OpenCode did not create a fresh control-plane decision session")
+      throw failClosed(
+        "control-plane session.create failed: OpenCode did not create a fresh control-plane decision session",
+      )
     }
     const request = binaryDecisionRequest(approval, controlSessionID)
     const control: ControlDecision = {
@@ -1028,8 +1069,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       "Do not answer the question, infer consent, rewrite any text, or emit approval prose.",
       JSON.stringify({ questions: [request.question] }),
     ].join("\n")
+    let prompted: unknown
     try {
-      await session.promptAsync({
+      prompted = await session.promptAsync({
         path: { id: controlSessionID },
         body: {
           agent: "gaia-orchestrator",
@@ -1039,8 +1081,13 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         },
       })
     } catch (error) {
-      closeControl(control)
-      throw error
+      await abandonControl(control, controlSessionID)
+      throw failClosed(`control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    const promptRejected = hostRejection(prompted)
+    if (promptRejected) {
+      await abandonControl(control, controlSessionID)
+      throw failClosed(`control-plane prompt rejected: ${promptRejected}`)
     }
     return control
   }
