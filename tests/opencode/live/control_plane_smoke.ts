@@ -3,10 +3,9 @@
  *
  * Measures the literal `question.asked` / `question.replied` events the host
  * emits when a child control session asks Gaia's consent question, so the
- * correlation in `opencode/plugin.ts` (event handler for `question.asked`,
- * which compares `JSON.stringify(event.properties.questions)` against
- * `JSON.stringify([control.request.question])`) can be judged against the real
- * host instead of the stubs in `tests/opencode/*_driver.ts`.
+ * correlation in `opencode/plugin.ts` (`matchesBinaryQuestion`, applied to
+ * `event.properties.questions` by the `question.asked` handler) can be judged
+ * against the real host instead of the stubs in `tests/opencode/*_driver.ts`.
  *
  * Opt-in: exits 0 with `SKIP` unless `OPENCODE_SMOKE_BASE_URL` is set. It talks
  * to a real LLM through the host's `gaia-orchestrator` agent, creates two

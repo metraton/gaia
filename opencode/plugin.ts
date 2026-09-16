@@ -709,7 +709,7 @@ export function questionAnswers(output: any): Record<string, string> | undefined
 }
 
 /** Apply a bridge response's updated_input onto the live args object, field
- * by field, never by whole-object reassignment. OpenCode 1.18.23 hands this
+ * by field, never by whole-object reassignment. OpenCode 1.18.18 hands this
  * hook the args object it will actually pass to the tool; a full
  * `output.args = updatedInput` replaces the reference the host already
  * captured and is a measured no-op (memory:
@@ -963,7 +963,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
 
   /** Read the session's agent back from the host's own message record. */
   async function hostAgent(sessionID: string, dispatching?: string): Promise<string | undefined> {
-    // OpenCode 1.18.23 passes tool.execute.before exactly {tool, sessionID,
+    // OpenCode 1.18.18 passes tool.execute.before exactly {tool, sessionID,
     // callID} at every trigger site, so this edge has no agent to read from the
     // call. The name that identifies the session travels the event bus instead,
     // which can still be undelivered when a dispatch arrives -- and a dispatch

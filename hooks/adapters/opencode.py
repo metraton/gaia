@@ -1037,6 +1037,15 @@ class OpenCodeAdapter(HookAdapter):
         run, so a denial would gate nothing while discarding the audit record,
         and the resolver reads an absent ``answers`` as no decision at all,
         which is fail-closed.
+
+        The consent control plane never reaches this method. For a session the
+        plugin registered as a control (``controlBySession``), its
+        ``tool.execute.after`` returns before ``send``, so the question's
+        answers never cross the bridge and the only route by which a reply
+        becomes a decision is ``gaia approvals opencode-decide``, invoked by the
+        plugin from ``question.replied``. The attested branch below is kept for
+        the case where an attested control-plane session does forward a
+        result; it is not the path a live decision takes.
         """
         if not isinstance(container, dict) or "answers" not in container:
             return container
