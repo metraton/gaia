@@ -125,6 +125,46 @@ PLAN_COMMAND_SET_TTL_MINUTES = 60
 
 
 # ---------------------------------------------------------------------------
+# Plan-first COMMAND_SET reservation lifetime
+# ---------------------------------------------------------------------------
+#
+# PLAN_COMMAND_RESERVATION_TTL_MINUTES bounds a single RESERVATION inside a live
+# grant: the window in which one reserved index stays bound to the tool call that
+# reserved it.
+#
+# It exists because a reservation is taken at the point Gaia AUTHORIZES and
+# released at the point the command SETTLES, and nothing guarantees the second
+# point is ever reached. A host may refuse the command downstream of Gaia's allow
+# (measured: OpenCode blocked an allowed index 0), and then settle_plan_command
+# never runs. Without a window the slot stays taken forever: the grant can no
+# longer advance, yet it is not failed either, so an approval the user genuinely
+# signed becomes unusable for a reason the user never chose. Expiry reverses only
+# that -- it does NOT spend the consent, because a host refusal is not the user
+# withdrawing it, and it is NOT settle_plan_command(success=False), which is
+# reserved for a command that actually ran and failed.
+#
+# The window must exceed the longest a single reserved command can legitimately
+# still be executing, since reclaiming a slot whose command is mid-flight would
+# authorize the same index twice. It must also stay well inside
+# PLAN_COMMAND_SET_TTL_MINUTES (60), or one abandoned index would consume the
+# whole grant. 10 minutes sits between the two: longer than any single item a
+# validated set may hold (each is one atomic non-interactive invocation, never a
+# chain), and short enough that a grant survives several abandoned attempts.
+#
+# Crucially, expiry does not loosen retry freshness, which is carried by a
+# DIFFERENT column: reserved_tool_use_ids_json is the append-only history of every
+# id that ever reserved, while reservation_tool_use_id is only the current slot.
+# Clearing the slot leaves the history intact, so a retry still requires a tool
+# call the grant has never seen.
+PLAN_COMMAND_RESERVATION_TTL_MINUTES = 10
+
+# The reason_code stamped on the NOOP that records an abandoned reservation. It is
+# metadata, not an event type: the chain's event_type CHECK is closed, and NOOP is
+# already the marker for a refusal that moves no authorization state.
+RESERVATION_ABANDONED_REASON_CODE = "reservation_abandoned_unexecuted"
+
+
+# ---------------------------------------------------------------------------
 # SCOPE_FILE_PATH grant lifetime
 # ---------------------------------------------------------------------------
 #
@@ -6643,6 +6683,31 @@ def _plan_grant_is_live(grant: dict, now_iso: str) -> bool:
     return bool(deadline) and deadline > now_iso
 
 
+def _reservation_is_live(grant: dict, now_iso: str) -> bool:
+    """Return whether the grant's current reservation still holds its index.
+
+    The unmeasurable case resolves OPPOSITE to _plan_grant_is_live: an unreadable
+    reservation_at holds the slot rather than releasing it. Refusing an
+    unmeasurable GRANT withholds authority, which is the safe direction there;
+    releasing an unmeasurable RESERVATION would hand the same index to a second
+    caller while the first may still be executing, so here the safe direction is
+    to keep it held and let the grant's own TTL end it.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    reserved_at = grant.get("reservation_at")
+    try:
+        taken = datetime.strptime(reserved_at, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError):
+        return True
+    deadline = (taken + timedelta(minutes=PLAN_COMMAND_RESERVATION_TTL_MINUTES)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    return deadline > now_iso
+
+
 def insert_plan_command_set(
     approval_id: str,
     command_set: list[dict],
@@ -6691,6 +6756,47 @@ def insert_plan_command_set(
             connection.close()
 
 
+def _record_abandoned_reservation(
+    approval_id: str,
+    abandoned: dict,
+    item: dict,
+    *,
+    db_path: Path | None = None,
+) -> None:
+    """Append the abandoned attempt to the approval's chain, changing no state.
+
+    Written only from the reclaim, where all three facts are established: the
+    grant was live (consented), the slot was held (reserved), and no settle ever
+    cleared it (not executed). Deliberately not called from anywhere the outcome
+    is merely unknown -- an event asserting a command did not run must not be
+    guessed.
+
+    ``host`` is "unattributed" rather than a host name: this layer runs identically
+    under every host and cannot observe which one dropped the call, and naming one
+    would both be a fabrication and make a portable record host-dependent.
+    """
+    try:
+        from gaia.approvals.store import record_execution_denial
+
+        record_execution_denial(
+            approval_id,
+            RESERVATION_ABANDONED_REASON_CODE,
+            host="unattributed",
+            session_id=abandoned.get("session_id"),
+            call_id=abandoned.get("tool_use_id"),
+            index=abandoned.get("index"),
+            command_fingerprint=(item or {}).get("fingerprint"),
+            detail=(
+                "Consented and reserved, never executed: the reservation was "
+                "released after PLAN_COMMAND_RESERVATION_TTL_MINUTES without a "
+                "settle, and a fresh tool call reclaimed the index."
+            ),
+            db_path=db_path,
+        )
+    except Exception:
+        return
+
+
 def reserve_plan_command(
     command: str,
     *,
@@ -6706,6 +6812,13 @@ def reserve_plan_command(
     build_policy_payload), so the rule is meetable on either. A grant predating
     the reserved_tool_use_ids_json column carries an empty history and therefore
     reserves exactly as it did before the column existed.
+
+    A reservation older than PLAN_COMMAND_RESERVATION_TTL_MINUTES is reclaimed
+    rather than refused: settle_plan_command runs only if the command reaches
+    execution, so a host that drops an allowed call would otherwise hold the index
+    for the rest of the grant's life. The reclaim is a compare-and-set against the
+    exact id observed, and it records the abandoned attempt on the approval's event
+    chain without moving any authorization state.
     """
     if not session_id or not tool_use_id:
         return None
@@ -6738,23 +6851,37 @@ def reserve_plan_command(
             if tool_use_id in reserved_ids:
                 con.rollback()
                 return None
-            if grant.get("reservation_tool_use_id"):
+            held_by = grant.get("reservation_tool_use_id")
+            if held_by and _reservation_is_live(grant, now_iso):
                 con.rollback()
                 return None
+            abandoned = (
+                {
+                    "tool_use_id": held_by,
+                    "session_id": grant.get("reservation_session_id"),
+                    "index": grant.get("reservation_index"),
+                }
+                if held_by
+                else None
+            )
             changed = con.execute(
                 "UPDATE approval_grants SET reservation_index=?, reservation_session_id=?, "
                 "reservation_tool_use_id=?, reservation_at=?, reserved_tool_use_ids_json=? "
-                "WHERE approval_id=? AND reservation_tool_use_id IS NULL AND next_index=?",
+                "WHERE approval_id=? AND reservation_tool_use_id IS ? AND next_index=?",
                 (
                     index, session_id, tool_use_id, _now_iso(),
                     _json.dumps(reserved_ids + [tool_use_id]),
-                    grant["approval_id"], index,
+                    grant["approval_id"], held_by, index,
                 ),
             ).rowcount
             if changed != 1:
                 con.rollback()
                 return None
             con.commit()
+            if abandoned is not None:
+                _record_abandoned_reservation(
+                    grant["approval_id"], abandoned, item, db_path=db_path
+                )
             return {"approval_id": grant["approval_id"], "index": index}
         con.rollback()
         return None

@@ -213,15 +213,15 @@ def _age_seconds(created_at: Optional[str], now: Optional[datetime] = None) -> f
 # Connection management
 # ---------------------------------------------------------------------------
 
-def _open_db() -> sqlite3.Connection:
-    """Open a connection to ~/.gaia/gaia.db.
+def _open_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    """Open a connection to ``db_path``, or to the resolved ~/.gaia/gaia.db.
 
     Uses gaia.store.writer._connect() to ensure the schema is materialized and
     gaia_sha256 is registered. This makes store.py safe to call in production
     contexts where the DB may not yet exist.
     """
     from gaia.store.writer import _connect
-    return _connect()
+    return _connect(db_path)
 
 
 def _get_con(con: Optional[sqlite3.Connection]) -> tuple[sqlite3.Connection, bool]:
@@ -536,6 +536,7 @@ def record_execution_denial(
     command_fingerprint: Optional[str] = None,
     agent_id: Optional[str] = None,
     detail: Optional[str] = None,
+    db_path: Optional[Path] = None,
 ) -> None:
     """Append one refused execution to an approval's chain, changing no state.
 
@@ -546,6 +547,10 @@ def record_execution_denial(
 
     At most one event is written per (approval_id, call_id), so an agent looping
     on the same call appends one record rather than one per attempt.
+
+    ``db_path`` keeps the record on the SAME substrate as the write that occasioned
+    it: a caller holding an explicit path would otherwise write its state to one
+    database and the event explaining it to another.
 
     Never raises: a failed write loses the record, never the denial.
     """
@@ -561,7 +566,7 @@ def record_execution_denial(
         }
         if detail:
             metadata["detail"] = detail
-        con = _open_db()
+        con = _open_db(db_path)
         try:
             if _execution_denial_recorded(con, approval_id, call_id or ""):
                 return
