@@ -55,6 +55,17 @@ CONTROL_OPENED_EVENT = "consent.control.opened"
 CONTROL_CLOSED_EVENT = "consent.control.closed"
 CONTROL_CLOSE_DECIDED = "decided"
 
+# A tool call that claimed an armed consent retry and was refused, with the one
+# comparison that refused it. The specialist gets the same cause in its error;
+# this record is what lets the orchestrator read it after the turn ended. The
+# lane names the gate that refused: the plugin judges the call against its own
+# bound retry before policy; the policy adapter judges the proof the plugin
+# forwarded against the grant it names.
+CONSENT_RETRY_REFUSED_EVENT = "consent.retry.refused"
+LANE_OPENCODE_PLUGIN_GATE = "opencode.plugin_gate"
+LANE_OPENCODE_POLICY_GATE = "opencode.policy_gate"
+RETRY_REFUSED_PROOF_REJECTED = "proof_rejected"
+
 # The user's "yes" reached Gaia and the plugin armed the grant. approval_events
 # holds the decision itself (opencode-decide writes it); this record holds what
 # the plugin did next -- which session it told to resume the specialist, or
@@ -339,6 +350,46 @@ def record_control_closed(
     )
 
 
+def record_consent_retry_refused(
+    *,
+    approval_id: str,
+    session_id: str,
+    call_id: str,
+    reason: str,
+    expected: str,
+    received: str,
+    lane: str,
+    detail: str = "",
+) -> int | None:
+    """Append the record that a claimed consent retry was refused, and on what.
+
+    ``reason`` is the refusing gate's own vocabulary, recorded verbatim for the
+    same reason as :func:`record_control_closed`; ``expected`` and ``received``
+    are the two sides of the comparison that failed, so the reader does not
+    have to reproduce the call to learn which field drifted.
+    """
+    meta: dict[str, Any] = {
+        "lane": lane,
+        "reason": reason,
+        "expected": expected,
+        "received": received,
+        "approval_id": approval_id,
+        "session_id": session_id,
+        "call_id": call_id,
+    }
+    if detail:
+        meta["detail"] = detail
+    result = (
+        f"{reason}: consent retry for {approval_id} refused in session {session_id}"
+        f" -- expected {expected}, received {received}"
+    )
+    if detail:
+        result = f"{result} -- {detail}"
+    return _record_control_event(
+        CONSENT_RETRY_REFUSED_EVENT, result=result, severity="warning", meta=meta,
+    )
+
+
 def record_decision_applied(
     *,
     approval_id: str,
@@ -384,6 +435,7 @@ def record_decision_applied(
 
 
 __all__ = [
+    "CONSENT_RETRY_REFUSED_EVENT",
     "CONTROL_CLOSED_EVENT",
     "CONTROL_CLOSE_DECIDED",
     "CONTROL_OPENED_EVENT",
@@ -393,6 +445,8 @@ __all__ = [
     "DETAILS_PAYLOAD_KEY",
     "LANE_CLAUDE_CODE_QUESTION",
     "LANE_OPENCODE_PERMISSION",
+    "LANE_OPENCODE_PLUGIN_GATE",
+    "LANE_OPENCODE_POLICY_GATE",
     "REASON_ACTIVATION_FAILED",
     "REASON_ALWAYS_REFUSED",
     "REASON_CONTROL_PLANE_FAILED",
@@ -400,8 +454,10 @@ __all__ = [
     "REASON_NO_NONCE_IN_LABELS",
     "REASON_NO_SESSION_BINDING",
     "REASON_PRESENTATION_FAILED",
+    "RETRY_REFUSED_PROOF_REJECTED",
     "DecisionNotActivated",
     "build_decision_not_activated",
+    "record_consent_retry_refused",
     "record_control_closed",
     "record_control_opened",
     "record_decision_applied",

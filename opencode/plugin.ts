@@ -343,6 +343,7 @@ export const UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
 export const CONTROL_OPENED_EVENT = "control.opened"
 export const CONTROL_CLOSED_EVENT = "control.closed"
 export const DECISION_APPLIED_EVENT = "decision.applied"
+export const CONSENT_RETRY_REFUSED_EVENT = "retry.refused"
 
 /**
  * The one message the plugin puts in the orchestrator's session once the user
@@ -1378,6 +1379,32 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     }
   }
 
+  /** Trace a refused claim to the bound retry, with the comparison that refused it.
+   *
+   * The specialist receives the same cause in the thrown error; this record is
+   * what lets the orchestrator read it once that turn has ended. The refusal
+   * never depends on this call succeeding.
+   */
+  async function reportConsentRetryRefused(
+    retry: BoundRetry,
+    call: { sessionID?: string; callID?: string },
+    refusal: ConsentRetryRefusal,
+  ) {
+    try {
+      await send({
+        event: CONSENT_RETRY_REFUSED_EVENT,
+        sessionID: call.sessionID,
+        callID: call.callID,
+        approvalID: retry.approvalID,
+        reason: refusal.reason,
+        expected: refusal.expected,
+        received: refusal.received,
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:consent] refused retry of ${retry.approvalID} went unaudited: ${error}`)
+    }
+  }
+
   async function requestApproval(response: BridgeResponse, sessionID: string, callID: string, role: string) {
     const id = approvalID(response)
     if (!id) return
@@ -1627,8 +1654,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       const normalized = normalizeBridgeToolRequest(call.tool, output.args, input)
       const retry = retryBySession.get(call.sessionID)
       const verdict = retry ? evaluateConsentRetry(retry, call, agent, normalized.tool, normalized.args) : undefined
-      if (verdict?.refusal) {
-        throw new Error("Gaia refused a drifted or replayed consent retry")
+      if (retry && verdict?.refusal) {
+        await reportConsentRetryRefused(retry, call, verdict.refusal)
+        const { reason, expected, received } = verdict.refusal
+        throw new Error(
+          `Gaia refused consent retry for ${retry.approvalID}: ${reason} (expected ${expected}, received ${received})`,
+        )
       }
       const retryProof = verdict?.proof
       const response = await send({

@@ -26,13 +26,15 @@ for _path in (str(_ROOT), str(_HOOKS)):
 _ATTEST_EVENT = "identity.attest"
 
 # Must stay equal to plugin.ts's UNCORRELATED_PERMISSION_EVENT,
-# CONTROL_OPENED_EVENT, CONTROL_CLOSED_EVENT and DECISION_APPLIED_EVENT: the
-# two halves of this adapter exchange the names by value, and a rename on one
-# side silently stops the audit rather than failing.
+# CONTROL_OPENED_EVENT, CONTROL_CLOSED_EVENT, DECISION_APPLIED_EVENT and
+# CONSENT_RETRY_REFUSED_EVENT: the two halves of this adapter exchange the
+# names by value, and a rename on one side silently stops the audit rather
+# than failing.
 _UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
 _CONTROL_OPENED_EVENT = "control.opened"
 _CONTROL_CLOSED_EVENT = "control.closed"
 _DECISION_APPLIED_EVENT = "decision.applied"
+_CONSENT_RETRY_REFUSED_EVENT = "retry.refused"
 _CONTROL_PLANE_STAGE = "control-plane"
 _DECIDE_STAGE = "decide"
 
@@ -210,6 +212,30 @@ def _record_decision_applied(raw: dict[str, object]) -> dict[str, object]:
     return _ack()
 
 
+def _record_consent_retry_refused(raw: dict[str, object]) -> dict[str, object]:
+    """Record that the plugin refused a claimed consent retry, and on what.
+
+    Acknowledged unconditionally: the plugin throws the refusal to the
+    specialist whether or not this write lands, and an audit write must not
+    become a policy answer.
+    """
+    from gaia.approvals.decision_audit import (
+        LANE_OPENCODE_PLUGIN_GATE,
+        record_consent_retry_refused,
+    )
+
+    record_consent_retry_refused(
+        approval_id=str(raw.get("approvalID") or ""),
+        session_id=str(raw.get("sessionID") or ""),
+        call_id=str(raw.get("callID") or ""),
+        reason=str(raw.get("reason") or "") or "unspecified",
+        expected=str(raw.get("expected") or ""),
+        received=str(raw.get("received") or ""),
+        lane=LANE_OPENCODE_PLUGIN_GATE,
+    )
+    return _ack()
+
+
 def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict[str, object]:
     """Evaluate one OpenCode event and return a plugin-safe response."""
     os.environ["GAIA_HOST"] = "opencode"
@@ -223,6 +249,8 @@ def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict
         return _record_control_closed(raw)
     if raw.get("event") == _DECISION_APPLIED_EVENT:
         return _record_decision_applied(raw)
+    if raw.get("event") == _CONSENT_RETRY_REFUSED_EVENT:
+        return _record_consent_retry_refused(raw)
     from adapters.opencode import OpenCodeAdapter
 
     adapter = OpenCodeAdapter()

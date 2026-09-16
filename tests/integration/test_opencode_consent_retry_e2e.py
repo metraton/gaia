@@ -18,6 +18,7 @@ exactly one bound grant index.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import subprocess
@@ -259,6 +260,14 @@ def _control_closures(db_path):
     ]
 
 
+def _retry_refusals(db_path):
+    """Every consent.retry.refused trace, reduced to the fields a reader acts on."""
+    return [
+        {key: payload[key] for key in ("reason", "expected", "received", "approval_id", "call_id", "lane")}
+        for payload in _harness_payloads(db_path, "consent.retry.refused")
+    ]
+
+
 def _tool_exchanges(driven, event="tool.execute.before", tool="bash"):
     """The bridge exchanges for one tool, in the order the plugin sent them.
 
@@ -490,7 +499,12 @@ def test_drift_after_yes_is_refused_before_policy_and_changes_no_state(db_env):
     ])
 
     assert _step(driven, "drifted")["allowed"] is False, driven
-    assert "drifted or replayed" in _step(driven, "drifted")["error"]
+    drifted_fingerprint = hashlib.sha256(drifted.encode("utf-8")).hexdigest()
+    # The specialist is told which comparison refused it, not a generic verdict.
+    assert _step(driven, "drifted")["error"] == (
+        f"Gaia refused consent retry for {approval_id}: fingerprint_mismatch "
+        f"(expected {FIRST_FINGERPRINT}, received {drifted_fingerprint})"
+    )
     assert len(_tool_exchanges(driven)) == 1
     grant = _grant(db_path, approval_id)
     assert grant["status"] == "PENDING"
@@ -498,6 +512,19 @@ def test_drift_after_yes_is_refused_before_policy_and_changes_no_state(db_env):
     assert grant["reservation_tool_use_id"] is None
     assert _row_count(db_path, "approval_grants") == 1
     assert _row_count(db_path, "approvals") == 1
+    assert _retry_refusals(db_path) == [{
+        "reason": "fingerprint_mismatch",
+        "expected": FIRST_FINGERPRINT,
+        "received": drifted_fingerprint,
+        "approval_id": approval_id,
+        "call_id": RETRY_CALL_ID,
+        "lane": "opencode.plugin_gate",
+    }]
+    with sqlite3.connect(db_path) as con:
+        severities = con.execute(
+            "SELECT severity FROM harness_events WHERE type='consent.retry.refused'"
+        ).fetchall()
+    assert severities == [("warning",)]
 
 
 def test_replayed_retry_is_refused_before_a_second_policy_effect(db_env):
@@ -513,8 +540,15 @@ def test_replayed_retry_is_refused_before_a_second_policy_effect(db_env):
 
     assert _step(driven, "retry")["allowed"] is True, driven
     assert _step(driven, "replay")["allowed"] is False, driven
-    assert "drifted or replayed" in _step(driven, "replay")["error"]
+    assert _step(driven, "replay")["error"] == (
+        f"Gaia refused consent retry for {approval_id}: replayed_call_id "
+        f"(expected an unused call id, received {RETRY_CALL_ID})"
+    )
     assert len(_tool_exchanges(driven)) == 2
+    # The accepted retry left no refusal behind; only the replay did.
+    assert [(r["reason"], r["call_id"]) for r in _retry_refusals(db_path)] == [
+        ("replayed_call_id", RETRY_CALL_ID),
+    ]
     grant = _grant(db_path, approval_id)
     assert grant["status"] == "PENDING"
     assert grant["next_index"] == 0
@@ -603,6 +637,8 @@ def test_fresh_bound_retry_reserves_exact_index_executes_settles_and_freezes(db_
     grant = _grant(db_path, approval_id)
     assert grant is not None and grant["scope"] == "COMMAND_SET"
     assert grant["source"] == "plan-first"
+    # A retry that matched its bound grant is not a refusal: no trace at all.
+    assert _harness_payloads(db_path, "consent.retry.refused") == []
 
     items = json.loads(grant["command_set_json"])
     assert items[0]["fingerprint"] == command_fingerprint(FIRST_COMMAND)

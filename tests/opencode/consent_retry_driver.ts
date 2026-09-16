@@ -31,7 +31,7 @@ const gaiaPath = new URL("../../bin/gaia", import.meta.url).pathname
 
 /** Bridge events that carry an audit record, never a policy verdict. */
 const AUDIT_TRACE_EVENTS = new Set([
-  "permission.uncorrelated", "control.opened", "control.closed", "decision.applied",
+  "permission.uncorrelated", "control.opened", "control.closed", "decision.applied", "retry.refused",
 ])
 
 /**

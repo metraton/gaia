@@ -504,13 +504,21 @@ class OpenCodeAdapter(HookAdapter):
     def _record_retry_denial(
         cls, event: HookEvent, tool_name: str, reason: str,
     ) -> None:
-        """Leave a durable denial on the approval a refused retry belongs to.
+        """Leave a durable trace of a refused retry proof, and why.
 
         Never raises and never affects the verdict: the caller has already
-        decided the denial. A command matching no live plan-first grant has no
-        approval row to write on and is skipped.
+        decided the denial. The ``harness_events`` record is written for every
+        refusal, naming the grant the call should have matched against what
+        the call actually presented; the ``approval_events`` denial needs an
+        approval row to hang off, so it is written only when a live plan-first
+        grant matches the command.
         """
         try:
+            from gaia.approvals.decision_audit import (
+                LANE_OPENCODE_POLICY_GATE,
+                RETRY_REFUSED_PROOF_REJECTED,
+                record_consent_retry_refused,
+            )
             from gaia.approvals.store import record_execution_denial
             from gaia.store.writer import find_pending_plan_command
 
@@ -518,6 +526,25 @@ class OpenCodeAdapter(HookAdapter):
             if command is None:
                 return
             match = find_pending_plan_command(command)
+            proof = event.payload.get("consentRetry")
+            claimed_id = proof.get("approval_id") if isinstance(proof, dict) else None
+            observed_fingerprint = hashlib.sha256(command.encode("utf-8")).hexdigest()
+            record_consent_retry_refused(
+                approval_id=match["approval_id"] if match else str(claimed_id or ""),
+                session_id=event.session_id or "",
+                call_id=event.call_id or "",
+                reason=RETRY_REFUSED_PROOF_REJECTED,
+                expected=(
+                    f"grant {match['approval_id']}[{match['index']}] fingerprint {match['fingerprint']}"
+                    if match else "a live plan-first grant naming this command"
+                ),
+                received=(
+                    f"{event.session_id}/{event.call_id} as {cls._policy_agent_type(event)}"
+                    f" fingerprint {observed_fingerprint}"
+                ),
+                lane=LANE_OPENCODE_POLICY_GATE,
+                detail=reason,
+            )
             if match is None:
                 return
             record_execution_denial(

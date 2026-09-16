@@ -175,6 +175,16 @@ re-present. The records, by type:
 - `consent.decision.applied`: the grant was armed for `once`;
   `notified_session_id` is the root session that received the activation
   notice, empty (warning) with `notify_failure` when none could be told.
+- `consent.retry.refused` (warning): after the yes, a tool call claimed the
+  armed retry and was refused, with `expected` and `received` for the one
+  comparison that failed. `lane` `opencode.plugin_gate` carries the plugin's
+  `reason` (`opencode/plugin.ts::evaluateConsentRetry`): `replayed_call_id`,
+  `session_mismatch`, `role_mismatch`, `out_of_order`, `fingerprint_mismatch`.
+  `lane` `opencode.policy_gate` carries `proof_rejected` with the adapter's
+  cause in `detail` (`hooks/adapters/opencode.py::_consent_retry_rejection`).
+  The specialist's own error names the same approval, reason and pair, so a
+  specialist reporting "Gaia refused consent retry for P-...: role_mismatch"
+  is reporting this row, not asking for a new presentation.
 
 On either host, before dispatching execution confirm with `gaia approvals show
 <approval_id>` that the approval actually left `pending`. Presentation and
