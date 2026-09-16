@@ -25,6 +25,17 @@ for _path in (str(_ROOT), str(_HOOKS)):
 
 _ATTEST_EVENT = "identity.attest"
 
+# Must stay equal to plugin.ts's UNCORRELATED_PERMISSION_EVENT: the two halves
+# of this adapter exchange the name by value, and a rename on one side silently
+# stops the audit rather than failing.
+_UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
+
+# The lane named here is permission.ask, not decision_audit's
+# LANE_OPENCODE_PERMISSION ("opencode.permission_replied"): what is recorded is
+# a request refused before any user reply existed, so reusing the reply lane's
+# name would misreport where the decision was lost.
+PERMISSION_ASK_LANE = "opencode.permission_ask"
+
 
 def _deny(reason: str) -> dict[str, object]:
     return {"action": "deny", "reason": reason}
@@ -85,11 +96,38 @@ def _ack() -> dict[str, object]:
     return {"action": "allow"}
 
 
+def _record_uncorrelated_permission(raw: dict[str, object]) -> dict[str, object]:
+    """Record one host permission request that matched no Gaia verdict.
+
+    The plugin has already denied it by the time this runs, so nothing here can
+    change the outcome and the acknowledgment is unconditional -- an audit write
+    that failed must not be reported to the plugin as a policy answer. The
+    request carried no binding to any session Gaia ruled on, which is exactly
+    what REASON_NO_SESSION_BINDING names.
+    """
+    from gaia.approvals.decision_audit import (
+        REASON_NO_SESSION_BINDING,
+        record_decision_not_activated,
+    )
+
+    call_id = str(raw.get("callID") or "")
+    record_decision_not_activated(
+        reason=REASON_NO_SESSION_BINDING,
+        lane=PERMISSION_ASK_LANE,
+        session_id=str(raw.get("sessionID") or ""),
+        detail="host permission request correlated to no Gaia verdict",
+        details={"call_id": call_id},
+    )
+    return _ack()
+
+
 def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict[str, object]:
     """Evaluate one OpenCode event and return a plugin-safe response."""
     os.environ["GAIA_HOST"] = "opencode"
     if raw.get("event") == _ATTEST_EVENT:
         return _attest(raw)
+    if raw.get("event") == _UNCORRELATED_PERMISSION_EVENT:
+        return _record_uncorrelated_permission(raw)
     from adapters.opencode import OpenCodeAdapter
 
     adapter = OpenCodeAdapter()

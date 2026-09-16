@@ -332,6 +332,14 @@ const LIFECYCLE_EVENT_TYPES = new Set([
   "session.compacted",
 ])
 
+/**
+ * The bridge event that records a host permission request matching no Gaia
+ * verdict. Must stay equal to bridge.py's UNCORRELATED_PERMISSION_EVENT: the
+ * two halves of this adapter exchange the name by value, and a rename on one
+ * side silently stops the audit rather than failing.
+ */
+export const UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
+
 export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
   if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
   if (typeof eventType === "string" && COMPATIBILITY_PERMISSION_EVENTS.includes(eventType)) {
@@ -663,6 +671,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   await announceLiveness(input)
   const pending = new Map<string, PendingApproval>()
   const pendingByCall = new Map<string, PendingApproval>()
+  // `sessionID:callID` pairs Gaia ALLOWED in tool.execute.before. OpenCode runs
+  // its own permission gate AFTER that verdict, and a second gate that can deny
+  // what Gaia granted makes an approval mean something different here than on
+  // Claude Code, where PreToolUse is the last word. Consumed on use, so one
+  // verdict frees exactly the one call it ruled on.
+  const allowedByCall = new Set<string>()
   const controlBySession = new Map<string, ControlDecision>()
   const controlByQuestion = new Map<string, ControlDecision>()
   const retryBySession = new Map<string, BoundRetry>()
@@ -1036,6 +1050,26 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     if (!control.closed) pendingByCall.set(`${sessionID}:${callID}`, pendingApproval)
   }
 
+  /** Leave a durable trace of a denial that otherwise only reached stderr.
+   *
+   * A request denied here and a request never made are indistinguishable to the
+   * user: that is how a signed approval came to look like a command nobody ever
+   * attempted. The bridge routes this onto Gaia's existing non-activation audit
+   * channel, so the denial becomes queryable without a new record shape. The
+   * denial itself never depends on this call succeeding.
+   */
+  async function reportUncorrelatedDenial(sessionID: unknown, callID: unknown) {
+    try {
+      await send({
+        event: UNCORRELATED_PERMISSION_EVENT,
+        sessionID: typeof sessionID === "string" ? sessionID : "",
+        callID: typeof callID === "string" ? callID : "",
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:permission] uncorrelated denial went unaudited: ${error}`)
+    }
+  }
+
   function consentRetry(
     retry: BoundRetry | undefined,
     call: { sessionID?: string; callID?: string },
@@ -1076,6 +1110,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       shellIdentities.clear()
       pending.clear()
       pendingByCall.clear()
+      allowedByCall.clear()
       controlByQuestion.clear()
       controlBySession.clear()
       retryByCall.clear()
@@ -1193,11 +1228,19 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         : undefined
       const approval = key ? pendingByCall.get(key) : undefined
       if (!approval) {
+        // A pair Gaia already allowed carries its verdict through: deciding it
+        // again here would let the host's gate revoke consent Gaia granted.
+        // Deleting is the consume -- the allow is spent on this one request.
+        if (key && allowedByCall.delete(key)) {
+          output.status = "allow"
+          return
+        }
         // This hook must never turn an uncorrelated or unsupported host request
         // into consent. Keep the host's request denied and make the capability
         // failure observable to the host log/stderr.
         output.status = "deny"
         console.error("[gaia-opencode:permission] denied uncorrelated permission request")
+        await reportUncorrelatedDenial(sessionID, callID)
         return
       }
       if (permission.id === undefined || permission.sessionID !== approval.sessionID) {
@@ -1310,6 +1353,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
             cwd: resolve(directory), args: output.args,
           })
         }
+        // Recorded last, so every check this branch still owes has passed: a
+        // throw above aborts the call, and a call that never runs must not
+        // leave a verdict the host's permission gate could later honor.
+        allowedByCall.add(`${call.sessionID}:${call.callID}`)
         return
       }
       if (approvalID(response)) {
@@ -1331,6 +1378,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         return
       }
       shellIdentities.forget(call.sessionID, call.callID)
+      // The call is over, so an allow the host never submitted to its gate has
+      // no request left to answer and must not outlive the call that earned it.
+      allowedByCall.delete(`${call.sessionID}:${call.callID}`)
       const agent = agentBySession.get(call.sessionID)
       if (call.tool === "task") {
         const sessionID = output.metadata?.sessionId
