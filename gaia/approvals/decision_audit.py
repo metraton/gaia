@@ -47,6 +47,13 @@ REASON_CONTROL_PLANE_FAILED = "control_plane_failed"
 # the presentation; this event records the question reaching the host.
 CONTROL_OPENED_EVENT = "consent.control.opened"
 
+# Every release of an opened control, with the plugin's reason for releasing
+# it. A control closed for any reason but a recorded decision is a consent
+# path that ended without the user's answer reaching Gaia, which is why only
+# CONTROL_CLOSE_DECIDED is graded info.
+CONTROL_CLOSED_EVENT = "consent.control.closed"
+CONTROL_CLOSE_DECIDED = "decided"
+
 # A decision that grants nothing is not automatically a fault -- a plain
 # rejection is the consent layer working as designed. Only the reasons where a
 # signature was given and could not be honored -- or, for presentation_failed
@@ -228,6 +235,36 @@ def record_decision_not_activated(
         return None
 
 
+def _record_control_event(
+    event_type: str, *, result: str, severity: str, meta: dict[str, Any]
+) -> int | None:
+    """Append one control-plane lifecycle record.
+
+    Same substrate and failure policy as :func:`record_decision_not_activated`:
+    a failed append is logged and swallowed, because the control it describes
+    has already changed state and an audit hiccup must not change it again.
+    """
+    try:
+        from gaia.project import resolve_workspace
+        from gaia.store.writer import write_harness_event
+
+        return write_harness_event(
+            workspace=resolve_workspace(),
+            event_type=event_type,
+            source=DECISION_NOT_ACTIVATED_SOURCE,
+            agent="",
+            result=result,
+            severity=severity,
+            meta=meta,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Failed to record %s for %s (non-fatal): %s",
+            event_type, meta.get("approval_id"), exc,
+        )
+        return None
+
+
 def record_control_opened(
     *,
     approval_id: str,
@@ -236,44 +273,64 @@ def record_control_opened(
     control_session_id: str,
     lane: str,
 ) -> int | None:
-    """Append the record that the host accepted the consent question.
+    """Append the record that the host accepted the consent question."""
+    return _record_control_event(
+        CONTROL_OPENED_EVENT,
+        result=(
+            f"consent question for {approval_id} reached the host "
+            f"in control session {control_session_id}"
+        ),
+        severity="info",
+        meta={
+            "lane": lane,
+            "approval_id": approval_id,
+            "session_id": session_id,
+            "call_id": call_id,
+            "control_session_id": control_session_id,
+        },
+    )
 
-    Same substrate and failure policy as :func:`record_decision_not_activated`:
-    a failed append is logged and swallowed, because the control it describes
-    is already open and an audit hiccup must not close it.
+
+def record_control_closed(
+    *,
+    approval_id: str,
+    session_id: str,
+    call_id: str,
+    control_session_id: str,
+    reason: str,
+    lane: str,
+    detail: str = "",
+) -> int | None:
+    """Append the record that the plugin released the control for one approval.
+
+    ``reason`` is the plugin's own vocabulary, recorded verbatim: the reader
+    needs to know which exit the control took, and a vocabulary duplicated here
+    would drift from the code that takes those exits.
     """
-    meta = {
+    meta: dict[str, Any] = {
         "lane": lane,
+        "reason": reason,
         "approval_id": approval_id,
         "session_id": session_id,
         "call_id": call_id,
         "control_session_id": control_session_id,
     }
-    try:
-        from gaia.project import resolve_workspace
-        from gaia.store.writer import write_harness_event
-
-        return write_harness_event(
-            workspace=resolve_workspace(),
-            event_type=CONTROL_OPENED_EVENT,
-            source=DECISION_NOT_ACTIVATED_SOURCE,
-            agent="",
-            result=(
-                f"consent question for {approval_id} reached the host "
-                f"in control session {control_session_id}"
-            ),
-            severity="info",
-            meta=meta,
-        )
-    except Exception as exc:
-        logger.warning(
-            "Failed to record opened control for %s on lane %s (non-fatal): %s",
-            approval_id, lane, exc,
-        )
-        return None
+    if detail:
+        meta["detail"] = detail
+    result = f"{reason}: consent control for {approval_id} closed in session {control_session_id}"
+    if detail:
+        result = f"{result} -- {detail}"
+    return _record_control_event(
+        CONTROL_CLOSED_EVENT,
+        result=result,
+        severity="info" if reason == CONTROL_CLOSE_DECIDED else "warning",
+        meta=meta,
+    )
 
 
 __all__ = [
+    "CONTROL_CLOSED_EVENT",
+    "CONTROL_CLOSE_DECIDED",
     "CONTROL_OPENED_EVENT",
     "DECISION_NOT_ACTIVATED_EVENT",
     "DECISION_NOT_ACTIVATED_SOURCE",
@@ -288,6 +345,7 @@ __all__ = [
     "REASON_PRESENTATION_FAILED",
     "DecisionNotActivated",
     "build_decision_not_activated",
+    "record_control_closed",
     "record_control_opened",
     "record_decision_not_activated",
 ]

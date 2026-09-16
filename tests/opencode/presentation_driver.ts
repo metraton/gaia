@@ -36,7 +36,7 @@ Bun.spawn = ((argv: string[], options?: { cwd?: string }) => {
 }) as typeof Bun.spawn
 
 async function gaiaBridge(event: Record<string, unknown>) {
-  if (event.event === "permission.uncorrelated" || event.event === "control.opened") {
+  if (["permission.uncorrelated", "control.opened", "control.closed", "decision.applied"].includes(String(event.event))) {
     bridgeEvents.push(event)
     return { action: "allow" as const }
   }

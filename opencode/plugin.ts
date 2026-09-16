@@ -340,6 +340,26 @@ const LIFECYCLE_EVENT_TYPES = new Set([
  */
 export const UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
 export const CONTROL_OPENED_EVENT = "control.opened"
+export const CONTROL_CLOSED_EVENT = "control.closed"
+
+/**
+ * Why a consent control was released. Recorded verbatim by the bridge, so a
+ * reader of harness_events can tell which exit the control took; `decided` is
+ * the one exit where the user's answer reached Gaia.
+ */
+export type ControlCloseReason =
+  | "decided"
+  | "decide_failed"
+  | "question_mismatch"
+  | "question_rejected"
+  | "reply_unreadable"
+  | "permission_reply_unusable"
+  | "decision_duplicate"
+  | "retry_conflict"
+  | "prompt_rejected"
+  | "session_ended"
+  | "drifted_tool_call"
+  | "drifted_tool_result"
 
 export function permissionDecisionLane(eventType: unknown): DecisionLane | undefined {
   if (eventType === PREFERRED_PERMISSION_EVENT) return "preferred"
@@ -558,6 +578,37 @@ export function binaryDecisionRequest(
       multiple: false,
     },
   }
+}
+
+/**
+ * Whether the host's copy of the question is the one binary question Gaia
+ * asked, compared by the fields that carry consent: header, question text,
+ * the ordered option labels and descriptions, and single choice.
+ *
+ * Compared structurally, never as serialized bytes: the host re-encodes the
+ * question (QuestionInfo declares question, header, options, multiple, custom
+ * in that order; the plugin sends header first) and may add keys of its own
+ * (`custom`, `tool`). A byte comparison closed the control on every such
+ * re-encoding, silently. A missing `multiple` reads as single choice, which is
+ * what Gaia asked for.
+ */
+export function matchesBinaryQuestion(
+  questions: unknown,
+  expected: BinaryDecisionRequest["question"],
+): boolean {
+  if (!Array.isArray(questions) || questions.length !== 1) return false
+  const question = questions[0] as Record<string, unknown> | null
+  if (!question || typeof question !== "object") return false
+  if (question.header !== expected.header || question.question !== expected.question) return false
+  if (Boolean(question.multiple) !== expected.multiple) return false
+  const options = question.options
+  if (!Array.isArray(options) || options.length !== expected.options.length) return false
+  return expected.options.every((option, index) => {
+    const candidate = options[index] as Record<string, unknown> | null
+    return Boolean(candidate) && typeof candidate === "object"
+      && candidate.label === option.label
+      && candidate.description === option.description
+  })
 }
 
 export function readBinaryDecision(
@@ -969,14 +1020,50 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     return decided.ok
   }
 
-  function closeControl(control: ControlDecision): void {
+  /** Release a control and leave the reason where a reader can find it.
+   *
+   * Every exit is logged AND traced through the bridge: a control that closes
+   * without a trace is indistinguishable from one the host never answered,
+   * which is how a user's answer came to vanish with nothing to query
+   * (measured 2026-09-16). A control already closed is left alone, so the
+   * clear that follows a decision does not record a second exit.
+   */
+  async function closeControl(
+    control: ControlDecision,
+    reason: ControlCloseReason,
+    detail?: string,
+  ): Promise<void> {
+    if (control.closed) return
     control.closed = true
     if (control.questionID && controlByQuestion.get(control.questionID) === control) {
       controlByQuestion.delete(control.questionID)
     }
+    const { approvalID, sessionID, callID } = control.approval
+    const controlSessionID = control.request.sessionID
+    console.error(
+      `[gaia-opencode:control] closed control for ${approvalID} in ${controlSessionID}: ${reason}`
+      + (detail ? ` -- ${detail}` : ""),
+    )
+    try {
+      await send({
+        event: CONTROL_CLOSED_EVENT,
+        sessionID,
+        callID,
+        approvalID,
+        controlSessionID,
+        reason,
+        ...(detail ? { detail } : {}),
+      })
+    } catch (error) {
+      console.error(`[gaia-opencode:control] closed control ${controlSessionID} went unaudited: ${error}`)
+    }
   }
 
-  function clearPendingApproval(approvalID: string): void {
+  async function clearPendingApproval(
+    approvalID: string,
+    reason: ControlCloseReason,
+    detail?: string,
+  ): Promise<void> {
     for (const [key, approval] of pendingByCall) {
       if (approval.approvalID === approvalID) pendingByCall.delete(key)
     }
@@ -984,7 +1071,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (approval.approvalID === approvalID) pending.delete(key)
     }
     for (const control of controlBySession.values()) {
-      if (control.approval.approvalID === approvalID) closeControl(control)
+      if (control.approval.approvalID === approvalID) await closeControl(control, reason, detail)
     }
   }
 
@@ -995,12 +1082,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   ): Promise<boolean> {
     const existing = retryBySession.get(control.approval.sessionID)
     if (reply === "once" && existing && existing.correlationID !== control.retry.correlationID) {
-      closeControl(control)
+      await closeControl(control, "retry_conflict", `session already bound to ${existing.approvalID}`)
       return false
     }
     const admission = decisions.admit(control.request.correlationID, lane)
     if (!admission.accepted) {
-      closeControl(control)
+      await closeControl(control, "decision_duplicate", `lane ${lane} after ${admission.lane}`)
       return false
     }
     const applied = await decide(control.approval, reply, lane)
@@ -1010,7 +1097,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         usedCallIDs: new Set(control.retry.usedCallIDs),
       })
     }
-    clearPendingApproval(control.approval.approvalID)
+    await clearPendingApproval(control.approval.approvalID, applied ? "decided" : "decide_failed", reply)
     return applied
   }
 
@@ -1037,8 +1124,8 @@ export const GaiaOpenCodePlugin = async (input: any) => {
    * can; an orphan that survives is reported, never allowed to keep a control
    * registered for a question nobody will answer.
    */
-  async function abandonControl(control: ControlDecision, controlSessionID: string): Promise<void> {
-    closeControl(control)
+  async function abandonControl(control: ControlDecision, controlSessionID: string, cause: string): Promise<void> {
+    await closeControl(control, "prompt_rejected", cause)
     if (controlBySession.get(controlSessionID) === control) controlBySession.delete(controlSessionID)
     const session = input?.client?.session
     if (typeof session?.delete !== "function") return
@@ -1103,13 +1190,15 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         },
       })
     } catch (error) {
-      await abandonControl(control, controlSessionID)
-      throw await failClosed(`control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`)
+      const cause = `control-plane prompt rejected: ${error instanceof Error ? error.message : String(error)}`
+      await abandonControl(control, controlSessionID, cause)
+      throw await failClosed(cause)
     }
     const promptRejected = hostRejection(prompted)
     if (promptRejected) {
-      await abandonControl(control, controlSessionID)
-      throw await failClosed(`control-plane prompt rejected: ${promptRejected}`)
+      const cause = `control-plane prompt rejected: ${promptRejected}`
+      await abandonControl(control, controlSessionID, cause)
+      throw await failClosed(cause)
     }
     await reportControlOpened(approval, controlSessionID)
     return control
@@ -1242,12 +1331,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         const requestID = event.properties?.id
         const control = typeof sessionID === "string" ? controlBySession.get(sessionID) : undefined
         if (!control || control.closed || typeof requestID !== "string" || !requestID) return
-        if (
-          control.questionID
-          || controlByQuestion.has(requestID)
-          || JSON.stringify(event.properties?.questions) !== JSON.stringify([control.request.question])
-        ) {
-          closeControl(control)
+        if (control.questionID || controlByQuestion.has(requestID)) {
+          await closeControl(control, "question_mismatch", `second question ${requestID} for one control`)
+          return
+        }
+        if (!matchesBinaryQuestion(event.properties?.questions, control.request.question)) {
+          await closeControl(control, "question_mismatch", `host asked ${JSON.stringify(event.properties?.questions)}`)
           return
         }
         control.questionID = requestID
@@ -1257,7 +1346,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       if (event.type === "question.rejected") {
         const requestID = event.properties?.requestID ?? event.properties?.id
         const control = typeof requestID === "string" ? controlByQuestion.get(requestID) : undefined
-        if (control) closeControl(control)
+        if (control) await closeControl(control, "question_rejected")
         return
       }
       if (event.type === "question.replied") {
@@ -1267,7 +1356,9 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (!control || control.closed || control.request.sessionID !== sessionID) return
         const reply = readBinaryDecision(control.request, event.properties?.answers)
         if (!reply) {
-          clearPendingApproval(control.approval.approvalID)
+          await clearPendingApproval(
+            control.approval.approvalID, "reply_unreadable", JSON.stringify(event.properties?.answers),
+          )
           return
         }
         await applyDecision(control, reply, "control")
@@ -1313,7 +1404,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         if (typeof sessionID === "string") {
           const control = controlBySession.get(sessionID)
           if (control) {
-            closeControl(control)
+            await closeControl(control, "session_ended", event.type)
             controlBySession.delete(sessionID)
             return
           }
@@ -1335,7 +1426,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         (candidate) => candidate.approval.approvalID === approval.approvalID,
       )
       if (!reply || !control || control.closed) {
-        clearPendingApproval(approval.approvalID)
+        await clearPendingApproval(approval.approvalID, "permission_reply_unusable", `${event.type} on ${requestID}`)
         return
       }
       await applyDecision(control, reply, lane)
@@ -1390,10 +1481,10 @@ export const GaiaOpenCodePlugin = async (input: any) => {
         }
         if (
           canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
-          || JSON.stringify(output.args?.questions) !== JSON.stringify([control.request.question])
+          || !matchesBinaryQuestion(output.args?.questions, control.request.question)
           || (control.questionCallID !== undefined && control.questionCallID !== call.callID)
         ) {
-          closeControl(control)
+          await closeControl(control, "drifted_tool_call", `${call.tool} ${call.callID}`)
           throw new Error("Gaia consent control plane permits one exact binary question")
         }
         control.questionCallID = call.callID
@@ -1492,7 +1583,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
           canonicalBridgeToolName(call.tool) !== "AskUserQuestion"
           || control.questionCallID !== call.callID
         ) {
-          closeControl(control)
+          await closeControl(control, "drifted_tool_result", `${call.tool} ${call.callID}`)
           throw new Error("Gaia refused a drifted control-plane tool result")
         }
         return

@@ -242,6 +242,23 @@ def _row_count(db_path, table):
         return con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
+def _harness_payloads(db_path, event_type):
+    """The payloads the bridge appended to harness_events under one type, in order."""
+    with sqlite3.connect(db_path) as con:
+        rows = con.execute(
+            "SELECT payload FROM harness_events WHERE type=? ORDER BY id", (event_type,)
+        ).fetchall()
+    return [json.loads(row[0]) for row in rows]
+
+
+def _control_closures(db_path):
+    """(reason, approval_id) for every consent.control.closed trace, in order."""
+    return [
+        (payload["reason"], payload["approval_id"])
+        for payload in _harness_payloads(db_path, "consent.control.closed")
+    ]
+
+
 def _tool_exchanges(driven, event="tool.execute.before", tool="bash"):
     """The bridge exchanges for one tool, in the order the plugin sent them.
 
@@ -296,25 +313,69 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     assert grant["next_index"] == 0
     assert grant["reservation_tool_use_id"] is None
     assert _row_count(db_path, "approval_grants") == 1
+    assert _control_closures(db_path) == [("decided", approval_id)]
+
+
+@pytest.mark.parametrize("encoding", ["reordered", "extra-keys"])
+def test_the_hosts_own_encoding_of_the_question_still_correlates(db_env, encoding):
+    """question.asked carries the host's re-serialization of the question, not the plugin's bytes.
+
+    OpenCode's QuestionInfo orders keys question, header, options, multiple and
+    may add `custom`; the control must correlate on the consent-bearing fields,
+    or every live answer closes the control before it can be read.
+    """
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "approve", "answer": "approve", "questionEncoding": encoding},
+    ])
+
+    assert _step(driven, "approve")["allowed"] is True, driven
+    assert _approval_status(db_path, approval_id) == "approved"
+    assert _grant(db_path, approval_id) is not None
+    assert _control_closures(db_path) == [("decided", approval_id)]
+
+
+def test_a_question_that_is_not_gaias_closes_the_control_with_a_trace(db_env):
+    env, db_path = db_env
+    approval_id = _request_set(env)
+
+    driven = _drive(env, [
+        _before("blocked", FIRST_COMMAND),
+        {"kind": "control-decision", "label": "mismatch", "answer": "approve", "questionEncoding": "mismatch"},
+    ])
+
+    # The driver still delivers an approving reply for the host's question; the
+    # control closed on question.asked, so that reply reaches no decision.
+    assert _approval_status(db_path, approval_id) == "pending"
+    assert _grant(db_path, approval_id) is None
+    assert _control_closures(db_path) == [("question_mismatch", approval_id)]
+    closed = _harness_payloads(db_path, "consent.control.closed")[0]
+    assert closed["detail"].startswith("host asked "), closed
+    assert closed["control_session_id"] == _step(driven, "mismatch")["controlSessionID"]
+    assert closed["session_id"] == SESSION_ID
+    assert closed["call_id"] == CALL_ID
 
 
 @pytest.mark.parametrize(
-    ("steps", "expected_status"),
+    ("steps", "expected_status", "expected_closures"),
     [
-        ([{"kind": "control-decision", "label": "decision", "answer": "reject"}], "rejected"),
-        ([{"kind": "control-decision", "label": "decision", "answer": "Approve"}], "pending"),
-        ([{"kind": "control-decision", "label": "decision", "answers": []}], "pending"),
+        ([{"kind": "control-decision", "label": "decision", "answer": "reject"}], "rejected", ["decided"]),
+        ([{"kind": "control-decision", "label": "decision", "answer": "Approve"}], "pending", ["reply_unreadable"]),
+        ([{"kind": "control-decision", "label": "decision", "answers": []}], "pending", ["reply_unreadable"]),
         ([{
             "kind": "replied",
             "label": "decision",
             "requestID": PERMISSION_ID,
             "reply": "always",
-        }], "pending"),
-        ([], "pending"),
+        }], "pending", ["decide_failed"]),
+        ([], "pending", []),
     ],
     ids=["reject", "free-text", "malformed", "autoapproval", "no-decision"],
 )
-def test_non_yes_decisions_create_no_executable_effect(db_env, steps, expected_status):
+def test_non_yes_decisions_create_no_executable_effect(db_env, steps, expected_status, expected_closures):
     env, db_path = db_env
     approval_id = _request_set(env)
 
@@ -325,6 +386,7 @@ def test_non_yes_decisions_create_no_executable_effect(db_env, steps, expected_s
     assert _grant(db_path, approval_id) is None
     assert _row_count(db_path, "approval_grants") == 0
     assert _row_count(db_path, "approvals") == 1
+    assert _control_closures(db_path) == [(reason, approval_id) for reason in expected_closures]
 
 
 def test_drift_after_yes_is_refused_before_policy_and_changes_no_state(db_env):

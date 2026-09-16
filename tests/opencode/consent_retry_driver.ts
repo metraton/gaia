@@ -28,6 +28,33 @@ import { assertPromptAsyncBody, assertSessionCreateBody } from "./sdk_body_contr
 
 const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
 
+/** Bridge events that carry an audit record, never a policy verdict. */
+const AUDIT_TRACE_EVENTS = new Set([
+  "permission.uncorrelated", "control.opened", "control.closed", "decision.applied",
+])
+
+/**
+ * The host's own encoding of the question the model asked, as the
+ * question.asked event carries it. OpenCode re-serializes QuestionInfo in its
+ * own key order and may add keys the plugin never sent; `mismatch` is a
+ * question that is NOT the one Gaia asked.
+ */
+function hostEncodedQuestion(question: any, encoding: string | undefined) {
+  if (encoding === "reordered") {
+    return {
+      question: question.question,
+      header: question.header,
+      options: question.options.map((option: any) => ({ description: option.description, label: option.label })),
+      multiple: question.multiple,
+    }
+  }
+  if (encoding === "extra-keys") return { ...question, custom: false, tool: "question" }
+  if (encoding === "mismatch") {
+    return { ...question, options: [{ ...question.options[0], label: `${question.options[0].label} ` }, question.options[1]] }
+  }
+  return question
+}
+
 type Exchange = {
   sent: Record<string, unknown>
   received: unknown
@@ -128,7 +155,7 @@ async function policyBridge(event: Record<string, unknown>) {
   // Audit traces the plugin sends mid-verdict (a denial it could not correlate,
   // a control the host accepted) are acknowledged, never ruled on; only a
   // policy answer says whether the host must now ask.
-  const isAuditTrace = event.event === "permission.uncorrelated" || event.event === "control.opened"
+  const isAuditTrace = AUDIT_TRACE_EVENTS.has(String(event.event))
   if (!isAuditTrace) {
     lastBridgeAction = (received as any)?.action
     lastBridgeRequiresApproval = Boolean(
@@ -302,7 +329,10 @@ async function runStep(step: any): Promise<void> {
       )
       await plugin.event({ event: {
         type: "question.asked",
-        properties: { sessionID: controlSessionID, id: requestID, questions },
+        properties: {
+          sessionID: controlSessionID, id: requestID,
+          questions: [hostEncodedQuestion(question, step.questionEncoding)],
+        },
       } })
       const selected = step.answer === "approve"
         ? question.options[0].label

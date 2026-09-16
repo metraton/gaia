@@ -25,11 +25,13 @@ for _path in (str(_ROOT), str(_HOOKS)):
 
 _ATTEST_EVENT = "identity.attest"
 
-# Must stay equal to plugin.ts's UNCORRELATED_PERMISSION_EVENT and
-# CONTROL_OPENED_EVENT: the two halves of this adapter exchange the names by
-# value, and a rename on one side silently stops the audit rather than failing.
+# Must stay equal to plugin.ts's UNCORRELATED_PERMISSION_EVENT,
+# CONTROL_OPENED_EVENT and CONTROL_CLOSED_EVENT: the two halves of this adapter
+# exchange the names by value, and a rename on one side silently stops the
+# audit rather than failing.
 _UNCORRELATED_PERMISSION_EVENT = "permission.uncorrelated"
 _CONTROL_OPENED_EVENT = "control.opened"
+_CONTROL_CLOSED_EVENT = "control.closed"
 _CONTROL_PLANE_STAGE = "control-plane"
 
 # The lane named here is permission.ask, not decision_audit's
@@ -157,6 +159,26 @@ def _record_control_opened(raw: dict[str, object]) -> dict[str, object]:
     return _ack()
 
 
+def _record_control_closed(raw: dict[str, object]) -> dict[str, object]:
+    """Record that the plugin released the control for one approval, and why.
+
+    Acknowledged unconditionally: the control is already closed on the plugin
+    side, and an audit write must not become a policy answer.
+    """
+    from gaia.approvals.decision_audit import record_control_closed
+
+    record_control_closed(
+        approval_id=str(raw.get("approvalID") or ""),
+        session_id=str(raw.get("sessionID") or ""),
+        call_id=str(raw.get("callID") or ""),
+        control_session_id=str(raw.get("controlSessionID") or ""),
+        reason=str(raw.get("reason") or "") or "unspecified",
+        detail=str(raw.get("detail") or ""),
+        lane=PERMISSION_ASK_LANE,
+    )
+    return _ack()
+
+
 def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict[str, object]:
     """Evaluate one OpenCode event and return a plugin-safe response."""
     os.environ["GAIA_HOST"] = "opencode"
@@ -166,6 +188,8 @@ def handle(raw: dict[str, object], *, shell_env_transport: bool = False) -> dict
         return _record_uncorrelated_permission(raw)
     if raw.get("event") == _CONTROL_OPENED_EVENT:
         return _record_control_opened(raw)
+    if raw.get("event") == _CONTROL_CLOSED_EVENT:
+        return _record_control_closed(raw)
     from adapters.opencode import OpenCodeAdapter
 
     adapter = OpenCodeAdapter()
