@@ -142,12 +142,15 @@ def _stored_payload(approval_id):
     return json.loads(row["payload_json"])
 
 
-def _drive_plugin(env, approval_id, call_id=CALL_ID, command=COMMANDS[0], control_prompt=None):
+def _drive_plugin(
+    env, approval_id, call_id=CALL_ID, command=COMMANDS[0], control_prompt=None, directory=None,
+):
     """Run the real plugin under bun and return what it delivered natively.
 
     ``control_prompt="rejected"`` makes the driver's host stub answer
     ``session.promptAsync`` the way the SDK client reports a schema rejection:
     a resolved ``{ error, response: { ok: false } }``, never a throw.
+    ``directory`` is the host's project directory handed to the plugin.
     """
     scenario = {
         "sessionID": SESSION_ID,
@@ -158,6 +161,8 @@ def _drive_plugin(env, approval_id, call_id=CALL_ID, command=COMMANDS[0], contro
     }
     if control_prompt is not None:
         scenario["controlPrompt"] = control_prompt
+    if directory is not None:
+        scenario["directory"] = directory
     result = subprocess.run(
         ["bun", str(DRIVER), json.dumps(scenario)],
         env=env, capture_output=True, text=True, timeout=180,
@@ -354,6 +359,31 @@ def test_a_refused_presentation_keeps_the_approval_id_and_gaia_cause(db_env):
     assert traces[0]["cause"] == "OpenCode session does not own this approval"
     assert traces[0]["sessionID"] == SESSION_ID
     assert traces[0]["callID"] == "call-refused"
+
+
+def test_gaia_runs_from_the_session_directory_not_the_serve_cwd(db_env, approval_id, tmp_path):
+    """The presentation is attributed to the workspace of the session's directory.
+
+    `opencode serve` may run from a directory that is not the project; Gaia
+    resolves the workspace from the cwd of the process that writes, so the
+    plugin must start `bin/gaia` from the directory the host handed it.
+    """
+    session_directory = tmp_path / "session-project"
+    session_directory.mkdir()
+    assert str(session_directory) != os.getcwd()
+
+    delivered = _drive_plugin(
+        db_env, approval_id, call_id="call-cwd", directory=str(session_directory),
+    )
+
+    assert delivered["asked"][0]["status"] == "ask"
+    assert delivered["gaiaSpawnCwds"] == [str(session_directory)], delivered["gaiaSpawnCwds"]
+
+
+def test_gaia_inherits_the_process_cwd_when_the_host_names_no_directory(db_env, approval_id):
+    delivered = _drive_plugin(db_env, approval_id, call_id="call-no-directory")
+
+    assert delivered["gaiaSpawnCwds"] == [None], delivered["gaiaSpawnCwds"]
 
 
 def test_control_prompt_body_matches_the_installed_sdk_types(db_env, approval_id):

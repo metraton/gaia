@@ -416,11 +416,23 @@ function traceableBridgeRequest(event: Record<string, unknown>): Record<string, 
   }
 }
 
-async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
+/** The directory Gaia's own processes run from, so their writes are attributed
+ * to the session's workspace: `resolve_workspace` derives the workspace from
+ * the cwd, and `opencode serve` may run from a directory that is not the
+ * project (measured: events from a /home/jorge serve landed in workspace
+ * 'jorge' instead of 'me'). Undefined when the host handed no absolute
+ * directory, which leaves the spawn inheriting this process's cwd. */
+function gaiaDirectory(input: any): string | undefined {
+  const directory = input?.directory
+  return typeof directory === "string" && isAbsolute(directory) ? directory : undefined
+}
+
+async function bridge(event: Record<string, unknown>, cwd: string | undefined): Promise<BridgeResponse> {
   if (process.env.GAIA_DEBUG) {
     console.error(`[gaia-opencode-bridge:request] ${JSON.stringify(traceableBridgeRequest(event))}`)
   }
   const child = Bun.spawn(["python3", bridgePath, "--shell-env-v1"], {
+    cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdin: "pipe",
     stdout: "pipe",
@@ -444,8 +456,12 @@ async function bridge(event: Record<string, unknown>): Promise<BridgeResponse> {
   return response
 }
 
-async function gaiaCapture(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+async function gaiaCapture(
+  args: string[],
+  cwd: string | undefined,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
   const child = Bun.spawn(["python3", gaiaPath, ...args], {
+    cwd,
     env: { ...process.env, GAIA_HOST: "opencode" },
     stdout: "pipe",
     stderr: "pipe",
@@ -468,10 +484,6 @@ export function gaiaFailureCause(result: { stdout: string; stderr: string }): st
     // Not a JSON line; fall through to stderr.
   }
   return result.stderr.trim() || "gaia exited non-zero without reporting a cause"
-}
-
-async function gaia(args: string[]): Promise<boolean> {
-  return (await gaiaCapture(args)).ok
 }
 
 export type NativeConsentPresentation = {
@@ -709,8 +721,12 @@ export const GaiaOpenCodePlugin = async (input: any) => {
   // not name that scope -- a field it sent would be a scope its own caller
   // could name, and a claim checked against a ledger the claimant chooses
   // carries no provenance.
+  const workspaceDirectory = gaiaDirectory(input)
   const send: (event: Record<string, unknown>) => Promise<BridgeResponse> =
-    typeof input?.gaiaBridge === "function" ? input.gaiaBridge : bridge
+    typeof input?.gaiaBridge === "function"
+      ? input.gaiaBridge
+      : (event) => bridge(event, workspaceDirectory)
+  const gaia = (args: string[]) => gaiaCapture(args, workspaceDirectory)
   // A claim the host process was granted, never one this edge composed: the
   // plugin receives caller-supplied names and cannot be the issuer of the
   // authority they would otherwise assert.
@@ -941,7 +957,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     reply: PermissionReply,
     lane: DecisionLane = "preferred",
   ): Promise<boolean> {
-    return gaia([
+    const decided = await gaia([
       "approvals", "opencode-decide", approval.approvalID,
       "--session-id", approval.sessionID,
       "--call-id", approval.callID,
@@ -950,6 +966,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
       "--decision-lane", lane === "compatibility" ? "compatibility" : "preferred",
       "--json",
     ])
+    return decided.ok
   }
 
   function closeControl(control: ControlDecision): void {
@@ -1123,7 +1140,7 @@ export const GaiaOpenCodePlugin = async (input: any) => {
     const id = approvalID(response)
     if (!id) return
     const approval = { approvalID: id, sessionID, callID, token: crypto.randomUUID() }
-    const presented = await gaiaCapture([
+    const presented = await gaia([
       "approvals", "opencode-present", id,
       "--session-id", sessionID,
       "--call-id", callID,

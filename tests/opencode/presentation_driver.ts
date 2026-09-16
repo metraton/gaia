@@ -23,6 +23,18 @@ const bridgeEvents: Record<string, unknown>[] = []
 const deletedSessions: string[] = []
 const controlSessionID = `control-${scenario.callID}`
 
+// The cwd of every `bin/gaia` process the plugin starts, observed at the spawn
+// boundary: the workspace Gaia attributes the presentation to is derived from
+// that cwd, so it is the fact under test, not the plugin's directory field.
+const gaiaSpawnCwds: (string | undefined)[] = []
+const hostSpawn = Bun.spawn
+Bun.spawn = ((argv: string[], options?: { cwd?: string }) => {
+  if (Array.isArray(argv) && argv.some((token) => String(token).endsWith("/bin/gaia"))) {
+    gaiaSpawnCwds.push(options?.cwd)
+  }
+  return hostSpawn(argv, options as any)
+}) as typeof Bun.spawn
+
 async function gaiaBridge(event: Record<string, unknown>) {
   if (event.event === "permission.uncorrelated" || event.event === "control.opened") {
     bridgeEvents.push(event)
@@ -78,7 +90,7 @@ const client = {
   },
 }
 
-const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client })
+const plugin: any = await GaiaOpenCodePlugin({ gaiaBridge, client, directory: scenario.directory })
 
 let error: string | undefined
 let originalInvocationExecuted = false
@@ -125,4 +137,5 @@ if (scenario.controlPrompt !== undefined) {
 
 console.log(JSON.stringify({
   asked, controlPrompts, bridgeEvents, deletedSessions, controlSessionLingered, error, originalInvocationExecuted,
+  gaiaSpawnCwds,
 }))
