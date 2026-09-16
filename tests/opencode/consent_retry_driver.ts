@@ -24,6 +24,7 @@
 
 import { isAbsolute } from "node:path"
 import { pathToFileURL } from "node:url"
+import { assertPromptAsyncBody, assertSessionCreateBody } from "./sdk_body_contract.ts"
 
 const bridgePath = new URL("./isolated_bridge.py", import.meta.url).pathname
 
@@ -124,11 +125,17 @@ async function policyBridge(event: Record<string, unknown>) {
     received,
     sentArgsJSON: JSON.stringify(event.args ?? null),
   })
-  lastBridgeAction = (received as any)?.action
-  lastBridgeRequiresApproval = Boolean(
-    (received as any)?.approval_id
-    || String((received as any)?.reason ?? "").match(/approval_id:\s*P-[A-Za-z0-9-]+/),
-  )
+  // Audit traces the plugin sends mid-verdict (a denial it could not correlate,
+  // a control the host accepted) are acknowledged, never ruled on; only a
+  // policy answer says whether the host must now ask.
+  const isAuditTrace = event.event === "permission.uncorrelated" || event.event === "control.opened"
+  if (!isAuditTrace) {
+    lastBridgeAction = (received as any)?.action
+    lastBridgeRequiresApproval = Boolean(
+      (received as any)?.approval_id
+      || String((received as any)?.reason ?? "").match(/approval_id:\s*P-[A-Za-z0-9-]+/),
+    )
+  }
   return received
 }
 
@@ -146,11 +153,14 @@ const client = {
     async messages({ sessionID }: { sessionID: string }) {
       return { data: scenario.messages?.[sessionID] ?? [] }
     },
-    async create({ body }: any) {
-      return { data: { id: `control-${controlPrompts.length + 1}`, title: body.title } }
+    async create(request: any) {
+      assertSessionCreateBody(request)
+      return { data: { id: `control-${controlPrompts.length + 1}`, title: request.body.title } }
     },
     async promptAsync(request: any) {
+      assertPromptAsyncBody(request)
       controlPrompts.push(request)
+      return { data: undefined, response: { ok: true, status: 204 } }
     },
   },
 }

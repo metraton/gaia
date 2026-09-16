@@ -12,6 +12,7 @@
  */
 
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
+import { assertPromptAsyncBody, assertSessionCreateBody } from "./sdk_body_contract.ts"
 
 const scenario = JSON.parse(process.argv[2])
 const bridgeEvents: Record<string, unknown>[] = []
@@ -39,10 +40,14 @@ const client = {
     async messages() {
       return { data: [{ info: { role: "assistant", agent: "gaia-orchestrator" } }] }
     },
-    async create({ body }: any) {
-      return { data: { id: `control-${scenario.callID}`, title: body.title } }
+    async create(request: any) {
+      assertSessionCreateBody(request)
+      return { data: { id: `control-${scenario.callID}`, title: request.body.title } }
     },
-    async promptAsync() {},
+    async promptAsync(request: unknown) {
+      assertPromptAsyncBody(request)
+      return { data: undefined, response: { ok: true, status: 204 } }
+    },
   },
 }
 

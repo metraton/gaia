@@ -14,14 +14,17 @@
  */
 
 import { GaiaOpenCodePlugin } from "../../opencode/plugin.ts"
+import { assertPromptAsyncBody, assertSessionCreateBody } from "./sdk_body_contract.ts"
 
 const scenario = JSON.parse(process.argv[2])
 const asked: Record<string, unknown>[] = []
 const controlPrompts: Record<string, unknown>[] = []
 const bridgeEvents: Record<string, unknown>[] = []
+const deletedSessions: string[] = []
+const controlSessionID = `control-${scenario.callID}`
 
 async function gaiaBridge(event: Record<string, unknown>) {
-  if (event.event === "permission.uncorrelated") {
+  if (event.event === "permission.uncorrelated" || event.event === "control.opened") {
     bridgeEvents.push(event)
     return { action: "allow" as const }
   }
@@ -52,11 +55,25 @@ const client = {
     async messages() {
       return { data: [{ info: { role: "assistant", agent: "gaia-orchestrator" } }] }
     },
-    async create({ body }: any) {
-      return { data: { id: `control-${scenario.callID}`, title: body.title } }
+    async create(request: any) {
+      assertSessionCreateBody(request)
+      return { data: { id: controlSessionID, title: request.body.title } }
     },
     async promptAsync(request: Record<string, unknown>) {
+      assertPromptAsyncBody(request)
       controlPrompts.push(request)
+      if (scenario.controlPrompt === "rejected") {
+        // The SDK client resolves the host's schema rejection as data, not a throw.
+        return {
+          error: { name: "BadRequestError", data: { message: 'schema rejection kind=Payload at ["system"]' } },
+          response: { ok: false, status: 400 },
+        }
+      }
+      return { data: undefined, response: { ok: true, status: 204 } }
+    },
+    async delete({ path }: any) {
+      deletedSessions.push(path.id)
+      return { data: true, response: { ok: true, status: 200 } }
     },
   },
 }
@@ -91,4 +108,21 @@ if (scenario.outcome === undefined || scenario.outcome === "pending" || scenario
   }
 }
 
-console.log(JSON.stringify({ asked, controlPrompts, bridgeEvents, error, originalInvocationExecuted }))
+// A control still registered for the child session makes the plugin refuse any
+// non-question tool result on it; a released one lets the probe fall through.
+let controlSessionLingered: boolean | undefined
+if (scenario.controlPrompt !== undefined) {
+  try {
+    await plugin["tool.execute.after"](
+      { sessionID: controlSessionID, callID: "probe-after", tool: "bash" },
+      { title: "probe", output: "", metadata: {} },
+    )
+    controlSessionLingered = false
+  } catch (thrown: any) {
+    controlSessionLingered = String(thrown?.message ?? thrown).includes("control-plane")
+  }
+}
+
+console.log(JSON.stringify({
+  asked, controlPrompts, bridgeEvents, deletedSessions, controlSessionLingered, error, originalInvocationExecuted,
+}))

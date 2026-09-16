@@ -286,6 +286,7 @@ def test_control_question_is_sealed_and_one_yes_activates_one_bound_grant(db_env
     ]
     prompt = driven["controlPrompts"][0]["body"]
     assert prompt["tools"] == {"*": False, "question": True}
+    assert isinstance(prompt["system"], str), prompt["system"]
     assert _approval_status(db_path, approval_id) == "approved"
     grant = _grant(db_path, approval_id)
     assert grant is not None
