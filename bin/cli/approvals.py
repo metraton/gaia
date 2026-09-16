@@ -1632,7 +1632,13 @@ def cmd_request_file_write(args) -> int:
 
 
 def _opencode_binding(args) -> tuple[dict | None, str | None]:
-    """Require matching presentations to agree on the approval's owning session."""
+    """Require matching presentations to agree on the approval's owning session.
+
+    An approval whose row names no session has not been presented anywhere
+    yet -- cmd_opencode_present adopts the session in the same transaction as
+    the first SHOWN -- so a NULL owner passes here to reach the "no matching
+    presentation" outcome instead of being refused as foreign.
+    """
     approval_id = _resolve_approval_id(args.approval_id)
     if not _is_canonical_approval_id(approval_id):
         return None, (
@@ -1655,7 +1661,8 @@ def _opencode_binding(args) -> tuple[dict | None, str | None]:
         return None, f"No approval found for id: {approval_id}"
     if approval.get("status") != "pending":
         return None, f"Approval {approval_id} is not pending"
-    if approval.get("session_id") != session_id:
+    owner = approval.get("session_id")
+    if owner is not None and owner != session_id:
         return None, "OpenCode session does not own this approval"
 
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -1716,7 +1723,15 @@ def _opencode_presentation(approval: dict, session_id: str, call_id: str) -> dic
 
 
 def cmd_opencode_present(args) -> int:
-    """Record an OpenCode-native presentation before requesting user consent."""
+    """Record an OpenCode-native presentation before requesting user consent.
+
+    A pending approval minted without a session (``request-set`` and
+    ``request-file-write`` persist NULL when ``--session-id`` is omitted, and a
+    dispatched OpenCode agent has no way to learn its own session id) is adopted
+    by the first session that presents it, in the same transaction as the SHOWN
+    event. From then on the ownership check applies unchanged: any other
+    session is refused.
+    """
     approval, error = _opencode_binding(args)
     if approval is not None:
         # A matching event already exists. Presentation is idempotent so plugin
@@ -1740,25 +1755,39 @@ def cmd_opencode_present(args) -> int:
     token = args.token.strip()
     try:
         store = _import_approval_store()
-        approval = store.get_by_id(approval_id)
-        if approval is None or approval.get("status") != "pending":
-            raise ValueError(f"Approval {approval_id} is not pending")
-        if approval.get("session_id") != session_id:
-            raise ValueError("OpenCode session does not own this approval")
-        store.record_event(
-            approval_id,
-            "SHOWN",
-            agent_id="opencode-plugin",
-            session_id=session_id,
-            metadata_json=json.dumps(
-                {
-                    "host": "opencode",
-                    "call_id": call_id,
-                    "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
-                },
-                sort_keys=True,
-            ),
-        )
+        con = store._open_db()
+        try:
+            con.execute("BEGIN IMMEDIATE")
+            approval = store.get_by_id(approval_id, con=con)
+            if approval is None or approval.get("status") != "pending":
+                raise ValueError(f"Approval {approval_id} is not pending")
+            owner = approval.get("session_id")
+            if owner is None:
+                store.adopt_session(approval_id, session_id, con=con)
+                approval["session_id"] = session_id
+            elif owner != session_id:
+                raise ValueError("OpenCode session does not own this approval")
+            store.record_event(
+                approval_id,
+                "SHOWN",
+                agent_id="opencode-plugin",
+                session_id=session_id,
+                metadata_json=json.dumps(
+                    {
+                        "host": "opencode",
+                        "call_id": call_id,
+                        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                    },
+                    sort_keys=True,
+                ),
+                con=con,
+            )
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
     except Exception as exc:
         _print_error(f"OpenCode presentation failed: {exc}", args)
         return 1
